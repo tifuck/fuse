@@ -4,7 +4,7 @@
 # as their own reviewed step against fuse_live.
 set -euo pipefail
 
-PROD="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROD="${FUSE_PROD_ROOT:-/root/fuse}"
 DEV="${FUSE_DEV_ROOT:-/root/fuse-dev}"
 PROD_BRANCH="${FUSE_PROD_BRANCH:-main}"
 DEV_BRANCH="${FUSE_DEV_BRANCH:-dev}"
@@ -12,12 +12,11 @@ DEV_BRANCH="${FUSE_DEV_BRANCH:-dev}"
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || die "run as root"
-[ -d "$PROD/.git" ] || die "production is not a git repo: $PROD"
-[ -d "$DEV/.git" ] || die "development worktree missing: $DEV"
+git -C "$PROD" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "production is not a git repo: $PROD"
+git -C "$DEV" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "development worktree missing: $DEV"
 [ "$PROD" != "$DEV" ] || die "dev and production are the same directory"
 
 cd "$PROD"
-git rev-parse --is-inside-work-tree >/dev/null
 [ "$(git rev-parse --abbrev-ref HEAD)" = "$PROD_BRANCH" ] || die "production is not on $PROD_BRANCH"
 git diff --quiet && git diff --cached --quiet || die "production worktree is dirty; commit or stash first"
 [ -z "$(git status --porcelain --untracked-files=normal)" ] || die "production has untracked files; review them first"
@@ -38,8 +37,11 @@ BEFORE="$(git rev-parse --short HEAD)"
 git merge --ff-only FETCH_HEAD
 AFTER="$(git rev-parse --short HEAD)"
 
-if [ -x "$PROD/venv/bin/pip" ] && ! "$PROD/venv/bin/pip" check >/dev/null 2>&1; then
-  "$PROD/venv/bin/pip" install --disable-pip-version-check -r "$PROD/requirements.txt"
+# requirements.txt changes are installed by hand in the dev venv, then
+# mirrored into the prod venv before this script runs. fuse.service has
+# NoNewPrivileges, so pip in that venv cannot re-exec from here.
+if ! cmp -s "$DEV/requirements.txt" "$PROD/requirements.txt"; then
+  die "requirements.txt changed; install it into $PROD/venv before promoting"
 fi
 
 systemctl restart fuse
