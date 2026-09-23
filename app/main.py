@@ -1,8 +1,10 @@
 import asyncio
 import inspect
 import logging
+import re
 import fcntl
 from contextlib import asynccontextmanager
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -136,7 +138,12 @@ async def lifespan(app: FastAPI):
     try:
         url = (getattr(settings, "database_url", "") or "").strip()
         if settings.database_mariadb_enabled and url.startswith("mysql://"):
-            worker_lock = open("/root/fuse/data/fuse.chat-worker.lock", "a")
+            schema = urlsplit(url).path.strip("/") or "fuse"
+            if not re.fullmatch(r"[A-Za-z0-9_-]+", schema):
+                raise RuntimeError("Refusing worker lock for an invalid database name")
+            lock_dir = ROOT / "data"
+            lock_dir.mkdir(parents=True, exist_ok=True)
+            worker_lock = open(lock_dir / f"fuse.{schema}.chat-worker.lock", "a")
         else:
             _, _, path, _ = db._database_target(settings.database_path)
             worker_lock = open(str(path) + ".chat-worker.lock", "a") if path is not None else None
