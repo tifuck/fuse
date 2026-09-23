@@ -1,0 +1,511 @@
+{% extends "base.html" %}
+{% block title %}Chat · Fuse{% endblock %}
+{% block page_title %}Chat{% endblock %}
+{% block head_extra %}
+<script src="/static/chat-appearance.js?v=16"></script>
+<link rel="stylesheet" href="/static/chat-design.css?v=154">
+<link rel="stylesheet" href="/static/spinner-next.css?v=3">
+<link rel="stylesheet" href="/static/spinner-future.css?v=3">
+{% endblock %}
+{% block body %}
+<div class="chat is-empty" data-chat data-view="cli">
+  <aside class="chat-history" id="chat-history" data-history aria-label="Chat history">
+    <div class="chat-history-head">
+      <a class="chat-brand" href="/chat" aria-label="Fuse home">
+        <svg class="chat-brand-mark" viewBox="0 0 512 512" aria-hidden="true"><g fill="currentColor"><rect x="168" y="136" width="66" height="240" rx="16"/><rect x="168" y="136" width="196" height="66" rx="16"/><rect x="168" y="252" width="152" height="58" rx="16"/></g><circle cx="398" cy="164" r="22" fill="var(--steel)"/></svg>
+        <span class="chat-brand-word">Fuse</span>
+        <span class="chat-brand-caption">Workspace</span>
+      </a>
+      <button type="button" class="chat-history-collapse" data-history-toggle aria-label="Toggle chat history" aria-controls="chat-history" aria-expanded="true" title="Toggle chat history">
+        <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><rect x="2.5" y="3.5" width="15" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M7.5 4v12" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>
+      </button>
+    </div>
+    <div class="chat-history-top">
+      <div class="chat-history-bar">
+        <div class="chat-history-tabs" role="tablist" aria-label="History">
+          <button type="button" class="chat-history-tab" role="tab" data-history-tab="chats" aria-selected="true" aria-busy="false">
+            <span class="chat-run-spin" data-run-spin="chats" hidden aria-hidden="true"></span>
+            Chats
+          </button>
+          <button type="button" class="chat-history-tab" role="tab" data-history-tab="projects" aria-selected="false" aria-busy="false">
+            <span class="chat-run-spin" data-run-spin="projects" hidden aria-hidden="true"></span>
+            Projects
+          </button>
+        </div>
+        <button type="button" class="chat-new" data-chat-new aria-label="New chat" aria-expanded="false" title="New chat">
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          <span class="visually-hidden" data-chat-new-label>New chat</span>
+        </button>
+        <button type="button" class="chat-history-iconbtn" data-history-search-toggle aria-expanded="false" aria-controls="chat-search" title="Search chats and projects">
+          <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10.4 10.4L13.8 13.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          <span class="visually-hidden">Search chats and projects</span>
+        </button>
+      </div>
+      <div class="chat-history-search" id="chat-search" data-history-row hidden>
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10.4 10.4L13.8 13.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        <label class="visually-hidden" for="chat-search-input">Search chats and projects</label>
+        <input id="chat-search-input" data-history-search type="search" placeholder="Search chats and projects" autocomplete="off">
+        <button type="button" class="chat-history-search-close" data-history-search-close aria-label="Close search">
+          <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <div class="chat-history-filters" data-project-filters hidden>
+        <label>
+          <span class="visually-hidden">Sort project sessions</span>
+          <select data-project-sort>
+            <option value="recent">Recent</option>
+            <option value="project">By project</option>
+          </select>
+        </label>
+        <label>
+          <span class="visually-hidden">Filter by project</span>
+          <select data-project-filter>
+            <option value="">All projects</option>
+          </select>
+        </label>
+      </div>
+    </div>
+    <p class="chat-history-kicker" data-history-kicker hidden>Chats</p>
+    <div class="chat-history-list" data-history-list></div>
+    <div class="chat-project-picker" data-project-picker hidden>
+      <div class="chat-project-picker-head">
+        <button type="button" class="chat-project-picker-back" data-project-picker-back hidden>Back</button>
+        <p data-project-picker-title>Workspaces</p>
+        <button type="button" class="chat-project-picker-close" data-project-picker-close aria-label="Close">Close</button>
+      </div>
+      <div class="chat-project-picker-body" data-project-picker-list></div>
+      <form class="chat-project-picker-form" data-project-picker-form hidden>
+        <label class="chat-project-picker-field">
+          <span>Host</span>
+          <select name="host_id" data-project-picker-host required></select>
+        </label>
+        <label class="chat-project-picker-field">
+          <span>Name</span>
+          <input name="name" maxlength="80" required placeholder="api" data-project-picker-name>
+        </label>
+        <label class="chat-project-picker-field">
+          <span>Folder</span>
+          <span class="chat-project-picker-path">
+            <input name="remote_path" maxlength="400" required placeholder="/srv/app" data-project-picker-path>
+            <button type="button" class="btn sm ghost" data-project-picker-browse>Browse</button>
+          </span>
+        </label>
+        <div class="chat-project-picker-browse" data-project-picker-browser hidden></div>
+        <p class="callout fault" data-project-picker-error hidden></p>
+        <button type="submit" class="btn sm">Create project</button>
+      </form>
+    </div>
+    <div class="chat-history-footer">
+      <button type="button" class="chat-history-foot" data-history-archived hidden>Archived</button>
+      {% include "_account.html" %}
+    </div>
+    <button type="button" class="chat-history-resize" data-history-resize role="separator" aria-orientation="vertical" aria-label="Resize sidebar" title="Drag to resize · double-click to reset"></button>
+  </aside>
+  <button type="button" class="chat-history-backdrop" data-history-backdrop aria-label="Close chat history" tabindex="-1" hidden></button>
+  <div class="chat-stage">
+  <header class="chat-bar">
+    <button type="button" class="btn ghost sm chat-history-toggle" data-history-toggle aria-label="Toggle chat history" aria-controls="chat-history" aria-expanded="true" title="Toggle chat history">
+      <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><rect x="2.5" y="3.5" width="15" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M7.5 4v12" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>
+    </button>
+    <div class="chat-project-chip" data-project-chip hidden>
+      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2.6 4.7h3.2l1.1 1.4H13.4v6.4H2.6z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
+      <span class="chat-project-name" data-project-name></span>
+    </div>
+    <h1 class="chat-bar-title" aria-busy="false"><span class="chat-run-spin" data-run-spin="title" hidden aria-hidden="true"></span><span data-chat-title class="is-untitled"></span></h1>
+    <div class="chat-bar-actions">
+      <div class="chat-view" data-chat-view-picker>
+        <button type="button" class="chat-bar-btn" data-view-toggle aria-label="View and theme" aria-haspopup="dialog" aria-expanded="false" aria-controls="chat-view-menu" title="View and theme">
+          <svg viewBox="0 0 16 16" width="17" height="17" aria-hidden="true"><rect x="2.6" y="3.4" width="10.8" height="9.2" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5 6.2h6M5 8.2h4.2M5 10.2h5.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+          <span data-view-label>View</span>
+        </button>
+      </div>
+      <button type="button" class="chat-bar-btn" data-artifact-toggle disabled aria-disabled="true" aria-pressed="false" aria-expanded="false" aria-controls="chat-artifact" aria-label="Artifact preview" title="Artifact preview">
+        <svg viewBox="0 0 16 16" width="17" height="17" aria-hidden="true"><rect x="2.6" y="3.4" width="10.8" height="9.2" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5 9.2l1.7-2 1.5 1.7 2.2-2.7 2.2 3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
+        <span>Artifact</span>
+      </button>
+      <div class="chat-bar-manage">
+        <button type="button" class="chat-bar-btn" data-memory-toggle aria-pressed="false" aria-expanded="false" aria-controls="chat-context" aria-label="Context" title="Instructions and saved context">
+          <svg viewBox="0 0 16 16" width="17" height="17" aria-hidden="true"><path d="M3.5 3.75h9v8.5h-9zM6 3.75V2.6a2 2 0 0 1 4 0v1.15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M6.5 8h3M6.5 10.25h2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+          <span>Context</span>
+        </button>
+        <button type="button" class="chat-bar-btn" data-skills-toggle aria-pressed="false" aria-expanded="false" aria-controls="chat-skills" aria-label="Skills" title="Skills">
+          <svg viewBox="0 0 16 16" width="17" height="17" aria-hidden="true"><path d="M8 2.6l1.15 3.3H12.7L9.9 8.05l1.1 3.35L8 9.4 5 11.4l1.1-3.35L3.3 5.9h3.55z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
+          <span>Skills</span>
+        </button>
+      </div>
+      <button type="button" class="chat-bar-btn" data-notif-toggle aria-pressed="false" aria-label="Alerts" title="Notify me when a chat finishes on any device">
+        <svg viewBox="0 0 16 16" width="17" height="17" aria-hidden="true"><path d="M8 2.4a3.6 3.6 0 0 0-3.6 3.6c0 2.8-1.1 3.9-1.6 4.4h10.4c-.5-.5-1.6-1.6-1.6-4.4A3.6 3.6 0 0 0 8 2.4z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M6.6 12.6a1.5 1.5 0 0 0 2.8 0" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+        <span>Alerts</span>
+      </button>
+      <button type="button" class="chat-bar-btn chat-agents-bar" data-agents-tab aria-label="Agents and commands" aria-controls="chat-agents" aria-expanded="false" title="Agents and background commands">
+        <svg viewBox="0 0 16 16" width="17" height="17" aria-hidden="true"><rect x="3.2" y="5.7" width="9.6" height="6.9" rx="1.8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 5.7V3.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="8" cy="2.65" r="0.95" fill="currentColor"/><path d="M5.9 8.7h.01M10.1 8.7h.01M6.2 10.8h3.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+        <span>Work</span>
+        <span class="chat-agents-bar-count" data-agents-count aria-hidden="true"></span>
+      </button>
+    </div>
+  </header>
+  <div class="chat-edge chat-edge-top" aria-hidden="true"></div>
+  <div class="chat-thread" data-chat-thread role="region" aria-label="Conversation" tabindex="0">
+    <div class="chat-log" data-chat-log hidden></div>
+  </div>
+  <button type="button" class="chat-latest" data-chat-latest hidden>Jump to latest</button>
+  <form class="chat-dock" data-chat-form>
+    <p class="chat-welcome-kicker">Ideas into action</p>
+    <h2 class="chat-welcome" data-chat-welcome>What are we building?</h2>
+    <p class="chat-welcome-note">Think it through. Explore a codebase. Make something work.</p>
+    <div class="chat-sync" aria-label="Chat synchronization" data-sync-state="connecting">
+      <span data-sync-label role="status">Connecting</span>
+      <button type="button" data-sync-retry hidden>Retry send</button>
+    </div>
+    <div class="chat-slash" data-chat-slash hidden>
+      <p class="chat-slash-kicker">Commands <span>Tab to complete · Enter to select</span></p>
+      <div class="chat-slash-list" id="chat-slash-list" data-chat-slash-list role="listbox" aria-label="Slash commands"></div>
+    </div>
+    <div class="chat-spell-pop" id="chat-spell-pop" data-chat-spell-pop hidden role="menu" aria-label="Spelling"></div>
+    <div class="chat-rewind" data-chat-rewind hidden role="dialog" aria-label="Rewind conversation">
+      <div class="chat-rewind-head">
+        <p>Rewind to a message</p>
+        <button type="button" class="chat-menu-close chat-rewind-close" data-rewind-close aria-label="Close">
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <div class="chat-rewind-list" data-chat-rewind-list></div>
+    </div>
+    <div class="chat-queue" data-chat-queue hidden role="region" aria-label="Queued messages">
+      <p class="chat-queue-kicker">Queued <span data-chat-queue-count></span></p>
+      <ul class="chat-queue-list" data-chat-queue-list></ul>
+    </div>
+    <div class="chat-live-dock" data-live-dock hidden role="status">
+      <span class="chat-activity-spin" data-live-dock-spin aria-hidden="true"></span>
+      <span class="chat-status-shimmer"><span data-live-dock-label>Working</span><span class="chat-dock-dots" aria-hidden="true"><i></i><i></i><i></i></span></span>
+    </div>
+    <div class="chat-context-alert" data-context-alert hidden role="status">
+      <p data-context-alert-text></p>
+      <button type="button" class="btn sm" data-context-alert-compact>Compact now</button>
+      <button type="button" class="chat-context-alert-dismiss" data-context-alert-dismiss>Dismiss</button>
+    </div>
+    <div class="chat-perm-queue" data-perm-queue hidden role="region" aria-label="Permission requests">
+      <ul class="chat-perm-list" data-perm-queue-list></ul>
+    </div>
+    <div class="chat-box">
+      <div class="chat-attach-list" data-chat-attach-list hidden></div>
+      <label class="visually-hidden" for="chat-input">Message</label>
+      <div class="chat-compose" data-chat-compose>
+        <div class="chat-compose-mirror" data-chat-compose-mirror aria-hidden="true"></div>
+        <textarea id="chat-input" data-chat-input rows="1" placeholder="Ask anything or type /" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="send" aria-label="Message"></textarea>
+      </div>
+      <div class="chat-box-bar">
+        <div class="chat-box-left">
+          <input id="chat-file" data-chat-file type="file" hidden multiple accept="image/jpeg,image/png,image/gif,image/webp,image/*,application/pdf,text/plain,text/markdown,text/csv,text/html,application/json,.md,.txt,.csv,.json,.py,.js,.ts,.css,.html">
+          <button type="button" class="chat-attach-btn" data-chat-attach aria-label="Add image or file" title="Add image or file">
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+          </button>
+          <div class="chat-model" data-chat-picker></div>
+          <button type="button" class="chat-search-btn is-on" data-tool-search aria-pressed="true" aria-label="Web search on" title="Web search is on">
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+              <circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.5"/>
+              <ellipse cx="8" cy="8" rx="2.2" ry="5.5" fill="none" stroke="currentColor" stroke-width="1.35"/>
+              <path d="M2.5 8h11" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/>
+            </svg>
+          </button>
+          <div class="chat-perm-host" data-perm-host>
+            <button type="button" class="chat-perm-btn" data-perm-chip aria-haspopup="dialog" aria-expanded="false" aria-pressed="false" aria-label="Permissions" title="Permission prompts on">
+              <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+                <path d="M8 1.8l4.6 1.7v3.9c0 2.9-1.9 5.4-4.6 6.4-2.7-1-4.6-3.5-4.6-6.4V3.5L8 1.8z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+                <path class="chat-perm-check" d="M5.6 7.9l1.7 1.7 3-3.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <span class="chat-perm-btn-label" data-perm-chip-label>Bypass</span>
+            </button>
+          </div>
+          <button type="button" class="chat-report-btn" data-bug-report-trigger aria-haspopup="dialog" title="Report an issue">
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="8.6" r="4.1" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 4.5V2.6M5 3.6l1 1.5M11 3.6l-1 1.5M2.2 7h1.7M12.1 7h1.7M3.4 12.4l1.3-1.2M12.6 12.4l-1.3-1.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+            <span class="visually-hidden">Report an issue</span>
+          </button>
+        </div>
+        <div class="chat-box-right">
+          <div class="chat-context-wrap" data-context-wrap hidden>
+            <button type="button" class="chat-context" data-chat-context aria-label="Context usage" aria-expanded="false" aria-controls="chat-context-pop" title="Context usage">
+              <svg viewBox="0 0 32 32" aria-hidden="true">
+                <circle class="chat-context-track" cx="16" cy="16" r="12" fill="none"></circle>
+                <circle class="chat-context-fill" data-context-fill cx="16" cy="16" r="12" fill="none"></circle>
+              </svg>
+            </button>
+            <div class="chat-context-pop" id="chat-context-pop" data-context-pop hidden>
+              <div class="chat-context-pop-head">
+                <p class="chat-context-pop-kicker">Context</p>
+                <p class="chat-context-pop-meter" data-context-pop-meter></p>
+              </div>
+              <ul class="chat-context-pop-parts" data-context-pop-parts></ul>
+              <p class="chat-context-pop-last" data-context-pop-last hidden></p>
+              <p class="chat-context-pop-note" data-context-pop-note></p>
+              <button type="button" class="btn sm" data-context-pop-compact>Compact now</button>
+            </div>
+          </div>
+          <button type="submit" class="chat-send" data-chat-send disabled aria-label="Send">
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M8 3.2v9.6M4.2 7l3.8-3.8L11.8 7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+    <p class="chat-toast" data-chat-hint role="status" hidden></p>
+  </form>
+  </div>
+  <button type="button" class="chat-artifact-backdrop" data-artifact-backdrop aria-label="Close artifact" tabindex="-1" hidden></button>
+  <aside class="chat-artifact" id="chat-artifact" data-chat-artifact hidden role="dialog" aria-label="Artifact">
+    <div class="chat-artifact-head">
+      <div class="chat-artifact-copy">
+        <p data-artifact-title>Artifact</p>
+        <span class="badge" data-artifact-visibility hidden></span>
+        <span class="chat-artifact-building-label" data-artifact-status hidden>Building…</span>
+      </div>
+      <div class="chat-artifact-tools">
+        <label class="chat-artifact-version" data-artifact-version-wrap hidden>
+          <span class="visually-hidden">Version</span>
+          <select data-artifact-version></select>
+        </label>
+        <button type="button" class="chat-artifact-tool" data-artifact-mode="preview" aria-pressed="true">Preview</button>
+        <button type="button" class="chat-artifact-tool" data-artifact-mode="source" aria-pressed="false">Source</button>
+         <a class="chat-artifact-tool" data-artifact-open href="#" target="_blank" rel="noopener noreferrer" hidden>Open</a>
+         <button type="button" class="chat-menu-close" data-artifact-close aria-label="Close">
+           <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+         </button>
+      </div>
+    </div>
+    <div class="chat-artifact-body">
+      <p class="chat-artifact-building" data-artifact-building hidden>Building the page…</p>
+      <iframe class="chat-artifact-frame" data-artifact-frame title="Artifact preview" sandbox="allow-scripts allow-forms allow-modals" referrerpolicy="no-referrer" hidden></iframe>
+      <pre class="chat-artifact-source" data-artifact-source hidden></pre>
+    </div>
+    <p class="chat-artifact-note">Runs in a sandbox. Do not put secrets in a public artifact.</p>
+  </aside>
+  <button type="button" class="chat-agents-backdrop" data-agents-backdrop aria-label="Close subagents" tabindex="-1" hidden></button>
+  <aside class="chat-agents" id="chat-agents" data-chat-agents hidden role="dialog" aria-label="Agents and commands">
+    <button type="button" class="chat-agents-resize" data-agents-resize role="separator" aria-orientation="vertical" aria-label="Resize subagents panel" title="Drag to resize · double-click to reset"></button>
+    <div class="chat-agents-head">
+      <div class="chat-agents-copy">
+        <p>Agents & commands</p>
+        <span class="chat-agents-live-label" data-agents-live hidden></span>
+      </div>
+      <button type="button" class="chat-menu-close" data-agents-close aria-label="Close">
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <div class="chat-agents-body">
+      <div class="chat-jobs-list" data-jobs-list hidden></div>
+      <div class="chat-agents-list" data-agents-list></div>
+      <div class="chat-agent-view" data-agent-view hidden>
+        <div class="chat-agent-view-head">
+          <button type="button" class="chat-menu-close chat-agent-view-back" data-agent-back aria-label="Back">
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M10.2 3.4L5.6 8l4.6 4.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <div class="chat-agent-view-copy">
+            <p data-agent-title>Subagent</p>
+            <span class="badge" data-agent-status></span>
+          </div>
+          <button type="button" class="chat-agent-view-tool" data-agent-resume hidden>Resume</button>
+          <button type="button" class="chat-agent-view-tool" data-agent-force hidden>Force stop</button>
+          <button type="button" class="chat-agent-view-tool" data-agent-stop hidden>Stop</button>
+        </div>
+        <div class="chat-agent-error" data-agent-error role="alert" hidden>
+          <p data-agent-error-text></p>
+          <button type="button" class="chat-agent-view-tool" data-agent-retry>Retry</button>
+        </div>
+        <div class="chat-agent-scroll" data-agent-log><div class="chat-log chat-agent-log" data-agent-log-body></div></div>
+        <div class="chat-agent-live-dock" data-agent-live-dock hidden role="status">
+          <span class="chat-activity-spin" data-agent-live-spin aria-hidden="true"></span>
+          <span class="chat-status-shimmer"><span class="chat-activity-text"><span data-agent-live-label>Working</span><span class="chat-dock-dots" aria-hidden="true"><i></i><i></i><i></i></span></span></span>
+          <span class="chat-agent-meter" data-agent-meter hidden>
+            <span class="chat-context chat-agent-context" data-agent-context aria-label="Subagent context usage" title="Subagent context usage">
+              <svg viewBox="0 0 32 32" aria-hidden="true">
+                <circle class="chat-context-track" cx="16" cy="16" r="12" fill="none"></circle>
+                <circle class="chat-context-fill" data-agent-context-fill cx="16" cy="16" r="12" fill="none"></circle>
+              </svg>
+            </span>
+            <span class="chat-agent-meter-label" data-agent-meter-label></span>
+          </span>
+        </div>
+      </div>
+    </div>
+  </aside>
+  <button type="button" class="chat-sheet-backdrop" data-memory-backdrop aria-label="Close context" tabindex="-1" hidden></button>
+  <div class="chat-sheet chat-memory" id="chat-context" data-chat-memory hidden role="dialog" aria-label="Context" aria-modal="true">
+    <div class="chat-sheet-head">
+      <div>
+        <p>Context</p>
+        <span>On every chat and project.</span>
+      </div>
+      <button type="button" class="chat-menu-close" data-memory-close aria-label="Close">
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <div class="chat-sheet-body chat-context-body">
+      <div class="chat-context-tabs" role="tablist" aria-label="Context sections">
+        <button type="button" class="chat-context-tab is-on" role="tab" aria-selected="true" aria-controls="context-panel-instructions" data-context-tab="instructions">Instructions</button>
+        <button type="button" class="chat-context-tab" role="tab" aria-selected="false" aria-controls="context-panel-profile" data-context-tab="profile">About you</button>
+        <button type="button" class="chat-context-tab" role="tab" aria-selected="false" aria-controls="context-panel-thread" data-context-tab="thread">This chat</button>
+      </div>
+      <div class="chat-context-panel" id="context-panel-instructions" data-context-panel="instructions" role="tabpanel">
+        <p class="chat-context-desc">How Fuse answers, in every chat and project.<span class="chat-context-eg">e.g. Be brief. Show diffs, not prose.</span></p>
+        <label class="chat-memory-field">
+          <span class="visually-hidden">Instructions</span>
+          <textarea data-memory-instructions maxlength="4000" rows="8" placeholder="How Fuse should answer you"></textarea>
+        </label>
+      </div>
+      <div class="chat-context-panel" id="context-panel-profile" data-context-panel="profile" role="tabpanel" hidden>
+        <p class="chat-context-desc">Who you are, in every chat and project.<span class="chat-context-eg">e.g. Berlin, CET. Solo dev on a Rails app.</span></p>
+        <label class="chat-memory-field">
+          <span class="visually-hidden">About you</span>
+          <textarea data-memory-profile maxlength="4000" rows="8" placeholder="Name, timezone, stack, preferences"></textarea>
+        </label>
+      </div>
+      <div class="chat-context-panel" id="context-panel-thread" data-context-panel="thread" role="tabpanel" hidden>
+        <p class="chat-context-desc">Notes for this thread only.<span class="chat-context-eg">e.g. We're on staging; the old API key is revoked.</span></p>
+        <label class="chat-memory-field">
+          <span class="visually-hidden">This conversation</span>
+          <textarea data-memory-thread maxlength="4000" rows="8" placeholder="Notes for this thread only"></textarea>
+        </label>
+      </div>
+      <p class="chat-memory-project" data-memory-project hidden></p>
+      <p class="chat-sheet-note">Empty instructions use Fuse's default style. Notes cannot add tools or change routing.</p>
+    </div>
+  </div>
+  <button type="button" class="chat-sheet-backdrop" data-skills-backdrop aria-label="Close skills" tabindex="-1" hidden></button>
+  <aside class="chat-sheet chat-skills" id="chat-skills" data-chat-skills data-skills hidden role="dialog" aria-label="Skills" aria-modal="true">
+    <div class="chat-sheet-head">
+      <div>
+        <p>Skills</p>
+        <span>On for every chat and project. Slash /name to run.</span>
+      </div>
+      <button type="button" class="chat-menu-close" data-skills-close aria-label="Close">
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <p class="callout fault" data-page-error hidden></p>
+    <div class="chat-sheet-body chat-skills-body">
+      <div class="skills-installed">
+        <div data-skill-list></div>
+        <p class="skills-empty usage-sub" data-empty hidden>Nothing on the wire yet. Search below or upload a SKILL.md.</p>
+      </div>
+      <div class="skills-add">
+        <form class="skills-search" data-search-form>
+          <label class="hosts-field">
+            <span>Search skills.sh</span>
+            <input type="search" name="q" maxlength="80" placeholder="ponytail" data-search-q autocomplete="off">
+          </label>
+          <button type="submit" class="btn sm">Search</button>
+        </form>
+        <form class="skills-upload" data-upload-form>
+          <label class="hosts-field">
+            <span>Upload zip or SKILL.md</span>
+            <input type="file" name="file" accept=".zip,.md,SKILL.md" data-upload-file>
+          </label>
+          <button type="submit" class="btn sm ghost">Install</button>
+        </form>
+        <p class="callout fault" data-search-error hidden></p>
+        <div data-search-results></div>
+        <p class="callout fault" data-upload-error hidden></p>
+      </div>
+    </div>
+  </aside>
+  <button type="button" class="chat-view-backdrop" data-view-backdrop hidden aria-label="Close appearance" tabindex="-1"></button>
+  <div class="chat-view-menu" id="chat-view-menu" data-view-menu hidden role="dialog" aria-label="View and appearance" aria-modal="true" tabindex="-1">
+    <div class="chat-view-sheet-head" data-view-sheet-head>
+      <span class="chat-view-grip" aria-hidden="true"></span>
+      <p class="chat-view-sheet-title">View &amp; appearance</p>
+      <button type="button" class="chat-menu-close chat-view-sheet-close" data-view-close aria-label="Close">
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <div class="chat-view-sheet-body">
+      <section class="chat-appearance-section">
+        <p class="chat-appearance-heading">Reading mode</p>
+        <div class="chat-view-modes">
+          <button type="button" data-view="cli"><span>Terminal</span><small>Full-window CLI</small></button>
+          <button type="button" data-view="console"><span>Console</span><small>Claude-style TUI</small></button>
+          <button type="button" data-view="compact"><span>Compact</span><small>Quick-scan ledger</small></button>
+        </div>
+      </section>
+      <section class="chat-appearance-section">
+        <p class="chat-appearance-heading">Color theme</p>
+        <div class="chat-theme-swatches" data-chat-theme-swatches></div>
+        <div class="chat-custom-colors" data-chat-custom hidden>
+          <label class="chat-custom-color">
+            <span>Background</span>
+            <input type="color" data-chat-custom-ink value="#121212" aria-label="Background color">
+          </label>
+          <label class="chat-custom-color">
+            <span>Accent</span>
+            <input type="color" data-chat-custom-brass value="#c5df88" aria-label="Accent color">
+          </label>
+          <small class="chat-appearance-hint">Surfaces and type color follow these two.</small>
+        </div>
+      </section>
+      <section class="chat-appearance-section">
+        <p class="chat-appearance-heading">Backdrop</p>
+        <div class="chat-backdrop-swatches" data-chat-backdrop-swatches></div>
+        <div class="chat-appearance-control" data-chat-backdrop-strength-wrap hidden>
+          <div class="chat-appearance-label-row">
+            <label for="chat-backdrop-strength">Intensity</label>
+            <output for="chat-backdrop-strength" data-chat-backdrop-strength-value>28%</output>
+          </div>
+          <input id="chat-backdrop-strength" class="chat-size-range" data-chat-backdrop-strength type="range" min="12" max="55" step="1" value="28" aria-label="Backdrop intensity">
+        </div>
+      </section>
+      <section class="chat-appearance-section">
+        <p class="chat-appearance-heading">Type</p>
+        <div class="chat-appearance-controls">
+          <div class="chat-appearance-control chat-size-control">
+            <div class="chat-appearance-label-row">
+              <label for="chat-text-size">Text size</label>
+              <output for="chat-text-size" data-chat-size-value>100%</output>
+            </div>
+            <div class="chat-size-row">
+              <button type="button" class="chat-size-step" data-size-step="-1" aria-label="Decrease text size">
+                <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M3.5 8h9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+              </button>
+              <input id="chat-text-size" class="chat-size-range" data-chat-size type="range" min="30" max="130" step="5" value="100" aria-label="Text size" list="chat-size-ticks">
+              <datalist id="chat-size-ticks"><option value="100"></option></datalist>
+              <button type="button" class="chat-size-step" data-size-step="1" aria-label="Increase text size">
+                <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="chat-appearance-control">
+            <label class="chat-appearance-label" for="chat-font-select">Font · <span data-chat-font-view>Conversation</span></label>
+            <select id="chat-font-select" class="chat-theme-select" data-chat-font-select></select>
+            <small class="chat-appearance-hint">Size applies to every view; each view keeps its own font.</small>
+          </div>
+        </div>
+      </section>
+      <section class="chat-appearance-section">
+        <p class="chat-appearance-heading">Composer</p>
+        <label class="chat-appearance-check">
+          <input type="checkbox" data-composer-pref="spell" checked>
+          Spell check
+        </label>
+        <label class="chat-appearance-check">
+          <input type="checkbox" data-composer-pref="palettes" checked>
+          Mentions and paths
+        </label>
+        <label class="chat-appearance-check">
+          <input type="checkbox" data-composer-pref="history" checked>
+          Earlier-prompt history
+        </label>
+        <small class="chat-appearance-hint">Spell check uses an on-device English dictionary in this browser. Slash commands stay on.</small>
+      </section>
+    </div>
+  </div>
+</div>
+<script type="application/json" id="chat-config">{{ chat_config | tojson }}</script>
+<script type="application/json" id="skills-config">{{ skills_bundle | tojson }}</script>
+{% endblock %}
+{% block scripts %}
+<script src="/static/composer-lexicon.js?v=1"></script>
+<script src="/static/composer-spell.js?v=1"></script>
+<script src="/static/composer-complete.js?v=1"></script>
+<script src="/static/skills.js?v=3"></script>
+<script src="/static/highlight.min.js?v=1"></script>
+<script src="/static/spinner-next.js?v=3"></script>
+<script src="/static/spinner-future.js?v=3"></script>
+  <script src="/static/chat.js?v=254"></script>
+{% endblock %}

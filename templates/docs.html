@@ -1,0 +1,287 @@
+{% extends "base.html" %}
+{% set example_model = models[0] if models else 'MODEL_ID' %}
+{% block title %}API · Fuse{% endblock %}
+{% block page_title %}API{% endblock %}
+{% block page_lead %}<p>One OpenAI-compatible <code>/v1</code> for every model on this account.</p>{% endblock %}
+{% block page_actions %}
+<button type="button" class="btn sm ghost copy" data-copy="{{ base_url }}" title="Copy base URL">Copy base URL</button>
+{% endblock %}
+{% block body %}
+<div class="api-docs catalog-page">
+  <nav class="docs-toc" aria-label="On this page" data-docs-jump>
+    <p class="docs-toc-title">On this page</p>
+    <a href="#overview" class="on">Overview</a>
+    <a href="#authentication">Authentication</a>
+    <a href="#models">Models</a>
+    <a href="#list-models"><code>GET</code> /models</a>
+    <a href="#chat-completions"><code>POST</code> /chat</a>
+    <a href="#streaming">Streaming</a>
+    <a href="#opencode">OpenCode</a>
+    <a href="#errors">Errors</a>
+  </nav>
+  <div class="stack-y docs-content">
+
+  <div class="metric-grid catalog-metrics" id="overview">
+    <article class="panel metric-card">
+      <p class="metric-label">Base URL</p>
+      <p class="metric-value is-url copy" data-copy="{{ base_url }}" title="Copy base URL">{{ base_url }}</p>
+      <p class="metric-delta up">API online</p>
+    </article>
+    <article class="panel metric-card">
+      <p class="metric-label">Models</p>
+      <p class="metric-value">{{ models|length }}</p>
+      <p class="metric-delta">available to this key</p>
+    </article>
+    <article class="panel metric-card">
+      <p class="metric-label">Auth</p>
+      <p class="metric-value is-text">Bearer</p>
+      <p class="metric-delta">dashboard API key</p>
+    </article>
+  </div>
+
+    <section class="panel docs-panel" id="authentication">
+      <div class="section-heading">
+        <h2>Authentication</h2>
+        <span class="usage-sub">Bearer token</span>
+      </div>
+      <p class="usage-note">Send your dashboard API key as a Bearer token on every request. Never expose it in browser-side code or commit it to source control.</p>
+      <div class="docs-note">
+        <strong>Authorization</strong>
+        <code>Authorization: Bearer $FUSE_API_KEY</code>
+      </div>
+      <div class="code-frame">
+        <div class="code-head"><span>Shell</span><button type="button" class="copy" data-copy="export FUSE_API_KEY=&quot;sk-your-key&quot;">Copy</button></div>
+        <pre><code><span class="syn-cmd">export</span> FUSE_API_KEY=<span class="syn-str">"sk-your-key"</span></code></pre>
+      </div>
+    </section>
+
+    <section class="docs-panel" id="models">
+      <div class="section-heading">
+        <h2>Available models</h2>
+        <span class="usage-sub">use the exact id in requests</span>
+      </div>
+      <div class="catalog-grid">
+        {% for g in groups %}
+        <article class="panel catalog-family">
+          <div class="section-heading">
+            <h2><img class="provider-logo" src="/static/logos/{{ g.type }}.svg" alt="" aria-hidden="true">{% if g.type == 'grok' %}Grok{% elif g.type == 'chatgpt' %}ChatGPT{% elif g.type == 'zai' %}Z.AI{% elif g.type == 'devin' %}Devin{% elif g.type == 'kimi' %}Kimi{% elif g.type == 'mimo' %}Xiaomi{% elif g.type == 'llama' %}Local inference{% elif g.type == 'ollama' %}Ollama Cloud{% elif g.type == 'openrouter' %}OpenRouter{% else %}{{ g.name }}{% endif %}</h2>
+            <span class="usage-sub">{{ g.models|length }}</span>
+          </div>
+          {% if g.models %}
+          <ul class="catalog-ids">
+            {% for m in g.models %}
+            <li><button type="button" class="copy" data-copy="{{ m }}" title="Copy {{ m }}"><span class="rank-name"><strong>{{ m }}</strong></span><span class="catalog-copy">Copy</span></button></li>
+            {% endfor %}
+          </ul>
+          {% else %}
+          <p class="empty">No models currently reported.</p>
+          {% endif %}
+        </article>
+        {% endfor %}
+      </div>
+      {% if not grok_listed %}
+      <div class="docs-callout">
+        <strong>Grok models are not listed for this key.</strong>
+        <span>{% if grok_reason == 'no_sub' %}The linked account does not currently report an active subscription.{% elif grok_reason == 'unauthed' %}The linked Grok sign-in is no longer valid.{% else %}Link an active Grok subscription on Sources to add its models to this catalog.{% endif %}</span>
+        <a href="/sources">Manage Grok access</a>
+      </div>
+      {% endif %}
+      {% if not zai_listed %}
+      <div class="docs-callout">
+        <strong>Z.AI models are not listed for this key.</strong>
+        <span>{% if zai_reason == 'no_sub' %}The linked key does not currently report a GLM Coding Plan.{% elif zai_reason == 'unauthed' %}The linked Z.AI key is no longer valid.{% else %}Link an x.ai, OpenAI, or Z.AI subscription on Sources to add GLM models to this catalog.{% endif %}</span>
+        <a href="/sources">Manage Z.AI access</a>
+      </div>
+      {% endif %}
+      {% if not devin_listed %}
+      <div class="docs-callout">
+        <strong>Devin models are not listed for this key.</strong>
+        <span>Link a Devin session token on Sources to add Fable, SWE, and the rest of the Devin catalog.</span>
+        <a href="/sources">Manage Devin access</a>
+      </div>
+      {% endif %}
+      {% if not kimi_listed %}
+      <div class="docs-callout">
+        <strong>Kimi models are not listed for this key.</strong>
+        <span>{% if kimi_reason == 'no_sub' %}The linked account does not currently report an active membership.{% elif kimi_reason == 'unauthed' %}The linked Kimi sign-in is no longer valid.{% else %}Link a Kimi membership on Sources to add K3 and Kimi for Coding to this catalog.{% endif %}</span>
+        <a href="/sources">Manage Kimi access</a>
+      </div>
+      {% endif %}
+      {% if not mimo_listed %}
+      <div class="docs-callout">
+        <strong>Xiaomi models are not listed for this key.</strong>
+        <span>{% if mimo_reason == 'no_sub' %}The linked key does not currently report a Token Plan.{% elif mimo_reason == 'unauthed' %}The linked Xiaomi key is no longer valid.{% else %}Link a Xiaomi Token Plan on Sources to add MiMo models to this catalog.{% endif %}</span>
+        <a href="/sources">Manage Xiaomi access</a>
+      </div>
+      {% endif %}
+      {% if not openrouter_user_key %}
+      <div class="docs-callout">
+        <strong>OpenRouter models are not listed for this key.</strong>
+        <span>Add your own OpenRouter key on Sources to list its models. Matching pool models such as GLM or GPT fall back to your key automatically when pool usage runs out.</span>
+        <a href="/sources">Manage OpenRouter access</a>
+      </div>
+      {% elif not openrouter_free_models %}
+      <div class="docs-callout">
+        <strong>Free OpenRouter models are turned off.</strong>
+        <span>You have the free OpenRouter models turned off; enable whatever paid models you want on Sources. Pool models such as GLM or GPT still fall back to your OpenRouter key automatically.</span>
+        <a href="/sources">Manage OpenRouter access</a>
+      </div>
+      {% endif %}
+    </section>
+
+    <section class="panel docs-panel" id="list-models">
+      <div class="section-heading">
+        <h2><span class="method get">GET</span> <code>/v1/models</code></h2>
+      </div>
+      <p class="usage-note">Returns the model IDs available to the authenticated account. Grok models are included only when that account has Grok access.</p>
+      <div class="code-frame">
+        <div class="code-head"><span>cURL</span><button type="button" class="copy" data-copy="curl {{ base_url }}/models \
+  -H &quot;Authorization: Bearer $FUSE_API_KEY&quot;">Copy</button></div>
+        <pre><code><span class="syn-cmd">curl</span> <span class="syn-url">{{ base_url }}/models</span> \
+  -H <span class="syn-str">"Authorization: Bearer $FUSE_API_KEY"</span></code></pre>
+      </div>
+      <div class="response-label"><span>200</span> application/json</div>
+      <div class="code-frame compact">
+        <pre><code>{
+  <span class="syn-key">"object"</span>: <span class="syn-str">"list"</span>,
+  <span class="syn-key">"data"</span>: [
+    { <span class="syn-key">"id"</span>: <span class="syn-str">"{{ example_model }}"</span>, <span class="syn-key">"object"</span>: <span class="syn-str">"model"</span>, <span class="syn-key">"owned_by"</span>: <span class="syn-str">"fuse"</span> }
+  ]
+}</code></pre>
+      </div>
+    </section>
+
+    <section class="panel docs-panel" id="chat-completions">
+      <div class="section-heading">
+        <h2><span class="method post">POST</span> <code>/v1/chat/completions</code></h2>
+      </div>
+      <p class="usage-note">Creates a chat completion using the OpenAI Chat Completions request shape.</p>
+      <div class="param-table" role="table" aria-label="Chat completion parameters">
+        <div class="param-row param-head" role="row"><span>Field</span><span>Type</span><span>Description</span></div>
+        <div class="param-row" role="row"><code>model</code><span>string</span><p>Required. An ID returned by <code>GET /v1/models</code>.</p></div>
+        <div class="param-row" role="row"><code>messages</code><span>array</span><p>Required. Conversation messages with <code>role</code> and <code>content</code>.</p></div>
+        <div class="param-row" role="row"><code>stream</code><span>boolean</span><p>Optional. Set to <code>true</code> for server-sent events. Defaults to <code>false</code>.</p></div>
+        <div class="param-row" role="row"><code>max_tokens</code><span>integer</span><p>Optional. Maximum generated tokens, capped by Fuse server policy.</p></div>
+        <div class="param-row" role="row"><code>temperature</code><span>number</span><p>Optional. Sampling temperature supported by the selected model.</p></div>
+        <div class="param-row" role="row"><code>tools</code><span>array</span><p>Optional. OpenAI-compatible tool definitions for models that support tool calls.</p></div>
+        <div class="param-row" role="row"><code>prompt_cache_key</code><span>string</span><p>Optional. Sticky conversation id for pooled Grok, ChatGPT, and Z.AI accounts. Reuse it on follow-up turns so Fuse keeps the request on the same subscription and forwards Grok <code>x-grok-conv-id</code> / ChatGPT <code>prompt_cache_key</code>. You can also send the Grok header <code>x-grok-conv-id</code>. If omitted, Fuse hashes the first system message, first user message, tools, user, and model.</p></div>
+      </div>
+      <div class="code-frame">
+        <div class="code-head"><span>cURL · streamed</span><button type="button" class="copy" data-copy="curl -N {{ base_url }}/chat/completions \
+  -H &quot;Authorization: Bearer $FUSE_API_KEY&quot; \
+  -H &quot;Content-Type: application/json&quot; \
+  -d '{&quot;model&quot;:&quot;{{ example_model }}&quot;,&quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;Explain this repository.&quot;}],&quot;stream&quot;:true}'">Copy</button></div>
+        <pre><code><span class="syn-cmd">curl</span> -N <span class="syn-url">{{ base_url }}/chat/completions</span> \
+  -H <span class="syn-str">"Authorization: Bearer $FUSE_API_KEY"</span> \
+  -H <span class="syn-str">"Content-Type: application/json"</span> \
+  -d <span class="syn-str">'{
+    "model": "{{ example_model }}",
+    "messages": [
+      {"role": "user", "content": "Explain this repository."}
+    ],
+    "stream": true
+  }'</span></code></pre>
+      </div>
+    </section>
+
+    <section class="panel docs-panel" id="streaming">
+      <div class="section-heading">
+        <h2>Streaming</h2>
+        <span class="usage-sub">text/event-stream</span>
+      </div>
+      <p class="usage-note">Read each <code>data:</code> event until <code>[DONE]</code>. The final usage event has an empty <code>choices</code> array.</p>
+      <div class="code-frame compact">
+        <div class="code-head"><span>Server-sent events</span></div>
+        <pre><code><span class="syn-dim">data:</span> {<span class="syn-key">"choices"</span>:[{<span class="syn-key">"delta"</span>:{<span class="syn-key">"content"</span>:<span class="syn-str">"Hello"</span>}}]}
+
+<span class="syn-dim">data:</span> {<span class="syn-key">"choices"</span>:[],<span class="syn-key">"usage"</span>:{<span class="syn-key">"prompt_tokens"</span>:<span class="syn-num">12</span>,<span class="syn-key">"completion_tokens"</span>:<span class="syn-num">4</span>,<span class="syn-key">"total_tokens"</span>:<span class="syn-num">16</span>}}
+
+<span class="syn-dim">data:</span> [DONE]</code></pre>
+      </div>
+    </section>
+
+    <section class="panel docs-panel" id="opencode">
+      <div class="section-heading">
+        <h2>OpenCode</h2>
+        <span class="usage-sub">custom OpenAI-compatible provider</span>
+      </div>
+      <p class="usage-note">Add Fuse as a custom provider. OpenCode does not dynamically import custom-provider models from <code>/v1/models</code>, so install (or refresh) the catalog with the wizard below. It only edits <code>provider.fuse</code> and replaces the Fuse model list.</p>
+      <div class="agent-prompt">
+        <div class="agent-prompt-copy">
+          <span class="badge on">Installer</span>
+          <h3>Install with a script</h3>
+          <p>Backs up <code>~/.config/opencode/opencode.json</code> (or <code>.jsonc</code>) and writes the current Fuse model catalog. If a Fuse API key is already in that file, the installer reuses it and does not prompt or change the key. Re-run anytime to refresh models. Pass <code>--api-key</code> only to set or rotate a key.</p>
+        </div>
+        <div class="agent-prompt-box">
+          <pre><code>curl -fsSL {{ site_url }}/install-opencode.sh | sh</code></pre>
+          <button type="button" class="btn prompt-copy copy" data-copy="curl -fsSL {{ site_url }}/install-opencode.sh | sh">Copy</button>
+        </div>
+      </div>
+      <p class="docs-note"><strong>Non-interactive</strong><span><code>curl -fsSL {{ site_url }}/install-opencode.sh | sh -s -- --api-key sk-… --yes</code></span></p>
+      {% set copy_state = namespace(first=true) %}
+      <div class="code-frame">
+        <div class="code-head"><span>opencode.json</span><button type="button" class="copy" data-copy='{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "fuse": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Fuse",
+      "options": {
+        "baseURL": "{{ base_url }}",
+        "apiKey": "sk-your-fuse-key"
+      },
+      "models": {
+{% for m in model_options %}        {% if not copy_state.first %},{% endif %}{{ m.id|tojson }}: {{ m.config|tojson }}{% set copy_state.first = false %}
+{% endfor %}      }
+    }
+  }
+}'>Copy</button></div>
+        {% set render_state = namespace(first=true) %}
+        <pre><code>{
+  <span class="syn-key">"$schema"</span>: <span class="syn-str">"https://opencode.ai/config.json"</span>,
+  <span class="syn-key">"provider"</span>: {
+    <span class="syn-key">"fuse"</span>: {
+      <span class="syn-key">"npm"</span>: <span class="syn-str">"@ai-sdk/openai-compatible"</span>,
+      <span class="syn-key">"name"</span>: <span class="syn-str">"Fuse"</span>,
+      <span class="syn-key">"options"</span>: {
+        <span class="syn-key">"baseURL"</span>: <span class="syn-str">"{{ base_url }}"</span>,
+        <span class="syn-key">"apiKey"</span>: <span class="syn-str">"sk-your-fuse-key"</span>
+      },
+      <span class="syn-key">"models"</span>: {
+{% for m in model_options %}{% if not render_state.first %},
+{% endif %}        <span class="syn-key">{{ m.id|tojson }}</span>: {{ m.config|tojson }}{% set render_state.first = false %}{% endfor %}
+      }
+    }
+  }
+}</code></pre>
+      </div>
+      <div class="steps">
+        <div><span>1</span><p><strong>Run the installer</strong><code>curl -fsSL {{ site_url }}/install-opencode.sh | sh</code></p></div>
+        <div><span>2</span><p><strong>Verify the catalog</strong><code>opencode models fuse</code></p></div>
+        <div><span>3</span><p><strong>Start with a model</strong><code>opencode -m fuse/{{ example_model }}</code></p></div>
+      </div>
+      <div class="code-frame compact">
+        <div class="code-head"><span>Non-interactive</span><button type="button" class="copy" data-copy='opencode run -m fuse/{{ example_model }} "Explain this repository"'>Copy</button></div>
+        <pre><code><span class="syn-cmd">opencode run</span> -m <span class="syn-url">fuse/{{ example_model }}</span> <span class="syn-str">"Explain this repository"</span></code></pre>
+      </div>
+      <p class="docs-footnote">Keep the OpenCode config private because it contains your key. Re-run the installer when the Fuse catalog changes — it replaces only the Fuse model list. Devin SKUs stay <code>devin/…</code> so they are distinct from ChatGPT/Grok ids.</p>
+    </section>
+
+    <section class="panel docs-panel" id="errors">
+      <div class="section-heading">
+        <h2>Errors</h2>
+        <span class="usage-sub">OpenAI-style JSON</span>
+      </div>
+      <p class="usage-note">Errors use standard HTTP status codes and an OpenAI-style JSON error object.</p>
+      <div class="error-grid">
+        <div><code>400</code><span>Invalid request body or parameter.</span></div>
+        <div><code>401</code><span>Missing or invalid Fuse API key.</span></div>
+        <div><code>403</code><span>The account cannot access the selected model.</span></div>
+        <div><code>404</code><span>Unknown model ID.</span></div>
+        <div><code>429</code><span>Request rate limit reached.</span></div>
+        <div><code>5xx</code><span>Selected model or upstream is unavailable.</span></div>
+      </div>
+    </section>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,723 @@
+{% extends "base.html" %}
+{% block title %}Sources · Fuse{% endblock %}
+{% block page_title %}Sources{% endblock %}
+{% block page_lead %}<p>Link a subscription to unlock models, or add a personal OpenRouter key. Admins control whether donated x.ai, OpenAI, Z.AI, Devin, Kimi, and Xiaomi accounts are shared. OpenRouter stays on your account only.</p>{% endblock %}
+{% block page_actions %}
+<div class="head-actions">
+  <button type="button" class="btn sm" data-dialog-open="grok-connect-dialog">{{ 'Continue x.ai' if pending else 'Add x.ai' }}</button>
+  <button type="button" class="btn sm" data-dialog-open="openai-connect-dialog">{{ 'Continue OpenAI' if chatgpt_pending else 'Add OpenAI' }}</button>
+  <button type="button" class="btn sm ghost" data-dialog-open="zai-add-dialog">Add Z.AI</button>
+  <button type="button" class="btn sm" data-dialog-open="kimi-connect-dialog">{{ 'Continue Kimi' if kimi_pending else 'Add Kimi' }}</button>
+  <button type="button" class="btn sm" data-dialog-open="mimo-connect-dialog">{{ 'Continue Xiaomi' if mimo_pending else 'Add Xiaomi' }}</button>
+  <form method="post" action="/sources/devin/start">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="btn sm">{{ 'Continue Devin' if devin_pending else 'Add Devin' }}</button>
+  </form>
+</div>
+{% endblock %}
+{% block body %}
+{% macro source_identity(a) -%}
+  {%- if a.email %}<span class="source-email">{{ a.email }}</span>{% else %}{{ a.label }}{% endif -%}
+  {%- if a.mine %} <span class="badge">Yours</span>{% endif -%}
+{%- endmacro %}
+
+{% macro source_auth(a) -%}
+  {%- if not a.authed %} <span class="badge held">Auth failed</span>{% endif -%}
+{%- endmacro %}
+
+{% macro pool_own_toggle(ui) %}
+<form method="post" action="/sources/pool/{{ ui.kind }}/prefs" class="pool-own-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <label class="check{% if not ui.can_override %} is-locked{% endif %}">
+    <input type="checkbox" name="own_only" value="1"{% if not ui.can_override or ui.own_only %} checked{% endif %}{% if not ui.can_override %} disabled{% endif %}>
+    {% if ui.can_override %}Use only my linked {{ ui.label }} accounts{% else %}Use only my linked accounts — disabled globally{% endif %}
+  </label>
+  {% if ui.can_override %}
+  <button type="submit" class="btn ghost sm">Save</button>
+  {% endif %}
+</form>
+{% endmacro %}
+
+{% macro pool_status(ok, ui, locked) %}
+  {%- if ui.uses_shared %}shared pool{% elif ok %}your accounts{% else %}{{ locked }}{% endif -%}
+{% endmacro %}
+
+{% macro mine_filter(ui, accounts, group='') %}
+{% if accounts %}
+<label class="check source-mine-filter">
+  <input type="checkbox" data-mine-only{% if group %} data-mine-group="{{ group }}"{% endif %}{% if ui.own_only %} checked{% endif %}>
+  Show only my accounts
+</label>
+{% endif %}
+{% endmacro %}
+
+{% macro source_account_name(a) -%}
+  {%- if a.email %}{{ a.email }}{% else %}{{ a.label }}{% endif -%}
+{%- endmacro %}
+
+{% macro source_since(a) -%}
+  {%- set s = a.fuse.since if a.fuse else '' -%}
+  {%- if s %}{{ s.rsplit(' ', 2)[0] }}{% else %}—{% endif -%}
+{%- endmacro %}
+
+{% macro source_status_title(a, kind) -%}
+  {%- if not a.authed -%}
+    {%- if a.mine %}This {{ kind }} sign-in is no longer valid. Remove the account and add it again.{% else %}Sign-in failed. Remove it or ask the owner to reconnect.{% endif -%}
+  {%- elif a.hold -%}
+    Out of the pool until {{ a.hold.until }}{% if a.hold.from_label and a.hold.to_label %} · usage rose from {{ a.hold.from_label }} to {{ a.hold.to_label }} without Fuse traffic{% endif %}
+  {%- elif a.billing and a.billing.plan_label -%}
+    {{ a.billing.plan_label }}
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro source_usage_title(a) -%}
+  {%- set plan = a.billing -%}
+  {%- if plan and plan.available -%}
+    Provider {{ plan.period|lower }} usage{% if plan.period_end %} · resets {{ plan.period_end }}{% endif %}
+    {%- if plan.products %} · {% for p in plan.products %}{{ p.name }} {{ p.percent_label }}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}
+    {%- if plan.money %} · {% for m in plan.money %}{{ m.label }} {{ m.text }}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}
+  {%- else -%}
+    No current usage reading{% if plan and plan.period_end %} · window resets {{ plan.period_end }}{% endif %}
+  {%- endif -%}
+  {%- if plan and plan.error %} · refresh error: {{ plan.error }}{% endif -%}
+{%- endmacro %}
+
+{% macro source_fuse_title(a) -%}
+  {%- set fuse = a.fuse -%}
+  {%- if fuse and fuse.has -%}
+    In {{ '{:,}'.format(fuse.prompt_tokens) }}{% if fuse.cached_tokens %} ({{ '{:,}'.format(fuse.cached_tokens) }} cached){% endif %} · Out {{ '{:,}'.format(fuse.output_tokens) }}{% if fuse.reasoning_tokens %} · Reasoning {{ '{:,}'.format(fuse.reasoning_tokens) }}{% endif %}{% if fuse.cost_label %} · {{ fuse.cost_label }}{% if fuse.cost_partial %} partial{% endif %} API equiv{% elif fuse.cost_unavailable %} · API equivalent unavailable{% endif %}{% if fuse.week_tokens %} · this week {{ '{:,}'.format(fuse.week_tokens) }}{% endif %}
+  {%- elif fuse and fuse.week_only -%}
+    This week {{ '{:,}'.format(fuse.week_tokens) }} · {{ '{:,}'.format(fuse.week_requests) }} request{{ 's' if fuse.week_requests != 1 else '' }}
+  {%- else -%}
+    No traffic through Fuse yet
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro source_stats(a) %}
+  {% set fuse = a.fuse %}
+  {% set plan = a.billing %}
+  <div class="source-stats">
+    <div>
+      <p class="metric-label">Fuse lifetime</p>
+      <p class="metric-value">{{ '{:,}'.format(fuse.display_tokens) }}</p>
+      {% if fuse.has %}
+      <p class="stat-facts">
+        <span><b>In</b> {{ '{:,}'.format(fuse.prompt_tokens) }}{% if fuse.cached_tokens %} <span class="dim">({{ '{:,}'.format(fuse.cached_tokens) }} cached)</span>{% endif %}</span>
+        <span><b>Out</b> {{ '{:,}'.format(fuse.output_tokens) }}</span>
+        {% if fuse.reasoning_tokens %}<span><b>Reasoning</b> {{ '{:,}'.format(fuse.reasoning_tokens) }}</span>{% endif %}
+      </p>
+      <p class="usage-sub">{% if fuse.cost_label %}{{ fuse.cost_label }} {% if fuse.cost_partial %}partial {% endif %}API equiv · {% elif fuse.cost_unavailable %}API equivalent unavailable · {% endif %}{{ '{:,}'.format(fuse.requests) }} request{{ 's' if fuse.requests != 1 else '' }}{% if fuse.week_tokens %} · this week {{ '{:,}'.format(fuse.week_tokens) }}{% endif %}{% if fuse.since %} · since linked {{ fuse.since }}{% endif %}</p>
+      {% elif fuse.week_only %}
+      <p class="usage-sub">this week · {{ '{:,}'.format(fuse.week_requests) }} request{{ 's' if fuse.week_requests != 1 else '' }}</p>
+      {% else %}
+      <p class="usage-sub">No traffic through Fuse yet</p>
+      {% endif %}
+    </div>
+    <div>
+      <p class="metric-label">Plan</p>
+      <p class="metric-value">{{ plan.percent_label if plan and plan.available else '—' }}</p>
+      <div class="usage-meter" aria-hidden="true"><span style="--pct: {{ plan.meter if plan else 0 }}%"></span></div>
+      {% if plan and plan.products %}
+      <p class="stat-facts">
+        {% for p in plan.products %}
+        <span><b>{{ p.name }}</b> {{ p.percent_label }}</span>
+        {% endfor %}
+      </p>
+      {% endif %}
+      {% if plan and plan.money %}
+      <p class="stat-facts">
+        {% for m in plan.money %}
+        <span><b>{{ m.label }}</b> {{ m.text }}</span>
+        {% endfor %}
+      </p>
+      {% endif %}
+      <p class="usage-sub">{% if plan and plan.available %}Provider {{ plan.period|lower }} usage{% if plan.period_end %} · resets {{ plan.period_end }}{% endif %}{% else %}No current usage reading{% if plan and plan.period_end %} · window resets {{ plan.period_end }}{% endif %}{% endif %}{% if plan and plan.error %} · refresh error: {{ plan.error }}{% endif %}</p>
+    </div>
+  </div>
+{% endmacro %}
+
+{% macro source_table(accounts, kind, revoke_path, confirm, empty, ui=None, group='', show_filter=True) %}
+{% if accounts %}
+{% if ui and show_filter %}{{ mine_filter(ui, accounts, group) }}{% endif %}
+<div class="source-table-scroll{% if ui and ui.own_only %} is-mine-only{% endif %}" data-source-table{% if group %} data-mine-group="{{ group }}"{% endif %}>
+  <table class="source-table">
+    <colgroup>
+      <col class="source-col-account">
+      <col class="source-col-status">
+      <col class="source-col-usage">
+      <col class="source-col-tokens">
+      <col class="source-col-reqs">
+      <col class="source-col-linked">
+      <col class="source-col-act">
+    </colgroup>
+    <thead>
+      <tr>
+        <th>Account</th>
+        <th>Status</th>
+        <th>Usage</th>
+        <th class="num">Tokens</th>
+        <th class="num">Reqs</th>
+        <th>Linked</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for a in accounts %}
+      <tr class="{% if a.mine %}is-mine{% endif %}{% if a.held or not a.authed %} is-held{% endif %}" data-mine="{{ '1' if a.mine else '0' }}">
+        <td class="source-account" title="{{ source_account_name(a) }}">
+          <span class="source-account-line">
+            <span class="source-account-name">{{ source_account_name(a) }}</span>
+            {% if a.mine %}<span class="badge">Yours</span>{% endif %}
+            {% if a.region == 'cn' %}<span class="badge">CN</span>{% endif %}
+          </span>
+        </td>
+        <td class="source-status" title="{{ source_status_title(a, kind) }}">
+          {% if not a.authed %}
+          <span class="badge held">Auth failed</span>
+          {% elif a.held %}
+          <span class="badge held">Held</span>
+          {% elif a.billing and a.billing.plan_label %}
+          <span class="badge{% if a.subscribed is defined and not a.subscribed %} off{% else %} on{% endif %}">{{ a.billing.plan_label }}</span>
+          {% elif a.subscribed %}
+          <span class="badge on">Active</span>
+          {% elif a.authed %}
+          <span class="badge off">No sub</span>
+          {% else %}
+          <span class="dim">—</span>
+          {% endif %}
+        </td>
+        <td class="source-usage" title="{{ source_usage_title(a) }}">
+          {% if a.billing and a.billing.available %}
+          <span class="source-usage-pct">{{ a.billing.percent_label }}</span>
+          <span class="usage-meter" aria-hidden="true"><span style="--pct: {{ a.billing.meter }}%"></span></span>
+          {% else %}
+          <span class="dim">—</span>
+          {% endif %}
+        </td>
+        <td class="num mono source-tokens" title="{{ source_fuse_title(a) }}">{% if a.fuse and (a.fuse.has or a.fuse.week_only) %}{{ '{:,}'.format(a.fuse.display_tokens) }}{% else %}<span class="dim">—</span>{% endif %}</td>
+        <td class="num mono">{% if a.fuse and a.fuse.has %}{{ '{:,}'.format(a.fuse.requests) }}{% elif a.fuse and a.fuse.week_only %}{{ '{:,}'.format(a.fuse.week_requests) }}{% else %}<span class="dim">—</span>{% endif %}</td>
+        <td class="mono source-linked" title="{{ a.fuse.since if a.fuse and a.fuse.since else '' }}">{{ source_since(a) }}</td>
+        <td class="source-act">
+          {% if a.can_revoke %}
+          <form method="post" action="{{ revoke_path }}/{{ a.id }}/revoke" data-confirm="{{ confirm }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="btn danger sm" type="submit">Remove</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      <tr class="source-empty-row" data-mine-empty>
+        <td colspan="7">No accounts of yours in this list.</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+{% else %}
+<section class="panel"><p class="empty">{{ empty }}</p></section>
+{% endif %}
+{% endmacro %}
+
+<div class="stack-y sources-page" data-tab-root>
+  <nav class="usage-tabs" role="tablist" aria-label="Source kinds" data-page-tabs>
+    <button type="button" role="tab"{% if not openrouter_flash_msg %} class="on" aria-selected="true"{% else %} aria-selected="false"{% endif %} data-tab="pool">Subscriptions</button>
+    <button type="button" role="tab"{% if openrouter_flash_msg %} class="on" aria-selected="true"{% else %} aria-selected="false"{% endif %} data-tab="openrouter">OpenRouter</button>
+  </nav>
+
+  <div data-tab-panel="pool" class="stack-y{% if openrouter_flash_msg %} hidden{% endif %}">
+    <p class="usage-note">x.ai, OpenAI, Z.AI, Devin, Kimi, and Xiaomi are donated subscription pools. Linking an account unlocks that provider. Z.AI is also unlocked if you donate a live x.ai or OpenAI account and sharing is on. Admins can open a pool to every registered user, or limit routing to accounts you linked. When sharing is on, you can opt out and use only your own.</p>
+    {% if pool_flash_msg %}
+    <p class="callout {% if pool_flash_kind == 'ok' %}ok{% else %}fault{% endif %}" role="alert">{{ pool_flash_msg }}</p>
+    {% endif %}
+
+    <div class="metric-grid sources-metrics">
+      <article class="panel metric-card">
+        <p class="metric-label">x.ai</p>
+        <p class="metric-value">{{ grok_pool.percent_label }}</p>
+        <div class="usage-meter" aria-hidden="true"><span style="--pct: {{ grok_pool.meter }}%"></span></div>
+        <p class="usage-sub">{{ grok_pool.count_label }}</p>
+        <p class="metric-delta{% if grok_ok %} up{% elif grok_reason in ('no_sub', 'unauthed') %} down{% endif %}">{% if grok_ok and grok_reason == 'open' %}Unlocked for everyone{% elif grok_ok %}Unlocked{% elif grok_reason == 'no_sub' %}No SuperGrok sub{% elif grok_reason == 'unauthed' %}Auth failed{% else %}Not linked{% endif %}</p>
+      </article>
+      <article class="panel metric-card">
+        <p class="metric-label">OpenAI paid</p>
+        <p class="metric-value">{{ chatgpt_paid_pool.percent_label }}</p>
+        <div class="usage-meter" aria-hidden="true"><span style="--pct: {{ chatgpt_paid_pool.meter }}%"></span></div>
+        <p class="usage-sub">{{ chatgpt_paid_pool.count_label }}</p>
+        <p class="metric-delta{% if chatgpt_ok %} up{% elif chatgpt_reason == 'unauthed' %} down{% endif %}">{% if chatgpt_ok and chatgpt_reason == 'open' %}Unlocked for everyone{% elif chatgpt_ok %}Unlocked{% elif chatgpt_reason == 'unauthed' %}Auth failed{% else %}Not linked{% endif %}</p>
+      </article>
+      <article class="panel metric-card">
+        <p class="metric-label">OpenAI Free / Go</p>
+        <p class="metric-value">{{ chatgpt_free_pool.percent_label }}</p>
+        <div class="usage-meter" aria-hidden="true"><span style="--pct: {{ chatgpt_free_pool.meter }}%"></span></div>
+        <p class="usage-sub">{{ chatgpt_free_pool.count_label }}</p>
+        <p class="metric-delta{% if chatgpt_ok %} up{% elif chatgpt_reason == 'unauthed' %} down{% endif %}">{% if chatgpt_ok and chatgpt_reason == 'open' %}Unlocked for everyone{% elif chatgpt_ok %}Unlocked{% elif chatgpt_reason == 'unauthed' %}Auth failed{% else %}Not linked{% endif %}</p>
+      </article>
+      <article class="panel metric-card">
+        <p class="metric-label">Z.AI</p>
+        <p class="metric-value">{{ zai_pool.percent_label }}</p>
+        <div class="usage-meter" aria-hidden="true"><span style="--pct: {{ zai_pool.meter }}%"></span></div>
+        <p class="usage-sub">{{ zai_pool.count_label }}</p>
+        <p class="metric-delta{% if zai_ok %} up{% elif zai_reason in ('no_sub', 'unauthed') %} down{% endif %}">{% if zai_ok and zai_reason == 'open' %}Unlocked for everyone{% elif zai_ok and zai_reason == 'pool' %}Unlocked via pool{% elif zai_ok %}Unlocked{% elif zai_reason == 'no_sub' %}No Coding Plan{% elif zai_reason == 'unauthed' %}Auth failed{% else %}Not linked{% endif %}</p>
+      </article>
+      <article class="panel metric-card">
+        <p class="metric-label">Devin</p>
+        <p class="metric-value">{{ devin_pool.percent_label }}</p>
+        <div class="usage-meter" aria-hidden="true"><span style="--pct: {{ devin_pool.meter }}%"></span></div>
+        <p class="usage-sub">{{ devin_pool.count_label }}</p>
+        <p class="metric-delta{% if devin_ok %} up{% elif devin_reason in ('no_sub', 'unauthed') %} down{% endif %}">{% if devin_ok and devin_reason == 'open' %}Unlocked for everyone{% elif devin_ok %}Unlocked{% elif devin_reason == 'unauthed' %}Auth failed{% else %}Not linked{% endif %}</p>
+      </article>
+      <article class="panel metric-card">
+        <p class="metric-label">Kimi</p>
+        <p class="metric-value">{{ kimi_pool.percent_label }}</p>
+        <div class="usage-meter" aria-hidden="true"><span style="--pct: {{ kimi_pool.meter }}%"></span></div>
+        <p class="usage-sub">{{ kimi_pool.count_label }}</p>
+        <p class="metric-delta{% if kimi_ok %} up{% elif kimi_reason in ('no_sub', 'unauthed') %} down{% endif %}">{% if kimi_ok and kimi_reason == 'open' %}Unlocked for everyone{% elif kimi_ok %}Unlocked{% elif kimi_reason == 'no_sub' %}No membership{% elif kimi_reason == 'unauthed' %}Auth failed{% else %}Not linked{% endif %}</p>
+      </article>
+      <article class="panel metric-card">
+        <p class="metric-label">Xiaomi</p>
+        <p class="metric-value">{{ mimo_pool.percent_label }}</p>
+        <div class="usage-meter" aria-hidden="true"><span style="--pct: {{ mimo_pool.meter }}%"></span></div>
+        <p class="usage-sub">{{ mimo_pool.count_label }}</p>
+        <p class="metric-delta{% if mimo_ok %} up{% elif mimo_reason in ('no_sub', 'unauthed') %} down{% endif %}">{% if mimo_ok and mimo_reason == 'open' %}Unlocked for everyone{% elif mimo_ok %}Unlocked{% elif mimo_reason == 'no_sub' %}No Token Plan{% elif mimo_reason == 'unauthed' %}Auth failed{% else %}Not linked{% endif %}</p>
+      </article>
+    </div>
+
+    <section class="stack-y">
+      <div class="section-heading">
+        <h2><img class="provider-logo" src="/static/logos/grok.svg" alt="" aria-hidden="true">x.ai</h2>
+        <span class="usage-sub">{{ pool_status(grok_ok, grok_ui, 'needs SuperGrok') }}</span>
+      </div>
+      {{ pool_own_toggle(grok_ui) }}
+      {% if grok_reason == 'no_sub' %}
+      <p class="callout fault">A Grok account is linked, but x.ai is not showing an active SuperGrok subscription. Grok models stay locked.</p>
+      {% elif grok_reason == 'unauthed' %}
+      <p class="callout fault">The linked Grok sign-in is no longer valid. Remove it and add the account again.</p>
+      {% endif %}
+      {{ source_table(accounts, 'x.ai', '/sources/grok', 'Remove this Grok account from the shared pool?', 'Optional — Grok is already unlocked. Add a SuperGrok account if you want to donate one.' if grok_ok and grok_reason == 'open' else ('Add a Grok account with an active SuperGrok subscription to join the shared pool.' if grok_ui.uses_shared else 'Add a Grok account with an active SuperGrok subscription. This pool is limited to accounts you link.'), grok_ui) }}
+    </section>
+
+    <section class="stack-y">
+      <div class="section-heading">
+        <h2><img class="provider-logo" src="/static/logos/chatgpt.svg" alt="" aria-hidden="true">OpenAI paid</h2>
+        <span class="usage-sub">{{ pool_status(chatgpt_ok, chatgpt_ui, 'needs Plus or Pro') }}</span>
+      </div>
+      {{ pool_own_toggle(chatgpt_ui) }}
+      {% if chatgpt_own_failed %}
+      <p class="callout fault">{% if chatgpt_own_failed == 1 %}A ChatGPT account you linked is no longer signed in.{% else %}{{ chatgpt_own_failed }} ChatGPT accounts you linked are no longer signed in.{% endif %} They stay out of the pool until you remove them and add them again.</p>
+      {% endif %}
+      {% if chatgpt_paid_accounts %}
+      {{ source_table(chatgpt_paid_accounts, 'OpenAI', '/sources/chatgpt', 'Remove this ChatGPT account from the shared pool?', 'No paid OpenAI accounts in this list.', chatgpt_ui, 'chatgpt') }}
+      {% elif not chatgpt_accounts %}
+      <section class="panel"><p class="empty">{% if chatgpt_ok and chatgpt_reason == 'open' %}Optional — OpenAI is already unlocked. Add a ChatGPT account if you want to donate one.{% elif chatgpt_ui.uses_shared %}Add a ChatGPT Plus or Pro account to join the shared pool.{% else %}Add a ChatGPT Plus or Pro account. This pool is limited to accounts you link.{% endif %}</p></section>
+      {% endif %}
+    </section>
+
+    {% if chatgpt_free_accounts %}
+    <section class="stack-y">
+      <div class="section-heading">
+        <h2><img class="provider-logo" src="/static/logos/chatgpt.svg" alt="" aria-hidden="true">OpenAI Free / Go</h2>
+        <span class="usage-sub">{{ chatgpt_free_pool.count_label }}</span>
+      </div>
+      {{ source_table(chatgpt_free_accounts, 'OpenAI', '/sources/chatgpt', 'Remove this ChatGPT account from the shared pool?', 'No Free or Go accounts in this list.', chatgpt_ui, 'chatgpt', not chatgpt_paid_accounts) }}
+    </section>
+    {% endif %}
+
+    <section class="stack-y">
+      <div class="section-heading">
+        <h2><img class="provider-logo" src="/static/logos/zai.svg" alt="" aria-hidden="true">Z.AI</h2>
+        <span class="usage-sub">{{ pool_status(zai_ok, zai_ui, 'needs a live plan') }}</span>
+      </div>
+      {{ pool_own_toggle(zai_ui) }}
+      {% if zai_reason == 'no_sub' %}
+      <p class="callout fault">A Z.AI key is linked, but it is not showing a live GLM Coding Plan. GLM models stay locked unless you also link a live x.ai or OpenAI subscription.</p>
+      {% elif zai_reason == 'unauthed' %}
+      <p class="callout fault">The linked Z.AI key is no longer valid. Remove it and add a new key, or link a live x.ai or OpenAI subscription.</p>
+      {% endif %}
+      {% if zai_flash_kind == 'ok' %}
+      <p class="callout ok" role="alert">{{ zai_flash_msg }}</p>
+      {% endif %}
+      {{ source_table(zai_accounts, 'Z.AI', '/sources/zai', 'Remove this Z.AI key from the shared pool?', 'Optional — GLM is already unlocked. Add a Coding Plan key if you want to donate one to the pool.' if zai_ok else ('Add a GLM Coding Plan API key, or link a live x.ai or OpenAI subscription.' if zai_ui.uses_shared else 'Add a GLM Coding Plan API key. This pool is limited to keys you link.'), zai_ui) }}
+    </section>
+
+    <section class="stack-y">
+      <div class="section-heading">
+        <h2><img class="provider-logo" src="/static/logos/devin.svg" alt="" aria-hidden="true">Devin</h2>
+        <span class="usage-sub">{{ pool_status(devin_ok, devin_ui, 'needs a Devin sign-in') }}</span>
+      </div>
+      {{ pool_own_toggle(devin_ui) }}
+      {% if devin_reason == 'unauthed' %}
+      <p class="callout fault">The linked Devin sign-in is no longer valid. Remove it and add the account again.</p>
+      {% endif %}
+      {% if devin_flash_kind == 'ok' %}
+      <p class="callout ok" role="alert">{{ devin_flash_msg }}</p>
+      {% endif %}
+      {{ source_table(devin_accounts, 'Devin', '/sources/devin', 'Remove this Devin account from the shared pool?', 'Optional — Devin is already unlocked. Add an account if you want to donate one.' if devin_ok and devin_reason == 'open' else ('Add a Devin account to unlock Fable, SWE, and the rest of the Devin catalog. You sign in on Devin the same way you do for x.ai and OpenAI — Fuse never asks for an API key.' if devin_ui.uses_shared else 'Add a Devin account. This pool is limited to accounts you link.'), devin_ui) }}
+    </section>
+
+    <section class="stack-y">
+      <div class="section-heading">
+        <h2><img class="provider-logo" src="/static/logos/kimi.svg" alt="" aria-hidden="true">Kimi</h2>
+        <span class="usage-sub">{{ pool_status(kimi_ok, kimi_ui, 'needs a membership') }}</span>
+      </div>
+      {{ pool_own_toggle(kimi_ui) }}
+      {% if kimi_reason == 'no_sub' %}
+      <p class="callout fault">A Kimi account is linked, but it is not showing an active membership. Kimi models stay locked.</p>
+      {% elif kimi_reason == 'unauthed' %}
+      <p class="callout fault">The linked Kimi sign-in is no longer valid. Remove it and add the account again.</p>
+      {% endif %}
+      {% if kimi_flash_kind == 'ok' %}
+      <p class="callout ok" role="alert">{{ kimi_flash_msg }}</p>
+      {% endif %}
+      {{ source_table(kimi_accounts, 'Kimi', '/sources/kimi', 'Remove this Kimi account from the shared pool?', 'Optional — Kimi is already unlocked. Add a membership if you want to donate one.' if kimi_ok and kimi_reason == 'open' else ('Add a Kimi membership via device sign-in, or paste a Kimi Code console API key.' if kimi_ui.uses_shared else 'Add a Kimi membership. This pool is limited to accounts you link.'), kimi_ui) }}
+    </section>
+
+    <section class="stack-y">
+      <div class="section-heading">
+        <h2><img class="provider-logo" src="/static/logos/mimo.svg" alt="" aria-hidden="true">Xiaomi</h2>
+        <span class="usage-sub">{{ pool_status(mimo_ok, mimo_ui, 'needs a Token Plan') }}</span>
+      </div>
+      {{ pool_own_toggle(mimo_ui) }}
+      {% if mimo_reason == 'no_sub' %}
+      <p class="callout fault">A Xiaomi key is linked, but it is not showing a Token Plan. MiMo models stay locked.</p>
+      {% elif mimo_reason == 'unauthed' %}
+      <p class="callout fault">The linked Xiaomi key is no longer valid. Remove it and add the plan again.</p>
+      {% endif %}
+      {% if mimo_flash_kind == 'ok' %}
+      <p class="callout ok" role="alert">{{ mimo_flash_msg }}</p>
+      {% endif %}
+      {{ source_table(mimo_accounts, 'Xiaomi', '/sources/mimo', 'Remove this Xiaomi account from the shared pool?', 'Optional — Xiaomi is already unlocked. Add a Token Plan if you want to donate one.' if mimo_ok and mimo_reason == 'open' else ('Sign in with Xiaomi, or paste the Token Plan key from the console (tp-… or ttp-…).' if mimo_ui.uses_shared else 'Add a Xiaomi Token Plan. This pool is limited to accounts you link.'), mimo_ui) }}
+    </section>
+  </div>
+
+  <div data-tab-panel="openrouter" class="stack-y{% if not openrouter_flash_msg %} hidden{% endif %}">
+    <p class="usage-note">This key is never shared. OpenRouter models are listed for your account per the switches below, and anything you enable is called on your own key. Pool models such as <code>glm-5.3-flash</code> or <code>gpt-5.6-sol</code> retry on this key automatically, with the exact same model, when pool usage runs out.</p>
+    {% if openrouter_user_key %}
+    <p class="callout ok">Your OpenRouter key is linked. {{ 'Every OpenRouter model is listed.' if openrouter_paid_all else 'A select list of paid OpenRouter models is enabled.' }} Free OpenRouter models {{ 'are listed' if openrouter_free_models else 'are turned off' }}; pool models fall back to this key for your account only.</p>
+    {% else %}
+    <p class="callout">Add your OpenRouter key to list its models and to fall back onto OpenRouter automatically when a pool model is unavailable.</p>
+    {% endif %}
+    {% if openrouter_flash_msg %}
+    <p class="callout {% if openrouter_flash_kind == 'ok' %}ok{% else %}fault{% endif %}" role="alert">{{ openrouter_flash_msg }}</p>
+    {% endif %}
+
+    <article class="panel">
+      <div class="section-heading">
+        <h2>{% if openrouter_account %}Replace key{% else %}Add your key{% endif %}</h2>
+        <span class="usage-sub">personal · not a pool</span>
+      </div>
+      <p class="usage-note">From openrouter.ai/settings/keys. Other users cannot use it.</p>
+      <form method="post" action="/sources/openrouter/add" class="stack">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label>API key
+          <input name="api_key" type="password" autocomplete="off" required placeholder="sk-or-v1-…">
+        </label>
+        <label>Label (optional)
+          <input name="label" maxlength="80" placeholder="OpenRouter key">
+        </label>
+        <button type="submit" class="btn">{% if openrouter_account %}Replace my key{% else %}Save my key{% endif %}</button>
+      </form>
+    </article>
+
+    {% if openrouter_account %}
+    {% set a = openrouter_account %}
+    <article class="panel source-card{% if not a.authed %} held{% endif %}">
+      <div class="section-heading">
+        <h2>{{ source_identity(a) }} <span class="badge">Yours only</span>{% if a.free_tier %} <span class="badge">Free tier</span>{% elif a.authed %} <span class="badge on">Linked</span>{% endif %}{{ source_auth(a) }}{% if a.free_models %} <span class="badge on">Free models on</span>{% else %} <span class="badge off">Free models off</span>{% endif %}{% if a.paid_all %} <span class="badge on">All models listed</span>{% else %} <span class="badge off">Custom model list</span>{% endif %}</h2>
+        <div class="row-actions">
+          <form method="post" action="/sources/openrouter/free-models">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="enabled" value="{{ '0' if a.free_models else '1' }}">
+            <button class="btn sm {{ 'ghost' if a.free_models else '' }}" type="submit">{{ 'Turn free models off' if a.free_models else 'Turn free models on' }}</button>
+          </form>
+          <form method="post" action="/sources/openrouter/paid-models/all">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="enabled" value="{{ '0' if a.paid_all else '1' }}">
+            <button class="btn sm {{ 'ghost' if a.paid_all else '' }}" type="submit">{{ 'List every OpenRouter model' if not a.paid_all else 'Hide all paid models' }}</button>
+          </form>
+          {% if a.can_revoke %}
+          <form method="post" action="/sources/openrouter/{{ a.id }}/revoke" data-confirm="Remove your OpenRouter key? Other users are not affected.">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="btn danger sm" type="submit">Remove</button>
+          </form>
+          {% endif %}
+        </div>
+      </div>
+      <p class="usage-note">{{ 'Free OpenRouter models are listed for your account.' if a.free_models else 'Free OpenRouter models are hidden. Pool-model fallback still uses this key automatically.' }} {{ 'Every paid OpenRouter model is listed and billed to your key.' if a.paid_all else 'Only the paid models you pick below are listed; they bypass shared pools and bill to your key.' }}</p>
+      {{ source_stats(a) }}
+      {% if not a.paid_all %}
+      <form method="post" action="/sources/openrouter/paid-models/select" class="or-pick">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="or-pick-head">
+          <label class="or-pick-search">Filter
+            <input type="search" data-or-filter placeholder="deepseek, gemma, author/…">
+          </label>
+          <span class="usage-sub" data-or-count></span>
+        </div>
+        <div class="or-pick-list" data-or-list>
+          {% for m in openrouter_paid_models %}
+          <label class="or-pick-row{% if m.enabled %} on{% endif %}" data-or-row>
+            <input type="checkbox" name="model" value="{{ m.id }}" {% if m.enabled %}checked{% endif %}>
+            <span class="or-pick-name">{{ m.name }}</span>
+            <code class="or-pick-id">{{ m.id }}</code>
+          </label>
+          {% endfor %}
+        </div>
+        <div class="row-actions">
+          <button class="btn sm" type="submit">Save enabled models</button>
+          <span class="usage-sub">Only enabled models appear in your model picker.</span>
+        </div>
+      </form>
+      {% endif %}
+      {% if a.key_info and a.key_info.last_error %}
+      <p class="callout fault">{{ a.key_info.last_error }}</p>
+      {% endif %}
+    </article>
+    {% endif %}
+  </div>
+</div>
+
+<dialog class="modal device-modal" id="grok-connect-dialog" aria-labelledby="grok-connect-title"{% if pending %} data-auto-open data-device-poll data-endpoint="/sources/grok/poll" data-interval="{{ pending_interval }}"{% endif %}>
+  <div class="modal-shell">
+    <header class="modal-head">
+      <div>
+        <p class="metric-label">x.ai · OAuth</p>
+        <h2 id="grok-connect-title">Connect your Grok account</h2>
+      </div>
+      <button type="button" class="btn ghost sm" data-dialog-close aria-label="Close x.ai connection dialog">Close</button>
+    </header>
+    {% if pending %}
+    <p class="aside">Open the secure x.ai device page, enter this code, and approve Fuse.</p>
+    <div class="device-code">
+      <span>Device code</span>
+      <strong>{{ pending_code }}</strong>
+    </div>
+    <div class="modal-actions">
+      {% if pending_verify %}
+      <a class="btn" href="{{ pending_verify }}" target="_blank" rel="noopener">Open x.ai and connect</a>
+      {% endif %}
+      <form method="post" action="/sources/grok/cancel">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn ghost">Cancel</button>
+      </form>
+    </div>
+    <p class="pulse poll-status">Waiting for approval…</p>
+    {% else %}
+    <p class="aside">Fuse uses x.ai's secure device authorization. You will receive a one-time code and a link to approve this account for the shared pool.</p>
+    <form method="post" action="/sources/grok/start" class="modal-actions">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="btn">Start x.ai connection</button>
+    </form>
+    {% endif %}
+  </div>
+</dialog>
+
+<dialog class="modal device-modal" id="openai-connect-dialog" aria-labelledby="openai-connect-title"{% if chatgpt_pending %} data-auto-open data-device-poll data-endpoint="/sources/chatgpt/poll" data-interval="{{ chatgpt_interval }}"{% endif %}>
+  <div class="modal-shell">
+    <header class="modal-head">
+      <div>
+        <p class="metric-label">OpenAI · OAuth</p>
+        <h2 id="openai-connect-title">Connect your ChatGPT account</h2>
+      </div>
+      <button type="button" class="btn ghost sm" data-dialog-close aria-label="Close OpenAI connection dialog">Close</button>
+    </header>
+    {% if chatgpt_pending %}
+    <p class="aside">Open the OpenAI device page, enter this code, and sign in with the ChatGPT account you want to share.</p>
+    <div class="device-code">
+      <span>Device code</span>
+      <strong>{{ chatgpt_code }}</strong>
+    </div>
+    <div class="modal-actions">
+      <a class="btn" href="{{ chatgpt_device_url }}" target="_blank" rel="noopener">Open OpenAI and connect</a>
+      <form method="post" action="/sources/chatgpt/cancel">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn ghost">Cancel</button>
+      </form>
+    </div>
+    <p class="pulse poll-status">Waiting for approval…</p>
+    {% else %}
+    <p class="aside">Fuse uses OpenAI's secure device authorization. You will receive a one-time code and a link to approve the ChatGPT account for the shared pool.</p>
+    <form method="post" action="/sources/chatgpt/start" class="modal-actions">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="btn">Start OpenAI connection</button>
+    </form>
+    {% endif %}
+  </div>
+</dialog>
+
+<dialog class="modal" id="zai-add-dialog" aria-labelledby="zai-add-title"{% if zai_flash_kind == 'err' %} data-auto-open{% endif %}>
+  <div class="modal-shell">
+    <header class="modal-head">
+      <div>
+        <p class="metric-label">Shared pool</p>
+        <h2 id="zai-add-title">Add Z.AI subscription</h2>
+      </div>
+      <button type="button" class="btn ghost sm" data-dialog-close aria-label="Close Z.AI subscription dialog">Close</button>
+    </header>
+    <p class="aside">Use a key from Individual Coding Plan → Plan Overview (or Team Plan → My Plan). Fuse checks 5-hour and weekly quota and does not send a test completion.</p>
+    {% if zai_flash_kind == 'err' %}
+    <p class="callout fault" role="alert">{{ zai_flash_msg }}</p>
+    {% endif %}
+    <form method="post" action="/sources/zai/add" class="stack">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>API key
+        <input name="api_key" type="password" autocomplete="off" required autofocus placeholder="Z.AI Coding Plan key">
+      </label>
+      <label>Label (optional)
+        <input name="label" maxlength="80" placeholder="Z.AI account">
+      </label>
+      <button type="submit" class="btn">Add Z.AI subscription</button>
+    </form>
+  </div>
+</dialog>
+
+<dialog class="modal device-modal" id="devin-connect-dialog" aria-labelledby="devin-connect-title"{% if devin_pending or devin_flash_kind == 'err' %} data-auto-open{% endif %}>
+  <div class="modal-shell">
+    <header class="modal-head">
+      <div>
+        <p class="metric-label">Devin · OAuth</p>
+        <h2 id="devin-connect-title">Connect your Devin account</h2>
+      </div>
+      <button type="button" class="btn ghost sm" data-dialog-close aria-label="Close Devin connection dialog">Close</button>
+    </header>
+    {% if devin_flash_kind == 'err' %}
+    <p class="callout fault" role="alert">{{ devin_flash_msg }}</p>
+    {% endif %}
+    {% if devin_pending %}
+    <p class="aside">Open Devin, sign in, then paste the one-time login code it shows. Devin only allows a localhost callback, so this is the same remote flow as Devin CLI — not an API key. The code expires in 5 minutes.</p>
+    <div class="modal-actions">
+      {% if devin_auth_url %}
+      <a class="btn" href="{{ devin_auth_url }}" target="_blank" rel="noopener">Open Devin and connect</a>
+      {% endif %}
+      <form method="post" action="/sources/devin/cancel">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn ghost">Cancel</button>
+      </form>
+    </div>
+    <form method="post" action="/sources/devin/complete" class="stack" style="margin-top:0.85rem">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Login code from Devin
+        <input name="code" autocomplete="off" required autofocus placeholder="Paste the code Devin shows">
+      </label>
+      <button type="submit" class="btn">Connect Devin account</button>
+    </form>
+    {% else %}
+    <p class="aside">Fuse uses Devin’s browser sign-in. You will approve the account on Devin, then paste a one-time login code back here.</p>
+    <form method="post" action="/sources/devin/start" class="modal-actions">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="btn">Start Devin connection</button>
+    </form>
+    {% endif %}
+  </div>
+</dialog>
+
+<dialog class="modal device-modal" id="kimi-connect-dialog" aria-labelledby="kimi-connect-title"{% if kimi_pending or kimi_flash_kind == 'err' %} data-auto-open{% if kimi_pending %} data-device-poll data-endpoint="/sources/kimi/poll" data-interval="{{ kimi_interval }}"{% endif %}{% endif %}>
+  <div class="modal-shell">
+    <header class="modal-head">
+      <div>
+        <p class="metric-label">Kimi · membership</p>
+        <h2 id="kimi-connect-title">Connect your Kimi membership</h2>
+      </div>
+      <button type="button" class="btn ghost sm" data-dialog-close aria-label="Close Kimi connection dialog">Close</button>
+    </header>
+    {% if kimi_flash_kind == 'err' %}
+    <p class="callout fault" role="alert">{{ kimi_flash_msg }}</p>
+    {% endif %}
+    {% if kimi_pending %}
+    <p class="aside">Open the Kimi device page, enter this code, and approve Fuse. This uses your membership, not a platform.kimi.ai PAYG key.</p>
+    <div class="device-code">
+      <span>Device code</span>
+      <strong>{{ kimi_code }}</strong>
+    </div>
+    <div class="modal-actions">
+      {% if kimi_verify %}
+      <a class="btn" href="{{ kimi_verify }}" target="_blank" rel="noopener">Open Kimi and connect</a>
+      {% endif %}
+      <form method="post" action="/sources/kimi/cancel">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn ghost">Cancel</button>
+      </form>
+    </div>
+    <p class="pulse poll-status">Waiting for approval…</p>
+    {% else %}
+    <p class="aside">Fuse uses Kimi Code device authorization, the same flow as the official CLI. You can also paste a key from the Kimi Code console — not a platform.kimi.ai PAYG key.</p>
+    <form method="post" action="/sources/kimi/start" class="modal-actions">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="region" value="global">
+      <button type="submit" class="btn">Start Kimi connection</button>
+    </form>
+    <form method="post" action="/sources/kimi/start" class="modal-actions" style="margin-top:0.5rem">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="region" value="cn">
+      <button type="submit" class="btn ghost">Start China (.com) connection</button>
+    </form>
+    <form method="post" action="/sources/kimi/add" class="stack" style="margin-top:0.85rem">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Kimi Code console API key (optional)
+        <input name="api_key" type="password" autocomplete="off" required placeholder="From www.kimi.com/code/console">
+      </label>
+      <label>Label (optional)
+        <input name="label" maxlength="80" placeholder="Kimi account">
+      </label>
+      <button type="submit" class="btn ghost">Add console key</button>
+    </form>
+    {% endif %}
+  </div>
+</dialog>
+
+<dialog class="modal device-modal" id="mimo-connect-dialog" aria-labelledby="mimo-connect-title"{% if mimo_pending or mimo_flash_kind == 'err' %} data-auto-open{% endif %}>
+  <div class="modal-shell">
+    <header class="modal-head">
+      <div>
+        <p class="metric-label">Xiaomi · Token Plan</p>
+        <h2 id="mimo-connect-title">Connect your Xiaomi Token Plan</h2>
+      </div>
+      <button type="button" class="btn ghost sm" data-dialog-close aria-label="Close Xiaomi connection dialog">Close</button>
+    </header>
+    {% if mimo_flash_kind == 'err' %}
+    <p class="callout fault" role="alert">{{ mimo_flash_msg }}</p>
+    {% endif %}
+    {% if mimo_pending %}
+    <p class="aside">Open Xiaomi, choose Token Plan, and approve Fuse. Then paste the code the page shows. This is the same sign-in as MiMo Code.</p>
+    <div class="modal-actions">
+      {% if mimo_auth_url %}
+      <a class="btn" href="{{ mimo_auth_url }}" target="_blank" rel="noopener">Open Xiaomi and connect</a>
+      {% endif %}
+      <form method="post" action="/sources/mimo/cancel">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn ghost">Cancel</button>
+      </form>
+    </div>
+    <form method="post" action="/sources/mimo/complete" class="stack" style="margin-top:0.85rem">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Code from Xiaomi
+        <input name="code" autocomplete="off" required autofocus placeholder="Paste the code Xiaomi shows">
+      </label>
+      <button type="submit" class="btn">Connect Xiaomi account</button>
+    </form>
+    {% else %}
+    <p class="aside">Fuse uses Xiaomi’s browser sign-in, the same flow as MiMo Code. You can also paste the Token Plan key from the console (tp-… or ttp-…). Pay-as-you-go sk- keys are not accepted.</p>
+    <form method="post" action="/sources/mimo/start" class="modal-actions">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="btn">Start Xiaomi connection</button>
+    </form>
+    <form method="post" action="/sources/mimo/add" class="stack" style="margin-top:0.85rem">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Token Plan key
+        <input name="api_key" type="password" autocomplete="off" required placeholder="tp-… or ttp-…">
+      </label>
+      <label>Region
+        <select name="region">
+          <option value="cn">China</option>
+          <option value="sgp">Singapore</option>
+          <option value="ams">Europe</option>
+        </select>
+      </label>
+      <label>Label (optional)
+        <input name="label" maxlength="80" placeholder="Xiaomi account">
+      </label>
+      <button type="submit" class="btn ghost">Add Token Plan key</button>
+    </form>
+    {% endif %}
+  </div>
+</dialog>
+{% endblock %}

@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Fast-forward production to the dev branch. Code only: .env, certs, data,
+# venv, and backups stay put. Schema changes are not applied here; they ship
+# as their own reviewed step against fuse_live.
+set -euo pipefail
+
+PROD="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEV="${FUSE_DEV_ROOT:-/root/fuse-dev}"
+PROD_BRANCH="${FUSE_PROD_BRANCH:-main}"
+DEV_BRANCH="${FUSE_DEV_BRANCH:-dev}"
+
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+[ "$(id -u)" -eq 0 ] || die "run as root"
+[ -d "$PROD/.git" ] || die "production is not a git repo: $PROD"
+[ -d "$DEV/.git" ] || die "development worktree missing: $DEV"
+[ "$PROD" != "$DEV" ] || die "dev and production are the same directory"
+
+cd "$PROD"
+git rev-parse --is-inside-work-tree >/dev/null
+[ "$(git rev-parse --abbrev-ref HEAD)" = "$PROD_BRANCH" ] || die "production is not on $PROD_BRANCH"
+git diff --quiet && git diff --cached --quiet || die "production worktree is dirty; commit or stash first"
+[ -z "$(git status --porcelain --untracked-files=normal)" ] || die "production has untracked files; review them first"
+
+cd "$DEV"
+[ "$(git rev-parse --abbrev-ref HEAD)" = "$DEV_BRANCH" ] || die "development is not on $DEV_BRANCH"
+git diff --quiet && git diff --cached --quiet || die "development worktree is dirty; commit first"
+[ -z "$(git status --porcelain --untracked-files=normal)" ] || die "development has untracked files; commit or remove them first"
+git rev-parse --verify "$DEV_BRANCH" >/dev/null || die "missing branch $DEV_BRANCH"
+
+cd "$PROD"
+git fetch "$DEV" "$DEV_BRANCH"
+git merge-base --is-ancestor "$PROD_BRANCH" FETCH_HEAD || die "$DEV_BRANCH is not a fast-forward of $PROD_BRANCH; rebase dev onto main first"
+[ "$(git rev-parse HEAD)" = "$(git rev-parse FETCH_HEAD)" ] && die "nothing to promote"
+
+BEFORE="$(git rev-parse --short HEAD)"
+"$PROD/backup-db.sh"
+git merge --ff-only FETCH_HEAD
+AFTER="$(git rev-parse --short HEAD)"
+
+if [ -x "$PROD/venv/bin/pip" ] && ! "$PROD/venv/bin/pip" check >/dev/null 2>&1; then
+  "$PROD/venv/bin/pip" install --disable-pip-version-check -r "$PROD/requirements.txt"
+fi
+
+systemctl restart fuse
+sleep 2
+systemctl is-active --quiet fuse || die "fuse.service did not come back; roll back with: git -C $PROD reset --hard $BEFORE && systemctl restart fuse"
+
+printf 'Promoted %s -> %s (%s..%s). fuse.service is active.\n' "$DEV_BRANCH" "$PROD_BRANCH" "$BEFORE" "$AFTER"

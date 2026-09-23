@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Users · Fuse{% endblock %}
+{% block page_title %}Users{% endblock %}
+{% block page_lead %}<p>People with access to this server. List an email so they can register with their own password. Promote, demote, or delete from here.</p>{% endblock %}
+{% block body %}
+{% if error %}<p class="callout fault" role="alert">{{ error }}</p>{% endif %}
+{% if notice %}<p class="callout ok">{{ notice }}</p>{% endif %}
+<div class="stack-y">
+<section class="panel">
+  <h2>Accounts</h2>
+  {% if users %}
+  <div class="table-wrap">
+    <table class="log">
+      <thead><tr><th>Email</th><th class="tight">Role</th><th class="num tight">Tokens</th><th class="num tight">Requests</th><th class="num tight">Cost</th><th class="tight">Created</th><th class="tight"></th></tr></thead>
+      <tbody>
+      {% for u in users %}
+      <tr>
+        <td data-label="Email">{{ u['email'] }}</td>
+        <td data-label="Role" class="tight">{% if u['is_admin'] %}<span class="badge admin">Admin</span>{% else %}<span class="badge">User</span>{% endif %}</td>
+        <td data-label="Tokens" class="mono num tight">{{ '{:,}'.format(u['total_tokens']) }}</td>
+        <td data-label="Requests" class="mono num tight">{{ '{:,}'.format(u['requests']) }}</td>
+        <td data-label="Cost" class="mono num tight">{{ u['cost_label'] }}</td>
+        <td data-label="Created" class="mono nows tight">{{ u['created_at'] }}</td>
+        <td data-label="Actions" class="tight">
+          <div class="row-actions">
+            {% if u['id'] == user['id'] %}
+            <span class="badge">You</span>
+            {% else %}
+            {% if u['is_admin'] %}
+            {% if admin_count > 1 %}
+            <form method="post" action="/admin/users/{{ u['id'] }}/role" data-confirm="Remove admin from {{ u['email'] }}?">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="admin" value="0">
+              <button class="btn ghost sm" type="submit">Remove admin</button>
+            </form>
+            {% endif %}
+            {% else %}
+            <form method="post" action="/admin/users/{{ u['id'] }}/role">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="admin" value="1">
+              <button class="btn ghost sm" type="submit">Make admin</button>
+            </form>
+            {% endif %}
+            {% if not u['is_admin'] or admin_count > 1 %}
+            <form method="post" action="/admin/users/{{ u['id'] }}/delete" data-confirm="Delete {{ u['email'] }}? Their keys and usage history will be removed.">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button class="btn danger sm" type="submit">Delete</button>
+            </form>
+            {% endif %}
+            {% endif %}
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">No accounts yet.</p>
+  {% endif %}
+</section>
+<section class="panel">
+  <h2>Allowed emails</h2>
+  <p class="aside" style="margin-top:0">They create the account themselves. The listing is used once.</p>
+  {% if invites %}
+  <div class="table-wrap">
+    <table class="log">
+      <thead><tr><th>Email</th><th class="tight">Listed</th><th class="tight"></th></tr></thead>
+      <tbody>
+      {% for invite in invites %}
+      <tr>
+        <td data-label="Email">{{ invite['email'] }}</td>
+        <td data-label="Listed" class="mono nows tight">{{ invite['created_at'] }}</td>
+        <td data-label="Actions" class="tight">
+          <div class="row-actions">
+            <form method="post" action="/admin/users/invites/{{ invite['id'] }}/delete">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button class="btn danger sm" type="submit">Remove</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">No emails waiting to register.</p>
+  {% endif %}
+  <form method="post" action="/admin/users" class="stack" style="margin-top:1rem">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Email <input type="email" name="email" required maxlength="254" autocomplete="off"></label>
+    <button type="submit" class="btn">Allow this email</button>
+  </form>
+</section>
+</div>
+{% endblock %}

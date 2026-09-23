@@ -1,0 +1,48 @@
+{% set email = user['email'] %}
+{% set initial = (email[:1] or '?')|upper %}
+{% set local = email.split('@')[0] %}
+<div class="user-dock" data-account>
+  <div class="user-dock-menu" data-account-menu hidden role="menu" aria-label="Account">
+    <div class="user-dock-who">
+      <span class="user-dock-avatar" aria-hidden="true">{{ initial }}</span>
+      <span class="user-dock-copy">
+        <strong>{{ local }}</strong>
+        <span title="{{ email }}">{{ email }}</span>
+        {% if user['is_admin'] %}<em>Admin</em>{% endif %}
+      </span>
+      <button type="button" class="chat-menu-close user-dock-close" data-account-close aria-label="Close">
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <nav class="user-dock-nav">
+      <p class="user-dock-label">Workspace</p>
+      <a href="/usage" role="menuitem"{% if path == '/usage' %} class="on" aria-current="page"{% endif %}>Usage</a>
+      <a href="/models" role="menuitem"{% if path.startswith('/models') %} class="on" aria-current="page"{% endif %}>Models</a>
+      <a href="/tasks" role="menuitem"{% if path.startswith('/tasks') %} class="on" aria-current="page"{% endif %}>Tasks</a>
+      <p class="user-dock-label">Setup</p>
+      <a href="/sources" role="menuitem"{% if path.startswith('/sources') or path.startswith('/pool') %} class="on" aria-current="page"{% endif %}>Sources</a>
+      <a href="/skills" role="menuitem"{% if path.startswith('/skills') %} class="on" aria-current="page"{% endif %}>Skills</a>
+      <a href="/projects" role="menuitem"{% if path.startswith('/hosts') or path.startswith('/projects') %} class="on" aria-current="page"{% endif %}>Machines</a>
+      <a href="/artifacts" role="menuitem"{% if path.startswith('/artifacts') %} class="on" aria-current="page"{% endif %}>Artifacts</a>
+      <a href="/docs" role="menuitem"{% if path.startswith('/docs') %} class="on" aria-current="page"{% endif %}>API</a>
+      <a href="/download" role="menuitem"{% if path.startswith('/download') %} class="on" aria-current="page"{% endif %}>Desktop</a>
+      {% if user['is_admin'] %}
+      <p class="user-dock-label">Admin</p>
+      <a href="/admin/sources" role="menuitem"{% if path.startswith('/admin/sources') %} class="on" aria-current="page"{% endif %}>Config</a>
+      <a href="/admin/users" role="menuitem"{% if path.startswith('/admin/users') %} class="on" aria-current="page"{% endif %}>Users</a>
+      {% endif %}
+    </nav>
+    <form method="post" action="/logout" class="user-dock-out">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" role="menuitem">Sign out</button>
+    </form>
+  </div>
+  <button type="button" class="user-dock-btn" data-account-toggle aria-expanded="false" aria-haspopup="menu" title="{{ email }}">
+    <span class="user-dock-avatar" aria-hidden="true">{{ initial }}</span>
+    <span class="user-dock-copy">
+      <strong>{{ local }}</strong>
+      <span>{{ email }}</span>
+    </span>
+    <svg class="user-dock-caret" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M4.2 6.2L8 10l3.8-3.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </button>
+</div>

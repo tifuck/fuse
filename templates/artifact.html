@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}{{ item.title }} · Fuse{% endblock %}
+{% block page_title %}{{ item.title }}{% endblock %}
+{% block body %}
+<div class="artifact-shell" data-artifact-page data-id="{{ item.identifier }}">
+  <header class="artifact-banner">
+    <div class="artifact-banner-copy">
+      {% if owner and item.thread_id %}
+      <a class="artifact-back" href="/chat?t={{ item.thread_id }}&amp;a={{ item.identifier }}">Chat</a>
+      {% endif %}
+      <h1>{{ item.title }}</h1>
+      {% if not owner %}
+      <p class="artifact-banner-note">User-generated and unverified</p>
+      {% endif %}
+    </div>
+    {% if owner %}
+    <div class="artifact-banner-actions">
+      {% if item.visibility == 'public' %}
+      <button type="button" class="btn ghost sm copy" data-copy="{{ item.share_url }}" title="Copy public link">Share</button>
+      <form method="post" action="{{ item.url }}/visibility">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="visibility" value="private">
+        <button class="btn ghost sm" type="submit">Hide</button>
+      </form>
+      {% else %}
+      <form method="post" action="{{ item.url }}/visibility">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="visibility" value="public">
+        <button class="btn ghost sm" type="submit">Share</button>
+      </form>
+      {% endif %}
+      <form method="post" action="{{ item.url }}/delete" data-confirm="Delete “{{ item.title }}”? This cannot be undone.">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="btn danger sm" type="submit">Delete</button>
+      </form>
+    </div>
+    {% endif %}
+  </header>
+  <iframe
+    class="artifact-frame"
+    title="{{ item.title }}"
+    sandbox="allow-scripts allow-forms allow-modals"
+    referrerpolicy="no-referrer"
+    src="{{ item.content_url }}"></iframe>
+</div>
+{% endblock %}

@@ -1,0 +1,122 @@
+<!doctype html>
+{% set path = request.url.path %}
+{% set is_chat = user and path.startswith('/chat') %}
+{% set is_artifact = path.startswith('/a/') %}
+{% set is_preview = path.startswith('/preview') %}
+{% set is_settings = user and not is_chat and not is_artifact and not is_preview %}
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#141615">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <title>{% block title %}Fuse{% endblock %}</title>
+  <link rel="manifest" href="/static/manifest.webmanifest">
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Fuse">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,700&family=Red+Hat+Mono:ital,wght@0,400;0,500;1,400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css?v=253">
+  {% if is_settings %}
+  <script src="/static/chat-appearance.js?v=16"></script>
+  <link rel="stylesheet" href="/static/chat-design.css?v=154">
+  {% endif %}
+  {% block head_extra %}{% endblock %}
+</head>
+<body class="{% if is_artifact %}is-artifact-page{% elif user %}is-app{% else %}is-auth{% endif %}{% if is_chat %} is-chat{% endif %}{% if is_settings %} is-settings{% endif %}">
+  <div class="fuse-wire" aria-hidden="true"></div>
+  {% if user and not is_artifact %}
+  <a class="skip" href="#content">Skip to content</a>
+  {% endif %}
+  {% if is_chat or is_settings %}
+  <div class="chat-scene" data-chat-scene aria-hidden="true">
+    <span data-chat-scene-wash></span>
+    <canvas data-chat-scene-fx hidden></canvas>
+    <span data-chat-scene-veil></span>
+  </div>
+  {% endif %}
+  <div class="stage">
+    <div class="stage-inner">
+      {% if is_settings %}
+      <div class="settings-shell" data-settings>
+        {% include "_app_rail.html" %}
+        <button type="button" class="chat-history-backdrop" data-nav-scrim aria-label="Close sidebar" tabindex="-1" hidden></button>
+        <div class="settings-stage">
+          <header class="chat-bar settings-bar">
+            <button type="button" class="btn ghost sm chat-history-toggle" data-rail-toggle aria-label="Toggle sidebar" aria-controls="app-rail" aria-expanded="true" title="Toggle sidebar">
+              <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><rect x="2.5" y="3.5" width="15" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M7.5 4v12" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>
+            </button>
+            <h1 class="chat-bar-title">{% block page_title %}{% endblock %}</h1>
+          </header>
+          <div class="settings-scroll">
+            <div class="settings-lead">{% block page_lead %}{% endblock %}</div>
+            <div class="settings-tools">{% block page_actions %}{% endblock %}</div>
+      {% endif %}
+            <main id="content"{% if not user %} class="auth-main"{% endif %}>
+              {% block body %}{% endblock %}
+            </main>
+      {% if is_settings %}
+          </div>
+        </div>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+  <dialog class="modal modal-confirm" data-confirm aria-labelledby="fuse-confirm-title">
+    <div class="modal-shell">
+      <p class="aside" id="fuse-confirm-title" data-confirm-text></p>
+      <div class="modal-actions">
+        <button type="button" class="btn sm ghost" data-confirm-no>Cancel</button>
+        <button type="button" class="btn sm" data-confirm-yes>Confirm</button>
+      </div>
+    </div>
+  </dialog>
+  <dialog class="modal modal-bugreport" data-bug-report aria-labelledby="fuse-bugreport-title">
+    <div class="modal-shell">
+      <header class="modal-head">
+        <div>
+          <p class="metric-label">Fuse · Feedback</p>
+          <h2 id="fuse-bugreport-title">Report an issue</h2>
+        </div>
+        <button type="button" class="btn ghost sm" data-bug-close aria-label="Close report dialog">Close</button>
+      </header>
+      <form data-bug-report-form>
+        <p class="aside">A short rundown is enough — what happened, where, and what you were doing when it did.</p>
+        <label class="bugreport-field">
+          <span>What went wrong?</span>
+          <textarea data-bug-summary rows="4" required minlength="4" maxlength="4000" placeholder="Model picker stopped responding after switching to a second model…"></textarea>
+        </label>
+        <label class="bugreport-field">
+          <span>What did you expect to happen? <em>optional</em></span>
+          <input type="text" data-bug-expected maxlength="2000" placeholder="It should have switched models and kept my draft">
+        </label>
+        <details class="bugreport-details" data-bug-details>
+          <summary>Technical details sent with this report</summary>
+          <pre data-bug-context></pre>
+        </details>
+        <p class="bugreport-note">Automatic context only — no account, no IP, no conversation content.</p>
+        <div class="modal-actions">
+          <span class="bugreport-status" data-bug-status role="status"></span>
+          <button type="submit" class="btn sm" data-bug-send>Send report</button>
+        </div>
+      </form>
+      <div class="bugreport-done" data-bug-done hidden>
+        <p class="aside">Thanks — your report is in the queue.</p>
+        <p class="bugreport-ref">Reference <strong data-bug-ref></strong></p>
+        <div class="modal-actions">
+          <button type="button" class="btn sm" data-bug-finish>Done</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+  <script src="/static/app.js?v=32"></script>
+  <script src="/static/notifications.js?v=2"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Artifact not found · Fuse{% endblock %}
+{% block page_title %}Artifact{% endblock %}
+{% block body %}
+<section class="panel">
+  <h2>Not found</h2>
+  <p class="empty">This page does not exist, or you do not have access.</p>
+  {% if user %}<p class="aside"><a href="/chat">Back to chat</a></p>{% endif %}
+</section>
+{% endblock %}

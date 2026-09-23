@@ -1,0 +1,747 @@
+"""Search engine: providers, cache, recency, entity queries (httpx mocked)."""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import socket
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+_TMP = tempfile.mkdtemp(prefix="fuse-search-")
+os.environ.setdefault("DATABASE_PATH", str(Path(_TMP) / "chat.db"))
+os.environ.setdefault("APP_SECRET", "x" * 32)
+
+from app.chat_tools import SCHEMAS, execute_tool, merge_queries
+from app.search.client import TIMEOUT_BRAVE, TIMEOUT_DDG, TIMEOUT_FETCH, TIMEOUT_WIKI
+from app.search.engine import (
+    MAX_HITS_MERGED,
+    cache_ttl,
+    infer_recency,
+    is_entity_query,
+    search_bulk,
+    sanitize_query,
+)
+from app.search.extract import FETCH_MAX_BYTES
+from app.search.providers.brave import freshness_bucket
+from app.search.providers.base import ProviderResponse, SearchHit, canonical_url
+
+
+class FakeResp:
+    def __init__(self, status=200, payload=None, text="", headers=None):
+        self.status_code = status
+        self._payload = payload
+        self.text = text
+        self.headers = headers or {}
+        self.request = None
+
+    def json(self):
+        if self._payload is None:
+            raise ValueError("no json")
+        return self._payload
+
+
+class FakeStream:
+    def __init__(self, status=200, body=b"", headers=None):
+        self.status_code = status
+        self.headers = headers or {"content-type": "text/html"}
+        self._body = body
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+    async def aiter_bytes(self, chunk_size=8192):
+        data = self._body
+        for i in range(0, len(data), chunk_size):
+            yield data[i : i + chunk_size]
+
+
+class FakeClient:
+    def __init__(self):
+        self.calls = []
+        self.get_impl = None
+        self.request_impl = None
+        self.stream_impl = None
+        self.is_closed = False
+
+    async def get(self, url, **kwargs):
+        self.calls.append(("GET", url, kwargs))
+        if self.get_impl is None:
+            return FakeResp(200, text="")
+        return await self.get_impl(url, kwargs)
+
+    async def request(self, method, url, **kwargs):
+        self.calls.append((method, url, kwargs))
+        impl = self.request_impl
+        if impl is None:
+            return FakeResp(503, text="")
+        return await impl(method, url, **kwargs)
+
+    def stream(self, method, url, **kwargs):
+        if self.stream_impl is None:
+            raise AttributeError("stream")
+        self.calls.append((method, url, kwargs))
+        return self.stream_impl(method, url, kwargs)
+
+
+class SsrfTest(unittest.TestCase):
+    def test_public_ips_rejects_mixed_public_private_dns(self):
+        from app.search.ssrf import public_ips
+
+        answers = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443)),
+        ]
+        with patch("app.search.ssrf.socket.getaddrinfo", return_value=answers):
+            self.assertEqual(public_ips("example.com"), [])
+
+
+class EntityQueryTest(unittest.TestCase):
+    def test_table(self):
+        self.assertTrue(is_entity_query("Ada Lovelace"))
+        self.assertTrue(is_entity_query("Tavily"))
+        self.assertTrue(is_entity_query("GLM-5.3"))
+        self.assertFalse(is_entity_query("how to install rust"))
+        self.assertFalse(is_entity_query("site:arxiv.org grok"))
+        self.assertFalse(is_entity_query("compare glm and grok"))
+        self.assertFalse(is_entity_query("latest news today"))
+
+
+LITE_HTML = """
+<html><body>
+<a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fcoinmarketcap.com%2Fcurrencies%2Fbitcoin%2F&amp;rut=abc" class='result-link'>Bitcoin price today</a>
+<td class='result-snippet'>The live Bitcoin price is 79172 USD</td>
+<a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.coingecko.com%2Fen%2Fcoins%2Fbitcoin" class='result-link'>Bitcoin price, BTC price index</a>
+<td class='result-snippet'>Bitcoin (BTC) price</td>
+</body></html>
+"""
+
+
+BING_HTML = """
+<li class="b_algo"><h2><a href="https://www.bing.com/ck/a?!&amp;u=a1aHR0cHM6Ly9naXRodWIuY29tL3VsYWI=">LLMRouter GitHub</a></h2>
+<cite>https://github.com/ulab-uiuc/LLMRouter</cite>
+<div class="b_caption"><p class="b_lineclamp2">An open-source library for LLM routing</p></div></li>
+<li class="b_algo"><h2><a href="https://www.bing.com/ck/a?!&amp;u=a1aHR0cHM6Ly9vcGVucm91dGVyLmFpLw">OpenRouter</a></h2>
+<cite>https://openrouter.ai</cite>
+<p class="b_lineclamp2">A unified interface for LLMs</p></li>
+"""
+
+
+class MergeHitsTest(unittest.TestCase):
+    def test_round_robin_dedup(self):
+        from app.search.engine import _merge_hits
+        from app.search.providers.base import SearchHit
+
+        a = [
+            SearchHit("A1", "https://a.example/1", "x", provider="ddg"),
+            SearchHit("A2", "https://a.example/2", "x", provider="ddg"),
+        ]
+        b = [
+            SearchHit("B1", "https://a.example/1", "dup", provider="bing"),
+            SearchHit("B2", "https://b.example/2", "y", provider="bing"),
+        ]
+        out = _merge_hits([a, b], "q")
+        urls = [h.url for h in out]
+        self.assertEqual(urls[0], "https://a.example/1")
+        self.assertEqual(set(urls), {"https://a.example/1", "https://a.example/2", "https://b.example/2"})
+        self.assertEqual(len(out), 3)
+
+    def test_canonical_dedup_fusion_provenance_diversity_and_cap(self):
+        from app.search.engine import _merge_hits
+
+        first = [
+            SearchHit(f"A{i}", f"https://same.example/{i}?utm_source=x", "", provider="ddg", rank=i)
+            for i in range(10)
+        ]
+        second = [
+            SearchHit("Corroborated", "https://same.example/0?fbclid=abc", "better", provider="bing", rank=0),
+            SearchHit("Other", "https://other.example/result#section", "other", provider="bing", rank=1),
+        ]
+        third = [
+            SearchHit(f"D{i}", f"https://domain{i}.example/result", "x", provider="yahoo", rank=i)
+            for i in range(8)
+        ]
+
+        out = _merge_hits([first, second, third], "query")
+
+        self.assertEqual(len(out), MAX_HITS_MERGED)
+        fused = next(hit for hit in out if canonical_url(hit.url) == "https://same.example/0")
+        self.assertEqual(fused.providers, ("ddg", "bing"))
+        self.assertEqual(fused.snippet, "better")
+        self.assertIn("https://other.example/result", [canonical_url(hit.url) for hit in out])
+        self.assertLessEqual(sum("same.example" in hit.url for hit in out), 2)
+
+    def test_same_provider_variants_do_not_fake_corroboration(self):
+        from app.search.engine import _merge_hits
+
+        repeated = [
+            SearchHit("Repeated", "https://one.example/item?utm_source=a", "", provider="ddg", rank=0),
+            SearchHit("Repeated", "https://one.example/item?utm_source=b", "", provider="ddg", rank=1),
+        ]
+        corroborated = [
+            SearchHit("Shared", "https://two.example/item", "", provider="ddg", rank=1),
+            SearchHit("Shared", "https://two.example/item?fbclid=x", "", provider="bing", rank=1),
+        ]
+
+        out = _merge_hits([repeated, corroborated], "query")
+
+        self.assertEqual(canonical_url(out[0].url), "https://two.example/item")
+        self.assertEqual(out[0].providers, ("ddg", "bing"))
+
+    def test_canonical_url_only_removes_known_tracking(self):
+        url = "HTTPS://Example.COM:443/path?id=7&utm_campaign=x&gclid=y#part"
+        self.assertEqual(canonical_url(url), "https://example.com/path?id=7")
+        self.assertEqual(canonical_url("https://example.com/?ref=essential"), "https://example.com/?ref=essential")
+
+
+class YahooParseTest(unittest.TestCase):
+    def test_ru_and_title(self):
+        from app.search.providers.yahoo import parse_yahoo_html
+
+        html = """
+        <div class="algo-sr relsrch"><a href="https://r.search.yahoo.com/x/RU=https%3a%2f%2fgithub.com%2fulab-uiuc%2fLLMRouter/RK=2/RS=abc">
+        <h3 class="title"><span class="d-b fz-20">LLMRouter GitHub</span></h3></a>
+        <p class="fc-dustygray fz-14">An open-source library</p></div>
+        """
+        hits = parse_yahoo_html(html)
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0].url, "https://github.com/ulab-uiuc/LLMRouter")
+        self.assertIn("LLMRouter", hits[0].title)
+
+
+class BingParseTest(unittest.TestCase):
+    def test_bing_cite_and_base64(self):
+        from app.search.providers.bing import parse_bing_html
+
+        hits = parse_bing_html(BING_HTML)
+        self.assertGreaterEqual(len(hits), 2)
+        urls = {h.url for h in hits}
+        self.assertTrue(any("github.com" in u for u in urls))
+        self.assertTrue(any("openrouter.ai" in u for u in urls))
+
+
+class DdgParseTest(unittest.TestCase):
+    def test_lite_protocol_relative_uddg(self):
+        from app.search.providers.ddg import parse_ddg_html
+
+        hits = parse_ddg_html(LITE_HTML)
+        self.assertGreaterEqual(len(hits), 1)
+        self.assertEqual(hits[0].url, "https://coinmarketcap.com/currencies/bitcoin/")
+        self.assertIn("79172", hits[0].snippet)
+
+
+class PackLiveTest(unittest.TestCase):
+    def test_live_quote_leads_pack(self):
+        from app.search.pack import pack_search
+        from app.search.providers.base import QueryResult, SearchHit
+
+        packed = pack_search(
+            [
+                QueryResult(
+                    query="btc",
+                    hits=[
+                        SearchHit("Wiki", "https://en.wikipedia.org/wiki/Bitcoin", "history", provider="wikipedia"),
+                        SearchHit("LIVE", "https://www.coingecko.com/en/coins/bitcoin", "LIVE QUOTE: bitcoin = 100 USD (CoinGecko)", provider="quotes"),
+                    ],
+                    error=None,
+                    kind="ok",
+                    provider="quotes+wikipedia",
+                    latency_ms=1,
+                    cached=False,
+                    status=200,
+                )
+            ]
+        )
+        self.assertIn("LIVE QUOTE", packed)
+        self.assertLess(packed.find("LIVE QUOTE"), packed.find("wikipedia.org"))
+
+    def test_pack_keeps_complete_source_records(self):
+        from app.search.pack import pack_search
+        from app.search.providers.base import QueryResult, SearchHit
+
+        results = []
+        for index in range(8):
+            hits = [
+                SearchHit(
+                    f"Title {index}-{rank}",
+                    f"https://example{rank}.com/{index}/" + "x" * 300,
+                    "snippet " * 35,
+                    provider="ddg",
+                )
+                for rank in range(8)
+            ]
+            results.append(QueryResult(f"query {index}", hits, None, "ok", "ddg", 1, False, 200))
+        packed = pack_search(results)
+        self.assertLessEqual(len(packed), 24_000)
+        self.assertNotIn("[truncated]", packed)
+        for line in packed.splitlines():
+            if "https://" in line:
+                self.assertIn("[web-", line)
+
+
+class QuoteDetectTest(unittest.TestCase):
+    def test_bitcoin_price_question(self):
+        from app.search.providers.quotes import is_live_query, quote_ids
+
+        self.assertEqual(quote_ids("What's the price of Bitcoin?")[0], "bitcoin")
+        self.assertTrue(is_live_query("What's the price of Bitcoin?"))
+        self.assertTrue(is_live_query("BTC USD price"))
+        self.assertFalse(is_live_query("history of Ada Lovelace"))
+
+
+class RecencyTest(unittest.TestCase):
+    def test_buckets(self):
+        self.assertIsNone(freshness_bucket(None))
+        self.assertEqual(freshness_bucket(1), "pd")
+        self.assertEqual(freshness_bucket(7), "pw")
+        self.assertEqual(freshness_bucket(31), "pm")
+        self.assertEqual(freshness_bucket(40), "py")
+
+    def test_live_quote_heuristic(self):
+        self.assertEqual(infer_recency("BTC USD price", None), 1)
+        self.assertIsNone(infer_recency("Ada Lovelace", None))
+        self.assertEqual(cache_ttl("pd", "ok"), 45.0)
+        self.assertEqual(cache_ttl("pw", "ok"), 600.0)
+
+
+class SchemaTest(unittest.TestCase):
+    def test_no_anyof_or_required(self):
+        params = SCHEMAS["web_search"]["function"]["parameters"]
+        self.assertNotIn("anyOf", params)
+        self.assertNotIn("required", params)
+        self.assertNotIn("anyOf", SCHEMAS["read_url"]["function"]["parameters"])
+        self.assertNotIn("required", SCHEMAS["read_url"]["function"]["parameters"])
+
+    def test_merge_queries(self):
+        self.assertEqual(merge_queries({"query": "alpha", "queries": ["beta"]}), ["alpha", "beta"])
+        self.assertEqual(merge_queries({"query": "alpha", "queries": ["beta", "alpha"]}), ["beta", "alpha"])
+        self.assertEqual(merge_queries({}), [])
+        self.assertEqual(sanitize_query("  x  "), "x")
+
+
+class EngineAsyncTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        from app.search.engine import _cache
+        from app.search.providers import ddg as ddg_mod
+
+        _cache.clear()
+        ddg_mod._fail_streak = 0
+        ddg_mod._break_until = 0.0
+
+    async def test_brave_200(self):
+        client = FakeClient()
+
+        async def get(url, kwargs):
+            return FakeResp(
+                200,
+                {
+                    "web": {
+                        "results": [
+                            {
+                                "title": "BTC",
+                                "url": "https://example.com/btc",
+                                "description": "65000",
+                                "page_age": "1d",
+                            }
+                        ]
+                    }
+                },
+            )
+
+        client.get_impl = get
+        with (
+            patch("app.search.engine.get_client", return_value=client),
+            patch("app.search.engine._brave_key", return_value="k"),
+            patch("app.search.providers.brave.brave_auth_failed", return_value=False),
+            patch("app.search.engine.brave_auth_failed", return_value=False),
+        ):
+            from app.search import cache as cache_mod
+
+            cache_mod.TtlLru.clear  # noqa
+            from app.search.engine import _cache
+
+            _cache.clear()
+            out = await search_bulk(["BTC USD price"], user_id=1, recency_days=1)
+        self.assertEqual(out[0].kind, "ok")
+        self.assertEqual(out[0].hits[0].url, "https://example.com/btc")
+        brave_calls = [c for c in client.calls if "api.search.brave.com" in str(c[1])]
+        self.assertTrue(brave_calls)
+        self.assertEqual(brave_calls[0][2]["timeout"], TIMEOUT_BRAVE)
+        self.assertEqual(brave_calls[0][2]["params"].get("freshness"), "pd")
+
+    async def test_brave_429_is_error_not_empty(self):
+        client = FakeClient()
+
+        async def get(url, kwargs):
+            return FakeResp(429, headers={"Retry-After": "0"})
+
+        client.get_impl = get
+        with (
+            patch("app.search.engine.get_client", return_value=client),
+            patch("app.search.engine._brave_key", return_value="k"),
+            patch("app.search.engine.brave_auth_failed", return_value=False),
+        ):
+            from app.search.engine import _cache
+
+            _cache.clear()
+            out = await search_bulk(["news"], user_id=2)
+        self.assertEqual(out[0].kind, "provider_error")
+        self.assertIn("search failed", (out[0].error or "").lower())
+        self.assertNotIn("provider", (out[0].error or "").lower())
+
+    async def test_live_quote_uses_coingecko(self):
+        client = FakeClient()
+
+        async def get(url, kwargs):
+            self.assertIn("coingecko.com", url)
+            return FakeResp(200, {"bitcoin": {"usd": 79172}})
+
+        client.get_impl = get
+        with (
+            patch("app.search.engine.get_client", return_value=client),
+            patch("app.search.engine._brave_key", return_value=""),
+        ):
+            from app.search.engine import _cache
+
+            _cache.clear()
+            out = await search_bulk(["BTC USD price"], user_id=9, recency_days=1)
+        self.assertEqual(out[0].kind, "ok")
+        self.assertTrue(any("79172" in (h.snippet or "") for h in out[0].hits))
+        self.assertIn("quotes", out[0].provider)
+
+    async def test_ddg_202_still_parses_lite_html(self):
+        client = FakeClient()
+
+        async def req(method, url, **kwargs):
+            return FakeResp(202, text=LITE_HTML)
+
+        client.request_impl = req
+        with (
+            patch("app.search.engine.get_client", return_value=client),
+            patch("app.search.engine._brave_key", return_value=""),
+            patch("app.search.engine.quote_ids", return_value=None),
+        ):
+            from app.search.engine import _cache
+
+            _cache.clear()
+            out = await search_bulk(["open source router"], user_id=8)
+        self.assertEqual(out[0].kind, "ok")
+        self.assertTrue(out[0].hits)
+        self.assertTrue(out[0].hits[0].url.startswith("https://"))
+
+    async def test_zero_query_execute_error(self):
+        text, trace = await execute_tool("web_search", "{}", user_id=1, allowed_urls=set())
+        self.assertEqual(trace["status"], "error")
+        self.assertIn("no valid query", text)
+
+    async def test_sibling_timeout_does_not_cancel(self):
+        client = FakeClient()
+        n = {"i": 0}
+
+        async def get(url, kwargs):
+            n["i"] += 1
+            if "slow" in str(kwargs.get("params", {}).get("q")):
+                await asyncio.sleep(0.05)
+                raise TimeoutError("nope")
+            return FakeResp(
+                200,
+                {"web": {"results": [{"title": "Fast", "url": "https://example.com/f", "description": "ok"}]}},
+            )
+
+        async def wrapped(url, kwargs):
+            try:
+                return await get(url, kwargs)
+            except TimeoutError:
+                import httpx
+
+                raise httpx.TimeoutException("t")
+
+        client.get_impl = wrapped
+        with (
+            patch("app.search.engine.get_client", return_value=client),
+            patch("app.search.engine._brave_key", return_value="k"),
+            patch("app.search.engine.brave_auth_failed", return_value=False),
+        ):
+            from app.search.engine import _cache
+
+            _cache.clear()
+            out = await search_bulk(["fast query", "slow query"], user_id=3)
+        kinds = {r.query: r.kind for r in out}
+        self.assertEqual(kinds["fast query"], "ok")
+
+    async def test_ddg_timeout_object(self):
+        client = FakeClient()
+
+        async def req(method, url, **kwargs):
+            self.assertEqual(kwargs.get("timeout"), TIMEOUT_DDG)
+            return FakeResp(202, text=LITE_HTML)
+
+        client.request_impl = req
+        with (
+            patch("app.search.engine.get_client", return_value=client),
+            patch("app.search.engine._brave_key", return_value=""),
+        ):
+            from app.search.engine import _cache
+
+            _cache.clear()
+            out = await search_bulk(["hello world"], user_id=4)
+        self.assertTrue(out)
+        self.assertEqual(out[0].kind, "ok")
+        self.assertTrue(out[0].hits)
+        ddg_timeouts = [c[2].get("timeout") for c in client.calls if "duckduckgo" in str(c[1])]
+        self.assertIn(TIMEOUT_DDG, ddg_timeouts)
+
+    async def test_soft_deadline_returns_hits_and_cancels_straggler(self):
+        from app.search import engine
+
+        cancelled = asyncio.Event()
+
+        async def fast(*args, **kwargs):
+            return ProviderResponse(
+                hits=[SearchHit("Fast", "https://fast.example/result", "ok", provider="ddg")],
+                status=200,
+            )
+
+        async def slow(*args, **kwargs):
+            try:
+                await asyncio.sleep(1)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        empty = AsyncMock(return_value=ProviderResponse(hits=[], status=200, error="empty"))
+        with (
+            patch("app.search.engine._brave_key", return_value=""),
+            patch.object(engine._ddg, "search", side_effect=fast),
+            patch.object(engine._bing, "search", side_effect=slow),
+            patch.object(engine._yahoo, "search", empty),
+            patch.object(engine._hn, "search", empty),
+            patch.object(engine._wiki, "search", empty),
+            patch("app.search.engine.QUERY_SOFT_DEADLINE", 0.02),
+            patch("app.search.engine.QUERY_DEADLINE", 0.2),
+            patch("app.search.engine._allow", return_value=True),
+        ):
+            started = asyncio.get_running_loop().time()
+            out = await search_bulk(["how to test orchestration"], user_id=10)
+            elapsed = asyncio.get_running_loop().time() - started
+
+        self.assertEqual(out[0].kind, "ok")
+        self.assertLess(elapsed, 0.15)
+        self.assertTrue(cancelled.is_set())
+
+    async def test_no_hits_waits_until_hard_deadline(self):
+        from app.search import engine
+
+        async def slow(*args, **kwargs):
+            await asyncio.sleep(1)
+
+        with (
+            patch("app.search.engine._brave_key", return_value=""),
+            patch.object(engine._ddg, "search", side_effect=slow),
+            patch.object(engine._bing, "search", side_effect=slow),
+            patch.object(engine._yahoo, "search", side_effect=slow),
+            patch.object(engine._hn, "search", side_effect=slow),
+            patch.object(engine._wiki, "search", side_effect=slow),
+            patch("app.search.engine.QUERY_SOFT_DEADLINE", 0.01),
+            patch("app.search.engine.QUERY_DEADLINE", 0.04),
+            patch("app.search.engine._allow", return_value=True),
+        ):
+            started = asyncio.get_running_loop().time()
+            out = await search_bulk(["how to test hard deadline"], user_id=11)
+            elapsed = asyncio.get_running_loop().time() - started
+
+        self.assertEqual(out[0].kind, "provider_error")
+        self.assertGreaterEqual(elapsed, 0.03)
+        self.assertLess(elapsed, 0.2)
+
+    async def test_fetch_90kb_not_too_large(self):
+        from app.search.engine import _page_cache, fetch_url
+        from app.search.ssrf import public_http_url
+
+        url = "https://example.com/doc"
+        article = "<article>" + ("<p>word </p>" * 200) + "</article>"
+        html = "<html><body>" + article + "</body></html>"
+        body = html.encode() + b" " * (90_000 - len(html.encode()))
+        client = FakeClient()
+        client.stream_impl = lambda method, u, kwargs=None, **kw: FakeStream(200, body, {"content-type": "text/html"})
+        _page_cache.clear()
+        with (
+            patch("app.search.engine.get_fetch_client", return_value=client),
+            patch("app.search.engine.public_ips", return_value=["93.184.216.34"]),
+            patch("app.search.engine._allow", return_value=True),
+        ):
+            extract, wrapped, err = await fetch_url(url, user_id=1, allowed={url})
+        self.assertNotIn("too large", wrapped.lower())
+        self.assertTrue(extract is not None or "extract" in wrapped.lower() or "word" in wrapped)
+
+    async def test_fetch_pins_resolved_ip_and_preserves_host_and_sni(self):
+        from app.search.engine import _page_cache, fetch_url
+
+        url = "https://example.com/doc"
+        client = FakeClient()
+        client.stream_impl = lambda method, u, kwargs=None, **kw: FakeStream(
+            200, b"<article>Public document body with enough useful text to extract safely.</article>"
+        )
+        _page_cache.clear()
+        with (
+            patch("app.search.engine.get_fetch_client", return_value=client),
+            patch("app.search.engine.public_ips", return_value=["93.184.216.34"]) as resolve,
+            patch("app.search.engine._allow", return_value=True),
+        ):
+            extract, _, err = await fetch_url(url, user_id=1, allowed={url})
+        self.assertIsNotNone(extract)
+        self.assertFalse(err)
+        resolve.assert_called_once_with("example.com", 443)
+        _, target, kwargs = client.calls[0]
+        self.assertEqual(target, "https://93.184.216.34:443/doc")
+        self.assertEqual(kwargs["headers"]["Host"], "example.com")
+        self.assertEqual(kwargs["extensions"], {"sni_hostname": "example.com"})
+
+    async def test_fetch_dns_resolution_does_not_block_event_loop(self):
+        from app.search.engine import _page_cache, fetch_url
+
+        url = "https://example.com/threaded"
+        client = FakeClient()
+        client.stream_impl = lambda method, u, kwargs=None, **kw: FakeStream(
+            200, b"<article>Threaded DNS resolution document body.</article>"
+        )
+
+        def slow_resolve(host, port):
+            time.sleep(0.05)
+            return ["93.184.216.34"]
+
+        async def ticker():
+            await asyncio.sleep(0.005)
+            return True
+
+        _page_cache.clear()
+        with (
+            patch("app.search.engine.get_fetch_client", return_value=client),
+            patch("app.search.engine.public_ips", side_effect=slow_resolve),
+            patch("app.search.engine._allow", return_value=True),
+        ):
+            (_, _, err), ticked = await asyncio.gather(
+                fetch_url(url, user_id=1, allowed={url}), ticker()
+            )
+        self.assertFalse(err)
+        self.assertTrue(ticked)
+
+    async def test_fetch_cache_reuses_extract_for_find_without_budget(self):
+        from app.search.engine import _page_cache, fetch_url, is_fetch_cached
+
+        url = "https://example.com/cache"
+        body = b"<article>Alpha opening. The cached needle is here. Omega ending.</article>"
+        client = FakeClient()
+        client.stream_impl = lambda method, u, kwargs=None, **kw: FakeStream(200, body)
+        _page_cache.clear()
+        allowed = {url}
+        with (
+            patch("app.search.engine.get_fetch_client", return_value=client),
+            patch("app.search.engine.public_ips", return_value=["93.184.216.34"]),
+            patch("app.search.engine._allow", side_effect=[True, False]) as permit,
+        ):
+            first, _, first_err = await fetch_url(url, user_id=1, allowed=allowed)
+            self.assertTrue(is_fetch_cached(url, allowed))
+            found, _, found_err = await fetch_url(url, user_id=1, allowed=allowed, find="cached needle")
+        self.assertIsNotNone(first)
+        self.assertFalse(first_err)
+        self.assertIsNotNone(found)
+        self.assertFalse(found_err)
+        self.assertTrue(found.used_find)
+        self.assertIn("cached needle", found.text)
+        self.assertEqual(len(client.calls), 1)
+        self.assertEqual(permit.call_count, 1)
+
+    async def test_fetch_cache_find_uses_document_beyond_opening_extract(self):
+        from app.search.engine import _page_cache, fetch_url
+
+        url = "https://example.com/long-cache"
+        body = (
+            "<article>"
+            + ("<p>opening words in a cached paragraph.</p>" * 300)
+            + "<p>deep-cache-marker appears in this final passage.</p></article>"
+        ).encode()
+        client = FakeClient()
+        client.stream_impl = lambda method, u, kwargs=None, **kw: FakeStream(200, body)
+        _page_cache.clear()
+        with (
+            patch("app.search.engine.get_fetch_client", return_value=client),
+            patch("app.search.engine.public_ips", return_value=["93.184.216.34"]),
+            patch("app.search.engine._allow", return_value=True),
+        ):
+            await fetch_url(url, user_id=1, allowed={url})
+            found, _, err = await fetch_url(
+                url, user_id=1, allowed={url}, find="deep-cache-marker"
+            )
+        self.assertFalse(err)
+        self.assertIsNotNone(found)
+        self.assertIn("deep-cache-marker", found.text)
+        self.assertEqual(len(client.calls), 1)
+
+    async def test_redirect_is_resolved_and_validated_separately(self):
+        from app.search.engine import _page_cache, fetch_url
+
+        source = "https://example.com/old"
+        target = "https://docs.example.org/new"
+        client = FakeClient()
+        responses = iter(
+            [
+                FakeStream(302, headers={"location": target}),
+                FakeStream(200, b"<article>Redirect destination public document text.</article>"),
+            ]
+        )
+        client.stream_impl = lambda method, u, kwargs=None, **kw: next(responses)
+        _page_cache.clear()
+        with (
+            patch("app.search.engine.get_fetch_client", return_value=client),
+            patch(
+                "app.search.engine.public_ips",
+                side_effect=[["93.184.216.34"], ["1.1.1.1"]],
+            ) as resolve,
+            patch("app.search.engine._allow", return_value=True),
+        ):
+            extract, _, err = await fetch_url(source, user_id=1, allowed={source})
+        self.assertIsNotNone(extract)
+        self.assertFalse(err)
+        self.assertEqual(
+            resolve.call_args_list,
+            [unittest.mock.call("example.com", 443), unittest.mock.call("docs.example.org", 443)],
+        )
+        self.assertEqual(client.calls[1][2]["headers"]["Host"], "docs.example.org")
+
+    async def test_fetched_page_adds_only_safe_https_links(self):
+        from app.search.engine import _page_cache, fetch_url
+
+        url = "https://example.com/index"
+        body = (
+            b"<article>Links in a sufficiently useful page body. "
+            b"<a href='/next'>Next</a><a href='https://localhost/private'>Private</a>"
+            b"<a href='http://public.example/plain'>Plain</a></article>"
+        )
+        client = FakeClient()
+        client.stream_impl = lambda method, u, kwargs=None, **kw: FakeStream(200, body)
+        _page_cache.clear()
+        allowed = {url}
+        with (
+            patch("app.search.engine.get_fetch_client", return_value=client),
+            patch("app.search.engine.public_ips", return_value=["93.184.216.34"]),
+            patch("app.search.engine._allow", return_value=True),
+        ):
+            extract, _, err = await fetch_url(url, user_id=1, allowed=allowed)
+        self.assertIsNotNone(extract)
+        self.assertFalse(err)
+        self.assertIn("https://example.com/next", allowed)
+        self.assertNotIn("https://localhost/private", allowed)
+        self.assertNotIn("http://public.example/plain", allowed)
+
+
+if __name__ == "__main__":
+    unittest.main()

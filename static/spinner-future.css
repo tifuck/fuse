@@ -1,0 +1,66 @@
+/* Revision 3: thick, low-detail silhouettes; explicit origins on animated elements.
+   Never apply a CSS origin to static SVG placement groups. */
+.studio-icon { fill: none; stroke: currentColor; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; }
+.studio-icon .ss-fill { fill: currentColor; stroke: none; }
+.studio-icon .ss-faint { opacity: .24; stroke-width: 3; }
+.studio-icon :is(.ss-turn,.ss-roll,.ss-slow,.ss-crescent,.ss-cross-turn,.ss-shell-a,.ss-shell-b,.ss-shell-c,.ss-sail-turn,.ss-lozenge-turn,.ss-lozenge) { transform-box: view-box; transform-origin: 32px 32px; }
+.studio-icon .ss-turn { animation: ss-turn 3s linear infinite; }
+.studio-icon .ss-roll { animation: ss-turn 5s linear infinite; }
+.studio-icon .ss-slow { animation: ss-turn 8s linear infinite; }
+.studio-icon .ss-halo { stroke-width: 7; animation: ss-halo 3s ease-in-out infinite; }
+.studio-icon .ss-trefoil { stroke-width: 6; stroke-dasharray: 88 12; animation: ss-lap 4s linear infinite; }
+.studio-icon .ss-square { stroke-width: 7; stroke-dasharray: 18 7; }
+.studio-icon .ss-fold-a { animation: ss-fold 3.2s ease-in-out infinite; }
+.studio-icon .ss-fold-b { animation: ss-fold 3.2s ease-in-out -1.6s infinite; }
+.studio-icon .ss-crown-base { stroke-width: 6; opacity: .35; }
+.studio-icon .ss-crown { stroke-width: 6; stroke-dasharray: 30 70; animation: ss-lap 3s linear infinite; }
+.studio-icon .ss-kite { transform-box: view-box; transform-origin: 32px 32px; animation: ss-kite 2.8s ease-in-out var(--ss-delay,0s) infinite; }
+.studio-icon .ss-capsule-a { animation: ss-capsule 3s ease-in-out infinite; }
+.studio-icon .ss-capsule-b { animation: ss-capsule 3s ease-in-out -1.5s infinite; }
+.studio-icon .ss-crescent { stroke-width: 4; animation: ss-crescent 3.6s ease-in-out var(--ss-delay,0s) infinite; }
+.studio-icon .ss-pixel { transform-box: fill-box; transform-origin: center; animation: ss-pixel 1.6s ease-in-out var(--ss-delay,0s) infinite; }
+.studio-icon .ss-focus { animation: ss-focus 2.8s ease-in-out infinite; }
+.studio-icon .ss-triune { stroke-width: 7; stroke-dasharray: 25 8.333333; animation: ss-lap 3.6s linear infinite; }
+.studio-icon .ss-facet { transform-box: fill-box; transform-origin: center; animation: ss-facet 2.8s ease-in-out var(--ss-delay,0s) infinite; }
+.studio-icon .ss-cross-turn { stroke-width: 6; animation: ss-turn 6s linear infinite reverse; }
+.studio-icon .ss-isometric { stroke-width: 5.5; stroke-dasharray: 68 32; animation: ss-lap 2.2s linear infinite; }
+.studio-icon .ss-knot-base { opacity: .3; stroke-width: 6; }
+.studio-icon .ss-knot { stroke-width: 6; stroke-dasharray: 20 30; animation: ss-lap 4s linear infinite; }
+.studio-icon .ss-dial { stroke-width: 7; animation: ss-dial 2.4s ease-in-out var(--ss-delay,0s) infinite; }
+.studio-icon .ss-tile { animation: ss-tile 3.2s ease-in-out var(--ss-delay,0s) infinite; }
+.studio-icon .ss-shell { stroke-width: 5; stroke-dasharray: 72 28; }
+.studio-icon .ss-shell-a { animation: ss-turn 4s linear infinite; }
+.studio-icon .ss-shell-b { animation: ss-turn 3s linear infinite reverse; }
+.studio-icon .ss-shell-c { animation: ss-turn 2.4s linear infinite; }
+/* A wider subpixel sweep and sine-like easing avoid the near-static endpoints
+   of the old tiny, slow motion at 16px. Only these two paths request layers. */
+.studio-icon :is(.ss-weave-a,.ss-weave-b) {
+  stroke-width: 8;
+  transform-box: view-box;
+  transform-origin: 32px 32px;
+  will-change: transform;
+  animation: ss-weave 2.4s cubic-bezier(.37,0,.63,1) infinite;
+}
+.studio-icon .ss-weave-b { animation-delay: -1.2s; }
+.studio-icon .ss-sail-turn { animation: ss-turn 7.2s linear infinite; }
+.studio-icon .ss-sail { stroke-width: 5.5; stroke-dasharray: 78 22; animation: ss-lap 2.4s linear infinite; }
+.studio-icon .ss-lozenge-turn { animation: ss-turn 6s linear infinite; }
+.studio-icon .ss-lozenge { animation: ss-lozenge 3s ease-in-out infinite; }
+@keyframes ss-turn { to { transform: rotate(360deg); } }
+@keyframes ss-lap { to { stroke-dashoffset: -100; } }
+@keyframes ss-halo { 0%,100% { stroke-dasharray: 25 75; } 50% { stroke-dasharray: 80 20; } }
+@keyframes ss-fold { 0%,100% { transform: translateY(-2px); } 50% { transform: translateY(2px); } }
+@keyframes ss-kite { 0%,100% { transform: scaleY(.85); opacity: .45; } 50% { transform: scaleY(1); opacity: 1; } }
+@keyframes ss-capsule { 0%,100% { transform: translateY(-3px); } 50% { transform: translateY(3px); } }
+@keyframes ss-crescent { 0%,100% { transform: rotate(-35deg); } 50% { transform: rotate(35deg); } }
+@keyframes ss-pixel { 0%,100% { transform: scaleY(.65); opacity: .3; } 50% { transform: scaleY(1.3); opacity: 1; } }
+@keyframes ss-focus { 0%,100% { transform: translateX(-9px); } 50% { transform: translateX(9px); } }
+@keyframes ss-facet { 0%,100% { transform: scale(.65); } 50% { transform: scale(.85); } }
+@keyframes ss-dial { 0%,100% { opacity: .3; } 40% { opacity: 1; } }
+@keyframes ss-tile { 0%,100% { transform: translate(0,0); } 50% { transform: translate(-3px,-3px); } }
+@keyframes ss-weave { 0%,100% { transform: translate3d(0,-4px,0); } 50% { transform: translate3d(0,4px,0); } }
+@keyframes ss-lozenge { 0%,100% { stroke-width: 5; transform: scale(.87); } 50% { stroke-width: 9; transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) {
+  .chat .studio-icon *, .motion-lab:not(.motion-enabled) .studio-icon * { animation-play-state: paused !important; }
+}
+.motion-lab.is-paused .studio-icon * { animation-play-state: paused !important; }

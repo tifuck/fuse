@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Sign in · Fuse{% endblock %}
+{% block body %}
+<section class="auth-brand">
+  <p class="eyebrow">Fuse</p>
+  <h1>One endpoint.<br>Every source.</h1>
+  <p class="lede">Point any coding harness at /v1. Grok subs, llama.cpp, rotating cloud keys — same wire.</p>
+</section>
+<section class="auth-pane">
+  <div class="auth-card">
+    <h2>Sign in</h2>
+    {% if error %}<p class="callout fault" role="alert">{{ error }}</p>{% endif %}
+    <form method="post" action="/login">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Email <input type="email" name="email" required autocomplete="username"></label>
+      <label>Password <input type="password" name="password" required maxlength="256" autocomplete="current-password"></label>
+      <button type="submit" class="btn">Sign in</button>
+    </form>
+    <p class="aside">No account? <a href="/register">Create one</a></p>
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,214 @@
+{
+  "description": "Real-page snapshots downloaded from the live web. Tests read these files locally and never touch the network (httpx is mocked in pipeline tests). Refresh with fetch_fixtures.py. Each entry records provenance plus scrubbing assertions: must_contain = main-content phrases that extraction must preserve; must_not_contain = script/CSS/app-shell strings from that page that must never leak into extracted text.",
+  "fetched": "2026-09-08",
+  "fixtures": [
+    {
+      "name": "wikipedia_ada_lovelace",
+      "file": "wikipedia_ada_lovelace.html",
+      "url": "https://en.wikipedia.org/wiki/Ada_Lovelace",
+      "host": "en.wikipedia.org",
+      "content_type": "text/html",
+      "expect_kind": "html",
+      "code_samples": false,
+      "truncated": true,
+      "min_chars_out": 4000,
+      "must_contain": [
+        "Augusta Ada King",
+        "Countess of Lovelace",
+        "Charles Babbage",
+        "analytical engine",
+        "first computer program"
+      ],
+      "must_not_contain": [
+        "wgPageName",
+        "RLCONF",
+        ".mw-parser-output",
+        "display:none",
+        "@media"
+      ]
+    },
+    {
+      "name": "hackernews",
+      "file": "hackernews.html",
+      "url": "https://news.ycombinator.com/",
+      "host": "news.ycombinator.com",
+      "content_type": "text/html",
+      "expect_kind": "html",
+      "code_samples": false,
+      "truncated": false,
+      "min_chars_out": 1000,
+      "must_contain": [
+        "Hacker News",
+        "points by",
+        "TALA Is Open-Source"
+      ],
+      "must_not_contain": [
+        "stylesheet",
+        ".css"
+      ]
+    },
+    {
+      "name": "mdn_array_filter",
+      "file": "mdn_array_filter.html",
+      "url": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/filter",
+      "host": "developer.mozilla.org",
+      "content_type": "text/html",
+      "expect_kind": "html",
+      "code_samples": true,
+      "truncated": false,
+      "min_chars_out": 2000,
+      "must_contain": [
+        "Array.prototype.filter()",
+        "creates a shallow copy",
+        "callbackFn",
+        "Expected output"
+      ],
+      "must_not_contain": [
+        "@media",
+        "localStorage",
+        "background-color",
+        "svg+xml"
+      ]
+    },
+    {
+      "name": "github_llmrouter",
+      "file": "github_llmrouter.html",
+      "url": "https://github.com/ulab-uiuc/LLMRouter",
+      "host": "github.com",
+      "content_type": "text/html",
+      "expect_kind": "html",
+      "code_samples": false,
+      "truncated": true,
+      "min_chars_out": 2000,
+      "must_contain": [
+        "ulab-uiuc",
+        "An Open-Source Library"
+      ],
+      "must_not_contain": [
+        "react-app.embeddedData",
+        "\"refInfo\"",
+        "background-color",
+        "svg+xml"
+      ]
+    },
+    {
+      "name": "pypi_requests",
+      "file": "pypi_requests.html",
+      "url": "https://pypi.org/project/requests/",
+      "host": "pypi.org",
+      "content_type": "text/html",
+      "expect_kind": "html",
+      "code_samples": true,
+      "truncated": true,
+      "min_chars_out": 2000,
+      "must_contain": [
+        "Python HTTP for Humans",
+        "pip install requests",
+        "elegant, HTTP library",
+        "300M downloads"
+      ],
+      "must_not_contain": [
+        "stylesheet",
+        "<noscript>"
+      ]
+    },
+    {
+      "name": "docs_python_asyncio",
+      "file": "docs_python_asyncio.html",
+      "url": "https://docs.python.org/3/library/asyncio.html",
+      "host": "docs.python.org",
+      "content_type": "text/html",
+      "expect_kind": "html",
+      "code_samples": true,
+      "truncated": false,
+      "min_chars_out": 1000,
+      "must_contain": [
+        "write concurrent code",
+        "event loops"
+      ],
+      "must_not_contain": [
+        "@media",
+        "addEventListener",
+        ".css"
+      ]
+    },
+    {
+      "name": "example_com",
+      "file": "example_com.html",
+      "url": "https://example.com",
+      "host": "example.com",
+      "content_type": "text/html",
+      "expect_kind": "html",
+      "code_samples": false,
+      "truncated": false,
+      "min_chars_out": 50,
+      "must_contain": [
+        "Example Domain",
+        "documentation examples"
+      ],
+      "must_not_contain": [
+        "font-size",
+        "a:link"
+      ]
+    },
+    {
+      "name": "github_api_repo",
+      "file": "github_api_repo.json",
+      "url": "https://api.github.com/repos/psf/requests",
+      "host": "api.github.com",
+      "content_type": "application/json",
+      "expect_kind": "json",
+      "code_samples": false,
+      "truncated": false,
+      "min_chars_out": 1000,
+      "must_contain": [
+        "psf/requests",
+        "\"html_url\""
+      ],
+      "must_not_contain": []
+    },
+    {
+      "name": "guardian_article",
+      "file": "guardian_article.html",
+      "url": "https://www.theguardian.com/technology/2026/feb/16/reworked-a-guardian-series",
+      "host": "www.theguardian.com",
+      "content_type": "text/html",
+      "expect_kind": "html",
+      "code_samples": false,
+      "truncated": false,
+      "min_chars_out": 800,
+      "must_contain": [
+        "AI disrupts",
+        "editorially independent",
+        "Omidyar Network"
+      ],
+      "must_not_contain": [
+        "function(",
+        "@font-face",
+        "!important",
+        "polyfill",
+        "display:none"
+      ]
+    },
+    {
+      "name": "arxiv_abs",
+      "file": "arxiv_abs.html",
+      "url": "https://arxiv.org/abs/1706.03762",
+      "host": "arxiv.org",
+      "content_type": "text/html",
+      "expect_kind": "html",
+      "code_samples": false,
+      "truncated": false,
+      "min_chars_out": 300,
+      "must_contain": [
+        "Attention Is All You Need",
+        "dominant sequence transduction",
+        "encoder-decoder"
+      ],
+      "must_not_contain": [
+        "document.",
+        "display:none"
+      ]
+    }
+  ]
+}

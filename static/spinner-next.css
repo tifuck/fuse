@@ -1,0 +1,38 @@
+/* Shared Collection 04 geometry. All motion remains legible in one ink. */
+.next-icon { fill: none; stroke: currentColor; stroke-width: 4.5; stroke-linecap: round; stroke-linejoin: round; }
+.next-icon .nx-fill { fill: currentColor; stroke: none; }
+.next-icon .nx-accent { color: var(--motion-b, currentColor); }
+.next-icon .nx-track { opacity: .2; stroke-width: 2; }
+.next-icon :is(g, path, circle, rect, ellipse) { transform-box: view-box; transform-origin: 32px 32px; }
+.next-icon .nx-turn { animation: nx-turn 2.4s linear infinite; }
+.next-icon .nx-reverse { animation: nx-turn 1.8s linear infinite reverse; }
+.next-icon .nx-slow { animation: nx-turn 7.2s linear infinite; }
+.next-icon .nx-reed { stroke-width: 6; animation: nx-reed 1.8s ease-in-out var(--delay) infinite; }
+.next-icon .nx-ripple { animation: nx-ripple 2.4s cubic-bezier(.2,.5,.4,1) var(--delay) infinite; }
+.next-icon .nx-weave { stroke-dasharray: 32 18; animation: nx-lap 2.4s linear infinite; }
+.next-icon .nx-grid-dot { transform-box: fill-box; transform-origin: center; animation: nx-dot 1.8s ease-in-out var(--delay) infinite; }
+.next-icon .nx-knot { stroke-dasharray: 65 35; animation: nx-lap 3s linear infinite; }
+
+.loader-halcyon .nx-comet {
+  stroke-width: 6;
+  stroke-dasharray: 55 45;
+  animation: nx-lap 1.6s linear infinite;
+}
+.loader-meridian-gate .nx-arc {
+  stroke-width: 6;
+  stroke-dasharray: 50 50;
+  animation: nx-lap 2.2s linear infinite;
+}
+.loader-meridian-gate .nx-reverse .nx-arc { animation-delay: -1.1s; }
+.loader-echo-mandala .nx-echo { animation: nx-echo 2.4s ease-in-out var(--delay) infinite; }
+
+@keyframes nx-turn { to { transform: rotate(360deg); } }
+@keyframes nx-lap { to { stroke-dashoffset: -100; } }
+@keyframes nx-reed { 0%,100% { transform: scaleY(.25); opacity: .4; } 50% { transform: scaleY(1); opacity: 1; } }
+@keyframes nx-ripple { 0% { transform: scale(.15); opacity: 0; } 15% { opacity: 1; } 100% { transform: scale(1); opacity: 0; } }
+@keyframes nx-dot { 0%,100% { transform: scale(.5); opacity: .35; } 50% { transform: scale(1); opacity: 1; } }
+@keyframes nx-echo { 0%,100% { transform: scale(.55); opacity: .5; } 50% { transform: scale(1.05); opacity: .15; } }
+@media (prefers-reduced-motion: reduce) {
+  .chat .next-icon *, .motion-lab:not(.motion-enabled) .next-icon * { animation-play-state: paused !important; }
+}
+.motion-lab.is-paused .next-icon * { animation-play-state: paused !important; }

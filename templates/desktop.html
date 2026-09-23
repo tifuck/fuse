@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Desktop · Fuse{% endblock %}
+{% block page_title %}Desktop app{% endblock %}
+{% block page_lead %}<p>Run Fuse in its own window with no browser chrome. The app is a thin wrapper around this site — every site update lands in it instantly, and the wrapper updates itself.</p>{% endblock %}
+{% block body %}
+<div class="stack-y">
+  <div class="catalog-grid">
+    <article class="panel catalog-family">
+      <div class="section-heading">
+        <h2>Windows</h2>
+        <span class="usage-sub">10 / 11 · 64-bit</span>
+      </div>
+      {% if win_url %}
+      <a class="btn sm" href="{{ win_url }}" download>Download {{ win_url.rsplit('/', 1)[-1] }}</a>
+      <p class="usage-note">Unsigned installer — if SmartScreen appears, choose More info → Run anyway. Installs per-user, no admin required.</p>
+      {% else %}
+      <p class="empty">No Windows build packaged yet.</p>
+      {% endif %}
+    </article>
+    <article class="panel catalog-family">
+      <div class="section-heading">
+        <h2>macOS</h2>
+        <span class="usage-sub">Apple Silicon / Intel</span>
+      </div>
+      {% if mac_url %}
+      <a class="btn sm" href="{{ mac_url }}" download>Download {{ mac_url.rsplit('/', 1)[-1] }}</a>
+      <p class="usage-note">Unsigned — first launch needs right-click → Open. Auto-update requires a Developer ID certificate.</p>
+      {% else %}
+      <p class="empty">macOS builds are produced by CI (.github/workflows/desktop.yml) — not packaged yet.</p>
+      {% endif %}
+    </article>
+    <article class="panel catalog-family">
+      <div class="section-heading">
+        <h2>Linux</h2>
+        <span class="usage-sub">x86_64</span>
+      </div>
+      {% if appimage_url %}
+      <a class="btn sm" href="{{ appimage_url }}" download>Download {{ appimage_url.rsplit('/', 1)[-1] }}</a>
+      <p class="usage-note">Portable — chmod +x and run. This flavor auto-updates in the background.</p>
+      {% else %}
+      <p class="empty">No AppImage packaged yet.</p>
+      {% endif %}
+      {% if deb_url %}
+      <a class="btn sm ghost" href="{{ deb_url }}" download>{{ deb_url.rsplit('/', 1)[-1] }}</a>
+      <p class="usage-note">Debian/Ubuntu package — updates by reinstalling a newer version.</p>
+      {% endif %}
+    </article>
+  </div>
+
+  <section class="panel docs-panel">
+    <div class="section-heading">
+      <h2>Updates</h2>
+      <span class="usage-sub">automatic</span>
+    </div>
+    <p class="usage-note">The desktop app checks this server on launch, downloads new wrapper versions silently, and swaps them in the next time you quit. You never need to reinstall for site changes — chat, models, and settings are always the live site.</p>
+  </section>
+
+  <section class="panel docs-panel">
+    <div class="section-heading">
+      <h2>No install? Use the PWA</h2>
+      <span class="usage-sub">mobile &amp; desktop</span>
+    </div>
+    <p class="usage-note">The site is an installable app too. In Chrome, Edge, or Brave choose <strong>Install app</strong> (Safari: <strong>Add to Dock</strong>, Android: menu → Install app) and it launches full-screen with no address bar — the same zero-maintenance experience without downloading anything.</p>
+  </section>
+</div>
+{% endblock %}

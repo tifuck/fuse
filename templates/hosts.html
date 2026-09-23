@@ -1,0 +1,235 @@
+{% extends "base.html" %}
+{% block title %}Machines · Fuse{% endblock %}
+{% block page_title %}Machines{% endblock %}
+{% block page_lead %}<p>Connect a machine, then add project folders and open them from chat. Connector machines phone home over HTTPS; SSH still works if the box allows it.</p>{% endblock %}
+{% block page_actions %}
+<button type="button" class="btn sm" data-wizard-start data-hosts-add>Add a machine</button>
+{% endblock %}
+{% block body %}
+<div class="stack-y hosts-page" data-hosts data-vault="{{ hosts_bundle.vault }}">
+  <div class="hosts-workspace" data-workspace>
+    <p class="callout fault" data-page-error hidden></p>
+
+    <section class="panel hosts-empty" data-empty hidden>
+      <div class="section-heading"><h2>Add a machine</h2></div>
+      <p class="usage-sub">Run one command on the machine. It phones home over HTTPS. No inbound SSH. Then add project folders and open them in chat.</p>
+      <button type="button" class="btn sm" data-wizard-start>Start</button>
+    </section>
+
+    <section class="panel hosts-connector" data-connector hidden>
+      <div class="section-heading"><h2>Run this on the machine</h2></div>
+      <p class="usage-sub">Paste the matching line on that computer. It installs the connector, signs in with a one-time code, and this page updates as soon as it is online.</p>
+      <p class="callout fault" data-connector-error hidden></p>
+      <div class="hosts-os-install">
+        <div>
+          <p class="hosts-os-label">Linux</p>
+          <pre class="hosts-install mono"><code data-install-line></code></pre>
+          <div class="hosts-actions">
+            <button type="button" class="btn sm copy" data-copy-install>Copy</button>
+          </div>
+        </div>
+        <div>
+          <p class="hosts-os-label">Windows</p>
+          <pre class="hosts-install mono"><code data-install-windows></code></pre>
+          <div class="hosts-actions">
+            <button type="button" class="btn sm copy" data-copy-windows>Copy</button>
+            <a class="btn sm ghost" data-download-windows hidden>Download EXE</a>
+          </div>
+          <p class="usage-sub">Run in PowerShell. Use an Administrator terminal if this machine should connect before anyone logs in.</p>
+        </div>
+      </div>
+      <div class="hosts-actions">
+        <button type="button" class="btn sm ghost" data-connector-cancel>Cancel</button>
+      </div>
+      <p class="usage-sub" data-connector-wait>Waiting for this machine…</p>
+      <p class="hosts-ssh-alt"><button type="button" class="btn sm ghost" data-ssh-instead>Connect with SSH instead</button></p>
+    </section>
+
+    <section class="panel hosts-wizard hosts-ssh-only" data-wizard hidden>
+      <p class="hosts-steps" data-wizard-steps aria-hidden="true">
+        <span data-step-dot="1">1. Machine</span>
+        <span data-step-dot="2">2. Sign-in</span>
+        <span data-step-dot="3">3. Trust</span>
+        <span data-step-dot="4">4. Project</span>
+      </p>
+      <p class="callout fault" data-wizard-error hidden></p>
+
+      <div data-step="1">
+        <div class="section-heading"><h2>Where is this machine?</h2></div>
+        <p class="usage-sub">A short nickname is what chats will use. Hostname is the SSH address.</p>
+        <div class="hosts-grid">
+          <label class="hosts-field">
+            <span>Nickname</span>
+            <input name="alias" maxlength="40" placeholder="prod-box" autocomplete="off" data-w-alias>
+          </label>
+          <label class="hosts-field">
+            <span>Hostname</span>
+            <input name="hostname" maxlength="253" placeholder="box.example.com" autocomplete="off" data-w-hostname>
+          </label>
+          <label class="hosts-field">
+            <span>Port</span>
+            <input name="port" type="number" min="1" max="65535" value="22" data-w-port>
+          </label>
+          <label class="hosts-field">
+            <span>Username</span>
+            <input name="username" maxlength="64" placeholder="deploy" autocomplete="off" data-w-username>
+          </label>
+        </div>
+      </div>
+
+      <div data-step="2" hidden>
+        <div class="section-heading"><h2>How should Fuse sign in?</h2></div>
+        <p class="usage-sub">SSH key is the default. A password works too. This is stored wrapped with your account password — not the site secret.</p>
+        <div class="hosts-grid">
+          <label class="hosts-field">
+            <span>Auth</span>
+            <select data-w-auth>
+              <option value="key" selected>SSH key</option>
+              <option value="password">Password</option>
+            </select>
+          </label>
+          <label class="hosts-field hosts-field-wide" data-w-secret-wrap>
+            <span data-w-secret-label>Private key (PEM)</span>
+            <textarea data-w-secret rows="5" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
+            <input type="password" data-w-password maxlength="1024" autocomplete="new-password" hidden>
+          </label>
+          <label class="hosts-field" data-w-pass-wrap>
+            <span>Key passphrase (optional)</span>
+            <input type="password" data-w-passphrase maxlength="1024" autocomplete="off">
+          </label>
+          <label class="hosts-field hosts-field-wide">
+            <span>Default path on this machine (optional)</span>
+            <input data-w-cwd maxlength="400" placeholder="/srv" autocomplete="off">
+          </label>
+        </div>
+      </div>
+
+      <div data-step="3" hidden>
+        <div class="section-heading"><h2>Trust this machine</h2></div>
+        <p class="usage-sub">Fuse looks up the SSH host key and shows the fingerprint. Compare it with the machine before you trust it. Agents will not connect until it is pinned.</p>
+        <p class="hosts-fingerprint mono" data-w-fingerprint hidden></p>
+        <p class="usage-sub" data-w-trust-status>Not probed yet.</p>
+      </div>
+
+      <div data-step="4" hidden>
+        <div class="section-heading"><h2>First project</h2></div>
+        <p class="usage-sub">Name it, pick a folder on the machine, and optionally make it read-only. You can skip and add projects later.</p>
+        <div class="hosts-grid">
+          <label class="hosts-field">
+            <span>Project name</span>
+            <input data-w-proj-name maxlength="80" placeholder="api" autocomplete="off">
+          </label>
+          <label class="hosts-field hosts-field-wide">
+            <span>Project folder</span>
+            <span class="hosts-path-row">
+              <input data-w-proj-path maxlength="400" placeholder="Choose a folder" autocomplete="off" readonly title="Click to browse folders">
+              <button type="button" class="btn sm ghost" data-w-browse>Browse</button>
+            </span>
+          </label>
+          <label class="check hosts-check hosts-field-wide">
+            <input type="checkbox" data-w-proj-ro>
+            <span>Read-only (no writes or shell on this project)</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="panel-foot hosts-wizard-nav">
+        <button type="button" class="btn sm ghost" data-wizard-cancel>Cancel</button>
+        <button type="button" class="btn sm ghost" data-wizard-back hidden>Back</button>
+        <button type="button" class="btn sm" data-wizard-next>Next</button>
+      </div>
+    </section>
+
+    <div data-host-list class="stack-y"></div>
+
+    <details class="panel hosts-advanced">
+      <summary>Advanced</summary>
+      <form class="hosts-settings" data-settings>
+        <label class="check hosts-check">
+          <input type="checkbox" data-setting="agent_coding">
+          <span>Let chats load workspace tools on these machines</span>
+        </label>
+        <label class="check hosts-check">
+          <input type="checkbox" data-setting="allow_nested_spawn">
+          <span>Allow nested subagents (off by default: children cannot spawn more agents)</span>
+        </label>
+        <p class="callout" data-settings-ok hidden>Saved.</p>
+        <p class="callout fault" data-settings-error hidden></p>
+        <button type="submit" class="btn sm ghost">Save</button>
+      </form>
+    </details>
+  </div>
+
+  <dialog class="modal" data-edit-host-modal aria-labelledby="edit-host-title">
+    <div class="modal-shell">
+      <header class="modal-head">
+        <div>
+          <p class="metric-label">Machine</p>
+          <h2 id="edit-host-title">Edit machine</h2>
+        </div>
+        <button type="button" class="btn ghost sm" data-dialog-close aria-label="Close machine editor">Close</button>
+      </header>
+      <p class="callout fault" data-edit-host-error hidden></p>
+      <form class="hosts-grid" data-edit-host-form>
+        <label class="hosts-field"><span>Nickname</span><input name="alias" required maxlength="40" autocomplete="off"></label>
+        <label class="hosts-field"><span>Hostname</span><input name="hostname" required maxlength="253" autocomplete="off"></label>
+        <label class="hosts-field" data-port-field><span>Port</span><input name="port" type="number" min="1" max="65535" value="22"></label>
+        <label class="hosts-field"><span>Username</span><input name="username" required maxlength="64" autocomplete="off"></label>
+        <label class="hosts-field hosts-field-wide"><span>Default path</span><input name="default_cwd" maxlength="400" placeholder="/srv" autocomplete="off"></label>
+        <div class="hosts-field-wide modal-actions">
+          <button type="submit" class="btn sm">Save machine</button>
+          <button type="button" class="btn sm ghost" data-dialog-close>Cancel</button>
+        </div>
+      </form>
+    </div>
+  </dialog>
+
+  <dialog class="modal" data-edit-project-modal aria-labelledby="edit-project-title">
+    <div class="modal-shell">
+      <header class="modal-head">
+        <div>
+          <p class="metric-label">Project</p>
+          <h2 id="edit-project-title" data-project-title>Add project</h2>
+        </div>
+        <button type="button" class="btn ghost sm" data-dialog-close aria-label="Close project editor">Close</button>
+      </header>
+      <p class="callout fault" data-edit-project-error hidden></p>
+      <form class="hosts-grid" data-edit-project-form>
+        <label class="hosts-field"><span>Name</span><input name="name" required maxlength="80" autocomplete="off" placeholder="api"></label>
+        <label class="hosts-field"><span>Folder</span>
+          <span class="hosts-path-row">
+            <input name="remote_path" required maxlength="400" placeholder="Choose a folder" data-browse data-browse-target="project" readonly title="Click to browse folders">
+            <button type="button" class="btn sm ghost" data-browse data-browse-target="project">Browse</button>
+          </span>
+        </label>
+        <label class="check hosts-check hosts-field-wide"><input type="checkbox" name="read_only"><span>Read-only (no writes or shell on this project)</span></label>
+        <div class="hosts-field-wide modal-actions">
+          <button type="submit" class="btn sm" data-project-submit>Add project</button>
+          <button type="button" class="btn sm ghost" data-dialog-close>Cancel</button>
+        </div>
+      </form>
+    </div>
+  </dialog>
+
+  <dialog class="modal hosts-browse-modal" data-browse-modal aria-labelledby="browse-title">
+    <div class="modal-shell">
+      <header class="modal-head">
+        <div>
+          <p class="metric-label">Folders</p>
+          <h2 id="browse-title">Choose a folder</h2>
+        </div>
+        <button type="button" class="btn ghost sm" data-dialog-close aria-label="Close folder browser">Close</button>
+      </header>
+      <div data-browse-body></div>
+      <div class="modal-actions">
+        <button type="button" class="btn sm" data-browse-use>Use this folder</button>
+      </div>
+    </div>
+  </dialog>
+
+</div>
+<script type="application/json" id="hosts-config">{{ hosts_bundle | tojson }}</script>
+{% endblock %}
+{% block scripts %}
+<script src="/static/hosts.js?v=17"></script>
+{% endblock %}

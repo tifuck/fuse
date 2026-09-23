@@ -1,0 +1,276 @@
+{% extends "base.html" %}
+{% block title %}Config · Fuse{% endblock %}
+{% block page_title %}Config{% endblock %}
+{% block page_lead %}<p>Site-wide backends every account can use. Donated x.ai, OpenAI, Z.AI, and Devin plans, plus personal OpenRouter keys, live on <a href="/sources">Sources</a>.</p>{% endblock %}
+{% block body %}
+{% if error %}<p class="callout fault" role="alert">{{ error }}</p>{% endif %}
+{% if notice %}<p class="callout ok">{{ notice }}</p>{% endif %}
+<div class="stack-y">
+<nav class="settings-jump" aria-label="On this page">
+  <a href="#llama">Local llama</a>
+  <a href="#ollama">Ollama Cloud</a>
+  <a href="#openrouter">OpenRouter</a>
+  <a href="#compat">Compatible</a>
+  <a href="#pools">Pool access</a>
+  <a href="#guards">Pool guards</a>
+  <a href="#fetch">Fetch domains</a>
+</nav>
+
+<section class="panel" id="llama">
+  <div class="account-head">
+    <div>
+      <p class="eyebrow">llama.cpp</p>
+      <h2>Local llama</h2>
+    </div>
+    <div class="head-actions">
+      {% if llama and llama['enabled'] %}<span class="badge on">On</span>{% else %}<span class="badge off">Off</span>{% endif %}
+      {% if llama %}<button type="button" class="btn ghost sm probe" data-source="{{ llama['id'] }}">Test</button>{% endif %}
+    </div>
+  </div>
+  <div class="probe-out hidden" {% if llama %}id="probe-{{ llama['id'] }}"{% endif %}></div>
+  <p class="aside">OpenAI-compatible llama.cpp (or a local Ollama /v1). Use the LAN IP of that box, not 127.0.0.1 — Fuse is a different host. HTTPS with a self-signed cert needs the skip-verify box (same as curl -k).</p>
+  <form method="post" action="/admin/sources/llama" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Base URL
+      <input name="base_url" value="{{ llama_cfg.get('base_url', '') }}" placeholder="https://llama.example.com:8080/v1">
+    </label>
+    <label>API key
+      <input name="api_key" type="password" autocomplete="off" placeholder="{% if llama_key_set %}Key is set — enter a new one to replace it{% else %}Optional{% endif %}">
+    </label>
+    <label>Default model
+      <input name="model" value="{{ llama_cfg.get('model', '') if llama_cfg.get('model') not in ('local', 'llama') else '' }}" placeholder="Optional; discovered automatically">
+    </label>
+    <label class="check">
+      <input type="checkbox" name="insecure" value="1"{% if llama_insecure %} checked{% endif %}>
+      Skip TLS verify (self-signed / curl -k)
+    </label>
+    <label class="check">
+      <input type="checkbox" name="enabled" value="1"{% if llama and llama['enabled'] %} checked{% endif %}>
+      Enabled — list and route llama models for every user
+    </label>
+    <button type="submit" class="btn">Save llama</button>
+  </form>
+</section>
+
+<section class="panel" id="ollama">
+  <div class="account-head">
+    <div>
+      <p class="eyebrow">Ollama Cloud</p>
+      <h2>Rotating keys</h2>
+    </div>
+    <div class="head-actions">
+      {% if ollama and ollama['enabled'] %}<span class="badge on">On</span>{% else %}<span class="badge off">Off</span>{% endif %}
+      {% if ollama %}<button type="button" class="btn ghost sm probe" data-source="{{ ollama['id'] }}">Test</button>{% endif %}
+    </div>
+  </div>
+  <div class="probe-out hidden" {% if ollama %}id="probe-{{ ollama['id'] }}"{% endif %}></div>
+  <p class="aside">Keys rotate per request. HTTP 402 “requires a subscription” is a paid model — the key stays. Real out-of-usage (weekly/session 429) cools it. Only unpaid-accessible models are advertised on /v1/models.</p>
+  <p class="usage-sub">{{ ollama_total }} key{{ 's' if ollama_total != 1 else '' }} · {{ ollama_ready }} ready · {{ ollama_cooling }} cooling · {{ ollama_problem }} problem{% if ollama_catalog %} · {{ ollama_catalog.free|length }} free · {{ ollama_catalog.gated|length }} paid hidden{% endif %}</p>
+  {% if ollama_keys %}
+  <div class="table-wrap">
+    <table class="log keys-table">
+      <thead>
+        <tr>
+          <th>Key</th>
+          <th class="tight">State</th>
+          <th>Last</th>
+          <th class="tight">Until</th>
+          <th class="tight"></th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for k in ollama_keys %}
+      <tr{% if k.state_kind in ('off', 'cool') %} class="is-problem"{% endif %}>
+        <td data-label="Key" class="mono">{{ k.prefix }}{% if k.label %} <span class="key-model">{{ k.label }}</span>{% endif %}</td>
+        <td data-label="State" class="tight"><span class="badge {{ k.state_kind }}">{{ k.state_label }}</span></td>
+        <td data-label="Last" class="mono nows">{% if k.last_label %}{{ k.last_label }}{% else %}—{% endif %}</td>
+        <td data-label="Until" class="mono nows tight">{% if k.available_label %}{{ k.available_label }}{% else %}—{% endif %}</td>
+        <td data-label="Actions" class="tight">
+          <form method="post" action="/admin/sources/ollama/keys/{{ k.id }}/delete" data-confirm="Remove this Ollama key?">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="btn danger sm" type="submit">Remove</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if ollama_pages > 1 %}
+  <nav class="pager" aria-label="Ollama keys">
+    {% if ollama_has_prev %}
+    <a class="btn ghost sm" href="/admin/sources?keys={{ ollama_page - 1 }}">Previous</a>
+    {% endif %}
+    <span class="pager-meta">{{ ollama_from }}–{{ ollama_to }} of {{ ollama_total }} · problems first</span>
+    {% if ollama_has_next %}
+    <a class="btn ghost sm" href="/admin/sources?keys={{ ollama_page + 1 }}">Next</a>
+    {% endif %}
+  </nav>
+  {% elif ollama_total %}
+  <p class="pager-meta">{{ ollama_from }}–{{ ollama_to }} of {{ ollama_total }}{% if ollama_problem %} · problems first{% endif %}</p>
+  {% endif %}
+  {% else %}
+  <p class="empty">No Ollama Cloud keys yet.</p>
+  {% endif %}
+  <form method="post" action="/admin/sources/ollama" class="stack keys-add">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Base URL
+      <input name="base_url" value="{{ ollama_cfg.get('base_url', 'https://ollama.com/api') }}" placeholder="https://ollama.com/api">
+    </label>
+    <label>Default model
+      <input name="model" value="{{ ollama_cfg.get('model', '') }}" placeholder="Optional; discovered automatically">
+    </label>
+    <label>Add keys (one per line)
+      <textarea name="keys" rows="3" placeholder="Paste new keys. Existing keys are kept."></textarea>
+    </label>
+    <label class="check">
+      <input type="checkbox" name="enabled" value="1"{% if ollama and ollama['enabled'] %} checked{% endif %}>
+      Enabled — list and route Ollama Cloud models for every user
+    </label>
+    <button type="submit" class="btn">Save Ollama</button>
+  </form>
+</section>
+
+<section class="panel" id="openrouter">
+  <div class="account-head">
+    <div>
+      <p class="eyebrow">OpenRouter</p>
+      <h2>Personal keys only</h2>
+    </div>
+    <div class="head-actions">
+      {% if openrouter and openrouter['enabled'] %}<span class="badge on">On</span>{% else %}{% if openrouter %}<span class="badge off">Off</span>{% endif %}{% endif %}
+      {% if openrouter %}<button type="button" class="btn ghost sm probe" data-source="{{ openrouter['id'] }}">Test</button>{% endif %}
+    </div>
+  </div>
+  <div class="probe-out hidden" {% if openrouter %}id="probe-{{ openrouter['id'] }}"{% endif %}></div>
+  <p class="aside">There is no site-wide OpenRouter key. Each user adds their own key on <a href="/sources">Sources</a>. Pool models such as GLM then retry on OpenRouter when that user has a key. Test checks the catalog; it does not send a completion.</p>
+  <p class="usage-sub">{{ openrouter_user_count }} personal key{{ 's' if openrouter_user_count != 1 else '' }} on Sources</p>
+  <form method="post" action="/admin/sources/openrouter" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label class="check">
+      <input type="checkbox" name="enabled" value="1"{% if openrouter and openrouter['enabled'] %} checked{% endif %}>
+      Enabled — route personal OpenRouter keys
+    </label>
+    <button type="submit" class="btn">Save OpenRouter</button>
+  </form>
+</section>
+
+{% if extras %}
+<section class="panel">
+  <h2>Other OpenAI-compatible</h2>
+  <div class="table-wrap">
+    <table class="log">
+      <thead><tr><th>Name</th><th class="num tight">Keys</th><th class="tight">On</th><th class="tight"></th></tr></thead>
+      <tbody>
+      {% for s in extras %}
+      <tr>
+        <td data-label="Name">{{ s['name'] }}</td>
+        <td data-label="Keys" class="mono num tight">{{ extra_counts.get(s['id'], 0) }}</td>
+        <td data-label="On" class="tight">{% if s['enabled'] %}<span class="badge on">On</span>{% else %}<span class="badge off">Off</span>{% endif %}</td>
+        <td data-label="Actions" class="tight">
+          <div class="row-actions">
+            <button type="button" class="btn ghost sm probe" data-source="{{ s['id'] }}">Test</button>
+            <form method="post" action="/admin/sources/{{ s['id'] }}/toggle">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button class="btn ghost sm" type="submit">{% if s['enabled'] %}Disable{% else %}Enable{% endif %}</button>
+            </form>
+            <form method="post" action="/admin/sources/{{ s['id'] }}/delete" data-confirm="Delete this source?">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button class="btn danger sm" type="submit">Delete</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      <tr class="probe-row hidden" id="probe-{{ s['id'] }}"><td colspan="4"></td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+<section class="panel" id="compat">
+  <h2>Add OpenAI-compatible</h2>
+  <p class="aside">Optional extra upstream. Llama, Ollama, and OpenRouter are above — do not add them here.</p>
+  <form method="post" action="/admin/sources" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="type" value="openai">
+    <label>Name <input name="name" placeholder="OpenAI-compatible" required></label>
+    <label>Base URL <input name="base_url" placeholder="https://api.example.com/v1"></label>
+    <label>Keys (one per line) <textarea name="keys" rows="3"></textarea></label>
+    <label>Rotation
+      <select name="rotation">
+        <option value="sticky">Sticky (cache-aware, recommended)</option>
+        <option value="every_request">Every request</option>
+        <option value="round_robin">Round robin</option>
+        <option value="none">None</option>
+      </select>
+    </label>
+    <button type="submit" class="btn">Add source</button>
+  </form>
+</section>
+
+<section class="panel" id="pools">
+  <p class="eyebrow">Shared pools</p>
+  <h2>Who can use donated accounts</h2>
+  <p class="aside">Sharing on: eligible users are routed across every linked {{ pool_labels.grok }}, {{ pool_labels.chatgpt }}, {{ pool_labels.zai }}, {{ pool_labels.devin }}, {{ pool_labels.kimi }}, and {{ pool_labels.mimo }} account. Sharing off: each user only uses accounts they linked. Open access lets any registered user use that pool without contributing one. Users can opt out of sharing when it is on; they cannot opt back in when it is off. {{ grok_count }} x.ai · {{ chatgpt_count }} OpenAI · {{ zai_count }} Z.AI · {{ devin_count }} Devin · {{ kimi_count }} Kimi · {{ mimo_count }} Xiaomi linked.</p>
+  <form method="post" action="/admin/sources/pools" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {% for kind in ('grok', 'chatgpt', 'zai', 'devin', 'kimi', 'mimo') %}
+    {% set policy = pool_policies[kind] %}
+    <div class="pool-policy">
+      <h3>{{ pool_labels[kind] }}</h3>
+      <label class="check">
+        <input type="checkbox" name="{{ kind }}_pool_shared" value="1"{% if policy.pool_shared %} checked{% endif %}>
+        Share donated {{ pool_labels[kind] }} accounts across users who can use the pool
+      </label>
+      <label class="check">
+        <input type="checkbox" name="{{ kind }}_open_access" value="1"{% if policy.open_access %} checked{% endif %}>
+        Allow users who have not linked a {{ pool_labels[kind] }} account
+      </label>
+    </div>
+    {% endfor %}
+    <button type="submit" class="btn">Save pool access</button>
+  </form>
+</section>
+
+<section class="panel" id="guards">
+  <p class="eyebrow">Shared pools</p>
+  <h2>Hold when usage rises off-site</h2>
+  <p class="aside">User plans are added on <a href="/sources">Sources</a>. These guards pull a donated x.ai or Z.AI plan out of the pool for 24h if quota jumps without Fuse traffic. {{ grok_count }} x.ai · {{ chatgpt_count }} OpenAI · {{ zai_count }} Z.AI linked.</p>
+  <form method="post" action="/admin/sources/grok" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label class="check">
+      <input type="checkbox" name="offpool_usage_guard" value="1"{% if grok_usage_guard %} checked{% endif %}>
+      Hold x.ai accounts when usage rises without Fuse traffic
+    </label>
+    <button type="submit" class="btn ghost sm">Save x.ai guard</button>
+  </form>
+  <form method="post" action="/admin/sources/zai" class="stack" style="margin-top:0.85rem">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label class="check">
+      <input type="checkbox" name="offpool_usage_guard" value="1"{% if zai_usage_guard %} checked{% endif %}>
+      Hold Z.AI keys when usage rises without Fuse traffic
+    </label>
+    <button type="submit" class="btn ghost sm">Save Z.AI guard</button>
+  </form>
+</section>
+
+<section class="panel" id="fetch">
+  <p class="eyebrow">Web search</p>
+  <h2>Fetch domains</h2>
+  <p class="aside">Page reads accept any public HTTPS URL unless it matches the blacklist. A non-empty whitelist allows only those domains (and their subdomains when the entry starts with <span class="mono">*.</span>). One domain per line. Example: <span class="mono">*.example.com</span> matches <span class="mono">a.example.com</span> but not <span class="mono">example.com</span>.</p>
+  <form method="post" action="/admin/sources/fetch-domains" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Blacklist
+      <textarea name="blacklist" rows="6" placeholder="ads.example.com&#10;*.tracker.test">{{ fetch_blacklist }}</textarea>
+    </label>
+    <label>Whitelist
+      <textarea name="whitelist" rows="6" placeholder="Empty allows every domain that is not blacklisted.&#10;wikipedia.org&#10;*.gov">{{ fetch_whitelist }}</textarea>
+    </label>
+    <button type="submit" class="btn">Save fetch domains</button>
+  </form>
+</section>
+
+</div>
+{% endblock %}

@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Motion Studies · Fuse{% endblock %}
+{% block head_extra %}
+<link rel="stylesheet" href="/static/spinner-loaders.css?v=1">
+<link rel="stylesheet" href="/static/spinner-preview.css?v=5">
+<link rel="stylesheet" href="/static/spinner-next.css?v=3">
+<link rel="stylesheet" href="/static/spinner-future.css?v=3">
+{% endblock %}
+{% block body %}
+<div class="motion-lab">
+  <header class="ml-header">
+    <a class="ml-brand" href="/chat"><img src="/static/icon.svg" alt="" width="22" height="22">Fuse <span>/ motion lab</span></a>
+    <span class="ml-edition"><span>Live rotation</span><span>Preview only</span></span>
+  </header>
+  <section class="ml-intro" aria-labelledby="ml-title">
+    <div>
+      <p class="ml-eyebrow" data-ml-eyebrow>49 loading icons · the live rotation</p>
+      <h1 id="ml-title">Less illustration.<br><em>More momentum.</em></h1>
+    </div>
+    <div class="ml-intro-note">
+      <p data-ml-lead>Loops that chase. Apertures that turn. Geometry that flows.</p>
+      <p data-ml-description>Collection 05: 25 retained designs, with smoother Chevron Weave motion. The 24 earlier designs follow below. Judge the 16px and 20px samples first.</p>
+      <p class="ml-disclaimer">Selections stay in this browser. Nothing changes in live chat.</p>
+    </div>
+  </section>
+  <div class="ml-toolbar" role="group" aria-label="Preview controls">
+    <div class="ml-filters">
+      <button type="button" data-ml-filter aria-pressed="false">Shortlist only <span data-ml-count>0</span></button>
+      <button type="button" data-ml-pause aria-pressed="false">Pause motion</button>
+      <button type="button" data-ml-surface aria-pressed="false">Light surface</button>
+    </div>
+    <a href="#ml-shortlist" class="ml-review-link">Review selection <span aria-hidden="true">&#8599;</span></a>
+  </div>
+  <div class="ml-table-wrap" role="region" aria-label="Spinner comparison table" tabindex="0">
+    <table class="ml-table">
+      <caption class="visually-hidden">The spinner concepts currently in the live chat rotation with enlarged, monochrome, and actual-size previews. Check Keep to shortlist a design.</caption>
+      <thead><tr><th scope="col">Concept / keep</th><th scope="col">Enlarged <small>64px</small></th><th scope="col">Monochrome <small>48px</small></th><th scope="col">In context <small>16px / 20px</small></th></tr></thead>
+      <tbody data-ml-group="05" data-ml-title="Collection 05 · New originals"></tbody>
+      <tbody data-ml-group="03" data-ml-title="Collection 03 · In rotation"></tbody>
+      <tbody data-ml-group="04" data-ml-title="Collection 04 · In rotation"></tbody>
+    </table>
+    <p class="ml-empty" data-ml-empty hidden>No designs shortlisted yet. Turn off the filter and check your favorites.</p>
+  </div>
+  <noscript><p>Enable JavaScript to view the motion studies and build your shortlist.</p></noscript>
+  <section class="ml-shortlist" id="ml-shortlist" aria-labelledby="ml-shortlist-title">
+    <div><p class="ml-eyebrow">Your edit</p><h2 id="ml-shortlist-title">Keep the ones that feel right.</h2><p>Copy the selected names and IDs and send them back. This is a review list, not an app setting.</p></div>
+    <div class="ml-export">
+      <label for="ml-selection">Selected designs</label>
+      <textarea id="ml-selection" data-ml-selection readonly rows="4" placeholder="Your shortlist will appear here."></textarea>
+      <div class="ml-export-actions"><button type="button" data-ml-copy disabled>Copy shortlist</button><button type="button" data-ml-clear disabled>Clear selection</button></div>
+      <p class="ml-feedback" data-ml-feedback role="status" aria-live="polite"></p>
+    </div>
+  </section>
+  <footer class="ml-footer"><span>Fuse / Motion lab</span><span>Local artwork. No provider calls. Shortlists stay in this browser.</span></footer>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/spinner-loaders.js?v=1"></script>
+<script src="/static/spinner-next.js?v=3"></script>
+<script src="/static/spinner-future.js?v=3"></script>
+<script src="/static/spinner-preview.js?v=5"></script>
+{% endblock %}

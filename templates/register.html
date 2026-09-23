@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Create account · Fuse{% endblock %}
+{% block body %}
+<section class="auth-brand">
+  <p class="eyebrow">Fuse</p>
+  <h1>Create an account</h1>
+  <p class="lede">You get an API key. First account on this server is admin.</p>
+</section>
+<section class="auth-pane">
+  <div class="auth-card">
+    <h2>Register</h2>
+    {% if error %}<p class="callout fault" role="alert">{{ error }}</p>{% endif %}
+    <form method="post" action="/register">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Email <input type="email" name="email" required maxlength="254" autocomplete="username"></label>
+      <label>Password <input type="password" name="password" required minlength="8" maxlength="256" autocomplete="new-password"></label>
+      <button type="submit" class="btn">Create account</button>
+    </form>
+    <p class="aside">Already registered? <a href="/login">Sign in</a></p>
+  </div>
+</section>
+{% endblock %}

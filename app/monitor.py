@@ -1,0 +1,261 @@
+"""Line-oriented watch helpers for the monitor tool.
+
+A monitor is a background job that turns stdout (or WebSocket text) into
+batched <monitor_event> envelopes. Stderr is retained and never emitted as
+events. Callers still own process lifecycle in command_jobs.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+import time
+from urllib.parse import urlparse, urlunparse
+
+logger = logging.getLogger(__name__)
+
+BATCH_S = 0.2
+DEFAULT_TIMEOUT_MS = 300_000
+MAX_TIMEOUT_MS = 1_800_000
+DEFAULT_MAX_EVENTS = 1
+MAX_MAX_EVENTS = 50
+MAX_PENDING_EVENTS = 64
+MAX_BATCH_LINES = 40
+FIREHOSE_WINDOW_S = 2.0
+FIREHOSE_MAX = 8
+ERR_TAIL_CHARS = 4_000
+_WS_SCHEMES = ("ws", "wss")
+EVENT_ID_RE = re.compile(r'<monitor_event id="([^"]+)" seq="(\d+)"')
+RESULT_ID_RE = re.compile(r'<(?:command_result|monitor_result) id="([^"]+)"')
+
+
+def deadline_ms(raw) -> int:
+    if raw is None or raw == "":
+        return DEFAULT_TIMEOUT_MS
+    try:
+        val = int(float(raw))
+    except (TypeError, ValueError, OverflowError):
+        return DEFAULT_TIMEOUT_MS
+    if val <= 0:
+        return DEFAULT_TIMEOUT_MS
+    if val < 1000:
+        val = val * 1000
+    return max(1_000, min(val, MAX_TIMEOUT_MS))
+
+
+def max_events(raw) -> int:
+    if raw is None or raw == "":
+        return DEFAULT_MAX_EVENTS
+    try:
+        val = int(float(raw))
+    except (TypeError, ValueError, OverflowError):
+        return DEFAULT_MAX_EVENTS
+    if val <= 0:
+        return DEFAULT_MAX_EVENTS
+    return max(1, min(val, MAX_MAX_EVENTS))
+
+
+def compile_pattern(raw: str):
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        return re.compile(text)
+    except re.error:
+        raise ValueError("invalid monitor pattern") from None
+
+
+def match_line(line: str, pattern) -> bool:
+    text = str(line or "")
+    if not text.strip():
+        return False
+    if pattern is None:
+        return True
+    return bool(pattern.search(text))
+
+
+def public_ws_url(raw: str) -> str:
+    from .search.ssrf import _netloc, is_blocked_host
+
+    url = str(raw or "").strip()
+    if not url or len(url) > 2000:
+        return ""
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+    except Exception:
+        return ""
+    if parsed.scheme not in _WS_SCHEMES:
+        return ""
+    if parsed.username or parsed.password:
+        return ""
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host or is_blocked_host(host):
+        return ""
+    if port not in (None, 80, 443):
+        return ""
+    path = parsed.path or "/"
+    if parsed.params:
+        path += ";" + parsed.params
+    query = (parsed.query or "")[:800]
+    http_scheme = "https" if parsed.scheme == "wss" else "http"
+    netloc = _netloc(host, port, http_scheme)
+    return urlunparse((parsed.scheme, netloc, path, "", query, ""))
+
+
+def event_receipt_id(job_id: str, seq: int) -> str:
+    return f"{job_id}:e{int(seq)}"
+
+
+def parse_event_receipt(ident: str) -> tuple[str, int] | None:
+    text = str(ident or "")
+    if ":e" not in text:
+        return None
+    job_id, _, rest = text.rpartition(":e")
+    if not job_id or not rest.isdigit():
+        return None
+    return job_id, int(rest)
+
+
+def envelope_receipts(envelopes: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for text in envelopes or []:
+        chunk = str(text)[:8000]
+        for job_id, seq in EVENT_ID_RE.findall(chunk):
+            ident = event_receipt_id(job_id, int(seq))
+            if ident not in seen:
+                seen.add(ident)
+                out.append(ident)
+        for job_id in RESULT_ID_RE.findall(chunk):
+            if job_id not in seen:
+                seen.add(job_id)
+                out.append(job_id)
+    return out
+
+
+class LineBatcher:
+    """Split a byte/text stream into 200ms line batches that match the filter."""
+
+    def __init__(self, rec: dict, on_batch):
+        self.rec = rec
+        self.on_batch = on_batch
+        self.buf = ""
+        self.pending: list[str] = []
+        self.task: asyncio.Task | None = None
+        self.pattern = rec.get("_pattern")
+        self.closed = False
+        self.stamps: list[float] = []
+
+    def feed(self, text: str) -> None:
+        if self.closed or not text:
+            return
+        self.buf += text
+        while "\n" in self.buf:
+            line, self.buf = self.buf.split("\n", 1)
+            line = line.rstrip("\r")
+            if match_line(line, self.pattern):
+                self.pending.append(line)
+        if self.pending and self.task is None and not self.closed:
+            self.task = asyncio.create_task(self._flush())
+
+    def firehose(self) -> bool:
+        now = time.monotonic()
+        self.stamps = [t for t in self.stamps if now - t <= FIREHOSE_WINDOW_S]
+        return len(self.stamps) >= FIREHOSE_MAX
+
+    async def _flush(self) -> None:
+        try:
+            await asyncio.sleep(BATCH_S)
+        except asyncio.CancelledError:
+            return
+        finally:
+            self.task = None
+        self._emit()
+
+    def _emit(self) -> None:
+        if not self.pending:
+            return
+        lines = self.pending[:MAX_BATCH_LINES]
+        overflow = len(self.pending) - len(lines)
+        self.pending = []
+        if overflow > 0:
+            lines.append(f"… {overflow} more lines in this batch omitted")
+        self.stamps.append(time.monotonic())
+        try:
+            self.on_batch(lines, overflow)
+        except TypeError:
+            try:
+                self.on_batch(lines)
+            except Exception:
+                logger.exception("monitor batch delivery failed")
+        except Exception:
+            logger.exception("monitor batch delivery failed")
+
+    async def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        task = self.task
+        self.task = None
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        if self.buf and match_line(self.buf.rstrip("\r"), self.pattern):
+            self.pending.append(self.buf.rstrip("\r"))
+        self.buf = ""
+        self._emit()
+
+
+def event_envelope(rec: dict, lines: list[str], seq: int) -> str:
+    host = rec.get("host") or ""
+    source = rec.get("source") or ("ws" if rec.get("url") else "command")
+    target = (rec.get("url") or rec.get("command") or "")[:200]
+    elapsed = 0
+    if rec.get("started"):
+        elapsed = int((time.monotonic() - float(rec["started"])) * 1000)
+    body = "\n".join(lines) if lines else "(no lines)"
+    rows = [
+        f'<monitor_event id="{rec["id"]}" seq="{seq}" count="{int(rec.get("event_count") or 0)}">',
+        f"host: {host} source: {source} target: {target}",
+        f"events: {int(rec.get('event_count') or 0)}",
+        f"elapsed_ms: {elapsed}",
+        "",
+        body,
+        "</monitor_event>",
+    ]
+    return "\n".join(rows)
+
+
+def result_envelope(rec: dict) -> str:
+    status = str(rec.get("status") or "")
+    source = rec.get("source") or ("ws" if rec.get("url") else "command")
+    target = (rec.get("url") or rec.get("command") or "")[:200]
+    lines = [
+        f'<monitor_result id="{rec["id"]}" state="{status}">',
+        f"host: {rec.get('host') or ''} source: {source} target: {target}",
+        f"events: {int(rec.get('event_count') or 0)}",
+    ]
+    if rec.get("max_events"):
+        lines.append(f"max_events: {int(rec['max_events'])}")
+    if status == "completed" and rec.get("exit_code") is not None:
+        lines.append(f"exit_code: {rec.get('exit_code')}")
+    if rec.get("duration_ms") is not None:
+        lines.append(f"duration_ms: {rec.get('duration_ms')}")
+    if rec.get("error"):
+        lines.append(f"error: {str(rec['error'])[:200]}")
+    err = str(rec.get("err") or "").strip()
+    if err:
+        lines.append("stderr: retained (not used as events)")
+    out = str(rec.get("out") or "")
+    lines.append("")
+    lines.append(out[-1500:] if out else "(no output)")
+    if err:
+        lines.append("")
+        lines.append("[stderr]")
+        lines.append(err[-800:])
+    lines.append("</monitor_result>")
+    return "\n".join(lines)

@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}Models · Fuse{% endblock %}
+{% block page_title %}Models{% endblock %}
+{% block page_lead %}<p>Ids your keys can call now, and what still needs a linked account.</p>{% endblock %}
+{% block body %}
+<div class="stack-y catalog-page" data-tab-root>
+  {% if locked %}
+  <nav class="usage-tabs" role="tablist" aria-label="Model availability" data-page-tabs>
+    <button type="button" role="tab" class="on" data-tab="available" aria-selected="true">Available</button>
+    <button type="button" role="tab" data-tab="locked" aria-selected="false">Locked</button>
+  </nav>
+  {% endif %}
+
+  <div class="metric-grid catalog-metrics">
+    <article class="panel metric-card">
+      <p class="metric-label">Available</p>
+      <p class="metric-value">{{ available_count }}</p>
+      <p class="metric-delta">ready with your key</p>
+    </article>
+    <article class="panel metric-card">
+      <p class="metric-label">Locked</p>
+      <p class="metric-value">{{ locked_count }}</p>
+      <p class="metric-delta">{% if locked_count %}need a linked account{% else %}nothing waiting{% endif %}</p>
+    </article>
+    <article class="panel metric-card">
+      <p class="metric-label">Providers</p>
+      <p class="metric-value">{{ available|length }}</p>
+      <p class="metric-delta">unlocked for this account</p>
+    </article>
+  </div>
+
+  <div data-tab-panel="available" class="catalog-grid">
+    {% if available %}
+    {% for family in available %}
+    <section class="panel catalog-family">
+      <div class="section-heading">
+        <h2><img class="provider-logo" src="/static/logos/{{ family.type }}.svg" alt="" aria-hidden="true">{{ family.title }}</h2>
+        <span class="usage-sub">{{ family.models|length }}</span>
+      </div>
+      <ul class="catalog-ids">
+        {% for m in family.models %}
+        <li>
+          <button type="button" class="copy" data-copy="{{ m.id }}" title="Copy {{ m.id }}">
+            <span class="rank-name">
+              <strong>{{ m.name or m.display_id }}</strong>
+              {% if m.name and m.name != m.display_id %}<span>{{ m.display_id }}</span>{% endif %}
+            </span>
+            <span class="catalog-copy">Copy</span>
+          </button>
+        </li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% endfor %}
+    {% else %}
+    <section class="panel catalog-family">
+      <p class="empty">No models are unlocked yet. Link a source to get ids here.</p>
+    </section>
+    {% endif %}
+  </div>
+
+  {% if locked %}
+  <div data-tab-panel="locked" class="catalog-grid hidden">
+    {% for family in locked %}
+    <section class="panel catalog-family is-locked">
+      <div class="section-heading">
+        <h2><img class="provider-logo" src="/static/logos/{{ family.type }}.svg" alt="" aria-hidden="true">{{ family.title }}</h2>
+        <span class="usage-sub">{{ family.models|length }}</span>
+      </div>
+      <p class="catalog-why">{{ family.why }} <a href="{{ family.href }}">{{ family.link_label }}</a></p>
+      <ul class="catalog-ids">
+        {% for m in family.models %}
+        <li>
+          <button type="button" class="copy" data-copy="{{ m.id }}" title="Copy {{ m.id }}">
+            <span class="rank-name">
+              <strong>{{ m.name or m.display_id }}</strong>
+              {% if m.name and m.name != m.display_id %}<span>{{ m.display_id }}</span>{% endif %}
+            </span>
+            <span class="catalog-copy">Copy</span>
+          </button>
+        </li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

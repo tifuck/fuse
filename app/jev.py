@@ -1,0 +1,234 @@
+"""TypeSafe Jev decisions via OpenRouter. Not a chat model.
+
+Used for permission auto-approve: clip thread state, ask atomic Noul
+questions, compose the yes/no in code. Fail closed on any miss.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+
+import httpx
+
+from . import chats, db
+
+logger = logging.getLogger(__name__)
+
+DECISIONS_URL = "https://openrouter.ai/api/alpha/decisions"
+MODEL = "typesafe/jev-1.13"
+TIMEOUT_S = 2.0
+_lock: asyncio.Lock | None = None
+
+
+def _gate() -> asyncio.Lock:
+    global _lock
+    if _lock is None:
+        _lock = asyncio.Lock()
+    return _lock
+DANGEROUS_CEILING = 0.40
+USER_CLIP = 2_000
+RECENT_TEXT = 400
+RECENT_PREVIEW = 200
+RECENT_MAX = 12
+COMMAND_CLIP = 800
+
+QUESTIONS = {
+    "dangerous": {
+        "type": "noul",
+        "instructions": (
+            "Is `action` a dangerous or destructive operation? "
+            "Judge only harm: deletion, disk wipe, force-push, chmod 777, secret theft, or irreversible system change. "
+            "Do not consider whether it matches the user's task. Listing folders and reading ordinary files are not dangerous."
+        ),
+        "criteria": {
+            "true": (
+                "Would delete data, wipe a disk, force-push, chmod 777, exfiltrate secrets, "
+                "or make an irreversible system change."
+            ),
+            "false": (
+                "A read, list, search, or a bounded non-destructive edit or command. "
+                "Listing /home or a sibling folder is not dangerous."
+            ),
+        },
+    },
+}
+
+_DESTRUCTIVE = re.compile(
+    r"(?is)("
+    r"\brm\s+(?:-[^\s]*[rf][^\s]*\s*)+"
+    r"|mkfs\b"
+    r"|\bdd\s+if="
+    r"|git\s+push\b[^\n]*--force"
+    r"|chmod\s+777\b"
+    r"|:\(\)\{:\|:&\};:"
+    r"|\bformat\s+[a-z]:"
+    r"|diskpart\b"
+    r"|remove-item\b[^\n]*-recurse"
+    r")"
+)
+
+
+def user_can_auto(user_id: int | None) -> bool:
+    if not user_id:
+        return False
+    try:
+        from .sources import openrouter as openrouter_mod
+
+        return bool(openrouter_mod.user_has_openrouter(int(user_id)))
+    except Exception:
+        logger.warning("Jev key lookup failed", exc_info=True)
+        return False
+
+
+def looks_destructive(command: str) -> bool:
+    text = str(command or "").strip()
+    return bool(text) and bool(_DESTRUCTIVE.search(text))
+
+
+def _noul(answers: dict, key: str) -> float | None:
+    rec = answers.get(key) if isinstance(answers, dict) else None
+    if not isinstance(rec, dict):
+        return None
+    raw = rec.get("noul")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    value = float(raw)
+    if value != value or value < 0.0 or value > 1.0:
+        return None
+    return value
+
+
+def should_allow(answers: dict) -> bool:
+    """Allow unless Jev says the action is dangerous. Missing answer → ask."""
+    dangerous = _noul(answers, "dangerous")
+    if dangerous is None:
+        return False
+    return dangerous < DANGEROUS_CEILING
+
+
+def clip_thread_state(user_id: int, thread_id: int, action: dict, *, roots: list[str] | None = None) -> dict:
+    """Small structured state. Full transcripts rot Jev 1.13 accuracy."""
+    row = db.fetchone(
+        "SELECT messages FROM chat_threads WHERE id=? AND user_id=?",
+        (int(thread_id), int(user_id)),
+    )
+    messages = chats.parse_messages(row["messages"]) if row else []
+    user_request = ""
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            user_request = str(msg.get("content") or "").strip()[:USER_CLIP]
+            break
+    recent: list[dict] = []
+    for msg in messages[-8:]:
+        role = msg.get("role")
+        if role == "user":
+            text = str(msg.get("content") or "").strip()
+            if text:
+                recent.append({"role": "user", "text": text[:RECENT_TEXT]})
+        elif role == "assistant":
+            text = str(msg.get("content") or "").strip()
+            if text:
+                recent.append({"role": "assistant", "text": text[:RECENT_TEXT]})
+            for tool in msg.get("tools") or []:
+                if not isinstance(tool, dict):
+                    continue
+                rec = {
+                    "role": "tool",
+                    "name": str(tool.get("name") or "")[:40],
+                    "ok": tool.get("status") not in ("error", "interrupted"),
+                }
+                path = str(tool.get("path") or "").strip()
+                if path:
+                    rec["path"] = path[:400]
+                preview = str(tool.get("preview") or tool.get("summary") or "").strip()
+                if preview:
+                    rec["preview"] = preview[:RECENT_PREVIEW]
+                command = str(tool.get("command") or "").strip()
+                if command:
+                    rec["command"] = command[:COMMAND_CLIP]
+                recent.append(rec)
+    act = dict(action or {})
+    command = str(act.get("command") or "")
+    if command:
+        act["command"] = command[:COMMAND_CLIP]
+    return {
+        "user_request": user_request,
+        "recent": recent[-RECENT_MAX:],
+        "action": act,
+        "allowed_roots": [str(r) for r in (roots or []) if r][:8],
+    }
+
+
+async def evaluate(user_id: int, state: dict, questions: dict | None = None, timeout: float = TIMEOUT_S):
+    """POST /api/alpha/decisions with the user's OpenRouter key. None on any failure."""
+    try:
+        from . import chat_runs as chat_runs_mod
+        from .sources import openrouter as openrouter_mod
+
+        if getattr(chat_runs_mod, "_stopping", False):
+            return None
+
+        picked = openrouter_mod.pick_key_for(int(user_id))
+        if not picked:
+            return None
+        _cred, _extra, key, _via = picked
+        if not key:
+            return None
+        body = {
+            "model": MODEL,
+            "state": state,
+            "questions": questions or QUESTIONS,
+        }
+        timeout_s = max(0.4, min(float(timeout), 2.0))
+        async with _gate():
+            if getattr(chat_runs_mod, "_stopping", False):
+                return None
+            async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_s, connect=min(0.8, timeout_s))) as client:
+                response = await asyncio.wait_for(
+                    client.post(DECISIONS_URL, headers=openrouter_mod._headers(key), json=body),
+                    timeout=timeout_s + 0.2,
+                )
+        if response.status_code != 200:
+            logger.warning("Jev HTTP %s body=%s", response.status_code, (response.text or "")[:300])
+            return None
+        payload = response.json()
+        if not isinstance(payload, dict):
+            logger.warning("Jev non-object payload")
+            return None
+        answers = payload.get("answers")
+        if not isinstance(answers, dict) or payload.get("error"):
+            logger.warning("Jev rejected payload status=%s error=%s", response.status_code, payload.get("error"))
+            return None
+        dangerous = answers.get("dangerous") if isinstance(answers.get("dangerous"), dict) else {}
+        logger.warning("Jev ok dangerous=%s model=%s", dangerous.get("noul"), payload.get("model"))
+        return payload
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning("Jev request failed", exc_info=True)
+        return None
+
+
+async def judge(user_id: int, thread_id: int, action: dict, *, roots: list[str] | None = None) -> bool:
+    """True only when Jev is confident the action is a safe auto-allow."""
+    try:
+        if looks_destructive(str((action or {}).get("command") or "")):
+            logger.warning("Jev skip regex-destructive tool=%s", (action or {}).get("tool"))
+            return False
+        if not user_can_auto(user_id):
+            logger.warning("Jev skip no OpenRouter key user=%s", user_id)
+            return False
+        state = clip_thread_state(user_id, thread_id, action, roots=roots)
+        result = await evaluate(user_id, state)
+        if not result:
+            logger.warning("Jev no result tool=%s path=%s", (action or {}).get("tool"), (action or {}).get("path"))
+            return False
+        allowed = should_allow(result.get("answers") or {})
+        logger.warning("Jev judge tool=%s path=%s allowed=%s", (action or {}).get("tool"), (action or {}).get("path") or (action or {}).get("cwd"), allowed)
+        return allowed
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning("Jev judge failed", exc_info=True)
+        return False

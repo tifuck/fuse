@@ -1,0 +1,45 @@
+appId: com.example.fuse
+productName: Fuse
+copyright: Fuse
+
+directories:
+  output: dist
+  buildResources: build
+
+afterPack: scripts/after-pack.js
+
+files:
+  - main.js
+  - package.json
+  - build/icon.png
+
+publish:
+  provider: generic
+  url: https://fuse.example.com/desktop/
+
+nsis:
+  oneClick: true
+  perMachine: false
+  deleteAppDataOnUninstall: false
+  artifactName: Fuse-Setup-${version}.${ext}
+
+dmg:
+  writeUpdateInfo: true
+
+deb:
+  afterInstall: build/after-install.sh
+  fpm:
+    - --deb-use-file-permissions
+
+linux:
+  icon: build/icon.png
+  category: Network
+  target:
+    - AppImage
+    - deb
+
+mac:
+  icon: build/icon.png
+  identity: null
+  target:
+    - dmg

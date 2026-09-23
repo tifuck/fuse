@@ -1,0 +1,280 @@
+{% extends "base.html" %}
+{% block title %}Usage · Fuse{% endblock %}
+{% block page_title %}Usage{% endblock %}
+{% block page_lead %}<p>Token activity, model mix, and estimated API-equivalent cost for this account.</p>{% endblock %}
+{% block page_actions %}
+<div class="usage-toolbar" aria-label="Usage filters">
+  <div class="usage-filter">
+    <label for="usage-provider">Provider</label>
+    <select id="usage-provider" data-usage-provider>
+      <option value="">All providers</option>
+    </select>
+  </div>
+  {% if user['is_admin'] %}
+  <div class="usage-filter">
+    <label for="usage-scope">View</label>
+    <select id="usage-scope" data-usage-scope>
+      <option value="account">My account</option>
+      <option value="all">All users</option>
+    </select>
+  </div>
+  {% endif %}
+  <div class="interval" aria-label="Time range" data-usage-range>
+    <button type="button" data-range="30m">30m</button>
+    <button type="button" data-range="6h">6h</button>
+    <button type="button" class="on" data-range="24h" aria-pressed="true">24h</button>
+    <button type="button" data-range="3d">3d</button>
+    <button type="button" data-range="7d">7d</button>
+    <button type="button" data-range="30d">30d</button>
+  </div>
+</div>
+{% endblock %}
+{% block body %}
+<div class="stack-y usage-dashboard" data-usage-dashboard data-admin="{{ 1 if user['is_admin'] else 0 }}">
+  <nav class="usage-tabs" role="tablist" aria-label="Usage views" data-usage-tabs>
+    <button type="button" role="tab" class="on" data-tab="overview" aria-selected="true">Overview</button>
+    <button type="button" role="tab" data-tab="trends" aria-selected="false">Trends</button>
+    <button type="button" role="tab" data-tab="recent" aria-selected="false">Recent</button>
+  </nav>
+
+  <div data-tab-panel="overview" class="stack-y">
+    <div class="metric-grid" aria-live="polite">
+      <article class="panel metric-card">
+        <p class="metric-label">Tokens</p>
+        <div class="metric-row">
+          <p class="metric-value" data-metric="tokens">—</p>
+          <div class="metric-spark" data-spark="tokens"></div>
+        </div>
+        <p class="metric-delta" data-delta="token_change">Waiting for history</p>
+      </article>
+      <article class="panel metric-card">
+        <p class="metric-label">Requests</p>
+        <div class="metric-row">
+          <p class="metric-value" data-metric="requests">—</p>
+          <div class="metric-spark" data-spark="requests"></div>
+        </div>
+        <p class="metric-delta" data-delta="request_change">Waiting for history</p>
+      </article>
+      <article class="panel metric-card">
+        <p class="metric-label">Est. API cost</p>
+        <div class="metric-row">
+          <p class="metric-value" data-metric="cost_label">—</p>
+          <div class="metric-spark" data-spark="cost"></div>
+        </div>
+        <p class="metric-delta" data-delta="cost_change">OpenRouter-equivalent rates</p>
+      </article>
+      <article class="panel metric-card">
+        <p class="metric-label">Cache hit rate</p>
+        <div class="metric-row">
+          <p class="metric-value" data-metric="cache_hit">—</p>
+          <div class="metric-spark" data-spark="cache"></div>
+        </div>
+        <p class="metric-delta" data-delta="cache_hit_change">share of prompt tokens</p>
+      </article>
+      <article class="panel metric-card">
+        <p class="metric-label">Cost / 1M tokens</p>
+        <div class="metric-row">
+          <p class="metric-value" data-metric="blended">—</p>
+          <div class="metric-spark" data-spark="blended"></div>
+        </div>
+        <p class="metric-delta" data-delta="blended_change">cost per million tokens</p>
+      </article>
+    </div>
+
+    <div class="usage-split">
+      <section class="panel ranked-panel">
+        <div class="section-heading">
+          <h2>Top API keys</h2>
+          <span class="usage-sub">this range</span>
+        </div>
+        <div class="rank-list" data-key-ranking><p class="empty">Loading keys…</p></div>
+      </section>
+      <section class="panel ranked-panel">
+        <div class="section-heading">
+          <h2>Providers</h2>
+          <span class="usage-sub">share of tokens</span>
+        </div>
+        <div class="rank-list" data-provider-ranking><p class="empty">Loading providers…</p></div>
+      </section>
+    </div>
+
+    <section class="panel chart-panel usage-main-chart">
+      <div class="chart-top">
+        <div>
+          <h2 data-chart-title>Tokens by model</h2>
+          <p class="usage-sub" data-chart-subtitle>Loading usage history…</p>
+        </div>
+        <div class="interval chart-modes" data-chart-mode aria-label="Chart metric">
+          <button type="button" class="on" data-mode="tokens" aria-pressed="true">Tokens</button>
+          <button type="button" data-mode="cost" aria-pressed="false">Cost</button>
+        </div>
+      </div>
+      <div class="bars-wrap">
+        <div class="bars" data-stacked-chart aria-live="polite"></div>
+        <div class="chart-tip hidden" data-chart-tip></div>
+      </div>
+      <div class="chart-footer">
+        <div class="chart-legend" data-chart-legend></div>
+        <div class="mix-strip" data-token-mix></div>
+      </div>
+    </section>
+
+    <section class="panel ranked-panel">
+      <div class="section-heading">
+        <h2>Models</h2>
+        <span class="usage-sub">tokens · requests · cost</span>
+      </div>
+      <div class="rank-list" data-model-ranking><p class="empty">Loading models…</p></div>
+    </section>
+
+  </div>
+
+  <div data-tab-panel="recent" class="stack-y hidden">
+    <section class="panel recent-panel" data-recent-panel>
+      <div class="section-heading">
+        <h2>Recent requests</h2>
+        <span class="usage-sub" data-recent-sub>latest 20 in this range</span>
+      </div>
+      <div class="table-wrap">
+        <table class="log recent-table">
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Model</th>
+              <th>Provider</th>
+              <th class="num tight">Input</th>
+              <th class="num tight">Output</th>
+              <th class="num tight">Cost</th>
+              <th class="tight">Status</th>
+            </tr>
+          </thead>
+          <tbody data-recent-rows></tbody>
+        </table>
+      </div>
+      <p class="empty hidden" data-recent-empty>No requests in this range.</p>
+    </section>
+  </div>
+
+  <div data-tab-panel="trends" class="stack-y hidden">
+    <div class="usage-split usage-trends">
+      <section class="panel chart-panel usage-main-chart">
+        <div class="chart-top">
+          <div>
+            <h2 data-trends-title>Usage over time</h2>
+            <p class="usage-sub" data-trends-subtitle>Loading usage history…</p>
+          </div>
+          <div class="interval chart-modes" data-trends-mode aria-label="Chart metric">
+            <button type="button" class="on" data-mode="tokens" aria-pressed="true">Tokens</button>
+            <button type="button" data-mode="cost" aria-pressed="false">Cost</button>
+          </div>
+        </div>
+        <div class="bars-wrap">
+          <div class="bars" data-trends-chart aria-live="polite"></div>
+          <div class="chart-tip hidden" data-trends-tip></div>
+        </div>
+        <div class="chart-legend" data-trends-legend></div>
+      </section>
+      <section class="panel ranked-panel trending-panel">
+        <div class="section-heading">
+          <h2>Trending</h2>
+          <span class="usage-sub">vs previous period</span>
+        </div>
+        <div class="trend-list" data-model-trends><p class="empty">Loading models…</p></div>
+      </section>
+    </div>
+    {% if user['is_admin'] %}
+    <section class="panel admin-usage hidden" data-user-comparison>
+      <div class="section-heading">
+        <h2>Who is using the pools</h2>
+        <span class="usage-sub">stacked by provider</span>
+      </div>
+      <p class="usage-note">Switch the view filter to <b>All users</b> to compare account consumption.</p>
+      <div class="user-bars" data-user-bars></div>
+    </section>
+    {% endif %}
+  </div>
+
+  <div data-overview-only class="stack-y">
+  <section class="panel lifetime-panel">
+    <div class="section-heading">
+      <div><p class="eyebrow">Lifetime</p><h2>This account</h2></div>
+      <p class="week"><span class="num">{{ '{:,}'.format(usage.totals.total_tokens) }}</span> <span class="unit">tokens</span></p>
+    </div>
+    <p class="usage-sub">{{ '{:,}'.format(usage.totals.requests) }} requests{% if usage.totals.cost_label %} · {{ usage.totals.cost_label }} recorded or estimated{% endif %}{% if usage.totals.last_model %} · last <span class="wrap">{{ usage.totals.last_model }}</span>{% endif %}</p>
+  </section>
+
+  <section class="panel">
+    <div class="section-heading"><h2>API keys</h2><span class="usage-sub">Lifetime counters</span></div>
+    {% if new_key %}
+    <p class="callout ok">Key created. Copy it now. It will not be shown again.</p>
+    <p class="code-chip copy key" data-copy="{{ new_key }}">{{ new_key }}</p>
+    {% endif %}
+    {% if usage.api_keys %}
+    <div class="table-wrap">
+      <table class="log key-table">
+        <thead><tr><th>Name</th><th>Key</th><th class="num tight" title="Total input tokens, including cached reads and cache writes">Input</th><th class="num tight" title="Generated tokens, reasoning included">Output</th><th class="num tight" title="Subset of output, not additive">Reasoning</th><th class="num tight" title="Input tokens served from cache; subset of input, not additive">Cached</th><th class="num tight">Tokens</th><th class="num tight">Requests</th><th class="num tight">Cost</th><th class="tight">Actions</th></tr></thead>
+        <tbody>
+        {% for k in usage.api_keys %}
+        <tr>
+          <td data-label="Name">{{ k.name }}</td>
+          <td data-label="Key" class="mono">{{ k.prefix }}…{% if k.last_model %} <span class="key-model">{{ k.last_model }}</span>{% endif %}</td>
+          <td data-label="Input" class="mono num tight">{{ '{:,}'.format(k.prompt_tokens) }}</td>
+          <td data-label="Output" class="mono num tight">{{ '{:,}'.format(k.output_tokens) }}</td>
+          <td data-label="Reasoning" class="mono num tight">{{ '{:,}'.format(k.reasoning_tokens) }}</td>
+          <td data-label="Cached" class="mono num tight">{{ '{:,}'.format(k.cached_tokens) }}</td>
+          <td data-label="Tokens" class="mono num tight">{{ '{:,}'.format(k.total_tokens) }}</td>
+          <td data-label="Requests" class="mono num tight">{{ '{:,}'.format(k.requests) }}</td>
+          <td data-label="Cost" class="mono num tight">{% if k.cost_label %}{{ k.cost_label }}{% else %}—{% endif %}</td>
+          <td data-label="Actions" class="tight"><form method="post" action="/keys/{{ k.id }}/delete" data-confirm="Delete API key ‘{{ k.name }}’? Requests using it will stop immediately."><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit" class="btn danger sm">Delete</button></form></td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}<p class="empty">No API keys on this account.</p>{% endif %}
+    <form method="post" action="/keys" class="key-create">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Key name <input type="text" name="name" value="{{ key_name }}" required maxlength="80" autocomplete="off" placeholder="Laptop, CI, production"></label>
+      <button type="submit" class="btn">Create key</button>
+    </form>
+    {% if key_error %}<p class="callout fault" role="alert">{{ key_error }}</p>{% endif %}
+  </section>
+
+  {% if user['is_admin'] %}
+  <section class="panel pricing-panel" id="pricing">
+    <div class="section-heading">
+      <div><p class="eyebrow">Admin</p><h2>Model pricing</h2></div>
+      <form method="post" action="/admin/pricing/openrouter" class="sync-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn sm">Sync OpenRouter rates</button>
+      </form>
+    </div>
+    <p class="usage-note">USD per 1M tokens. Sync pulls live xAI, OpenAI, Z.AI, and OpenRouter catalog rates from openrouter.ai/models — including cached-input, cache-write, and long-context tiers — and reprices matching history. Manual entries are never overwritten by a sync. Cached and reasoning rates are optional; a missing cache-write rate bills writes at the input rate, and unknown stays unknown.</p>
+    {% if pricing_synced %}<p class="callout ok">Synced {{ pricing_synced }} model rates from OpenRouter.</p>{% endif %}
+    {% if pricing_sync_error %}<p class="callout fault" role="alert">Pricing sync failed. Existing rates were not changed.</p>{% endif %}
+    {% if pricing %}
+    <div class="table-wrap pricing-table">
+      <table class="log">
+        <thead><tr><th>Provider</th><th>Model</th><th>Origin</th><th class="num">Input</th><th class="num">Cached</th><th class="num">Cache W</th><th class="num">Output</th><th class="num">Reasoning</th><th>Long-context</th><th class="tight"></th></tr></thead>
+        <tbody>{% for p in pricing %}<tr><td data-label="Provider">{{ p.provider_label }}</td><td data-label="Model" class="mono">{{ p.model }}</td><td data-label="Origin">{% if p.origin == 'openrouter' %}<span class="badge" title="Synced {{ p.synced_label }}">OpenRouter</span>{% else %}<span class="badge">Manual</span>{% endif %}</td><td data-label="Input" class="mono num">{{ p.input_usd }}</td><td data-label="Cached" class="mono num">{{ p.cached_usd }}</td><td data-label="Cache W" class="mono num">{{ p.write_usd }}</td><td data-label="Output" class="mono num">{{ p.output_usd }}</td><td data-label="Reasoning" class="mono num">{{ p.reasoning_usd }}</td><td data-label="Long-context" class="mono">{{ p.long_label }}</td><td data-label="Actions" class="tight"><form method="post" action="/admin/pricing/delete" data-confirm="Delete pricing for {{ p.model }}?"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="provider" value="{{ p.provider }}"><input type="hidden" name="model" value="{{ p.model }}"><button class="btn danger sm" type="submit">Delete</button></form></td></tr>{% endfor %}</tbody>
+      </table>
+    </div>
+    {% endif %}
+    <form method="post" action="/admin/pricing" class="pricing-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Provider <select name="provider" required>{% for id, label in provider_types.items() %}<option value="{{ id }}">{{ label }}</option>{% endfor %}</select></label>
+      <label>Model <input type="text" name="model" required maxlength="200" placeholder="grok-4.5"></label>
+      <label>Input <input type="number" name="input_rate" min="0" step="0.000001" value="0" required></label>
+      <label>Cached <small>optional</small> <input type="number" name="cached_rate" min="0" step="0.000001" value="" placeholder="unset"></label>
+      <label>Cache write <small>optional</small> <input type="number" name="cache_write_rate" min="0" step="0.000001" value="" placeholder="unset"></label>
+      <label>Output <input type="number" name="output_rate" min="0" step="0.000001" value="0" required></label>
+      <label>Reasoning <small>optional</small> <input type="number" name="reasoning_rate" min="0" step="0.000001" value="" placeholder="unset"></label>
+      <button type="submit" class="btn">Save rate</button>
+    </form>
+  </section>
+  {% endif %}
+
+  <section class="panel endpoint-panel"><h2>Endpoint</h2><p class="code-chip copy" data-copy="{{ base_url }}">{{ base_url }}</p></section>
+  </div>
+</div>
+{% endblock %}

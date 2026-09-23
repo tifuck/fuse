@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% block title %}Tasks · Fuse{% endblock %}
+{% block page_title %}Tasks{% endblock %}
+{% block page_lead %}<p>Fire a prompt on a clock, in a chat or a project. Click a row for its history; a task name opens its chat.</p>{% endblock %}
+{% block page_actions %}
+<button type="button" class="btn sm" data-sched-new>New task</button>
+{% endblock %}
+{% block body %}
+<div class="stack-y hosts-page sched-page" data-sched>
+  <p class="callout fault" data-page-error hidden></p>
+  <section class="panel sched-table-wrap">
+    <div class="section-heading">
+      <h2>Tasks</h2>
+    </div>
+    <p class="usage-sub">Each task owns a chat. Click a row to see its fire history.</p>
+    <div class="sched-table-scroll">
+      <table class="sched-table" data-sched-table>
+        <thead>
+          <tr>
+            <th>Task</th>
+            <th>Runs in</th>
+            <th>When</th>
+            <th>Last fire</th>
+            <th>Next</th>
+          </tr>
+        </thead>
+        <tbody data-sched-body></tbody>
+      </table>
+    </div>
+    <p class="usage-sub" data-sched-empty hidden>No tasks yet. New task sets a prompt, a clock, and a chat or project.</p>
+  </section>
+  <section class="panel" data-sched-detail hidden>
+    <div class="section-heading">
+      <h2 data-detail-title>History</h2>
+    </div>
+    <p class="usage-sub" data-detail-when></p>
+    <div class="sched-table-scroll">
+      <table class="sched-table">
+        <thead>
+          <tr>
+            <th>Fired</th>
+            <th>Status</th>
+            <th>Chat</th>
+          </tr>
+        </thead>
+        <tbody data-detail-fires></tbody>
+      </table>
+    </div>
+  </section>
+  <dialog class="modal" data-sched-modal aria-labelledby="sched-title">
+    <div class="modal-shell">
+      <header class="modal-head">
+        <div>
+          <p class="metric-label">Task</p>
+          <h2 id="sched-title">New task</h2>
+        </div>
+        <button type="button" class="btn ghost sm" data-sched-close aria-label="Close">Close</button>
+      </header>
+      <form class="stack-y" data-sched-form>
+        <p class="callout fault" data-sched-error hidden></p>
+        <div class="hosts-grid">
+          <label class="hosts-field">
+            <span>Name</span>
+            <input name="name" maxlength="80" required placeholder="Morning standup" autocomplete="off" data-f-name>
+          </label>
+          <label class="hosts-field">
+            <span>Model</span>
+            <select name="model" required data-f-model></select>
+          </label>
+          <label class="hosts-field">
+            <span>Runs in</span>
+            <select name="target" data-f-target>
+              <option value="chat">A new chat</option>
+              <option value="project">A project</option>
+            </select>
+          </label>
+          <label class="hosts-field" data-f-project-wrap hidden>
+            <span>Project</span>
+            <select name="project_id" data-f-project></select>
+          </label>
+        </div>
+        <label class="hosts-field">
+          <span>Prompt</span>
+          <textarea name="prompt" rows="6" maxlength="8000" required placeholder="Summarize overnight changes in this repo." data-f-prompt></textarea>
+        </label>
+        <p class="usage-sub">Variables: <span class="mono">{{ '{{date}}' }}</span> <span class="mono">{{ '{{time}}' }}</span> <span class="mono">{{ '{{project_name}}' }}</span> <span class="mono">{{ '{{host_alias}}' }}</span></p>
+        <div class="hosts-grid">
+          <label class="hosts-field">
+            <span>Repeat</span>
+            <select name="builder" data-f-builder>
+              <option value="daily">Daily</option>
+              <option value="weekly">Weekly</option>
+              <option value="every">Every…</option>
+              <option value="once">Once</option>
+              <option value="cron">Cron</option>
+            </select>
+          </label>
+          <label class="hosts-field">
+            <span>Timezone</span>
+            <input name="timezone" maxlength="80" value="UTC" data-f-tz>
+          </label>
+          <label class="hosts-field" data-f-time-wrap>
+            <span>Time</span>
+            <input name="at_local" type="time" value="09:00" data-f-time>
+          </label>
+          <label class="hosts-field" data-f-every-wrap hidden>
+            <span>Every</span>
+            <select name="every_seconds" data-f-every>
+              <option value="300">5 minutes</option>
+              <option value="900">15 minutes</option>
+              <option value="1800">30 minutes</option>
+              <option value="3600">1 hour</option>
+              <option value="21600">6 hours</option>
+              <option value="86400">1 day</option>
+            </select>
+          </label>
+          <label class="hosts-field" data-f-once-wrap hidden>
+            <span>At (UTC)</span>
+            <input name="once_at" data-f-once placeholder="2026-09-15T09:00:00Z">
+          </label>
+          <label class="hosts-field" data-f-cron-wrap hidden>
+            <span>Cron</span>
+            <input name="cron_expr" class="mono" data-f-cron placeholder="0 9 * * 1-5">
+          </label>
+        </div>
+        <div class="sched-dows" data-f-dows hidden>
+          <span class="hosts-field"><span>Days</span></span>
+          <label><input type="checkbox" value="0" checked> Mon</label>
+          <label><input type="checkbox" value="1" checked> Tue</label>
+          <label><input type="checkbox" value="2" checked> Wed</label>
+          <label><input type="checkbox" value="3" checked> Thu</label>
+          <label><input type="checkbox" value="4" checked> Fri</label>
+          <label><input type="checkbox" value="5"> Sat</label>
+          <label><input type="checkbox" value="6"> Sun</label>
+        </div>
+        <label class="hosts-field" data-f-coding-wrap>
+          <span><input type="checkbox" data-f-coding> Allow coding tools (15 min minimum)</span>
+        </label>
+        <p class="usage-sub" data-f-coding-note hidden>Scheduled runs cannot ask for permission: actions outside the allowed locations are denied until you accept them in that chat (or turn on Bypass there). First runs may report denied steps.</p>
+        <label class="hosts-field">
+          <span><input type="checkbox" data-f-fresh> New chat every fire</span>
+        </label>
+        <p class="usage-sub" data-f-preview></p>
+        <div class="modal-actions">
+          <button type="submit" class="btn sm">Save</button>
+          <button type="button" class="btn sm ghost" data-sched-run hidden>Run now</button>
+          <button type="button" class="btn sm ghost" data-sched-delete hidden>Delete</button>
+          <button type="button" class="btn sm ghost" data-sched-close>Cancel</button>
+        </div>
+      </form>
+    </div>
+  </dialog>
+</div>
+<script type="application/json" id="sched-config">{{ schedule_bundle | tojson }}</script>
+{% endblock %}
+{% block scripts %}
+<script src="/static/schedules.js?v=4"></script>
+{% endblock %}
