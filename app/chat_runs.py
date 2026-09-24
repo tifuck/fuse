@@ -743,11 +743,6 @@ def _reap_one(row):
             chat_store.abort_active(ident, "cancelled")
         return
     if live:
-        if _iso_age(row["created_at"]) > MAX_RUNTIME_SECONDS + 60:
-            cancel(ident)
-            chat_store.abort_active(ident, "interrupted")
-            _wake_stalled_child(row)
-            return
         stamp = ""
         if "updated_at" in row.keys() and row["updated_at"]:
             stamp = row["updated_at"]

@@ -3865,17 +3865,6 @@ def start_child_run(
             child_id = str(resume_from_id)
             source_row = conn.execute("SELECT * FROM chat_runs WHERE id=?", (child_id,)).fetchone()
             message_id = source_row["message_id"] if source_row else str(uuid4())
-            # The reaper bounds the TOTAL life of a continued subagent from its
-            # original created_at. The worker timeout must agree with it: a
-            # fresh 8h here would let the reaper kill a worker that still
-            # thinks it has hours left.
-            lifetime_left = float(DEFAULT_REMAINING_SECONDS)
-            if source_row is not None and "created_at" in source_row.keys():
-                lifetime_left = min(lifetime_left, float(DEFAULT_REMAINING_SECONDS) - _iso_age(source_row["created_at"]))
-            if lifetime_left < 60:
-                raise SpawnCapError(
-                    "this subagent session reached its 8-hour lifetime; spawn a new subagent instead of continuing it."
-                )
             child_model = (model or req.get("model") or "")
             assistant = chats.parse_messages(
                 [{"id": message_id, "role": "assistant", "content": "", "tools": [], "segments": [], "model": child_model}],
@@ -3905,7 +3894,7 @@ def start_child_run(
                     "permission_mode": permission_mode,
                     "allow_nested_spawn": allow_nested_spawn,
                     "loaded_tools": loaded,
-                    "remaining_seconds": max(30.0, lifetime_left),
+                    "remaining_seconds": max(30, float(remaining_seconds)),
                     "max_completions": max_completions,
                     "spawns_used": 0,
                     "skip_sanitize": True,
@@ -3918,11 +3907,11 @@ def start_child_run(
                     "scheduled": bool(scheduled),
                 },
             }
-            # created_at is deliberately NOT refreshed: the same session id
-            # keeps its original lifetime, so the 8h wall-clock reaper bounds
-            # the TOTAL life of a continued subagent instead of granting a
-            # fresh 8h per resume. A deliberate parent-driven continuation is a
-            # fresh leg for crash recovery, so the auto-resume budget resets.
+            # created_at is kept so the session keeps its identity and list
+            # ordering; the runtime budget is per-leg (worker timeout + stall
+            # reaper), never derived from it. A deliberate parent-driven
+            # continuation is a fresh leg for crash recovery, so the
+            # auto-resume budget resets.
             conn.execute(
                 """UPDATE chat_runs SET status='queued', request=?, message=?, cancel_requested=0,
                    provider_messages=?, loaded_tools=?, parent_run_id=?, root_run_id=?, agent_depth=?,
@@ -4358,17 +4347,9 @@ def _requeue_for_resume(row, messages, allowed=None):
     agent = req.get("agent") if isinstance(req.get("agent"), dict) else {}
     agent["skip_sanitize"] = True
     agent["resumed"] = True
-    # The worker timeout must agree with the created_at-based wall-clock
-    # reaper: a run near its 8h lifetime must not be re-driven for hours the
-    # reaper will not grant it.
-    lifetime_left = min(
-        float(DEFAULT_REMAINING_SECONDS),
-        float(DEFAULT_REMAINING_SECONDS) - _iso_age(row["created_at"] if "created_at" in row.keys() else ""),
-    )
-    if lifetime_left < 30:
-        _interrupt_abandoned(row)
-        return
-    agent["remaining_seconds"] = lifetime_left
+    # Recovery is a fresh leg: the worker gets the full runtime budget again
+    # no matter how long ago the previous leg ran.
+    agent["remaining_seconds"] = DEFAULT_REMAINING_SECONDS
     if row["parent_run_id"] if "parent_run_id" in row.keys() else None:
         # The parent can no longer await a restarted child synchronously, so
         # the result must reach it through the background paths: mid-run

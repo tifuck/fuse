@@ -900,6 +900,62 @@ class AgentCapsTest(unittest.TestCase):
         self.assertEqual(resumed["id"], child["id"])
         self.assertEqual(resumed["request"]["model"], "grok-4.6")
 
+    def test_resume_after_lifetime_and_any_terminal_status(self):
+        for status in ("completed", "interrupted", "cancelled", "failed"):
+            thread = chats.create_thread(1, model="offline")
+            parent = store.start_turn(
+                1, thread["id"], "Hello", thread["revision"], f"turn-old-{status}"
+            )["run"]
+            child = store.start_child_run(
+                user_id=1,
+                thread_id=thread["id"],
+                parent_run_id=parent["id"],
+                prompt="look around",
+                description=f"old {status}",
+            )
+            store.finish_run(child["id"], {"content": "done", "tools": []}, status)
+            old = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+            db.execute(
+                "UPDATE chat_runs SET created_at=?, updated_at=? WHERE id=?",
+                (old, old, child["id"]),
+            )
+            resumed = store.start_child_run(
+                user_id=1,
+                thread_id=thread["id"],
+                parent_run_id=parent["id"],
+                prompt="continue",
+                description=f"resume {status}",
+                resume_from_id=child["id"],
+            )
+            self.assertEqual(resumed["id"], child["id"])
+            self.assertEqual(resumed["status"], "queued")
+            self.assertEqual(
+                resumed["request"]["agent"]["remaining_seconds"],
+                store.DEFAULT_REMAINING_SECONDS,
+            )
+
+    def test_recovery_requeue_grants_fresh_budget_regardless_of_age(self):
+        thread, parent = self._parent()
+        child = store.start_child_run(
+            user_id=1,
+            thread_id=thread["id"],
+            parent_run_id=parent["id"],
+            prompt="look around",
+            description="explore",
+        )
+        store.finish_run(child["id"], {"content": "mid", "tools": []}, "interrupted")
+        old = (datetime.now(timezone.utc) - timedelta(days=9)).isoformat()
+        db.execute(
+            "UPDATE chat_runs SET created_at=?, updated_at=?, status='running' WHERE id=?",
+            (old, old, child["id"]),
+        )
+        row = db.fetchone("SELECT * FROM chat_runs WHERE id=?", (child["id"],))
+        messages = json.loads(row["provider_messages"] or "[]") or [{"role": "user", "content": "look around"}]
+        store._requeue_for_resume(row, messages)
+        saved = store.get_run(1, child["id"])
+        self.assertEqual(saved["status"], "queued")
+        self.assertEqual(saved["request"]["agent"]["remaining_seconds"], store.DEFAULT_REMAINING_SECONDS)
+
     def test_resolve_child_run_description_must_be_exact_and_unique(self):
         thread, parent = self._parent()
         a = store.start_child_run(
