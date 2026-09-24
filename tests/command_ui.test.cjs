@@ -52,6 +52,18 @@ test('returned waits stay complete while their child continues in the background
   assert.equal(c.toolRunning({name: 'spawn_subagent', status: 'done', execution_status: 'running'}, false), true);
 });
 
+test('a wait abandoned by its parent cannot spin for the lifetime of its child', () => {
+  const c = world();
+  for (const name of ['get_command_output', 'get_subagent_output']) {
+    for (const execution_status of [undefined, 'running', 'cancelling']) {
+      const trace = { name, child_id: 'child', status: 'running', execution_status };
+      assert.equal(c.toolPresentation(trace, true).running, true);
+      assert.equal(c.toolPresentation(trace, false).running, false);
+      assert.equal(c.toolPresentation(trace, false).interrupted, true);
+    }
+  }
+});
+
 test('agent lifecycle reconciliation never completes or restarts wait invocations', () => {
   const c = world();
   Object.assign(c, { messages: [{ tools: [
@@ -101,6 +113,42 @@ test('historical tool activity cannot resurrect a thinking spinner or running la
   const state = c.currentActivity({ stopped: true, tools: [trace], _activity: { phase: 'tools', tool_id: 'wait' } }, [], false);
   assert.equal(state.phase, 'stopped');
   assert.equal(state.current, null);
+});
+
+test('command polling cannot rewrite pending or returned wait invocations', () => {
+  const c = world();
+  Object.assign(c, { messages: [], agentRun: null, agentsOpen: false, log: { children: [] } });
+  load('reconcileBgTraces', c);
+  for (const state of ['completed', 'failed', 'cancelled', 'lost']) {
+    for (const status of ['running', 'done', 'error', 'interrupted']) {
+      const trace = { name: 'get_command_output', child_id: 'job', status, state: 'running', output: 'observed' };
+      const before = { ...trace };
+      c.messages = [{ role: 'assistant', tools: [trace] }];
+      c.reconcileBgTraces([{ id: 'job', state, output: 'later output', output_chars: 12 }], false);
+      assert.deepEqual(trace, before);
+    }
+  }
+});
+
+test('wake envelopes preserve historical command observations', () => {
+  const c = world();
+  for (const status of ['running', 'done', 'interrupted']) {
+    const trace = { name: 'get_command_output', status, child_id: 'job', summary: 'observed' };
+    const before = { ...trace };
+    c.applyCommandResult(trace, { state: 'failed', error: 'later failure', output: 'later output' });
+    assert.deepEqual(trace, before);
+  }
+});
+
+test('late cancellation acknowledgement cannot install a run in an idle thread', () => {
+  const c = world();
+  Object.assign(c, { activeRun: null, stoppingRunId: '', setRunning() {}, runIsActive: r => r?.status === 'running' });
+  load('applyCancelResult', c);
+  c.applyCancelResult({ run: { id: 'old-run', status: 'running', cancel_requested: true } }, 'old-run');
+  assert.equal(c.activeRun, null);
+  c.activeRun = { id: 'new-run', status: 'running' };
+  c.applyCancelResult({ run: { id: 'old-run', status: 'cancelled' } }, 'old-run');
+  assert.equal(c.activeRun.id, 'new-run');
 });
 
 test('agent activity uses its own queue and cancellation state', () => {

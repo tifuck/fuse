@@ -264,8 +264,11 @@ class AgentCapsTest(unittest.TestCase):
         messages = [{"tools": [{"name": name, "child_id": child["id"], "status": "running"}]} for name in
                     ["spawn_subagent", "get_subagent_output"] * 16]
         store.settle_spawn_traces(self.conn, 1, messages)
-        self.assertTrue(all(m["tools"][0]["status"] == "error" for m in messages))
-        self.assertTrue(all(m["tools"][0]["error"] == "Child execution failed" for m in messages))
+        for message in messages:
+            trace = message["tools"][0]
+            self.assertEqual(trace["status"], "error" if trace["name"] == "spawn_subagent" else "running")
+            if trace["name"] == "spawn_subagent":
+                self.assertEqual(trace["error"], "Child execution failed")
 
     def test_scratch_prompt_spawns_and_survives_a_failed_call(self):
         from app import agents
@@ -314,7 +317,7 @@ class AgentCapsTest(unittest.TestCase):
                                       prompt="Inspect", description="Inspector", background=True)
         messages = [{"tools": [{"name": "get_subagent_output", "child_id": child["id"], "status": "interrupted"}]}]
         store.settle_spawn_traces(self.conn, 1, messages)
-        self.assertEqual(messages[0]["tools"][0]["status"], "running")
+        self.assertEqual(messages[0]["tools"][0]["status"], "interrupted")
 
     def test_nested_on_allows_depth_2(self):
         thread, parent = self._parent()

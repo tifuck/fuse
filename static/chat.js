@@ -2135,6 +2135,7 @@
   function toolRunning(trace, live) {
     // Waiting is an invocation, not the lifetime of the child it observes.
     if (/^get_(command|subagent)_output$/.test(trace?.name) && ["done", "error", "failed", "interrupted", "cancelled"].includes(trace.status)) return false;
+    if (/^get_(command|subagent)_output$/.test(trace?.name) && !live && !toolAwaitingCancellation(trace)) return false;
     if (["completed", "done", "failed", "error", "timed_out", "cancelled", "interrupted", "lost"].includes(executionState(trace))) return false;
     if (["running", "queued", "cancelling"].includes(executionState(trace))) return true;
     if (trace && childBackedTool(trace.name) && executionIdentity(trace) && ["running", "progress", "queued"].includes(trace.status)) return true;
@@ -2182,7 +2183,7 @@
     if (["completed", "done"].includes(executionState(trace))) return false;
     if (trace.status === "interrupted" || trace.status === "cancelled") return true;
     if (live || toolAwaitingCancellation(trace)) return false;
-    if (childBackedTool(trace.name) && executionIdentity(trace)) return false;
+    if (childBackedTool(trace.name) && executionIdentity(trace) && !/^get_(command|subagent)_output$/.test(trace.name)) return false;
     return trace.status === "running" || trace.status === "progress" || trace.status === "queued";
   }
 
@@ -2194,7 +2195,8 @@
   function toolPresentation(trace, live) {
     const execution = executionState(trace);
     const returnedWait = /^get_(command|subagent)_output$/.test(trace.name) && ["done", "error", "failed", "interrupted", "cancelled"].includes(trace.status);
-    const executing = !returnedWait && ["running", "queued", "cancelling"].includes(execution);
+    const abandonedWait = /^get_(command|subagent)_output$/.test(trace.name) && !returnedWait && !live && !toolAwaitingCancellation(trace);
+    const executing = !returnedWait && !abandonedWait && ["running", "queued", "cancelling"].includes(execution);
     const failed = !executing && ((!returnedWait && ["timed_out", "failed", "error"].includes(execution)) || toolFailed(trace));
     const interrupted = !executing && ((!returnedWait && ["cancelled", "interrupted", "lost"].includes(execution)) || toolInterrupted(trace, live));
     const running = !failed && !interrupted && toolRunning(trace, live);
@@ -2249,6 +2251,11 @@
         if (trace.name === "get_subagent_output") return;
         if (["running", "queued"].includes(status) && !pending && !allowRestart && !row.cancel_requested) return;
         const next = { ...trace };
+        if (["running", "queued"].includes(status) && !pending) {
+          delete next.summary;
+          delete next.preview;
+          delete next.error;
+        }
         if (status) {
           next.status = status;
           next.execution_status = row.status;
@@ -2812,7 +2819,9 @@
 
   function applyCancelResult(data, runId) {
     const run = data && data.run;
-    if (runId && activeRun && activeRun.id !== runId) return;
+    // A late acknowledgement must not install a stopped thread's run into an
+    // idle thread (or resurrect a run already cleared by a terminal event).
+    if (runId && activeRun?.id !== runId) return;
     if (!run) {
       if (activeRun && (!runId || activeRun.id === runId)) {
         if (!runId || stoppingRunId === runId) stoppingRunId = "";
@@ -2932,7 +2941,10 @@
       setActive(messages.length > 0);
       syncComposer();
     } else paint();
-    reconcileAgentTraces([...agentLifecycle.values()]);
+    // This snapshot already reconciles children transactionally. Cached list
+    // rows/events can predate a resume and must not overwrite it now or later.
+    agentLifecycle.clear();
+    agentLifecycleEpoch += 1;
     syncEmptyReplyRetry();
     upsertLocal(data);
     renderHistory();
@@ -5597,6 +5609,7 @@
   }
 
   function applyCommandResult(trace, result) {
+    if (["get_command_output", "kill_command"].includes(trace.name)) return;
     // Legacy wake envelopes must not replace an authoritative retained-output
     // record with a shorter text preview or discard its provenance.
     if (typeof trace.output === "string" && result.output_mode == null && result.output_chars == null) return;
@@ -12113,7 +12126,7 @@
       agentsFailCount = 0;
       agentsRows = Array.isArray(data.agents) ? data.agents : [];
       agentsRows.forEach(row => agentLifecycle.set(String(row.id), row));
-      reconcileAgentTraces(agentsRows);
+      reconcileAgentTraces(agentsRows, true);
       syncAgentsUi();
     } catch {
       if (tid === currentId && gen === generation) agentsFailCount += 1;
@@ -12271,7 +12284,7 @@
       if (msg.role !== "assistant" || !Array.isArray(msg.tools)) return;
       msg.tools.forEach((trace) => {
         if (!trace || (!executionPending(trace) && !["running", "progress", "queued"].includes(trace.status)) || !executionIdentity(trace)) return;
-        if (!isShellExecTool(trace.name)) return;
+        if (!["run_terminal_command", "monitor"].includes(trace.name)) return;
         const job = done.get(String(executionIdentity(trace)));
         if (!job || !["completed", "timed_out", "failed", "error", "cancelled", "interrupted", "lost"].includes(job.state) &&
             !(["running", "cancelling"].includes(job.state) && typeof job.output === "string")) return;

@@ -50,6 +50,30 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
     async def disconnected(self):
         raise AssertionError("Original browser receive must never be used")
 
+    async def test_wake_batches_whole_reports_and_only_selected_command_receipts(self):
+        from app import command_jobs
+        run = self.turn()
+        store.finish_run(run["id"], {"content": "Done"}, "completed")
+        candidates = [{"id": "child", "status": "completed", "summary": "REPORT" * 20000,
+                       "description": "Large report", "generation": "leg", "attempts": 0}]
+        commands = [{"id": "first", "envelope": "<command_result>" + "A" * 20000 + "</command_result>"},
+                    {"id": "later", "envelope": "<command_result>" + "B" * 40000 + "</command_result>"}]
+        with patch.object(chats, "AUTO_CONTENT_MAX", 160000), \
+             patch.object(runs, "_wake_lock", asyncio.Lock()), \
+             patch.object(store, "wake_candidates", return_value=candidates), \
+             patch.object(command_jobs, "pending_envelopes", return_value=commands), \
+             patch.object(command_jobs, "mark_delivered") as acknowledge, \
+             patch.object(runs, "start", new_callable=AsyncMock):
+            await runs._wake_parent(1, run["thread_id"])
+            wake = store.get_run(1, store.thread_root_run(1, run["thread_id"])["id"])
+            seed = wake["request"]["messages"][-1]["content"]
+            self.assertIn(candidates[0]["summary"], seed)
+            self.assertIn(commands[0]["envelope"], seed)
+            self.assertNotIn(commands[1]["envelope"], seed)
+            self.assertEqual(acknowledge.call_args.args[0], ["first"])
+            shown = chats.get_thread(1, run["thread_id"])["messages"][-2]["content"]
+            self.assertEqual(shown, seed)
+
     async def asyncTearDown(self):
         await runs.stop()
         runs._stopping = False

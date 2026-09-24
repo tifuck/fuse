@@ -65,7 +65,7 @@ class LifecycleContract(unittest.IsolatedAsyncioTestCase):
             gate.set()
             await task
 
-    async def test_history_preserves_completed_observations_but_settles_pending_ones(self):
+    async def test_history_preserves_wait_invocations_independently_of_execution(self):
         async def runner(sink):
             return SimpleNamespace(exit_status=0)
         rec = self.launch(runner)
@@ -76,7 +76,14 @@ class LifecycleContract(unittest.IsolatedAsyncioTestCase):
         with patch.object(chat_store, "command_rows", return_value={rec["id"]: row}):
             view = chat_store.settle_command_traces(self.conn, 1, 3, [{"tools": [original.copy(), pending]}])
         self.assertEqual(view[0]["tools"][0], original)
-        self.assertEqual(view[0]["tools"][1]["state"], "completed")
+        self.assertEqual(view[0]["tools"][1]["state"], "running")
+        for state in ("completed", "failed", "cancelled", "lost"):
+            for status in ("running", "done", "error", "interrupted"):
+                wait = {**pending, "status": status, "output": "observed"}
+                original = dict(wait)
+                with patch.object(chat_store, "command_rows", return_value={rec["id"]: {**row, "status": state}}):
+                    chat_store.settle_command_traces(self.conn, 1, 3, [{"tools": [wait]}])
+                self.assertEqual(wait, original)
 
     async def test_terminal_identity_output_tail_survives_database_reload(self):
         source = " \n" + "€" * 10000 + "  END\n "

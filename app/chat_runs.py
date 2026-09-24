@@ -858,11 +858,21 @@ async def _wake_parent(user_id: int, thread_id) -> None:
         ]
         # Whole reports only: if the batch cannot fit a turn, deliver fewer
         # children now (the rest stay wake-pending) instead of cutting text.
-        budget = chats.CONTENT_MAX - 2048
+        budget = chats.AUTO_CONTENT_MAX - 2048
         while len(included) > 1 and sum(len(env) for env in envelopes) > budget:
             included.pop()
             envelopes.pop()
         ids = [item["id"] for item in included]
+        # Only whole envelopes included in the durable wake may be acknowledged.
+        # Command results that do not fit stay pending for the next wake.
+        used = sum(len(env) + 2 for env in envelopes)
+        selected_commands = []
+        for item in cmd_results:
+            size = len(item["envelope"]) + 2
+            if used + size <= budget:
+                selected_commands.append(item)
+                used += size
+        cmd_results = selected_commands
         live_monitor = any("<monitor_event" in str(item.get("envelope") or "") for item in cmd_results)
         if live_monitor:
             opener = (
@@ -891,7 +901,7 @@ async def _wake_parent(user_id: int, thread_id) -> None:
         if included:
             closing += " Use spawn_subagent with task_id=<id> to continue a child from its saved transcript."
         lines.append(closing)
-        text = "\n".join(lines)[: chats.CONTENT_MAX]
+        text = "\n".join(lines)
         try:
             result = chat_store.start_turn(
                 user_id, thread_id, text, revision, f"wake-{uuid4().hex[:12]}",

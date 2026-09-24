@@ -917,7 +917,7 @@ def render_task_output(
     lines.append("</task>")
     lines.append(f"task_id: {ident} (pass task_id to continue this subagent)")
     # No size cap: the parent must receive the child's full report. The child's
-    # stored message is already bounded by chats.CONTENT_MAX, and the parent's
+    # stored message is bounded by chats.ASSISTANT_CONTENT_MAX, and the parent's
     # context manager compacts when the relayed reports overflow the window.
     return "\n".join(lines)
 
@@ -2004,11 +2004,9 @@ def settle_command_traces(conn, user_id, thread_id, messages):
               if t.get("name") in COMMAND_TOOLS and (t.get("job_id") or t.get("child_id"))]
     rows = command_rows(conn, user_id, thread_id, [t.get("job_id") or t["child_id"] for t in wanted])
     for tool in wanted:
-        # Completed observations are historical receipts, not subscriptions.
-        # Pending checks and launch rows continue to follow the execution.
-        if (tool.get("name") not in ("run_terminal_command", "monitor")
-                and tool.get("status") in ("done", "error", "interrupted")
-                and (tool.get("state") or tool.get("execution_status")) not in ("running", "queued", "cancelling")):
+        # Only the invocation's result can finish a wait. Returned observations
+        # are historical receipts, not subscriptions to later execution state.
+        if tool.get("name") not in ("run_terminal_command", "monitor"):
             continue
         row = rows.get(tool.get("job_id") or tool.get("child_id"))
         if row:
@@ -2045,10 +2043,8 @@ def settle_spawn_traces(conn, user_id, messages):
         for tool in msg.get("tools") or []:
             if (
                 isinstance(tool, dict)
-                and tool.get("name") in ("spawn_subagent", "get_subagent_output")
+                and tool.get("name") == "spawn_subagent"
                 and tool.get("child_id")
-                and (tool.get("status") in ("running", "progress", "queued", "interrupted")
-                     or tool.get("execution_status") in ("running", "queued"))
             ):
                 wanted.append(tool)
     ids = list({tool["child_id"] for tool in wanted})
@@ -2065,9 +2061,17 @@ def settle_spawn_traces(conn, user_id, messages):
         if row is None:
             continue
         if row["status"] in ACTIVE:
-            tool["status"] = "done" if tool.get("name") == "get_subagent_output" and tool.get("execution_status") else "running"
+            if tool.get("execution_status") not in ACTIVE and tool.get("status") not in ("running", "progress", "queued"):
+                for key in ("summary", "preview", "error"):
+                    tool.pop(key, None)
+            tool["status"] = "running"
+            tool["execution_status"] = row["status"]
+            if "state" in tool:
+                tool["state"] = row["status"]
             continue
         tool["execution_status"] = row["status"]
+        if "state" in tool:
+            tool["state"] = row["status"]
         if row["status"] == "completed":
             tool["status"] = "done"
             tool.pop("error", None)
@@ -2079,9 +2083,8 @@ def settle_spawn_traces(conn, user_id, messages):
             msg = json.loads(row["message"] or "{}") if "message" in row.keys() else {}
         except (json.JSONDecodeError, TypeError):
             msg = {}
-        writeup = ""
+        writeup = child_writeup({"id": row["id"], "status": row["status"], "message": msg})
         if isinstance(msg, dict):
-            writeup = str(msg.get("content") or msg.get("error") or "").strip()
             if tool["status"] == "error":
                 tool["error"] = str(msg.get("error") or "Subagent failed without a report.")[:400]
         if writeup:
@@ -2175,7 +2178,7 @@ def start_turn(user_id, thread_id, text, expected_revision, command_id, model=No
                 scheduled=False, coding_override=None, command_receipt_ids=None):
     from . import chats
 
-    text = chats._text(text if text is not None else "", "text", chats.CONTENT_MAX)
+    text = chats._text(text if text is not None else "", "text", chats.AUTO_CONTENT_MAX if auto else chats.CONTENT_MAX)
     attachments = chats.parse_attachments(attachments, strict=True)
     if not text.strip() and not attachments:
         raise chats.ChatValidationError("text cannot be empty")

@@ -73,6 +73,38 @@ class ChatStoreTest(unittest.TestCase):
         repaired = chats.parse_messages([message, message])
         self.assertNotEqual(repaired[0]["id"], repaired[1]["id"])
 
+    def test_spawn_snapshot_failure_is_status_only_and_waits_are_receipts(self):
+        run = self.turn()["run"]
+        for status in ("failed", "cancelled", "interrupted", "completed"):
+            with self.subTest(status=status):
+                db.execute("UPDATE chat_runs SET status=?,message=? WHERE id=?",
+                           (status, json.dumps({"content": "private partial prose", "error": "provider stopped" if status != "completed" else ""}), run["id"]))
+                spawn = {"name": "spawn_subagent", "child_id": run["id"], "status": "running", "state": "running"}
+                waits = [{"name": "get_subagent_output", "child_id": run["id"], "status": s,
+                          "execution_status": "running", "summary": "observed output"} for s in ("running", "done", "interrupted")]
+                originals = [dict(t) for t in waits]
+                store.settle_spawn_traces(self.conn, 1, [{"tools": [spawn, *waits]}])
+                self.assertEqual(waits, originals)
+                self.assertEqual(spawn["state"], status)
+                if status == "completed":
+                    self.assertEqual(spawn["summary"], "private partial prose")
+                else:
+                    self.assertNotIn("private partial prose", spawn["summary"])
+                    self.assertIn("provider stopped", spawn["summary"])
+                    self.assertIn("No completed report", spawn["preview"])
+
+    def test_spawn_snapshot_follows_resumed_child_without_old_report(self):
+        run = self.turn()["run"]
+        spawn = {"name": "spawn_subagent", "child_id": run["id"], "status": "done",
+                 "state": "completed", "execution_status": "completed", "summary": "Old report", "preview": "Old report"}
+        store.settle_spawn_traces(self.conn, 1, [{"tools": [spawn]}])
+        self.assertEqual(spawn["execution_status"], "queued")
+        self.assertNotIn("summary", spawn)
+        db.execute("UPDATE chat_runs SET status='completed',message=? WHERE id=?",
+                   (json.dumps({"content": "New report"}), run["id"]))
+        store.settle_spawn_traces(self.conn, 1, [{"tools": [spawn]}])
+        self.assertEqual(spawn["summary"], "New report")
+
     def test_assistant_messages_carry_model(self):
         parsed = chats.parse_messages(
             [{"role": "assistant", "content": "hi", "model": "openrouter/z-ai/glm-5.3-flash"}], strict=True)

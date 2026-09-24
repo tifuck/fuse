@@ -20,6 +20,7 @@ CONTENT_MAX = 100_000
 # User input and generated turn output have different lifetimes. A coding
 # turn can span hundreds of requests/compactions; do not kill it at 100k chars.
 ASSISTANT_CONTENT_MAX = 8_000_000
+AUTO_CONTENT_MAX = ASSISTANT_CONTENT_MAX + 8192
 CONTEXT_MAX = 4_000
 ERROR_MAX = 4_000
 NOTICE_MAX = 2_000
@@ -782,15 +783,16 @@ def parse_messages(raw, *, strict: bool = False) -> list[dict]:
             if strict:
                 raise ChatValidationError(f"messages[{index}] has an invalid role or content")
             continue
+        content_limit = ASSISTANT_CONTENT_MAX if role == "assistant" else AUTO_CONTENT_MAX if item.get("auto") is True else CONTENT_MAX
         if strict:
-            content = _text(content, f"messages[{index}].content", ASSISTANT_CONTENT_MAX if role == "assistant" else CONTENT_MAX)
+            content = _text(content, f"messages[{index}].content", content_limit)
             if role == "user" and not content.strip() and not attachments:
                 raise ChatValidationError(f"messages[{index}].content cannot be empty")
             reasoning = _text(item.get("reasoning", ""), f"messages[{index}].reasoning", ASSISTANT_CONTENT_MAX if role == "assistant" else CONTENT_MAX)
             error = _text(item.get("error", ""), f"messages[{index}].error", ERROR_MAX)
             notice = _text(item.get("notice", ""), f"messages[{index}].notice", NOTICE_MAX)
         else:
-            content = _legacy_text(content, ASSISTANT_CONTENT_MAX if role == "assistant" else CONTENT_MAX)
+            content = _legacy_text(content, content_limit)
             reasoning = _legacy_text(item.get("reasoning"), ASSISTANT_CONTENT_MAX if role == "assistant" else CONTENT_MAX)
             error = _legacy_text(item.get("error"), ERROR_MAX)
             notice = _legacy_text(item.get("notice"), NOTICE_MAX)
