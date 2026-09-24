@@ -135,6 +135,19 @@ async def lifespan(app: FastAPI):
     maint_task = None
     walk_task = None
     worker_lock = None
+    # asyncio's default executor is min(32, cpu+4) threads (8 on a 4-core
+    # host): every off-loop DB call, checkpoint, and socket replay shares it.
+    # Size it to the database pool instead so a saturated pool queues in
+    # worker threads instead of serializing the whole process.
+    from concurrent.futures import ThreadPoolExecutor
+
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(
+        ThreadPoolExecutor(
+            max_workers=max(8, min(32, settings.database_pool_size)),
+            thread_name_prefix="fuse-io",
+        )
+    )
     try:
         url = (getattr(settings, "database_url", "") or "").strip()
         if settings.database_mariadb_enabled and url.startswith("mysql://"):
