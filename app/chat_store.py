@@ -3700,7 +3700,7 @@ def start_child_run(
     parent_run_id: str,
     prompt: str,
     description: str,
-    subagent_type: str = "general-purpose",
+    subagent_type: str = "",
     host_id=None,
     cwd: str = "",
     model: str = "",
@@ -3775,6 +3775,7 @@ def start_child_run(
         resume_loaded: list[str] = []
         resume_host_id = None
         resume_cwd = ""
+        retype = False
         if resume_from_id:
             source = conn.execute(
                 "SELECT * FROM chat_runs WHERE id=? AND user_id=?",
@@ -3839,8 +3840,13 @@ def start_child_run(
             parent_kind = str(agent.get("subagent_type") or "")
             if parent_kind in ("explore", "plan") and src_kind != parent_kind:
                 raise SpawnCapError("Restricted subagents cannot resume an agent of a different type.")
-            if src_kind in ("general-purpose", "explore", "plan"):
+            if parent_kind not in ("explore", "plan") and subagent_type in ("general-purpose", "explore", "plan"):
+                # An unrestricted parent may re-type the session on resume
+                # (e.g. promote its explore auditor to apply the fixes).
+                kind = subagent_type
+            elif src_kind in ("general-purpose", "explore", "plan"):
                 kind = src_kind
+            retype = bool(resume_from_id) and kind != src_kind
             raw_loaded = source["loaded_tools"] if "loaded_tools" in source.keys() else None
             if raw_loaded:
                 try:
@@ -3857,7 +3863,12 @@ def start_child_run(
             seed = [*resume_messages, {"role": "user", "content": prompt}]
         else:
             seed = [{"role": "user", "content": prompt}]
-        loaded = sanitize_loaded(resume_loaded) if resume_loaded else default_loaded_for_child(kind)
+        if retype:
+            # The persisted toolset belongs to the old kind; seed the new kind's
+            # defaults instead of carrying a restricted (or unrestricted) set over.
+            loaded = default_loaded_for_child(kind)
+        else:
+            loaded = sanitize_loaded(resume_loaded) if resume_loaded else default_loaded_for_child(kind)
         parent_agent = agent
         ts = db.now()
         if resume_from_id and resume_messages:

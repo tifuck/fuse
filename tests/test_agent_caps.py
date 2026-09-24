@@ -956,6 +956,53 @@ class AgentCapsTest(unittest.TestCase):
         self.assertEqual(saved["status"], "queued")
         self.assertEqual(saved["request"]["agent"]["remaining_seconds"], store.DEFAULT_REMAINING_SECONDS)
 
+    def _finished_explore_child(self):
+        thread, parent = self._parent()
+        child = store.start_child_run(
+            user_id=1,
+            thread_id=thread["id"],
+            parent_run_id=parent["id"],
+            prompt="audit the module",
+            description="audit",
+            subagent_type="explore",
+        )
+        store.finish_run(child["id"], {"content": "found issues", "tools": []}, "completed")
+        return thread, parent, child
+
+    def test_resume_keeps_type_when_omitted(self):
+        thread, parent, child = self._finished_explore_child()
+        resumed = store.start_child_run(
+            user_id=1,
+            thread_id=thread["id"],
+            parent_run_id=parent["id"],
+            prompt="dig deeper",
+            description="audit",
+            resume_from_id=child["id"],
+        )
+        agent = resumed["request"]["agent"]
+        self.assertEqual(agent["subagent_type"], "explore")
+        self.assertNotIn("write_file", agent["loaded_tools"])
+        self.assertNotIn("search_replace", agent["loaded_tools"])
+
+    def test_resume_can_retype_explore_to_general_purpose(self):
+        thread, parent, child = self._finished_explore_child()
+        resumed = store.start_child_run(
+            user_id=1,
+            thread_id=thread["id"],
+            parent_run_id=parent["id"],
+            prompt="fix the issues you found",
+            description="audit",
+            subagent_type="general-purpose",
+            resume_from_id=child["id"],
+        )
+        self.assertEqual(resumed["id"], child["id"])
+        agent = resumed["request"]["agent"]
+        self.assertEqual(agent["subagent_type"], "general-purpose")
+        self.assertIn("write_file", agent["loaded_tools"])
+        self.assertIn("search_replace", agent["loaded_tools"])
+        seed = resumed["request"]["messages"]
+        self.assertEqual(seed[-1]["content"], "fix the issues you found")
+
     def test_resolve_child_run_description_must_be_exact_and_unique(self):
         thread, parent = self._parent()
         a = store.start_child_run(

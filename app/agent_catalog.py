@@ -601,15 +601,17 @@ SCHEMAS = {
                     "task_id": {
                         "type": "string",
                         "description": (
-                            "Resume only — not a name, label, or description. Pass the id of an existing child "
-                            "(from list_subagents or an earlier spawn result) to continue that same session. "
-                            "Omit it to start a new child; do not invent an id, and a failed spawn that never "
-                            "returned an id has nothing to resume — retry that spawn (its scratch slot is still there). "
-                            "A finished child is resumed; a live child receives only this prompt as a follow-up, "
-                            "without rebinding host/cwd or changing type. A finished child keeps its transcript, type, "
-                            "and model, but host/cwd default to the current parent's bindings; pass them explicitly when needed. "
-                            "Pass model only to switch. On a follow-up, prompt (or scratch) is required; description is optional "
-                            "and defaults to the child's label."
+                        "Resume only — not a name, label, or description. Pass the id of an existing child "
+                        "(from list_subagents or an earlier spawn result) to continue that same session. "
+                        "Omit it to start a new child; do not invent an id, and a failed spawn that never "
+                        "returned an id has nothing to resume — retry that spawn (its scratch slot is still there). "
+                        "A finished child is resumed; a live child receives only this prompt as a follow-up, "
+                        "without rebinding host/cwd or changing type. A finished child keeps its transcript and "
+                        "model, and keeps its type unless you pass subagent_type to re-type it (e.g. resume an "
+                        "explore auditor as general-purpose so it can apply its own findings); host/cwd default "
+                        "to the current parent's bindings; pass them explicitly when needed. "
+                        "Pass model only to switch. On a follow-up, prompt (or scratch) is required; description is optional "
+                        "and defaults to the child's label."
                         ),
                     },
                 },

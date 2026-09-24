@@ -494,10 +494,20 @@ async def spawn(
                 rec["model"] = existing_model
             return text, rec
     parent_model = str((parent.get("request") or {}).get("model") or "")
-    if resume_from and not requested_model:
-        existing_resume = chat_store.get_run(user["id"], resume_from)
-        if existing_resume:
-            parent_model = str((existing_resume.get("request") or {}).get("model") or "") or parent_model
+    existing_resume = chat_store.get_run(user["id"], resume_from) if resume_from else None
+    if existing_resume and not requested_model:
+        parent_model = str((existing_resume.get("request") or {}).get("model") or "") or parent_model
+    if parent_kind in ("explore", "plan"):
+        spawn_kind = parent_kind
+    else:
+        spawn_kind = str(args.get("subagent_type") or "").strip()
+        if spawn_kind not in ("general-purpose", "explore", "plan"):
+            # Omitted on resume: keep the session's type (an explore auditor
+            # stays read-only unless the parent explicitly promotes it).
+            spawn_kind = "general-purpose"
+            if existing_resume:
+                resume_agent = (existing_resume.get("request") or {}).get("agent")
+                spawn_kind = str((resume_agent or {}).get("subagent_type") or "") or spawn_kind
     model, model_error = await resolve_spawn_model(
         user_id=user["id"],
         slug=requested_model,
@@ -519,11 +529,7 @@ async def spawn(
             parent_run_id=parent_run_id,
             prompt=prompt,
             description=description,
-            subagent_type=(
-                parent_kind
-                if parent_kind in ("explore", "plan")
-                else str(args.get("subagent_type") or "general-purpose")
-            ),
+            subagent_type=spawn_kind,
             host_id=host_id,
             cwd=cwd,
             model=model,
