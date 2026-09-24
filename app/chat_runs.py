@@ -1354,8 +1354,13 @@ async def _run(request, user, run):
                     if child_agent.get("wake"):
                         if status == "completed":
                             # The wake turn delivered its reports; only now mark
-                            # the children sent so a failed wake can retry.
-                            chat_store.mark_wake_sent(child_agent.get("wake_ids") or [])
+                            # the children sent so a failed wake can retry. A
+                            # child re-spawned during this turn (new leg) or one
+                            # whose envelope is still queued unconsumed stays
+                            # unacknowledged so its own completion wakes again.
+                            chat_store.mark_wake_sent(
+                                child_agent.get("wake_ids") or [], pending_guard_run=ident
+                            )
                         else:
                             chat_store.bump_wake_attempts(child_agent.get("wake_ids") or [])
                     schedule_wake(user["id"], run["thread_id"])

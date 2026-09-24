@@ -2675,14 +2675,39 @@ def wake_candidates(user_id, thread_id):
     return out
 
 
-def mark_wake_sent(run_ids):
+def mark_wake_sent(run_ids, pending_guard_run: str | None = None):
+    """Acknowledge wake delivery for finished children.
+
+    A child that has since been re-spawned (queued/running: a new leg in
+    flight) keeps wake_sent=0 — that leg owes a fresh report and must still
+    wake the thread when it finishes. With pending_guard_run, a child whose
+    latest envelope is still queued unconsumed on that run's
+    pending_child_results is also left unacknowledged so the next wake
+    re-delivers it.
+    """
     ids = [str(r) for r in (run_ids or []) if str(r)]
     if not ids:
         return
     with transaction() as conn:
+        guarded: set[str] = set()
+        if pending_guard_run:
+            grow = conn.execute("SELECT request FROM chat_runs WHERE id=?", (pending_guard_run,)).fetchone()
+            if grow is not None:
+                try:
+                    greq = json.loads(grow["request"] or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    greq = {}
+                gagent = greq.get("agent") if isinstance(greq, dict) and isinstance(greq.get("agent"), dict) else {}
+                guarded = {
+                    str(item.get("id") or "")
+                    for item in (gagent.get("pending_child_results") or [])
+                    if isinstance(item, dict)
+                }
         for run_id in ids:
-            row = conn.execute("SELECT request FROM chat_runs WHERE id=?", (run_id,)).fetchone()
-            if row is None:
+            if run_id in guarded:
+                continue
+            row = conn.execute("SELECT status,request FROM chat_runs WHERE id=?", (run_id,)).fetchone()
+            if row is None or row["status"] not in TERMINAL:
                 continue
             try:
                 req = json.loads(row["request"])
@@ -2695,14 +2720,18 @@ def mark_wake_sent(run_ids):
 
 
 def bump_wake_attempts(run_ids):
-    """Count a wake-turn attempt per child so a failed wake can retry once."""
+    """Count a wake-turn attempt per child so a failed wake can retry once.
+
+    Skips re-spawned children: a new leg in flight did not cause the wake
+    failure and its own completion must keep full delivery budget.
+    """
     ids = [str(r) for r in (run_ids or []) if str(r)]
     if not ids:
         return
     with transaction() as conn:
         for run_id in ids:
-            row = conn.execute("SELECT request FROM chat_runs WHERE id=?", (run_id,)).fetchone()
-            if row is None:
+            row = conn.execute("SELECT status,request FROM chat_runs WHERE id=?", (run_id,)).fetchone()
+            if row is None or row["status"] not in TERMINAL:
                 continue
             try:
                 req = json.loads(row["request"])
@@ -3570,6 +3599,10 @@ def save_turn_progress(run_id, messages, loaded_tools=None, extra=None):
                 else:
                     kept.append(item)
             agent["pending_child_results"] = kept
+            kept_ids = {
+                str(item.get("id") or "") for item in kept if isinstance(item, dict)
+            }
+            delivered_children = [cid for cid in delivered_children if cid and cid not in kept_ids]
         pending_followups = agent.get("pending_followups")
         if isinstance(pending_followups, list) and pending_followups:
             agent["pending_followups"] = [
@@ -3590,8 +3623,10 @@ def save_turn_progress(run_id, messages, loaded_tools=None, extra=None):
         for cid in delivered_children:
             if not cid:
                 continue
-            crow = conn.execute("SELECT request FROM chat_runs WHERE id=?", (cid,)).fetchone()
-            if crow is None:
+            crow = conn.execute("SELECT status,request FROM chat_runs WHERE id=?", (cid,)).fetchone()
+            if crow is None or crow["status"] not in TERMINAL:
+                # A re-spawned child (new leg in flight) keeps wake_sent=0;
+                # that leg owes a fresh report and must still wake the thread.
                 continue
             try:
                 creq = json.loads(crow["request"])

@@ -488,6 +488,141 @@ class AgentCapsTest(unittest.TestCase):
         cands = store.wake_candidates(1, parent["thread_id"])
         self.assertFalse(any(item["id"] == child["id"] for item in cands))
 
+    def _wake_turn(self, thread, parent):
+        store.finish_run(parent["id"], {"content": "ok", "tools": []}, "completed")
+        rev = chats.get_thread(1, thread["id"])["revision"]
+        wake = store.start_turn(1, thread["id"], "AUTOMATED EVENT - background report", rev, "wake-t")["run"]
+        return wake
+
+    def test_wake_turn_completing_after_respawn_keeps_child_wakeable(self):
+        # Production race: a wake turn resumed the child (spawn task_id) and
+        # then completed; its finalize used to mark the child wake_sent even
+        # though the new leg had not reported yet, stranding the next report.
+        thread, parent = self._parent()
+        child = store.start_child_run(
+            user_id=1,
+            thread_id=thread["id"],
+            parent_run_id=parent["id"],
+            prompt="bg",
+            description="bg",
+            background=True,
+        )
+        store.finish_run(child["id"], {"content": "first report", "tools": []}, "completed")
+        wake = self._wake_turn(thread, parent)
+        store.mark_run_wake(wake["id"], [child["id"]])
+        resumed = store.start_child_run(
+            user_id=1,
+            thread_id=thread["id"],
+            parent_run_id=wake["id"],
+            prompt="fix the findings",
+            description="bg",
+            resume_from_id=child["id"],
+        )
+        self.assertEqual(resumed["status"], "queued")
+        store.finish_run(wake["id"], {"content": "relayed", "tools": []}, "completed")
+        store.mark_wake_sent([child["id"]], pending_guard_run=wake["id"])
+        agent = store.get_run(1, child["id"])["request"]["agent"]
+        self.assertFalse(agent.get("wake_sent"))
+        # The new leg finishing must still wake the thread with its report.
+        # (Outliving its spawning turn marks the child background, exactly as
+        # the finalize path does for a foreground spawn whose parent ended.)
+        store.mark_child_background(child["id"])
+        store.finish_run(child["id"], {"content": "second report", "tools": []}, "completed")
+        cands = store.wake_candidates(1, parent["thread_id"])
+        self.assertTrue(any(item["id"] == child["id"] for item in cands))
+        self.assertIn("second report", next(c for c in cands if c["id"] == child["id"])["summary"])
+
+    def test_mark_wake_sent_skips_active_and_pending_guard_children(self):
+        thread, parent = self._parent()
+        child = store.start_child_run(
+            user_id=1,
+            thread_id=thread["id"],
+            parent_run_id=parent["id"],
+            prompt="bg",
+            description="bg",
+            background=True,
+        )
+        store.finish_run(child["id"], {"content": "report", "tools": []}, "completed")
+        wake = self._wake_turn(thread, parent)
+        env = store.render_task_output(child_id=child["id"], state="completed", text="report", description="bg")
+        self.assertTrue(store.queue_child_result(wake["id"], env, child_id=child["id"]))
+        # Unconsumed envelope on the finishing wake run: stays unacknowledged.
+        store.mark_wake_sent([child["id"]], pending_guard_run=wake["id"])
+        self.assertFalse(store.get_run(1, child["id"])["request"]["agent"].get("wake_sent"))
+        # Consumed envelope: acknowledged now that the child is terminal.
+        store.save_turn_progress(wake["id"], [{"role": "user", "content": env}])
+        store.mark_wake_sent([child["id"]])
+        self.assertTrue(store.get_run(1, child["id"])["request"]["agent"].get("wake_sent"))
+        # A re-spawned (queued/running) child is never acknowledged.
+        resumed = store.start_child_run(
+            user_id=1,
+            thread_id=thread["id"],
+            parent_run_id=wake["id"],
+            prompt="again",
+            description="bg",
+            resume_from_id=child["id"],
+        )
+        self.assertEqual(resumed["status"], "queued")
+        store.mark_wake_sent([child["id"]])
+        self.assertFalse(store.get_run(1, child["id"])["request"]["agent"].get("wake_sent"))
+
+    def test_bump_wake_attempts_skips_respawned_child(self):
+        thread, parent = self._parent()
+        child = store.start_child_run(
+            user_id=1,
+            thread_id=thread["id"],
+            parent_run_id=parent["id"],
+            prompt="bg",
+            description="bg",
+            background=True,
+        )
+        store.finish_run(child["id"], {"content": "report", "tools": []}, "completed")
+        resumed = store.start_child_run(
+            user_id=1,
+            thread_id=thread["id"],
+            parent_run_id=parent["id"],
+            prompt="again",
+            description="bg",
+            resume_from_id=child["id"],
+        )
+        store.bump_wake_attempts([resumed["id"]])
+        self.assertEqual(store.get_run(1, resumed["id"])["request"]["agent"].get("wake_attempts") or 0, 0)
+
+    def test_save_turn_progress_does_not_ack_respawned_child(self):
+        # Injection ack path: the parent delivered the old envelope but has
+        # already re-spawned the child; the new leg must stay wakeable.
+        thread, parent = self._parent()
+        child = store.start_child_run(
+            user_id=1,
+            thread_id=thread["id"],
+            parent_run_id=parent["id"],
+            prompt="bg",
+            description="bg",
+            background=True,
+        )
+        store.finish_run(child["id"], {"content": "report one", "tools": []}, "completed")
+        env = store.render_task_output(child_id=child["id"], state="completed", text="report one", description="bg")
+        self.assertTrue(store.queue_child_result(parent["id"], env, child_id=child["id"]))
+        resumed = store.start_child_run(
+            user_id=1,
+            thread_id=thread["id"],
+            parent_run_id=parent["id"],
+            prompt="continue",
+            description="bg",
+            resume_from_id=child["id"],
+        )
+        self.assertEqual(resumed["status"], "queued")
+        store.save_turn_progress(parent["id"], [{"role": "user", "content": env}])
+        self.assertFalse(store.get_run(1, child["id"])["request"]["agent"].get("wake_sent"))
+        # A newer unconsumed envelope also keeps the child unacknowledged.
+        store.finish_run(child["id"], {"content": "report two", "tools": []}, "completed")
+        env2 = store.render_task_output(child_id=child["id"], state="completed", text="report two", description="bg")
+        self.assertTrue(store.queue_child_result(parent["id"], env2, child_id=child["id"]))
+        store.save_turn_progress(parent["id"], [{"role": "user", "content": env}, {"role": "user", "content": env2[:20]}])
+        self.assertFalse(store.get_run(1, child["id"])["request"]["agent"].get("wake_sent"))
+        store.save_turn_progress(parent["id"], [{"role": "user", "content": env2}])
+        self.assertTrue(store.get_run(1, child["id"])["request"]["agent"].get("wake_sent"))
+
     def test_child_writeup_never_returns_status_word(self):
         self.assertEqual(store.child_writeup({"message": {}, "request": {}}), "")
         self.assertIn(
