@@ -3742,10 +3742,11 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-con
   margin: 0.08rem 0 0;
   font: var(--console-type)/var(--console-leading) var(--mono);
 }
-/* The expanded band keeps its summary ("Thought for 17s") as the header row
-   instead of a blank line; long diffs and outputs scroll inside the band. */
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-think:not([data-think-mode="collapsed"]) .chat-think-summary {
-  display: block;
+/* An expanded completed thought drops its now-empty header row: the band
+   starts directly with the thinking text (click the text to collapse).
+   Live thoughts keep the header for the stream/hide control. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-think:not(.is-live-think):not([data-think-mode="collapsed"]) > .chat-step-main > .chat-step-head {
+  display: none;
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-hang.is-expanded .chat-console-out {
   max-height: min(28rem, 55vh);
