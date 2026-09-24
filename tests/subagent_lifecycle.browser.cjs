@@ -31,6 +31,7 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
           message: {content: status === 'completed' ? 'COMPLETED_REPORT' : 'PARTIAL_MUST_NOT_DELIVER', error,
             tools: [{name: 'read_file', preview: 'TOOL_MUST_NOT_DELIVER'}]}}]));
         f.toolEvent({event: 'tool', id: 'wait', name: 'get_subagent_output', child_id: 'child-0', status: 'done', summary: 'COMPLETED_REPORT'});
+        f.agents([{id: 'child-0', status: 'completed', summary: 'COMPLETED'}]);
         const traces = f.snapshot()[0].tools;
         return {before, children: traces.filter(t => t.name === 'spawn_subagent').map(t => ({summary:t.summary, state:f.state(t, true).state})),
           wait:f.state(traces.find(t => t.id === 'wait'), true).state};

@@ -10,7 +10,8 @@ function load(name, context) {
   vm.runInContext(source.slice(start, end), context);
 }
 function world() {
-  const ctx = vm.createContext({ activeRun: null, runIsActive: () => false });
+  const ctx = vm.createContext({ activeRun: null, runIsActive: () => false,
+    EXECUTION_FIELDS: ['state', 'execution_status', 'output', 'output_mode', 'output_chars'] });
   for (const name of ['executionState', 'executionIdentity', 'executionPending', 'toolBackground', 'toolAwaitingCancellation', 'isShellExecTool', 'childBackedTool', 'toolIsCurrent', 'toolRunning', 'backgroundCommandLabel', 'applyCommandResult', 'shellExitOnly', 'shellExitCode', 'toolFailed', 'toolInterrupted', 'toolPresentation']) load(name, ctx);
   return ctx;
 }
@@ -65,6 +66,60 @@ test('agent lifecycle reconciliation never completes or restarts wait invocation
   assert.equal(c.toolRunning(c.messages[0].tools[0], false), false, 'state and execution_status must agree');
   assert.equal(c.messages[0].tools[1].status, 'running', 'only the tool result completes an in-flight wait');
   assert.equal(c.messages[0].tools[2].status, 'done');
+});
+
+test('agent list previews do not truncate a delivered report', () => {
+  const c = world();
+  const report = 'Final report. '.repeat(100);
+  Object.assign(c, { messages: [{ tools: [{ name: 'spawn_subagent', child_id: 'child', status: 'done', summary: report }] }],
+    agentRun: null, log: { children: [] }, syncLiveDock() {} });
+  load('mapAgentToolStatus', c);
+  load('reconcileAgentTraces', c);
+  c.reconcileAgentTraces([{ id: 'child', status: 'completed', summary: report.slice(0, 200) }]);
+  assert.equal(c.messages[0].tools[0].summary, report);
+});
+
+test('background command completion reaches nested-agent transcript tools', () => {
+  const c = world();
+  const trace = { name: 'run_terminal_command', child_id: 'job', status: 'done', execution_status: 'running', background: true };
+  let paints = 0;
+  Object.assign(c, { messages: [], agentRun: { messages: [{ role: 'assistant', tools: [trace] }] }, agentsOpen: true,
+    log: { children: [] }, scheduleAgentView() { paints++; } });
+  load('reconcileBgTraces', c);
+  c.reconcileBgTraces([{ id: 'job', state: 'completed', output: 'Final output', output_chars: 12, exit_code: 0 }]);
+  assert.equal(c.toolPresentation(trace, false).statusLabel, 'Done');
+  assert.equal(trace.output, 'Final output');
+  assert.equal(paints, 1);
+});
+
+test('historical tool activity cannot resurrect a thinking spinner or running label', () => {
+  const c = world();
+  Object.assign(c, { activeRun: null, groupTraces: () => [], lastCurrentTrace: () => null,
+    assistantSegments: () => [], isConsoleView: () => false, runIsStopping: () => false });
+  load('currentActivity', c);
+  const trace = { name: 'get_subagent_output', id: 'wait', status: 'running', child_id: 'child' };
+  const state = c.currentActivity({ stopped: true, tools: [trace], _activity: { phase: 'tools', tool_id: 'wait' } }, [], false);
+  assert.equal(state.phase, 'stopped');
+  assert.equal(state.current, null);
+});
+
+test('agent snapshots retain activity and replay cancellation without regressing the cursor', () => {
+  const c = world();
+  Object.assign(c, { agentRun: null, jobsRows: [], completedJobs: new Map(),
+    reconcileBgTraces() {}, applyProgressPayload() {}, agentPendingEvents: [
+      { id: 12, type: 'agent.cancel_requested', payload: { run_id: 'child', status: 'running', cancel_requested: true } },
+    ] });
+  load('acceptAgentSnapshot', c);
+  assert.equal(c.acceptAgentSnapshot({ id: 'child', event_cursor: 10, status: 'running', message: {}, activity: { phase: 'model' } }), true);
+  assert.equal(c.agentRun.message._activity.phase, 'model');
+  assert.equal(c.agentRun.cancel_requested, true);
+  assert.equal(c.agentRun.event_cursor, 12);
+  assert.equal(c.acceptAgentSnapshot({ id: 'child', event_cursor: 11, status: 'running', message: {} }), false);
+  assert.equal(c.agentRun.cancel_requested, true);
+  c.agentPendingEvents = [{ id: 14, type: 'agent.resumed', payload: { run_id: 'child' } }];
+  c.acceptAgentSnapshot({ id: 'child', event_cursor: 13, status: 'cancelled', cancel_requested: true, message: {} });
+  assert.equal(c.agentRun.status, 'queued');
+  assert.equal(c.agentRun.cancel_requested, false);
 });
 
 test('agent list rejects reads overtaken by lifecycle events and schedules a replacement', async () => {

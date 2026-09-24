@@ -2270,7 +2270,9 @@
         const summary = terminalFailure
           ? `Subagent ${row.status}${reason ? `: ${reason}` : ""}. No completed report is available.`
           : row.status === "completed" || row.status === "done" ? row.message?.content || row.summary : "";
-        if (summary) {
+        // List summaries are previews, not replacements for a full report
+        // already received through the lifecycle event or tool result.
+        if (summary && (terminalFailure || row.message || !next.summary || next.summary === "Background task started")) {
           next.summary = String(summary).slice(0, 4000);
           next.output_truncated = String(summary).length > 4000;
           if (terminalFailure) next.preview = next.summary.slice(0, 800);
@@ -3017,9 +3019,9 @@
       if (Array.isArray(payload.permissions)) syncPermQueueFromMessage({ permissions: payload.permissions });
       const row = agentsRows.find((item) => String(item.id) === String(payload.run_id));
       if (row) {
-        if (payload.current) row.current = payload.current;
+        if (Object.prototype.hasOwnProperty.call(payload, "current")) row.current = payload.current;
         row.quiet_s = 0;
-        row.updated_at = row.updated_at || new Date().toISOString();
+        row.updated_at = new Date().toISOString();
         if (agentsOpen && Date.now() - _agentTickRenderAt > 1000) {
           _agentTickRenderAt = Date.now();
           renderAgentsList();
@@ -3064,6 +3066,8 @@
           agentRun.event_cursor = event.id;
           if (payload.status) agentRun.status = payload.status;
           else if (event.type === "agent.resumed" || event.type === "agent.started") agentRun.status = "queued";
+          if (payload.cancel_requested != null) agentRun.cancel_requested = payload.cancel_requested;
+          else if (event.type === "agent.resumed") agentRun.cancel_requested = false;
           if (payload.message) applyProgressPayload(agentRun.message, payload, true);
           scheduleAgentView();
         }
@@ -6325,7 +6329,7 @@
     let current = live && !stopping ? lastCurrentTrace(grouped) : null;
     const activity = msg?.id === activeRun?.message_id ? activeRun?.activity : msg?._activity;
     if (activity?.phase === "model") current = null;
-    else if (activity?.phase === "tools" && activity.tool_id) {
+    else if (live && !stopping && activity?.phase === "tools" && activity.tool_id) {
       current = traces.find(trace => trace.id === activity.tool_id && toolIsCurrent(trace)) || current;
     }
     const segments = assistantSegments(msg);
@@ -12066,15 +12070,19 @@
     if (!Number.isSafeInteger(run.event_cursor)) throw new Error("Subagent snapshot is missing its event cursor.");
     if (agentRun?.id === run.id && run.event_cursor < (agentRun.event_cursor || 0)) return false;
     agentRun = run;
+    if (agentRun.message) agentRun.message._activity = run.activity || null;
     for (const event of agentPendingEvents) {
       if (event.payload?.run_id === run.id && event.id > agentRun.event_cursor) {
         applyProgressPayload(agentRun.message, event.payload, true);
         if (event.payload.status) agentRun.status = event.payload.status;
         else if (["agent.started", "agent.resumed"].includes(event.type)) agentRun.status = "queued";
+        if (event.payload.cancel_requested != null) agentRun.cancel_requested = event.payload.cancel_requested;
+        else if (event.type === "agent.resumed") agentRun.cancel_requested = false;
         agentRun.event_cursor = event.id;
       }
     }
     agentPendingEvents = [];
+    reconcileBgTraces([...jobsRows, ...completedJobs.values()], false);
     return true;
   }
 
@@ -12252,7 +12260,8 @@
     if (!recent.length) return;
     const done = new Map(recent.map((job) => [String(job.command_id || job.id || job.child_id), job]));
     let changed = false;
-    messages.forEach((msg) => {
+    const targets = [...messages, ...(agentRun?.messages || []), ...(agentRun?.message ? [agentRun.message] : [])];
+    targets.forEach((msg) => {
       if (msg.role !== "assistant" || !Array.isArray(msg.tools)) return;
       msg.tools.forEach((trace) => {
         if (!trace || (!executionPending(trace) && !["running", "progress", "queued"].includes(trace.status)) || !executionIdentity(trace)) return;
@@ -12272,6 +12281,7 @@
       });
     });
     if (changed && repaint) {
+      if (agentsOpen && agentRun) scheduleAgentView();
       messages.forEach((msg, index) => {
         const article = log.children[index];
         if (article && msg.role === "assistant") {

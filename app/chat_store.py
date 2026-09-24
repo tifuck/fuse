@@ -519,20 +519,17 @@ def run_view(row):
 
 
 def last_assistant_text(messages) -> str:
-    """Most recent non-empty assistant text in a provider transcript."""
-    last = ""
-    for msg in messages or []:
-        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+    """Final response only; never borrow an earlier leg or tool-call preamble."""
+    for msg in reversed(messages or []):
+        if not isinstance(msg, dict) or msg.get("role") == "system":
             continue
-        text = str(msg.get("content") or "").strip()
-        if not text:
-            continue
+        if msg.get("role") != "assistant" or msg.get("tool_calls") or msg.get("function_call"):
+            return ""
+        text = _provider_text(msg.get("content")).strip()
         from . import context as ctxmod
 
-        if ctxmod.is_compact_ack(text):
-            continue
-        last = text
-    return last
+        return "" if ctxmod.is_compact_ack(text) else text
+    return ""
 
 
 def _provider_text(content) -> str:
@@ -2634,10 +2631,14 @@ def resolve_child_run(user_id, token: str, *, thread_id=None, parent_run_id: str
 def wake_candidates(user_id, thread_id):
     """Terminal background children of a thread that have not woken the parent yet."""
     rows = db.fetchall(
-        """SELECT id, status, request, message FROM chat_runs
-           WHERE user_id=? AND thread_id=? AND parent_run_id IS NOT NULL
-              AND status IN ('completed','failed','cancelled','interrupted')
-           ORDER BY created_at""",
+        """SELECT child.id, child.status, child.request, child.message FROM chat_runs child
+           WHERE child.user_id=? AND child.thread_id=? AND child.parent_run_id IS NOT NULL
+              AND child.status IN ('completed','failed','cancelled','interrupted')
+              AND NOT EXISTS (
+                  SELECT 1 FROM chat_runs parent WHERE parent.id=child.parent_run_id
+                  AND parent.parent_run_id IS NOT NULL AND parent.status IN ('queued','running')
+              )
+           ORDER BY child.created_at""",
         (user_id, thread_id),
     )
     out = []
@@ -2879,7 +2880,6 @@ def list_thread_agents(user_id, thread_id, limit=100):
         message = message if isinstance(message, dict) else {}
         tools = message.get("tools") if isinstance(message.get("tools"), list) else []
         tool_counts: dict[str, int] = {}
-        current = ""
         for trace in tools:
             if not isinstance(trace, dict):
                 continue
@@ -2887,22 +2887,13 @@ def list_thread_agents(user_id, thread_id, limit=100):
             if not name:
                 continue
             tool_counts[name] = tool_counts.get(name, 0) + 1
-            if trace.get("status") in ("running", "progress", "queued"):
-                current = name
         quiet_s = _iso_age(row["updated_at"] or row["created_at"])
+        current = agent_current_activity(message, agent.get("activity"), row["status"])
         if row["status"] in ACTIVE:
             if quiet_s >= STALL_IDLE_SECONDS:
                 current = "stalled"
-            elif not current:
-                if quiet_s >= STALL_WAIT_SECONDS:
-                    current = "waiting"
-                else:
-                    segments = message.get("segments") if isinstance(message.get("segments"), list) else []
-                    last = segments[-1] if segments and isinstance(segments[-1], dict) else None
-                    if (last and last.get("type") == "reasoning") or not str(message.get("content") or ""):
-                        current = "thinking"
-                    else:
-                        current = "waiting"
+            elif quiet_s >= STALL_WAIT_SECONDS and current in ("thinking", "writing"):
+                current = "waiting"
         entry = {
             "id": row["id"],
             "status": row["status"],
@@ -2935,6 +2926,32 @@ def list_thread_agents(user_id, thread_id, limit=100):
         }
         out.append(entry)
     return out
+
+
+def agent_current_activity(message, activity=None, status="running"):
+    """Execution activity, excluding handed-off work and returned invocations."""
+    if status not in ACTIVE:
+        return ""
+    if status == "queued":
+        return "queued"
+    activity = activity if isinstance(activity, dict) else {}
+    tools = message.get("tools") or []
+    if activity.get("phase") != "model":
+        for trace in reversed(tools):
+            if not isinstance(trace, dict) or trace.get("status") not in ("running", "progress", "queued"):
+                continue
+            if (trace.get("state") or trace.get("execution_status")) in ("completed", "failed", "cancelled", "interrupted", "lost", "timed_out"):
+                continue
+            if trace.get("background") and (trace.get("child_id") or trace.get("command_id")) and trace.get("name") not in ("get_subagent_output", "get_command_output"):
+                continue
+            return str(trace.get("name") or "working")
+    segments = message.get("segments") or []
+    last = next((part for part in reversed(segments) if isinstance(part, dict) and (part.get("type") == "tool" or str(part.get("text") or "").strip())), {})
+    if last.get("type") == "reasoning":
+        return "thinking"
+    if last.get("type") == "content":
+        return "writing"
+    return "waiting"
 
 
 def _agent_context_chip(req, agent, row) -> dict | None:
@@ -3043,6 +3060,8 @@ def checkpoint(run_id, message, events=None, durable=True, future=None):
         request["agent"].pop("steer_closed", None)
     _advance_steer_display(request, message)
     payload = {"run_id": run_id, "message_id": row["message_id"]}
+    if row["parent_run_id"]:
+        payload["current"] = agent_current_activity(message, (request.get("agent") or {}).get("activity"))
     projected = display_messages(request, message, row["message_id"], live=True)
     materialize_thread = False
     if (request.get("agent") or {}).get("display_parts"):

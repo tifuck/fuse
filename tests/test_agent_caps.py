@@ -40,6 +40,86 @@ class AgentCapsTest(unittest.TestCase):
         result = store.start_turn(1, thread["id"], "Hello", thread["revision"], "turn")
         return thread, result["run"]
 
+    def test_join_report_acknowledged_only_with_durable_parent_transcript(self):
+        from app import agents
+
+        thread, parent = self._parent()
+        child = store.start_child_run(user_id=1, thread_id=thread["id"], parent_run_id=parent["id"],
+                                      prompt="inspect", description="worker")
+        store.finish_run(child["id"], {"content": "Final report"}, "completed")
+        text, trace = asyncio.run(agents.get_output(user_id=1, arguments=json.dumps({"id": child["id"]}),
+                                                    thread_id=thread["id"], parent_run_id=parent["id"]))
+        self.assertEqual(trace["status"], "done")
+        self.assertFalse(store.get_run(1, child["id"])["request"]["agent"].get("wake_sent"))
+        self.assertEqual(store.take_child_results(parent["id"]), [text])
+        # A second retrieval neither acknowledges nor duplicates the receipt.
+        asyncio.run(agents.get_output(user_id=1, arguments=json.dumps({"id": child["id"]}),
+                                     thread_id=thread["id"], parent_run_id=parent["id"]))
+        self.assertEqual(store.take_child_results(parent["id"]), [text])
+        store.save_turn_progress(parent["id"], [{"role": "tool", "tool_call_id": "join", "content": text}])
+        self.assertTrue(store.get_run(1, child["id"])["request"]["agent"]["wake_sent"])
+        self.assertEqual(store.take_child_results(parent["id"]), [])
+
+    def test_foreground_report_survives_parent_interruption_before_persistence(self):
+        from app import agents, chat_runs
+
+        thread, parent = self._parent()
+        async def finish(_request, _user, child):
+            store.finish_run(child["id"], {"content": "Final report"}, "completed")
+            return None
+        with patch.object(chat_runs, "start", side_effect=finish):
+            text, trace = asyncio.run(agents.spawn(user={"id": 1}, request=None, parent_run_id=parent["id"],
+                                                  thread_id=thread["id"], arguments='{"prompt":"inspect"}'))
+        self.assertIn("Final report", text)
+        store.abort_active(parent["id"], "interrupted")
+        candidates = store.wake_candidates(1, parent["thread_id"])
+        self.assertEqual([item["id"] for item in candidates], [trace["child_id"]])
+        self.assertEqual(candidates[0]["summary"], "Final report")
+
+    def test_agent_activity_agrees_between_snapshots_and_compact_events(self):
+        from app.chat_events import _downgrade_progress
+
+        thread, parent = self._parent()
+        child = store.start_child_run(user_id=1, thread_id=thread["id"], parent_run_id=parent["id"],
+                                      prompt="inspect", description="worker")
+        message = {"content": "Now writing", "tools": [
+            {"id": "spawn", "name": "spawn_subagent", "child_id": "grandchild", "status": "running", "background": True}],
+            "segments": [{"type": "tool", "id": "spawn"}, {"type": "content", "text": "Now writing"}]}
+        store.checkpoint(child["id"], message, events=[{"fuse": {"event": "activity", "phase": "model"}}])
+        row = store.list_thread_agents(1, parent["thread_id"])[0]
+        self.assertEqual(row["current"], "writing")
+        event = next(e for e in reversed(store.events_after(1, 0)) if e["type"] == "agent.progress")
+        self.assertEqual(_downgrade_progress(event, None)["payload"]["current"], "writing")
+        self.assertEqual(store.agent_current_activity(message, status="completed"), "")
+
+    def test_empty_completed_leg_does_not_reuse_old_report_or_tool_preamble(self):
+        old = {"role": "assistant", "content": "Report from previous leg"}
+        for tail in (
+            [{"role": "user", "content": "Continue with a new task"}],
+            [{"role": "assistant", "content": "I will inspect", "tool_calls": [{"id": "call"}]}],
+            [{"role": "assistant", "content": "I will inspect", "tool_calls": [{"id": "call"}]},
+             {"role": "tool", "content": "tool result"}],
+            [{"role": "assistant", "content": ""}],
+        ):
+            self.assertEqual(store.child_writeup({"status": "completed", "message": {},
+                                                  "request": {"messages": [old, *tail]}}), "")
+        self.assertEqual(store.last_assistant_text([old, {"role": "assistant", "content": [
+            {"type": "text", "text": "Final report"}]}]), "Final report")
+
+    def test_root_does_not_steal_live_nested_parents_report(self):
+        thread, root = self._parent()
+        parent = store.start_child_run(user_id=1, thread_id=thread["id"], parent_run_id=root["id"],
+                                       prompt="coordinate", description="parent", allow_nested_spawn=True, background=True)
+        child = store.start_child_run(user_id=1, thread_id=thread["id"], parent_run_id=parent["id"],
+                                      prompt="inspect", description="child", depth=2, background=True, allow_nested_spawn=True)
+        store.finish_run(child["id"], {"content": "Nested report"}, "completed")
+        envelope = store.render_task_output(child_id=child["id"], state="completed", text="Nested report")
+        store.queue_child_result(parent["id"], envelope, child_id=child["id"])
+        self.assertEqual(store.wake_candidates(1, root["thread_id"]), [])
+        self.assertEqual(store.take_child_results(parent["id"]), [envelope])
+        store.abort_active(parent["id"], "interrupted")
+        self.assertIn(child["id"], [row["id"] for row in store.wake_candidates(1, root["thread_id"])])
+
     def test_start_turn_omits_agent_when_coding_off(self):
         _thread, run = self._parent()
         self.assertNotIn("agent", run["request"])
@@ -918,7 +998,7 @@ class AgentCapsTest(unittest.TestCase):
         self.assertEqual(rows[0]["current"], "waiting")
         db.execute("UPDATE chat_runs SET updated_at=? WHERE id=?", (db.now(), child["id"]))
         rows = store.list_thread_agents(1, parent["thread_id"])
-        self.assertEqual(rows[0]["current"], "thinking")
+        self.assertEqual(rows[0]["current"], "waiting")  # no reasoning has arrived yet
 
     def test_spawn_start_failure_fails_queued_child(self):
         from app import agents

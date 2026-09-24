@@ -79,6 +79,8 @@ def _downgrade_progress(row, viewed):
     if not isinstance(run_id, str) or run_id == viewed:
         return row
     tick = {"run_id": run_id}
+    if "current" in payload:
+        tick["current"] = payload["current"]
     events = payload.get("events") if isinstance(payload.get("events"), list) else []
     patch = events[0].get("fuse") if events and isinstance(events[0], dict) else None
     if isinstance(patch, dict) and patch.get("event") == "message.patch":
@@ -92,7 +94,7 @@ def _downgrade_progress(row, viewed):
     tools = payload.get("tools")
     if isinstance(tools, list):
         tick["tools"] = len(tools)
-        for trace in reversed(tools):
+        for trace in reversed(tools) if "current" not in tick else []:
             if isinstance(trace, dict) and trace.get("status") in ("running", "progress", "queued"):
                 tick["current"] = str(trace.get("name") or "")
                 break

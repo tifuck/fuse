@@ -30,6 +30,9 @@ class _Result:
 
 class CommandDeliveryTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        stopping = patch.object(chat_runs, "_stopping", False)
+        stopping.start()
+        self.addCleanup(stopping.stop)
         self.tmp = tempfile.TemporaryDirectory(prefix="fuse-cmddel-")
         self.addCleanup(self.tmp.cleanup)
         self.conn = sqlite3.connect(str(Path(self.tmp.name) / "test.db"), check_same_thread=False)
@@ -206,7 +209,7 @@ class CommandDeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("<task id=", text)
         self.assertIn("spawn_subagent", text)
 
-    async def test_wake_after_cancelled_root_still_delivers(self):
+    async def test_cancelled_root_defers_report_until_user_continues(self):
         thread = chats.create_thread(1, model="offline")
         result = store.start_turn(1, thread["id"], "go", thread["revision"], "turn-cancel")
         parent = result["run"]
@@ -221,10 +224,12 @@ class CommandDeliveryTest(unittest.IsolatedAsyncioTestCase):
         store.finish_run(child["id"], {"content": "child report", "tools": []}, "completed")
         store.finish_run(parent["id"], {"content": "stopped", "tools": []}, "cancelled")
         started = await self._wake(parent["thread_id"])
-        self.assertEqual(len(started), 1)
+        self.assertEqual(len(started), 0)
         autos = self._auto_messages(thread["id"])
-        self.assertEqual(len(autos), 1)
-        self.assertIn("<task id=", autos[0]["content"])
+        self.assertEqual(len(autos), 0)
+        candidates = store.wake_candidates(1, parent["thread_id"])
+        self.assertEqual([item["id"] for item in candidates], [child["id"]])
+        self.assertEqual(candidates[0]["summary"], "child report")
 
 
 if __name__ == "__main__":

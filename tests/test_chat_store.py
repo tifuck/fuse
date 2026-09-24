@@ -17,6 +17,7 @@ from app import chat_store as store, chats, db
 
 class ChatStoreTest(unittest.TestCase):
     def setUp(self):
+        store.invalidate_committed_cursors()
         self.tmp = tempfile.TemporaryDirectory(prefix="fuse-chat-store-")
         self.addCleanup(self.tmp.cleanup)
         self.conn = sqlite3.connect(str(Path(self.tmp.name) / "test.db"), check_same_thread=False)

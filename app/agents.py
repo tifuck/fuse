@@ -602,8 +602,10 @@ async def spawn(
         if done.get("status") in ("cancelled", "interrupted"):
             status = "interrupted"
         if done["status"] in chat_store.TERMINAL:
-            chat_store.drop_pending_child_result(parent_run_id, child["id"])
-            chat_store.mark_wake_sent([child["id"]])
+            # Returning a tool result is not durable delivery. Keep a receipt
+            # pending until save_turn_progress saves this exact envelope.
+            chat_store.mark_child_background(child["id"])
+            chat_store.queue_child_result(parent_run_id, _envelope(done, description=description), child_id=child["id"])
     text = _envelope(done, fallback_id=child["id"], description=description)
     return text, _spawn_rec(
         status=status,
@@ -653,10 +655,10 @@ async def get_output(*, user_id: int, arguments: str, thread_id=None, parent_run
         child_id = row["id"]
         if row["status"] not in chat_store.ACTIVE:
             summary = _child_summary(row)
-            if parent_run_id:
-                chat_store.drop_pending_child_result(str(parent_run_id), child_id)
-            chat_store.mark_wake_sent([child_id])
             text = _envelope(row)
+            if parent_run_id:
+                chat_store.mark_child_background(child_id)
+                chat_store.queue_child_result(str(parent_run_id), text, child_id=child_id)
             status = "done" if row["status"] == "completed" else "error"
             if row["status"] in ("cancelled", "interrupted"):
                 status = "interrupted"

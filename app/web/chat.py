@@ -266,6 +266,7 @@ async def chat_run_get(request: Request, run_id: str):
             "model": req.get("model") or "",
             "description": str(agent.get("description") or "")[:200],
             "subagent_type": str(agent.get("subagent_type") or ""),
+            "activity": agent.get("activity"),
             "parent_description": parent_description,
             "messages": seed,
             "compaction": {"meter": meter} if meter else None,
