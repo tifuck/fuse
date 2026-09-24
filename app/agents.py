@@ -359,7 +359,8 @@ def _envelope(row: dict | None, *, fallback_id: str = "", description: str = "",
     if not desc:
         agent = (row.get("request") or {}).get("agent") if isinstance(row.get("request"), dict) else {}
         desc = str((agent or {}).get("description") or "")
-    return chat_store.render_task_output(child_id=row["id"], state=state, text=text, description=desc)
+    generation = str(((row.get("request") or {}).get("agent") or {}).get("delivery_generation") or "")
+    return chat_store.render_task_output(child_id=row["id"], state=state, text=text, description=desc, generation=generation)
 
 
 async def spawn(

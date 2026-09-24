@@ -103,6 +103,19 @@ test('historical tool activity cannot resurrect a thinking spinner or running la
   assert.equal(state.current, null);
 });
 
+test('agent activity uses its own queue and cancellation state', () => {
+  const c = world();
+  Object.assign(c, { activeRun: { message_id: 'root', status: 'running' },
+    agentRun: { message_id: 'child', status: 'queued' }, groupTraces: () => [],
+    lastCurrentTrace: () => null, assistantSegments: () => [], isConsoleView: () => false,
+    runIsStopping: run => Boolean(run.cancel_requested) });
+  load('currentActivity', c);
+  assert.equal(c.currentActivity({ id: 'child' }, [], true).label, 'Queued');
+  c.agentRun.status = 'running';
+  c.agentRun.cancel_requested = true;
+  assert.equal(c.currentActivity({ id: 'child' }, [], true).label, 'Stopping');
+});
+
 test('agent snapshots retain activity and replay cancellation without regressing the cursor', () => {
   const c = world();
   Object.assign(c, { agentRun: null, jobsRows: [], completedJobs: new Map(),

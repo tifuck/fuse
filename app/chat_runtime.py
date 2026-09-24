@@ -2788,6 +2788,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                                 text=(item["summary"] or item["status"]).strip()
                                 or "Subagent finished without a report.",
                                 description=item["description"],
+                                generation=item.get("generation", ""),
                             )
                             if store.queue_child_result(str(run_id), envelope, child_id=item["id"]):
                                 injected.append(envelope)

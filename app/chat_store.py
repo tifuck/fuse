@@ -885,6 +885,7 @@ def render_task_output(
     state: str,
     text: str,
     description: str = "",
+    generation: str = "",
 ) -> str:
     """OpenCode-style parent-facing envelope. The parent sees this, not tool spam."""
     ident = str(child_id or "")
@@ -908,6 +909,8 @@ def render_task_output(
     ]
     if summary:
         lines.append(f"<summary>{summary}</summary>")
+    if generation:
+        lines.append(f"<task_generation>{generation}</task_generation>")
     lines.append(f"<{tag}>")
     lines.append(body)
     lines.append(f"</{tag}>")
@@ -947,7 +950,12 @@ def queue_child_result(parent_run_id: str, envelope: str, child_id: str | None =
                 item for item in pending
                 if not (isinstance(item, dict) and str(item.get("id") or "") == str(child_id or ""))
             ]
-            pending.append({"id": str(child_id or ""), "text": str(envelope)})
+            child = conn.execute("SELECT request FROM chat_runs WHERE id=?", (child_id,)).fetchone() if child_id else None
+            child_agent = (json.loads(child["request"]).get("agent") or {}) if child else {}
+            generation = str(child_agent.get("delivery_generation") or "")
+            if generation and f"<task_generation>{generation}</task_generation>" not in envelope:
+                return False  # A result from a superseded execution must not be queued.
+            pending.append({"id": str(child_id or ""), "text": str(envelope), "generation": generation})
             agent["pending_child_results"] = pending[-PENDING_CHILD_RESULTS:]
             req["agent"] = agent
             conn.execute(
@@ -1019,9 +1027,17 @@ def take_child_results(parent_run_id: str) -> list[str]:
     if not isinstance(pending, list) or not pending:
         return []
     transcript = row["provider_messages"] or ""
+    ids = [str(item.get("id") or "") for item in pending if isinstance(item, dict) and item.get("id")]
+    generations = {}
+    if ids:
+        for child in db.fetchall(f"SELECT id,request FROM chat_runs WHERE id IN ({','.join('?' for _ in ids)})", ids):
+            generations[child["id"]] = str((json.loads(child["request"]).get("agent") or {}).get("delivery_generation") or "")
     out = []
     for item in pending:
         if isinstance(item, dict):
+            cid = str(item.get("id") or "")
+            if cid in generations and str(item.get("generation") or "") != generations[cid]:
+                continue
             text = str(item.get("text") or "").strip()
             if text and _json_needle(text) not in transcript:
                 out.append(text)
@@ -1294,6 +1310,7 @@ def continue_child_with_followups(run_id: str, followups: list) -> bool:
         agent["pending_followups"] = []
         agent["background"] = True
         agent["followup_continuation"] = True
+        agent["delivery_generation"] = uuid4().hex
         agent["wake_sent"] = False
         agent["wake_attempts"] = 0
         req["agent"] = agent
@@ -2658,6 +2675,7 @@ def wake_candidates(user_id, thread_id):
                 "id": row["id"],
                 "status": row["status"],
                 "attempts": int(agent.get("wake_attempts") or 0),
+                "generation": str(agent.get("delivery_generation") or ""),
                 "description": str(agent.get("description") or "subagent"),
                 "summary": child_writeup(
                     {"id": row["id"], "status": row["status"], "message": message if isinstance(message, dict) else {}, "request": {"agent": agent}}
@@ -2682,14 +2700,18 @@ def mark_wake_sent(run_ids, pending_guard_run: str | None = None):
         return
     with transaction() as conn:
         guarded: set[str] = set()
+        receipts = None
+        receipt_sources = []
         if pending_guard_run:
-            grow = conn.execute("SELECT request FROM chat_runs WHERE id=?", (pending_guard_run,)).fetchone()
+            grow = conn.execute("SELECT request,provider_messages FROM chat_runs WHERE id=?", (pending_guard_run,)).fetchone()
             if grow is not None:
                 try:
                     greq = json.loads(grow["request"] or "{}")
                 except (json.JSONDecodeError, TypeError):
                     greq = {}
                 gagent = greq.get("agent") if isinstance(greq, dict) and isinstance(greq.get("agent"), dict) else {}
+                receipts = gagent.get("wake_receipts")
+                receipt_sources = [dumps(greq.get("messages") or []), str(grow["provider_messages"] or ""), dumps(gagent.get("wake_seed_receipts") or {})]
                 guarded = {
                     str(item.get("id") or "")
                     for item in (gagent.get("pending_child_results") or [])
@@ -2706,6 +2728,15 @@ def mark_wake_sent(run_ids, pending_guard_run: str | None = None):
             except (json.JSONDecodeError, TypeError):
                 continue
             agent = req.get("agent") if isinstance(req, dict) and isinstance(req.get("agent"), dict) else {}
+            generation = str(agent.get("delivery_generation") or "")
+            if isinstance(receipts, dict):
+                receipt = receipts.get(run_id) or ""
+                if not receipt or (generation and f"<task_generation>{generation}</task_generation>" not in receipt):
+                    continue
+                if not any(_json_needle(receipt) in source for source in receipt_sources):
+                    continue
+            elif pending_guard_run and generation:
+                continue
             agent["wake_sent"] = True
             req["agent"] = agent
             conn.execute("UPDATE chat_runs SET request=? WHERE id=?", (dumps(req), run_id))
@@ -2755,13 +2786,11 @@ def settle_wake_children(run_id, child_ids):
         ).fetchone()
         if row is None:
             return
-        sources = [str(row["request"] or ""), str(row["provider_messages"] or "")]
-        trow = conn.execute(
-            "SELECT messages FROM chat_threads WHERE id=? AND user_id=?",
-            (row["thread_id"], row["user_id"]),
-        ).fetchone()
-        if trow is not None:
-            sources.append(str(trow["messages"] or ""))
+        request = json.loads(row["request"] or "{}")
+        receipts = (request.get("agent") or {}).get("wake_receipts") or {}
+        # Pending queues and unrelated historical thread bubbles are not proof
+        # that this wake delivered a report.
+        sources = [dumps(request.get("messages") or []), str(row["provider_messages"] or ""), dumps((request.get("agent") or {}).get("wake_seed_receipts") or {})]
         for cid in ids:
             crow = conn.execute("SELECT status,request FROM chat_runs WHERE id=?", (cid,)).fetchone()
             if crow is None or crow["status"] not in TERMINAL:
@@ -2773,8 +2802,12 @@ def settle_wake_children(run_id, child_ids):
             if not isinstance(creq, dict):
                 continue
             cagent = creq.get("agent") if isinstance(creq.get("agent"), dict) else {}
-            needle = _json_needle(f'<task id="{cid}"')
-            if any(needle in src for src in sources):
+            receipt = receipts.get(cid) or ""
+            generation = str(cagent.get("delivery_generation") or "")
+            if generation and f"<task_generation>{generation}</task_generation>" not in receipt:
+                continue
+            needle = _json_needle(receipt) if receipt else ""
+            if needle and any(needle in src for src in sources):
                 cagent["wake_sent"] = True
             else:
                 cagent["wake_attempts"] = int(cagent.get("wake_attempts") or 0) + 1
@@ -2803,7 +2836,7 @@ def thread_root_run(user_id, thread_id):
     return {"id": row["id"], "status": row["status"], "wake": bool(agent.get("wake"))}
 
 
-def mark_run_wake(run_id, child_ids=None):
+def mark_run_wake(run_id, child_ids=None, receipts=None):
     """Flag a run as an automated wake turn (subagent reports and/or command results)."""
     with transaction() as conn:
         row = conn.execute("SELECT request FROM chat_runs WHERE id=?", (run_id,)).fetchone()
@@ -2817,6 +2850,10 @@ def mark_run_wake(run_id, child_ids=None):
             return
         agent = req.get("agent") if isinstance(req.get("agent"), dict) else {}
         agent["wake"] = True
+        if receipts is not None:
+            agent["wake_receipts"] = receipts
+            seed = dumps(req.get("messages") or [])
+            agent["wake_seed_receipts"] = {cid: text for cid, text in receipts.items() if text and _json_needle(text) in seed}
         if child_ids:
             agent["wake_ids"] = [str(c) for c in child_ids if str(c)][:32]
         req["agent"] = agent
@@ -2853,8 +2890,14 @@ def list_thread_agents(user_id, thread_id, limit=100):
                   resume_count, (provider_messages IS NOT NULL) AS has_transcript, parent_run_id, root_run_id, agent_depth
            FROM chat_runs
            WHERE user_id=? AND thread_id=? AND parent_run_id IS NOT NULL
-           ORDER BY created_at DESC, id DESC LIMIT ?""",
-        (user_id, thread_id, max(1, min(int(limit), 200))),
+             AND (status IN ('queued','running') OR id IN (
+                 SELECT id FROM (SELECT id FROM chat_runs
+                   WHERE user_id=? AND thread_id=? AND parent_run_id IS NOT NULL
+                     AND status NOT IN ('queued','running')
+                   ORDER BY updated_at DESC, id DESC LIMIT ?) recent
+             ))
+           ORDER BY created_at DESC, id DESC""",
+        (user_id, thread_id, user_id, thread_id, max(1, min(int(limit), 200))),
     )
     counts: dict[str, int] = {}
     if rows:
@@ -3634,6 +3677,7 @@ def save_turn_progress(run_id, messages, loaded_tools=None, extra=None):
             except (TypeError, ValueError):
                 pass
         delivered_children: list[str] = []
+        delivered_generations = {}
         pending_steers = agent.get("pending_steers")
         if isinstance(pending_steers, list) and pending_steers:
             # Cleared in the same transaction that persists the transcript:
@@ -3652,6 +3696,7 @@ def save_turn_progress(run_id, messages, loaded_tools=None, extra=None):
                     text = str(item.get("text") or "")
                     if text and _json_needle(text) in scan:
                         delivered_children.append(str(item.get("id") or ""))
+                        delivered_generations[str(item.get("id") or "")] = str(item.get("generation") or "")
                     else:
                         kept.append(item)
                 else:
@@ -3693,6 +3738,8 @@ def save_turn_progress(run_id, messages, loaded_tools=None, extra=None):
             if not isinstance(creq, dict):
                 continue
             cagent = creq.get("agent") if isinstance(creq.get("agent"), dict) else {}
+            if str(cagent.get("delivery_generation") or "") != delivered_generations.get(cid, ""):
+                continue
             if cagent.get("wake_sent"):
                 continue
             cagent["wake_sent"] = True
@@ -4007,6 +4054,7 @@ def start_child_run(
                     "background": bool(background),
                     "wake_sent": False,
                     "wake_attempts": 0,
+                    "delivery_generation": uuid4().hex,
                     "auto": bool(auto),
                     "scheduled": bool(scheduled),
                 },
@@ -4462,6 +4510,7 @@ def _requeue_for_resume(row, messages, allowed=None):
         agent["background"] = True
         agent["wake_sent"] = False
         agent["wake_attempts"] = 0
+        agent["delivery_generation"] = uuid4().hex
     agent.setdefault("allowed_urls", agent.get("allowed_urls") or [])
     raw_loaded = row["loaded_tools"] if "loaded_tools" in row.keys() else None
     if raw_loaded:

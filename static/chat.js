@@ -3041,6 +3041,8 @@
         if (Array.isArray(payload.permissions)) syncPermQueueFromMessage({ permissions: payload.permissions });
         if (payload.run_id === agentViewId) agentLastEventAt = Date.now();
         if (agentsOpen && agentViewId && payload.run_id === agentViewId && agentRun && event.id > (agentRun.event_cursor || 0)) {
+          if (agentRun.status === "queued") agentRun.status = "running";
+          agentRun.updated_at = new Date().toISOString();
           if (!agentRun.message || typeof agentRun.message !== "object") agentRun.message = {};
           applyProgressPayload(agentRun.message, payload, true);
           agentRun.event_cursor = event.id;
@@ -6325,7 +6327,9 @@
   function currentActivity(msg, groups, live) {
     const traces = Array.isArray(msg && msg.tools) ? msg.tools : [];
     const grouped = groups || groupTraces(traces);
-    const stopping = Boolean(live && msg?.id === activeRun?.message_id && runIsStopping(activeRun));
+    const owner = msg?.id === activeRun?.message_id ? activeRun
+      : typeof agentRun !== "undefined" && msg?.id === agentRun?.message_id ? agentRun : null;
+    const stopping = Boolean(live && owner && runIsStopping(owner));
     let current = live && !stopping ? lastCurrentTrace(grouped) : null;
     const activity = msg?.id === activeRun?.message_id ? activeRun?.activity : msg?._activity;
     if (activity?.phase === "model") current = null;
@@ -6345,7 +6349,7 @@
     if (stopping) {
       phase = "stopping";
       label = "Stopping";
-    } else if (live && activeRun?.status === "queued" && msg?.id === activeRun.message_id) {
+    } else if (live && owner?.status === "queued") {
       phase = "queued";
       label = "Queued";
     } else if (current?.status === "queued") {
@@ -11984,6 +11988,7 @@
   async function showAgent(id) {
     if (!id) return;
     const gen = ++agentsViewGen;
+    agentLastEventAt = 0;
     agentViewId = id;
     sendSyncView(id);
     agentRun = null;
@@ -12076,6 +12081,7 @@
         applyProgressPayload(agentRun.message, event.payload, true);
         if (event.payload.status) agentRun.status = event.payload.status;
         else if (["agent.started", "agent.resumed"].includes(event.type)) agentRun.status = "queued";
+        else if (event.type === "agent.progress" && agentRun.status === "queued") agentRun.status = "running";
         if (event.payload.cancel_requested != null) agentRun.cancel_requested = event.payload.cancel_requested;
         else if (event.type === "agent.resumed") agentRun.cancel_requested = false;
         agentRun.event_cursor = event.id;

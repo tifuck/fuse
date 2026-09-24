@@ -40,6 +40,37 @@ class AgentCapsTest(unittest.TestCase):
         result = store.start_turn(1, thread["id"], "Hello", thread["revision"], "turn")
         return thread, result["run"]
 
+    def test_old_receipt_cannot_ack_recompleted_generation(self):
+        from app import agents
+        thread, parent = self._parent()
+        child = store.start_child_run(user_id=1, thread_id=thread["id"], parent_run_id=parent["id"], prompt="first", description="worker", background=True)
+        store.finish_run(child["id"], {"content": "same report"}, "completed")
+        old = agents._envelope(store.get_run(1, child["id"]))
+        store.queue_child_result(parent["id"], old, child_id=child["id"])
+        store.mark_run_wake(parent["id"], [child["id"]], receipts={child["id"]: old})
+        resumed = store.start_child_run(user_id=1, thread_id=thread["id"], parent_run_id=parent["id"], prompt="again", description="worker", background=True, resume_from_id=child["id"])
+        store.finish_run(child["id"], {"content": "same report"}, "completed")
+        self.assertTrue(resumed["request"]["agent"]["delivery_generation"])
+        store.save_turn_progress(parent["id"], [{"role": "user", "content": old}])
+        store.mark_wake_sent([child["id"]], pending_guard_run=parent["id"])
+        store.settle_wake_children(parent["id"], [child["id"]])
+        self.assertFalse(store.get_run(1, child["id"])["request"]["agent"]["wake_sent"])
+        self.assertFalse(store.queue_child_result(parent["id"], old, child_id=child["id"]))
+        fresh = agents._envelope(store.get_run(1, child["id"]))
+        self.assertTrue(store.queue_child_result(parent["id"], fresh, child_id=child["id"]))
+        store.save_turn_progress(parent["id"], [{"role": "user", "content": old}, {"role": "user", "content": fresh}])
+        self.assertTrue(store.get_run(1, child["id"])["request"]["agent"]["wake_sent"])
+
+    def test_agent_history_limit_never_hides_active_work(self):
+        thread, parent = self._parent()
+        live = store.start_child_run(user_id=1, thread_id=thread["id"], parent_run_id=parent["id"], prompt="live", description="live")
+        for i in range(3):
+            child = store.start_child_run(user_id=1, thread_id=thread["id"], parent_run_id=parent["id"], prompt=str(i), description=str(i))
+            store.finish_run(child["id"], {"content": "done"}, "completed")
+        rows = store.list_thread_agents(1, parent["thread_id"], limit=1)
+        self.assertEqual(len(rows), 2)
+        self.assertIn(live["id"], [row["id"] for row in rows])
+
     def test_join_report_acknowledged_only_with_durable_parent_transcript(self):
         from app import agents
 
@@ -696,7 +727,8 @@ class AgentCapsTest(unittest.TestCase):
         self.assertFalse(store.get_run(1, child["id"])["request"]["agent"].get("wake_sent"))
         # A newer unconsumed envelope also keeps the child unacknowledged.
         store.finish_run(child["id"], {"content": "report two", "tools": []}, "completed")
-        env2 = store.render_task_output(child_id=child["id"], state="completed", text="report two", description="bg")
+        env2 = store.render_task_output(child_id=child["id"], state="completed", text="report two", description="bg",
+                                        generation=resumed["request"]["agent"]["delivery_generation"])
         self.assertTrue(store.queue_child_result(parent["id"], env2, child_id=child["id"]))
         store.save_turn_progress(parent["id"], [{"role": "user", "content": env}, {"role": "user", "content": env2[:20]}])
         self.assertFalse(store.get_run(1, child["id"])["request"]["agent"].get("wake_sent"))
@@ -765,7 +797,7 @@ class AgentCapsTest(unittest.TestCase):
         rev = chats.get_thread(1, thread["id"])["revision"]
         env_a = store.render_task_output(child_id=child_a["id"], state="completed", text="alpha", description="a")
         wake = store.start_turn(1, thread["id"], f"AUTOMATED EVENT\n\n{env_a}", rev, "wake-s", auto=True)["run"]
-        store.mark_run_wake(wake["id"], [child_a["id"], child_b["id"]])
+        store.mark_run_wake(wake["id"], [child_a["id"], child_b["id"]], receipts={child_a["id"]: env_a})
         # Stopped by the user: A's bubble was already in the turn seed, B's
         # report never made it into any transcript.
         store.finish_run(wake["id"], {"content": "", "tools": []}, "cancelled")

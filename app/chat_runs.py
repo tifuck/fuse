@@ -852,6 +852,7 @@ async def _wake_parent(user_id: int, thread_id) -> None:
                 state=item["status"],
                 text=(item["summary"] or item["status"]).strip() or "Subagent finished without a report.",
                 description=item["description"],
+                generation=item.get("generation", ""),
             )
             for item in included
         ]
@@ -911,7 +912,7 @@ async def _wake_parent(user_id: int, thread_id) -> None:
         if run is None:
             chat_store.bump_wake_attempts(ids)
             return
-        chat_store.mark_run_wake(run["id"], ids)
+        chat_store.mark_run_wake(run["id"], ids, receipts=dict(zip(ids, envelopes)))
         try:
             await start(internal_request(user_id), dict(owner), result["run"])
         except Exception:
@@ -1350,6 +1351,7 @@ async def _run(request, user, run):
                             state="completed" if status == "completed" else status,
                             text=text,
                             description=str(child_agent.get("description") or ""),
+                            generation=str(child_agent.get("delivery_generation") or ""),
                         )
                         if not chat_store.queue_child_result(str(current["parent_run_id"]), envelope, child_id=ident):
                             schedule_wake(user["id"], run["thread_id"])
