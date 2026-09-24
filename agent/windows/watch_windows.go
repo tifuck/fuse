@@ -21,9 +21,7 @@ func startWatchOS() {
 
 func networkWatch() {
 	cb := syscall.NewCallback(func(callerContext, row, notificationType uintptr) uintptr {
-		if wakeFn != nil {
-			wakeFn(wakeNetwork)
-		}
+		notifyWake(wakeNetwork)
 		return 0
 	})
 	var handle uintptr

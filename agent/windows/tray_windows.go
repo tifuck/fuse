@@ -146,9 +146,7 @@ func trayWndProc(hwnd windows.HWND, msg uint32, wParam, lParam uintptr) uintptr 
 	switch msg {
 	case wmPowerBroadcast:
 		if wParam == pbtResumeAuto || wParam == pbtResumeSuspend {
-			if wakeFn != nil {
-				wakeFn(wakeResume)
-			}
+			notifyWake(wakeResume)
 		}
 	case wmTray:
 		if lParam == wmRButtonUp || lParam == wmLButtonUp {

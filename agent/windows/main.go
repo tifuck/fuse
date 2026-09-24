@@ -12,7 +12,7 @@ import (
 var version = "0.0.0"
 
 func usage() {
-	fmt.Fprintf(os.Stderr, "fuse-agent %s\n  run     [--url URL] [--code CODE] [--token TOK] [--config FILE]\n  install [--url URL] [--code CODE]\n  uninstall\n  update\n  service [--config FILE]\n", version)
+	fmt.Fprintf(os.Stderr, "fuse-agent %s\n  run     [--url URL] [--code CODE] [--token TOK] [--config FILE]\n  install [--url URL] [--code CODE]\n  uninstall\n  update\n  service [--config FILE]\n  swap    (internal: commit helper)\n", version)
 }
 
 func parseArgs(args []string) (cmd string, cfg *agentConfig, headless bool) {
@@ -44,6 +44,11 @@ func parseArgs(args []string) (cmd string, cfg *agentConfig, headless bool) {
 func main() {
 	log.SetFlags(0)
 	log.SetPrefix("")
+	// The swap helper is a subcommand of the same binary (Windows commit);
+	// it must not go through the generic flag parsing below.
+	if len(os.Args) > 1 && os.Args[1] == "swap" {
+		os.Exit(doSwap(os.Args[2:]))
+	}
 	cmd, cfg, headless := parseArgs(os.Args[1:])
 	if cmd == "-h" || cmd == "--help" || cmd == "help" {
 		usage()
@@ -110,8 +115,20 @@ func runInteractive(cfg *agentConfig, headless bool) {
 		once.Do(func() { close(stop) })
 	}
 	onUpdate := func() {
-		cfg.AutoUpdate = true
-		maybeUpdate(cfg)
+		if serviceRunning() {
+			// Jobs run in the service process; only it can reserve update
+			// admission. Restarting the service from here would kill them.
+			log.Printf("fuse-agent: update is owned by the running FuseAgent service; it will apply the update itself")
+			return
+		}
+		s := activeSession.Load()
+		if s == nil {
+			log.Printf("fuse-agent: update skipped; connector session is not running")
+			return
+		}
+		// Tray-triggered updates bypass the auto-update flag, not admission:
+		// maybeUpdate holds the reservation across swap and exit.
+		maybeUpdate(cfg, true, s.reserveUpdateAdmission)
 	}
 	startSession := true
 	if serviceRunning() {

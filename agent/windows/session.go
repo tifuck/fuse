@@ -14,12 +14,18 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
 
 const wsMax = 1024 * 1024
+
+// activeSession exposes the in-process session to other goroutines (tray
+// update admission). Atomic publication: the tray menu goroutine must read a
+// fully constructed session. nil in CLI/headless processes.
+var activeSession atomic.Pointer[session]
 
 type session struct {
 	cfg     *agentConfig
@@ -31,6 +37,29 @@ type session struct {
 	status  string
 	ready   bool
 	results []jobRes
+}
+
+// reserveUpdateAdmission pauses job intake and verifies nothing is in flight.
+// The hold must span swapAndRelaunch plus process exit: intake refusal makes
+// the invariant durable for the minutes between the reservation and the
+// exit, instead of a one-off idle check racing the pump.
+func (s *session) reserveUpdateAdmission() (hold func(), ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.results) != 0 {
+		return nil, false
+	}
+	s.jobs.mu.Lock()
+	defer s.jobs.mu.Unlock()
+	if len(s.jobs.live) != 0 || len(s.jobs.queue) != 0 {
+		return nil, false
+	}
+	s.jobs.paused = true
+	return func() {
+		s.jobs.mu.Lock()
+		s.jobs.paused = false
+		s.jobs.mu.Unlock()
+	}, true
 }
 
 func archSKU() string {
@@ -240,6 +269,7 @@ func runSession(cfg *agentConfig, stop chan struct{}) {
 		wake: make(chan int, 8),
 		jobs: newJobHub(),
 	}
+	activeSession.Store(s)
 	startWatch(s)
 	host, userName := hostnameUser()
 	failIndex := 0
@@ -261,7 +291,7 @@ func runSession(cfg *agentConfig, stop chan struct{}) {
 		default:
 		}
 		if failIndex == 0 && wake == 0 && s.idleForUpdate() {
-			maybeUpdate(cfg)
+			maybeUpdate(cfg, false, s.reserveUpdateAdmission)
 		}
 		if wake == wakeResume {
 			log.Printf("fuse-agent: resume detected")
@@ -465,7 +495,7 @@ func (s *session) pump(conn *websocket.Conn, stop chan struct{}, cfg *agentConfi
 			}
 			if !time.Now().Before(nextUpdate) && s.idleForUpdate() {
 				nextUpdate = time.Now().Add(updateEvery)
-				maybeUpdate(cfg)
+				maybeUpdate(cfg, false, s.reserveUpdateAdmission)
 			}
 			if send {
 				if err := s.sendJSON(map[string]any{"v": 1, "t": "ping"}); err != nil {

@@ -40,6 +40,7 @@ type jobHub struct {
 	live    map[string]*liveJob
 	queue   chan map[string]any
 	started bool
+	paused  bool // update admission: refuse intake while an exit-commit is held
 }
 
 func newJobHub() *jobHub {
@@ -61,7 +62,10 @@ func (h *jobHub) handle(s *session, msg map[string]any) {
 	h.mu.Unlock()
 	id := fmt.Sprint(msg["id"])
 	h.mu.Lock()
-	if id == "" || id == "<nil>" || len(h.live) >= maxJobs || h.live[id] != nil {
+	if id == "" || id == "<nil>" || h.paused || len(h.live) >= maxJobs || h.live[id] != nil {
+		// While update admission is held (paused) intake must be refused,
+		// never queued: the holder is about to swap and exit, and a queued
+		// job would be killed silently.
 		h.mu.Unlock()
 		s.sendRes(id, false, 1, "", "", "agent is busy or job id is invalid")
 		return

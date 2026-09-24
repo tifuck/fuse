@@ -25,6 +25,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <sys/file.h>
 #ifdef __linux__
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
@@ -104,12 +105,25 @@ static char g_token[192] = {0};
 static char g_code[128] = {0};
 static char g_config[PATH_MAX] = {0};
 static int g_auto_update = 0;
-static volatile sig_atomic_t g_stop = 0;
-static volatile sig_atomic_t g_wake = 0;
+/* Wake/stop state crosses threads and signal contexts ONLY through pipes:
+ * write(2) is async-signal-safe, and a single reader (the session-loop
+ * thread) derives the flags below from the bytes. No shared variable is
+ * written cross-thread, so correctness never depends on lock-free atomics.
+ * Shared wake pipe bytes: 1 = resume, 2 = network change, 0 = pure wakeup.
+ * Stop does NOT travel on the wake pipe: out_wake can fill it with zeros and
+ * a nonblocking stop write would then hit EAGAIN and be lost forever. Stop
+ * is level-triggered on dedicated, unsaturable stop pipes that only on_sig
+ * writes; record_main_stop() drains one while setting the sticky flag. */
+static int g_stop_main = 0;    /* main-thread only; set via stop pipe */
+static int g_wake_reason = 0;  /* main-thread only; latest wake reason */
 static pthread_mutex_t g_conn_mu = PTHREAD_MUTEX_INITIALIZER;
 static int g_live_fd = -1;
 static int g_wake_rd = -1;
 static int g_wake_wr = -1;
+static int g_main_stop_rd = -1;
+static int g_main_stop_wr = -1;
+static int g_watch_stop_rd = -1;
+static int g_watch_stop_wr = -1;
 static int g_watch_started = 0;
 
 static void die(const char *fmt, ...) {
@@ -124,27 +138,66 @@ static void die(const char *fmt, ...) {
 
 static void on_sig(int sig) {
     (void)sig;
-    g_stop = 1;
+    /* Dedicated stop pipes carry the signal: only this handler writes them,
+     * so they cannot saturate and a stop can never be lost to EAGAIN the way
+     * it would on the shared wake pipe (which out_wake can fill with zeros).
+     * The wake-pipe byte is best-effort: it only speeds up the poll wakeup;
+     * the reason it may carry would degrade to a ping-timeout reconnect. */
+    char stop = 1, wake = 0;
+    if (g_main_stop_wr >= 0) {
+        (void)!write(g_main_stop_wr, &stop, 1);
+    }
+    if (g_watch_stop_wr >= 0) {
+        (void)!write(g_watch_stop_wr, &stop, 1);
+    }
     if (g_wake_wr >= 0) {
-        char x = 1;
-        (void)!write(g_wake_wr, &x, 1);
+        (void)!write(g_wake_wr, &wake, 1);
     }
 }
 
 static void on_usr1(int sig) {
     (void)sig;
-    g_wake = WAKE_RESUME;
+    char b = 1;
     if (g_wake_wr >= 0) {
-        char x = 1;
-        (void)!write(g_wake_wr, &x, 1);
+        (void)!write(g_wake_wr, &b, 1);
     }
 }
 
-static void drain_wake_pipe(void) {
+/* Single consumer: the session-loop thread. Derives the latest wake reason
+ * from the shared wake pipe bytes. */
+static void consume_wake(void) {
     if (g_wake_rd < 0) return;
     char buf[64];
-    while (read(g_wake_rd, buf, sizeof(buf)) > 0) {
+    ssize_t k;
+    while ((k = read(g_wake_rd, buf, sizeof(buf))) > 0) {
+        for (ssize_t i = 0; i < k; i++) {
+            switch (buf[i]) {
+            case 1: g_wake_reason = WAKE_RESUME; break;
+            case 2: g_wake_reason = WAKE_NETWORK; break;
+            default: break;
+            }
+        }
     }
+}
+
+/* Level-triggered stop: drain the dedicated stop pipe while recording the
+ * sticky flag. Only on_sig writes this pipe, so it cannot saturate; even if
+ * several signals queued, one drain records them all. */
+static void record_main_stop(void) {
+    if (g_main_stop_rd >= 0) {
+        char buf[64];
+        while (read(g_main_stop_rd, buf, sizeof(buf)) > 0) {
+        }
+    }
+    g_stop_main = 1;
+}
+
+/* Atomically consume-and-clear the pending wake reason (main thread only,
+ * so no lost reset is possible against producers: they only write bytes). */
+static int wake_take(void) {
+    int r = g_wake_reason;
+    g_wake_reason = 0;
+    return r;
 }
 
 static void set_live_fd(int fd) {
@@ -154,14 +207,18 @@ static void set_live_fd(int fd) {
 }
 
 static void request_reconnect(int reason) {
-    g_wake = reason;
+    char b = (reason == WAKE_RESUME) ? 1 : 2;
+    /* Validate and shut the fd down under the connection mutex: a copied fd
+     * could be closed and re-used by a fresh connection before the shutdown
+     * landed. close() only happens after set_live_fd(-1) under this same
+     * mutex, so a value read here is either still the live connection or -1;
+     * a recycled number can only be re-registered after that transition. */
     pthread_mutex_lock(&g_conn_mu);
     int fd = g_live_fd;
-    pthread_mutex_unlock(&g_conn_mu);
     if (fd >= 0) shutdown(fd, SHUT_RDWR);
+    pthread_mutex_unlock(&g_conn_mu);
     if (g_wake_wr >= 0) {
-        char x = 1;
-        (void)!write(g_wake_wr, &x, 1);
+        (void)!write(g_wake_wr, &b, 1);
     }
 }
 
@@ -235,24 +292,34 @@ static int wait_fd(int fd, int events, int timeout_ms) {
             left = (int)(deadline - now_mono_ms());
             if (left <= 0) return 0;
         }
-        struct pollfd p[2];
+        struct pollfd p[3];
         int n = 1;
+        int wake_i = -1, stop_i = -1;
         p[0].fd = fd;
         p[0].events = (short)events;
         p[0].revents = 0;
         if (g_wake_rd >= 0) {
-            p[1].fd = g_wake_rd;
-            p[1].events = POLLIN;
-            p[1].revents = 0;
-            n = 2;
+            wake_i = n;
+            p[n].fd = g_wake_rd;
+            p[n].events = POLLIN;
+            p[n].revents = 0;
+            n++;
+        }
+        if (g_main_stop_rd >= 0) {
+            stop_i = n;
+            p[n].fd = g_main_stop_rd;
+            p[n].events = POLLIN;
+            p[n].revents = 0;
+            n++;
         }
         int pr = poll(p, n, left);
-        if (n == 2 && (p[1].revents & POLLIN)) drain_wake_pipe();
+        if (wake_i >= 0 && (p[wake_i].revents & POLLIN)) consume_wake();
+        if (stop_i >= 0 && (p[stop_i].revents & POLLIN)) record_main_stop();
         if (pr < 0) {
             if (errno == EINTR) continue;
             return -1;
         }
-        if (g_wake || g_stop) return -2;
+        if (g_wake_reason || g_stop_main) return -2;
         if (pr == 0) return 0;
         if (p[0].revents & (POLLERR | POLLHUP | POLLNVAL)) {
             if (p[0].revents & events) return 1;
@@ -341,7 +408,11 @@ static int tls_connect(struct tls *t, const struct url *u) {
 }
 
 static void tls_close(struct tls *t) {
-    if (t->fd >= 0 && t->fd == g_live_fd) set_live_fd(-1);
+    if (t->fd >= 0) {
+        pthread_mutex_lock(&g_conn_mu);
+        if (t->fd == g_live_fd) g_live_fd = -1;
+        pthread_mutex_unlock(&g_conn_mu);
+    }
     if (t->ssl) {
         SSL_set_quiet_shutdown(t->ssl, 1);
         SSL_shutdown(t->ssl);
@@ -357,7 +428,7 @@ static int tls_write_all(struct tls *t, const void *buf, size_t n) {
     const unsigned char *p = buf;
     int64_t deadline = now_mono_ms() + IO_TIMEOUT_MS;
     while (n) {
-        if (g_wake || g_stop) return -1;
+        if (g_wake_reason || g_stop_main) return -1;
         int k = SSL_write(t->ssl, p, (int)n);
         if (k > 0) {
             p += k;
@@ -494,8 +565,9 @@ static int ws_send_text(struct tls *t, const char *s) {
 }
 
 static void out_wake(void) {
+    /* Pure wakeup: byte 0 carries no wake reason. */
     if (g_wake_wr >= 0) {
-        char x = 1;
+        char x = 0;
         (void)!write(g_wake_wr, &x, 1);
     }
 }
@@ -557,7 +629,7 @@ static int ssl_read_n(struct tls *t, unsigned char *buf, size_t n) {
             got += take;
             continue;
         }
-        if (g_wake || g_stop) return -1;
+        if (g_wake_reason || g_stop_main) return -1;
         int k = SSL_read(t->ssl, buf + got, (int)(n - got));
         if (k > 0) {
             got += (size_t)k;
@@ -1953,14 +2025,59 @@ static int ver_newer(const char *cand, const char *cur) {
     return 0;
 }
 
-static int maybe_update(void) {
+/* Cross-process update ownership: exactly one updater at a time (the daemon's
+ * idle-gated auto-update or a manual `fuse-agent update`). The lock file is
+ * created once and never unlinked while held, so contenders always flock the
+ * same inode; release is close(). */
+static int update_lock_acquire(const char *self, char *lockpath, size_t cap) {
+    if (snprintf(lockpath, cap, "%s.update.lock", self) >= (int)cap) return -1;
+    int fd = open(lockpath, O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
+    if (fd < 0) return -1;
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+/* Exclusive-create staging name. The update lock already serializes updaters,
+ * but the staging file itself is still created O_EXCL (mkstemp) so a leftover
+ * from a crashed updater can never be re-opened and truncated by the next
+ * run: verification then always covers bytes this process alone wrote. */
+static int format_update_staging(char *dst, size_t cap, const char *self) {
+    size_t n = strlen(self);
+    if (n + sizeof(".new.XXXXXX") > cap) return -1;
+    memcpy(dst, self, n);
+    memcpy(dst + n, ".new.XXXXXX", sizeof(".new.XXXXXX"));
+    return 0;
+}
+
+/* allow_exec: only the connected daemon may execv() into the new build - it
+ * replaces itself (same PID, single daemon) and only from the idle-gated
+ * call sites. A manual `fuse-agent update` runs in its own process and must
+ * never become a second live daemon (two instances on one token replace each
+ * other forever), so it stages the verified binary and leaves restart
+ * ownership to the operator or systemd. */
+static int maybe_update(int allow_exec) {
     if (!g_auto_update || !g_url[0]) return 0;
-    char tmp[PATH_MAX];
-    snprintf(tmp, sizeof(tmp), "/tmp/fuse-manifest.%d", (int)getpid());
-    if (http_get_file(g_url, "/agent/v1/manifest", tmp, 300000) != 0) return 0;
-    FILE *f = fopen(tmp, "rb");
-    if (!f) return 0;
+    char self[PATH_MAX];
+    ssize_t k = readlink("/proc/self/exe", self, sizeof(self) - 1);
+    if (k < 0) return 0;
+    self[k] = 0;
+    char lockpath[PATH_MAX];
+    int lockfd = update_lock_acquire(self, lockpath, sizeof(lockpath));
+    if (lockfd < 0) {
+        fprintf(stderr, "fuse-agent: update skipped; another updater is active\n");
+        return 0;
+    }
+    int rc = 0;
+    char tmp[PATH_MAX] = {0}, neu[PATH_MAX] = {0};
+    cJSON *root = NULL;
     char *body = NULL;
+    snprintf(tmp, sizeof(tmp), "/tmp/fuse-manifest.%d", (int)getpid());
+    if (http_get_file(g_url, "/agent/v1/manifest", tmp, 300000) != 0) goto out;
+    FILE *f = fopen(tmp, "rb");
+    if (!f) goto out;
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
     rewind(f);
@@ -1978,57 +2095,56 @@ static int maybe_update(void) {
     }
     fclose(f);
     unlink(tmp);
-    if (!body) return 0;
-    cJSON *root = cJSON_Parse(body);
+    tmp[0] = 0;
+    if (!body) goto out;
+    root = cJSON_Parse(body);
     free(body);
-    if (!root) return 0;
+    body = NULL;
+    if (!root) goto out;
     const char *ver = json_cstr(root, "version", "");
-    if (!ver[0] || !ver_newer(ver, FUSE_AGENT_VERSION)) {
-        cJSON_Delete(root);
-        return 0;
-    }
+    if (!ver[0] || !ver_newer(ver, FUSE_AGENT_VERSION)) goto out;
     cJSON *bins = cJSON_GetObjectItemCaseSensitive(root, "binaries");
     cJSON *bin = bins ? cJSON_GetObjectItemCaseSensitive(bins, arch_sku()) : NULL;
     const char *path = json_cstr(bin, "path", "");
     const char *expect = json_cstr(bin, "sha256", "");
-    if (!path[0] || !expect[0]) {
-        cJSON_Delete(root);
-        return 0;
-    }
-    char self[PATH_MAX];
-    ssize_t k = readlink("/proc/self/exe", self, sizeof(self) - 1);
-    if (k < 0) {
-        cJSON_Delete(root);
-        return 0;
-    }
-    self[k] = 0;
-    char neu[PATH_MAX];
-    if (snprintf(neu, sizeof(neu), "%s.new", self) >= (int)sizeof(neu)) {
-        cJSON_Delete(root);
-        return 0;
-    }
-    int ok = http_get_file(g_url, path, neu, 128 * 1024 * 1024);
-    if (ok != 0) {
-        cJSON_Delete(root);
-        return 0;
+    if (!path[0] || !expect[0]) goto out;
+    if (format_update_staging(neu, sizeof(neu), self) != 0) goto out;
+    int sfd = mkstemp(neu);
+    if (sfd < 0) goto out;
+    close(sfd);
+    if (http_get_file(g_url, path, neu, 128 * 1024 * 1024) != 0) {
+        unlink(neu);
+        goto out;
     }
     char got[72];
     if (sha256_file(neu, got, sizeof(got)) != 0 || strcmp(got, expect) != 0) {
         unlink(neu);
-        cJSON_Delete(root);
-        return 0;
+        goto out;
     }
     chmod(neu, 0755);
     if (rename(neu, self) != 0) {
         unlink(neu);
-        cJSON_Delete(root);
-        return 0;
+        goto out;
     }
-    cJSON_Delete(root);
+    if (!allow_exec) {
+        fprintf(stderr, "fuse-agent: updated to %s\n", ver);
+        fprintf(stderr,
+                "fuse-agent: restart the connector to activate "
+                "(systemctl restart fuse-agent, or rerun it)\n");
+        goto out;
+    }
     fprintf(stderr, "fuse-agent: updated to %s, restarting\n", ver);
-    char *argv[] = {self, "run", "--config", g_config, NULL};
-    execv(self, argv);
+    {
+        char *argv[] = {self, "run", "--config", g_config, NULL};
+        execv(self, argv); /* O_CLOEXEC fds (incl. the lock) close here */
+    }
     _exit(0);
+out:
+    if (root) cJSON_Delete(root);
+    free(body);
+    if (tmp[0]) unlink(tmp);
+    close(lockfd);
+    return rc;
 }
 
 #ifdef __linux__
@@ -2151,10 +2267,10 @@ static void *watch_thread(void *arg) {
         }
     }
 
-    while (!g_stop) {
-        struct pollfd p[2];
+    while (1) {
+        struct pollfd p[3];
         int n = 0;
-        int nl_i = -1, bus_i = -1;
+        int nl_i = -1, bus_i = -1, stop_i = -1;
         if (nl >= 0) {
             nl_i = n;
             p[n].fd = nl;
@@ -2169,8 +2285,16 @@ static void *watch_thread(void *arg) {
             p[n].revents = 0;
             n++;
         }
+        if (g_watch_stop_rd >= 0) {
+            stop_i = n;
+            p[n].fd = g_watch_stop_rd;
+            p[n].events = POLLIN;
+            p[n].revents = 0;
+            n++;
+        }
         int pr = poll(p, n, 1000);
         (void)pr;
+        if (stop_i >= 0 && (p[stop_i].revents & POLLIN)) break;
         if (nl_i >= 0 && (p[nl_i].revents & POLLIN)) drain_netlink(nl);
         if (bus_i >= 0 && (p[bus_i].revents & POLLIN) && sd_bus_process) sd_bus_process(bus, NULL);
         int up = default_route_up();
@@ -2187,9 +2311,12 @@ static void *watch_thread(void *arg) {
     (void)arg;
     int64_t last_boot = now_boot_ms();
     int64_t last_mono = now_mono_ms();
-    while (!g_stop) {
-        struct pollfd p = {g_wake_rd, POLLIN, 0};
-        poll(&p, g_wake_rd >= 0 ? 1 : 0, 1000);
+    while (1) {
+        /* Sleep on the watch stop pipe only: the main wake pipe belongs to
+         * the session-loop reader, and no shared stop flag is read here. */
+        struct pollfd p = {g_watch_stop_rd, POLLIN, 0};
+        int pr = poll(&p, g_watch_stop_rd >= 0 ? 1 : 0, 1000);
+        if (pr > 0 && (p.revents & POLLIN)) break;
         int64_t boot = now_boot_ms();
         int64_t mono = now_mono_ms();
         if ((boot - last_boot) - (mono - last_mono) >= SUSPEND_GAP_MS) request_reconnect(WAKE_RESUME);
@@ -2202,10 +2329,18 @@ static void *watch_thread(void *arg) {
 
 static void start_watch_thread(void) {
     if (g_watch_started) return;
-    int p[2];
+    int p[2], q[2], r[2];
     if (pipe2(p, O_CLOEXEC | O_NONBLOCK) == 0) {
         g_wake_rd = p[0];
         g_wake_wr = p[1];
+    }
+    if (pipe2(q, O_CLOEXEC | O_NONBLOCK) == 0) {
+        g_main_stop_rd = q[0];
+        g_main_stop_wr = q[1];
+    }
+    if (pipe2(r, O_CLOEXEC) == 0) {
+        g_watch_stop_rd = r[0];
+        g_watch_stop_wr = r[1];
     }
     pthread_t th;
     if (pthread_create(&th, NULL, watch_thread, NULL) == 0) {
@@ -2217,26 +2352,50 @@ static void start_watch_thread(void) {
 static void wait_interruptible_ms(int ms) {
     if (ms <= 0) return;
     int64_t deadline = now_mono_ms() + ms;
-    while (!g_stop) {
-        if (g_wake) return;
+    while (!g_stop_main) {
+        if (g_wake_reason) return;
         int64_t left = deadline - now_mono_ms();
         if (left <= 0) return;
         if (left > 1000) left = 1000;
-        struct pollfd p = {g_wake_rd, POLLIN, 0};
-        int pr = poll(&p, g_wake_rd >= 0 ? 1 : 0, (int)left);
-        if (pr > 0) drain_wake_pipe();
+        struct pollfd fds[2];
+        int nfds = 0, wake_i = -1, stop_i = -1;
+        if (g_wake_rd >= 0) {
+            wake_i = nfds;
+            fds[nfds].fd = g_wake_rd;
+            fds[nfds].events = POLLIN;
+            fds[nfds].revents = 0;
+            nfds++;
+        }
+        if (g_main_stop_rd >= 0) {
+            stop_i = nfds;
+            fds[nfds].fd = g_main_stop_rd;
+            fds[nfds].events = POLLIN;
+            fds[nfds].revents = 0;
+            nfds++;
+        }
+        int pr = poll(fds, nfds, (int)left);
+        if (pr > 0) {
+            if (wake_i >= 0 && (fds[wake_i].revents & POLLIN)) consume_wake();
+            if (stop_i >= 0 && (fds[stop_i].revents & POLLIN)) record_main_stop();
+        }
     }
 }
 
 /* No queued results and no running/queued jobs: safe to execv() into an
  * update without orphaning in-flight work. */
 static int agent_idle(void) {
-    pthread_mutex_lock(&g_out_mu);
-    int out_n = g_out_n;
-    pthread_mutex_unlock(&g_out_mu);
+    /* Order matters: a worker enqueues its result (g_out_mu) strictly before
+     * dropping g_busy (g_job_mu). Sampling jobs first, then outputs, cannot
+     * miss work: jobs==0 implies every completed job is already counted in
+     * g_out_n. The previous outputs-first order could observe out_n==0, then
+     * a completion enqueued, then jobs==0, and report idle while a result was
+     * still queued - and maybe_update's execv would discard it. */
     pthread_mutex_lock(&g_job_mu);
     int jobs = g_qcount + g_busy;
     pthread_mutex_unlock(&g_job_mu);
+    pthread_mutex_lock(&g_out_mu);
+    int out_n = g_out_n;
+    pthread_mutex_unlock(&g_out_mu);
     return out_n == 0 && jobs == 0;
 }
 
@@ -2256,13 +2415,12 @@ static int session_loop(void) {
      * soon after connecting so restarts pick up releases quickly. */
     int64_t next_update_ms = now_mono_ms() + 60 * 1000;
     start_watch_thread();
-    while (!g_stop) {
+    while (!g_stop_main) {
         attempts++;
-        int wake = g_wake;
+        consume_wake();
+        int wake = wake_take(); /* consume then take: no lost reset */
         /* Don't stall a resume/network reconnect on the auto-update HTTP fetch. */
-        if (fail_index == 0 && wake == 0 && agent_idle()) maybe_update();
-        g_wake = 0;
-        drain_wake_pipe();
+        if (fail_index == 0 && wake == 0 && agent_idle()) maybe_update(1);
         if (wake == WAKE_RESUME) fprintf(stderr, "fuse-agent: resume detected\n");
         else if (wake == WAKE_NETWORK) fprintf(stderr, "fuse-agent: network up\n");
         if (ever_connected || attempts > 1)
@@ -2345,17 +2503,18 @@ static int session_loop(void) {
         struct conn_watch watch;
         conn_watch_init(&watch, now_mono_ms(), now_boot_ms());
         set_live_fd(t.fd);
-        while (!g_stop) {
+        while (!g_stop_main) {
             int send_ping = 0;
-            int wake_now = g_wake;
-            g_wake = 0;
+            consume_wake();
+            int wake_now = wake_take();
             drop_reason = conn_watch_tick(&watch, now_mono_ms(), now_boot_ms(), wake_now, &send_ping);
             if (drop_reason) break;
             if (send_ping) {
                 static const char ping_json[] = "{\"v\":1,\"t\":\"ping\"}";
                 if (ws_send(&t, 1, (const unsigned char *)ping_json, sizeof(ping_json) - 1) != 0) {
-                    drop_reason = (g_wake && wake_reason_str(g_wake)[0]) ? wake_reason_str(g_wake)
-                                                                        : "io error";
+                    int werr = g_wake_reason;
+                    drop_reason = (werr && wake_reason_str(werr)[0]) ? wake_reason_str(werr)
+                                                                     : "io error";
                     break;
                 }
                 conn_watch_sent_ping(&watch, now_mono_ms());
@@ -2366,7 +2525,7 @@ static int session_loop(void) {
             }
             if (g_auto_update && now_mono_ms() >= next_update_ms) {
                 if (agent_idle()) {
-                    maybe_update(); /* execv on success; returns on failure */
+                    maybe_update(1); /* execv on success; returns on failure */
                     next_update_ms = now_mono_ms() + UPDATE_EVERY_MS;
                 } else {
                     /* Jobs in flight: retry soon rather than starve updates. */
@@ -2374,25 +2533,36 @@ static int session_loop(void) {
                 }
             }
             if (SSL_pending(t.ssl) == 0 && t.pb_off >= t.pb_len) {
-                struct pollfd p[2];
+                struct pollfd p[3];
                 int n = 1;
+                int wake_i = -1, stop_i = -1;
                 p[0].fd = t.fd;
                 p[0].events = POLLIN;
                 p[0].revents = 0;
                 if (g_wake_rd >= 0) {
-                    p[1].fd = g_wake_rd;
-                    p[1].events = POLLIN;
-                    p[1].revents = 0;
-                    n = 2;
+                    wake_i = n;
+                    p[n].fd = g_wake_rd;
+                    p[n].events = POLLIN;
+                    p[n].revents = 0;
+                    n++;
+                }
+                if (g_main_stop_rd >= 0) {
+                    stop_i = n;
+                    p[n].fd = g_main_stop_rd;
+                    p[n].events = POLLIN;
+                    p[n].revents = 0;
+                    n++;
                 }
                 int pr = poll(p, n, conn_watch_wait_ms(&watch, now_mono_ms()));
-                if (n == 2 && (p[1].revents & POLLIN)) drain_wake_pipe();
+                if (wake_i >= 0 && (p[wake_i].revents & POLLIN)) consume_wake();
+                if (stop_i >= 0 && (p[stop_i].revents & POLLIN)) record_main_stop();
                 if (pr < 0) {
                     if (errno == EINTR) continue;
                     drop_reason = "io error";
                     break;
                 }
-                if (g_wake) continue;
+                if (g_stop_main) break; /* loop condition exits, then cleanup */
+                if (g_wake_reason) continue;
                 if (p[0].revents & (POLLERR | POLLHUP | POLLNVAL)) {
                     drop_reason = "socket closed";
                     break;
@@ -2407,7 +2577,8 @@ static int session_loop(void) {
             size_t n_in = 0;
             char *msg = ws_read_text(&t, &opcode, &n_in);
             if (!msg) {
-                drop_reason = g_wake ? wake_reason_str(g_wake) : "socket closed";
+                int wdrop = g_wake_reason;
+                drop_reason = wdrop ? wake_reason_str(wdrop) : "socket closed";
                 if (!drop_reason[0]) drop_reason = "socket closed";
                 break;
             }
@@ -2466,7 +2637,7 @@ static int session_loop(void) {
         }
         set_live_fd(-1);
         tls_close(&t);
-        if (!g_stop) {
+        if (!g_stop_main) {
             if (replaced) {
                 /* Another instance paired with the same token took over.
                    Retry slowly so two duplicates cannot kick each other. */
@@ -2475,8 +2646,7 @@ static int session_loop(void) {
                 wait_interruptible_ms(wait * 1000);
                 attempts = 0;
             } else {
-                int wake_now = g_wake;
-                g_wake = 0;
+                int wake_now = wake_take(); /* consume then take */
                 if (wake_now == WAKE_RESUME || (drop_reason && strcmp(drop_reason, "resume") == 0))
                     fprintf(stderr, "fuse-agent: resume detected\n");
                 else if (wake_now == WAKE_NETWORK ||
@@ -2774,8 +2944,9 @@ int main(int argc, char **argv) {
     if (g_config[0]) load_config(g_config);
     if (strcmp(cmd, "update") == 0) {
         g_auto_update = 1;
-        maybe_update();
-        return 0;
+        /* allow_exec=0: a manual update stages the verified binary and never
+         * execs a second daemon or disturbs the running one. */
+        return maybe_update(0);
     }
     if (strcmp(cmd, "run") != 0) {
         usage();
