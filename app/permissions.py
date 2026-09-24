@@ -410,6 +410,25 @@ def grants_for(user_id: int, thread_id: int) -> list[dict]:
     return out
 
 
+def pending_asks(user_id: int, thread_id: int) -> list[dict]:
+    """Live asks for this thread, parent or subagent, for reconnect card seeding.
+
+    The dock queue is event-driven; a reload or socket resync after a child
+    raised an ask would otherwise never render the card (child asks live in
+    agent.progress payloads, not the thread transcript).
+    """
+    rows = db.fetchall(
+        "SELECT * FROM chat_permission_asks WHERE user_id=? AND thread_id=? AND status='pending' ORDER BY created_at",
+        (int(user_id), int(thread_id)),
+    )
+    out = []
+    for row in rows:
+        if ask_expired(row["expires_at"]):
+            continue
+        out.append(_public_payload(row))
+    return out
+
+
 def revoke_grant(user_id: int, grant_id: int) -> bool:
     with db.tx() as conn:
         cur = conn.execute("DELETE FROM chat_permission_grants WHERE id=? AND user_id=?", (int(grant_id), int(user_id)))
@@ -525,6 +544,7 @@ def panel_for(user_id: int, thread_id: int) -> dict:
         "auto_available": available,
         "thread_host_id": summary.get("thread_host_id"),
         "hosts": hosts,
+        "pending": pending_asks(user_id, thread_id),
     }
 
 

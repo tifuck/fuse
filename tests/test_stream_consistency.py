@@ -74,11 +74,12 @@ class ConsistencyTests(unittest.TestCase):
                 self.assertTrue(ready.wait(5))
                 two = b.submit(finish)
                 self.assertTrue(attempted.wait(5))
-                try:
-                    time.sleep(.1)
-                    self.assertFalse(two.done())
-                finally:
-                    release.set()
+                # Checkpoints no longer hold a run row lock across their read,
+                # so finish may commit while the checkpoint is parked. The
+                # guarantees moved into the writers: the state UPDATE carries
+                # `status IN ('queued','running')`, and the publication guard
+                # drops progress for an already-terminal run.
+                release.set()
                 one.result(5); two.result(5)
         store.checkpoint(run['id'], {'content':'late stale write'}, [])
         final = store.get_run(self.uid, run['id'])
@@ -108,14 +109,14 @@ class ConsistencyTests(unittest.TestCase):
             writes = []
             real = store.checkpoint
             once = False
-            def checkpoint(ident, message, events=None):
+            def checkpoint(ident, message, events=None, **kwargs):
                 nonlocal once
                 if events and not once:
                     once = True
                     entered.set()
                     if not release.wait(5): raise TimeoutError('test release')
                 writes.append(copy.deepcopy(events))
-                return real(ident, message, events=events)
+                return real(ident, message, events=events, **kwargs)
             async def model(*args, **kwargs):
                 async def chunks():
                     yield b'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n'

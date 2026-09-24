@@ -18,7 +18,7 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       await page.route('**/chat/runs/fixture-child', route => {
         requests++;
         return route.fulfill({ status: missing ? 404 : 200, contentType: 'application/json', body: JSON.stringify(missing ? { detail: 'Saved child is unavailable' } : {
-          id: 'fixture-child', message_id: 'fixture-child-message', description: 'Completed audit child', status: 'completed',
+          id: 'fixture-child', event_cursor: 0, message_id: 'fixture-child-message', description: 'Completed audit child', status: 'completed',
           message: { role: 'assistant', content: 'Existing child transcript loaded.', tools: [{ id: 'child-read', name: 'read_file', status: 'done', path: 'README.md', preview: 'Child file contents' }] }, messages: [],
         }) });
       });

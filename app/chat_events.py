@@ -56,8 +56,55 @@ def _origin(origin):
 
 
 def replay_valid(uid, cursor):
+    # A high-water mark alone cannot validate replay: the retention floor
+    # remains authoritative after pruning. Read both off the event loop.
     row = db.fetchone("SELECT cursor,floor FROM chat_event_cursors WHERE user_id=?", (uid,))
-    return 0 <= cursor <= (row["cursor"] if row else 0) and cursor >= (row["floor"] if row else 0)
+    high = int(row["cursor"]) if row else 0
+    floor = int(row["floor"]) if row else 0
+    return floor <= cursor <= high
+
+
+def _downgrade_progress(row, viewed):
+    """Compact an agent.progress event for a subagent the socket is not viewing.
+
+    The full patch stream of every subagent would force the client to replay
+    patches it mostly discards; the viewed agent streams in full while the
+    rest surface as a tick (enough for list rows and tool chips). Pending
+    permission asks always pass through — the dock queue is fed from them.
+    """
+    payload = row["payload"]
+    if row["type"] != "agent.progress" or not isinstance(payload, dict):
+        return row
+    run_id = payload.get("run_id")
+    if not isinstance(run_id, str) or run_id == viewed:
+        return row
+    tick = {"run_id": run_id}
+    events = payload.get("events") if isinstance(payload.get("events"), list) else []
+    patch = events[0].get("fuse") if events and isinstance(events[0], dict) else None
+    if isinstance(patch, dict) and patch.get("event") == "message.patch":
+        content = patch.get("content")
+        if isinstance(content, dict):
+            tick["len"] = int(content.get("from") or 0) + len(content.get("text") or "")
+        if type(patch.get("streamOut")) is int:
+            tick["streamOut"] = patch["streamOut"]
+        if patch.get("elapsedMs") is not None:
+            tick["elapsedMs"] = patch["elapsedMs"]
+    tools = payload.get("tools")
+    if isinstance(tools, list):
+        tick["tools"] = len(tools)
+        for trace in reversed(tools):
+            if isinstance(trace, dict) and trace.get("status") in ("running", "progress", "queued"):
+                tick["current"] = str(trace.get("name") or "")
+                break
+    if payload.get("parent_run_id"):
+        tick["parent_run_id"] = payload["parent_run_id"]
+        tick["root_run_id"] = payload.get("root_run_id")
+    permissions = payload.get("permissions")
+    if isinstance(permissions, list):
+        # Resolution is as important as the ask: filtering to pending leaves
+        # stale cards visible when an unviewed child receives a decision.
+        tick["permissions"] = permissions
+    return {"id": row["id"], "type": "agent.tick", "thread_id": row["thread_id"], "payload": tick}
 
 
 @router.websocket("/chat/events")
@@ -68,7 +115,7 @@ async def events(ws: WebSocket):
         logger.warning("chat/events rejected origin=%r expected=%r scheme=%r", ws.headers.get("origin", ""), expected, ws.url.scheme)
         await ws.close(code=4403)
         return
-    if not uid or not accounts.get_user(uid):
+    if not uid or not await asyncio.to_thread(accounts.get_user, uid):
         logger.warning("chat/events rejected auth uid=%r", uid)
         await ws.close(code=4401)
         return
@@ -98,6 +145,7 @@ async def events(ws: WebSocket):
     signal = asyncio.Event()
     _subscribers[uid][ws] = signal
     started = last_pong = time.monotonic()
+    view = {"run_id": None}
 
     async def send(data):
         async with asyncio.timeout(5):
@@ -107,26 +155,41 @@ async def events(ws: WebSocket):
         nonlocal last_pong
         while True:
             message = await ws.receive_text()
-            if message != "pong":
+            if message == "pong":
+                last_pong = time.monotonic()
+                continue
+            # The client names the subagent whose full patch stream it renders;
+            # every other live subagent arrives as a compact agent.tick.
+            try:
+                import json as _json
+
+                data = _json.loads(message)
+            except (ValueError, TypeError):
                 await ws.close(code=4400)
                 return
-            last_pong = time.monotonic()
+            if not isinstance(data, dict) or data.get("type") != "view":
+                await ws.close(code=4400)
+                return
+            run_id = data.get("run_id")
+            view["run_id"] = run_id if isinstance(run_id, str) and run_id else None
 
     reader = asyncio.create_task(receive())
     reader.add_done_callback(lambda _: signal.set())
     try:
-        if not replay_valid(uid, cursor):
+        if not await asyncio.to_thread(replay_valid, uid, cursor):
             await send({"type": "resync_required"})
             return
         ready = False
         last_ping = time.monotonic()
         while not _closing and not reader.done():
             signal.clear()
-            if not replay_valid(uid, cursor):
+            if not await asyncio.to_thread(replay_valid, uid, cursor):
                 await send({"type": "resync_required"})
                 return
-            rows = chat_store.events_after(uid, cursor, limit=64)
+            rows = await asyncio.to_thread(chat_store.events_after, uid, cursor, limit=64)
             if rows:
+                viewed = view["run_id"]
+                rows = [_downgrade_progress(row, viewed) for row in rows]
                 await send({"type": "events", "events": rows})
                 cursor = rows[-1]["id"]
                 continue
@@ -135,8 +198,9 @@ async def events(ws: WebSocket):
                 ready = True
             now = time.monotonic()
             if now - last_ping >= 15:
-                if now - started > 1800 or now - last_pong > 60 or not accounts.get_user(uid):
-                    await ws.close(code=4401 if not accounts.get_user(uid) else 1012)
+                owner = await asyncio.to_thread(accounts.get_user, uid)
+                if now - started > 1800 or now - last_pong > 60 or not owner:
+                    await ws.close(code=4401 if not owner else 1012)
                     return
                 await send({"type": "ping"})
                 last_ping = now

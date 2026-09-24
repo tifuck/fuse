@@ -5,7 +5,7 @@ import hashlib
 import json
 import re
 import secrets
-import sqlite3
+from .database_errors import IntegrityError
 from datetime import datetime, timedelta, timezone
 
 from . import db
@@ -315,7 +315,7 @@ def add_host(user_id: int, raw: dict) -> dict:
                     ts,
                 ),
             )
-        except sqlite3.IntegrityError as exc:
+        except IntegrityError as exc:
             raise HostError("alias already exists", 409) from exc
         host_id = db.last_id(conn)
         row = conn.execute("SELECT * FROM user_hosts WHERE id=?", (host_id,)).fetchone()
@@ -424,7 +424,7 @@ def patch_host(user_id: int, host_id: int, raw: dict) -> dict:
                     user_id,
                 ),
             )
-        except sqlite3.IntegrityError as exc:
+        except IntegrityError as exc:
             raise HostError("alias already exists", 409) from exc
         row = conn.execute("SELECT * FROM user_hosts WHERE id=?", (host_id,)).fetchone()
         return _public_host(row, _projects(conn, user_id, host_id))
@@ -477,7 +477,7 @@ def add_project(user_id: int, host_id: int, raw: dict) -> dict:
                 ) VALUES (?,?,?,?,?,?,?,?,?)""",
                 (user_id, host_id, name, path, notes.strip(), model.strip(), mode, ts, ts),
             )
-        except sqlite3.IntegrityError as exc:
+        except IntegrityError as exc:
             raise HostError("project already exists on this host", 409) from exc
         pid = db.last_id(conn)
         row = conn.execute("SELECT * FROM user_projects WHERE id=?", (pid,)).fetchone()
@@ -518,7 +518,7 @@ def patch_project(user_id: int, host_id: int, project_id: int, raw: dict) -> dic
                    WHERE id=?""",
                 (name, path, notes, model, mode, ts, project_id),
             )
-        except sqlite3.IntegrityError as exc:
+        except IntegrityError as exc:
             raise HostError("project already exists on this host", 409) from exc
         row = conn.execute("SELECT * FROM user_projects WHERE id=?", (project_id,)).fetchone()
         return _project_view(row)
@@ -850,7 +850,7 @@ def mint_pairing(user_id: int, alias_hint: str = "") -> dict:
                         now,
                     ),
                 )
-            except sqlite3.IntegrityError:
+            except IntegrityError:
                 continue
             row = conn.execute("SELECT * FROM host_pairings WHERE id=?", (db.last_id(conn),)).fetchone()
             view = _pairing_view(row, public_origin())

@@ -15,7 +15,6 @@ That override cannot turn sharing back on when the admin has turned it off.
 from __future__ import annotations
 
 import json
-import sqlite3
 
 from .. import db
 
@@ -90,10 +89,7 @@ def set_admin_policy(kind: str, *, pool_shared: bool, open_access: bool) -> None
 
 
 def user_prefs(user_id: int) -> dict:
-    try:
-        row = db.fetchone("SELECT pool_prefs FROM users WHERE id=?", (int(user_id),))
-    except sqlite3.OperationalError:
-        return {}
+    row = db.fetchone("SELECT pool_prefs FROM users WHERE id=?", (int(user_id),))
     if row is None:
         return {}
     try:

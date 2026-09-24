@@ -117,7 +117,7 @@ const out = process.env.THINKING_UI_ARTIFACTS || '/tmp/opencode/thinking-ui';
 
     let childThought = markdown;
     await page.route('**/chat/runs/thinking-child', route => route.fulfill({ json: {
-      id: 'thinking-child', message_id: 'thinking-child-message', status: 'running', description: 'Thinking child',
+      id: 'thinking-child', event_cursor: 0, message_id: 'thinking-child-message', status: 'running', description: 'Thinking child',
       created_at: new Date().toISOString(), updated_at: new Date().toISOString(), messages: [],
       message: { role: 'assistant', reasoning: childThought, content: '', tools: [], segments: [{ type: 'reasoning', text: childThought }] },
     } }));

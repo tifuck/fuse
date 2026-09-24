@@ -1,11 +1,14 @@
 """Durable chat synchronization. All write transactions are short and synchronous."""
 from __future__ import annotations
 
+import asyncio
+import collections
 import copy
 import hashlib
 import json
 import logging
 import re
+import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -27,6 +30,8 @@ DEFAULT_REMAINING_SECONDS = 8 * 60 * 60
 # (2s/5s) and permission asks (60s).
 STALL_IDLE_SECONDS = 180
 STALL_WAIT_SECONDS = 60
+# Admission limits remain conservative until synchronized load tests verify
+# bounded memory and latency at the proposed higher concurrency.
 LIVE_TREE_CHILDREN = 32
 # Buffer for results queued onto a generating run. Larger than the live-tree
 # cap so finished children are not silently dropped while a long turn runs;
@@ -42,6 +47,31 @@ SCRATCH_MAX_SLOTS = 32
 SCRATCH_VALUE_MAX = 100_000
 _writes = threading.local()
 
+# Post-commit, in-process view of the per-user event cursor and per-thread
+# watermarks. Written only from transaction() epilogues after COMMIT, so the
+# values never exceed what a fresh reader could observe in the database.
+# Readers (WebSocket replay validation, thread reconcile short-circuit) use
+# them to avoid a query on every wake; prune_events invalidates them.
+_committed_cursors: dict[int, int] = {}
+_committed_threads: dict[tuple[int, int], int] = {}
+_committed_lock = threading.Lock()
+
+
+def committed_cursor(user_id) -> int | None:
+    with _committed_lock:
+        return _committed_cursors.get(int(user_id))
+
+
+def invalidate_committed_cursors():
+    with _committed_lock:
+        _committed_cursors.clear()
+        _committed_threads.clear()
+
+
+def thread_event_watermark(user_id, thread_id) -> int | None:
+    with _committed_lock:
+        return _committed_threads.get((int(user_id), int(thread_id)))
+
 
 def dumps(value):
     return json.dumps(value, ensure_ascii=True, separators=(",", ":"), sort_keys=True, allow_nan=False)
@@ -55,14 +85,26 @@ def _json_needle(text: str) -> str:
 @contextmanager
 def transaction():
     users = set()
+    threads: dict[tuple[int, int], int] = {}
+    cursors: dict[int, int] = {}
     _writes.users = users
+    _writes.threads = threads
+    _writes.cursors = cursors
     try:
         with db.tx() as conn:
             conn.execute("BEGIN IMMEDIATE")
             yield conn
     finally:
         _writes.users = None
+        _writes.threads = None
+        _writes.cursors = None
     # Wake observers only after commit; SQLite remains the replay source of truth.
+    if cursors or threads:
+        with _committed_lock:
+            _committed_threads.update(threads)
+            for uid, eid in cursors.items():
+                if eid > _committed_cursors.get(uid, 0):
+                    _committed_cursors[uid] = eid
     if users:
         from .chat_events import notify
         notify(users)
@@ -212,7 +254,17 @@ def _agent_wake_state(agent, status):
     return "retrying"
 
 
-def event(conn, user_id, type, thread_id=None, payload=None):
+def event(conn, user_id, type, thread_id=None, payload=None, guard_run=None):
+    # Progress guard first: run row lock BEFORE the per-user cursor lock, so
+    # publication and finish_run share one lock order (chat_runs ->
+    # chat_event_cursors) and can never deadlock. Group-committed progress is
+    # dropped when the run finalized first; the terminal event already carries
+    # the final state, and replaying a stale patch after it would resurrect
+    # "running" display state.
+    if guard_run is not None:
+        row = conn.execute("SELECT status FROM chat_runs WHERE id=?", (guard_run,)).fetchone()
+        if row is None or row["status"] not in ACTIVE:
+            return None
     # Acquire the per-user publication lock BEFORE allocating an event ID.
     # This makes IDs a commit-ordered prefix for that user's replay stream.
     # Merely taking MAX(cursor, id) after INSERT would still skip late commits.
@@ -223,6 +275,14 @@ def event(conn, user_id, type, thread_id=None, payload=None):
                   (user_id, eid))
     if getattr(_writes, "users", None) is not None:
         _writes.users.add(user_id)
+        threads = getattr(_writes, "threads", None)
+        if thread_id is not None and threads is not None:
+            key = (int(user_id), int(thread_id))
+            if eid > threads.get(key, 0):
+                threads[key] = eid
+        cursors = getattr(_writes, "cursors", None)
+        if cursors is not None and eid > cursors.get(int(user_id), 0):
+            cursors[int(user_id)] = eid
     return eid
 
 
@@ -258,6 +318,194 @@ def prune_events():
         conn.execute("""UPDATE chat_event_cursors SET floor=MAX(floor,COALESCE(
             (SELECT MAX(id) FROM chat_events WHERE user_id=chat_event_cursors.user_id AND created_at<?),0))""", (cutoff,))
         conn.execute("DELETE FROM chat_events WHERE created_at<?", (cutoff,))
+    # Floors moved: the cached committed cursors can no longer validate a
+    # replay cursor without a fresh read.
+    invalidate_committed_cursors()
+
+
+# --- Group-commit publication -------------------------------------------------
+# Live run/agent progress is published through one FIFO queue drained by a
+# single committer task. Each batch is a tiny transaction (cursor upsert,
+# inserts, cursor bump) that never carries run payloads, so the per-user
+# cursor row is only ever held for a few small statements regardless of how
+# many subagents stream concurrently. Durable-but-slow work (the chat_runs
+# message/request rewrite) happens in separate, per-run transactions.
+
+_PUB_BATCH = 128
+_PUB_MAX_DEPTH = 2048
+_pub_queue: collections.deque = collections.deque()
+_pub_lock = threading.Lock()
+_pub_loop: asyncio.AbstractEventLoop | None = None
+_pub_gate: asyncio.Event | None = None
+_pub_task: asyncio.Task | None = None
+_pub_stopping = False
+
+
+def start_publisher():
+    """Bind the committer to the running loop (application lifespan)."""
+    global _pub_loop, _pub_gate, _pub_task, _pub_stopping
+    if _pub_gate is not None and _pub_task is not None and not _pub_task.done():
+        return
+    _pub_loop = asyncio.get_running_loop()
+    _pub_stopping = False
+    _pub_gate = asyncio.Event()
+    _pub_task = _pub_loop.create_task(_pub_committer(), name="fuse-event-publisher")
+
+
+async def stop_publisher():
+    global _pub_task, _pub_stopping, _pub_loop, _pub_gate
+    task = _pub_task
+    if task is None:
+        return
+    with _pub_lock:
+        _pub_stopping = True
+    _pub_gate.set()
+    try:
+        # Accepted work drains before the database pool is closed. Cancelling
+        # a to_thread waiter would leave its transaction running unobserved.
+        await asyncio.shield(task)
+    finally:
+        if task.done():
+            _pub_task = None
+            _pub_loop = None
+            _pub_gate = None
+
+
+def _publish_submit(user_id, type, thread_id, payload, guard_run=None, future=None):
+    """Enqueue one event; safe from worker threads. FIFO order is preserved."""
+    with _pub_lock:
+        if _pub_stopping:
+            raise RuntimeError("Event publisher is stopping")
+        if len(_pub_queue) >= _PUB_MAX_DEPTH:
+            # Fail the flush explicitly; never drop an ordered patch or grow
+            # an unbounded queue while storage is unavailable.
+            raise RuntimeError("Event publication queue is full")
+        _pub_queue.append((user_id, type, thread_id, payload, guard_run, future))
+    loop = _pub_loop
+    gate = _pub_gate
+    if loop is not None and gate is not None:
+        def _wake():
+            gate.set()
+        try:
+            loop.call_soon_threadsafe(_wake)
+        except RuntimeError:
+            pass  # loop closed during shutdown; stop_publisher owns draining
+
+
+def _pub_drain():
+    batch = []
+    with _pub_lock:
+        while _pub_queue and len(batch) < _PUB_BATCH:
+            batch.append(_pub_queue.popleft())
+    return batch
+
+
+def _commit_publications(batch, attempts=3):
+    eids = []
+    try:
+        with transaction() as conn:
+            # Phase 1: every run guard BEFORE any cursor upsert. Holding run
+            # locks across the batch is safe (they are released only at
+            # commit); acquiring a run row while holding a cursor row would
+            # invert finish_run's lock order and deadlock under load.
+            alive = []
+            for _user_id, _type, _thread_id, _payload, guard_run, _future in batch:
+                if guard_run is None:
+                    alive.append(True)
+                    continue
+                row = conn.execute("SELECT status FROM chat_runs WHERE id=?", (guard_run,)).fetchone()
+                alive.append(row is not None and row["status"] in ACTIVE)
+            # Phase 2: FIFO event allocation under the per-user cursor locks.
+            for index, (user_id, type, thread_id, payload, guard_run, _future) in enumerate(batch):
+                if not alive[index]:
+                    eids.append(None)
+                    continue
+                eids.append(event(conn, user_id, type, thread_id, payload))
+    except Exception as exc:
+        # MariaDB may pick the batch as a deadlock victim even under a
+        # disciplined lock order; the whole transaction rolled back, so the
+        # batch can simply retry.
+        code = getattr(exc, "args", (None,))[0]
+        retryable = code == 1213 or "Deadlock found" in str(exc)
+        if retryable and attempts > 1:
+            logger.warning("Event publication batch deadlocked; retrying (%d items)", len(batch))
+            return _commit_publications(batch, attempts - 1)
+        raise
+    return eids
+
+
+async def _pub_committer():
+    while True:
+        await _pub_gate.wait()
+        _pub_gate.clear()
+        while True:
+            batch = _pub_drain()
+            if not batch:
+                if _pub_stopping:
+                    return
+                break
+            eids = None
+            error = None
+            try:
+                eids = await asyncio.to_thread(_commit_publications, batch)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - surfaced to every waiter
+                error = exc
+                logger.exception("Event publication batch failed (%d items)", len(batch))
+            for index, (_user_id, _type, _thread_id, _payload, _guard_run, future) in enumerate(batch):
+                if future is None or future.done():
+                    continue
+                if error is not None:
+                    # Do not attach the active committer's traceback to an
+                    # exception owned by another task; consumers may clear
+                    # traceback frames while this coroutine is suspended.
+                    future.set_exception(RuntimeError("event publication failed"))
+                else:
+                    future.set_result(eids[index] if eids else None)
+
+
+def publish(user_id, type, thread_id=None, payload=None, guard_run=None, future=None):
+    """Queue one event for group commit. Callers that need commit ordering
+    pass an asyncio.Future (created on their loop) and await it.
+
+    When the committer is not running (standalone scripts, tests, startup
+    recovery), fall back to one direct tiny transaction instead of queueing
+    into a drain that will never come.
+    """
+    if _pub_task is None or _pub_task.done() or _pub_gate is None:
+        try:
+            eid = None
+            with transaction() as conn:
+                eid = event(conn, user_id, type, thread_id, payload, guard_run=guard_run)
+            if future is not None:
+                _resolve_future(future, eid)
+            return
+        except Exception:
+            if future is not None:
+                _resolve_future(future, None, error=True)
+            raise
+    _publish_submit(user_id, type, thread_id, payload, guard_run=guard_run, future=future)
+
+
+def _resolve_future(future, value, error=False):
+    try:
+        loop = future.get_loop()
+    except Exception:
+        return
+
+    def _finish():
+        if future.done():
+            return
+        if error:
+            future.set_exception(RuntimeError("event publication failed"))
+        else:
+            future.set_result(value)
+
+    try:
+        loop.call_soon_threadsafe(_finish)
+    except RuntimeError:
+        pass  # caller's loop is gone; nothing is waiting
 
 
 def run_view(row):
@@ -1675,6 +1923,12 @@ def thread_view(conn, user_id, thread_id):
            ORDER BY rowid DESC LIMIT 128""", (user_id, thread_id))]
     high = conn.execute("SELECT cursor FROM chat_event_cursors WHERE user_id=?", (user_id,)).fetchone()
     result["event_cursor"] = int(high[0]) if high else 0
+    # Per-thread watermark: reconciles can short-circuit while OTHER threads'
+    # subagents advance the user-global cursor. Falls back to the global
+    # cursor until this thread has published at least one event.
+    result["thread_cursor"] = thread_event_watermark(user_id, thread_id)
+    if result["thread_cursor"] is None:
+        result["thread_cursor"] = result["event_cursor"]
     return result
 
 
@@ -2528,7 +2782,7 @@ def list_thread_agents(user_id, thread_id, limit=100):
     """Child runs (subagents) of a thread, newest first, with spawned-child counts."""
     rows = db.fetchall(
         """SELECT id, status, request, message, created_at, updated_at, cancel_requested, cancel_requested_at,
-                  resume_count, provider_messages, parent_run_id, root_run_id, agent_depth
+                  resume_count, (provider_messages IS NOT NULL) AS has_transcript, parent_run_id, root_run_id, agent_depth
            FROM chat_runs
            WHERE user_id=? AND thread_id=? AND parent_run_id IS NOT NULL
            ORDER BY created_at DESC, id DESC LIMIT ?""",
@@ -2582,37 +2836,36 @@ def list_thread_agents(user_id, thread_id, limit=100):
                         current = "thinking"
                     else:
                         current = "waiting"
-        out.append(
-            {
-                "id": row["id"],
-                "status": row["status"],
-                "cancel_requested": bool(row["cancel_requested"]),
-                "cancel_requested_at": str(row["cancel_requested_at"] if "cancel_requested_at" in row.keys() else ""),
-                "resume_count": int(row["resume_count"] if "resume_count" in row.keys() else 0),
-                "has_transcript": bool(row["provider_messages"] if "provider_messages" in row.keys() else None),
-                "resumable": bool(
-                    row["status"] in ("interrupted", "cancelled")
-                    and (row["provider_messages"] if "provider_messages" in row.keys() else None)
-                    and int(row["resume_count"] if "resume_count" in row.keys() else 0) < MAX_RESUME_ATTEMPTS
-                ),
-                "description": str(agent.get("description") or "")[:200],
-                "subagent_type": str(agent.get("subagent_type") or "general-purpose"),
-                "depth": int(row["agent_depth"] or 0),
-                "model": str(req.get("model") or ""),
-                "parent_run_id": row["parent_run_id"],
-                "root_run_id": row["root_run_id"],
-                "created_at": row["created_at"],
-                "updated_at": row["updated_at"],
-                "summary": str(message.get("content") or "")[:200],
-                "error": str(message.get("error") or "")[:400],
-                "children": counts.get(row["id"], 0),
-                "tool_counts": tool_counts,
-                "current": current,
-                "quiet_s": round(quiet_s, 1),
-                "wake_state": _agent_wake_state(agent, row["status"]),
-                "context": _agent_context_chip(req, agent, row),
-            }
-        )
+        entry = {
+            "id": row["id"],
+            "status": row["status"],
+            "cancel_requested": bool(row["cancel_requested"]),
+            "cancel_requested_at": str(row["cancel_requested_at"] if "cancel_requested_at" in row.keys() else ""),
+            "resume_count": int(row["resume_count"] if "resume_count" in row.keys() else 0),
+            "has_transcript": bool(row["has_transcript"]),
+            "resumable": bool(
+                row["status"] in ("interrupted", "cancelled")
+                and row["has_transcript"]
+                and int(row["resume_count"] if "resume_count" in row.keys() else 0) < MAX_RESUME_ATTEMPTS
+            ),
+            "description": str(agent.get("description") or "")[:200],
+            "subagent_type": str(agent.get("subagent_type") or "general-purpose"),
+            "depth": int(row["agent_depth"] or 0),
+            "model": str(req.get("model") or ""),
+            "parent_run_id": row["parent_run_id"],
+            "root_run_id": row["root_run_id"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "summary": str(message.get("content") or "")[:200],
+            "error": str(message.get("error") or "")[:400],
+            "children": counts.get(row["id"], 0),
+            "tool_counts": tool_counts,
+            "current": current,
+            "quiet_s": round(quiet_s, 1),
+            "wake_state": _agent_wake_state(agent, row["status"]),
+            "context": _agent_context_chip(req, agent, row),
+        }
+        out.append(entry)
     return out
 
 
@@ -2676,47 +2929,122 @@ def _message(message, message_id):
             }
 
 
-def checkpoint(run_id, message, events=None):
-    with transaction() as conn:
-        row = conn.execute(
-            "SELECT id,status,message_id,user_id,thread_id,parent_run_id,root_run_id,request,message FROM chat_runs WHERE id=?",
-            (run_id,),
-        ).fetchone()
-        if row is None or row["status"] not in ACTIVE:
-            return
-        message = _message(message, row["message_id"])
-        request = json.loads(row["request"] or "{}")
-        for item in events or []:
-            activity = item.get("fuse") or {}
-            if activity.get("event") == "activity" and activity.get("phase") in ("model", "tools"):
-                request.setdefault("agent", {})["activity"] = dict(activity)
-            elif activity.get("event") == "tool" and activity.get("status") == "running":
-                request.setdefault("agent", {})["activity"] = {"phase": "tools", "tool_id": activity.get("id")}
-            elif activity.get("event") == "heartbeat":
-                agent = request.setdefault("agent", {})
-                act = agent.get("activity") if isinstance(agent.get("activity"), dict) else {}
-                if act.get("phase") in ("tools", "model"):
-                    agent["activity"] = {**act, "heartbeat": True}
-                else:
-                    agent["activity"] = {"phase": "waiting", "heartbeat": True}
-            elif activity.get("event") == "context" and activity.get("phase") == "compacted":
-                request.setdefault("agent", {})["history_output_floor"] = len(message.get("content") or "")
-        if row["parent_run_id"]:
-            request.setdefault("display_seed", request.get("messages") or [])
-            if any(s.get("type") == "marker" and s.get("kind") == "compaction" and s.get("summary") for s in message.get("segments") or []):
-                # The live handoff marker owns the post-compaction projection.
-                request["display_seed"] = []
-        if row["status"] == "queued" and isinstance(request.get("agent"), dict):
-            request["agent"].pop("steer_closed", None)
-        _advance_steer_display(request, message)
-        conn.execute("UPDATE chat_runs SET message=?,request=?,status='running',updated_at=? WHERE id=?", (dumps(message), dumps(request), db.now(), run_id))
-        payload = {"run_id": run_id, "message_id": row["message_id"]}
-        projected = display_messages(request, message, row["message_id"], live=True)
-        if (request.get("agent") or {}).get("display_parts"):
-            from .chat_runs import _segments_patch
+# Durable state snapshot cadence for live runs. Events (patches, tools,
+# permissions) are published immediately through the group committer; the
+# chat_runs message/request rewrite is only a restart-durability snapshot, so
+# it is throttled. Tool/permission/context events force an immediate snapshot.
+# A snapshot's event_cursor currently refers to the durable run row. Until
+# snapshot reads replay the intervening journal, skipping state writes would
+# return stale text with a newer cursor and permanently skip those patches.
+STATE_WRITE_SECONDS = 0.0
+_state_write_at: dict[str, float] = {}
 
-            previous = display_messages(json.loads(row["request"] or "{}"), json.loads(row["message"] or "{}"), row["message_id"], live=True)
-            if set(projected) != set(previous):
+
+def checkpoint(run_id, message, events=None, durable=True, future=None):
+    # Plain read: no write transaction, no row locks. Heavy work (strict
+    # re-parse, projection) never shares a transaction with publication, so
+    # concurrent subagents cannot serialize on each other's payloads.
+    row = _checkpoint_row(run_id)
+    if row is None or row["status"] not in ACTIVE:
+        if future is not None:
+            _resolve_future(future, None)
+        return
+    message = _message(message, row["message_id"])
+    request = json.loads(row["request"] or "{}")
+    for item in events or []:
+        activity = item.get("fuse") or {}
+        if activity.get("event") == "activity" and activity.get("phase") in ("model", "tools"):
+            request.setdefault("agent", {})["activity"] = dict(activity)
+        elif activity.get("event") == "tool" and activity.get("status") == "running":
+            request.setdefault("agent", {})["activity"] = {"phase": "tools", "tool_id": activity.get("id")}
+        elif activity.get("event") == "heartbeat":
+            agent = request.setdefault("agent", {})
+            act = agent.get("activity") if isinstance(agent.get("activity"), dict) else {}
+            if act.get("phase") in ("tools", "model"):
+                agent["activity"] = {**act, "heartbeat": True}
+            else:
+                agent["activity"] = {"phase": "waiting", "heartbeat": True}
+        elif activity.get("event") == "context" and activity.get("phase") == "compacted":
+            request.setdefault("agent", {})["history_output_floor"] = len(message.get("content") or "")
+    if row["parent_run_id"]:
+        request.setdefault("display_seed", request.get("messages") or [])
+        if any(s.get("type") == "marker" and s.get("kind") == "compaction" and s.get("summary") for s in message.get("segments") or []):
+            # The live handoff marker owns the post-compaction projection.
+            request["display_seed"] = []
+    if row["status"] == "queued" and isinstance(request.get("agent"), dict):
+        request["agent"].pop("steer_closed", None)
+    _advance_steer_display(request, message)
+    payload = {"run_id": run_id, "message_id": row["message_id"]}
+    projected = display_messages(request, message, row["message_id"], live=True)
+    materialize_thread = False
+    if (request.get("agent") or {}).get("display_parts"):
+        from .chat_runs import _segments_patch
+
+        previous = display_messages(json.loads(row["request"] or "{}"), json.loads(row["message"] or "{}"), row["message_id"], live=True)
+        if set(projected) != set(previous):
+            materialize_thread = True
+        old, current = previous[row["message_id"]], projected[row["message_id"]]
+        patch = {"event": "message.patch", "elapsedMs": current.get("elapsedMs"), "usage": current.get("usage"), "error": current.get("error", "")}
+        source_patch = next((entry.get("fuse") for entry in events or [] if (entry.get("fuse") or {}).get("event") == "message.patch"), None)
+        if source_patch and type(source_patch.get("streamOut")) is int and source_patch["streamOut"] >= 0:
+            patch["streamOut"] = source_patch["streamOut"]
+        for field in ("content", "reasoning"):
+            before, after = old.get(field) or "", current.get(field) or ""
+            offset = 0
+            while offset < min(len(before), len(after)) and before[offset] == after[offset]:
+                offset += 1
+            patch[field] = {"from": len(before[:offset].encode("utf-16-le")) // 2, "text": after[offset:]}
+        segments = _segments_patch(old.get("segments") or [], current.get("segments") or [])
+        if segments:
+            patch["segments"] = segments
+        extra_events = [entry for entry in events or [] if (entry.get("fuse") or {}).get("event") not in ("tool", "message.patch") and entry.get("fuse")]
+        payload.update(events=[{"fuse": patch}, *extra_events], tools=current.get("tools") or [], permissions=current.get("permissions") or [],
+                       updates=[msg for mid, msg in projected.items() if mid != row["message_id"] and msg != previous.get(mid)])
+    else:
+        payload.update({"events": events} if events is not None else {"message": message})
+        # Subagent checkpoints travel as agent.progress; the dock permission
+        # queue is fed from payload.permissions (the raw events array is
+        # only replayed when the child's own panel is open). Without this
+        # key an ask raised inside a child never renders and times out.
+        payload["permissions"] = message.get("permissions") or []
+    if row["parent_run_id"]:
+        payload["parent_run_id"] = row["parent_run_id"]
+        payload["root_run_id"] = row["root_run_id"]
+        kind = "agent.progress"
+    else:
+        kind = "run.progress"
+
+    # 1) Durable state snapshot, own transaction, per-run row lock only.
+    now = time.monotonic()
+    force_state = (
+        durable
+        or row["status"] == "queued"
+        or bool((request.get("agent") or {}).get("display_parts"))
+        or materialize_thread
+    )
+    if not force_state:
+        last = _state_write_at.get(run_id)
+        force_state = last is None or now - last >= STATE_WRITE_SECONDS
+        if len(_state_write_at) > 4096:
+            cutoff = now - 600.0
+            for ident, stamp in list(_state_write_at.items()):
+                if stamp < cutoff:
+                    _state_write_at.pop(ident, None)
+    if force_state:
+        with transaction() as conn:
+            # Optimistic concurrency: without the old cross-read row lock, a
+            # concurrent finish/save_turn_progress/seal between our read and
+            # this write must not be clobbered by stale state. updated_at has
+            # second granularity, so the request blob itself is the version.
+            # Rowcount 0 means superseded — events still publish, the state
+            # snapshot is simply skipped.
+            # Lock order matches finish_run: chat_runs before chat_threads
+            # before the event cursor.
+            cur = conn.execute(
+                "UPDATE chat_runs SET message=?,request=?,status='running',updated_at=? WHERE id=? AND status IN ('queued','running') AND COALESCE(request,'')=?",
+                (dumps(message), dumps(request), db.now(), run_id, row["request"] or ""),
+            )
+            if materialize_thread and getattr(cur, "rowcount", 1):
                 from . import chats
 
                 thread = conn.execute("SELECT messages FROM chat_threads WHERE id=? AND user_id=?", (row["thread_id"], row["user_id"])).fetchone()
@@ -2724,31 +3052,19 @@ def checkpoint(run_id, message, events=None):
                     materialized = _project_thread_messages(chats.parse_messages(thread["messages"]), projected, request)
                     conn.execute("UPDATE chat_threads SET messages=?,revision=revision+1 WHERE id=?", (dumps(materialized), row["thread_id"]))
                     thread_event(conn, row["user_id"], row["thread_id"], transcript_changed=True)
-            old, current = previous[row["message_id"]], projected[row["message_id"]]
-            patch = {"event": "message.patch", "elapsedMs": current.get("elapsedMs"), "usage": current.get("usage"), "error": current.get("error", "")}
-            source_patch = next((entry.get("fuse") for entry in events or [] if (entry.get("fuse") or {}).get("event") == "message.patch"), None)
-            if source_patch and type(source_patch.get("streamOut")) is int and source_patch["streamOut"] >= 0:
-                patch["streamOut"] = source_patch["streamOut"]
-            for field in ("content", "reasoning"):
-                before, after = old.get(field) or "", current.get(field) or ""
-                offset = 0
-                while offset < min(len(before), len(after)) and before[offset] == after[offset]:
-                    offset += 1
-                patch[field] = {"from": len(before[:offset].encode("utf-16-le")) // 2, "text": after[offset:]}
-            segments = _segments_patch(old.get("segments") or [], current.get("segments") or [])
-            if segments:
-                patch["segments"] = segments
-            extra_events = [entry for entry in events or [] if (entry.get("fuse") or {}).get("event") not in ("tool", "message.patch") and entry.get("fuse")]
-            payload.update(events=[{"fuse": patch}, *extra_events], tools=current.get("tools") or [], permissions=current.get("permissions") or [],
-                           updates=[msg for mid, msg in projected.items() if mid != row["message_id"] and msg != previous.get(mid)])
-        else:
-            payload.update({"events": events} if events is not None else {"message": message})
-        if row["parent_run_id"]:
-            payload["parent_run_id"] = row["parent_run_id"]
-            payload["root_run_id"] = row["root_run_id"]
-            event(conn, row["user_id"], "agent.progress", row["thread_id"], payload)
-        else:
-            event(conn, row["user_id"], "run.progress", row["thread_id"], payload)
+        _state_write_at[run_id] = now
+
+    # 2) Publication through the group committer (tiny batched transaction).
+    # The guard drops progress for a run that finalized while this checkpoint
+    # was in flight, so a terminal event can never be followed by stale patches.
+    publish(row["user_id"], kind, row["thread_id"], payload, guard_run=run_id, future=future)
+
+
+def _checkpoint_row(run_id):
+    return db.fetchone(
+        "SELECT id,status,message_id,user_id,thread_id,parent_run_id,root_run_id,request,message,updated_at FROM chat_runs WHERE id=?",
+        (run_id,),
+    )
 
 
 def _merge_thread_loaded(thread_row, run_row) -> list[str]:
@@ -2811,6 +3127,7 @@ def finish_run(run_id, message, status):
         if isinstance(request.get("agent"), dict):
             request["agent"]["activity"] = {"phase": "idle", "status": status}
         conn.execute("UPDATE chat_runs SET message=?,request=?,status=?,updated_at=? WHERE id=?", (dumps(message), dumps(request), status, db.now(), run_id))
+        _state_write_at.pop(run_id, None)
         try:
             from .schedules import sync_run_status
 
@@ -2884,38 +3201,48 @@ def request_cancel(user_id, run_id):
 def request_cancel_self(user_id, run_id):
     """Cancel one run and its strict descendants only; the rest of the root tree keeps running."""
     ids = []
-    with transaction() as conn:
-        row = conn.execute(
-            "SELECT id, root_run_id FROM chat_runs WHERE id=? AND user_id=?",
-            (run_id, user_id),
-        ).fetchone()
-        if row is None:
-            return ids
-        root = row["root_run_id"] or row["id"]
-        tree = conn.execute(
-            "SELECT id, parent_run_id, message_id, thread_id, cancel_requested, status FROM chat_runs WHERE user_id=? AND root_run_id=?",
-            (user_id, root),
-        ).fetchall()
-        by_parent: dict[str, list] = {}
-        for item in tree:
-            by_parent.setdefault(item["parent_run_id"], []).append(item)
-        frontier = [run_id]
-        seen = set()
+    # Lock-free tree read (see request_cancel_descendants): per-row updates
+    # re-check liveness, so the scan must not FOR UPDATE the whole tree.
+    row = db.fetchone(
+        "SELECT id, root_run_id FROM chat_runs WHERE id=? AND user_id=?",
+        (run_id, user_id),
+    )
+    if row is None:
+        return ids
+    root = row["root_run_id"] or row["id"]
+    tree = db.fetchall(
+        "SELECT id, parent_run_id, message_id, thread_id, cancel_requested, status FROM chat_runs WHERE user_id=? AND root_run_id=?",
+        (user_id, root),
+    )
+    by_parent: dict[str, list] = {}
+    for item in tree:
+        by_parent.setdefault(item["parent_run_id"], []).append(item)
+    frontier = [run_id]
+    seen = set()
+    doomed = []
+    while frontier:
+        current = frontier.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        item = next((r for r in tree if r["id"] == current), None)
+        if item is None:
+            continue
+        ids.append(item["id"])
+        if item["status"] in ACTIVE and not item["cancel_requested"]:
+            doomed.append(item)
+        frontier.extend(child["id"] for child in by_parent.get(current, []))
+    if doomed:
         ts = db.now()
-        while frontier:
-            current = frontier.pop()
-            if current in seen:
-                continue
-            seen.add(current)
-            item = next((r for r in tree if r["id"] == current), None)
-            if item is None:
-                continue
-            ids.append(item["id"])
-            if item["status"] in ACTIVE and not item["cancel_requested"]:
-                conn.execute("UPDATE chat_runs SET cancel_requested=1,cancel_requested_at=?,updated_at=? WHERE id=?", (ts, ts, item["id"]))
-                kind = "agent.cancel_requested" if item["parent_run_id"] else "run.cancel_requested"
-                event(conn, user_id, kind, item["thread_id"], _cancel_event_payload(item))
-            frontier.extend(child["id"] for child in by_parent.get(current, []))
+        with transaction() as conn:
+            for item in doomed:
+                cur = conn.execute(
+                    "UPDATE chat_runs SET cancel_requested=1,cancel_requested_at=?,updated_at=? WHERE id=? AND status IN ('queued','running') AND cancel_requested=0",
+                    (ts, ts, item["id"]),
+                )
+                if getattr(cur, "rowcount", 1):
+                    kind = "agent.cancel_requested" if item["parent_run_id"] else "run.cancel_requested"
+                    event(conn, user_id, kind, item["thread_id"], _cancel_event_payload(item))
     return ids
 
 
@@ -3284,42 +3611,58 @@ def request_cancel_descendants(user_id, run_id, skip_background=False):
     """Cancel a run's descendants. skip_background keeps background subagents
     (and their subtrees) alive past the end of the spawning turn."""
     ids = []
-    with transaction() as conn:
-        row = conn.execute("SELECT id, root_run_id FROM chat_runs WHERE id=? AND user_id=?", (run_id, user_id)).fetchone()
-        if row is None:
-            return ids
-        root = row["root_run_id"] or row["id"]
-        tree = conn.execute(
-            "SELECT id, parent_run_id, message_id, thread_id, cancel_requested, status, request FROM chat_runs WHERE user_id=? AND root_run_id=?",
-            (user_id, root),
-        ).fetchall()
-        by_parent: dict[str, list] = {}
-        for item in tree:
-            by_parent.setdefault(item["parent_run_id"], []).append(item)
-        frontier = [item["id"] for item in by_parent.get(run_id, [])]
-        seen = set()
+    # Leaf agents are the common case. Do not load and decode the entire
+    # root tree for each of hundreds of siblings finishing together.
+    if not db.fetchone("SELECT id FROM chat_runs WHERE user_id=? AND parent_run_id=? LIMIT 1", (user_id, run_id)):
+        return ids
+    # Read the tree without row locks: a FOR UPDATE scan of the whole root
+    # tree on every child finalization serializes (and deadlocks) once
+    # hundreds of subagents finish concurrently. The per-row updates below
+    # re-check liveness in their WHERE clause.
+    row = db.fetchone("SELECT id, root_run_id FROM chat_runs WHERE id=? AND user_id=?", (run_id, user_id))
+    if row is None:
+        return ids
+    root = row["root_run_id"] or row["id"]
+    tree = db.fetchall(
+        "SELECT id, parent_run_id, message_id, thread_id, cancel_requested, status, request FROM chat_runs WHERE user_id=? AND root_run_id=?",
+        (user_id, root),
+    )
+    by_parent: dict[str, list] = {}
+    for item in tree:
+        by_parent.setdefault(item["parent_run_id"], []).append(item)
+    frontier = [item["id"] for item in by_parent.get(run_id, [])]
+    seen = set()
+    doomed = []
+    while frontier:
+        current = frontier.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        item = next((r for r in tree if r["id"] == current), None)
+        if item is None:
+            continue
+        if skip_background:
+            try:
+                agent = (json.loads(item["request"]) or {}).get("agent")
+            except (json.JSONDecodeError, TypeError):
+                agent = None
+            if isinstance(agent, dict) and agent.get("background"):
+                continue
+        ids.append(item["id"])
+        if item["status"] in ACTIVE and not item["cancel_requested"]:
+            doomed.append(item)
+        frontier.extend(child["id"] for child in by_parent.get(current, []))
+    if doomed:
         ts = db.now()
-        while frontier:
-            current = frontier.pop()
-            if current in seen:
-                continue
-            seen.add(current)
-            item = next((r for r in tree if r["id"] == current), None)
-            if item is None:
-                continue
-            if skip_background:
-                try:
-                    agent = (json.loads(item["request"]) or {}).get("agent")
-                except (json.JSONDecodeError, TypeError):
-                    agent = None
-                if isinstance(agent, dict) and agent.get("background"):
-                    continue
-            ids.append(item["id"])
-            if item["status"] in ACTIVE and not item["cancel_requested"]:
-                conn.execute("UPDATE chat_runs SET cancel_requested=1,cancel_requested_at=?,updated_at=? WHERE id=?", (ts, ts, item["id"]))
-                kind = "agent.cancel_requested" if item["parent_run_id"] else "run.cancel_requested"
-                event(conn, user_id, kind, item["thread_id"], _cancel_event_payload(item))
-            frontier.extend(child["id"] for child in by_parent.get(current, []))
+        with transaction() as conn:
+            for item in doomed:
+                cur = conn.execute(
+                    "UPDATE chat_runs SET cancel_requested=1,cancel_requested_at=?,updated_at=? WHERE id=? AND status IN ('queued','running') AND cancel_requested=0",
+                    (ts, ts, item["id"]),
+                )
+                if getattr(cur, "rowcount", 1):
+                    kind = "agent.cancel_requested" if item["parent_run_id"] else "run.cancel_requested"
+                    event(conn, user_id, kind, item["thread_id"], _cancel_event_payload(item))
     return ids
 
 

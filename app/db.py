@@ -60,8 +60,8 @@ def connect():
     global _conn
     if _conn is None:
         url = (getattr(settings, "database_url", "") or "").strip()
-        if settings.database_mariadb_enabled and not url.startswith("mysql://"):
-            raise RuntimeError("MariaDB is enabled but DATABASE_URL is invalid; refusing SQLite fallback")
+        if not settings.database_mariadb_enabled or not url.startswith("mysql://"):
+            raise RuntimeError("Fuse requires MariaDB: configure DATABASE_URL and DATABASE_MARIADB_ENABLED=true")
         if settings.database_mariadb_enabled and url.startswith("mysql://"):
             from .mysql_compat import connect as mysql_connect
             conn = mysql_connect(url, max_connections=settings.database_pool_size)
@@ -75,20 +75,6 @@ def connect():
                 raise
             _conn = conn
             return _conn
-        target, uri, path, _parent_created = _database_target(settings.database_path)
-        conn = sqlite3.connect(target, check_same_thread=False, uri=uri)
-        try:
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA foreign_keys=ON")
-            conn.execute("PRAGMA busy_timeout=5000")
-            _init(conn)
-            if path is not None:
-                _chmod_db(path)
-        except Exception:
-            conn.close()
-            raise
-        _conn = conn
     return _conn
 
 

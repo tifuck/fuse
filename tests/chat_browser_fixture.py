@@ -7,7 +7,6 @@ import asyncio
 import json
 import os
 import sys
-import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -23,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from app import chat_events, chat_runs, chat_runtime, chat_store, chats, db, web
 from app.config import ROOT
+from tests.mariadb_fixture import isolated_database
 
 
 queue_gates = {}
@@ -94,18 +94,19 @@ async def fake_title(request, user, model, text):
 
 @asynccontextmanager
 async def lifespan(app):
-    with tempfile.TemporaryDirectory(prefix="fuse-browser-") as tmp:
-        db.settings.database_path = str(Path(tmp) / "chat.db")
-        db.connect()
+    with isolated_database():
         db.execute("INSERT INTO users(id,email,password_hash,created_at) VALUES(1,'browser@test.invalid','unused',?)", (db.now(),))
         chat_runtime.stream_dashboard_chat = fake_model
         chat_runtime.generate_thread_title = fake_title
         chat_runs._stopping = False
         chat_events.start()
-        yield
-        await chat_events.stop()
-        await chat_runs.stop()
-        db.close()
+        chat_store.start_publisher()
+        try:
+            yield
+        finally:
+            await chat_events.stop()
+            await chat_runs.stop()
+            await chat_store.stop_publisher()
 
 
 app = FastAPI(lifespan=lifespan)

@@ -417,14 +417,23 @@ async def chat_thread_get(request: Request, thread_id: str):
     user, err = _chat_auth(request)
     if err:
         return err
-    observed = request.query_params.get("observed_cursor")
-    try:
-        observed = int(observed) if observed is not None else None
-        if observed is not None and not 0 <= observed <= 2**53 - 1:
-            raise ValueError
-    except ValueError:
-        raise HTTPException(422, "Invalid event cursor") from None
-    thread = chats.get_thread(user["id"], thread_id, observed_cursor=observed)
+
+    def _cursor_param(name):
+        raw = request.query_params.get(name)
+        try:
+            value = int(raw) if raw is not None else None
+            if value is not None and not 0 <= value <= 2**53 - 1:
+                raise ValueError
+            return value
+        except ValueError:
+            raise HTTPException(422, "Invalid event cursor") from None
+
+    observed = _cursor_param("observed_cursor")
+    observed_thread = _cursor_param("observed_thread_cursor")
+    thread = await asyncio.to_thread(
+        chats.get_thread, user["id"], thread_id,
+        observed_cursor=observed, observed_thread_cursor=observed_thread,
+    )
     if not thread:
         raise HTTPException(404, "Chat not found")
     if thread.get("unchanged"):
@@ -483,8 +492,8 @@ async def chat_thread_agents(request: Request, thread_id: str):
     user, err = _chat_auth(request)
     if err:
         return err
-    pk = _chat_thread_pk(user, thread_id)
-    agents = chat_store.list_thread_agents(user["id"], pk)
+    pk = await asyncio.to_thread(_chat_thread_pk, user, thread_id)
+    agents = await asyncio.to_thread(chat_store.list_thread_agents, user["id"], pk)
     live = sum(1 for item in agents if item["status"] in chat_store.ACTIVE)
     return JSONResponse(
         {"agents": agents, "live_count": live},

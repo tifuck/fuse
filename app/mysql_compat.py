@@ -6,7 +6,7 @@ offline operation; runtime schema probes may only verify existing objects.
 from __future__ import annotations
 
 import re
-import sqlite3
+from .database_errors import IntegrityError
 import threading
 from collections import deque
 from functools import lru_cache
@@ -125,7 +125,7 @@ class Conn:
                 return Cursor(rows, cursor.rowcount, cursor.lastrowid or 0)
         except pymysql.IntegrityError as exc:
             # Preserve callers' established duplicate/constraint error contract.
-            raise sqlite3.IntegrityError(str(exc)) from exc
+            raise IntegrityError(str(exc)) from exc
 
     def execute(self, sql, args=()):
         text = sql.strip().rstrip(";")

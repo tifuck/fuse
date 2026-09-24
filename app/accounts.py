@@ -1,7 +1,7 @@
 import hashlib
 import json
 import secrets
-import sqlite3
+from .database_errors import IntegrityError
 
 from . import db
 from .config import settings
@@ -69,7 +69,7 @@ def create_user(email: str, password: str, *, admin: bool | None = None, require
                    VALUES (?,?,?,?,?,?,?)""",
                 (email, hash_password(password), is_admin, db.now(), salt, wrapped, params),
             )
-        except sqlite3.IntegrityError:
+        except IntegrityError:
             raise ValueError("exists") from None
         uid = db.last_id(conn)
         conn.execute(
@@ -102,7 +102,7 @@ def add_whitelist(email: str) -> str:
             "INSERT INTO registration_whitelist (email, created_at) VALUES (?,?)",
             (email, db.now()),
         )
-    except sqlite3.IntegrityError:
+    except IntegrityError:
         raise ValueError("listed") from None
     return email
 

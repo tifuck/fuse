@@ -1602,7 +1602,7 @@ def search_threads(user_id: int, q: str, *, archived: bool = False) -> list[dict
     return out
 
 
-def get_thread(user_id: int, thread_id, *, observed_cursor: int | None = None):
+def get_thread(user_id: int, thread_id, *, observed_cursor: int | None = None, observed_thread_cursor: int | None = None):
     from . import chat_store
 
     with db.tx() as conn:
@@ -1613,6 +1613,13 @@ def get_thread(user_id: int, thread_id, *, observed_cursor: int | None = None):
         # Check inside the same read transaction as the snapshot. A revision
         # alone is insufficient: live progress advances the event cursor without
         # changing the thread revision. Resolve ownership even on a cache hit.
+        # The per-thread watermark is the precise check: another thread's
+        # subagents advance the user-global cursor constantly, which would
+        # defeat the short-circuit for every reconcile while they stream.
+        if observed_thread_cursor is not None:
+            watermark = chat_store.thread_event_watermark(user_id, pk)
+            if watermark is not None and int(observed_thread_cursor) == watermark:
+                return {"unchanged": True, "event_cursor": watermark, "thread_cursor": watermark}
         if observed_cursor is not None:
             high = conn.execute("SELECT cursor FROM chat_event_cursors WHERE user_id=?", (user_id,)).fetchone()
             cursor = int(high[0]) if high else 0

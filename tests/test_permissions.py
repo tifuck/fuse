@@ -427,5 +427,51 @@ class RecoverTest(PermSchemaTest):
         self.assertEqual(row["status"], "cancelled")
 
 
+class PendingAsksTest(PermSchemaTest):
+    def _seed(self):
+        future = "2099-01-01T00:00:00Z"
+        past = "2020-01-01T00:00:00Z"
+        with db.tx() as conn:
+            conn.execute("DELETE FROM chat_permission_asks")
+            for ident, tid, expires, requester in (
+                ("pa_live_sub", 1, future, "scanner (explore)"),
+                ("pa_live_main", 1, future, "Main agent"),
+                ("pa_expired", 1, past, "Main agent"),
+                ("pa_other_thread", 2, future, "Main agent"),
+                ("pa_done", 1, future, "Main agent"),
+            ):
+                conn.execute(
+                    """INSERT INTO chat_permission_asks(
+                           id,user_id,thread_id,run_id,status,decision,kind,tool,host_id,host,path,cwd,command,
+                           secret,requester,grant_kind,grant_value,created_at,expires_at)
+                       VALUES (?,?,?,?,'pending','','path','run_terminal_command',7,'prod','','','cat /etc/shadow',
+                           0,?,'dir','/etc','2026-01-01T00:00:00Z',?)""",
+                    (ident, 1, tid, f"run-{ident}", requester, expires),
+                )
+            conn.execute("UPDATE chat_permission_asks SET status='allowed' WHERE id='pa_done'")
+
+    def test_pending_asks_lists_live_thread_asks_only(self):
+        self._seed()
+        pend = permissions.pending_asks(1, 1)
+        ids = [p["id"] for p in pend]
+        self.assertIn("pa_live_sub", ids)
+        self.assertIn("pa_live_main", ids)
+        self.assertNotIn("pa_expired", ids)
+        self.assertNotIn("pa_other_thread", ids)
+        self.assertNotIn("pa_done", ids)
+        sub = next(p for p in pend if p["id"] == "pa_live_sub")
+        self.assertEqual(sub["kind"], "tool_permission")
+        self.assertEqual(sub["status"], "pending")
+        self.assertEqual(sub["requester"], "scanner (explore)")
+        self.assertEqual(sub["tool"], "run_terminal_command")
+        self.assertEqual(sub["command"], "cat /etc/shadow")
+
+    def test_panel_exposes_pending_for_reconnect_seeding(self):
+        self._seed()
+        panel = permissions.panel_for(1, 1)
+        ids = [p["id"] for p in panel["pending"]]
+        self.assertEqual(ids, ["pa_live_sub", "pa_live_main"])
+
+
 if __name__ == "__main__":
     unittest.main()

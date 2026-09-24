@@ -168,6 +168,66 @@ class SearchToolsTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("audit_extra", loaded)
         self.assertEqual(trace["status"], "error")
 
+    async def test_explore_pack_filter_names_dropped_tools(self):
+        # An explore child asking for the workspace pack must hear which tools
+        # were filtered and why, instead of a silent loaded:[] that reads as
+        # "nothing extra exists" and pushes edits onto the shell.
+        loaded: list[str] = []
+        packed, trace = await execute_tool(
+            "search_tools",
+            json.dumps({"query": "workspace"}),
+            user_id=1,
+            allowed_urls=set(),
+            coding=True,
+            loaded=loaded,
+            session={"subagent_type": "explore", "depth": 1, "parent_run_id": "p1"},
+        )
+        data = json.loads(packed)
+        self.assertIn("read_file", data["loaded"])
+        self.assertIn("run_terminal_command", data["loaded"])
+        self.assertNotIn("write_file", data["loaded"])
+        note = data.get("note", "") + (trace.get("error") or "")
+        self.assertIn("read-only", note)
+        self.assertIn("write_file", note)
+        self.assertIn("search_replace", note)
+        self.assertIn("run_terminal_command", note)
+        self.assertNotIn("write_file", loaded)
+
+    async def test_explore_write_names_refused_with_note(self):
+        loaded: list[str] = []
+        packed, trace = await execute_tool(
+            "search_tools",
+            json.dumps({"names": ["write_file", "search_replace"]}),
+            user_id=1,
+            allowed_urls=set(),
+            coding=True,
+            loaded=loaded,
+            session={"subagent_type": "explore", "depth": 1, "parent_run_id": "p1"},
+        )
+        data = json.loads(packed)
+        self.assertEqual(data["loaded"], [])
+        self.assertEqual(trace["status"], "error")
+        self.assertEqual(trace["kind"], "refused")
+        self.assertIn("read-only", trace["error"])
+        self.assertIn("write_file", trace["error"])
+        self.assertEqual(loaded, [])
+
+    async def test_general_purpose_load_is_unrestricted(self):
+        loaded: list[str] = []
+        packed, trace = await execute_tool(
+            "search_tools",
+            json.dumps({"query": "workspace"}),
+            user_id=1,
+            allowed_urls=set(),
+            coding=True,
+            loaded=loaded,
+            session={"subagent_type": "general-purpose", "depth": 1, "parent_run_id": "p1"},
+        )
+        data = json.loads(packed)
+        self.assertEqual(data["loaded"], list(agent_catalog.PACKS["workspace"]))
+        self.assertEqual(trace["status"], "done")
+        self.assertNotIn("read-only", data.get("note", ""))
+
     async def test_hosts_query(self):
         with patch("app.hosts.catalog_for_prompt", return_value="- box  u@h:22") as catalog:
             packed, trace = await execute_tool(

@@ -81,6 +81,49 @@ class AgentCapsTest(unittest.TestCase):
         self.assertNotEqual(again["messages"][-1]["id"], child["message_id"])
         self.assertEqual(again["run"]["id"], parent["id"])
 
+    def test_child_checkpoint_carries_permissions_key(self):
+        # The dock permission queue is fed from agent.progress payload.permissions;
+        # child asks never touch the thread transcript, so without this key a
+        # subagent ask cannot render and always times out.
+        thread, parent = self._parent()
+        child = store.start_child_run(
+            user_id=1,
+            thread_id=thread["id"],
+            parent_run_id=parent["id"],
+            prompt="scan things",
+            description="scanner",
+        )
+        expires = (datetime.now(timezone.utc) + timedelta(seconds=60)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        store.checkpoint(child["id"], {
+            "content": "working",
+            "tools": [],
+            "permissions": [{
+                "id": "pa_child1",
+                "kind": "tool_permission",
+                "status": "pending",
+                "tool": "run_terminal_command",
+                "host": "prod",
+                "path": "",
+                "cwd": "",
+                "command": "cat /etc/shadow",
+                "secret": False,
+                "requester": "scanner (explore)",
+                "reasons": ["outside the allowed roots"],
+                "expires_at": expires,
+            }],
+        })
+        row = db.fetchone(
+            "SELECT payload FROM chat_events WHERE type='agent.progress' ORDER BY id DESC LIMIT 1"
+        )
+        payload = json.loads(row["payload"])
+        self.assertIn("permissions", payload)
+        perms = payload["permissions"]
+        self.assertEqual(len(perms), 1)
+        self.assertEqual(perms[0]["id"], "pa_child1")
+        self.assertEqual(perms[0]["status"], "pending")
+        self.assertEqual(perms[0]["requester"], "scanner (explore)")
+        self.assertEqual(perms[0]["tool"], "run_terminal_command")
+
     def test_nested_off_rejects_grandchild(self):
         thread, parent = self._parent()
         child = store.start_child_run(

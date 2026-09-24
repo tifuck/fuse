@@ -261,6 +261,11 @@
   let pendingCreate = null;
   let pendingProject = null;
   let viewCursor = 0;
+  // Per-thread event watermark echoed for the reconcile short-circuit.
+  // viewCursor stays user-global (snapshot + event guards); this one only
+  // moves for events of the open thread, so other threads' subagents
+  // streaming cannot defeat the unchanged-snapshot fast path.
+  let threadWatermark = 0;
   let cursor = 0;
   let socket = null;
   let reconnectTimer = 0;
@@ -449,6 +454,19 @@
   let agentsOpen = false;
   let agentsRows = [];
   let agentViewId = "";
+  let agentLastEventAt = 0;
+  let _agentTickRenderAt = 0;
+  let _syncViewSent = "";
+  function sendSyncView(runId) {
+    const next = String(runId || "");
+    if (_syncViewSent === next) return;
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      try {
+        socket.send(JSON.stringify({ type: "view", run_id: next || null }));
+        _syncViewSent = next;
+      } catch (_) {}
+    }
+  }
   let agentRun = null;
   let agentPollRequest = null;
   let agentPollAgain = false;
@@ -751,17 +769,33 @@
     return aliases[name] || name;
   }
 
+  // Highlight memoization: streaming re-renders a message on nearly every
+  // frame, and settled fences never change once closed. Re-parsing them with
+  // hljs every time is the dominant O(message) cost per event; string-keyed
+  // map hits cost a cached hash plus one memcmp.
+  const _hljsCache = new Map();
+  const _HLJS_CACHE_MAX = 600;
+
   function highlightCode(lang, code) {
     const source = String(code || "");
     const language = codeLanguage(lang);
     if (!window.hljs || !language || source.length > 100000 || !window.hljs.getLanguage(language)) {
       return escapeHtml(source);
     }
+    const key = language + "\u0000" + source;
+    const cached = _hljsCache.get(key);
+    if (cached !== undefined) return cached;
+    let html;
     try {
-      return window.hljs.highlight(source, { language, ignoreIllegals: true }).value;
+      html = window.hljs.highlight(source, { language, ignoreIllegals: true }).value;
     } catch (_) {
       return escapeHtml(source);
     }
+    if (_hljsCache.size >= _HLJS_CACHE_MAX) {
+      _hljsCache.clear();
+    }
+    _hljsCache.set(key, html);
+    return html;
   }
 
   function renderFence(lang, code) {
@@ -1088,6 +1122,10 @@
   // Replacing the entire body on every chunk resets selection, code scroll and
   // browser layout anchors even when only its final text node changed.
   function patchMarkdown(target, html) {
+    patchMarkdownFrom(target, html, 0);
+  }
+
+  function patchMarkdownFrom(target, html, skipCount) {
     const template = document.createElement("template");
     template.innerHTML = html;
     const sync = (parent, source) => {
@@ -1110,7 +1148,86 @@
       }
       while (current) { const next = current.nextSibling; current.remove(); current = next; }
     };
+    if (skipCount > 0) {
+      // The frozen prefix is never re-diffed: isEqualNode is a deep compare,
+      // so touching it would reintroduce the O(message) per-event cost this
+      // splitting exists to remove.
+      const frozen = target.childNodes[skipCount - 1];
+      if (!frozen) { patchMarkdown(target, html); return; }
+      let current = frozen.nextSibling;
+      for (const fresh of [...template.content.childNodes]) {
+        if (!current) { target.appendChild(fresh.cloneNode(true)); continue; }
+        const next = current.nextSibling;
+        if (!current.isEqualNode(fresh)) {
+          if (current.nodeType === Node.TEXT_NODE && fresh.nodeType === Node.TEXT_NODE) {
+            if (fresh.data.startsWith(current.data)) current.appendData(fresh.data.slice(current.data.length));
+            else current.data = fresh.data;
+          } else if (current.nodeType === Node.ELEMENT_NODE && fresh.nodeType === Node.ELEMENT_NODE && current.tagName === fresh.tagName) {
+            const keepOpen = current.tagName === "DETAILS" && current.dataset.mdDetails === fresh.dataset.mdDetails;
+            for (const attr of [...current.attributes]) if (!(keepOpen && attr.name === "open") && !fresh.hasAttribute(attr.name)) current.removeAttribute(attr.name);
+            for (const attr of [...fresh.attributes]) if (!(keepOpen && attr.name === "open") && current.getAttribute(attr.name) !== attr.value) current.setAttribute(attr.name, attr.value);
+            sync(current, fresh);
+          } else target.replaceChild(fresh.cloneNode(true), current);
+        }
+        current = next;
+      }
+      while (current) { const next = current.nextSibling; current.remove(); current = next; }
+      return;
+    }
     sync(target, template.content);
+  }
+
+  // Char offset where a streaming markdown text becomes structurally stable:
+  // the last blank-line block boundary that is not inside an open fence or
+  // details block. Conservatively matches the renderer's own segmentation,
+  // so splitting there can never alter the combined output.
+  function mdStableBoundary(text) {
+    // Disclosure node IDs use document-relative offsets. Keep disclosures
+    // on the full renderer until the parser exposes stable block identities.
+    if (/<\/?details\b/i.test(text)) return 0;
+    let fence = false, boundary = 0;
+    for (let i = 0; i < text.length; i += 1) {
+      if (text.startsWith("```", i)) { fence = !fence; i += 2; continue; }
+      if (!fence && text[i] === "\n" && text[i + 1] === "\n") boundary = i + 2;
+    }
+    return boundary;
+  }
+
+  function _mdNodeKey(node) {
+    return node.nodeType === Node.TEXT_NODE ? node.nodeValue : node.outerHTML;
+  }
+
+  // Streamed markdown renderer: appends-only text is split into a frozen
+  // prefix (rendered once, never re-diffed) and a small active tail that is
+  // re-rendered per update. Amortized O(new text) per event instead of
+  // O(whole message).
+  function streamMarkdown(el, text, writing, catalog) {
+    const catalogKey = catalog.join("\n") + "\u0000" + Boolean(writing);
+    const reset = el._mdCatalog !== catalogKey || (el._mdText && !text.startsWith(el._mdText));
+    let anchor = reset ? 0 : (el._mdAnchor || 0);
+    let frozen = reset ? 0 : (el._mdFrozen || 0);
+    const want = mdStableBoundary(text);
+    if (!reset && want > anchor) {
+      const deltaHtml = renderMarkdown(text.slice(anchor, want), writing, catalog);
+      const probe = document.createElement("template");
+      probe.innerHTML = deltaHtml;
+      const deltaNodes = [...probe.content.childNodes];
+      const liveNodes = [...el.childNodes].slice(frozen, frozen + deltaNodes.length);
+      const aligned = liveNodes.length === deltaNodes.length &&
+        liveNodes.every((node, index) => _mdNodeKey(node) === _mdNodeKey(deltaNodes[index]));
+      if (aligned) {
+        frozen += deltaNodes.length;
+        anchor = want;
+      }
+      // Misaligned: freeze nothing this round and re-render from the old
+      // anchor so the visible region is reconciled against the full text.
+    }
+    const tailHtml = renderMarkdown(text.slice(anchor), writing, catalog);
+    patchMarkdownFrom(el, tailHtml, frozen);
+    el._mdAnchor = anchor;
+    el._mdFrozen = frozen;
+    el._mdText = text;
+    el._mdCatalog = catalogKey;
   }
 
   function splitThink(text) {
@@ -1373,12 +1490,11 @@
   }
 
   function occupancyRows(snap) {
-    const local = localOccupancy();
     const parts = (snap && snap.parts && typeof snap.parts === "object") ? snap.parts : {};
     const draft = estimateDraftTokens();
     // Zero is authoritative too. Do not mix a compacted prompt breakdown
     // with the much larger, still-visible historical transcript.
-    const source = snap?.parts ? parts : liveMeter ? {} : local;
+    const source = snap?.parts ? parts : liveMeter ? {} : localOccupancy();
     const system = Number(source.system) || 0;
     const history = Number(source.history) || 0;
     const messagesN = Number(source.messages) || 0;
@@ -1618,7 +1734,7 @@
     if (contextPopMeter) {
       contextPopMeter.textContent = `${usedLabel} / ${limitLabel}${snap.refreshing ? " · updating" : ""}`;
     }
-    if (contextPopParts) {
+    if (contextPopParts && contextPop && !contextPop.hidden) {
       const rows = occupancyRows(snap);
       contextPopParts.innerHTML = rows.map(([label, tokens, nest]) => {
         const cls = [nest === "child" ? "is-child" : "", nest === "grand" ? "is-grand" : "", tokens <= 0 ? "is-zero" : ""].filter(Boolean).join(" ");
@@ -2149,7 +2265,9 @@
         if (next.status === "error") next.error = row.message?.error || row.error || next.error || "Subagent failed without a report.";
         else if (next.status === "interrupted") next.error = row.message?.error || row.error || next.error || "";
         else if (["done", "running", "queued"].includes(next.status)) delete next.error;
-        if (JSON.stringify(next) !== JSON.stringify(trace)) {
+        const traceChanged = Object.keys(next).some((key) => next[key] !== trace[key]) ||
+          Object.keys(trace).some((key) => !(key in next));
+        if (traceChanged) {
           Object.keys(trace).forEach((key) => delete trace[key]);
           Object.assign(trace, next);
           changed = true;
@@ -2158,7 +2276,7 @@
       if (changed && index < messages.length && log.children[index]) updateAssistant(log.children[index], msg, Boolean(streaming && activeRun?.message_id === msg.id));
       if (changed && index >= messages.length) childChanged = true;
     });
-    if (childChanged && agentsOpen) renderAgentView();
+    if (childChanged && agentsOpen) scheduleAgentView();
     syncLiveDock();
   }
 
@@ -2612,7 +2730,7 @@
     if (prior !== streaming || state !== renderedRunState) {
       renderedRunState = state;
       renderHistory();
-      if (repaint && messages.length) paintLast();
+      if (repaint && messages.length) schedulePaintLast();
     }
     syncRunSpinners();
     syncComposer();
@@ -2759,6 +2877,7 @@
     });
     serverRevision = data.revision;
     viewCursor = Number(data.event_cursor || 0);
+    threadWatermark = Number.isSafeInteger(data.thread_cursor) ? Number(data.thread_cursor) : viewCursor;
     activeRun = data.run;
     if (activeRun && stoppingRunId && activeRun.id === stoppingRunId) activeRun.cancel_requested = true;
     if (!runIsActive(activeRun) && (!activeRun || !stoppingRunId || activeRun.id === stoppingRunId)) stoppingRunId = "";
@@ -2814,7 +2933,9 @@
     let data;
     // Keep the race-healing read, but avoid rebuilding/downloading a snapshot
     // already represented by this view (including in-flight run progress).
-    const query = !dirty && !transcriptDirty ? "?observed_cursor=" + viewCursor : "";
+    const query = !dirty && !transcriptDirty
+      ? "?observed_cursor=" + viewCursor + "&observed_thread_cursor=" + threadWatermark
+      : "";
     try { data = await api("/chat/threads/" + id + query); }
     catch (error) {
       if (id !== currentId || gen !== generation || load !== loadEpoch) return;
@@ -2875,17 +2996,33 @@
         }
       }
       notifyTurnDone(event.thread_id, payload, event.type);
+    } else if (event.thread_id === currentId && event.type === "agent.tick") {
+      // Compact progress for subagents this socket is not viewing. Enough
+      // for the Work list and permission asks; the full patch stream of the
+      // viewed agent arrives as regular agent.progress.
+      if (Array.isArray(payload.permissions)) syncPermQueueFromMessage({ permissions: payload.permissions });
+      const row = agentsRows.find((item) => String(item.id) === String(payload.run_id));
+      if (row) {
+        if (payload.current) row.current = payload.current;
+        row.quiet_s = 0;
+        row.updated_at = row.updated_at || new Date().toISOString();
+        if (agentsOpen && Date.now() - _agentTickRenderAt > 1000) {
+          _agentTickRenderAt = Date.now();
+          renderAgentsList();
+        }
+      }
     } else if (event.thread_id === currentId && event.type.startsWith("agent.")) {
       const cid = payload.child_id || payload.run_id;
       if (agentsOpen && cid === agentViewId && !agentRun) agentPendingEvents.push(event);
       if (cid && event.type !== "agent.progress") reconcileAgentTraces([payload], event.type === "agent.started" || event.type === "agent.resumed");
       if (event.type === "agent.progress") {
         if (Array.isArray(payload.permissions)) syncPermQueueFromMessage({ permissions: payload.permissions });
+        if (payload.run_id === agentViewId) agentLastEventAt = Date.now();
         if (agentsOpen && agentViewId && payload.run_id === agentViewId && agentRun && event.id > (agentRun.event_cursor || 0)) {
           if (!agentRun.message || typeof agentRun.message !== "object") agentRun.message = {};
           applyProgressPayload(agentRun.message, payload, true);
           agentRun.event_cursor = event.id;
-          renderAgentView();
+          scheduleAgentView();
           // Compaction rewrites the child's provider transcript. The live
           // bubble above is the post-handoff continuation; reload the seed so
           // the summary is shown and the replaced turns leave the panel.
@@ -2908,7 +3045,7 @@
           if (payload.status) agentRun.status = payload.status;
           else if (event.type === "agent.resumed" || event.type === "agent.started") agentRun.status = "queued";
           if (payload.message) applyProgressPayload(agentRun.message, payload, true);
-          renderAgentView();
+          scheduleAgentView();
         }
         pollAgentView();
       }
@@ -2930,7 +3067,8 @@
             if (log.children[index]) updateAssistant(log.children[index], messages[index], false);
           }
           viewCursor = event.id;
-          paintLast();
+          threadWatermark = event.id;
+          schedulePaintLast();
         }
       } else if (event.type === "run.cancel_requested") {
         if (activeRun && activeRun.id === payload.run_id) {
@@ -2940,6 +3078,7 @@
           setHint("Stopping…");
         }
         viewCursor = event.id;
+        threadWatermark = event.id;
       } else if (["run.completed", "run.cancelled", "run.failed", "run.interrupted"].includes(event.type)) {
         const msg = messages.find((item) => item.id === payload.message_id);
         if (msg && payload.message) Object.assign(msg, payload.message);
@@ -2961,6 +3100,7 @@
         notifyTurnDone(event.thread_id, payload, event.type);
         if (payload.revision != null) serverRevision = payload.revision;
         viewCursor = event.id;
+        threadWatermark = event.id;
         if (editingIndex < 0 && msg) {
           const article = log.children[messages.indexOf(msg)];
           if (article) mountActions(article, messages.indexOf(msg));
@@ -3010,6 +3150,13 @@
       url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
       url.searchParams.set("cursor", String(cursor));
       const ws = socket = new WebSocket(url);
+      ws.onopen = () => {
+        heartbeat();
+        // Re-assert the viewed subagent so a reconnect keeps full patches
+        // coming for it (the new socket starts with no view).
+        _syncViewSent = null;
+        sendSyncView(agentsOpen ? agentViewId : "");
+      };
       const heartbeat = () => {
         window.clearTimeout(heartbeatTimer);
         heartbeatTimer = window.setTimeout(() => {
@@ -3018,7 +3165,6 @@
           ws.close();
         }, HEARTBEAT_MS);
       };
-      ws.onopen = heartbeat;
       let chain = Promise.resolve();
       ws.onmessage = (message) => {
         if (epoch !== syncEpoch) return;
@@ -3055,6 +3201,7 @@
         }).catch((error) => { syncFailure(error); if (epoch === syncEpoch) ws.close(); });
       };
       ws.onclose = (event) => {
+        _syncViewSent = "";
         if (event.code === 4401) {
           syncState = "session";
           syncLabel = "Session expired. Sign in again.";
@@ -4360,7 +4507,11 @@
     }));
     serverRevision = data.revision;
     viewCursor = Number(data.event_cursor || 0);
+    threadWatermark = Number.isSafeInteger(data.thread_cursor) ? Number(data.thread_cursor) : viewCursor;
     activeRun = data.run;
+    // Restore any live permission asks (parent or subagent) the event stream
+    // cannot replay after a reload — child asks never touch the transcript.
+    seedPendingFromServer(currentId);
     // Never carry the previous thread's meter into this one.
     liveMeter = null;
     compacting = false;
@@ -6346,7 +6497,7 @@
       const next = (Number(spin.dataset.frame || 0) + 1) % CONSOLE_SPIN_FRAMES.length;
       spin.dataset.frame = String(next);
       spin.textContent = CONSOLE_SPIN_FRAMES[next];
-    }, 80);
+    }, 200);
   }
 
   function syncLiveDock() {
@@ -6569,7 +6720,7 @@
       syncActivityElapsed(article, msg, true);
       syncActivitySpin(article, msg, true);
       syncLiveDock();
-    }, 100);
+    }, 250);
   }
 
   function thinkPreview(text) {
@@ -8314,6 +8465,29 @@
     if (changed) renderPermQueue();
   }
 
+  function seedPendingPermCards(panel) {
+    // Subagent asks live in child runs, not the thread transcript: after a
+    // reload or socket resync the durable pending list is the only way to
+    // restore their cards. Stale entries self-drop via expires_at. Auto mode
+    // still asks for secrets/destructive shells, so only bypass suppresses.
+    if (!panel || !Array.isArray(panel.pending) || threadBypass) return;
+    let changed = false;
+    panel.pending.forEach((perm) => {
+      if (!perm || perm.kind !== "tool_permission" || perm.status !== "pending" || !perm.id) return;
+      upsertPermCard(perm, false);
+      changed = true;
+    });
+    if (changed) renderPermQueue();
+  }
+
+  async function seedPendingFromServer(id) {
+    try {
+      const panel = await api(`/chat/threads/${encodeURIComponent(id)}/permissions`);
+      if (id !== currentId) return;
+      seedPendingPermCards(panel);
+    } catch (error) { /* card replay is best effort */ }
+  }
+
   function permToolLabel(tool) {
     return ({
       read_file: "Read file",
@@ -8388,11 +8562,25 @@
     return `rgb(${Math.round(a[0] + (b[0] - a[0]) * u)} ${Math.round(a[1] + (b[1] - a[1]) * u)} ${Math.round(a[2] + (b[2] - a[2]) * u)})`;
   }
 
-  function permUrgencyColor(el, frac) {
+  let _permThemeCache = { key: "", brass: null, yellow: null, red: null };
+  function permThemeColors(el) {
+    // Theme variables are identical for every card; resolve them once per
+    // theme instead of forcing computed style on each card per frame.
+    const root = document.documentElement;
+    const key = root.getAttribute("data-theme") || "";
+    if (_permThemeCache.key === key && _permThemeCache.brass) return _permThemeCache;
     const theme = getComputedStyle(el);
-    const brass = parseCssRgb(theme.getPropertyValue("--brass"), "#B5E05A");
-    const yellow = parseCssRgb(theme.getPropertyValue("--status-live"), "#FBBF24");
-    const red = parseCssRgb(theme.getPropertyValue("--fault"), "#F87171");
+    _permThemeCache = {
+      key,
+      brass: parseCssRgb(theme.getPropertyValue("--brass"), "#B5E05A"),
+      yellow: parseCssRgb(theme.getPropertyValue("--status-live"), "#FBBF24"),
+      red: parseCssRgb(theme.getPropertyValue("--fault"), "#F87171"),
+    };
+    return _permThemeCache;
+  }
+
+  function permUrgencyColor(el, frac) {
+    const { brass, yellow, red } = permThemeColors(el);
     const spent = 1 - Math.max(0, Math.min(1, frac));
     if (spent < 0.45) return mixRgb(brass, yellow, spent / 0.45);
     return mixRgb(yellow, red, (spent - 0.45) / 0.55);
@@ -8782,6 +8970,7 @@
       threadAuto = Boolean(threadPermData.auto);
       autoAvailable = Boolean(threadPermData.auto_available);
       if (threadPermData.auto_available === false) threadAuto = false;
+      seedPendingPermCards(threadPermData);
       syncPermChip();
       paintPermsPanel();
     } catch (error) {
@@ -9189,6 +9378,11 @@
     );
   }
 
+  const transcriptDomOptions = {
+    island: node => node.hasAttribute("data-reason-preview") || node.hasAttribute("data-content-block") || node.dataset.step?.startsWith("think-"),
+    dispose: node => { if (node.nodeType === 1) disposeThinking(node); },
+  };
+
   function updateAssistant(article, msg, live) {
     // Off-screen historical responses are hydrated from the latest message
     // object when they enter the viewport, rather than on every sync event.
@@ -9266,7 +9460,13 @@
     const lastActivity = blocks.map((block) => block.kind).lastIndexOf("activity");
     const liveGroups = groupTraces(traces);
     const liveKind = activityKind(msg, liveGroups, live);
-    const structure = segments.map((part) => `${part?.type || ""}:${part.id || part.text || ""}:${part.summary || ""}`).join("|");
+    // Structure only: types, ids and immutable marker text. Including segment
+    // text here would rebuild the whole message DOM on every streamed delta
+    // (the shape-change path innerHTML-renders every block); text growth is
+    // handled per block by the settled/tail markdown streamer below.
+    const structure = segments.map((part) => part?.type === "marker"
+      ? `marker:${part.text || ""}:${part.summary || ""}`
+      : `${part?.type || ""}:${part.id || ""}`).join("|");
     const permSig = (msg.permissions || []).map((p) => `${p.id}:${p.status}`).join("|");
     const traceById = new Map(traces.map((trace) => [trace && trace.id, trace]));
     const blockSig = (block, blockIndex) => {
@@ -9309,25 +9509,8 @@
         const fresh = document.createElement("template");
         fresh.innerHTML = html;
         const incoming = fresh.content.firstElementChild;
-        const currentRows = [...node.querySelectorAll(".chat-timeline > [data-step]")];
-        const nextRows = incoming ? [...incoming.querySelectorAll(".chat-timeline > [data-step]")] : [];
-        const reusable = currentRows.length === nextRows.length && currentRows.every((row, index) => row.dataset.step === nextRows[index].dataset.step);
-        if (!reusable || !incoming) {
-          if (!incoming) return;
-          incoming._blockSig = next;
-          node.replaceWith(incoming);
-          return;
-        }
-        currentRows.forEach((row, index) => {
-          const freshRow = nextRows[index];
-          if (row.outerHTML === freshRow.outerHTML) return;
-          // Streaming text and the next tool call rebuild every row. Replacing
-          // one that is already settled restarts its output-branch animation,
-          // so the L under every earlier call flashes. Patch text in place.
-          if (patchSettledToolRow(row, freshRow)) return;
-          settleToolReveal(freshRow);
-          row.replaceWith(freshRow);
-        });
+        if (!incoming) return;
+        FuseChatDOM.patch(node, incoming, transcriptDomOptions);
         node._blockSig = next;
       });
     } else if (flow._sig !== sig) {
@@ -9341,8 +9524,7 @@
       const preKey = (el, i) => el.closest("[data-tool-section]") ? `${el.closest("[data-step]")?.dataset.step}:${el.closest("[data-tool-section]").dataset.toolSection}` : `pre-${i}`;
       const positions = new Map([...flow.querySelectorAll("pre")].map((el, i) => [preKey(el, i), [el.scrollLeft, el.scrollTop]]));
       flow._sig = sig;
-      disposeThinking(flow);
-      flow.innerHTML = blocks.map((block, blockIndex) => {
+      const nextFlow = blocks.map((block, blockIndex) => {
         if (block.kind === "permission") {
           return permissionCardHtml(block.entries[0].perm, msg);
         }
@@ -9352,11 +9534,12 @@
         if (block.kind === "content") {
           const text = block.entries.map((entry) => entry.text).join("");
           const writing = live && blockIndex === blocks.length - 1;
-          return `<div class="chat-md${writing ? " is-writing" : ""}" data-content-block="${blockIndex}">${renderMarkdown(text, writing, catalog)}</div>`;
+          return `<div class="chat-md${writing ? " is-writing" : ""}" data-content-block="${blockIndex}"></div>`;
         }
         const blockLive = live && blockIndex === blocks.length - 1;
          return activityBlockHtml(block.entries, msg, blockLive, blockIndex, !live && blockIndex === lastActivity, live);
        }).join("");
+      FuseChatDOM.reconcile(flow, nextFlow, transcriptDomOptions);
       [...flow.children].forEach((node, blockIndex) => { node._blockSig = blockSig(blocks[blockIndex], blockIndex); });
       flow.querySelectorAll("pre").forEach((el, i) => {
         const position = positions.get(preKey(el, i));
@@ -9391,7 +9574,7 @@
       }
       if (peek._source !== source || peek._live !== liveThink) {
         peek._source = source; peek._live = liveThink;
-        patchMarkdown(peek.firstElementChild, renderMarkdown(source, liveThink, catalog));
+        streamMarkdown(peek.firstElementChild, source, liveThink, catalog);
         if (!isConsoleView()) {
           const summary = li.querySelector(".chat-think-summary");
           if (summary) summary.innerHTML = thinkingSummaryHtml(source);
@@ -9421,7 +9604,7 @@
       if (md._src === srcKey) return;
       const positions = [...md.querySelectorAll("pre")].map((el) => [el.scrollLeft, el.scrollTop]);
       md._src = srcKey;
-      patchMarkdown(md, renderMarkdown(text, writing, catalog));
+      streamMarkdown(md, text, writing, catalog);
       md.querySelectorAll("pre").forEach((el, i) => {
         if (positions[i]) { el.scrollLeft = positions[i][0]; el.scrollTop = positions[i][1]; }
       });
@@ -9548,6 +9731,37 @@
     restoreThreadViewport(viewport);
     if (viewport.threadId !== currentId) scrollThread();
   }
+
+  // Frame-coalesced repaint entry points. Sync events can arrive dozens of
+  // times per second across many subagents; state updates stay eager and
+  // cheap, while the DOM repaint runs at most once per animation frame.
+  let _paintLastQueued = false;
+  function schedulePaintLast() {
+    if (_paintLastQueued) return;
+    _paintLastQueued = true;
+    requestAnimationFrame(() => {
+      _paintLastQueued = false;
+      paintLast();
+    });
+  }
+
+  let _agentViewQueued = false;
+  function scheduleAgentView() {
+    if (_agentViewQueued) return;
+    _agentViewQueued = true;
+    requestAnimationFrame(() => {
+      _agentViewQueued = false;
+      renderAgentView();
+    });
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    // Background tabs throttle rAF to nothing; repaint live streams on return.
+    if (!document.hidden) {
+      if (streaming) schedulePaintLast();
+      if (agentsOpen && agentViewId) scheduleAgentView();
+    }
+  });
 
   function paintLast() {
     const msg = runIsActive(activeRun) ? activeAssistant() : messages[messages.length - 1];
@@ -10842,11 +11056,19 @@
       hideContextAlert();
     });
   }
+  let _meterDebounce = 0;
+  function queueContextMeter() {
+    // localOccupancy is O(transcript); recount at most 300ms after typing
+    // stops instead of on every keystroke of a long conversation.
+    window.clearTimeout(_meterDebounce);
+    _meterDebounce = window.setTimeout(() => { _meterDebounce = 0; syncContextMeter(); }, 300);
+  }
+
   input.addEventListener("input", () => {
     drafts.set(currentId, input.value);
     resizeInput();
     syncComposer();
-    syncContextMeter();
+    queueContextMeter();
     syncEmptyComposer();
     slashIndex = 0;
     if (window.FuseComposerSpell && FuseComposerSpell.composing) {
@@ -11432,8 +11654,8 @@
     let html = "";
     if (live.length) html += '<p class="chat-agents-kicker">Live · longest first</p>' + live.map(agentRowHtml).join("");
     if (done.length) html += '<p class="chat-agents-kicker">Finished</p>' + done.map(agentRowHtml).join("");
-    agentsListEl.innerHTML =
-      html || '<p class="chat-agents-empty">No subagents yet. The main agent spawns them for isolated sub-tasks while it works.</p>';
+    FuseChatDOM.reconcile(agentsListEl,
+      html || '<p class="chat-agents-empty">No subagents yet. The main agent spawns them for isolated sub-tasks while it works.</p>');
   }
 
   function renderAgentHead() {
@@ -11733,6 +11955,7 @@
     if (!id) return;
     const gen = ++agentsViewGen;
     agentViewId = id;
+    sendSyncView(id);
     agentRun = null;
     agentMsgState = null;
     agentPendingEvents = [];
@@ -12022,9 +12245,13 @@
 
   setInterval(() => {
     if (currentId && (agentsOpen || hasRunningBgTraces())) refreshJobs();
+  }, 3000);
+  // agent.tick events drive the closed-panel list now; the poll is only a
+  // fallback for missed started/ended events (socket resync, older server).
+  setInterval(() => {
     if (currentId && !agentsOpen && (agentsRows.some((row) => agentLive(row.status)) || messages.some((msg) =>
       (msg.tools || []).some((trace) => ["spawn_subagent", "get_subagent_output"].includes(trace.name) && trace.child_id && toolRunning(trace, false))))) refreshAgents();
-  }, 3000);
+  }, 10000);
 
   // Transport heartbeats alone do not prove that this particular run is alive.
   // A quiet current run gets an authoritative snapshot; the server's existing
@@ -12078,7 +12305,8 @@
     agentsPollTick += 1;
     if (agentsPollTick < 2) return;
     agentsPollTick = 0;
-    if (agentViewId && (!agentRun || agentLive(agentRun.status) || agentViewFailCount)) pollAgentView();
+    const wsHealthy = isLive() && Date.now() - agentLastEventAt < 3000;
+    if (agentViewId && (!agentRun || agentLive(agentRun.status) || agentViewFailCount) && !wsHealthy) pollAgentView();
     refreshAgents();
   }
 
@@ -12103,7 +12331,7 @@
       overlayPush("agents");
       if (!agentsTimer) agentsTimer = setInterval(agentsTick, 1000);
       refreshAgents();
-      if (agentViewId) pollAgentView();
+      if (agentViewId && agentRun) pollAgentView();
     } else {
       agentsViewGen += 1;
       if (!agentRun) { agentViewId = ""; agentMsgState = null; }
@@ -12170,6 +12398,7 @@
       showAgent(openAgentEl.getAttribute("data-open-agent"));
     });
   function closeAgentView() {
+    sendSyncView("");
     if (!agentViewId) return;
     agentsViewGen += 1;
     agentViewId = "";

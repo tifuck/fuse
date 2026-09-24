@@ -145,8 +145,7 @@ async def lifespan(app: FastAPI):
             lock_dir.mkdir(parents=True, exist_ok=True)
             worker_lock = open(lock_dir / f"fuse.{schema}.chat-worker.lock", "a")
         else:
-            _, _, path, _ = db._database_target(settings.database_path)
-            worker_lock = open(str(path) + ".chat-worker.lock", "a") if path is not None else None
+            raise RuntimeError("Fuse requires a configured MariaDB database")
         if worker_lock is not None:
             try:
                 fcntl.flock(worker_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -171,6 +170,7 @@ async def lifespan(app: FastAPI):
         chat_runs._stopping = False
         chat_events.start()
         host_events.start()
+        chat_store.start_publisher()
         await bootstrap()
         start_pools()
         await chat_runs.resume_queued()
@@ -203,6 +203,9 @@ async def lifespan(app: FastAPI):
         await host_events.stop()
         await chat_titles.drain()
         await chat_runs.stop()
+        # After the runs drain: flush any publications still queued so their
+        # waiters resolve and terminal events are not lost mid-shutdown.
+        await chat_store.stop_publisher()
         try:
             from . import ssh_pool, vault, agent_hub
             await agent_hub.drain()
@@ -302,7 +305,7 @@ async def health():
     healthy = bool(database_ok and getattr(app.state, "refresh_healthy", False) and task_running)
     payload = {
         "ok": healthy,
-        "database": {"ok": database_ok, "backend": "mariadb" if settings.database_mariadb_enabled else "sqlite"},
+        "database": {"ok": database_ok, "backend": "mariadb"},
         "background": {
             "running": task_running,
             "healthy": bool(getattr(app.state, "refresh_healthy", False)),

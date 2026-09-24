@@ -10,10 +10,12 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=str(ROOT / ".env"), extra="ignore")
 
     app_secret: str
-    database_path: str = str(ROOT / "data" / "fuse.db")
+    # Retained only while offline legacy migration tools are being retired.
+    database_path: str = ""
+    skills_directory: str = str(ROOT / "data" / "skills")
     # mysql://user:pass@127.0.0.1:3306/fuse — when set, this is the only database.
     database_url: str = ""
-    database_mariadb_enabled: bool = False
+    database_mariadb_enabled: bool = True
     database_pool_size: int = 48
     host: str = "0.0.0.0"
     port: int = 8088

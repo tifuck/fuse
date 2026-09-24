@@ -48,11 +48,7 @@ LAYOUTS = (
 
 
 def data_dir() -> Path:
-    raw = (settings.database_path or "").strip()
-    if not raw or raw == ":memory:" or raw.startswith("file:"):
-        path = ROOT / "data" / "skills"
-    else:
-        path = Path(raw).expanduser().resolve().parent / "skills"
+    path = Path(settings.skills_directory).expanduser().resolve()
     path.mkdir(parents=True, exist_ok=True)
     os.chmod(path, 0o700)
     return path

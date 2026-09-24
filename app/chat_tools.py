@@ -736,17 +736,52 @@ async def execute_tool(
             names_arg = args.get("names") if isinstance(args.get("names"), list) else None
             found = agent_catalog.search(query, names_arg)
             kind = str((session or {}).get("subagent_type") or "")
+            allowed_names: frozenset[str] | None = None
             if kind == "explore":
-                found = [item for item in found if item["function"]["name"] in agent_catalog.EXPLORE_TOOLS]
+                allowed_names = frozenset(agent_catalog.EXPLORE_TOOLS)
             elif kind == "plan":
-                found = [item for item in found if item["function"]["name"] in agent_catalog.PLAN_TOOLS]
-            if not found:
+                allowed_names = frozenset(agent_catalog.PLAN_TOOLS)
+            dropped: list[str] = []
+            if allowed_names is not None:
+                kept = []
+                for item in found:
+                    item_name = item["function"]["name"]
+                    if item_name in allowed_names:
+                        kept.append(item)
+                    else:
+                        dropped.append(item_name)
+                found = kept
+            restriction_note = ""
+            if dropped:
+                # A silent filter here reads as "the pack has nothing extra":
+                # the model then emulates edits through run_terminal_command,
+                # which is both out of type and lands on the permission gate.
+                restriction_note = (
+                    f"{'explore' if kind == 'explore' else 'plan'} subagents are read-only: "
+                    f"{', '.join(dropped[:6])} cannot be loaded by this agent. Do not emulate edits "
+                    "with run_terminal_command (heredocs, sed -i, redirection); report the proposed "
+                    "change to the parent, or ask it to assign the edits to a general-purpose subagent."
+                )
+            if not found and not dropped:
                 packed = agent_catalog.pack_search_result([], added=[], index_only=True)
                 return packed, {"name": "search_tools", "status": "done", "preview": "index"}
+            if not found:
+                packed = json.dumps(
+                    {"note": restriction_note, "loaded": [], "usage": "This agent type cannot load the requested tools."},
+                    ensure_ascii=False,
+                )
+                return packed, {
+                    "name": "search_tools",
+                    "status": "error",
+                    "kind": "refused",
+                    "preview": f"refused: {', '.join(dropped[:4])}",
+                    "error": restriction_note,
+                }
             bucket = loaded if loaded is not None else []
             added, _refused, note = agent_catalog.apply_load(bucket, found)
             keep = set(bucket)
             found = [item for item in found if item["function"]["name"] in keep]
+            note = " | ".join(part for part in (restriction_note, note) if part)
             packed = agent_catalog.pack_search_result(found, added=added, note=note)
             preview = ", ".join(added or [item["function"]["name"] for item in found])
             status = "error" if note and not added else "done"

@@ -19,7 +19,12 @@ from fastapi import Request
 
 from . import chat_runtime, chat_store, chats, db
 
-FLUSH_SECONDS = 0.075
+FLUSH_SECONDS = 0.2
+# Fallback cadence for the per-run status poll. Cancellation is delivered
+# in-process (see _cancel_signals); the database re-check only guards against
+# a lost worker or a run whose task handle vanished. With hundreds of
+# concurrent subagents a 75ms-per-run poll would be thousands of queries/sec.
+STATUS_POLL_SECONDS = 2.0
 MAX_RUNTIME_SECONDS = chat_store.DEFAULT_REMAINING_SECONDS
 CLEANUP_SECONDS = 2
 MAX_FRAME_BYTES = 2_500_000
@@ -31,8 +36,30 @@ logger = logging.getLogger(__name__)
 _tasks: dict[str, asyncio.Task] = {}
 _iterators: dict[str, object] = {}
 _cancelled: set[str] = set()
+# In-process cancellation wakeups, keyed by run id. The HTTP Stop path and
+# the reaper set these directly; workers observe them within one flush tick
+# instead of polling chat_runs for cancel_requested at streaming cadence.
+_cancel_signals: dict[str, tuple[asyncio.Event, asyncio.AbstractEventLoop]] = {}
 _stopping = False
 _THINK = re.compile(r"</?(?:think|thinking|thought|reasoning)>", re.I)
+
+
+def _register_cancel_signal(ident: str):
+    event = asyncio.Event()
+    _cancel_signals[ident] = (event, asyncio.get_running_loop())
+    return event
+
+
+def _signal_cancel(ident: str):
+    """Thread-safe: wake a run's cancel event from any thread."""
+    entry = _cancel_signals.get(ident)
+    if entry is None:
+        return
+    event, loop = entry
+    try:
+        loop.call_soon_threadsafe(event.set)
+    except RuntimeError:
+        pass  # loop closed during shutdown
 
 
 def _take(value):
@@ -70,6 +97,15 @@ class Output:
         self._think_pending = ""
         self._xml_pending = ""
         self._last_source = None
+        # Aggregates (content/reasoning) are maintained incrementally on the
+        # append-only fast path; any structural rewrite (tool-xml scrub that
+        # dropped text) marks them dirty for one full recompute. Per-token
+        # cost stays O(chunk) instead of O(message length).
+        self._agg_dirty = False
+        # Prefix length of the current tail content segment already scanned
+        # for tool-xml blocks. Complete blocks only ever form in the unstable
+        # tail, so the committed prefix is never rescanned.
+        self._scrub_stable = 0
         self._round_content = len(msg.get("content") or "")
         self._round_reasoning = len(msg.get("reasoning") or "")
         self._round_tool_chars = 0
@@ -83,16 +119,22 @@ class Output:
             if not text:
                 return
         segments = self.message["segments"]
+        added = text
         if segments and segments[-1].get("type") == kind:
             if kind == "reasoning" and self._last_source and self._last_source != source:
                 segments[-1]["text"] += "\n"
+                added = "\n" + text
             segments[-1]["text"] += text
         else:
             if kind == "content" and any(part.get("type") == "content" for part in segments):
                 if not text.startswith("\n"):
-                    text = "\n\n" + text
+                    added = "\n\n" + text
+                    text = added
             segments.append({"type": kind, "text": text})
+            if kind == "content":
+                self._scrub_stable = 0
         self._last_source = source
+        self.message[kind] = (self.message.get(kind) or "") + added
 
     def _remove_pending(self):
         if not self._think_pending:
@@ -100,9 +142,16 @@ class Output:
         pending = self._think_pending
         segments = self.message["segments"]
         if segments and segments[-1].get("type") in ("content", "reasoning") and segments[-1]["text"].endswith(pending):
+            kind = segments[-1].get("type")
             segments[-1]["text"] = segments[-1]["text"][:-len(pending)]
+            if kind == "content":
+                self._scrub_stable = min(self._scrub_stable, len(segments[-1]["text"]))
             if not segments[-1]["text"]:
                 segments.pop()
+                if kind == "content":
+                    self._scrub_stable = 0
+            base = self.message.get(kind) or ""
+            self.message[kind] = base[: max(0, len(base) - len(pending))]
         self._think_pending = ""
         return pending
 
@@ -131,21 +180,35 @@ class Output:
             return
         segments = self.message["segments"]
         if not segments or segments[-1].get("type") != "content":
+            self._scrub_stable = 0
             return
-        visible, pending = chat_runtime.drop_tool_xml(segments[-1].get("text") or "")
+        text = segments[-1].get("text") or ""
+        stable = min(self._scrub_stable, len(text))
+        visible, pending = chat_runtime.drop_tool_xml(text[stable:])
         self._xml_pending = pending
-        if visible:
-            segments[-1]["text"] = visible
+        merged = text[:stable] + visible
+        delta = len(merged) - len(text)
+        if merged:
+            segments[-1]["text"] = merged
+            self._scrub_stable = len(merged)
         else:
             segments.pop()
+            self._scrub_stable = 0
+        if delta:
+            # A dropped block is a middle removal, not a suffix trim; the
+            # aggregates need one recompute from the segments.
+            self._agg_dirty = True
 
-    def _sync_aggregates(self):
-        self.message["content"] = chat_runtime.strip_special_tokens(
-            "".join(part.get("text", "") for part in self.message["segments"] if part.get("type") == "content")
+    def _ensure_aggregates(self):
+        if not self._agg_dirty:
+            return
+        self.message["content"] = "".join(
+            part.get("text", "") for part in self.message["segments"] if part.get("type") == "content"
         )
-        self.message["reasoning"] = chat_runtime.strip_special_tokens(
-            "".join(part.get("text", "") for part in self.message["segments"] if part.get("type") == "reasoning")
+        self.message["reasoning"] = "".join(
+            part.get("text", "") for part in self.message["segments"] if part.get("type") == "reasoning"
         )
+        self._agg_dirty = False
 
     def fold_handoff(self, summary: str, marker: str):
         """Drop the pre-handoff bubble. The summary is the session from here."""
@@ -164,13 +227,15 @@ class Output:
         self._think_pending = ""
         self._xml_pending = ""
         self._last_source = None
+        self._agg_dirty = False
+        self._scrub_stable = 0
         self._round_content = 0
         self._round_reasoning = 0
         self._round_tool_chars = 0
         self._stream_out = 0
 
     def _reset_stream_round(self):
-        self._sync_aggregates()
+        self._ensure_aggregates()
         self._round_content = len(self.message.get("content") or "")
         self._round_reasoning = len(self.message.get("reasoning") or "")
         self._round_tool_chars = 0
@@ -340,7 +405,7 @@ class Output:
         for key in ("reasoning_content", "reasoning", "thinking", "reasoning_text"):
             self._append_text("reasoning", _take(delta.get(key)) or _take(message.get(key)) or _take(obj.get(key)), "native")
         self._append_content(content, pending)
-        self._sync_aggregates()
+        self._ensure_aggregates()
         if max(len(msg["content"]), len(msg["reasoning"])) > chats.ASSISTANT_CONTENT_MAX:
             raise ValueError(f"Generation output safety limit reached ({chats.ASSISTANT_CONTENT_MAX:,} characters per reply field). Start a new turn to continue; this is separate from model context compaction.")
         if isinstance(obj.get("usage"), dict):
@@ -350,9 +415,19 @@ class Output:
             msg["usage"] = obj["usage"]
         self._refresh_stream_out(obj)
 
-    def stored(self):
+    def stored(self, light=False):
         # Run status/created_at are durable separately; message schema excludes these.
+        self._ensure_aggregates()
         msg = {k: v for k, v in self.message.items() if k not in ("startedAt", "status")}
+        if light:
+            # Live flushes run ~5x/sec per run: shallow-defensive copies are
+            # enough (the stream loop only mutates top-level keys of tool and
+            # segment dicts) and avoid a full deepcopy of the message.
+            msg["tools"] = [dict(t) for t in (msg.get("tools") or []) if isinstance(t, dict)]
+            msg["segments"] = [dict(s) for s in (msg.get("segments") or []) if isinstance(s, dict)]
+            msg.setdefault("content", "")
+            msg.setdefault("reasoning", "")
+            return msg
         msg["tools"] = chats._parse_tool_traces(msg.get("tools") or [])
         # A new wait is a new tool call, even if it targets the same child.
         # Collapsing by child ID loses the current wait and its timeline slot.
@@ -574,6 +649,7 @@ def cancel(run_id):
     on a phantom queued/running row.
     """
     _cancelled.add(run_id)
+    _signal_cancel(run_id)
     try:
         from . import workspace
 
@@ -867,11 +943,16 @@ async def _run(request, user, run):
         )
 
     flush_lock = asyncio.Lock()
+    cancel_signal = _register_cancel_signal(ident)
 
-    async def persist_checkpoint(stored, events):
+    async def persist_checkpoint(stored, events, durable=True):
         # Cancelling an asyncio waiter does not cancel a running thread. Drain
         # the actual write before releasing the run's persistence lock.
-        write = asyncio.create_task(asyncio.to_thread(chat_store.checkpoint, ident, stored, events=events))
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        write = asyncio.create_task(
+            asyncio.to_thread(chat_store.checkpoint, ident, stored, events=events, durable=durable, future=future)
+        )
         cancelled = False
         while not write.done():
             try:
@@ -886,19 +967,31 @@ async def _run(request, user, run):
             if cancelled:
                 raise asyncio.CancelledError
             raise
+        # The publication may still be queued in the group committer. This
+        # run's next flush and its terminal event must never commit ahead of
+        # it, so wait for the event to land before releasing the flush lock.
+        while not future.done():
+            try:
+                await asyncio.shield(future)
+            except asyncio.CancelledError:
+                cancelled = True
+        # A failed publication must not advance the producer's patch base.
+        # Inspect already-completed futures too (a fast failing batch can
+        # finish before the state writer returns).
+        future.result()
         return cancelled
 
-    async def flush():
+    async def flush(durable=True):
         async with flush_lock:
-            await flush_batch()
+            await flush_batch(durable=durable)
 
-    async def flush_batch():
+    async def flush_batch(durable=True):
         nonlocal pending_bytes, previous_segments
         output.message["elapsedMs"] = min(86_400_000, elapsed_before + int((time.monotonic() - started) * 1000))
         if pending:
             # Normalized suffix patches are replayable even across a checkpoint
             # taken halfway through an upstream <think> tag.
-            stored = copy.deepcopy(output.stored())
+            stored = output.stored(light=True)
             batch_count, batch_bytes = len(pending), pending_bytes
             patch = {"event": "message.patch", "elapsedMs": stored["elapsedMs"]}
             for field in ("content", "reasoning"):
@@ -917,11 +1010,13 @@ async def _run(request, user, run):
             segment_patch = _segments_patch(previous_segments, stored.get("segments") or [])
             if segment_patch:
                 patch["segments"] = segment_patch
-            events = copy.deepcopy([obj for obj in pending[:batch_count] if obj.get("fuse")])
+            # Raw SSE objects are owned exclusively by this loop once parsed;
+            # no concurrent mutator exists, so no defensive copy is needed.
+            events = [obj for obj in pending[:batch_count] if obj.get("fuse")]
             events.insert(0, {"fuse": patch})
-            cancelled = await persist_checkpoint(stored, events)
+            cancelled = await persist_checkpoint(stored, events, durable=durable)
             previous_text.update({field: stored.get(field, "") for field in previous_text})
-            previous_segments = copy.deepcopy(stored.get("segments") or [])
+            previous_segments = [dict(part) for part in (stored.get("segments") or [])]
             del pending[:batch_count]
             pending_bytes -= batch_bytes
             if cancelled:
@@ -929,16 +1024,36 @@ async def _run(request, user, run):
 
     async def periodic():
         flush_failures = 0
+        next_poll = time.monotonic()
         while True:
-            await asyncio.sleep(FLUSH_SECONDS)
-            row = await asyncio.to_thread(db.fetchone, "SELECT status,cancel_requested FROM chat_runs WHERE id=? AND user_id=?", (ident, user["id"]))
-            if row is None or row["cancel_requested"] or row["status"] not in chat_store.ACTIVE:
+            now = time.monotonic()
+            if now >= next_poll:
+                next_poll = now + STATUS_POLL_SECONDS
+                row = await asyncio.to_thread(db.fetchone, "SELECT status,cancel_requested FROM chat_runs WHERE id=? AND user_id=?", (ident, user["id"]))
+                if row is None or row["cancel_requested"] or row["status"] not in chat_store.ACTIVE:
+                    _cancelled.add(ident)
+                    task.cancel()
+                    return
+            if cancel_signal is not None and cancel_signal.is_set():
                 _cancelled.add(ident)
                 task.cancel()
                 return
             try:
-                await flush()
+                if cancel_signal is not None:
+                    await asyncio.wait_for(cancel_signal.wait(), timeout=FLUSH_SECONDS)
+                else:
+                    await asyncio.sleep(FLUSH_SECONDS)
+            except TimeoutError:
+                pass
+            if not pending or flush_lock.locked():
+                # Nothing new, or an inline (tool/permission) flush is already
+                # persisting under the lock; the next tick re-checks.
+                continue
+            try:
+                await flush(durable=False)
                 flush_failures = 0
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 flush_failures += 1
                 logger.exception("Chat checkpoint failed for %s", ident)
@@ -951,7 +1066,7 @@ async def _run(request, user, run):
             if run["cancel_requested"]:
                 _cancelled.add(ident)
             raise asyncio.CancelledError
-        if await persist_checkpoint(copy.deepcopy(output.stored()), []):
+        if await persist_checkpoint(output.stored(), []):
             raise asyncio.CancelledError
         worker = asyncio.create_task(periodic())
         try:
@@ -1272,6 +1387,7 @@ async def _run(request, user, run):
             if _tasks.get(ident) is task:
                 _tasks.pop(ident, None)
             _cancelled.discard(ident)
+            _cancel_signals.pop(ident, None)
             current = chat_store.get_run(user["id"], ident)
             if current and current["status"] == "queued" and not _stopping:
                 await start(request, user, current)
