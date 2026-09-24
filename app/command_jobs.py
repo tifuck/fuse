@@ -19,6 +19,7 @@ import time
 from uuid import uuid4
 
 from . import db
+from .async_work import durable_call
 
 logger = logging.getLogger(__name__)
 
@@ -139,33 +140,12 @@ def elapsed_ms(rec: dict) -> int:
     return int((time.monotonic() - rec["started"]) * 1000)
 
 
-def launch(
-    *,
-    user_id: int,
-    host_id: int,
-    host: str,
-    thread_id: int | None,
-    run_id: str | None,
-    command: str,
-    cwd: str,
-    background: bool,
-    timeout_ms: int,
-    runner,
-    kind: str = "command",
-    url: str = "",
-    pattern: str = "",
-    max_events: int = 1,
-) -> dict:
-    """Create the job row and start the executor task. Returns the live rec."""
-    ensure_schema()
+def _admit(kind: str, host_id: int, source: str) -> None:
+    """In-memory admission caps. Raises ValueError when a cap is hit."""
     _prune()
     running = sum(1 for v in _live.values() if v.get("status") not in TERMINAL)
     if running >= JOB_CAP:
         raise ValueError("too many running commands")
-    kind = "monitor" if str(kind or "") == "monitor" else "command"
-    if kind == "monitor":
-        background = True
-    source = "ws" if (kind == "monitor" and url and not command) else "command"
     if source == "ws":
         ws_running = sum(
             1
@@ -184,11 +164,13 @@ def launch(
         )
         if per_host >= PER_HOST_CAP:
             raise ValueError("too many running commands on this host")
-    job_id = uuid4().hex[:12]
-    now = db.now()
-    from . import monitor as monitor_mod
 
-    max_events = monitor_mod.max_events(max_events)
+
+def _insert_job_row(
+    *, job_id: str, user_id: int, host_id: int, host: str, thread_id, run_id,
+    command: str, cwd: str, background: bool, timeout_ms: int, now: str,
+    kind: str, source: str, url: str, pattern: str, max_events: int,
+) -> None:
     with db.tx() as conn:
         conn.execute(
             "INSERT INTO command_jobs (id,user_id,host_id,host,thread_id,run_id,command,cwd,"
@@ -218,6 +200,13 @@ def launch(
                 0,
             ),
         )
+
+
+def _start_rec(
+    *, runner, job_id: str, user_id: int, host_id: int, host: str, thread_id, run_id,
+    command: str, cwd: str, background: bool, timeout_ms: int, kind: str,
+    source: str, url: str, pattern: str, max_events: int,
+) -> dict:
     rec = {
         "id": job_id,
         "user_id": int(user_id),
@@ -252,25 +241,140 @@ def launch(
         "pending_events": [],
         "event_seq": 0,
     }
+    if kind == "monitor":
+        # Monitor event persistence/delivery is ordered through one writer
+        # task; _supervise drains it in its finally so a terminal state is
+        # never observed before its queued events are durable.
+        rec["_write_queue"] = asyncio.Queue()
+        rec["notify"] = True
     loop = asyncio.get_running_loop()
     rec["future"] = loop.create_future()
     rec["task"] = asyncio.create_task(_supervise(rec, runner))
     rec["task"].add_done_callback(lambda task: _cancelled_before_start(rec, task))
     _live[job_id] = rec
-    if kind == "monitor":
-        rec["notify"] = True
-        with db.tx() as conn:
-            conn.execute("UPDATE command_jobs SET notify=1 WHERE id=?", (job_id,))
     return rec
+
+
+def _set_monitor_notify(job_id: str) -> None:
+    with db.tx() as conn:
+        conn.execute("UPDATE command_jobs SET notify=1 WHERE id=?", (job_id,))
+
+
+def _normalize_launch(
+    *, kind: str, url: str, command: str, background: bool, max_events: int,
+) -> tuple[str, str, bool, int]:
+    from . import monitor as monitor_mod
+
+    kind = "monitor" if str(kind or "") == "monitor" else "command"
+    if kind == "monitor":
+        background = True
+    source = "ws" if (kind == "monitor" and url and not command) else "command"
+    return kind, source, background, monitor_mod.max_events(max_events)
+
+
+def launch(
+    *,
+    user_id: int,
+    host_id: int,
+    host: str,
+    thread_id: int | None,
+    run_id: str | None,
+    command: str,
+    cwd: str,
+    background: bool,
+    timeout_ms: int,
+    runner,
+    kind: str = "command",
+    url: str = "",
+    pattern: str = "",
+    max_events: int = 1,
+) -> dict:
+    """Create the job row and start the executor task. Returns the live rec."""
+    ensure_schema()
+    kind, source, background, max_events = _normalize_launch(
+        kind=kind, url=url, command=command, background=background, max_events=max_events
+    )
+    _admit(kind, host_id, source)
+    job_id = uuid4().hex[:12]
+    now = db.now()
+    _insert_job_row(
+        job_id=job_id, user_id=user_id, host_id=host_id, host=host, thread_id=thread_id,
+        run_id=run_id, command=command, cwd=cwd, background=background, timeout_ms=timeout_ms,
+        now=now, kind=kind, source=source, url=url, pattern=pattern, max_events=max_events,
+    )
+    if kind == "monitor":
+        _set_monitor_notify(job_id)
+    return _start_rec(
+        runner=runner, job_id=job_id, user_id=user_id, host_id=host_id, host=host,
+        thread_id=thread_id, run_id=run_id, command=command, cwd=cwd, background=background,
+        timeout_ms=timeout_ms, kind=kind, source=source, url=url, pattern=pattern,
+        max_events=max_events,
+    )
+
+
+async def launch_async(**kwargs) -> dict:
+    """Off-loop twin of launch(): the job INSERT runs on a worker thread.
+
+    Same admission order (caps, then the durable row, then the supervisor
+    task); the INSERT is an admitted write, so it drains on cancellation.
+    """
+    ensure_schema()
+    kind, source, background, max_events = _normalize_launch(
+        kind=kwargs.get("kind", "command"), url=kwargs.get("url", ""),
+        command=kwargs.get("command", ""), background=kwargs.get("background", False),
+        max_events=kwargs.get("max_events", 1),
+    )
+    kwargs["background"] = background
+    host_id = kwargs.get("host_id") or 0
+    _admit(kind, host_id, source)
+    job_id = uuid4().hex[:12]
+    now = db.now()
+    await durable_call(
+        _insert_job_row,
+        job_id=job_id, user_id=kwargs["user_id"], host_id=host_id, host=kwargs["host"],
+        thread_id=kwargs.get("thread_id"), run_id=kwargs.get("run_id"),
+        command=kwargs["command"], cwd=kwargs.get("cwd", ""), background=background,
+        timeout_ms=kwargs["timeout_ms"], now=now, kind=kind, source=source,
+        url=kwargs.get("url", ""), pattern=kwargs.get("pattern", ""), max_events=max_events,
+    )
+    if kind == "monitor":
+        await asyncio.to_thread(_set_monitor_notify, job_id)
+    return _start_rec(
+        runner=kwargs["runner"], job_id=job_id, user_id=kwargs["user_id"], host_id=host_id,
+        host=kwargs["host"], thread_id=kwargs.get("thread_id"), run_id=kwargs.get("run_id"),
+        command=kwargs["command"], cwd=kwargs.get("cwd", ""), background=background,
+        timeout_ms=kwargs["timeout_ms"], kind=kind, source=source, url=kwargs.get("url", ""),
+        pattern=kwargs.get("pattern", ""), max_events=max_events,
+    )
 
 
 def _cancelled_before_start(rec: dict, task) -> None:
     # Cancellation before the first step never enters _supervise's finally.
     if task.cancelled() and rec.get("status") not in TERMINAL:
         rec["termination_confirmed"] = True  # the executor never started
-        _finish(rec, status="cancelled", exit_code=None, error="cancelled by request")
-        if not rec["future"].done():
-            rec["future"].set_result("cancelled")
+        # In-memory state lands synchronously so observers of the finished
+        # task already see a terminal status; only the writes are deferred.
+        _apply_finish(rec, status="cancelled", exit_code=None, error="cancelled by request")
+
+        async def _finish_cancelled():
+            await asyncio.to_thread(
+                _persist_finish, rec, status="cancelled", exit_code=None,
+                error="cancelled by request", duration=int(rec.get("duration_ms") or 0),
+            )
+            if rec.get("notify"):
+                try:
+                    await _deliver(rec)
+                except Exception:
+                    logger.exception("Failed to deliver command job %s", rec["id"])
+            fut = rec["future"]
+            if not fut.done():
+                fut.set_result(rec["status"])
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(_finish_cancelled())
 
 
 def _is_monitor(rec: dict) -> bool:
@@ -300,11 +404,15 @@ def _on_monitor_batch(rec: dict, lines: list[str], overflow: int = 0) -> None:
     rec["event_seq"] = int(rec.get("event_seq") or 0) + 1
     seq = int(rec["event_seq"])
     envelope = monitor_mod.event_envelope(rec, lines, seq)
-    _persist_monitor_count(rec)
     rec["_last_event"] = envelope
     rec["_last_event_lines"] = list(lines)
     rec["_last_event_at"] = time.monotonic()
-    _deliver_monitor_event(rec, envelope, seq)
+    # Sink callbacks run synchronously on the event loop (SSH drain tasks,
+    # connector chunk frames). Persistence and delivery are ordered through
+    # the per-job writer task instead of blocking the loop here.
+    queue = rec.get("_write_queue")
+    if queue is not None:
+        queue.put_nowait((envelope, seq))
     cap = int(rec.get("max_events") or monitor_mod.DEFAULT_MAX_EVENTS)
     if int(rec.get("event_count") or 0) >= cap:
         rec["_max_events_hit"] = True
@@ -348,6 +456,23 @@ def _wrap_monitor_sink(rec: dict, sink):
     return wrapped, batcher
 
 
+async def _monitor_writer(rec: dict) -> None:
+    """Ordered, off-loop persistence/delivery for one monitor's events."""
+    queue: asyncio.Queue = rec["_write_queue"]
+    while True:
+        item = await queue.get()
+        if item is None:
+            return
+        envelope, seq = item
+        try:
+            await asyncio.to_thread(_persist_monitor_count, rec)
+            await _deliver_monitor_event(rec, envelope, seq)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Monitor event write failed for job %s", rec["id"])
+
+
 async def _supervise(rec: dict, runner) -> None:
     job_id = rec["id"]
 
@@ -360,8 +485,11 @@ async def _supervise(rec: dict, runner) -> None:
 
     sink.incomplete = incomplete
     batcher = None
+    writer = None
     if _is_monitor(rec):
         sink, batcher = _wrap_monitor_sink(rec, sink)
+        writer = asyncio.create_task(_monitor_writer(rec))
+        rec["_writer"] = writer
 
     try:
         async with asyncio.timeout(rec["timeout_ms"] / 1000):
@@ -378,26 +506,32 @@ async def _supervise(rec: dict, runner) -> None:
                 await batcher.close()
         if rec.get("_firehose"):
             rec["termination_confirmed"] = True
-            _finish(rec, status="cancelled", exit_code=None, error=str(rec.get("error") or "monitor auto-stopped: too many events"))
+            await _finish(rec, status="cancelled", exit_code=None, error=str(rec.get("error") or "monitor auto-stopped: too many events"))
             return
         if rec.get("_max_events_hit"):
             rec["termination_confirmed"] = True
-            _finish(rec, status="completed", exit_code=0, error=str(rec.get("error") or "monitor reached max_events"))
+            await _finish(rec, status="completed", exit_code=0, error=str(rec.get("error") or "monitor reached max_events"))
             return
         if _is_monitor(rec) and rec.get("source") == "ws":
             rec["termination_confirmed"] = True
-            _finish(rec, status="completed", exit_code=0, error="")
+            await _finish(rec, status="completed", exit_code=0, error="")
             return
         if code is None or code < 0:
             raise RuntimeError("command ended without a normal exit status; remote outcome is unknown")
         rec["termination_confirmed"] = code is not None
-        _finish(
+        await _finish(
             rec,
             status="completed",
             exit_code=code,
             error="",
         )
     except asyncio.CancelledError:
+        # Uncancel before the terminal writes: a cancellation landing on one
+        # of the awaited persists must not skip the job's final state.
+        current = asyncio.current_task()
+        if current is not None and hasattr(current, "uncancel"):
+            while current.uncancel():
+                pass
         if batcher is not None:
             await batcher.close()
         rec["termination_confirmed"] = False
@@ -405,17 +539,13 @@ async def _supervise(rec: dict, runner) -> None:
         error = str(rec.get("error") or "")
         if rec.get("_firehose"):
             rec["termination_confirmed"] = True
-            _finish(rec, status="cancelled", exit_code=None, error=error or "monitor auto-stopped: too many events")
+            await _finish(rec, status="cancelled", exit_code=None, error=error or "monitor auto-stopped: too many events")
         elif rec.get("_max_events_hit"):
             rec["termination_confirmed"] = True
-            _finish(rec, status="completed", exit_code=0, error=error or "monitor reached max_events")
+            await _finish(rec, status="completed", exit_code=0, error=error or "monitor reached max_events")
         else:
-            _finish(rec, status="cancelled", exit_code=None,
-                    error="cancellation requested; remote termination is not confirmed")
-        current = asyncio.current_task()
-        if current is not None and hasattr(current, "uncancel"):
-            while current.uncancel():
-                pass
+            await _finish(rec, status="cancelled", exit_code=None,
+                          error="cancellation requested; remote termination is not confirmed")
         return
     except (CommandTimedOut, TimeoutError) as exc:
         if batcher is not None:
@@ -427,7 +557,7 @@ async def _supervise(rec: dict, runner) -> None:
         if _is_monitor(rec):
             extra = f"; {int(rec.get('event_count') or 0)} events"
         label = "monitor" if _is_monitor(rec) else "command"
-        _finish(
+        await _finish(
             rec,
             status="timed_out",
             exit_code=None,
@@ -440,13 +570,23 @@ async def _supervise(rec: dict, runner) -> None:
         text = str(exc) or exc.__class__.__name__
         low = text.lower()
         status = "timed_out" if "timed out" in low else "interrupted"
-        _finish(rec, status=status, exit_code=None, error=text[:400])
+        await _finish(rec, status=status, exit_code=None, error=text[:400])
     finally:
         if batcher is not None:
             try:
                 await batcher.close()
             except Exception:
                 pass
+        if writer is not None:
+            # Drain queued monitor events (and nothing more) before the
+            # terminal state is observed; then stop the writer.
+            rec["_write_queue"].put_nowait(None)
+            try:
+                await writer
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("Monitor writer failed to drain for job %s", rec["id"])
         fut: asyncio.Future = rec["future"]
         if not fut.done():
             fut.set_result(rec["status"])
@@ -455,7 +595,7 @@ async def _supervise(rec: dict, runner) -> None:
             task.cancel()
 
 
-def _finish(rec: dict, *, status: str, exit_code: int | None, error: str) -> None:
+def _apply_finish(rec: dict, *, status: str, exit_code: int | None, error: str) -> None:
     if rec.get("termination_confirmed") is None:
         rec["termination_confirmed"] = False
     duration = int((time.monotonic() - rec["started"]) * 1000)
@@ -468,6 +608,9 @@ def _finish(rec: dict, *, status: str, exit_code: int | None, error: str) -> Non
             "out": (rec.get("out") or "")[-OUT_TAIL_CHARS:],
         }
     )
+
+
+def _persist_finish(rec: dict, *, status: str, exit_code: int | None, error: str, duration: int) -> None:
     ensure_schema()
     try:
         with db.tx() as conn:
@@ -496,16 +639,27 @@ def _finish(rec: dict, *, status: str, exit_code: int | None, error: str) -> Non
             )
     except Exception:
         logger.exception("Failed to persist command job %s", rec["id"])
+
+
+async def _finish(rec: dict, *, status: str, exit_code: int | None, error: str) -> None:
+    _apply_finish(rec, status=status, exit_code=exit_code, error=error)
+    # In-memory state lands first (render/job_status read it immediately);
+    # the row write goes through a worker thread so the loop never blocks
+    # on the pool for every completing command.
+    await asyncio.to_thread(
+        _persist_finish, rec, status=status, exit_code=exit_code, error=error,
+        duration=int(rec.get("duration_ms") or 0),
+    )
     if rec.get("notify"):
         try:
-            _deliver(rec)
+            await _deliver(rec)
         except Exception:
             logger.exception("Failed to deliver command job %s", rec["id"])
     if status == "cancelled" and not _is_monitor(rec):
-        _mark_delivered([str(rec["id"])])
+        await asyncio.to_thread(_mark_delivered, [str(rec["id"])])
 
 
-def _deliver(rec: dict) -> None:
+async def _deliver(rec: dict) -> None:
     """Hand a terminal result to the owning run (active) or thread (idle).
 
     Delivery is acknowledged only when the envelope becomes durable: either
@@ -526,7 +680,9 @@ def _deliver(rec: dict) -> None:
 
         envelope = notification(rec)
         try:
-            chat_store.queue_child_result(str(run_id), envelope, child_id=str(rec["id"]))
+            await asyncio.to_thread(
+                chat_store.queue_child_result, str(run_id), envelope, child_id=str(rec["id"])
+            )
         except Exception:
             logger.exception("Queue command result failed for job %s", rec["id"])
     thread_id = rec.get("thread_id")
@@ -539,7 +695,7 @@ def _deliver(rec: dict) -> None:
             logger.exception("Schedule command wake failed for job %s", rec["id"])
 
 
-def _deliver_monitor_event(rec: dict, envelope: str, seq: int) -> None:
+async def _deliver_monitor_event(rec: dict, envelope: str, seq: int) -> None:
     """Running-state, multi-fire delivery: each batched stdout event can wake the model.
 
     Live parent: stash on pending_child_results. Idle parent: keep the envelope
@@ -555,8 +711,9 @@ def _deliver_monitor_event(rec: dict, envelope: str, seq: int) -> None:
         from . import chat_store
 
         try:
-            queued = chat_store.queue_child_result(
-                str(run_id), envelope, child_id=monitor_mod.event_receipt_id(rec["id"], seq)
+            queued = await asyncio.to_thread(
+                chat_store.queue_child_result,
+                str(run_id), envelope, child_id=monitor_mod.event_receipt_id(rec["id"], seq),
             )
         except Exception:
             logger.exception("Queue monitor event failed for job %s", rec["id"])

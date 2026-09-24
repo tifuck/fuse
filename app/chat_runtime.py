@@ -1644,7 +1644,7 @@ def _cap_get(src_type: str, upstream: str) -> str | None:
     return value
 
 
-def _record_failure(
+async def _record_failure(
     *,
     job: ToolJob | None,
     trace: dict | None,
@@ -1671,7 +1671,8 @@ def _record_failure(
             call_id = call_id or job.call_id
         if name in ARTIFACT_TOOL_IDS or not name:
             arguments = _redact_tool_args(name, arguments)
-        tool_failures.record(
+        await asyncio.to_thread(
+            tool_failures.record,
             tool_name=name or "unknown",
             error=error or str(trace.get("error") or ""),
             kind=kind or str(trace.get("kind") or ""),
@@ -1766,7 +1767,7 @@ async def _run_tools(
             job.text = "Tool interrupted."
             job.trace = {"name": job.name, "status": "interrupted", "kind": "interrupted", "id": job.event_id}
             job.done = True
-            _record_failure(
+            await _record_failure(
                 job=job,
                 trace=job.trace,
                 diag=diag,
@@ -1801,7 +1802,7 @@ async def _run_tools(
                     "id": job.event_id,
                 }
                 job.done = True
-                _record_failure(
+                await _record_failure(
                     job=job,
                     trace=job.trace,
                     diag=diag,
@@ -1884,7 +1885,7 @@ async def _run_tools(
                                       "duration_ms": trace.get("duration_ms", latency_ms), "call_duration_ms": latency_ms}
             job.done = True
             if trace.get("status") in ("error", "interrupted"):
-                _record_failure(
+                await _record_failure(
                     job=job,
                     trace=job.trace,
                     diag=diag,
@@ -1897,7 +1898,7 @@ async def _run_tools(
             job.text = "Tool interrupted."
             job.trace = {**job.trace, "name": job.name, "status": "interrupted", "kind": "interrupted", "id": job.event_id}
             job.done = True
-            _record_failure(
+            await _record_failure(
                 job=job,
                 trace=job.trace,
                 diag=diag,
@@ -1921,7 +1922,7 @@ async def _run_tools(
                 "id": job.event_id,
             }
             job.done = True
-            _record_failure(
+            await _record_failure(
                 job=job,
                 trace=job.trace,
                 diag=diag,
@@ -1983,7 +1984,7 @@ async def _run_tools(
                         "id": j.event_id,
                     }
                     j.done = True
-                    _record_failure(
+                    await _record_failure(
                         job=j,
                         trace=j.trace,
                         diag=diag,
@@ -3245,7 +3246,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             raw_calls = summary.get("calls") or []
             for c in raw_calls:
                 if isinstance(c, dict) and not ((c.get("function") or {}).get("name")):
-                    _record_failure(
+                    await _record_failure(
                         job=None,
                         trace={"name": "", "status": "error", "kind": "malformed_call"},
                         diag=diag,

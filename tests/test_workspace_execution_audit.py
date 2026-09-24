@@ -163,7 +163,7 @@ class HubAudit(unittest.IsolatedAsyncioTestCase):
 
 class JobAudit(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.conn = sqlite3.connect(":memory:")
+        self.conn = sqlite3.connect(":memory:", check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.addCleanup(self.conn.close)
         p = patch.object(db, "connect", return_value=self.conn)

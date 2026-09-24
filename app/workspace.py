@@ -1227,7 +1227,7 @@ async def _shell(user_id, host_id, alias, args, root, *, windows: bool = False, 
     else:
         runner = _make_ssh_runner(user_id, host_id, command, cwd, timeout_ms)
     try:
-        rec = command_jobs.launch(
+        rec = await command_jobs.launch_async(
             user_id=user_id,
             host_id=host_id,
             host=alias,
@@ -1247,7 +1247,7 @@ async def _shell(user_id, host_id, alias, args, root, *, windows: bool = False, 
         trace.pop("id", None)
         on_started(trace)
     if background:
-        command_jobs.mark_notified(rec)
+        await asyncio.to_thread(command_jobs.mark_notified, rec)
         return command_jobs.render(rec)
     wait_s = min(command_jobs.FOREGROUND_WAIT_S, timeout_ms / 1000)
     try:
@@ -1258,8 +1258,8 @@ async def _shell(user_id, host_id, alias, args, root, *, windows: bool = False, 
     if trace.get("status") == "running":
         # Hand off: the process keeps running under its execution deadline and
         # its terminal result will be delivered automatically.
-        command_jobs.mark_notified(rec)
-        command_jobs.mark_background(rec)
+        await asyncio.to_thread(command_jobs.mark_notified, rec)
+        await asyncio.to_thread(command_jobs.mark_background, rec)
         return command_jobs.render(rec)
     # Completed inside the foreground wait: report it as the shell call itself
     # (join() renders both paths as get_command_output, which the dashboard
@@ -1426,7 +1426,7 @@ async def _monitor(user_id, host_id, alias, args, root, *, windows: bool = False
     else:
         runner = _make_monitor_ssh_runner(user_id, host_id, command, cwd, timeout_ms)
     try:
-        rec = command_jobs.launch(
+        rec = await command_jobs.launch_async(
             user_id=user_id,
             host_id=host_id,
             host=alias,

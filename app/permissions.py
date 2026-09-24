@@ -23,6 +23,7 @@ import time
 from uuid import uuid4
 
 from . import db
+from .async_work import durable_call
 
 logger = logging.getLogger(__name__)
 
@@ -688,33 +689,46 @@ class Gate:
         self._cancel = cancel
 
 
-async def _ask_and_wait(gate: Gate, payload: dict) -> str:
-    ask_id = "pa_" + uuid4().hex[:16]
-    from datetime import datetime, timedelta, timezone
-
-    expires_iso = (datetime.now(timezone.utc) + timedelta(seconds=ASK_TIMEOUT_S)).strftime("%Y-%m-%dT%H:%M:%SZ")
+def _insert_ask(gate: Gate, ask_id: str, expires_iso: str, payload: dict) -> bool:
+    """Admit one ask, bounded per thread. False when the pending queue is full."""
     with db.tx() as conn:
         pending = conn.execute(
             "SELECT COUNT(*) FROM chat_permission_asks WHERE thread_id=? AND status='pending'",
             (gate.thread_id,),
         ).fetchone()[0]
         if pending >= MAX_PENDING_PER_THREAD:
-            return "deny_busy"
+            return False
         conn.execute(
             """INSERT INTO chat_permission_asks(
                    id, user_id, thread_id, run_id, status, decision, kind, tool, host_id, host,
                    path, cwd, command, secret, requester, grant_kind, grant_value, created_at, expires_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 ask_id, gate.user_id, gate.thread_id, gate.run_id, "pending", "",
                 payload.get("perm_kind") or "path", payload.get("tool") or "", payload.get("host_id"),
                 payload.get("host") or "", payload.get("path") or "", payload.get("cwd") or "",
                 str(payload.get("command") or "")[:8000], 1 if payload.get("secret") else 0,
-                payload.get("requester_label") or "Main agent",
+                payload.get("requester_label") or "Main Agent",
                 payload.get("grant_kind") or "", payload.get("grant_value") or "",
                 db.now(), expires_iso,
             ),
         )
+    return True
+
+
+def _poll_ask(user_id: int, thread_id: int | None, ask_id: str):
+    """The poll loop's two reads in one worker-thread hop."""
+    return bypass_enabled(user_id, thread_id), _get_ask(user_id, ask_id)
+
+
+async def _ask_and_wait(gate: Gate, payload: dict) -> str:
+    ask_id = "pa_" + uuid4().hex[:16]
+    from datetime import datetime, timedelta, timezone
+
+    expires_iso = (datetime.now(timezone.utc) + timedelta(seconds=ASK_TIMEOUT_S)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Admitted write: drain the INSERT even when the caller is cancelled.
+    if not await durable_call(_insert_ask, gate, ask_id, expires_iso, payload):
+        return "deny_busy"
     gate._notify({"event": "permission", **payload, "id": ask_id, "status": "pending", "expires_at": expires_iso})
     deadline = time.time() + ASK_TIMEOUT_S
     try:
@@ -722,19 +736,21 @@ async def _ask_and_wait(gate: Gate, payload: dict) -> str:
 
         while True:
             if gate._cancel is not None and gate._cancel.is_set():
-                _finish_ask(ask_id, "cancelled")
+                await durable_call(_finish_ask, ask_id, "cancelled")
                 gate._notify({"event": "permission", "kind": "tool_permission", "id": ask_id, "status": "cancelled"})
                 return "cancelled"
             if getattr(chat_runs_mod, "_stopping", False):
-                _finish_ask(ask_id, "cancelled")
+                await durable_call(_finish_ask, ask_id, "cancelled")
                 gate._notify({"event": "permission", "kind": "tool_permission", "id": ask_id, "status": "cancelled"})
                 return "cancelled"
-            if bypass_enabled(gate.user_id, gate.thread_id):
-                _finish_ask(ask_id, "allowed")
+            # DB reads stay off the event loop: a slow or exhausted pool must
+            # never stall every running agent behind one permission ask.
+            bypass, row = await asyncio.to_thread(_poll_ask, gate.user_id, gate.thread_id, ask_id)
+            if bypass:
+                await durable_call(_finish_ask, ask_id, "allowed")
                 gate._notify({"event": "permission", "kind": "tool_permission", "id": ask_id,
                               "status": "allowed", "decision": "allow"})
                 return "allow"
-            row = _get_ask(gate.user_id, ask_id)
             if row is not None and row["status"] != "pending":
                 status = row["status"]
                 gate._notify({"event": "permission", "kind": "tool_permission", "id": ask_id,
@@ -742,12 +758,12 @@ async def _ask_and_wait(gate: Gate, payload: dict) -> str:
                               "grant_scope": row["decision"] if row["decision"] in ("allow_session", "allow_host") else ""})
                 return status if status != "allowed" else (row["decision"] or "allow")
             if time.time() >= deadline:
-                _finish_ask(ask_id, "timeout")
+                await durable_call(_finish_ask, ask_id, "timeout")
                 gate._notify({"event": "permission", "kind": "tool_permission", "id": ask_id, "status": "timeout"})
                 return "timeout"
             await asyncio.sleep(0.25)
     except asyncio.CancelledError:
-        _finish_ask(ask_id, "cancelled")
+        await durable_call(_finish_ask, ask_id, "cancelled")
         raise
 
 
@@ -854,11 +870,18 @@ async def review(*, tool: str, args: dict, user_id: int,
     if not reasons:
         return ReviewResult(allowed=True)
 
-    bypass = bypass_enabled(gate.user_id, gate.thread_id)
+    bypass = await asyncio.to_thread(bypass_enabled, gate.user_id, gate.thread_id)
     if bypass:
         return ReviewResult(allowed=True, root_override="" if out_of_root else None)
 
-    if grant_value and grant_covers(gate.user_id, gate.thread_id, host_id, grant_kind, grant_value, windows):
+    covered = (
+        await asyncio.to_thread(
+            grant_covers, gate.user_id, gate.thread_id, host_id, grant_kind, grant_value, windows
+        )
+        if grant_value
+        else False
+    )
+    if covered:
         return ReviewResult(allowed=True, root_override="" if out_of_root else None)
 
     label = display if perm_kind == "shell" else (display or cwd or command)
@@ -882,14 +905,14 @@ async def review(*, tool: str, args: dict, user_id: int,
         "grant_value": str(grant_value)[:400],
     }
     if (
-        auto_enabled(gate.user_id, gate.thread_id)
+        await asyncio.to_thread(auto_enabled, gate.user_id, gate.thread_id)
         and not secret
         and not _destructive_command(command)
     ):
         from . import jev
         from . import chat_runs as chat_runs_mod
 
-        if jev.user_can_auto(gate.user_id) and not getattr(chat_runs_mod, "_stopping", False):
+        if await asyncio.to_thread(jev.user_can_auto, gate.user_id) and not getattr(chat_runs_mod, "_stopping", False):
             # Read-only directory probes are why Auto exists: listing /home or
             # a sibling folder should not stop the agent for a card. Writes
             # and shell still go through Jev.

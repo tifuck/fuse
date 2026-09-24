@@ -85,7 +85,7 @@ class MonitorHelpers(unittest.TestCase):
 
 class MonitorJobs(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.conn = sqlite3.connect(":memory:")
+        self.conn = sqlite3.connect(":memory:", check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.addCleanup(self.conn.close)
         for p in (
@@ -100,7 +100,7 @@ class MonitorJobs(unittest.IsolatedAsyncioTestCase):
     async def test_stdout_lines_become_events_stderr_does_not(self):
         delivered = []
 
-        def capture(rec, envelope, seq=None):
+        async def capture(rec, envelope, seq=None):
             delivered.append(envelope)
 
         async def runner(sink):

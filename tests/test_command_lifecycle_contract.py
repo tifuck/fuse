@@ -11,7 +11,7 @@ from app import agent_hub as hub, command_jobs as jobs, db, workspace as ws, cha
 
 class LifecycleContract(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.conn = sqlite3.connect(":memory:")
+        self.conn = sqlite3.connect(":memory:", check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.addCleanup(self.conn.close)
         for p in (patch.object(db, "connect", return_value=self.conn),
@@ -361,7 +361,10 @@ class ReconnectCancellation(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await sent.get(), {"v": 1, "t": "cancel", "id": "remote-job"})
             self.assertIn("remote-job", hub._cancel_replay[1, 2])
             await incoming.put(json.dumps({"t": "res", "id": "remote-job", "ok": False, "exit": 1}))
-            await asyncio.sleep(0)
+            for _ in range(200):
+                if (1, 2) not in hub._cancel_replay:
+                    break
+                await asyncio.sleep(0.01)
             self.assertNotIn((1, 2), hub._cancel_replay)
             task.cancel()
             with self.assertRaises(asyncio.CancelledError):

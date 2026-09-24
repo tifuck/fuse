@@ -169,7 +169,7 @@ async def _hold_pending(key: tuple[int, int], pending: dict, chunks=None) -> Non
             _remember_cancel(key, job_id)
         _fail_pending(parked, "agent connection lost; remote outcome is unknown")
         try:
-            hosts.mark_agent_offline(*key)
+            await asyncio.to_thread(hosts.mark_agent_offline, *key)
         except Exception:
             logger.exception("mark expired agent offline failed")
 
@@ -331,7 +331,8 @@ async def handle_socket(ws, *, hello_timeout: float = HELLO_TIMEOUT) -> None:
     try:
         replay = _cancel_replay.get(key, {})
         await _cancel_pending(ws, {i: None for i, deadline in replay.items() if deadline > time.monotonic()})
-        hosts.touch_agent(
+        await asyncio.to_thread(
+            hosts.touch_agent,
             user_id,
             host_id,
             version=str(msg.get("ver") or msg.get("version") or ""),
@@ -343,7 +344,7 @@ async def handle_socket(ws, *, hello_timeout: float = HELLO_TIMEOUT) -> None:
         try:
             from . import hosts as hosts_mod
 
-            hosts_mod.enable_coding_if_off(user_id)
+            await asyncio.to_thread(hosts_mod.enable_coding_if_off, user_id)
         except Exception:
             logger.exception("enable coding after agent hello failed")
         while True:
@@ -416,7 +417,7 @@ async def handle_socket(ws, *, hello_timeout: float = HELLO_TIMEOUT) -> None:
                 await _hold_pending(key, leftover, rec.get("chunks"))
             else:
                 try:
-                    hosts.mark_agent_offline(user_id, host_id)
+                    await asyncio.to_thread(hosts.mark_agent_offline, user_id, host_id)
                 except Exception:
                     logger.exception("mark agent offline failed")
 
@@ -432,10 +433,10 @@ async def _hello(msg: dict) -> tuple[int, int, str, str]:
         "arch": msg.get("arch") or "",
     }
     if code:
-        view, minted = hosts.redeem_pairing(code, meta)
+        view, minted = await asyncio.to_thread(hosts.redeem_pairing, code, meta)
         return int(view["user_id"]), int(view["id"]), view["alias"], minted
     if token:
-        row = hosts.host_by_device_token(token)
+        row = await asyncio.to_thread(hosts.host_by_device_token, token)
         if row is None:
             raise AgentError("invalid token", 401)
         return int(row["user_id"]), int(row["id"]), row["alias"], ""
