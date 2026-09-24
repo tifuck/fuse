@@ -323,7 +323,7 @@ async def resolve_spawn_model(*, user_id: int, slug: str, parent_model: str) -> 
 
 
 def _child_summary(row: dict) -> str:
-    """Best available write-up: final text, else transcript, else tool previews."""
+    """Completed report or status-only notification from the shared delivery policy."""
     text = chat_store.child_writeup(row)
     if text:
         return text

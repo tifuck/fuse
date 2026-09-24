@@ -10,8 +10,8 @@ function load(name, context) {
   vm.runInContext(source.slice(start, end), context);
 }
 function world() {
-  const ctx = vm.createContext({});
-  for (const name of ['isShellExecTool', 'childBackedTool', 'toolIsCurrent', 'toolRunning', 'backgroundCommandLabel', 'applyCommandResult']) load(name, ctx);
+  const ctx = vm.createContext({ activeRun: null, runIsActive: () => false });
+  for (const name of ['executionState', 'executionIdentity', 'executionPending', 'toolBackground', 'toolAwaitingCancellation', 'isShellExecTool', 'childBackedTool', 'toolIsCurrent', 'toolRunning', 'backgroundCommandLabel', 'applyCommandResult', 'shellExitOnly', 'shellExitCode', 'toolFailed', 'toolInterrupted', 'toolPresentation']) load(name, ctx);
   return ctx;
 }
 test('background execution stays live independently of the assistant turn', () => {
@@ -37,4 +37,69 @@ test('foreground commands retain ordinary presentation', () => {
   assert.equal(c.backgroundCommandLabel(trace), '');
   assert.equal(c.toolRunning(trace, true), true);
   assert.equal(c.toolRunning(trace, false), false);
+});
+
+test('returned waits stay complete while their child continues in the background', () => {
+  const c = world();
+  for (const name of ['get_command_output', 'get_subagent_output']) {
+    for (const execution_status of ['running', 'queued', 'cancelling', 'completed', 'failed']) {
+      const trace = { name, id: 'wait-1', child_id: 'child', status: 'done', execution_status };
+      assert.equal(c.toolPresentation(trace, true).running, false);
+      assert.equal(c.toolPresentation(trace, true).statusLabel, 'Done');
+    }
+  }
+  assert.equal(c.toolRunning({name: 'spawn_subagent', status: 'done', execution_status: 'running'}, false), true);
+});
+
+test('agent lifecycle reconciliation never completes or restarts wait invocations', () => {
+  const c = world();
+  Object.assign(c, { messages: [{ tools: [
+    { name: 'spawn_subagent', child_id: 'child', status: 'done', state: 'running', execution_status: 'running' },
+    { name: 'get_subagent_output', child_id: 'child', status: 'running' },
+    { name: 'get_subagent_output', child_id: 'child', status: 'done', execution_status: 'running' },
+  ] }], agentRun: null, log: { children: [] }, syncLiveDock() {} });
+  load('mapAgentToolStatus', c);
+  load('reconcileAgentTraces', c);
+  c.reconcileAgentTraces([{ id: 'child', status: 'completed', summary: 'Report' }]);
+  assert.equal(c.messages[0].tools[0].execution_status, 'completed');
+  assert.equal(c.toolRunning(c.messages[0].tools[0], false), false, 'state and execution_status must agree');
+  assert.equal(c.messages[0].tools[1].status, 'running', 'only the tool result completes an in-flight wait');
+  assert.equal(c.messages[0].tools[2].status, 'done');
+});
+
+test('agent list rejects reads overtaken by lifecycle events and schedules a replacement', async () => {
+  const c = world();
+  const start = source.indexOf('  async function refreshAgents(');
+  const end = source.indexOf('\n  }', start) + 4;
+  const pending = [];
+  Object.assign(c, { currentId: 'thread', generation: 1, agentsRequest: null, agentsRefreshAgain: false,
+    agentLifecycleEpoch: 0, agentLifecycle: new Map(), agentsRows: [], agentsFailCount: 0,
+    api: () => new Promise(resolve => pending.push(resolve)), reconcileAgentTraces() {}, syncAgentsUi() {}, refreshJobs() {} });
+  vm.runInContext(source.slice(start, end), c);
+  const first = c.refreshAgents();
+  c.agentLifecycleEpoch++;
+  await c.refreshAgents();
+  pending.shift()({ agents: [{ id: 'child', status: 'running' }] });
+  await first;
+  assert.equal(c.agentsRows.length, 0, 'stale running state must not be published');
+  assert.equal(pending.length, 1, 'a lifecycle refresh must not be dropped');
+  pending.shift()({ agents: [{ id: 'child', status: 'completed' }] });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(c.agentsRows[0].status, 'completed');
+});
+
+test('a wait trace cannot change the background classification of its child', () => {
+  const c = world();
+  Object.assign(c, { activeRun: { message_id: 'message', activity: { phase: 'tools' } },
+    runIsStopping: () => false, groupTraces: () => [], lastCurrentTrace: () => null,
+    assistantSegments: () => [], isConsoleView: () => false });
+  load('currentActivity', c);
+  const tools = [
+    { id: 'spawn', name: 'spawn_subagent', child_id: 'child', status: 'done', execution_status: 'running', background: true },
+    { id: 'other', name: 'spawn_subagent', child_id: 'other-child', status: 'done', execution_status: 'running', background: true },
+    { id: 'wait', name: 'get_subagent_output', child_id: 'child', status: 'running' },
+  ];
+  assert.match(c.currentActivity({ id: 'message', tools }, [], true).label, /2 active \/ 2 background/);
+  tools[2].status = 'done';
+  assert.match(c.currentActivity({ id: 'message', tools }, [], true).label, /2 active \/ 2 background/);
 });

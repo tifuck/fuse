@@ -761,22 +761,22 @@ class AgentCapsTest(unittest.TestCase):
         self.assertTrue(store.get_run(1, child["id"])["request"]["agent"].get("wake_sent"))
         self.assertEqual(store.take_child_results(nxt["id"]), [])
 
-    def test_child_writeup_never_returns_status_word(self):
-        self.assertEqual(store.child_writeup({"message": {}, "request": {}}), "")
-        self.assertIn(
-            "read_file",
+    def test_child_writeup_never_fabricates_report_from_tools(self):
+        self.assertEqual(store.child_writeup({"status": "completed", "message": {}, "request": {}}), "")
+        self.assertEqual(
             store.child_writeup(
                 {
+                    "status": "completed",
                     "message": {
                         "content": "",
                         "tools": [{"name": "read_file", "preview": "/tmp/x.py", "status": "done"}],
                     },
                     "request": {},
                 }
-            ),
+            ), "",
         )
 
-    def test_child_writeup_combines_error_with_real_partial(self):
+    def test_child_writeup_suppresses_real_partial_on_failure(self):
         text = store.child_writeup(
             {
                 "message": {
@@ -787,7 +787,7 @@ class AgentCapsTest(unittest.TestCase):
             }
         )
         self.assertIn("experienced difficulties", text)
-        self.assertIn("patched foo.py", text)
+        self.assertNotIn("patched foo.py", text)
 
     def test_child_writeup_prefers_error_over_content(self):
         text = store.child_writeup(
@@ -1120,6 +1120,39 @@ class AgentCapsTest(unittest.TestCase):
         cands = store.wake_candidates(1, parent["thread_id"])
         self.assertTrue(cands)
         self.assertIn("found the bug", cands[0]["summary"])
+
+    def test_terminal_child_delivery_matrix(self):
+        from app import agents
+        thread, parent = self._parent()
+        cases = [
+            ("completed", {}),
+            ("cancelled", {"stopped": True}),
+            ("interrupted", {"notice": "Generation interrupted by server shutdown."}),
+            ("failed", {"error": "Provider unavailable after retries"}),
+            ("failed", {"error": "Unhandled tool exception"}),
+        ]
+        for index, (status, extra) in enumerate(cases):
+            with self.subTest(status=status, extra=extra):
+                child = store.start_child_run(user_id=1, thread_id=thread["id"],
+                    parent_run_id=parent["id"], prompt="fixture work", description=f"case {index}", background=True)
+                store.save_turn_progress(child["id"], [
+                    {"role": "assistant", "content": "PRIVATE_PARTIAL_TRANSCRIPT"},
+                    {"role": "assistant", "tool_calls": [{"id": "read", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+                    {"role": "tool", "tool_call_id": "read", "content": "PRIVATE_TOOL_OUTPUT"},
+                ])
+                store.finish_run(child["id"], {"content": "FINAL_REPORT" if status == "completed" else "PRIVATE_PARTIAL",
+                    "tools": [{"name": "read_file", "preview": "PRIVATE_TOOL_OUTPUT"}], **extra}, status)
+                row = store.get_run(1, child["id"])
+                candidate = next(item for item in store.wake_candidates(1, parent["thread_id"]) if item["id"] == child["id"])
+                for text in [agents._envelope(row), candidate["summary"]]:
+                    if status == "completed":
+                        self.assertIn("FINAL_REPORT", text)
+                    else:
+                        self.assertIn("No completed report", text)
+                        self.assertNotIn("PRIVATE_", text)
+                        self.assertNotIn("read_file", text)
+                        if extra.get("error") or extra.get("notice"):
+                            self.assertIn(extra.get("error") or extra["notice"], text)
 
     def test_resume_keeps_prior_host_and_cwd(self):
         thread, parent = self._parent()

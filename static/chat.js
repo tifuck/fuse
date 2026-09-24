@@ -477,6 +477,9 @@
   let agentsRefreshAt = 0;
   let agentsViewGen = 0;
   let agentsRequest = null;
+  let agentsRefreshAgain = false;
+  let agentLifecycleEpoch = 0;
+  const agentLifecycle = new Map();
   let agentsFailCount = 0;
   let agentViewFailCount = 0;
   let agentStick = true;
@@ -2130,6 +2133,8 @@
   }
 
   function toolRunning(trace, live) {
+    // Waiting is an invocation, not the lifetime of the child it observes.
+    if (/^get_(command|subagent)_output$/.test(trace?.name) && ["done", "error", "failed", "interrupted", "cancelled"].includes(trace.status)) return false;
     if (["completed", "done", "failed", "error", "timed_out", "cancelled", "interrupted", "lost"].includes(executionState(trace))) return false;
     if (["running", "queued", "cancelling"].includes(executionState(trace))) return true;
     if (trace && childBackedTool(trace.name) && executionIdentity(trace) && ["running", "progress", "queued"].includes(trace.status)) return true;
@@ -2188,14 +2193,15 @@
 
   function toolPresentation(trace, live) {
     const execution = executionState(trace);
-    const executing = ["running", "queued", "cancelling"].includes(execution);
-    const failed = !executing && (["timed_out", "failed", "error"].includes(execution) || toolFailed(trace));
-    const interrupted = !executing && (["cancelled", "interrupted", "lost"].includes(execution) || toolInterrupted(trace, live));
+    const returnedWait = /^get_(command|subagent)_output$/.test(trace.name) && ["done", "error", "failed", "interrupted", "cancelled"].includes(trace.status);
+    const executing = !returnedWait && ["running", "queued", "cancelling"].includes(execution);
+    const failed = !executing && ((!returnedWait && ["timed_out", "failed", "error"].includes(execution)) || toolFailed(trace));
+    const interrupted = !executing && ((!returnedWait && ["cancelled", "interrupted", "lost"].includes(execution)) || toolInterrupted(trace, live));
     const running = !failed && !interrupted && toolRunning(trace, live);
     const exit = shellExitCode(trace);
     const warning = !running && !failed && !interrupted && exit !== null && exit !== 0;
     const uncertainTermination = trace.termination_confirmed === false || (isShellExecTool(trace.name) && Boolean(execution) && trace.termination_confirmed !== true);
-    const statusLabel = execution === "cancelling" ? "Cancelling" : execution === "timed_out" ? "Timed out" : execution === "lost" ? "Lost"
+    const statusLabel = !returnedWait && execution === "cancelling" ? "Cancelling" : !returnedWait && execution === "timed_out" ? "Timed out" : !returnedWait && execution === "lost" ? "Lost"
       : failed ? "Failed" : interrupted ? uncertainTermination ? (execution === "cancelled" ? "Cancelled" : "Interrupted") : "Stopped" : running
       ? execution === "queued" || trace.status === "queued" ? "Queued" : trace.status === "done" && executing ? "Background" : /^get_(command|subagent)_output$/.test(trace.name) ? "Waiting" : toolBackground(trace) ? "Background" : "Running"
       : warning ? `Exit ${exit}` : "Done";
@@ -2240,16 +2246,18 @@
         if (!status && !row.cancel_requested) return;
         const pending = ["running", "progress", "queued"].includes(trace.status) || executionPending(trace);
         // A finished join is historical. A spawn tracks its child's lifecycle.
-        if (trace.name === "get_subagent_output" && !pending) return;
+        if (trace.name === "get_subagent_output") return;
         if (["running", "queued"].includes(status) && !pending && !allowRestart && !row.cancel_requested) return;
         const next = { ...trace };
         if (status) {
           next.status = status;
           next.execution_status = row.status;
+          if (Object.prototype.hasOwnProperty.call(next, "state")) next.state = row.status;
         }
         if (row.cancel_requested && ["running", "queued", ""].includes(status)) {
           next.status = next.status === "done" ? "done" : "running";
           next.execution_status = "cancelling";
+          if (Object.prototype.hasOwnProperty.call(next, "state")) next.state = "cancelling";
         }
         if (trace.status === "done" && ["running", "queued"].includes(next.status)) next.status = "done";
         if (!["running", "queued"].includes(next.status) && next.summary === "Background task started") next.summary = "";
@@ -2257,10 +2265,15 @@
         if (row.description) next.description = row.description;
         if (row.wake_state) next.wake_state = row.wake_state;
         else delete next.wake_state;
-        const summary = row.message?.content || row.summary;
+        const terminalFailure = ["failed", "error", "cancelled", "interrupted", "lost", "timed_out"].includes(row.status);
+        const reason = row.message?.error || row.error || row.message?.notice || "";
+        const summary = terminalFailure
+          ? `Subagent ${row.status}${reason ? `: ${reason}` : ""}. No completed report is available.`
+          : row.status === "completed" || row.status === "done" ? row.message?.content || row.summary : "";
         if (summary) {
           next.summary = String(summary).slice(0, 4000);
           next.output_truncated = String(summary).length > 4000;
+          if (terminalFailure) next.preview = next.summary.slice(0, 800);
         }
         if (next.status === "error") next.error = row.message?.error || row.error || next.error || "Subagent failed without a report.";
         else if (next.status === "interrupted") next.error = row.message?.error || row.error || next.error || "";
@@ -2917,6 +2930,7 @@
       setActive(messages.length > 0);
       syncComposer();
     } else paint();
+    reconcileAgentTraces([...agentLifecycle.values()]);
     syncEmptyReplyRetry();
     upsertLocal(data);
     renderHistory();
@@ -3013,6 +3027,12 @@
       }
     } else if (event.thread_id === currentId && event.type.startsWith("agent.")) {
       const cid = payload.child_id || payload.run_id;
+      if (cid && event.type !== "agent.progress") {
+        agentLifecycleEpoch += 1;
+        const row = { ...payload, id: cid };
+        if (!row.status && ["agent.started", "agent.resumed"].includes(event.type)) row.status = "queued";
+        agentLifecycle.set(String(cid), row);
+      }
       if (agentsOpen && cid === agentViewId && !agentRun) agentPendingEvents.push(event);
       if (cid && event.type !== "agent.progress") reconcileAgentTraces([payload], event.type === "agent.started" || event.type === "agent.resumed");
       if (event.type === "agent.progress") {
@@ -3049,7 +3069,6 @@
         }
         pollAgentView();
       }
-      if (agentRun && event.type !== "agent.progress") agentRun.event_cursor = Math.max(agentRun.event_cursor || 0, event.id);
     } else if (event.thread_id === currentId && event.id > viewCursor && event.type.startsWith("run.")) {
       lastRunReceiptAt = Date.now();
       if (event.type === "run.started" || !activeRun || activeRun.id !== payload.run_id) {
@@ -3060,6 +3079,7 @@
         if (!msg) await reconcileThread();
         else {
           applyProgressPayload(msg, payload);
+          reconcileAgentTraces([...agentLifecycle.values()]);
           for (const update of payload.updates || []) {
             const index = messages.findIndex((item) => item.id === update.id);
             if (index < 0) { await reconcileThread(); break; }
@@ -6409,7 +6429,13 @@
       else label = `${total} ${total === 1 ? "action" : "actions"} · ${countsLabel(counts)}`;
     }
     if (live && !stopping) {
-      const executions = new Map(traces.filter(t => toolPresentation(t, true).running).map(t => [executionIdentity(t) || t.id, t]));
+      const executions = new Map();
+      for (const trace of traces) {
+        if (!toolPresentation(trace, true).running) continue;
+        const key = executionIdentity(trace) || trace.id;
+        // A foreground join must not erase its child's background identity.
+        executions.set(key, { background: toolBackground(trace) || Boolean(executions.get(key)?.background) });
+      }
       if (executions.size > 1) {
         const background = [...executions.values()].filter(toolBackground).length;
         label += ` · ${executions.size} active${background ? ` / ${background} background` : ""}`;
@@ -6876,7 +6902,7 @@
     propose_skill: "Skill draft",
     todo_write: "Todos",
     spawn_subagent: "Subagent",
-    get_subagent_output: "Subagent",
+    get_subagent_output: "Await task",
     kill_subagent: "Subagent",
     list_subagents: "Agents",
     search_models: "Models",
@@ -6905,7 +6931,7 @@
     load_skill: "skill",
     todo_write: "edit",
     spawn_subagent: "agent",
-    get_subagent_output: "agent",
+    get_subagent_output: "await",
     kill_subagent: "stop",
     list_subagents: "agent",
     search_models: "search",
@@ -7472,7 +7498,7 @@
     if (name === "kill_command") return "Stop Task";
     if (name === "kill_subagent") return "Stop";
     if (name === "spawn_subagent") return "Agent";
-    if (name === "get_subagent_output") return "Agent";
+    if (name === "get_subagent_output") return "Await";
     if (name === "list_subagents") return "Agents";
     if (name === "search_models") return "Models";
     if (name === "load_skill") return "Skill";
@@ -12062,19 +12088,26 @@
       return;
     }
     const tid = currentId;
-    if (agentsRequest === tid) return;
-    agentsRequest = tid;
+    const gen = generation;
+    if (agentsRequest?.tid === tid && agentsRequest.gen === gen) { agentsRefreshAgain = true; return; }
+    const ticket = agentsRequest = { tid, gen };
+    const epoch = agentLifecycleEpoch;
     try {
       const data = await api("/chat/threads/" + encodeURIComponent(tid) + "/agents");
-      if (tid !== currentId) return;
+      if (tid !== currentId || gen !== generation) return;
+      if (epoch !== agentLifecycleEpoch) { agentsRefreshAgain = true; return; }
       agentsFailCount = 0;
       agentsRows = Array.isArray(data.agents) ? data.agents : [];
+      agentsRows.forEach(row => agentLifecycle.set(String(row.id), row));
       reconcileAgentTraces(agentsRows);
       syncAgentsUi();
     } catch {
-      if (tid === currentId) agentsFailCount += 1;
+      if (tid === currentId && gen === generation) agentsFailCount += 1;
     } finally {
-      if (agentsRequest === tid) agentsRequest = null;
+      if (agentsRequest === ticket) {
+        agentsRequest = null;
+        if (agentsRefreshAgain) { agentsRefreshAgain = false; refreshAgents(); }
+      }
     }
     refreshJobs();
   }
@@ -12083,6 +12116,7 @@
   let jobsRendered = "";
   let jobsThread = "";
   let jobsRequest = null;
+  let jobsRefreshAgain = false;
 
   if (jobsListEl) jobsListEl.addEventListener("click", async (event) => {
     const output = event.target.closest("[data-show-job]");
@@ -12179,24 +12213,28 @@
       return;
     }
     const tid = currentId;
-    if (jobsRequest === tid) return;
+    const gen = generation;
+    if (jobsRequest?.tid === tid && jobsRequest.gen === gen) { jobsRefreshAgain = true; return; }
     if (jobsThread !== tid) {
       jobsThread = tid;
       completedJobs.clear();
       jobsRows = [];
       renderJobsList();
     }
-    jobsRequest = tid;
+    const ticket = jobsRequest = { tid, gen };
     try {
       const data = await api("/chat/threads/" + encodeURIComponent(tid) + "/jobs");
-      if (tid !== currentId) return;
+      if (tid !== currentId || gen !== generation) return;
       jobsRows = Array.isArray(data.jobs) ? data.jobs : [];
       renderJobsList();
       syncAgentsUi();
       (Array.isArray(data.recent) ? data.recent : []).forEach((job) => completedJobs.set(String(job.id), job));
       reconcileBgTraces([...jobsRows, ...completedJobs.values()]);
     } catch {} finally {
-      if (jobsRequest === tid) jobsRequest = null;
+      if (jobsRequest === ticket) {
+        jobsRequest = null;
+        if (jobsRefreshAgain) { jobsRefreshAgain = false; refreshJobs(); }
+      }
     }
   }
 
@@ -12349,6 +12387,9 @@
 
   function resetAgents() {
     agentsViewGen += 1;
+    agentLifecycle.clear();
+    agentLifecycleEpoch += 1;
+    agentsRefreshAgain = false;
     agentsRows = [];
     jobsRows = [];
     completedJobs.clear();

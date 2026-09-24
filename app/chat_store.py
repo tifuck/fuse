@@ -1817,24 +1817,25 @@ def promote_run_binding(run_id: str, host_id=None, cwd: str = "") -> None:
 
 
 def child_writeup(row: dict) -> str:
-    """Best available child report: UI text, then transcript, then tool previews.
+    """Deliver a completed report, or a status-only failure notification.
 
-    A failed child must not present leftover assistant text (including a
-    provider overload sentence that arrived as content) as a successful report.
+    Partial prose and tool output remain available in the child's transcript,
+    but are never promoted to a report on cancellation or failure.
     """
     msg = row.get("message") if isinstance(row.get("message"), dict) else {}
     err = str(msg.get("error") or "").strip()
     text = str(msg.get("content") or "").strip()
-    if err and text:
-        from . import chat_runtime
-
-        # Combine error with partial work, unless the leftover "content" is
-        # itself a provider failure sentence painted as an answer.
-        if chat_runtime._provider_error_content(text):
-            return err
-        return f"{err}\n\n{text}"
-    if err:
-        return err
+    status = str(row.get("status") or msg.get("status") or "")
+    if status != "completed" or err:
+        reason = err or str(msg.get("notice") or "").strip()
+        label = {
+            "cancelled": "Subagent stopped by cancellation",
+            "interrupted": "Subagent interrupted",
+            "failed": "Subagent failed",
+            "running": "Subagent is still running",
+            "queued": "Subagent is queued",
+        }.get(status, "Subagent did not complete")
+        return f"{label}: {reason}. No completed report is available." if reason else f"{label}. No completed report is available."
     if text:
         return text
     ident = row.get("id")
@@ -1856,16 +1857,6 @@ def child_writeup(row: dict) -> str:
     text = last_assistant_text(transcript)
     if text:
         return text
-    bits = []
-    for tool in msg.get("tools") or []:
-        if not isinstance(tool, dict):
-            continue
-        name = str(tool.get("name") or "")
-        preview = str(tool.get("preview") or tool.get("summary") or tool.get("path") or "").strip()
-        if name and preview and preview != "still running":
-            bits.append(f"{name}: {preview[:400]}")
-    if bits:
-        return ("Subagent finished with no final write-up. Tool results:\n" + "\n".join(bits[:8]))[:6000]
     return ""
 
 
@@ -2668,7 +2659,7 @@ def wake_candidates(user_id, thread_id):
                 "attempts": int(agent.get("wake_attempts") or 0),
                 "description": str(agent.get("description") or "subagent"),
                 "summary": child_writeup(
-                    {"id": row["id"], "message": message if isinstance(message, dict) else {}, "request": {"agent": agent}}
+                    {"id": row["id"], "status": row["status"], "message": message if isinstance(message, dict) else {}, "request": {"agent": agent}}
                 ),
             }
         )
@@ -2932,7 +2923,8 @@ def list_thread_agents(user_id, thread_id, limit=100):
             "root_run_id": row["root_run_id"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
-            "summary": str(message.get("content") or "")[:200],
+            "summary": (child_writeup({"status": row["status"], "message": message})
+                        if row["status"] not in ACTIVE else "")[:200],
             "error": str(message.get("error") or "")[:400],
             "children": counts.get(row["id"], 0),
             "tool_counts": tool_counts,

@@ -1141,7 +1141,7 @@ async def _run(request, user, run):
                 output.message["error"] = "The model returned an empty reply."
             is_child = bool(run.get("parent_run_id") or agent.get("parent_run_id"))
             if is_child and not output.message.get("content") and not output.message.get("error"):
-                writeup = chat_store.child_writeup({"id": ident, "message": output.message, "request": run.get("request")})
+                writeup = chat_store.child_writeup({"id": ident, "status": "completed", "message": output.message, "request": run.get("request")})
                 if writeup:
                     output.message["content"] = writeup[:chats.ASSISTANT_CONTENT_MAX]
                     segs = list(output.message.get("segments") or [])
