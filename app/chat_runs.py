@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from fastapi import Request
 
 from . import chat_runtime, chat_store, chats, db
+from .async_work import durable_call
 
 FLUSH_SECONDS = 0.2
 # Fallback cadence for the per-run status poll. Cancellation is delivered
@@ -695,18 +696,18 @@ async def cancel_wait(user_id, run_id, *, tree=True, force=False):
     subagent wedged in stopping).
     """
     if tree:
-        chat_store.request_cancel(user_id, run_id)
-        ids = [run_id, *chat_store.descendant_ids(run_id)]
+        await durable_call(chat_store.request_cancel, user_id, run_id)
+        ids = [run_id, *await asyncio.to_thread(chat_store.descendant_ids, run_id)]
         cancel_tree(run_id)
     else:
-        ids = chat_store.request_cancel_self(user_id, run_id)
+        ids = await durable_call(chat_store.request_cancel_self, user_id, run_id)
         for ident in ids:
             cancel(ident)
     await _await_tasks(ids, 0.0 if force else CANCEL_GRACE_SECONDS)
     for ident in ids:
-        row = chat_store.get_run(user_id, ident)
+        row = await asyncio.to_thread(chat_store.get_run, user_id, ident)
         if row and row["status"] in chat_store.ACTIVE:
-            chat_store.abort_active(ident, "cancelled")
+            await durable_call(chat_store.abort_active, ident, "cancelled")
 
 
 def reap_orphans(user_id=None):
@@ -766,6 +767,8 @@ def _wake_stalled_child(row) -> None:
 
 
 _wake_lock = asyncio.Lock()
+_wake_tasks: dict[tuple[int, object], asyncio.Task] = {}
+_wake_again: set[tuple[int, object]] = set()
 
 
 def schedule_wake(user_id: int, thread_id) -> None:
@@ -776,13 +779,24 @@ def schedule_wake(user_id: int, thread_id) -> None:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return
+    key = (user_id, thread_id)
+    if key in _wake_tasks:
+        _wake_again.add(key)
+        return
     async def _run():
         try:
-            await _wake_parent(user_id, thread_id)
+            while True:
+                _wake_again.discard(key)
+                await _wake_parent(user_id, thread_id)
+                if key not in _wake_again or _stopping:
+                    break
         except Exception:
             logger.exception("Wake parent failed for thread %s", thread_id)
+        finally:
+            _wake_tasks.pop(key, None)
+            _wake_again.discard(key)
 
-    loop.create_task(_run(), name=f"chat-wake-{thread_id}")
+    _wake_tasks[key] = loop.create_task(_run(), name=f"chat-wake-{thread_id}")
 
 
 def sweep_wakes() -> None:
@@ -819,7 +833,7 @@ async def _wake_parent(user_id: int, thread_id) -> None:
     async with _wake_lock:
         if _stopping:
             return
-        root = chat_store.thread_root_run(user_id, thread_id)
+        root = await asyncio.to_thread(chat_store.thread_root_run, user_id, thread_id)
         if root is None or root["status"] in chat_store.ACTIVE:
             return
         if root["status"] == "cancelled":
@@ -830,19 +844,19 @@ async def _wake_parent(user_id: int, thread_id) -> None:
             # service restart or stall) end as interrupted/failed and still
             # wake; only an explicit Stop suppresses delivery.
             return
-        candidates = chat_store.wake_candidates(user_id, thread_id)
+        candidates = await asyncio.to_thread(chat_store.wake_candidates, user_id, thread_id)
         # A failed wake turn may retry each child once; after that the report
         # stays in the transcript and list_subagents instead of looping forever.
         candidates = [item for item in candidates if int(item.get("attempts") or 0) < 2]
         from . import command_jobs
 
-        cmd_results = command_jobs.pending_envelopes(user_id, thread_id)
+        cmd_results = await asyncio.to_thread(command_jobs.pending_envelopes, user_id, thread_id)
         if not candidates and not cmd_results:
             return
-        owner = accounts.get_user(user_id)
+        owner = await asyncio.to_thread(accounts.get_user, user_id)
         if owner is None:
             return
-        revision = chat_store.thread_revision(user_id, thread_id)
+        revision = await asyncio.to_thread(chat_store.thread_revision, user_id, thread_id)
         if revision is None:
             return
         included = candidates[:8]
@@ -903,7 +917,8 @@ async def _wake_parent(user_id: int, thread_id) -> None:
         lines.append(closing)
         text = "\n".join(lines)
         try:
-            result = chat_store.start_turn(
+            result = await durable_call(
+                chat_store.start_turn,
                 user_id, thread_id, text, revision, f"wake-{uuid4().hex[:12]}",
                 auto=True,
                 command_receipt_ids=[item["id"] for item in cmd_results],
@@ -913,16 +928,16 @@ async def _wake_parent(user_id: int, thread_id) -> None:
             # 413 is the message cap — deterministic, so count it. 409/429
             # are capacity races; leave attempts so sweep_wakes can retry.
             if int(getattr(exc, "status_code", 0) or 0) == 413:
-                chat_store.bump_wake_attempts(ids)
+                await durable_call(chat_store.bump_wake_attempts, ids)
             return
         except Exception:
             logger.exception("Wake turn failed for thread %s", thread_id)
             return
         run = result.get("run")
         if run is None:
-            chat_store.bump_wake_attempts(ids)
+            await durable_call(chat_store.bump_wake_attempts, ids)
             return
-        chat_store.mark_run_wake(run["id"], ids, receipts=dict(zip(ids, envelopes)))
+        await durable_call(chat_store.mark_run_wake, run["id"], ids, receipts=dict(zip(ids, envelopes)))
         try:
             await start(internal_request(user_id), dict(owner), result["run"])
         except Exception:
@@ -1176,7 +1191,7 @@ async def _run(request, user, run):
                 pass
         try:
             if _stopping and status == "interrupted":
-                live_row = chat_store.get_run(user["id"], ident)
+                live_row = await asyncio.to_thread(chat_store.get_run, user["id"], ident)
                 if (
                     live_row is not None
                     and live_row["status"] in chat_store.ACTIVE
@@ -1194,7 +1209,7 @@ async def _run(request, user, run):
                 await flush()
             except Exception:
                 logger.exception("Chat final flush failed for %s", ident)
-            row = chat_store.get_run(user["id"], ident)
+            row = await asyncio.to_thread(chat_store.get_run, user["id"], ident)
             if row and row["cancel_requested"]:
                 status = "cancelled"
                 output.message["stopped"] = True
@@ -1208,7 +1223,7 @@ async def _run(request, user, run):
                     and tool.get("status") in ("running", "progress", "interrupted")
                     and tool.get("preview") == "still running"
                 ):
-                    child = chat_store.get_run(user["id"], str(tool.get("child_id") or ""))
+                    child = await asyncio.to_thread(chat_store.get_run, user["id"], str(tool.get("child_id") or ""))
                     if child and child["status"] == "completed":
                         summary = (child.get("message") or {}).get("content") or ""
                         tool["status"] = "done"
@@ -1236,7 +1251,7 @@ async def _run(request, user, run):
                         # their real state instead of labelling them interrupted.
                         from . import command_jobs
 
-                        job_state = command_jobs.job_status(user["id"], str(tool["child_id"]))
+                        job_state = await asyncio.to_thread(command_jobs.job_status, user["id"], str(tool["child_id"]))
                         if job_state is None:
                             tool["status"] = "interrupted"
                         elif job_state == "completed":
@@ -1248,7 +1263,7 @@ async def _run(request, user, run):
                         else:
                             tool["status"] = "running"
                     elif tool.get("name") == "spawn_subagent" and tool.get("child_id"):
-                        child = chat_store.get_run(user["id"], str(tool["child_id"]))
+                        child = await asyncio.to_thread(chat_store.get_run, user["id"], str(tool["child_id"]))
                         child_agent = (child.get("request") or {}).get("agent") if child else {}
                         child_agent = child_agent if isinstance(child_agent, dict) else {}
                         if child and child["status"] == "completed":
@@ -1267,8 +1282,12 @@ async def _run(request, user, run):
                         tool["status"] = "interrupted"
                 kept.append(tool)
             output.message["tools"] = kept
-            with db.tx() as conn:
-                chat_store.settle_command_traces(conn, user["id"], run["thread_id"], [output.message])
+
+            def _settle_commands():
+                with db.tx() as conn:
+                    chat_store.settle_command_traces(conn, user["id"], run["thread_id"], [output.message])
+
+            await durable_call(_settle_commands)
             ids = {t.get("id") for t in kept if t.get("id")}
             output.message["segments"] = [
                 part
@@ -1278,23 +1297,23 @@ async def _run(request, user, run):
             parent = not bool(run.get("parent_run_id") or agent.get("parent_run_id"))
             # Every spawning agent owns its foreground descendants, including
             # nested agents that time out while awaiting a foreground child.
-            doomed = chat_store.request_cancel_descendants(user["id"], ident, skip_background=True)
+            doomed = await durable_call(chat_store.request_cancel_descendants, user["id"], ident, skip_background=True)
             if status != "cancelled":
                 # User Stop stays quiet. A parent that completed, failed, or
                 # was interrupted still owes the thread a report for any
                 # foreground child it is about to kill.
                 for did in doomed:
-                    chat_store.mark_child_background(did)
+                    await durable_call(chat_store.mark_child_background, did)
             for did in doomed:
                 cancel(did)
             from . import permissions as permissions_mod
 
             permissions_mod.cancel_run_asks(ident)
             try:
-                chat_store.finish_run(ident, output.stored(), status)
+                await durable_call(chat_store.finish_run, ident, output.stored(), status)
             except Exception:
                 logger.exception("Chat finish_run failed for %s", ident)
-            current = chat_store.get_run(user["id"], ident)
+            current = await asyncio.to_thread(chat_store.get_run, user["id"], ident)
             if not parent and status in chat_store.TERMINAL and current is not None:
                 # Follow-ups that raced the finish line were never consumed.
                 # A completed child simply continues (same run id, seamless
@@ -1303,20 +1322,20 @@ async def _run(request, user, run):
                 # the child with spawn_subagent task_id. A user-cancelled child
                 # is never auto-continued, but the pending prompts are still
                 # reported.
-                leftover = chat_store.take_followups(ident)
+                leftover = await asyncio.to_thread(chat_store.take_followups, ident)
                 if leftover:
                     continued = False
                     if not current.get("cancel_requested"):
-                        continued = chat_store.continue_child_with_followups(ident, leftover)
+                        continued = await durable_call(chat_store.continue_child_with_followups, ident, leftover)
                     if not continued:
-                        chat_store.flag_unconsumed_followups(ident, leftover)
-                    current = chat_store.get_run(user["id"], ident) or current
+                        await durable_call(chat_store.flag_unconsumed_followups, ident, leftover)
+                    current = await asyncio.to_thread(chat_store.get_run, user["id"], ident) or current
             continuing = False
             if current and current["status"] == "queued":
                 _agent = (current.get("request") or {}).get("agent") or {}
                 continuing = bool(_agent.get("pending_steers") or _agent.get("followup_continuation"))
             if current and current["status"] in chat_store.ACTIVE and not continuing:
-                chat_store.abort_active(ident, status if status in chat_store.TERMINAL else "interrupted")
+                await durable_call(chat_store.abort_active, ident, status if status in chat_store.TERMINAL else "interrupted")
             if status in chat_store.TERMINAL and not continuing:
                 child_agent = {}
                 if current and isinstance(current.get("request"), dict):
@@ -1343,8 +1362,8 @@ async def _run(request, user, run):
                     # parent a report; so does one that finished with queued
                     # follow-ups it never consumed.
                     if status in ("cancelled", "interrupted") and not child_agent.get("background"):
-                        chat_store.mark_child_background_if_pending(ident)
-                        current = chat_store.get_run(user["id"], ident) or current
+                        await durable_call(chat_store.mark_child_background_if_pending, ident)
+                        current = await asyncio.to_thread(chat_store.get_run, user["id"], ident) or current
                         child_agent = (
                             current["request"].get("agent")
                             if isinstance(current.get("request"), dict) and isinstance(current["request"].get("agent"), dict)
@@ -1363,7 +1382,7 @@ async def _run(request, user, run):
                             description=str(child_agent.get("description") or ""),
                             generation=str(child_agent.get("delivery_generation") or ""),
                         )
-                        if not chat_store.queue_child_result(str(current["parent_run_id"]), envelope, child_id=ident):
+                        if not await durable_call(chat_store.queue_child_result, str(current["parent_run_id"]), envelope, child_id=ident):
                             schedule_wake(user["id"], run["thread_id"])
                     else:
                         schedule_wake(user["id"], run["thread_id"])
@@ -1375,7 +1394,8 @@ async def _run(request, user, run):
                             # child re-spawned during this turn (new leg) or one
                             # whose envelope is still queued unconsumed stays
                             # unacknowledged so its own completion wakes again.
-                            chat_store.mark_wake_sent(
+                            await durable_call(
+                                chat_store.mark_wake_sent,
                                 child_agent.get("wake_ids") or [], pending_guard_run=ident
                             )
                         else:
@@ -1384,11 +1404,11 @@ async def _run(request, user, run):
                             # transcript (the user saw the bubble; a stopped
                             # turn must not be retried into a loop) and spend
                             # retry budget only on genuinely undelivered ones.
-                            chat_store.settle_wake_children(ident, child_agent.get("wake_ids") or [])
+                            await durable_call(chat_store.settle_wake_children, ident, child_agent.get("wake_ids") or [])
                     schedule_wake(user["id"], run["thread_id"])
         except Exception:
             logger.exception("Chat run finalization failed for %s", ident)
-            chat_store.abort_active(ident, status if status in chat_store.TERMINAL else "interrupted")
+            await durable_call(chat_store.abort_active, ident, status if status in chat_store.TERMINAL else "interrupted")
         finally:
             if iterator is not None and hasattr(iterator, "aclose"):
                 try:
@@ -1410,7 +1430,7 @@ async def _run(request, user, run):
                 _tasks.pop(ident, None)
             _cancelled.discard(ident)
             _cancel_signals.pop(ident, None)
-            current = chat_store.get_run(user["id"], ident)
+            current = await asyncio.to_thread(chat_store.get_run, user["id"], ident)
             if current and current["status"] == "queued" and not _stopping:
                 await start(request, user, current)
 
@@ -1422,12 +1442,12 @@ async def resume_queued(user_id=None):
     from . import accounts
 
     if user_id is None:
-        rows = db.fetchall(
+        rows = await asyncio.to_thread(db.fetchall,
             """SELECT * FROM chat_runs WHERE status='queued'
                ORDER BY created_at,id"""
         )
     else:
-        rows = db.fetchall(
+        rows = await asyncio.to_thread(db.fetchall,
             """SELECT * FROM chat_runs WHERE status='queued' AND user_id=?
                ORDER BY created_at,id""",
             (user_id,),
@@ -1436,7 +1456,7 @@ async def resume_queued(user_id=None):
         run = chat_store.run_view(row)
         if run is None or (run["id"] in _tasks and not _tasks[run["id"]].done()):
             continue
-        owner = accounts.get_user(run["user_id"])
+        owner = await asyncio.to_thread(accounts.get_user, run["user_id"])
         if owner is None:
             continue
         await start(internal_request(run["user_id"]), dict(owner), run)

@@ -28,15 +28,17 @@ const wsMax = 1024 * 1024
 var activeSession atomic.Pointer[session]
 
 type session struct {
-	cfg     *agentConfig
-	mu      sync.Mutex
-	conn    *websocket.Conn
-	stop    chan struct{}
-	wake    chan int
-	jobs    *jobHub
-	status  string
-	ready   bool
-	results []jobRes
+	cfg           *agentConfig
+	mu            sync.Mutex
+	conn          *websocket.Conn
+	stop          chan struct{}
+	wake          chan int
+	jobs          *jobHub
+	status        string
+	ready         bool
+	results       []jobRes
+	resultSpace   *sync.Cond
+	droppedChunks map[string]bool
 }
 
 // reserveUpdateAdmission pauses job intake and verifies nothing is in flight.
@@ -138,11 +140,40 @@ func (s *session) sendJSON(v any) error {
 func (s *session) sendResult(res jobRes) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.results) >= maxJobs {
-		s.results = s.results[1:]
+	if s.resultSpace == nil {
+		s.resultSpace = sync.NewCond(&s.mu)
+	}
+	if res.T == "chunk" && len(s.results) >= maxJobs {
+		if s.droppedChunks == nil {
+			s.droppedChunks = make(map[string]bool)
+		}
+		s.droppedChunks[res.ID] = true
+		return
+	}
+	for len(s.results) >= maxJobs {
+		s.resultSpace.Wait()
+	}
+	if res.T == "res" && s.droppedChunks[res.ID] {
+		res.Truncated = true
+		delete(s.droppedChunks, res.ID)
 	}
 	s.results = append(s.results, res)
 	_ = s.flushResultsLocked()
+}
+
+// Refusals run on the reader goroutine, which must never wait for queue
+// space that only a reconnect on that same goroutine can make available.
+func (s *session) sendRefusal(id, reason string) {
+	res := jobRes{V: 1, T: "res", ID: id, Exit: 1, Error: reason, TerminationConfirmed: true}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.results) < maxJobs {
+		s.results = append(s.results, res)
+		_ = s.flushResultsLocked()
+	} else if s.ready && s.conn != nil {
+		s.conn.SetWriteDeadline(time.Now().Add(ioTimeoutMS * time.Millisecond))
+		_ = s.conn.WriteJSON(res)
+	}
 }
 
 func (s *session) drainResults(send func(jobRes) error) error {
@@ -152,6 +183,9 @@ func (s *session) drainResults(send func(jobRes) error) error {
 		}
 		s.results[0] = jobRes{}
 		s.results = s.results[1:]
+		if s.resultSpace != nil {
+			s.resultSpace.Broadcast()
+		}
 	}
 	return nil
 }
@@ -443,6 +477,8 @@ func (s *session) pump(conn *websocket.Conn, stop chan struct{}, cfg *agentConfi
 	conn.SetReadDeadline(time.Time{})
 	incoming := make(chan []byte, 8)
 	readErr := make(chan error, 1)
+	done := make(chan struct{})
+	defer close(done)
 	go func() {
 		for {
 			_, data, err := conn.ReadMessage()
@@ -450,7 +486,11 @@ func (s *session) pump(conn *websocket.Conn, stop chan struct{}, cfg *agentConfi
 				readErr <- err
 				return
 			}
-			incoming <- data
+			select {
+			case incoming <- data:
+			case <-done:
+				return
+			}
 		}
 	}()
 	ticker := time.NewTicker(50 * time.Millisecond)

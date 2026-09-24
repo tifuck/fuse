@@ -979,7 +979,7 @@ async def execute_tool(
         if name == "list_subagents":
             return agents.list_agents(user_id=user_id, thread_id=thread_id)
         if name == "kill_subagent":
-            return agents.kill(user_id=user_id, arguments=arguments, thread_id=thread_id)
+            return await agents.kill(user_id=user_id, arguments=arguments, thread_id=thread_id)
         if name == "get_subagent_output":
             return await agents.get_output(
                 user_id=user_id,

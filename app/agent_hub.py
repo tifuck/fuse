@@ -128,15 +128,16 @@ async def _finish_rec(rec: dict, reason: str) -> None:
     await _close_ws(rec.get("ws"), reason)
 
 
-async def _hold_pending(key: tuple[int, int], pending: dict) -> None:
+async def _hold_pending(key: tuple[int, int], pending: dict, chunks=None) -> None:
     if not pending:
         return
-    rec = {"pending": dict(pending), "task": None, "user_id": key[0], "host_id": key[1]}
+    rec = {"pending": dict(pending), "chunks": {k: v for k, v in (chunks or {}).items() if k in pending}, "task": None, "user_id": key[0], "host_id": key[1]}
     pending.clear()
     async with _lock:
         live = _conns.get(key)
         if live is not None:
             live.setdefault("pending", {}).update(rec["pending"])
+            live.setdefault("chunks", {}).update(rec["chunks"])
             rec["pending"].clear()
             return
         old = _held.pop(key, None)
@@ -162,6 +163,7 @@ async def _hold_pending(key: tuple[int, int], pending: dict) -> None:
             _held.pop(key, None)
             if live is not None:
                 live.setdefault("pending", {}).update(parked)
+                live.setdefault("chunks", {}).update(rec["chunks"])
                 return
         for job_id in parked:
             _remember_cancel(key, job_id)
@@ -316,10 +318,14 @@ async def handle_socket(ws, *, hello_timeout: float = HELLO_TIMEOUT) -> None:
     rec = {"ws": ws, "pending": {}, "user_id": int(user_id), "host_id": int(host_id)}
     async with _lock:
         old = _conns.pop(key, None)
+        held = _held.get(key)
+        if held:
+            rec.setdefault("chunks", {}).update(held.get("chunks") or {})
         rec["pending"].update(_take_held(key))
         _conns[key] = rec
     if old is not None:
         rec["pending"].update(old.get("pending") or {})
+        rec.setdefault("chunks", {}).update(old.get("chunks") or {})
         old.get("pending", {}).clear()
         await _close_ws(old.get("ws"), "replaced")
     try:
@@ -407,7 +413,7 @@ async def handle_socket(ws, *, hello_timeout: float = HELLO_TIMEOUT) -> None:
             rec["pending"] = {}
             if leftover:
                 # Connector workers retain results across transient reconnects.
-                await _hold_pending(key, leftover)
+                await _hold_pending(key, leftover, rec.get("chunks"))
             else:
                 try:
                     hosts.mark_agent_offline(user_id, host_id)

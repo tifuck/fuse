@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -33,6 +34,32 @@ func TestResultsSurviveOfflineAndFailedFlush(t *testing.T) {
 	err = s.drainResults(func(res jobRes) error { got = append(got, res.ID); return nil })
 	if err != nil || len(s.results) != 0 || strings.Join(got, ",") != "first,second" {
 		t.Fatalf("bad replay: %v %v", got, err)
+	}
+}
+
+func TestTerminalResultWaitsForSpace(t *testing.T) {
+	s := &session{}
+	for i := 0; i < maxJobs; i++ {
+		s.sendChunk("job", "out", "x")
+	}
+	s.sendChunk("job", "out", "lost")
+	done := make(chan struct{})
+	go func() { s.sendRes("job", true, 0, "", "", ""); close(done) }()
+	select {
+	case <-done:
+		t.Fatal("terminal result discarded instead of waiting")
+	case <-time.After(20 * time.Millisecond):
+	}
+	s.mu.Lock()
+	_ = s.drainResults(func(jobRes) error { return nil })
+	s.mu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("producer did not wake")
+	}
+	if len(s.results) != 1 || s.results[0].T != "res" || !s.results[0].Truncated {
+		t.Fatalf("missing terminal or loss marker: %+v", s.results)
 	}
 }
 

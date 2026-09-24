@@ -8,6 +8,7 @@ import re
 import time
 
 from . import chat_runs, chat_store
+from .async_work import durable_call
 from .chat_store import SpawnCapError
 from .hosts import host_by_alias
 from .workspace import RESERVED
@@ -383,13 +384,13 @@ async def spawn(
     description = str(args.get("description") or "").strip()[:200]
     raw_model = args.get("model")
     requested_model = str(raw_model).strip() if isinstance(raw_model, str) else ""
-    parent = chat_store.get_run(user["id"], parent_run_id)
+    parent = await asyncio.to_thread(chat_store.get_run, user["id"], parent_run_id)
     if parent is None:
         return "parent run is not active", {"name": "spawn_subagent", "status": "error", "error": "parent run is not active"}
     if scratch_name:
         # The slot is the prompt. A failed spawn leaves it in place, so the
         # same call can be retried without the model re-sending the text.
-        stored = chat_store.scratch_read(parent_run_id, scratch_name)
+        stored = await asyncio.to_thread(chat_store.scratch_read, parent_run_id, scratch_name)
         if stored is None:
             msg = f"scratch slot {scratch_name!r} not found; write it with the scratch tool first."
             return msg, {"name": "spawn_subagent", "status": "error", "error": msg, "kind": "not_found", "description": description}
@@ -411,7 +412,7 @@ async def spawn(
     if alias:
         if alias.strip().lower() in RESERVED:
             return "host alias is not allowed", {"name": "spawn_subagent", "status": "error", "error": "host alias is not allowed", "description": description}
-        row = host_by_alias(user["id"], alias)
+        row = await asyncio.to_thread(host_by_alias, user["id"], alias)
         if row is None:
             return "unknown host alias", {"name": "spawn_subagent", "status": "error", "error": "unknown host alias", "description": description}
         host_id = row["id"]
@@ -422,7 +423,7 @@ async def spawn(
         resume_from = args.get("resume_from")
     if resume_from:
         if not description:
-            existing_label = chat_store.get_run(user["id"], resume_from)
+            existing_label = await asyncio.to_thread(chat_store.get_run, user["id"], resume_from)
             existing_agent = ((existing_label.get("request") or {}).get("agent") or {}) if existing_label else {}
             description = str(existing_agent.get("description") or "subagent").strip()[:200] or "subagent"
     elif not description:
@@ -430,7 +431,7 @@ async def spawn(
         # instead of rejecting a perfectly usable spawn.
         description = " ".join(prompt.split()[:8])[:80] or "subagent"
     if resume_from:
-        existing = chat_store.get_run(user["id"], resume_from)
+        existing = await asyncio.to_thread(chat_store.get_run, user["id"], resume_from)
         if existing and existing.get("status") in chat_store.ACTIVE:
             root = pagent.get("root_run_id") or parent_run_id
             # Follow-ups only make sense for a live child; pending_followups on
@@ -495,7 +496,7 @@ async def spawn(
                 rec["model"] = existing_model
             return text, rec
     parent_model = str((parent.get("request") or {}).get("model") or "")
-    existing_resume = chat_store.get_run(user["id"], resume_from) if resume_from else None
+    existing_resume = await asyncio.to_thread(chat_store.get_run, user["id"], resume_from) if resume_from else None
     if existing_resume and not requested_model:
         parent_model = str((existing_resume.get("request") or {}).get("model") or "") or parent_model
     if parent_kind in ("explore", "plan"):
@@ -523,7 +524,9 @@ async def spawn(
             "description": description,
             "kind": "unknown_model",
         }
-    try:
+    admitted = []
+
+    def admit_child():
         child = chat_store.start_child_run(
             user_id=user["id"],
             thread_id=thread_id or parent["thread_id"],
@@ -544,6 +547,22 @@ async def spawn(
             auto=bool(pagent.get("auto")),
             scheduled=bool(pagent.get("scheduled")),
         )
+        admitted.append(child)
+        return child
+
+    try:
+        child = await durable_call(admit_child)
+    except asyncio.CancelledError:
+        # Stop may land between admission committing and start(). Hand the
+        # queued row to its worker as the pre-await path would have; a row
+        # that cannot start now stays queued — recovery/resume_queued owns
+        # queued runs, and background children must survive a parent Stop.
+        if admitted:
+            try:
+                await chat_runs.start(request, user, admitted[0])
+            except (Exception, asyncio.CancelledError):
+                logger.exception("Subagent handoff after cancellation failed for %s", admitted[0].get("id"))
+        raise
     except SpawnCapError as exc:
         return exc.detail, {"name": "spawn_subagent", "status": "error", "error": exc.detail, "preview": exc.detail[:800], "description": description}
     def _spawn_rec(**extra) -> dict:
@@ -565,12 +584,12 @@ async def spawn(
     except Exception as exc:
         logger.exception("Subagent start failed for %s", child["id"])
         err = str(exc).strip()[:400] or "Subagent could not start"
-        chat_store.abort_active(child["id"], "failed", err)
-        chat_store.refund_spawn(parent_run_id)
+        await durable_call(chat_store.abort_active, child["id"], "failed", err)
+        await durable_call(chat_store.refund_spawn, parent_run_id)
         return err, _spawn_rec(status="error", error=err, preview=err[:800])
-    current = chat_store.get_run(user["id"], child["id"]) if task is None else child
+    current = await asyncio.to_thread(chat_store.get_run, user["id"], child["id"]) if task is None else child
     if task is None and current is not None and current.get("status") not in chat_store.ACTIVE:
-        chat_store.refund_spawn(parent_run_id)
+        await durable_call(chat_store.refund_spawn, parent_run_id)
     if background and current and current.get("status") in chat_store.ACTIVE:
         text = _envelope(child, fallback_id=child["id"], description=description, running=True)
         return text, _spawn_rec(
@@ -581,7 +600,7 @@ async def spawn(
     if task is not None:
         done_set, _pending = await asyncio.wait({task}, timeout=FOREGROUND_BUDGET_S)
         if task not in done_set:
-            chat_store.mark_child_background(child["id"])
+            await durable_call(chat_store.mark_child_background, child["id"])
             text = _envelope(child, fallback_id=child["id"], description=description, running=True)
             return text, _spawn_rec(
                 status="running",
@@ -593,7 +612,7 @@ async def spawn(
         if exc is not None:
             err = str(exc)[:400]
             return err, _spawn_rec(status="error", error=err, preview=err[:800])
-    done = chat_store.get_run(user["id"], child["id"])
+    done = await asyncio.to_thread(chat_store.get_run, user["id"], child["id"])
     summary = _child_summary(done) if done else ""
     status = "error"
     if done:
@@ -605,8 +624,8 @@ async def spawn(
         if done["status"] in chat_store.TERMINAL:
             # Returning a tool result is not durable delivery. Keep a receipt
             # pending until save_turn_progress saves this exact envelope.
-            chat_store.mark_child_background(child["id"])
-            chat_store.queue_child_result(parent_run_id, _envelope(done, description=description), child_id=child["id"])
+            await durable_call(chat_store.mark_child_background, child["id"])
+            await durable_call(chat_store.queue_child_result, parent_run_id, _envelope(done, description=description), child_id=child["id"])
     text = _envelope(done, fallback_id=child["id"], description=description)
     return text, _spawn_rec(
         status=status,
@@ -638,7 +657,7 @@ async def get_output(*, user_id: int, arguments: str, thread_id=None, parent_run
     row = None
     misses = 0
     while True:
-        row = chat_store.resolve_child_run(
+        row = await asyncio.to_thread(chat_store.resolve_child_run,
             user_id,
             child_id,
             thread_id=thread_id,
@@ -658,8 +677,8 @@ async def get_output(*, user_id: int, arguments: str, thread_id=None, parent_run
             summary = _child_summary(row)
             text = _envelope(row)
             if parent_run_id:
-                chat_store.mark_child_background(child_id)
-                chat_store.queue_child_result(str(parent_run_id), text, child_id=child_id)
+                await durable_call(chat_store.mark_child_background, child_id)
+                await durable_call(chat_store.queue_child_result, str(parent_run_id), text, child_id=child_id)
             status = "done" if row["status"] == "completed" else "error"
             if row["status"] in ("cancelled", "interrupted"):
                 status = "interrupted"
@@ -680,7 +699,7 @@ async def get_output(*, user_id: int, arguments: str, thread_id=None, parent_run
     return text, {"name": "get_subagent_output", "status": "running", "child_id": child_id, "preview": "still running", "background": True}
 
 
-def kill(*, user_id: int, arguments: str, thread_id=None) -> tuple[str, dict]:
+async def kill(*, user_id: int, arguments: str, thread_id=None) -> tuple[str, dict]:
     try:
         args = json.loads(arguments or "{}")
         if not isinstance(args, dict):
@@ -688,7 +707,7 @@ def kill(*, user_id: int, arguments: str, thread_id=None) -> tuple[str, dict]:
     except json.JSONDecodeError:
         args = {}
     child_id = str(args.get("id") or args.get("child_id") or "")
-    row = chat_store.resolve_child_run(user_id, child_id, thread_id=thread_id)
+    row = await asyncio.to_thread(chat_store.resolve_child_run, user_id, child_id, thread_id=thread_id)
     if row is None:
         return "subagent not found", {"name": "kill_subagent", "status": "error", "error": "not found", "child_id": child_id}
     child_id = row["id"]
@@ -699,7 +718,7 @@ def kill(*, user_id: int, arguments: str, thread_id=None) -> tuple[str, dict]:
             "child_id": child_id,
             "preview": f"already {row['status']}",
         }
-    ids = chat_store.request_cancel_self(user_id, child_id)
+    ids = await durable_call(chat_store.request_cancel_self, user_id, child_id)
     if not ids:
         return "subagent not found", {"name": "kill_subagent", "status": "error", "error": "not found", "child_id": child_id}
     for ident in ids:
@@ -707,10 +726,10 @@ def kill(*, user_id: int, arguments: str, thread_id=None) -> tuple[str, dict]:
     return "cancelled", {"name": "kill_subagent", "status": "done", "child_id": child_id}
 
 
-def list_agents(*, user_id: int, thread_id) -> tuple[str, dict]:
+async def list_agents(*, user_id: int, thread_id) -> tuple[str, dict]:
     if thread_id is None:
         return "no active session", {"name": "list_subagents", "status": "error", "error": "no active session"}
-    rows = chat_store.list_thread_agents(user_id, thread_id)
+    rows = await asyncio.to_thread(chat_store.list_thread_agents, user_id, thread_id)
     live = [item for item in rows if item["status"] in chat_store.ACTIVE]
     finished = [item for item in rows if item["status"] not in chat_store.ACTIVE]
 

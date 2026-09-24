@@ -1749,7 +1749,9 @@ async def _run_tools(
         if persist is None:
             return
         async with persist_lock:
-            persist(jobs)
+            result = persist(jobs)
+            if hasattr(result, "__await__"):
+                await result
 
     async def heartbeat():
         while not cancel.is_set():
@@ -2053,7 +2055,9 @@ async def _run_tools(
                 j.trace = {**j.trace, "name": j.name, "status": "interrupted", "id": j.event_id}
                 j.done = True
         if persist is not None:
-            persist(jobs)
+            result = persist(jobs)
+            if hasattr(result, "__await__"):
+                await result
     yield jobs
 
 
@@ -2496,20 +2500,21 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
         delivered_local: set[str] = set()
         start_i = _completion_start_index(agent, messages, completion_limit)
 
-        def persist_jobs(jobs=None):
+        async def persist_jobs(jobs=None):
             if not run_id:
                 return
             try:
                 from . import chat_store as store
+                from .async_work import durable_call
 
                 extra = {
                     "allowed_urls": list(allowed_urls),
                     "search_queries": budgets.get("search_queries", 0),
                     "fetches": budgets.get("fetches", 0),
                     "fetch_attempts": budgets.get("fetch_attempts", 0),
-                    "command_delivery_ids": command_delivery_ids,
+                    "command_delivery_ids": list(command_delivery_ids),
                 }
-                store.save_turn_progress(
+                await durable_call(store.save_turn_progress,
                     run_id,
                     _provider_snapshot(current_messages, jobs,
                         reasoning=(summary or {}).get("reasoning") if jobs else "", model=model),
@@ -2528,7 +2533,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 invoke=invoke,
             )
             if preload_event:
-                persist_jobs()
+                await persist_jobs()
                 yield _sse(preload_event)
 
         if agent.get("resumed"):
@@ -2720,9 +2725,9 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             yield _sse({"fuse": {"event": "notice", "message": "A very large message was truncated to fit the context window."}})
             yield _sse(ctxmod.context_event(boot, phase="update"))
             _persist_meter(boot)
-            persist_jobs()
+            await persist_jobs()
 
-        persist_jobs()
+        await persist_jobs()
         completion_i = start_i
         resumes_left = MAX_RESUME_RETRIES
         stall_fails = 0
@@ -2808,7 +2813,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     # provider-side only (the wake banner exists solely for the
                     # idle-thread path) and the UI stays as-is by design.
                     current_messages.append({"role": "user", "content": block})
-                    persist_jobs()
+                    await persist_jobs()
                     command_delivery_ids = []
                 steered = store.take_steers(str(run_id)) if not is_child else []
                 if steered:
@@ -2823,7 +2828,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     # the thread); they land here at the next tool boundary.
                     for item in steered:
                         current_messages.append(store.steer_message(item))
-                    persist_jobs()
+                    await persist_jobs()
                     # A new user instruction gets a real response budget, not
                     # the exhausted turn's text-only wrap-up round.
                     completion_limit = max(completion_limit, completion_i + MAX_COMPLETIONS)
@@ -2852,7 +2857,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                             ),
                         }
                     )
-                    persist_jobs()
+                    await persist_jobs()
             # Coding parents are never force-stopped for "last round". Search chats
             # wrap up at MAX_COMPLETIONS; extra_wrap is one text-only round after
             # last-round tools actually ran. dropped_tools always forces text.
@@ -2881,12 +2886,12 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     yield _sse({"fuse": {"event": "notice", "message": "Context pruning: older tool outputs were replaced with marked placeholders to free space."}})
                 yield _sse(ctxmod.context_event(preflight, phase="compacted" if kind in ("summarize", "truncate") else "update"))
                 _persist_meter(preflight)
-                persist_jobs()
+                await persist_jobs()
             current_messages, clipped_n = ctxmod.clip_to_fit(
                 current_messages, limit=preflight["limit"], tools=current.get("tools"), calibration=calibration)
             if clipped_n:
                 yield _sse({"fuse": {"event": "notice", "message": "A very large message was truncated to fit the context window."}})
-                persist_jobs()
+                await persist_jobs()
             _user = user
             src = None
             upstream = ""
@@ -3171,7 +3176,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     async for frame in _heartbeat_sleep(delay):
                         yield frame
                     _apply_resume_state(current_messages, "")
-                    persist_jobs()
+                    await persist_jobs()
                     continue
                 yield _sse(_exhausted_provider_error(is_child, {"error": {"message": err_msg, "code": 502}}))
                 _snap = _live_meter(); yield _sse(ctxmod.context_event(_snap, phase="end")); _persist_meter(_snap)
@@ -3231,7 +3236,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     if _provider_error_content(partial):
                         partial = ""
                     _apply_resume_state(current_messages, partial)
-                    persist_jobs()
+                    await persist_jobs()
                     continue
                 yield _sse(_exhausted_provider_error(is_child, raw_err))
                 _snap = _live_meter(); yield _sse(ctxmod.context_event(_snap, phase="end")); _persist_meter(_snap)
@@ -3300,7 +3305,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 else:
                     current_messages.append({"role": "user", "content": _LENGTH_CONTINUE})
                     notice = "Output hit the token limit — continuing from where it stopped."
-                persist_jobs()
+                await persist_jobs()
                 yield _sse(
                     {
                         "fuse": {
@@ -3343,7 +3348,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     # Give it a real next round rather than finishing silently.
                     if summary.get("content"):
                         current_messages.append({"role": "assistant", "content": str(summary["content"]), **_native_reasoning(summary.get("reasoning"), model)})
-                    persist_jobs()
+                    await persist_jobs()
                     completion_i += 1
                     extra_wrap = True
                     continue
@@ -3369,7 +3374,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 break
             jobs = None
             preview = jobs_from_calls(calls, completion_i)
-            persist_jobs(preview)
+            await persist_jobs(preview)
             async with contextlib.aclosing(_run_tools(
                 calls,
                 user_id=user["id"],
@@ -3465,7 +3470,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     yield _sse({"fuse": {"event": "notice", "message": "A very large message was truncated to fit the context window."}})
                     yield _sse(ctxmod.context_event(tool_meter, phase="update"))
                     _persist_meter(tool_meter)
-                    persist_jobs()
+                    await persist_jobs()
                 if session.get("coding"):
                     grown = openai_tools(
                         tools,
@@ -3550,7 +3555,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                             }
                         }
                     )
-                persist_jobs()
+                await persist_jobs()
                 for job in jobs:
                     trace = job.trace if isinstance(getattr(job, "trace", None), dict) else {}
                     st = trace.get("status") or ""
@@ -3576,7 +3581,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     extra_wrap = True
                     dropped_tools = True
                     current_messages.append({"role": "user", "content": _STALL_WRAP})
-                    persist_jobs()
+                    await persist_jobs()
                     completion_i += 1
                     continue
                 sig = round_signature(calls)
@@ -3604,7 +3609,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                             },
                             *current_messages[1:],
                         ]
-                    persist_jobs()
+                    await persist_jobs()
                     completion_i += 1
                     continue
                 if same_calls == STATIONARITY_NUDGE:
@@ -3621,7 +3626,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 current_messages.append({"role": "assistant", "content": final_text,
                     **(_native_reasoning((summary or {}).get("reasoning"), model)
                        if (summary or {}).get("content") == final_text else {})})
-        persist_jobs()
+        await persist_jobs()
         if total_usage:
             yield _sse({"usage": total_usage, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
         _snap = _live_meter(usage=(summary or {}).get("usage"))

@@ -85,6 +85,25 @@ class AgentHubTest(unittest.TestCase):
         with self.assertRaises(agent_hub.AgentError):
             asyncio.run(agent_hub.call(1, self.hid, "exec", {"cmd": "true"}, 1))
 
+    def test_reconnect_preserves_stream_callback(self):
+        async def go():
+            key = (1, self.hid)
+            future = asyncio.get_running_loop().create_future()
+            received = []
+            callback = lambda stream, text: received.append((stream, text))
+            pending = {"job": future}
+            await agent_hub._hold_pending(key, pending, {"job": callback})
+            held = agent_hub._held[key]
+            self.assertIs(held["chunks"]["job"], callback)
+            live = {"pending": {}, "chunks": {}}
+            agent_hub._conns[key] = live
+            second = {"other": asyncio.get_running_loop().create_future()}
+            await agent_hub._hold_pending(key, second, {"other": callback})
+            live["chunks"]["other"]("out", "after reconnect")
+            self.assertEqual(received, [("out", "after reconnect")])
+            agent_hub._take_held(key)
+        asyncio.run(go())
+
     def test_roundtrip_and_workspace(self):
         ws = FakeWS(self.hid)
         agent_hub._conns[(1, self.hid)] = {"ws": ws, "pending": {}, "user_id": 1, "host_id": self.hid}

@@ -100,6 +100,7 @@ static struct {
 } g_outq[OUT_QMAX];
 static int g_out_head = 0, g_out_tail = 0, g_out_n = 0;
 static pthread_mutex_t g_out_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_out_space = PTHREAD_COND_INITIALIZER;
 static char g_url[256] = {0};
 static char g_token[192] = {0};
 static char g_code[128] = {0};
@@ -572,11 +573,13 @@ static void out_wake(void) {
     }
 }
 
-static int out_enqueue(int opcode, const unsigned char *data, size_t n) {
+static int out_enqueue_mode(int opcode, const unsigned char *data, size_t n, int reliable) {
     unsigned char *copy = malloc(n ? n : 1);
     if (!copy) return -1;
     if (n) memcpy(copy, data, n);
     pthread_mutex_lock(&g_out_mu);
+    while (reliable && g_out_n >= OUT_QMAX)
+        pthread_cond_wait(&g_out_space, &g_out_mu);
     if (g_out_n >= OUT_QMAX) {
         pthread_mutex_unlock(&g_out_mu);
         free(copy);
@@ -590,6 +593,10 @@ static int out_enqueue(int opcode, const unsigned char *data, size_t n) {
     pthread_mutex_unlock(&g_out_mu);
     out_wake();
     return 0;
+}
+
+static int out_enqueue(int opcode, const unsigned char *data, size_t n) {
+    return out_enqueue_mode(opcode, data, n, 0);
 }
 
 static int out_flush(struct tls *t) {
@@ -612,6 +619,7 @@ static int out_flush(struct tls *t) {
         g_outq[g_out_head].data = NULL;
         g_out_head = (g_out_head + 1) % OUT_QMAX;
         g_out_n--;
+        pthread_cond_signal(&g_out_space);
         pthread_mutex_unlock(&g_out_mu);
         free(data);
     }
@@ -795,10 +803,10 @@ static int json_bool(cJSON *o, const char *k) {
     return cJSON_IsTrue(v);
 }
 
-static void send_chunk(const char *id, const char *stream, const char *data, size_t n) {
-    if (!data || !n) return;
+static int send_chunk(const char *id, const char *stream, const char *data, size_t n) {
+    if (!data || !n) return 0;
     char *tmp = malloc(n + 1);
-    if (!tmp) return;
+    if (!tmp) return -1;
     memcpy(tmp, data, n);
     tmp[n] = 0;
     cJSON *o = cJSON_CreateObject();
@@ -810,10 +818,12 @@ static void send_chunk(const char *id, const char *stream, const char *data, siz
     free(tmp);
     char *s = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);
+    int rc = -1;
     if (s) {
-        out_enqueue(1, (const unsigned char *)s, strlen(s));
+        rc = out_enqueue(1, (const unsigned char *)s, strlen(s));
         free(s);
     }
+    return rc;
 }
 
 static void send_res_tmo(struct tls *t, const char *id, int ok, int exit_code, const char *out, const char *err, const char *error, int timed_out) {
@@ -834,8 +844,11 @@ static void send_res_tmo(struct tls *t, const char *id, int ok, int exit_code, c
      char *s = cJSON_PrintUnformatted(o);
      cJSON_Delete(o);
      if (s) {
-         (void)t;
-         out_enqueue(1, (const unsigned char *)s, strlen(s));
+         /* Only the network thread supplies t (intake rejection). It must
+          * never wait for itself to drain the outbound queue. Workers retain
+          * their slot until their terminal result has bounded queue space. */
+         if (t) ws_send_text(t, s);
+         else out_enqueue_mode(1, (const unsigned char *)s, strlen(s), 1);
          free(s);
      }
 }
@@ -970,7 +983,7 @@ static int run_exec(const char *cwd, const char *cmd, int timeout_ms, char *out,
         char tmp[2048];
         ssize_t k;
         for (int reads = 0; reads < 64 && (k = read(outp[0], tmp, sizeof(tmp))) > 0; reads++) {
-            if (stream) send_chunk(job_id, "out", tmp, (size_t)k);
+            if (stream && send_chunk(job_id, "out", tmp, (size_t)k) != 0) out_clipped = 1;
             if (o + (size_t)k >= ocap) { out_clipped = 1; k = (ssize_t)(ocap - 1 - o); }
             if (k > 0 && !stream) {
                 memcpy(out + o, tmp, (size_t)k);
@@ -979,7 +992,7 @@ static int run_exec(const char *cwd, const char *cmd, int timeout_ms, char *out,
             }
         }
         for (int reads = 0; reads < 64 && (k = read(errp[0], tmp, sizeof(tmp))) > 0; reads++) {
-            if (stream) send_chunk(job_id, "err", tmp, (size_t)k);
+            if (stream && send_chunk(job_id, "err", tmp, (size_t)k) != 0) err_clipped = 1;
             if (e + (size_t)k >= ecap) { err_clipped = 1; k = (ssize_t)(ecap - 1 - e); }
             if (k > 0 && !stream) {
                 memcpy(errb + e, tmp, (size_t)k);
@@ -1003,6 +1016,11 @@ static int run_exec(const char *cwd, const char *cmd, int timeout_ms, char *out,
         if (elapsed >= timeout_ms) by_timeout = 1;
     }
     const char *mark = "\n[fuse-agent: output truncated]\n";
+    if (stream) {
+        if (out_clipped) snprintf(out, ocap, "%s", mark);
+        if (err_clipped) snprintf(errb, ecap, "%s", mark);
+        out_clipped = err_clipped = 0;
+    }
     size_t marklen = strlen(mark);
     if (out_clipped && ocap > marklen + 1) {
         size_t end = ocap - marklen - 1;
@@ -1446,7 +1464,7 @@ static void ensure_workers(void) {
 }
 
 /* Takes ownership of `owned` (a parsed job object); parses it exactly once. */
-static void enqueue_job(cJSON *owned) {
+static void enqueue_job(struct tls *t, cJSON *owned) {
     ensure_workers();
     pthread_mutex_lock(&g_job_mu);
     if (g_qcount >= MAX_QUEUE || g_qcount + g_busy >= MAX_JOBS) {
@@ -1455,7 +1473,7 @@ static void enqueue_job(cJSON *owned) {
         if (owned) json_str(owned, "id", id, sizeof(id));
         cJSON_Delete(owned);
         job_clear(job_reserve(id));
-        send_res(NULL, id, 0, 1, "", "", "agent is busy");
+        send_res(t, id, 0, 1, "", "", "agent is busy");
         return;
     }
     g_queue[g_qtail] = owned;
@@ -2604,7 +2622,7 @@ static int session_loop(void) {
                 char jid[16] = {0};
                 json_str(o, "id", jid, sizeof(jid));
                 if (jid[0]) job_reserve(jid);
-                enqueue_job(o); /* ownership moves to the worker */
+                enqueue_job(&t, o); /* ownership moves to the worker */
                 o = NULL;
             } else if (strcmp(tt, "cancel") == 0) {
                  char cid[16];

@@ -93,32 +93,37 @@ async def chat_sync_snapshot(request: Request):
     user, err = _chat_auth(request)
     if err:
         return err
-    with db.tx() as conn:
-        conn.execute("BEGIN")
-        rows = conn.execute(
-            f"""SELECT {chats._THREAD_LIST_COLS}
-               FROM chat_threads t
-               LEFT JOIN user_hosts h ON h.id=t.host_id
-               LEFT JOIN user_projects p ON p.id=t.project_id
-               LEFT JOIN chat_schedules s ON s.id=t.schedule_id
-               WHERE t.user_id=? ORDER BY t.updated_at DESC, t.id DESC""",
-            (user["id"],),
-        ).fetchall()
-        account = conn.execute("SELECT * FROM users WHERE id=?", (user["id"],)).fetchone()
-        high = conn.execute("SELECT cursor FROM chat_event_cursors WHERE user_id=?", (user["id"],)).fetchone()
-        live_agents = conn.execute(
-            """SELECT COUNT(*) FROM chat_runs
-               WHERE user_id=? AND parent_run_id IS NOT NULL AND status IN ('queued','running')""",
-            (user["id"],),
-        ).fetchone()[0]
-        data = {
-            "cursor": int(high[0]) if high else 0,
-            "threads": [chats._view(row) for row in rows],
-            "context": chats._context_view(account),
-            "live_agents": int(live_agents),
-        }
-    data["projects"] = chats.list_sidebar_projects(user["id"])
-    chat_runs.reap_orphans(user["id"])
+
+    def _snapshot():
+        with db.tx() as conn:
+            conn.execute("BEGIN")
+            rows = conn.execute(
+                f"""SELECT {chats._THREAD_LIST_COLS}
+                   FROM chat_threads t
+                   LEFT JOIN user_hosts h ON h.id=t.host_id
+                   LEFT JOIN user_projects p ON p.id=t.project_id
+                   LEFT JOIN chat_schedules s ON s.id=t.schedule_id
+                   WHERE t.user_id=? ORDER BY t.updated_at DESC, t.id DESC""",
+                (user["id"],),
+            ).fetchall()
+            account = conn.execute("SELECT * FROM users WHERE id=?", (user["id"],)).fetchone()
+            high = conn.execute("SELECT cursor FROM chat_event_cursors WHERE user_id=?", (user["id"],)).fetchone()
+            live_agents = conn.execute(
+                """SELECT COUNT(*) FROM chat_runs
+                   WHERE user_id=? AND parent_run_id IS NOT NULL AND status IN ('queued','running')""",
+                (user["id"],),
+            ).fetchone()[0]
+            data = {
+                "cursor": int(high[0]) if high else 0,
+                "threads": [chats._view(row) for row in rows],
+                "context": chats._context_view(account),
+                "live_agents": int(live_agents),
+            }
+        data["projects"] = chats.list_sidebar_projects(user["id"])
+        return data
+
+    data = await asyncio.to_thread(_snapshot)
+    await asyncio.to_thread(chat_runs.reap_orphans, user["id"])
     await chat_runs.resume_queued(user["id"])
     return JSONResponse(data, headers={"Cache-Control": "no-store"})
 

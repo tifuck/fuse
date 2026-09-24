@@ -3836,7 +3836,18 @@ def descendant_ids(run_id):
     return out
 
 
-def start_child_run(
+_child_admission_lock = threading.Lock()
+
+
+def start_child_run(**kwargs):
+    # Admission used to run without an await on the sole event loop. Preserve
+    # that serialization when callers move the transaction to worker threads:
+    # different parents must not both pass the tree/user/process count checks.
+    with _child_admission_lock:
+        return _start_child_run(**kwargs)
+
+
+def _start_child_run(
     *,
     user_id: int,
     thread_id: int,

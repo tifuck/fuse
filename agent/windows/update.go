@@ -215,7 +215,7 @@ func maybeUpdate(cfg *agentConfig, force bool, admit func() (hold func(), ok boo
 		return
 	}
 	self, _ = filepath.Abs(self)
-	lock, ok := acquireUpdateLock(self)
+	release, lock, ok := acquireUpdateLock(self)
 	if !ok {
 		log.Printf("fuse-agent: update skipped; another updater is active")
 		return

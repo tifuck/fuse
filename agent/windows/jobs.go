@@ -67,7 +67,9 @@ func (h *jobHub) handle(s *session, msg map[string]any) {
 		// never queued: the holder is about to swap and exit, and a queued
 		// job would be killed silently.
 		h.mu.Unlock()
-		s.sendRes(id, false, 1, "", "", "agent is busy or job id is invalid")
+		// Intake runs on the socket reader: it cannot wait for reconnect or
+		// queue space. No operation was accepted, so a failed reply is safe.
+		s.sendRefusal(id, "agent is busy or job id is invalid")
 		return
 	}
 	h.live[id] = &liveJob{id: id, cancel: make(chan struct{})}
@@ -76,7 +78,7 @@ func (h *jobHub) handle(s *session, msg map[string]any) {
 	case h.queue <- msg:
 	default:
 		h.clear(id)
-		s.sendRes(fmt.Sprint(msg["id"]), false, 1, "", "", "agent is busy")
+		s.sendRefusal(id, "agent is busy")
 	}
 }
 
