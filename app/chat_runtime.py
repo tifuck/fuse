@@ -2765,7 +2765,13 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     command_delivery_ids.extend(_command_result_ids(injected))
                 if not injected and not is_child and thread_id:
                     # Terminal results of commands that finished while no run
-                    # was generating (owner idle or service restarted).
+                    # was generating (owner idle or service restarted), plus
+                    # subagent reports stranded by a hard user stop or
+                    # exhausted wake retries: they ride with the user's next
+                    # turn instead of starting an automated one. Stashing via
+                    # queue_child_result keeps the save_turn_progress
+                    # acknowledgment (and the agent panel's delivered state)
+                    # on the same path as live injection.
                     try:
                         from . import command_jobs
 
@@ -2774,6 +2780,19 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                         injected = [item["envelope"] for item in pending_commands]
                     except Exception:
                         logger.debug("thread command result inject skipped", exc_info=True)
+                    try:
+                        for item in store.wake_candidates(user["id"], int(thread_id))[:8]:
+                            envelope = store.render_task_output(
+                                child_id=item["id"],
+                                state=item["status"],
+                                text=(item["summary"] or item["status"]).strip()
+                                or "Subagent finished without a report.",
+                                description=item["description"],
+                            )
+                            if store.queue_child_result(str(run_id), envelope, child_id=item["id"]):
+                                injected.append(envelope)
+                    except Exception:
+                        logger.debug("thread subagent result inject skipped", exc_info=True)
                 if injected:
                     block = (
                         "[Fuse] AUTOMATED EVENT — not written by the user. Background results:\n\n"
@@ -2784,6 +2803,9 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                         "Do not re-arm a firehose auto-stop."
                     )
                     # Delivery receipts commit with the retained transcript.
+                    # No thread bubble or notice is emitted: the hand-off is
+                    # provider-side only (the wake banner exists solely for the
+                    # idle-thread path) and the UI stays as-is by design.
                     current_messages.append({"role": "user", "content": block})
                     persist_jobs()
                     command_delivery_ids = []

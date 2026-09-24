@@ -632,7 +632,7 @@ SCHEMAS = {
                 "type": "object",
                 "properties": {
                     "id": {"type": "string"},
-                    "timeout_ms": {"type": "integer", "description": "Maximum wait in milliseconds, 0-600000; default 60000. A timeout leaves the child running."},
+                    "timeout_ms": {"type": "integer", "description": "Maximum wait in milliseconds, 0-600000; default 600000 (the tool blocks until the child finishes or this budget ends). A timeout leaves the child running."},
                 },
                 "required": ["id"],
                 "additionalProperties": False,

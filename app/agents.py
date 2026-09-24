@@ -624,11 +624,13 @@ async def get_output(*, user_id: int, arguments: str, thread_id=None, parent_run
     child_id = str(args.get("id") or args.get("child_id") or "")
     timeout_ms = args.get("timeout_ms")
     try:
-        # Default join budget matches the spawn foreground budget: longer
-        # blocking favors the wake/notify path anyway.
-        wait = min(max(int(timeout_ms), 0), 600_000) / 1000 if timeout_ms is not None else 60
+        # Join blocks until the child finishes. The old 60s default forced the
+        # model into a re-poll loop against long background agents; tools run
+        # concurrently in the parent's TaskGroup now, so a long join is cheap
+        # and the default is the full 600s cap.
+        wait = min(max(int(timeout_ms), 0), 600_000) / 1000 if timeout_ms is not None else 600
     except (TypeError, ValueError):
-        wait = 60
+        wait = 600
     deadline = time.monotonic() + wait
     row = None
     misses = 0

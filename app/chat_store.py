@@ -2743,6 +2743,53 @@ def bump_wake_attempts(run_ids):
             conn.execute("UPDATE chat_runs SET request=? WHERE id=?", (dumps(req), run_id))
 
 
+def settle_wake_children(run_id, child_ids):
+    """Settle delivery for children carried by a wake turn that did not complete.
+
+    A child whose report envelope is already durable — in the wake turn's
+    request seed, its provider transcript, or the thread messages — is
+    acknowledged as delivered: the bubble was shown, and a user-stopped turn
+    must not be retried into a loop. Only genuinely undelivered children
+    spend wake retry budget. Re-spawned children (a new leg in flight) are
+    left untouched: that leg owes a fresh report.
+    """
+    ids = [str(c) for c in (child_ids or []) if str(c)]
+    if not ids:
+        return
+    with transaction() as conn:
+        row = conn.execute(
+            "SELECT user_id, thread_id, request, provider_messages FROM chat_runs WHERE id=?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return
+        sources = [str(row["request"] or ""), str(row["provider_messages"] or "")]
+        trow = conn.execute(
+            "SELECT messages FROM chat_threads WHERE id=? AND user_id=?",
+            (row["thread_id"], row["user_id"]),
+        ).fetchone()
+        if trow is not None:
+            sources.append(str(trow["messages"] or ""))
+        for cid in ids:
+            crow = conn.execute("SELECT status,request FROM chat_runs WHERE id=?", (cid,)).fetchone()
+            if crow is None or crow["status"] not in TERMINAL:
+                continue
+            try:
+                creq = json.loads(crow["request"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(creq, dict):
+                continue
+            cagent = creq.get("agent") if isinstance(creq.get("agent"), dict) else {}
+            needle = _json_needle(f'<task id="{cid}"')
+            if any(needle in src for src in sources):
+                cagent["wake_sent"] = True
+            else:
+                cagent["wake_attempts"] = int(cagent.get("wake_attempts") or 0) + 1
+            creq["agent"] = cagent
+            conn.execute("UPDATE chat_runs SET request=? WHERE id=?", (dumps(creq), cid))
+
+
 def thread_root_run(user_id, thread_id):
     """Latest root run of a thread with its status."""
     try:

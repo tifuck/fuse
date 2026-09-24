@@ -822,9 +822,14 @@ async def _wake_parent(user_id: int, thread_id) -> None:
         root = chat_store.thread_root_run(user_id, thread_id)
         if root is None or root["status"] in chat_store.ACTIVE:
             return
-        # A cancelled/interrupted last root must not suppress delivery: stopping
-        # one turn is not a reason to drop background results entirely. The wake
-        # turn is automated and its prompt forbids reviving cancelled work.
+        if root["status"] == "cancelled":
+            # A hard user stop is final: no automated turn may restart the
+            # thread, no matter which sweep or child finishing asks. Stranded
+            # reports wait as wake candidates and ride with the user's next
+            # message (chat_runtime injects them). System interruptions (a
+            # service restart or stall) end as interrupted/failed and still
+            # wake; only an explicit Stop suppresses delivery.
+            return
         candidates = chat_store.wake_candidates(user_id, thread_id)
         # A failed wake turn may retry each child once; after that the report
         # stays in the transcript and list_subagents instead of looping forever.
@@ -1362,7 +1367,12 @@ async def _run(request, user, run):
                                 child_agent.get("wake_ids") or [], pending_guard_run=ident
                             )
                         else:
-                            chat_store.bump_wake_attempts(child_agent.get("wake_ids") or [])
+                            # Stopped or failed wake: acknowledge children whose
+                            # report is already durable in this turn's seed or
+                            # transcript (the user saw the bubble; a stopped
+                            # turn must not be retried into a loop) and spend
+                            # retry budget only on genuinely undelivered ones.
+                            chat_store.settle_wake_children(ident, child_agent.get("wake_ids") or [])
                     schedule_wake(user["id"], run["thread_id"])
         except Exception:
             logger.exception("Chat run finalization failed for %s", ident)

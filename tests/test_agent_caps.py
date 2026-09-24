@@ -623,6 +623,144 @@ class AgentCapsTest(unittest.TestCase):
         store.save_turn_progress(parent["id"], [{"role": "user", "content": env2}])
         self.assertTrue(store.get_run(1, child["id"])["request"]["agent"].get("wake_sent"))
 
+    def test_user_stopped_root_blocks_wake_turns(self):
+        from app import chat_runs as runs
+        from app import command_jobs
+
+        thread, parent = self._parent()
+        child = store.start_child_run(
+            user_id=1,
+            thread_id=thread["id"],
+            parent_run_id=parent["id"],
+            prompt="bg",
+            description="bg",
+            background=True,
+        )
+        store.finish_run(child["id"], {"content": "report", "tools": []}, "completed")
+        store.finish_run(parent["id"], {"content": "ok", "tools": []}, "cancelled")
+        with patch.object(runs, "start", new=AsyncMock(return_value=None)), \
+                patch.object(command_jobs, "pending_envelopes", return_value=[]):
+            asyncio.run(runs._wake_parent(1, parent["thread_id"]))
+        roots = db.fetchall(
+            "SELECT id FROM chat_runs WHERE thread_id=? AND parent_run_id IS NULL",
+            (parent["thread_id"],),
+        )
+        self.assertEqual(len(roots), 1)  # no automated wake after a hard user stop
+
+        # A completed root still wakes: the loop only breaks on user Stop.
+        thread2 = chats.create_thread(1, model="offline")
+        parent2 = store.start_turn(1, thread2["id"], "Hello", thread2["revision"], "turn-2")["run"]
+        child2 = store.start_child_run(
+            user_id=1,
+            thread_id=thread2["id"],
+            parent_run_id=parent2["id"],
+            prompt="bg",
+            description="bg",
+            background=True,
+        )
+        store.finish_run(child2["id"], {"content": "report", "tools": []}, "completed")
+        store.finish_run(parent2["id"], {"content": "ok", "tools": []}, "completed")
+        with patch.object(runs, "start", new=AsyncMock(return_value=None)), \
+                patch.object(command_jobs, "pending_envelopes", return_value=[]):
+            asyncio.run(runs._wake_parent(1, parent2["thread_id"]))
+        roots = db.fetchall(
+            "SELECT id FROM chat_runs WHERE thread_id=? AND parent_run_id IS NULL",
+            (parent2["thread_id"],),
+        )
+        self.assertEqual(len(roots), 2)  # original + wake turn
+
+    def test_settle_wake_children_acks_delivered_envelope_only(self):
+        thread, parent = self._parent()
+        child_a = store.start_child_run(
+            user_id=1, thread_id=thread["id"], parent_run_id=parent["id"],
+            prompt="a", description="a", background=True,
+        )
+        child_b = store.start_child_run(
+            user_id=1, thread_id=thread["id"], parent_run_id=parent["id"],
+            prompt="b", description="b", background=True,
+        )
+        store.finish_run(child_a["id"], {"content": "alpha", "tools": []}, "completed")
+        store.finish_run(child_b["id"], {"content": "beta", "tools": []}, "completed")
+        store.finish_run(parent["id"], {"content": "ok", "tools": []}, "completed")
+        rev = chats.get_thread(1, thread["id"])["revision"]
+        env_a = store.render_task_output(child_id=child_a["id"], state="completed", text="alpha", description="a")
+        wake = store.start_turn(1, thread["id"], f"AUTOMATED EVENT\n\n{env_a}", rev, "wake-s", auto=True)["run"]
+        store.mark_run_wake(wake["id"], [child_a["id"], child_b["id"]])
+        # Stopped by the user: A's bubble was already in the turn seed, B's
+        # report never made it into any transcript.
+        store.finish_run(wake["id"], {"content": "", "tools": []}, "cancelled")
+        store.settle_wake_children(wake["id"], [child_a["id"], child_b["id"]])
+        a = store.get_run(1, child_a["id"])["request"]["agent"]
+        b = store.get_run(1, child_b["id"])["request"]["agent"]
+        self.assertTrue(a.get("wake_sent"))
+        self.assertEqual(a.get("wake_attempts") or 0, 0)
+        self.assertFalse(b.get("wake_sent"))
+        self.assertEqual(b.get("wake_attempts") or 0, 1)
+
+    def test_get_output_joins_until_child_finishes(self):
+        # The join default must block for the full budget against a long
+        # background child instead of returning "still running" after 60s and
+        # forcing the model into a re-poll loop.
+        from app import agents
+
+        thread, parent = self._parent()
+        child = store.start_child_run(
+            user_id=1,
+            thread_id=thread["id"],
+            parent_run_id=parent["id"],
+            prompt="bg",
+            description="long audit",
+            background=True,
+        )
+        waits = []
+
+        async def fake_wait(run_id, timeout):
+            waits.append(timeout)
+            store.finish_run(run_id, {"content": "audit report", "tools": []}, "completed")
+
+        with patch.object(agents.chat_runs, "wait_for_run", new=fake_wait):
+            text, rec = asyncio.run(agents.get_output(
+                user_id=1,
+                arguments=json.dumps({"id": child["id"]}),
+                thread_id=thread["id"],
+                parent_run_id=parent["id"],
+            ))
+        self.assertEqual(rec["status"], "done")
+        self.assertIn("audit report", text)
+        self.assertGreaterEqual(waits[0], 595)
+
+    def test_stranded_report_rides_with_next_user_turn(self):
+        # Hard user stop strands the report; it must not start a turn, and it
+        # must be delivered (and acknowledged) with the user's next message.
+        thread, parent = self._parent()
+        child = store.start_child_run(
+            user_id=1,
+            thread_id=thread["id"],
+            parent_run_id=parent["id"],
+            prompt="bg",
+            description="bg",
+            background=True,
+        )
+        store.finish_run(child["id"], {"content": "late report", "tools": []}, "completed")
+        store.finish_run(parent["id"], {"content": "ok", "tools": []}, "cancelled")
+        rev = chats.get_thread(1, thread["id"])["revision"]
+        nxt = store.start_turn(1, thread["id"], "what happened while I was away?", rev, "next-t")["run"]
+        cands = store.wake_candidates(1, parent["thread_id"])
+        self.assertTrue(any(item["id"] == child["id"] for item in cands))
+        item = next(c for c in cands if c["id"] == child["id"])
+        envelope = store.render_task_output(
+            child_id=item["id"],
+            state=item["status"],
+            text=item["summary"],
+            description=item["description"],
+        )
+        self.assertTrue(store.queue_child_result(nxt["id"], envelope, child_id=child["id"]))
+        self.assertEqual(store.take_child_results(nxt["id"]), [envelope])
+        block = "[Fuse] AUTOMATED EVENT — not written by the user. Background results:\n\n" + envelope
+        store.save_turn_progress(nxt["id"], [{"role": "user", "content": block}])
+        self.assertTrue(store.get_run(1, child["id"])["request"]["agent"].get("wake_sent"))
+        self.assertEqual(store.take_child_results(nxt["id"]), [])
+
     def test_child_writeup_never_returns_status_word(self):
         self.assertEqual(store.child_writeup({"message": {}, "request": {}}), "")
         self.assertIn(
