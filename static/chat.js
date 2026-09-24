@@ -7327,7 +7327,7 @@
     return `<div class="chat-console-lines">${rows}</div>${extra}`;
   }
 
-  function consoleDiffHtml(text) {
+  function consoleDiffHtml(text, { limit } = {}) {
     const lines = String(text || "").split("\n");
     let oldN = 0;
     let newN = 0;
@@ -7354,11 +7354,16 @@
       newN += 1;
     });
     if (!rows.length) return "";
+    const cap = Number.isFinite(limit) ? Math.min(limit, rows.length) : rows.length;
     const width = String(Math.max(...rows.map((row) => row.n), 1)).length;
-    return `<div class="chat-console-lines is-diff">${rows.map((row) => {
+    const table = rows.slice(0, cap).map((row) => {
       const mark = row.kind === "del" ? "-" : row.kind === "add" ? "+" : " ";
       return `<div class="chat-console-nline is-${row.kind}"><span class="chat-console-n">${String(row.n).padStart(width, " ")}</span><span class="chat-console-mark">${mark}</span><span class="chat-console-nbody">${escapeHtml(row.text)}</span></div>`;
-    }).join("")}</div>`;
+    }).join("");
+    const extra = rows.length > cap
+      ? `<div class="chat-console-more">… +${rows.length - cap} lines</div>`
+      : "";
+    return `<div class="chat-console-lines is-diff">${table}</div>${extra}`;
   }
 
   function consoleFileBody(trace) {
@@ -7377,8 +7382,8 @@
       return consoleNumberedHtml(body, { limit: 10, lang: consoleLangForPath(trace.path) });
     }
     if (name === "search_replace") {
-      const raw = String(trace.preview || trace.output || "");
-      if (looksLikeDiff(raw)) return consoleDiffHtml(raw);
+      const diff = [trace.preview, trace.output].find((value) => looksLikeDiff(value));
+      if (diff) return consoleDiffHtml(diff, { limit: 12 });
       return "";
     }
     return "";
@@ -7387,7 +7392,7 @@
   function consoleDetailHtml(trace, failed, running) {
     if (trace && trace.name === "todo_write") {
       const list = todoListHtml(trace.todos, { live: running });
-      return list || "";
+      return list ? `<div class="chat-console-out is-todo">${list}</div>` : "";
     }
     if (trace && ["read_file", "write_file"].includes(trace.name)) {
       const body = consoleFileBody(trace);
@@ -7395,8 +7400,8 @@
       return `<div class="chat-console-out is-file">${consoleNumberedHtml(body, { lang: consoleLangForPath(trace.path) })}</div>`;
     }
     if (trace && trace.name === "search_replace") {
-      const raw = String(trace.output || trace.preview || "");
-      if (looksLikeDiff(raw)) return `<div class="chat-console-out is-diff">${consoleDiffHtml(raw)}</div>`;
+      const diff = [trace.preview, trace.output].find((value) => looksLikeDiff(value));
+      if (diff) return `<div class="chat-console-out is-diff">${consoleDiffHtml(diff)}</div>`;
     }
     let body = consoleOutputText(trace, failed, running);
     if (!body) return "";
@@ -7459,6 +7464,14 @@
       const hunks = String(trace.preview || "").split("\n").filter((line) => line.startsWith("-") && !line.startsWith("---")).length;
       if (hunks) return `Added ${hunks} line${hunks === 1 ? "" : "s"}, removed ${hunks} line${hunks === 1 ? "" : "s"}`;
       return "Edited";
+    }
+    if (name === "todo_write") {
+      const todos = normalizeTodos(trace.todos);
+      if (todos.length) {
+        const done = todos.filter((item) => item.status === "completed").length;
+        return `${todos.length} ${todos.length === 1 ? "todo" : "todos"} · ${done}/${todos.length} done`;
+      }
+      return "no todos";
     }
     if (name === "run_terminal_command") {
       if (toolBackground(trace)) {
@@ -7934,7 +7947,7 @@
       : ["spawn_subagent", "get_subagent_output"].includes(trace.name) && trace.child_id ? "agent" : "";
     const openId = openKind === "artifact" ? trace.identifier : openKind === "agent" ? trace.child_id : "";
     const inner = isConsoleView() ? consoleDetailHtml(trace, failed, running) : toolDetailHtml(trace, failed, running);
-    const revealed = open || (trace.name === "todo_write" && normalizeTodos(trace.todos).length > 0);
+    const revealed = open || (!isConsoleView() && trace.name === "todo_write" && normalizeTodos(trace.todos).length > 0);
     const icon = failed ? STEP_ICONS.error : interrupted ? STEP_ICONS.stop : artifact ? STEP_ICONS.artifact : toolIcon(trace.name, false, false);
     if (isConsoleView()) {
       const result = consoleResultLine(trace, presentation);
