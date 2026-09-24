@@ -3080,14 +3080,27 @@ def checkpoint(run_id, message, events=None, durable=True, future=None):
         if future is not None:
             _resolve_future(future, None)
         return
-    message = _message(message, row["message_id"])
+    if durable or row["status"] == "queued":
+        # Durable boundaries (tool/permission events, round transitions, the
+        # final flush) keep the strict shape check: what restart recovery
+        # reads back must parse under the same rules as the seed.
+        message = _message(message, row["message_id"])
+    else:
+        # Periodic token flushes re-send the Output snapshot, which grew from
+        # a strictly parsed seed and was capped as it was built. Re-parsing
+        # every tool output on each 200ms tick is the dominant CPU cost of
+        # many concurrent streams.
+        message = {**message, "id": row["message_id"], "role": "assistant"}
     request = json.loads(row["request"] or "{}")
+    request_changed = False
     for item in events or []:
         activity = item.get("fuse") or {}
         if activity.get("event") == "activity" and activity.get("phase") in ("model", "tools"):
             request.setdefault("agent", {})["activity"] = dict(activity)
+            request_changed = True
         elif activity.get("event") == "tool" and activity.get("status") == "running":
             request.setdefault("agent", {})["activity"] = {"phase": "tools", "tool_id": activity.get("id")}
+            request_changed = True
         elif activity.get("event") == "heartbeat":
             agent = request.setdefault("agent", {})
             act = agent.get("activity") if isinstance(agent.get("activity"), dict) else {}
@@ -3095,16 +3108,27 @@ def checkpoint(run_id, message, events=None, durable=True, future=None):
                 agent["activity"] = {**act, "heartbeat": True}
             else:
                 agent["activity"] = {"phase": "waiting", "heartbeat": True}
+            request_changed = True
         elif activity.get("event") == "context" and activity.get("phase") == "compacted":
             request.setdefault("agent", {})["history_output_floor"] = len(message.get("content") or "")
+            request_changed = True
     if row["parent_run_id"]:
-        request.setdefault("display_seed", request.get("messages") or [])
+        seed = request.get("messages") or []
+        if "display_seed" not in request:
+            request["display_seed"] = seed
+            request_changed = True
         if any(s.get("type") == "marker" and s.get("kind") == "compaction" and s.get("summary") for s in message.get("segments") or []):
             # The live handoff marker owns the post-compaction projection.
-            request["display_seed"] = []
+            if request["display_seed"] != []:
+                request["display_seed"] = []
+                request_changed = True
     if row["status"] == "queued" and isinstance(request.get("agent"), dict):
-        request["agent"].pop("steer_closed", None)
-    _advance_steer_display(request, message)
+        if request["agent"].pop("steer_closed", None) is not None:
+            request_changed = True
+    steer_parts = (request.get("agent") or {}).get("display_parts") or []
+    if any(part.get("awaiting_delivery") for part in steer_parts):
+        _advance_steer_display(request, message)
+        request_changed = True
     payload = {"run_id": run_id, "message_id": row["message_id"]}
     if row["parent_run_id"]:
         payload["current"] = agent_current_activity(message, (request.get("agent") or {}).get("activity"))
@@ -3173,10 +3197,18 @@ def checkpoint(run_id, message, events=None, durable=True, future=None):
             # snapshot is simply skipped.
             # Lock order matches finish_run: chat_runs before chat_threads
             # before the event cursor.
-            cur = conn.execute(
-                "UPDATE chat_runs SET message=?,request=?,status='running',updated_at=? WHERE id=? AND status IN ('queued','running') AND COALESCE(request,'')=?",
-                (dumps(message), dumps(request), db.now(), run_id, row["request"] or ""),
-            )
+            if request_changed:
+                cur = conn.execute(
+                    "UPDATE chat_runs SET message=?,request=?,status='running',updated_at=? WHERE id=? AND status IN ('queued','running') AND COALESCE(request,'')=?",
+                    (dumps(message), dumps(request), db.now(), run_id, row["request"] or ""),
+                )
+            else:
+                # Token-only flush: the request blob is byte-identical to the
+                # guarded value, so skip transporting and rewriting it.
+                cur = conn.execute(
+                    "UPDATE chat_runs SET message=?,status='running',updated_at=? WHERE id=? AND status IN ('queued','running') AND COALESCE(request,'')=?",
+                    (dumps(message), db.now(), run_id, row["request"] or ""),
+                )
             if materialize_thread and getattr(cur, "rowcount", 1):
                 from . import chats
 
