@@ -10665,8 +10665,10 @@
     bubble.textContent = text || `${attachments.length} attachment(s)`;
     const status = document.createElement("small");
     status.textContent = "Sending…";
-    pendingArticle.append(bubble, status);
-    pending.append(pendingArticle);
+    // The status stays outside the turn article: console paints the user turn
+    // itself as the gray box, and the label belongs below it in every view.
+    pendingArticle.append(bubble);
+    pending.append(pendingArticle, status);
     log.after(pending);
     setActive(true);
     stickToBottom = true;

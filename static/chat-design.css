@@ -2649,6 +2649,11 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-think .c
   font-size: 11px;
   margin-top: 6px;
 }
+/* Console: the gray user box is the turn article; align the status with the
+   box's text column instead of the thread edge. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-pending-send small {
+  margin: 0.15rem 0 0.3rem 0.75rem;
+}
 
 /* —— Terminal composer: narrow viewports keep the single row. —— */
 @media (max-width: 1100px) {
