@@ -27,6 +27,36 @@ git diff --quiet && git diff --cached --quiet || die "development worktree is di
 [ -z "$(git status --porcelain --untracked-files=normal)" ] || die "development has untracked files; commit or remove them first"
 git rev-parse --verify "$DEV_BRANCH" >/dev/null || die "missing branch $DEV_BRANCH"
 
+# HTML is no-store, but /static is cached by URL. Raise ?v= on every template
+# reference whose file changed since production, then commit that on dev so the
+# fast-forward below carries it. A no-op when nothing referenced changed.
+python3 - "$PROD" "$DEV" <<'PY'
+import pathlib, re, subprocess, sys
+prod, dev = sys.argv[1:]
+base = subprocess.check_output(["git", "-C", prod, "rev-parse", "HEAD"], text=True).strip()
+changed = subprocess.check_output(
+    ["git", "-C", dev, "diff", "--name-only", base, "HEAD"], text=True)
+changed = {line.strip() for line in changed.splitlines() if line.strip()}
+pat = re.compile(r'((?:src|href)="/static/([^"?]+)\?v=)(\d+)')
+bumped = []
+for path in pathlib.Path(dev, "templates").rglob("*.html"):
+    text = path.read_text()
+    def repl(m):
+        if "static/" + m.group(2) not in changed:
+            return m.group(0)
+        bumped.append(f"{m.group(2)} {m.group(3)}->{int(m.group(3)) + 1}")
+        return f"{m.group(1)}{int(m.group(3)) + 1}"
+    new = pat.sub(repl, text)
+    if new != text:
+        path.write_text(new)
+if bumped:
+    print("cache bust:", ", ".join(sorted(set(bumped))))
+PY
+if ! git -C "$DEV" diff --quiet; then
+  git -C "$DEV" add templates
+  git -C "$DEV" commit -m "Bump static cache versions for files changed since production"
+fi
+
 cd "$PROD"
 git fetch "$DEV" "$DEV_BRANCH"
 git merge-base --is-ancestor "$PROD_BRANCH" FETCH_HEAD || die "$DEV_BRANCH is not a fast-forward of $PROD_BRANCH; rebase dev onto main first"
