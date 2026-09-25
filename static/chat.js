@@ -1987,10 +1987,11 @@
   let viewportFrame = 0;
   let viewportWidth = window.innerWidth;
   let viewportBaseline = window.innerHeight;
-  let composerKeyboardSeen = false;
 
   function setComposerExpanded(expanded) {
-    root.classList.toggle("is-composer-expanded", expanded && window.innerWidth <= 800);
+    const next = expanded && window.innerWidth <= 800;
+    if (root.classList.contains("is-composer-expanded") === next) return;
+    root.classList.toggle("is-composer-expanded", next);
     resizeInput();
   }
 
@@ -2017,16 +2018,6 @@
       // Android can resize both viewports; preserve the pre-keyboard height.
       viewportBaseline = Math.max(viewportBaseline, inner, Math.round(vvHeight + vvOffset));
       const occluded = viewportBaseline - vvHeight > 80;
-      // Focus and keyboard visibility are different states on Android: hiding
-      // the keyboard leaves the textarea focused. Wait for an observed shrink
-      // before treating a restored viewport as dismissal (not opening latency).
-      if (mobile && occluded && document.activeElement === input) {
-        composerKeyboardSeen = true;
-        root.classList.add("is-composer-expanded");
-      } else if (!mobile || (composerKeyboardSeen && !occluded)) {
-        composerKeyboardSeen = false;
-        root.classList.remove("is-composer-expanded");
-      }
       const keyboard = mobile && occluded && (editing || document.body.classList.contains("is-keyboard"));
       if (!keyboard && !editing) viewportBaseline = inner;
       // Keyboard open: do not apply offsetTop. Android Chrome/Brave with
@@ -11159,21 +11150,7 @@
     _meterDebounce = window.setTimeout(() => { _meterDebounce = 0; syncContextMeter(); }, 300);
   }
 
-  let emptyCollapseTimer = 0;
-  function armEmptyCollapse() {
-    window.clearTimeout(emptyCollapseTimer);
-    emptyCollapseTimer = 0;
-    if (window.innerWidth > 800 || input.value) return;
-    // Some phones hide the keyboard without blurring or resizing. An empty
-    // field with no further keystrokes is that case; typing reopens it.
-    emptyCollapseTimer = window.setTimeout(() => {
-      emptyCollapseTimer = 0;
-      if (!input.value && document.activeElement === input) setComposerExpanded(false);
-    }, 700);
-  }
   input.addEventListener("input", () => {
-    if (input.value) setComposerExpanded(true);
-    armEmptyCollapse();
     drafts.set(currentId, input.value);
     resizeInput();
     syncComposer();
@@ -11188,14 +11165,13 @@
     if (window.FuseComposerSpell) FuseComposerSpell.debounceCheck();
   });
   input.addEventListener("focus", () => {
-    setComposerExpanded(true);
-    armEmptyCollapse();
     document.documentElement.scrollTop = 0;
     document.body.scrollTop = 0;
     pinVisualViewport();
   });
-  // Re-tapping a still-focused field after keyboard dismissal must reopen it.
-  input.addEventListener("pointerdown", () => setComposerExpanded(true));
+  // Expand after the pointer is released. Doing it on pointerdown moves the
+  // controls under the finger, so one tap hits whichever button slid there.
+  input.addEventListener("pointerup", () => setComposerExpanded(true));
   input.addEventListener("blur", () => {
     setComposerExpanded(false);
     window.setTimeout(syncEmptyComposer, 0);
