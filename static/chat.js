@@ -480,6 +480,7 @@
   let agentsRefreshAgain = false;
   let agentLifecycleEpoch = 0;
   const agentLifecycle = new Map();
+  let agentTraceRenderAt = 0;
   let agentsFailCount = 0;
   let agentViewFailCount = 0;
   let agentStick = true;
@@ -3101,7 +3102,14 @@
         if (!msg) await reconcileThread();
         else {
           applyProgressPayload(msg, payload);
-          reconcileAgentTraces([...agentLifecycle.values()]);
+          // Trace reconciliation walks every message x tool x lifecycle row;
+          // run.progress arrives ~5x/s while streaming, so match the agent.tick
+          // path's 1s cadence. Terminal agent events still reconcile at once,
+          // and thread snapshots rebuild traces from scratch.
+          if (Date.now() - agentTraceRenderAt > 1000) {
+            agentTraceRenderAt = Date.now();
+            reconcileAgentTraces([...agentLifecycle.values()]);
+          }
           for (const update of payload.updates || []) {
             const index = messages.findIndex((item) => item.id === update.id);
             if (index < 0) { await reconcileThread(); break; }
