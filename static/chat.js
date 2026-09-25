@@ -7406,8 +7406,9 @@
 
   function consoleDetailHtml(trace, failed, running) {
     if (trace && trace.name === "todo_write") {
-      const list = todoListHtml(trace.todos, { live: running });
-      return list ? `<div class="chat-console-out is-todo">${list}</div>` : "";
+      // Not wrapped in .chat-console-out: the list is always shown inline and
+      // the step is never expandable, so the hang stays out of the band flow.
+      return todoListHtml(trace.todos, { live: running });
     }
     if (trace && ["read_file", "write_file"].includes(trace.name)) {
       const body = consoleFileBody(trace);
@@ -7962,12 +7963,13 @@
       : ["spawn_subagent", "get_subagent_output"].includes(trace.name) && trace.child_id ? "agent" : "";
     const openId = openKind === "artifact" ? trace.identifier : openKind === "agent" ? trace.child_id : "";
     const inner = isConsoleView() ? consoleDetailHtml(trace, failed, running) : toolDetailHtml(trace, failed, running);
+    // Todo lists are plain inline content in console view: always shown, no disclosure.
     const revealed = open || (!isConsoleView() && trace.name === "todo_write" && normalizeTodos(trace.todos).length > 0);
     const icon = failed ? STEP_ICONS.error : interrupted ? STEP_ICONS.stop : artifact ? STEP_ICONS.artifact : toolIcon(trace.name, false, false);
     if (isConsoleView()) {
       const result = consoleResultLine(trace, presentation);
       const preview = consoleCollapsedPreview(trace, failed, running);
-      const expandable = openKind !== "agent" && Boolean(inner) && inner !== preview;
+      const expandable = openKind !== "agent" && trace.name !== "todo_write" && Boolean(inner) && inner !== preview;
       const head = toolHeadHtml({
         ...presentation, line: consoleCallHtml(trace, presentation), title: trace.command || trace.path || trace.url || label, expandable, open: revealed, openKind, openId,
         contextHost: "",
