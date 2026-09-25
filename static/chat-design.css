@@ -3323,6 +3323,9 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-foo
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box::before {
     font: 500 0.82rem/1.7rem var(--mono);
   }
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box:focus-within::before {
+    content: none;
+  }
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box textarea {
     font: 16px/1.7rem var(--mono);
   }
