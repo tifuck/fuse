@@ -971,14 +971,19 @@ async def _run(request, user, run):
     flush_lock = asyncio.Lock()
     cancel_signal = _register_cancel_signal(ident)
 
-    async def persist_checkpoint(stored, events, durable=True):
+    async def persist_checkpoint(stored, events, durable=True, state_only=False):
         # Cancelling an asyncio waiter does not cancel a running thread. Drain
         # the actual write before releasing the run's persistence lock.
         loop = asyncio.get_running_loop()
         future = loop.create_future()
-        write = asyncio.create_task(
-            asyncio.to_thread(chat_store.checkpoint, ident, stored, events=events, durable=durable, future=future)
-        )
+        if state_only:
+            write = asyncio.create_task(
+                asyncio.to_thread(chat_store.flush_pending_state, ident, stored, future=future)
+            )
+        else:
+            write = asyncio.create_task(
+                asyncio.to_thread(chat_store.checkpoint, ident, stored, events=events, durable=durable, future=future)
+            )
         cancelled = False
         while not write.done():
             try:
@@ -987,8 +992,9 @@ async def _run(request, user, run):
                 cancelled = True
             except Exception:
                 break
+        wrote = None
         try:
-            write.result()
+            wrote = write.result()
         except Exception:
             if cancelled:
                 raise asyncio.CancelledError
@@ -1005,15 +1011,28 @@ async def _run(request, user, run):
         # Inspect already-completed futures too (a fast failing batch can
         # finish before the state writer returns).
         future.result()
+        if wrote:
+            # checkpoint() wrote the durable row and its event has committed:
+            # refine the run's replay stamp so snapshots advance past it.
+            chat_store.stamp_state_cursor(ident, user["id"])
         return cancelled
 
-    async def flush(durable=True):
+    async def flush(durable=True, state_only=False):
         async with flush_lock:
-            await flush_batch(durable=durable)
+            await flush_batch(durable=durable, state_only=state_only)
 
-    async def flush_batch(durable=True):
+    async def flush_batch(durable=True, state_only=False):
         nonlocal pending_bytes, previous_segments
         output.message["elapsedMs"] = min(86_400_000, elapsed_before + int((time.monotonic() - started) * 1000))
+        if not pending:
+            if not state_only:
+                return
+            # Trailing snapshot owed by a throttled flush: its events already
+            # published, so persist the newest output without republishing.
+            cancelled = await persist_checkpoint(output.stored(light=True), [], state_only=True)
+            if cancelled:
+                raise asyncio.CancelledError
+            return
         if pending:
             # Normalized suffix patches are replayable even across a checkpoint
             # taken halfway through an upstream <think> tag.
@@ -1074,6 +1093,21 @@ async def _run(request, user, run):
             if not pending or flush_lock.locked():
                 # Nothing new, or an inline (tool/permission) flush is already
                 # persisting under the lock; the next tick re-checks.
+                if not pending and not flush_lock.locked() and chat_store.state_write_pending(ident):
+                    # A throttled flush left the durable row behind the
+                    # journal; catch it up so restart recovery never misses
+                    # the tail of a burst that has gone quiet.
+                    try:
+                        await flush(state_only=True)
+                        flush_failures = 0
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        flush_failures += 1
+                        logger.exception("Chat checkpoint failed for %s", ident)
+                        if flush_failures >= 3:
+                            task.cancel()
+                            return
                 continue
             try:
                 await flush(durable=False)

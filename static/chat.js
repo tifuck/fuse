@@ -2860,7 +2860,11 @@
 
   function acceptThread(data) {
     if (data && !Number.isSafeInteger(data.event_cursor)) throw new Error("Thread snapshot is missing event_cursor; live sync requires a consistent snapshot.");
-    if (!data || data.id !== currentId || Number(data.event_cursor) < viewCursor) return;
+    if (!data || data.id !== currentId) return;
+    // A snapshot may carry an older durable replay cursor than the patches
+    // already applied (server state writes are throttled). Accept it and let
+    // the socket replay the gap; the snapshot is the authoritative base.
+    if (Number(data.event_cursor) < viewCursor) viewCursor = Number(data.event_cursor);
     lastRunReceiptAt = Date.now();
     acceptPermThread(data);
     acceptedQueueCommands = new Set(data.accepted_queue_ids || []);
@@ -3183,6 +3187,9 @@
         renderHistory();
         await reconcileThread();
         if (epoch !== syncEpoch) return;
+        // The socket must not start ahead of the thread snapshot's durable
+        // cursor, or patches between the two would never be replayed.
+        if (Number.isSafeInteger(viewCursor) && viewCursor > 0) cursor = Math.min(cursor, viewCursor);
       }
       const url = new URL("/chat/events", location.href);
       url.protocol = location.protocol === "https:" ? "wss:" : "ws:";

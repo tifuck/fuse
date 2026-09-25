@@ -1928,6 +1928,12 @@ def thread_view(conn, user_id, thread_id):
            ORDER BY rowid DESC LIMIT 128""", (user_id, thread_id))]
     high = conn.execute("SELECT cursor FROM chat_event_cursors WHERE user_id=?", (user_id,)).fetchone()
     result["event_cursor"] = int(high[0]) if high else 0
+    if result.get("run") and result["run"].get("status") in ACTIVE:
+        # Same contract as get_run_snapshot: an active run's embedded message
+        # is only durable up to its stamped cursor; replay the gap.
+        stamped = durable_state_cursor(str(result["run"]["id"]))
+        if stamped is not None and stamped < result["event_cursor"]:
+            result["event_cursor"] = stamped
     # Per-thread watermark: reconciles can short-circuit while OTHER threads'
     # subagents advance the user-global cursor. Falls back to the global
     # cursor until this thread has published at least one event.
@@ -2574,6 +2580,13 @@ def get_run_snapshot(user_id, run_id):
             return None
         high = conn.execute("SELECT cursor FROM chat_event_cursors WHERE user_id=?", (user_id,)).fetchone()
         run["event_cursor"] = int(high[0]) if high else 0
+        if run["status"] in ACTIVE:
+            # The durable row may lag published patches (state writes are
+            # throttled). Report the cursor the row actually covers so the
+            # panel replays the gap instead of skipping it.
+            stamped = durable_state_cursor(str(run_id))
+            if stamped is not None and stamped < run["event_cursor"]:
+                run["event_cursor"] = stamped
         settle_spawn_traces(conn, user_id, [run["message"]])
         settle_command_traces(conn, user_id, run["thread_id"], [run["message"]])
         run["display_messages"] = child_display_messages(run, include_current=False)
@@ -3064,11 +3077,44 @@ def _message(message, message_id):
 # permissions) are published immediately through the group committer; the
 # chat_runs message/request rewrite is only a restart-durability snapshot, so
 # it is throttled. Tool/permission/context events force an immediate snapshot.
-# A snapshot's event_cursor currently refers to the durable run row. Until
-# snapshot reads replay the intervening journal, skipping state writes would
-# return stale text with a newer cursor and permanently skip those patches.
-STATE_WRITE_SECONDS = 0.0
+# Snapshot readers must not treat the user event cursor as "included in the
+# row": checkpoint stamps each run with the last committed cursor its state
+# write covers (_state_cursors), and snapshots clamp event_cursor to it so a
+# reconnecting client replays the intervening patches instead of skipping
+# them.
+STATE_WRITE_SECONDS = 0.5
 _state_write_at: dict[str, float] = {}
+_state_cursors: dict[str, int] = {}
+# Runs whose latest flush published events but skipped the durable row
+# rewrite; their flush loop owes a trailing snapshot once the burst ends.
+_state_dirty: set[str] = set()
+
+
+def durable_state_cursor(run_id: str) -> int | None:
+    """Last committed event cursor that the run's durable row reflects."""
+    return _state_cursors.get(str(run_id))
+
+
+def state_write_pending(run_id) -> bool:
+    return run_id in _state_dirty
+
+
+def _forget_state_cursor(run_id: str) -> None:
+    _state_cursors.pop(str(run_id), None)
+
+
+def stamp_state_cursor(run_id, user_id) -> None:
+    """Record the committed cursor the run's durable row now covers.
+
+    Called right after a state-write commit (and again once publication
+    committed): every event published so far is covered by the cumulative
+    message just persisted. Reading after publication lets the stamp include
+    the flush's own event, so snapshot cursors advance past durable
+    boundaries; when the group committer defers the commit the value simply
+    stays one event behind (conservative, replay covers the gap)."""
+    stamped = committed_cursor(user_id)
+    if stamped is not None:
+        _state_cursors[str(run_id)] = stamped
 
 
 def checkpoint(run_id, message, events=None, durable=True, future=None):
@@ -3077,6 +3123,7 @@ def checkpoint(run_id, message, events=None, durable=True, future=None):
     # concurrent subagents cannot serialize on each other's payloads.
     row = _checkpoint_row(run_id)
     if row is None or row["status"] not in ACTIVE:
+        _state_dirty.discard(run_id)
         if future is not None:
             _resolve_future(future, None)
         return
@@ -3187,6 +3234,8 @@ def checkpoint(run_id, message, events=None, durable=True, future=None):
             for ident, stamp in list(_state_write_at.items()):
                 if stamp < cutoff:
                     _state_write_at.pop(ident, None)
+                    _state_cursors.pop(ident, None)
+                    _state_dirty.discard(ident)
     if force_state:
         with transaction() as conn:
             # Optimistic concurrency: without the old cross-read row lock, a
@@ -3218,11 +3267,52 @@ def checkpoint(run_id, message, events=None, durable=True, future=None):
                     conn.execute("UPDATE chat_threads SET messages=?,revision=revision+1 WHERE id=?", (dumps(materialized), row["thread_id"]))
                     thread_event(conn, row["user_id"], row["thread_id"], transcript_changed=True)
         _state_write_at[run_id] = now
+        stamp_state_cursor(run_id, row["user_id"])
+        _state_dirty.discard(run_id)
+    else:
+        # Events still publish through the group committer, but the durable
+        # row now lags them; the run's flush loop must catch it up (see
+        # flush_pending_state) or a quiet stream leaves the tail undurable.
+        _state_dirty.add(run_id)
 
     # 2) Publication through the group committer (tiny batched transaction).
     # The guard drops progress for a run that finalized while this checkpoint
     # was in flight, so a terminal event can never be followed by stale patches.
     publish(row["user_id"], kind, row["thread_id"], payload, guard_run=run_id, future=future)
+    if force_state:
+        # Without a live group committer publish() already committed, so the
+        # cursor read now includes this checkpoint's own event; refine the
+        # stamp so snapshot cursors advance past the durable boundary.
+        stamp_state_cursor(run_id, row["user_id"])
+        return True
+    return None
+
+
+def flush_pending_state(run_id, message, future=None):
+    """Trailing durable snapshot for a run whose last flush was throttled.
+
+    The skipped checkpoint's events already committed through the group
+    committer; only the chat_runs row lags. When the stream goes quiet no
+    later flush carries the tail, so the flush loop calls this on its idle
+    ticks: same optimistic request guard as checkpoint, strict shape check,
+    and no publication (nothing new to tell clients)."""
+    row = _checkpoint_row(run_id)
+    if row is None or row["status"] not in ACTIVE:
+        _state_dirty.discard(run_id)
+        if future is not None:
+            _resolve_future(future, None)
+        return
+    message = _message(message, row["message_id"])
+    with transaction() as conn:
+        conn.execute(
+            "UPDATE chat_runs SET message=?,status='running',updated_at=? WHERE id=? AND status IN ('queued','running') AND COALESCE(request,'')=?",
+            (dumps(message), db.now(), run_id, row["request"] or ""),
+        )
+    _state_write_at[run_id] = time.monotonic()
+    stamp_state_cursor(run_id, row["user_id"])
+    _state_dirty.discard(run_id)
+    if future is not None:
+        _resolve_future(future, None)
 
 
 def _checkpoint_row(run_id):
@@ -3293,6 +3383,8 @@ def finish_run(run_id, message, status):
             request["agent"]["activity"] = {"phase": "idle", "status": status}
         conn.execute("UPDATE chat_runs SET message=?,request=?,status=?,updated_at=? WHERE id=?", (dumps(message), dumps(request), status, db.now(), run_id))
         _state_write_at.pop(run_id, None)
+        _forget_state_cursor(run_id)
+        _state_dirty.discard(run_id)
         try:
             from .schedules import sync_run_status
 
