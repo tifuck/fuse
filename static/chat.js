@@ -11159,7 +11159,21 @@
     _meterDebounce = window.setTimeout(() => { _meterDebounce = 0; syncContextMeter(); }, 300);
   }
 
+  let emptyCollapseTimer = 0;
+  function armEmptyCollapse() {
+    window.clearTimeout(emptyCollapseTimer);
+    emptyCollapseTimer = 0;
+    if (window.innerWidth > 800 || input.value) return;
+    // Some phones hide the keyboard without blurring or resizing. An empty
+    // field with no further keystrokes is that case; typing reopens it.
+    emptyCollapseTimer = window.setTimeout(() => {
+      emptyCollapseTimer = 0;
+      if (!input.value && document.activeElement === input) setComposerExpanded(false);
+    }, 700);
+  }
   input.addEventListener("input", () => {
+    if (input.value) setComposerExpanded(true);
+    armEmptyCollapse();
     drafts.set(currentId, input.value);
     resizeInput();
     syncComposer();
@@ -11175,6 +11189,7 @@
   });
   input.addEventListener("focus", () => {
     setComposerExpanded(true);
+    armEmptyCollapse();
     document.documentElement.scrollTop = 0;
     document.body.scrollTop = 0;
     pinVisualViewport();
