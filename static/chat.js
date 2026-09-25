@@ -11169,6 +11169,7 @@
     pinVisualViewport();
   });
   input.addEventListener("blur", () => {
+    if (window.innerWidth <= 800) document.body.classList.remove("is-keyboard");
     window.setTimeout(syncEmptyComposer, 0);
   });
   ["focusin", "focusout"].forEach((type) => root.addEventListener(type, (event) => {

@@ -5946,7 +5946,7 @@ a.chat-query-label:hover { color: var(--mist); }
     max-height: 5.5rem;
     padding: 0.2rem 0.25rem 0.3rem;
   }
-  /* The expanded row only exists while the keyboard covers the screen. */
+  /* Focused mobile composer owns its own row. */
   body.is-keyboard .chat .chat-box:focus-within textarea {
     min-height: 4.5rem;
     max-height: min(9rem, 32dvh);
