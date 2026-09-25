@@ -1979,30 +1979,32 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-send:active { tr
    unchanged. display:contents on the bar means the compose box itself has
    to be the flex item that breaks the row. */
 @media (max-width: 800px) {
-  .chat .chat-box:focus-within textarea {
+  /* Explicit class, not :focus-within: hiding the mobile keyboard leaves the
+     field focused. The class is added on tap and removed when the keyboard
+     is dismissed or the field blurs. */
+  .chat.is-composer-expanded .chat-box:focus-within textarea,
+  .chat.is-composer-expanded .chat-box textarea {
     min-height: 4.5rem;
     max-height: min(9rem, 32dvh);
   }
-  html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-box:focus-within .chat-compose,
-  html[data-chat-console="true"] .chat[data-view="console"] .chat-box:focus-within .chat-compose {
+  html[data-chat-terminal="true"] .chat.is-composer-expanded[data-view="cli"] .chat-box .chat-compose,
+  html[data-chat-console="true"] .chat.is-composer-expanded[data-view="console"] .chat-box .chat-compose {
     flex: 1 1 100%;
     width: 100%;
     min-width: 100%;
     order: -1;
   }
-  /* The prompt glyph and the attach button belong to the control row while
-     the field is expanded, so the message starts flush at the top left. */
-  html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-box:focus-within::before,
-  html[data-chat-console="true"] .chat[data-view="console"] .chat-box:focus-within::before {
+  html[data-chat-terminal="true"] .chat.is-composer-expanded[data-view="cli"] .chat-box::before,
+  html[data-chat-console="true"] .chat.is-composer-expanded[data-view="console"] .chat-box::before {
     content: none;
   }
-  html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-box:focus-within .chat-attach-btn,
-  html[data-chat-console="true"] .chat[data-view="console"] .chat-box:focus-within .chat-attach-btn {
+  html[data-chat-terminal="true"] .chat.is-composer-expanded[data-view="cli"] .chat-box .chat-attach-btn,
+  html[data-chat-console="true"] .chat.is-composer-expanded[data-view="console"] .chat-box .chat-attach-btn {
     order: 1;
     align-self: flex-end;
   }
-  html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-box:focus-within textarea,
-  html[data-chat-console="true"] .chat[data-view="console"] .chat-box:focus-within textarea {
+  html[data-chat-terminal="true"] .chat.is-composer-expanded[data-view="cli"] .chat-box textarea,
+  html[data-chat-console="true"] .chat.is-composer-expanded[data-view="console"] .chat-box textarea {
     min-height: 4.5rem;
     max-height: min(9rem, 32dvh);
   }
@@ -3314,7 +3316,7 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-foo
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box::before {
     font: 500 0.82rem/1.7rem var(--mono);
   }
-  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box:focus-within::before {
+  html[data-chat-console="true"] body.is-chat .chat.is-composer-expanded[data-view="console"] .chat-box::before {
     content: none;
   }
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box textarea {

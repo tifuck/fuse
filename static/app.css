@@ -5946,8 +5946,8 @@ a.chat-query-label:hover { color: var(--mist); }
     max-height: 5.5rem;
     padding: 0.2rem 0.25rem 0.3rem;
   }
-  /* Focused mobile composer owns its own row. */
-  body.is-keyboard .chat .chat-box:focus-within textarea {
+  /* Expanded mobile composer owns its own row. */
+  body.is-keyboard .chat.is-composer-expanded .chat-box textarea {
     min-height: 4.5rem;
     max-height: min(9rem, 32dvh);
   }

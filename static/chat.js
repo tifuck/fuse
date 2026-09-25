@@ -1987,6 +1987,12 @@
   let viewportFrame = 0;
   let viewportWidth = window.innerWidth;
   let viewportBaseline = window.innerHeight;
+  let composerKeyboardSeen = false;
+
+  function setComposerExpanded(expanded) {
+    root.classList.toggle("is-composer-expanded", expanded && window.innerWidth <= 800);
+    resizeInput();
+  }
 
   function pinVisualViewport() {
     if (viewportFrame) return;
@@ -2011,12 +2017,17 @@
       // Android can resize both viewports; preserve the pre-keyboard height.
       viewportBaseline = Math.max(viewportBaseline, inner, Math.round(vvHeight + vvOffset));
       const occluded = viewportBaseline - vvHeight > 80;
-      // Focus opens the expanded composer immediately, and it stays open while
-      // there is text: some mobile browsers never resize the viewport, so a
-      // pure viewport test cannot be trusted to notice the keyboard. An empty
-      // field collapses again once the viewport is measurably open.
-      const typing = Boolean(input.value);
-      const keyboard = mobile && editing && (occluded || !vv || (typing && document.body.classList.contains("is-keyboard")));
+      // Focus and keyboard visibility are different states on Android: hiding
+      // the keyboard leaves the textarea focused. Wait for an observed shrink
+      // before treating a restored viewport as dismissal (not opening latency).
+      if (mobile && occluded && document.activeElement === input) {
+        composerKeyboardSeen = true;
+        root.classList.add("is-composer-expanded");
+      } else if (!mobile || (composerKeyboardSeen && !occluded)) {
+        composerKeyboardSeen = false;
+        root.classList.remove("is-composer-expanded");
+      }
+      const keyboard = mobile && occluded && (editing || document.body.classList.contains("is-keyboard"));
       if (!keyboard && !editing) viewportBaseline = inner;
       // Keyboard open: do not apply offsetTop. Android Chrome/Brave with
       // interactive-widget=resizes-content already shrinks the layout; a
@@ -11163,13 +11174,15 @@
     if (window.FuseComposerSpell) FuseComposerSpell.debounceCheck();
   });
   input.addEventListener("focus", () => {
-    if (window.innerWidth <= 800) document.body.classList.add("is-keyboard");
+    setComposerExpanded(true);
     document.documentElement.scrollTop = 0;
     document.body.scrollTop = 0;
     pinVisualViewport();
   });
+  // Re-tapping a still-focused field after keyboard dismissal must reopen it.
+  input.addEventListener("pointerdown", () => setComposerExpanded(true));
   input.addEventListener("blur", () => {
-    if (window.innerWidth <= 800) document.body.classList.remove("is-keyboard");
+    setComposerExpanded(false);
     window.setTimeout(syncEmptyComposer, 0);
   });
   ["focusin", "focusout"].forEach((type) => root.addEventListener(type, (event) => {
