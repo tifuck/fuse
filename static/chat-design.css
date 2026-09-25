@@ -3267,7 +3267,11 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-md 
   word-break: break-word;
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-md table {
-  display: table;
+  /* A block scroll container: display:table ignores max-width once its
+     content is wider, which made the whole transcript scroll sideways. */
+  display: block;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
   width: max-content;
   max-width: 100%;
   border-collapse: collapse;
