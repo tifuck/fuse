@@ -3,7 +3,7 @@
 {% block page_title %}Chat{% endblock %}
 {% block head_extra %}
 <script src="/static/chat-appearance.js?v=16"></script>
-<link rel="stylesheet" href="/static/chat-design.css?v=174">
+<link rel="stylesheet" href="/static/chat-design.css?v=175">
 <link rel="stylesheet" href="/static/spinner-next.css?v=3">
 <link rel="stylesheet" href="/static/spinner-future.css?v=3">
 {% endblock %}
@@ -181,7 +181,7 @@
     </div>
     <div class="chat-live-dock" data-live-dock hidden role="status">
       <span class="chat-activity-spin" data-live-dock-spin aria-hidden="true"></span>
-      <span class="chat-status-shimmer"><span data-live-dock-label>Working</span><span class="chat-dock-dots" aria-hidden="true"><i></i><i></i><i></i></span></span>
+      <span class="chat-status-shimmer"><span data-live-dock-label><span class="chat-status-verb">Working</span><span class="chat-status-meta" hidden></span></span><span class="chat-dock-dots" aria-hidden="true"><i></i><i></i><i></i></span></span>
     </div>
     <div class="chat-context-alert" data-context-alert hidden role="status">
       <p data-context-alert-text></p>
@@ -317,7 +317,7 @@
         <div class="chat-agent-scroll" data-agent-log><div class="chat-log chat-agent-log" data-agent-log-body></div></div>
         <div class="chat-agent-live-dock" data-agent-live-dock hidden role="status">
           <span class="chat-activity-spin" data-agent-live-spin aria-hidden="true"></span>
-          <span class="chat-status-shimmer"><span class="chat-activity-text"><span data-agent-live-label>Working</span><span class="chat-dock-dots" aria-hidden="true"><i></i><i></i><i></i></span></span></span>
+          <span class="chat-status-shimmer"><span class="chat-activity-text"><span data-agent-live-label><span class="chat-status-verb">Working</span><span class="chat-status-meta" hidden></span></span><span class="chat-dock-dots" aria-hidden="true"><i></i><i></i><i></i></span></span></span>
           <span class="chat-agent-meter" data-agent-meter hidden>
             <span class="chat-context chat-agent-context" data-agent-context aria-label="Subagent context usage" title="Subagent context usage">
               <svg viewBox="0 0 32 32" aria-hidden="true">
@@ -512,5 +512,5 @@
 <script src="/static/spinner-next.js?v=3"></script>
 <script src="/static/spinner-future.js?v=3"></script>
   <script src="/static/chat-dom.js?v=1"></script>
-  <script src="/static/chat.js?v=279"></script>
+  <script src="/static/chat.js?v=280"></script>
 {% endblock %}

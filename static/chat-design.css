@@ -464,11 +464,9 @@ html[data-chat-backdrop="none"] .chat-scene,
   width: 1.15rem;
   height: 1.15rem;
   flex: 0 0 1.15rem;
-  color: color-mix(in srgb, var(--mute) 35%, var(--mist));
 }
 .chat-live-dock .chat-status-shimmer {
   --status-ink: color-mix(in srgb, var(--mute) 42%, var(--mist) 58%);
-  --status-gleam: var(--mist);
 }
 .chat-status-shimmer .chat-dock-dots { display: inline-flex; align-items: baseline; }
 .chat-status-shimmer .chat-dock-dots i {
@@ -477,21 +475,17 @@ html[data-chat-backdrop="none"] .chat-scene,
   height: 0.2em;
   margin-left: 0.17em;
   border-radius: 50%;
-  background: var(--status-ink, currentColor);
-  animation: dock-dots 1.44s cubic-bezier(0.45, 0, 0.2, 1) infinite;
+  background: var(--status-gleam, currentColor);
+  animation: dock-dots calc(var(--status-tempo, 2.4s) * 0.6) cubic-bezier(0.45, 0, 0.2, 1) infinite;
 }
-.chat-status-shimmer .chat-dock-dots i:nth-child(2) { animation-delay: 0.16s; }
-.chat-status-shimmer .chat-dock-dots i:nth-child(3) { animation-delay: 0.32s; }
+.chat-status-shimmer .chat-dock-dots i:nth-child(2) { animation-delay: calc(var(--status-tempo, 2.4s) * 0.066); }
+.chat-status-shimmer .chat-dock-dots i:nth-child(3) { animation-delay: calc(var(--status-tempo, 2.4s) * 0.133); }
 @keyframes dock-dots {
   0%, 60%, 100% { opacity: 0.26; transform: translateY(0); }
   30% { opacity: 1; transform: translateY(-0.12em); }
 }
 @media (prefers-reduced-motion: reduce) {
   .chat-status-shimmer .chat-dock-dots i { animation: none; opacity: 0.6; }
-}
-html[data-chat-theme="paper"] .chat-status-shimmer {
-  --status-ink: color-mix(in srgb, var(--mute) 42%, var(--mist) 58%);
-  --status-gleam: var(--ink);
 }
 .chat .chat-send:disabled { background: var(--raise); color: var(--mute); }
 .chat :is(.chat-attach-btn, .chat-search-btn, .chat-picker-btn) { border-radius: 5px; }
@@ -3010,49 +3004,43 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-liv
   letter-spacing: 0;
   transform: none;
 }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-live-dock .chat-activity-spin {
+/* Console status line: one animated glyph, a lowercase verb that carries the
+   shimmer, and a quiet clock/token counter. The subagent dock uses the same
+   pieces so a subagent chat reads exactly like the main chat. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-agent-live-dock {
+  gap: 0.45rem;
+  min-height: 1.55rem;
+  font: 0.88rem/1.4 var(--mono);
+  font-style: normal;
+  letter-spacing: 0;
+  color: color-mix(in srgb, var(--mist) 70%, var(--ink));
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-dock, .chat-agent-live-dock) .chat-activity-spin {
   display: grid;
-  width: 1rem;
-  height: 1rem;
-  flex: 0 0 1rem;
+  width: 1.1rem;
+  height: 1.1rem;
+  flex: 0 0 1.1rem;
   place-items: center;
   overflow: visible;
-  color: var(--brass);
+  color: color-mix(in srgb, var(--phase-tint) 30%, var(--brass));
 }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-dock, .chat-agent-live-dock) .chat-activity-spin[hidden] { display: none; }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-spin {
   display: block;
-  width: 1rem;
-  height: 1rem;
-  font: 1rem/1 var(--mono);
+  width: 1.1rem;
+  font: 0.98rem/1.1rem var(--mono);
   font-style: normal;
-  color: var(--brass);
-}
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-live-dock .chat-status-shimmer {
-  display: inline;
-  min-width: 0;
-  overflow: visible;
-  font: inherit;
-  font-style: inherit;
+  text-align: center;
   color: inherit;
-  background: none;
-  -webkit-text-fill-color: currentColor;
+  text-shadow: 0 0 0.55em color-mix(in srgb, currentColor 40%, transparent);
 }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-live-dock [data-live-dock-label] {
-  overflow: visible;
-  white-space: nowrap;
-  text-overflow: clip;
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-dock, .chat-agent-live-dock) .chat-status-shimmer {
+  --status-ink: color-mix(in srgb, var(--mist) 62%, var(--ink));
+  --status-gleam: color-mix(in srgb, var(--phase-tint) 35%, var(--mist));
   font: inherit;
-  color: inherit;
-  background: none;
-  background-image: none;
-  -webkit-text-fill-color: currentColor;
-  animation: none;
-  font-variant-numeric: tabular-nums;
+  font-style: normal;
 }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-live-dock [data-live-dock-label].is-swap {
-  animation: none;
-}
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-live-dock .chat-dock-dots {
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-dock, .chat-agent-live-dock) .chat-dock-dots {
   display: none;
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-md.is-writing::after {
@@ -3426,15 +3414,6 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-ste
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-live-dock:not([hidden]) {
   font-style: normal;
   color: color-mix(in srgb, var(--mist) 70%, var(--ink));
-}
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-live-dock:not([hidden])::before {
-  content: "*";
-  color: var(--brass);
-  font-style: normal;
-  margin-right: 0.35rem;
-}
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-live-dock .chat-activity-spin {
-  display: none;
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box {
   margin: 0;

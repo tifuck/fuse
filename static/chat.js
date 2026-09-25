@@ -6444,16 +6444,33 @@
     return verbPick;
   }
 
-  function setLiveLabelText(el, text) {
-    if (!el || el.textContent === text) return;
-    el.textContent = text;
-    if (isConsoleView()) {
-      el.classList.remove("is-swap");
-      return;
+  // The verb carries the shimmer and animates in when it changes; the console
+  // meta (clock and token counter) ticks beside it without replaying that.
+  function setLiveLabelText(el, text, meta) {
+    if (!el) return;
+    let verb = el.querySelector(":scope > .chat-status-verb");
+    let tail = el.querySelector(":scope > .chat-status-meta");
+    if (!verb || !tail) {
+      verb = document.createElement("span");
+      verb.className = "chat-status-verb";
+      tail = document.createElement("span");
+      tail.className = "chat-status-meta";
+      el.replaceChildren(verb, tail);
     }
-    el.classList.remove("is-swap");
-    void el.offsetWidth;
-    el.classList.add("is-swap");
+    const nextMeta = meta || "";
+    if (tail.textContent !== nextMeta) tail.textContent = nextMeta;
+    tail.hidden = !nextMeta;
+    if (verb.textContent === text) return;
+    const first = !verb.textContent;
+    verb.textContent = text;
+    verb.classList.remove("is-swap");
+    if (first || reduceMotion.matches) return;
+    void verb.offsetWidth;
+    verb.classList.add("is-swap");
+  }
+
+  function setLivePhase(dock, phase) {
+    if (dock && dock.dataset.phase !== phase) dock.dataset.phase = phase;
   }
 
   function currentActivity(msg, groups, live) {
@@ -6626,14 +6643,23 @@
     liveDock.hidden = true;
     liveDock.setAttribute("aria-hidden", "true");
     if (liveDockSpin) {
-      stopConsoleSpin();
       liveDockSpin.replaceChildren();
       delete liveDockSpin.dataset.spinSet;
     }
   }
 
-  const CONSOLE_SPIN_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+  // Console docks (main and subagent) share one glyph that blooms from a dot
+  // to a full star and back. The frame index is global so both stay in step.
+  const CONSOLE_SPIN_FRAMES = ["·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢"];
+  const CONSOLE_SPIN_STILL = "✻";
   let consoleSpinTimer = 0;
+  let consoleSpinFrame = 0;
+  function consoleSpinMarks() {
+    return [[liveDock, liveDockSpin], [agentLiveDock, agentLiveSpin]]
+      .filter(([dock, spin]) => dock && spin && !dock.hidden && !spin.hidden)
+      .map(([, spin]) => spin.querySelector(":scope > .chat-console-spin"))
+      .filter(Boolean);
+  }
   function stopConsoleSpin() {
     if (consoleSpinTimer) {
       window.clearInterval(consoleSpinTimer);
@@ -6642,28 +6668,25 @@
   }
   function setConsoleSpin(el) {
     if (!el) return;
-    let mark = el.querySelector(".chat-console-spin");
-    if (el.dataset.spinSet !== "console-braille" || !mark) {
-      el.dataset.spinSet = "console-braille";
-      el.replaceChildren();
+    let mark = el.querySelector(":scope > .chat-console-spin");
+    if (el.dataset.spinSet !== "console-glyph" || !mark) {
+      el.dataset.spinSet = "console-glyph";
       mark = document.createElement("span");
       mark.className = "chat-console-spin";
       mark.setAttribute("aria-hidden", "true");
-      mark.dataset.frame = "0";
-      mark.textContent = CONSOLE_SPIN_FRAMES[0];
-      el.appendChild(mark);
+      mark.textContent = reduceMotion.matches ? CONSOLE_SPIN_STILL : CONSOLE_SPIN_FRAMES[consoleSpinFrame];
+      el.replaceChildren(mark);
     }
-    if (consoleSpinTimer) return;
+    if (consoleSpinTimer || reduceMotion.matches) return;
     consoleSpinTimer = window.setInterval(() => {
-      const spin = liveDockSpin && liveDockSpin.querySelector(".chat-console-spin");
-      if (!spin || liveDock.hidden) {
+      const marks = consoleSpinMarks();
+      if (!marks.length) {
         stopConsoleSpin();
         return;
       }
-      const next = (Number(spin.dataset.frame || 0) + 1) % CONSOLE_SPIN_FRAMES.length;
-      spin.dataset.frame = String(next);
-      spin.textContent = CONSOLE_SPIN_FRAMES[next];
-    }, 200);
+      consoleSpinFrame = (consoleSpinFrame + 1) % CONSOLE_SPIN_FRAMES.length;
+      marks.forEach((spin) => { spin.textContent = CONSOLE_SPIN_FRAMES[consoleSpinFrame]; });
+    }, 110);
   }
 
   function syncLiveDock() {
@@ -6680,7 +6703,11 @@
       liveDock.setAttribute("aria-hidden", "false");
       const groups = groupTraces(Array.isArray(msg.tools) ? msg.tools : []);
       const status = currentActivity(msg, groups, true);
-      setLiveLabelText(liveDockLabel, isConsoleView() ? formatConsoleLiveStatus(msg, groups) : status.label);
+      setLivePhase(liveDock, status.phase);
+      if (isConsoleView()) {
+        const line = formatConsoleLiveStatus(msg, groups);
+        setLiveLabelText(liveDockLabel, line.verb, line.meta);
+      } else setLiveLabelText(liveDockLabel, status.label);
       if (liveDockSpin && isConsoleView()) setConsoleSpin(liveDockSpin);
       else if (liveDockSpin) applySpinEl(liveDockSpin, activitySpinSet(msg), "dock", true, msg._spinOrigin);
       const wasOn = root.classList.contains("is-live-dock");
@@ -6768,7 +6795,7 @@
     return `${consoleFlow(status, msg)}|${traces.length}`;
   }
 
-  function ensureConsoleRound(msg, status) {
+  function ensureConsoleRound(msg, status, meter = liveMeter) {
     const key = consoleRoundKey(msg, status);
     if (msg._consoleRound && msg._consoleRound.key === key) return msg._consoleRound;
     const split = usageInOut(msg && msg.usage);
@@ -6778,7 +6805,7 @@
     // when we notice the switch. Keep the origin snapshotted when tools began.
     const keepOrigin = prev && flow === "down" && String(prev.key).startsWith("up|");
     if (prev) delete msg.streamOut;
-    const meterUsed = liveMeter && typeof liveMeter.used === "number" ? Math.max(0, Math.round(Number(liveMeter.used) || 0)) : 0;
+    const meterUsed = meter && typeof meter.used === "number" ? Math.max(0, Math.round(Number(meter.used) || 0)) : 0;
     msg._consoleRound = {
       key,
       content: keepOrigin ? prev.content : (prev ? String((msg && msg.content) || "").length : 0),
@@ -6809,29 +6836,35 @@
     return down;
   }
 
-  function consoleUpTokens(msg, round) {
-    const fromMeter = liveMeter && typeof liveMeter.used === "number" ? Math.max(0, Math.round(Number(liveMeter.used) || 0)) : 0;
+  function consoleUpTokens(msg, round, meter) {
+    const fromMeter = meter && typeof meter.used === "number" ? Math.max(0, Math.round(Number(meter.used) || 0)) : 0;
     if (fromMeter && round && fromMeter > (round.meterUsed || 0)) return fromMeter - (round.meterUsed || 0);
     const traces = Array.isArray(msg && msg.tools) ? msg.tools : [];
     const last = traces[traces.length - 1];
     return last ? estimateTrace(last) : 0;
   }
 
-  function formatConsoleLiveStatus(msg, groups) {
+  // Main run by default; the subagent dock passes its own meter and clock.
+  function formatConsoleLiveStatus(msg, groups, opts) {
     const status = currentActivity(msg, groups, true);
-    const verb = String(status.label || "working").replace(/\.+$/, "");
-    const seconds = Math.max(0, Math.floor(liveElapsedSeconds(msg, true) || 0));
-    const round = ensureConsoleRound(msg, status);
+    const verb = String(status.label || "working").replace(/\.+$/, "").toLowerCase();
+    const meter = opts ? opts.meter : liveMeter;
+    const elapsed = opts && opts.seconds != null ? opts.seconds : liveElapsedSeconds(msg, true);
+    const seconds = Math.max(0, Math.floor(elapsed || 0));
+    const round = ensureConsoleRound(msg, status, meter);
     const flow = consoleFlow(status, msg);
     let tokenText = "";
     if (flow === "down") {
       const n = consoleDownTokens(msg, round);
       if (n) tokenText = `↓ ${formatConsoleCount(n)}`;
     } else if (flow === "up") {
-      const n = consoleUpTokens(msg, round);
+      const n = consoleUpTokens(msg, round, meter);
       if (n) tokenText = `↑ ${formatConsoleCount(n)}`;
     }
-    return tokenText ? `${verb}.. (${seconds}s · ${tokenText})` : `${verb}.. (${seconds}s)`;
+    // "bash · 2 active" keeps the concurrency note with the counters.
+    const [head, ...extra] = verb.split(" · ");
+    const meta = [...extra, `${seconds}s`, tokenText].filter(Boolean).join(" · ");
+    return { verb: `${head}…`, meta };
   }
 
   function syncActivityElapsed(article, msg, live) {
@@ -12236,7 +12269,8 @@
     const shimmer = agentLiveDock.querySelector(".chat-status-shimmer");
     if (shimmer) shimmer.hidden = !live;
     if (stalled) {
-      setLiveLabelText(agentLiveLabel, "Stalled — no progress");
+      setLivePhase(agentLiveDock, "stalled");
+      setLiveLabelText(agentLiveLabel, isConsoleView() ? "stalled — no progress" : "Stalled — no progress");
       if (agentLiveSpin && (agentLiveSpin.firstChild || agentLiveSpin.dataset.spinSet)) {
         agentLiveSpin.replaceChildren();
         delete agentLiveSpin.dataset.spinSet;
@@ -12246,8 +12280,19 @@
       if (!msg._spinOrigin) msg._spinOrigin = Date.now();
       const groups = groupTraces(Array.isArray(msg.tools) ? msg.tools : []);
       const status = currentActivity(msg, groups, true);
-      setLiveLabelText(agentLiveLabel, status.label);
-      if (agentLiveSpin) applySpinEl(agentLiveSpin, activitySpinSet(msg), "agent-dock", true, msg._spinOrigin);
+      setLivePhase(agentLiveDock, status.phase);
+      // The subagent dock mirrors the main dock of the selected view.
+      if (isConsoleView()) {
+        const line = formatConsoleLiveStatus(msg, groups, {
+          meter: agentRun.compaction && agentRun.compaction.meter,
+          seconds: agentElapsedSeconds(agentRun.created_at),
+        });
+        setLiveLabelText(agentLiveLabel, line.verb, line.meta);
+        if (agentLiveSpin) setConsoleSpin(agentLiveSpin);
+      } else {
+        setLiveLabelText(agentLiveLabel, status.label);
+        if (agentLiveSpin) applySpinEl(agentLiveSpin, activitySpinSet(msg), "agent-dock", true, msg._spinOrigin);
+      }
     } else if (agentLiveSpin && (agentLiveSpin.firstChild || agentLiveSpin.dataset.spinSet)) {
       agentLiveSpin.replaceChildren();
       delete agentLiveSpin.dataset.spinSet;
