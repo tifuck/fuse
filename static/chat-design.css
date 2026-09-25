@@ -1979,16 +1979,12 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-send:active { tr
    unchanged. display:contents on the bar means the compose box itself has
    to be the flex item that breaks the row. */
 @media (max-width: 800px) {
-  .chat .chat-box:focus-within textarea {
-    min-height: 4.5rem;
-    max-height: min(10rem, 34dvh);
-  }
   body.is-keyboard .chat .chat-box:focus-within textarea {
     min-height: 4.5rem;
     max-height: min(9rem, 32dvh);
   }
-  html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-box:focus-within .chat-compose,
-  html[data-chat-console="true"] .chat[data-view="console"] .chat-box:focus-within .chat-compose {
+  body.is-keyboard html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-box:focus-within .chat-compose,
+  body.is-keyboard html[data-chat-console="true"] .chat[data-view="console"] .chat-box:focus-within .chat-compose {
     flex: 1 1 100%;
     width: 100%;
     min-width: 100%;
@@ -1996,19 +1992,14 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-send:active { tr
   }
   /* The prompt glyph and the attach button belong to the control row while
      the field is expanded, so the message starts flush at the top left. */
-  html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-box:focus-within::before,
-  html[data-chat-console="true"] .chat[data-view="console"] .chat-box:focus-within::before {
+  body.is-keyboard html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-box:focus-within::before,
+  body.is-keyboard html[data-chat-console="true"] .chat[data-view="console"] .chat-box:focus-within::before {
     content: none;
   }
-  html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-box:focus-within .chat-attach-btn,
-  html[data-chat-console="true"] .chat[data-view="console"] .chat-box:focus-within .chat-attach-btn {
+  body.is-keyboard html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-box:focus-within .chat-attach-btn,
+  body.is-keyboard html[data-chat-console="true"] .chat[data-view="console"] .chat-box:focus-within .chat-attach-btn {
     order: 1;
     align-self: flex-end;
-  }
-  html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-box:focus-within textarea,
-  html[data-chat-console="true"] .chat[data-view="console"] .chat-box:focus-within textarea {
-    min-height: 4.5rem;
-    max-height: min(10rem, 34dvh);
   }
   body.is-keyboard html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-box:focus-within textarea,
   body.is-keyboard html[data-chat-console="true"] .chat[data-view="console"] .chat-box:focus-within textarea {
@@ -3323,7 +3314,7 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-foo
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box::before {
     font: 500 0.82rem/1.7rem var(--mono);
   }
-  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box:focus-within::before {
+  body.is-keyboard html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box:focus-within::before {
     content: none;
   }
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box textarea {
