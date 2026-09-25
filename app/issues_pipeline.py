@@ -120,7 +120,7 @@ def _parse_verdict(text: str) -> dict | None:
 async def _triage_one(report: dict) -> bool:
     from . import sources
 
-    picked = await sources.pick(_model_name(), allow_grok=False, allow_chatgpt=False, allow_zai=False, allow_devin=False, allow_kimi=False, allow_mimo=False)
+    picked = await sources.pick(_model_name(), allow_grok=False, allow_chatgpt=False, allow_zai=False, allow_devin=False, allow_kimi=False, allow_mimo=False, allow_claude=False)
     if picked is None:
         issues.release(report["id"])
         return False

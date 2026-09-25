@@ -75,6 +75,9 @@ KNOWN_WINDOWS = {
     "mimo-v2.6-flash": 1_048_576,
     "mimo-v2.5-pro": 1_048_576,
     "mimo-v2.5": 1_048_576,
+    "claude/claude-opus-4-6": 200_000,
+    "claude/claude-sonnet-4-6": 200_000,
+    "claude/claude-haiku-4-5": 200_000,
 }
 
 TYPE_WINDOWS = {
@@ -84,6 +87,7 @@ TYPE_WINDOWS = {
     "devin": 200_000,
     "kimi": 262_144,
     "mimo": 1_048_576,
+    "claude": 200_000,
     "openrouter": 128_000,
     "openai": 128_000,
     "ollama": 128_000,
@@ -101,6 +105,7 @@ PREFIX_WINDOWS = (
     ("kimi-for-coding", 1_048_576),
     ("k3-", 262_144),
     ("mimo-", 1_048_576),
+    ("claude/", 200_000),
 )
 
 SUMMARIZE_PROMPT = """You are compressing a conversation so another assistant can continue the same work without the original messages. This handoff will be the only record of the older turns.
@@ -262,6 +267,8 @@ def type_id_for_model(model: str) -> str | None:
         return "kimi"
     if mid.startswith("mimo-"):
         return "mimo"
+    if mid.startswith("claude/"):
+        return "claude"
     return None
 
 
@@ -323,6 +330,15 @@ def window_for(
             from .sources.kimi import model_window
 
             got = model_window(mid)
+            if got:
+                return _clamp_window(got, cfg.default_window)
+        except Exception:
+            pass
+    if kind == "claude":
+        try:
+            from .sources.claude import model_window as claude_window
+
+            got = claude_window(mid)
             if got:
                 return _clamp_window(got, cfg.default_window)
         except Exception:

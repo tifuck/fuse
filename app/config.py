@@ -113,6 +113,15 @@ class Settings(BaseSettings):
     # A console key (tp- / ttp-) is the same credential without the browser step.
     mimo_platform_url: str = "https://platform.xiaomimimo.com"
 
+    # Claude Code subscription OAuth. Same client and manual redirect the CLI
+    # uses when the browser cannot reach localhost. Chat is the Messages API.
+    claude_client_id: str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+    claude_authorize_url: str = "https://claude.com/cai/oauth/authorize"
+    claude_console_authorize_url: str = "https://platform.claude.com/oauth/authorize"
+    claude_token_url: str = "https://platform.claude.com/v1/oauth/token"
+    claude_manual_redirect_url: str = "https://platform.claude.com/oauth/code/callback"
+    claude_api_base: str = "https://api.anthropic.com"
+
     brave_search_api_key: str = ""
 
     # Bug-report triage pipeline. Disabled by default; reports queue in the

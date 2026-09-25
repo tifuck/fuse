@@ -10,6 +10,7 @@ from .sources import chatgpt as chatgpt_mod
 from .sources import grok as grok_mod
 from .sources import kimi as kimi_mod
 from .sources import mimo as mimo_mod
+from .sources import claude as claude_mod
 from .sources import zai as zai_mod
 from .sources.pool_pick import (
     CHATGPT_FREE_PLANS,
@@ -925,6 +926,25 @@ def kimi_pool_meter(rows) -> dict:
             continue
         percents.append(pct)
         plans.append(str(billing.get("plan_type") or extra.get("plan_type") or ""))
+    return _finish_pool_meter(percents, plans, unread)
+
+
+def claude_pool_meter(rows) -> dict:
+    percents: list[float] = []
+    plans: list[str] = []
+    unread = 0
+    for row in rows:
+        if row["disabled"]:
+            continue
+        extra = accounts.cred_extra(row)
+        if claude_mod.is_held(row) or not claude_mod.credential_is_authed(row, extra):
+            continue
+        billing = extra.get("billing") if isinstance(extra.get("billing"), dict) else {}
+        if not claude_mod.billing_has_subscription(billing):
+            unread += 1
+            continue
+        plans.append(str(billing.get("plan_type") or extra.get("subscription_type") or "Claude"))
+        unread += 1
     return _finish_pool_meter(percents, plans, unread)
 
 

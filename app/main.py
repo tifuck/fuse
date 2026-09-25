@@ -22,6 +22,7 @@ from .sources import bootstrap, start_pools
 from .sources.chatgpt import refresh_due as chatgpt_refresh_due
 from .sources.grok import refresh_due
 from .sources.kimi import refresh_due as kimi_refresh_due
+from .sources.claude import refresh_due as claude_refresh_due
 from .sources.openrouter import refresh_due as openrouter_refresh_due
 from .sources.usage_walk import WALK_PAUSE, walk_next
 from .security import MaxBodyMiddleware, SecurityHeadersMiddleware
@@ -87,6 +88,7 @@ async def _refresh_loop(app: FastAPI):
         ("grok credentials", refresh_due),
         ("chatgpt credentials", chatgpt_refresh_due),
         ("kimi credentials", kimi_refresh_due),
+        ("claude credentials", claude_refresh_due),
         ("openrouter catalog", openrouter_refresh_due),
     )
     local_jobs = (

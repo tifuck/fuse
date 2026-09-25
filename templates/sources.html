@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Sources · Fuse{% endblock %}
 {% block page_title %}Sources{% endblock %}
-{% block page_lead %}<p>Link a subscription to unlock models, or add a personal OpenRouter key. Admins control whether donated x.ai, OpenAI, Z.AI, Devin, Kimi, and Xiaomi accounts are shared. OpenRouter stays on your account only.</p>{% endblock %}
+{% block page_lead %}<p>Link a subscription to unlock models, or add a personal OpenRouter key. Admins control whether donated x.ai, OpenAI, Z.AI, Devin, Kimi, Xiaomi, and Claude accounts are shared. OpenRouter stays on your account only.</p>{% endblock %}
 {% block page_actions %}
 <div class="head-actions">
   <button type="button" class="btn sm" data-dialog-open="grok-connect-dialog">{{ 'Continue x.ai' if pending else 'Add x.ai' }}</button>
@@ -9,6 +9,7 @@
   <button type="button" class="btn sm ghost" data-dialog-open="zai-add-dialog">Add Z.AI</button>
   <button type="button" class="btn sm" data-dialog-open="kimi-connect-dialog">{{ 'Continue Kimi' if kimi_pending else 'Add Kimi' }}</button>
   <button type="button" class="btn sm" data-dialog-open="mimo-connect-dialog">{{ 'Continue Xiaomi' if mimo_pending else 'Add Xiaomi' }}</button>
+  <button type="button" class="btn sm" data-dialog-open="claude-connect-dialog">{{ 'Continue Claude' if claude_pending else 'Add Claude' }}</button>
   <form method="post" action="/sources/devin/start">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button type="submit" class="btn sm">{{ 'Continue Devin' if devin_pending else 'Add Devin' }}</button>
@@ -274,6 +275,13 @@
         <p class="metric-delta{% if kimi_ok %} up{% elif kimi_reason in ('no_sub', 'unauthed') %} down{% endif %}">{% if kimi_ok and kimi_reason == 'open' %}Unlocked for everyone{% elif kimi_ok %}Unlocked{% elif kimi_reason == 'no_sub' %}No membership{% elif kimi_reason == 'unauthed' %}Auth failed{% else %}Not linked{% endif %}</p>
       </article>
       <article class="panel metric-card">
+        <p class="metric-label">Claude</p>
+        <p class="metric-value">{{ claude_pool.percent_label }}</p>
+        <div class="usage-meter" aria-hidden="true"><span style="--pct: {{ claude_pool.meter }}%"></span></div>
+        <p class="usage-sub">{{ claude_pool.count_label }}</p>
+        <p class="metric-delta{% if claude_ok %} up{% elif claude_reason in ('no_sub', 'unauthed') %} down{% endif %}">{% if claude_ok and claude_reason == 'open' %}Unlocked for everyone{% elif claude_ok %}Unlocked{% elif claude_reason == 'unauthed' %}Auth failed{% else %}Not linked{% endif %}</p>
+      </article>
+      <article class="panel metric-card">
         <p class="metric-label">Xiaomi</p>
         <p class="metric-value">{{ mimo_pool.percent_label }}</p>
         <div class="usage-meter" aria-hidden="true"><span style="--pct: {{ mimo_pool.meter }}%"></span></div>
@@ -386,6 +394,21 @@
       <p class="callout ok" role="alert">{{ mimo_flash_msg }}</p>
       {% endif %}
       {{ source_table(mimo_accounts, 'Xiaomi', '/sources/mimo', 'Remove this Xiaomi account from the shared pool?', 'Optional — Xiaomi is already unlocked. Add a Token Plan if you want to donate one.' if mimo_ok and mimo_reason == 'open' else ('Sign in with Xiaomi, or paste the Token Plan key from the console (tp-… or ttp-…).' if mimo_ui.uses_shared else 'Add a Xiaomi Token Plan. This pool is limited to accounts you link.'), mimo_ui) }}
+    </section>
+
+    <section class="stack-y">
+      <div class="section-heading">
+        <h2><img class="provider-logo" src="/static/logos/claude.svg" alt="" aria-hidden="true">Claude</h2>
+        <span class="usage-sub">{{ pool_status(claude_ok, claude_ui, 'needs a Claude sign-in') }}</span>
+      </div>
+      {{ pool_own_toggle(claude_ui) }}
+      {% if claude_reason == 'unauthed' %}
+      <p class="callout fault">The linked Claude sign-in is no longer valid. Remove it and add the account again.</p>
+      {% endif %}
+      {% if claude_flash_kind == 'ok' %}
+      <p class="callout ok" role="alert">{{ claude_flash_msg }}</p>
+      {% endif %}
+      {{ source_table(claude_accounts, 'Claude', '/sources/claude', 'Remove this Claude account from the shared pool?', 'Optional — Claude is already unlocked. Add an account if you want to donate one.' if claude_ok and claude_reason == 'open' else ('Sign in with the same Claude account you use for Claude Code.' if claude_ui.uses_shared else 'Add a Claude account. This pool is limited to accounts you link.'), claude_ui) }}
     </section>
   </div>
 
@@ -605,6 +628,51 @@
     <form method="post" action="/sources/devin/start" class="modal-actions">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button type="submit" class="btn">Start Devin connection</button>
+    </form>
+    {% endif %}
+  </div>
+</dialog>
+
+<dialog class="modal device-modal" id="claude-connect-dialog" aria-labelledby="claude-connect-title"{% if claude_pending or claude_flash_kind == 'err' %} data-auto-open{% endif %}>
+  <div class="modal-shell">
+    <header class="modal-head">
+      <div>
+        <p class="metric-label">Claude · subscription</p>
+        <h2 id="claude-connect-title">Connect your Claude account</h2>
+      </div>
+      <button type="button" class="btn ghost sm" data-dialog-close aria-label="Close Claude connection dialog">Close</button>
+    </header>
+    {% if claude_flash_kind == 'err' %}
+    <p class="callout fault" role="alert">{{ claude_flash_msg }}</p>
+    {% endif %}
+    {% if claude_pending %}
+    <p class="aside">Open Claude, sign in, and approve Fuse. If the page shows a code instead of returning here, paste the full code, including the part after #. This is the same sign-in as Claude Code.</p>
+    <div class="modal-actions">
+      {% if claude_auth_url %}
+      <a class="btn" href="{{ claude_auth_url }}" target="_blank" rel="noopener">Open Claude and connect</a>
+      {% endif %}
+      <form method="post" action="/sources/claude/cancel">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn ghost">Cancel</button>
+      </form>
+    </div>
+    <form method="post" action="/sources/claude/complete" class="stack" style="margin-top:0.85rem">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Code from Claude
+        <input name="code" autocomplete="off" required autofocus placeholder="Paste the full code#state value">
+      </label>
+      <button type="submit" class="btn">Connect Claude account</button>
+    </form>
+    {% else %}
+    <p class="aside">Fuse uses Claude Code’s browser sign-in. You approve the account on Claude, then paste the one-time code it shows. This uses your subscription, not an Anthropic API key.</p>
+    <form method="post" action="/sources/claude/start" class="modal-actions">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="btn">Start Claude connection</button>
+    </form>
+    <form method="post" action="/sources/claude/start" class="modal-actions" style="margin-top:0.5rem">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="console" value="1">
+      <button type="submit" class="btn ghost">Start Console connection</button>
     </form>
     {% endif %}
   </div>

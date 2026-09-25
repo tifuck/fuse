@@ -17,6 +17,7 @@ from ..sources import devin as devin_mod
 from ..sources import openrouter as openrouter_mod
 from ..sources import kimi as kimi_mod
 from ..sources import mimo as mimo_mod
+from ..sources import claude as claude_mod
 from ..sources import zai as zai_mod
 from ..sources import ollama_access
 from ..sources.grok import (
@@ -35,6 +36,7 @@ from .deps import (
     _devin_pending,
     _kimi_pending,
     _mimo_pending,
+    _claude_pending,
     _notices,
     _pending,
     _pool_flash,
@@ -46,7 +48,7 @@ from .deps import (
 )
 
 router = APIRouter()
-_BUILTINS = {"grok", "llama", "ollama", "zai", "chatgpt", "devin", "kimi", "mimo", "openrouter"}
+_BUILTINS = {"grok", "llama", "ollama", "zai", "chatgpt", "devin", "kimi", "mimo", "claude", "openrouter"}
 _OLLAMA_PAGE = 10
 
 def _source_cfg(row) -> dict:
@@ -188,6 +190,7 @@ def _admin_sources_ctx(error: str | None = None, notice: str | None = None, olla
     devin_id = devin_mod.ensure_devin_source()
     kimi_id = kimi_mod.ensure_kimi_source()
     mimo_id = mimo_mod.ensure_mimo_source()
+    claude_id = claude_mod.ensure_claude_source()
     openrouter_id = openrouter_mod.ensure_openrouter_source()
     llama = db.fetchone("SELECT * FROM sources WHERE id=?", (llama_id,))
     ollama = db.fetchone("SELECT * FROM sources WHERE id=?", (ollama_id,))
@@ -197,6 +200,7 @@ def _admin_sources_ctx(error: str | None = None, notice: str | None = None, olla
     devin = db.fetchone("SELECT * FROM sources WHERE id=?", (devin_id,))
     kimi = db.fetchone("SELECT * FROM sources WHERE id=?", (kimi_id,))
     mimo = db.fetchone("SELECT * FROM sources WHERE id=?", (mimo_id,))
+    claude = db.fetchone("SELECT * FROM sources WHERE id=?", (claude_id,))
     openrouter = db.fetchone("SELECT * FROM sources WHERE id=?", (openrouter_id,))
     llama_cfg = _source_cfg(llama)
     ollama_cfg = _source_cfg(ollama)
@@ -220,6 +224,9 @@ def _admin_sources_ctx(error: str | None = None, notice: str | None = None, olla
     )
     mimo_n = db.fetchone(
         "SELECT COUNT(*) AS n FROM credentials WHERE source_id=? AND disabled=0", (mimo_id,)
+    )
+    claude_n = db.fetchone(
+        "SELECT COUNT(*) AS n FROM credentials WHERE source_id=? AND disabled=0", (claude_id,)
     )
     openrouter_user_n = db.fetchone(
         """SELECT COUNT(*) AS n FROM credentials
@@ -272,6 +279,8 @@ def _admin_sources_ctx(error: str | None = None, notice: str | None = None, olla
         "kimi_count": int(kimi_n["n"] if kimi_n else 0),
         "mimo": mimo,
         "mimo_count": int(mimo_n["n"] if mimo_n else 0),
+        "claude": claude,
+        "claude_count": int(claude_n["n"] if claude_n else 0),
         "pool_policies": {kind: pool_policy.admin_policy(kind) for kind in pool_policy.POOL_KINDS},
         "pool_labels": pool_policy.POOL_LABELS,
         "openrouter": openrouter,
@@ -322,6 +331,16 @@ def _kimi_pending_for(uid: int):
         return None
     if time.time() - float(data.get("_started") or 0) > _PENDING_TTL:
         _kimi_pending.pop(uid, None)
+        return None
+    return data
+
+
+def _claude_pending_for(uid: int):
+    data = _claude_pending.get(uid)
+    if not data:
+        return None
+    if time.time() - float(data.get("_started") or 0) > _PENDING_TTL:
+        _claude_pending.pop(uid, None)
         return None
     return data
 
@@ -451,6 +470,8 @@ def _pool_card(user, row, *, kind: str, index: int, extra: dict | None = None) -
             email = devin_mod.account_email(extra)
         elif kind == "Kimi":
             email = kimi_mod.account_email(extra)
+        elif kind == "Claude":
+            email = claude_mod.account_email(extra)
         if not email and admin and row["donated_by"] and row["donated_by"] != user["id"]:
             donor = accounts.get_user(row["donated_by"])
             try:
@@ -718,6 +739,41 @@ async def user_sources(request: Request):
     _fuse_fill(mimo_visible)
     mimo_pending = _mimo_pending_for(user["id"])
 
+    claude_sid = claude_mod.ensure_claude_source()
+    claude_rows = db.fetchall(
+        "SELECT * FROM credentials WHERE source_id=? AND disabled=0 ORDER BY id",
+        (claude_sid,),
+    )
+    claude_access = claude_mod.claude_access_state(user["id"])
+    claude_ui = pool_policy.ui_state(user["id"], "claude")
+    claude_contributor = bool(user["is_admin"]) or _donated_source(user["id"], claude_sid)
+    claude_visible = []
+    for i, a in enumerate(claude_rows, start=1):
+        mine = a["donated_by"] == user["id"]
+        if not _pool_account_visible(user, mine, claude_contributor, claude_ui):
+            continue
+        extra = accounts.cred_extra(a)
+        billing = extra.get("billing") if isinstance(extra.get("billing"), dict) else None
+        guard = extra.get("guard") if isinstance(extra.get("guard"), dict) else None
+        held = claude_mod.is_held(a)
+        authed = claude_mod.credential_is_authed(a, extra)
+        subscribed = claude_mod.billing_has_subscription(billing if isinstance(billing, dict) else extra.get("billing"))
+        card = _pool_card(user, a, kind="Claude", index=i, extra=extra)
+        card.update(
+            {
+                "billing": stats.billing_view(billing, last_percent=a["last_usage_percent"]),
+                "held": held,
+                "hold": stats.hold_view(a["pool_held_until"] if held else None, guard, a["last_usage_percent"]),
+                "authed": authed,
+                "subscribed": subscribed,
+            }
+        )
+        claude_visible.append(card)
+    _sort_mine_first(claude_visible)
+    claude_pool = stats.claude_pool_meter(_pool_meter_rows(claude_rows, user, claude_ui))
+    _fuse_fill(claude_visible)
+    claude_pending = _claude_pending_for(user["id"])
+
     openrouter_sid = openrouter_mod.ensure_openrouter_source()
     or_access = openrouter_mod.openrouter_access_state(user["id"])
     or_owned = openrouter_mod.user_credential(user["id"], openrouter_sid)
@@ -791,6 +847,7 @@ async def user_sources(request: Request):
         devin_ui=devin_ui,
         kimi_ui=kimi_ui,
         mimo_ui=mimo_ui,
+        claude_ui=claude_ui,
         chatgpt_accounts=chatgpt_visible,
         chatgpt_paid_accounts=chatgpt_paid_accounts,
         chatgpt_free_accounts=chatgpt_free_accounts,
@@ -829,6 +886,14 @@ async def user_sources(request: Request):
         mimo_auth_url=safe_verify_url((mimo_pending or {}).get("manual_url") or ""),
         mimo_flash_kind=flash[0] if flash and flash[2] == "mimo" else "",
         mimo_flash_msg=flash[1] if flash and flash[2] == "mimo" else "",
+        claude_accounts=claude_visible,
+        claude_ok=claude_access["ok"],
+        claude_reason=claude_access["reason"],
+        claude_pool=claude_pool,
+        claude_pending=claude_pending,
+        claude_auth_url=safe_verify_url((claude_pending or {}).get("auth_url") or ""),
+        claude_flash_kind=flash[0] if flash and flash[2] == "claude" else "",
+        claude_flash_msg=flash[1] if flash and flash[2] == "claude" else "",
         zai_flash=flash,
         pool_flash_kind=flash[0] if flash and flash[2] == "pool" else "",
         pool_flash_msg=flash[1] if flash and flash[2] == "pool" else "",
@@ -1490,6 +1555,79 @@ async def mimo_revoke(request: Request, cred_id: int):
     mimo_mod.disable_credential(cred_id)
     invalidate_model_cache("mimo")
     _pool_flash[user["id"]] = ("ok", "Xiaomi account removed.", "mimo")
+    return RedirectResponse("/sources", status_code=303)
+
+
+@router.post("/sources/claude/start")
+@router.post("/pool/claude/start")
+async def claude_start(request: Request, console: str = Form("")):
+    user, redir = require_user(request)
+    if redir:
+        return redir
+    if not limiter.allow(f"claude-start:{user['id']}", 5, 60):
+        _pool_flash[user["id"]] = ("err", "Too many attempts. Try again in a minute.", "claude")
+        return RedirectResponse("/sources", status_code=303)
+    data = claude_mod.start_login(console=str(console).strip().lower() in ("1", "true", "console", "on"))
+    if not data.get("auth_url") or not data.get("verifier") or not data.get("state"):
+        _pool_flash[user["id"]] = ("err", "Claude sign-in could not be prepared. Try again shortly.", "claude")
+        return RedirectResponse("/sources", status_code=303)
+    data["_started"] = time.time()
+    data["user_id"] = user["id"]
+    _claude_pending[user["id"]] = data
+    return RedirectResponse("/sources", status_code=303)
+
+
+@router.post("/sources/claude/complete")
+@router.post("/pool/claude/complete")
+async def claude_complete(request: Request, code: str = Form("")):
+    user, redir = require_user(request)
+    if redir:
+        return redir
+    pending = _claude_pending_for(user["id"])
+    if not pending:
+        _pool_flash[user["id"]] = ("err", "Claude sign-in expired. Start again.", "claude")
+        return RedirectResponse("/sources", status_code=303)
+    cred_id, err = await claude_mod.complete_login(
+        code,
+        str(pending.get("verifier") or ""),
+        str(pending.get("state") or ""),
+        user["id"],
+    )
+    if err or not cred_id:
+        _pool_flash[user["id"]] = ("err", err or "Could not link this Claude account.", "claude")
+        return RedirectResponse("/sources", status_code=303)
+    _claude_pending.pop(user["id"], None)
+    invalidate_model_cache("claude")
+    _pool_flash[user["id"]] = ("ok", "Claude account added to the pool.", "claude")
+    return RedirectResponse("/sources", status_code=303)
+
+
+@router.post("/sources/claude/cancel")
+@router.post("/pool/claude/cancel")
+async def claude_cancel(request: Request):
+    user, redir = require_user(request)
+    if redir:
+        return redir
+    _claude_pending.pop(user["id"], None)
+    return RedirectResponse("/sources", status_code=303)
+
+
+@router.post("/sources/claude/{cred_id}/revoke")
+@router.post("/pool/claude/{cred_id}/revoke")
+async def claude_revoke(request: Request, cred_id: int):
+    user, redir = require_user(request)
+    if redir:
+        return redir
+    sid = claude_mod.ensure_claude_source()
+    row = db.fetchone("SELECT * FROM credentials WHERE id=?", (cred_id,))
+    if not row or row["source_id"] != sid:
+        raise HTTPException(404, "Not found")
+    if row["donated_by"] != user["id"] and not user["is_admin"]:
+        raise HTTPException(403, "Forbidden")
+    await claude_mod.revoke_remote(row)
+    claude_mod.disable_credential(cred_id)
+    invalidate_model_cache("claude")
+    _pool_flash[user["id"]] = ("ok", "Claude account removed.", "claude")
     return RedirectResponse("/sources", status_code=303)
 
 

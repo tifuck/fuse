@@ -784,6 +784,7 @@ async def _fire(schedule: dict, fire: dict, *, consume_slot: bool) -> None:
         from .sources.grok import user_has_grok
         from .sources.kimi import user_has_kimi
         from .sources.mimo import user_has_mimo
+        from .sources.claude import user_has_claude
         from .sources.zai import user_has_zai
 
         chosen = await pick(
@@ -794,6 +795,7 @@ async def _fire(schedule: dict, fire: dict, *, consume_slot: bool) -> None:
             allow_devin=user_has_devin(user_id),
             allow_kimi=user_has_kimi(user_id),
             allow_mimo=user_has_mimo(user_id),
+            allow_claude=user_has_claude(user_id),
             user_id=user_id,
         )
         if chosen is None:

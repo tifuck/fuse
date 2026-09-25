@@ -194,4 +194,6 @@ def safe_verify_url(url: str) -> str:
         return url
     if host in ("xiaomimimo.com", "platform.xiaomimimo.com", "mimo.mi.com") or host.endswith(".xiaomimimo.com"):
         return url
+    if host in ("claude.ai", "claude.com", "platform.claude.com") or host.endswith(".claude.ai") or host.endswith(".claude.com"):
+        return url
     return ""

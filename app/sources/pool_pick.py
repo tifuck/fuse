@@ -218,7 +218,7 @@ def pick_account(
 ):
     """Lowest usage first. Skip plans at USAGE_BUSY or above when another is under.
 
-    kind is 'grok', 'chatgpt', 'zai', 'devin', 'kimi', or 'mimo'. Returns (cred, extra)
+    kind is 'grok', 'chatgpt', 'zai', 'devin', 'kimi', 'mimo', or 'claude'. Returns (cred, extra)
     or None.
 
     ChatGPT: models Free/Go can serve (luna, terra, 5.5, 5.4-mini) pick those

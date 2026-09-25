@@ -12,6 +12,7 @@ from ..sources import devin as devin_mod
 from ..sources import openrouter as openrouter_mod
 from ..sources import kimi as kimi_mod
 from ..sources import mimo as mimo_mod
+from ..sources import claude as claude_mod
 from ..sources import zai as zai_mod
 from ..sources.grok import grok_access_state
 from ..sources import pool_policy
@@ -30,6 +31,8 @@ def _reasoning_efforts(type_id: str, model: str | None = None) -> tuple[str, ...
         return kimi_mod.efforts_for(model)
     if type_id == "mimo":
         return ("none", "high")
+    if type_id == "claude":
+        return ("none", "low", "medium", "high", "xhigh", "max")
     if type_id == "ollama":
         return ("none", "low", "medium", "high", "max")
     return ("none", "minimal", "low", "medium", "high", "xhigh", "max")
@@ -64,6 +67,7 @@ _FAMILY_TITLES = {
     "devin": "Devin",
     "kimi": "Kimi",
     "mimo": "Xiaomi",
+    "claude": "Claude",
     "llama": "Local inference",
     "ollama": "Ollama Cloud",
     "openrouter": "OpenRouter",
@@ -102,6 +106,11 @@ _LOCK_COPY = {
         "no_sub": "The linked Xiaomi key is not showing a Token Plan.",
         "unauthed": "The linked Xiaomi key is no longer valid.",
     },
+    "claude": {
+        "none": "You need to link a Claude account.",
+        "no_sub": "The linked Claude account needs an active subscription.",
+        "unauthed": "The linked Claude sign-in is no longer valid.",
+    },
 }
 
 _POOL_FALLBACKS = {
@@ -111,6 +120,7 @@ _POOL_FALLBACKS = {
     "devin": devin_mod.DEVIN_MODELS,
     "kimi": kimi_mod.KIMI_MODELS,
     "mimo": mimo_mod.MIMO_MODELS,
+    "claude": claude_mod.CLAUDE_MODELS,
 }
 
 _MODEL_NAMES = {
@@ -164,6 +174,9 @@ _MODEL_NAMES = {
     "k3-256k": "Kimi K3 256K",
     "kimi-for-coding": "K2.8 Preview",
     "kimi-for-coding-highspeed": "K2.7 Code HighSpeed",
+    "claude/claude-opus-4-6": "Claude Opus 4.6",
+    "claude/claude-sonnet-4-6": "Claude Sonnet 4.6",
+    "claude/claude-haiku-4-5": "Claude Haiku 4.5",
     "qwen3.8-27b-abliterated": "Qwen 3.8 27B Obliterated",
 }
 
@@ -185,6 +198,10 @@ _MODEL_WORDS = {
     "fable": "Fable",
     "swe": "SWE",
     "devin": "Devin",
+    "claude": "Claude",
+    "opus": "Opus",
+    "sonnet": "Sonnet",
+    "haiku": "Haiku",
     "llama": "Llama",
     "minimax": "MiniMax",
     "mistral": "Mistral",
@@ -299,6 +316,10 @@ def _model_display_name(model: str, type_id: str, openrouter_catalog: dict | Non
         named = _named_model(model) or kimi_mod.model_label(model)
         if named:
             return _standardize_display_name(named)
+    if type_id == "claude":
+        named = _named_model(model) or claude_mod.model_label(model)
+        if named:
+            return _standardize_display_name(named)
     return _MODEL_NAMES.get(model) or _humanize_model_id(model)
 
 
@@ -326,6 +347,7 @@ def _pool_catalog(type_id: str) -> list[str]:
         "devin": devin_mod._models_cache,
         "kimi": kimi_mod._models_cache,
         "mimo": mimo_mod._models_cache,
+        "claude": claude_mod._models_cache,
     }.get(type_id)
     if cache and cache[1]:
         return list(cache[1])
@@ -352,8 +374,9 @@ async def _models_page_families(user) -> tuple[list[dict], list[dict]]:
     devin = devin_mod.devin_access_state(user["id"])
     kimi = kimi_mod.kimi_access_state(user["id"])
     mimo = mimo_mod.mimo_access_state(user["id"])
+    claude = claude_mod.claude_access_state(user["id"])
     or_state = openrouter_mod.openrouter_access_state(user["id"])
-    access = {"grok": grok, "chatgpt": chatgpt, "zai": zai, "devin": devin, "kimi": kimi, "mimo": mimo}
+    access = {"grok": grok, "chatgpt": chatgpt, "zai": zai, "devin": devin, "kimi": kimi, "mimo": mimo, "claude": claude}
     groups = await models_by_source(
         allow_grok=grok["ok"],
         allow_chatgpt=chatgpt["ok"],
@@ -361,6 +384,7 @@ async def _models_page_families(user) -> tuple[list[dict], list[dict]]:
         allow_devin=devin["ok"],
         allow_kimi=kimi["ok"],
         allow_mimo=mimo["ok"],
+        allow_claude=claude["ok"],
         user_id=user["id"],
     )
     catalog = openrouter_mod.cached_catalog()
@@ -382,7 +406,7 @@ async def _models_page_families(user) -> tuple[list[dict], list[dict]]:
         )
     have = {g["type"] for g in available}
     locked: list[dict] = []
-    for type_id in ("grok", "chatgpt", "zai", "devin", "kimi", "mimo"):
+    for type_id in ("grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude"):
         state = access[type_id]
         if state["ok"] or type_id in have:
             continue

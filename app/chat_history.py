@@ -49,6 +49,7 @@ def for_model(messages, model):
         row = {k: v for k, v in original.items() if not k.startswith("_fuse_")}
         if original.get("_fuse_reasoning_model") != model:
             row.pop("reasoning_content", None)
+            row.pop("claude_thinking", None)
         out.append(row)
     # Some backends recycle tool-call IDs across requests. Full replay must
     # keep every call/result pair unambiguous without mutating saved history.
@@ -76,7 +77,7 @@ def for_model(messages, model):
 
 def _clean(messages):
     """Keep provider fields, never historical system instructions or UI fields."""
-    fields = {"role", "content", "tool_calls", "tool_call_id", "name", "reasoning_content", "_fuse_reasoning_model"}
+    fields = {"role", "content", "tool_calls", "tool_call_id", "name", "reasoning_content", "claude_thinking", "_fuse_reasoning_model"}
     return [{k: v for k, v in row.items() if k in fields} for row in messages
             if isinstance(row, dict) and row.get("role") in ("user", "assistant", "tool")]
 

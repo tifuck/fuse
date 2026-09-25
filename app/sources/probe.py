@@ -149,6 +149,8 @@ async def probe_source(source_id: int) -> dict:
         checks = await _probe_kimi(src)
     elif src.type_id == "mimo":
         checks = await _probe_mimo(src)
+    elif src.type_id == "claude":
+        checks = await _probe_claude(src)
     elif src.type_id == "openrouter":
         checks = await _probe_openrouter(src)
     else:
@@ -441,6 +443,67 @@ async def _probe_kimi(src) -> list[dict]:
             "Skipped — Fuse does not send Kimi completions as a probe.",
             skip=True,
         )
+    )
+    return checks
+
+
+async def _probe_claude(src) -> list[dict]:
+    """Profile only. Never send a Claude completion."""
+    from .claude import (
+        billing_has_subscription as claude_billing_has_subscription,
+        credential_is_authed as claude_credential_is_authed,
+        is_held as claude_is_held,
+        refresh_quota as claude_refresh_quota,
+    )
+
+    checks: list[dict] = []
+    creds = db.fetchall(
+        "SELECT * FROM credentials WHERE source_id=? AND disabled=0", (src.source_id,)
+    )
+    if not creds:
+        checks.append(_check("Accounts", False, "No Claude accounts linked"))
+        checks.append(
+            _check("Chat", True, "Skipped — Fuse does not send Claude completions as a probe.", skip=True)
+        )
+        return checks
+    checks.append(_check("Accounts", True, f"{len(creds)} linked"))
+    authed = 0
+    subscribed = 0
+    usable = 0
+    for cred in creds:
+        try:
+            await claude_refresh_quota(cred, force=True)
+        except Exception:
+            pass
+        row = db.fetchone("SELECT * FROM credentials WHERE id=?", (cred["id"],))
+        if not row:
+            continue
+        extra = accounts.cred_extra(row)
+        if claude_credential_is_authed(row, extra):
+            authed += 1
+        billing = extra.get("billing") if isinstance(extra.get("billing"), dict) else {}
+        if claude_billing_has_subscription(billing):
+            subscribed += 1
+        if claude_credential_is_authed(row, extra) and not claude_is_held(row):
+            usable += 1
+    checks.append(_check("Auth", authed > 0, f"{authed} of {len(creds)} still authed" if authed else "No live token"))
+    checks.append(
+        _check(
+            "Subscription",
+            subscribed > 0,
+            f"{subscribed} with a live subscription" if subscribed else "No Claude subscription on file",
+        )
+    )
+    checks.append(_check("Pool", usable > 0, f"{usable} usable" if usable else "Every account is held or unusable"))
+    try:
+        names = await asyncio.wait_for(src.models(), timeout=20)
+    except Exception as e:
+        names = []
+        checks.append(_check("Catalog", False, f"Could not list models ({type(e).__name__})"))
+    else:
+        checks.append(_check("Catalog", bool(names), _summary(names) if names else "No models listed"))
+    checks.append(
+        _check("Chat", True, "Skipped — Fuse does not send Claude completions as a probe.", skip=True)
     )
     return checks
 

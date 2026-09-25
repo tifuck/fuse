@@ -13,6 +13,7 @@ ZAI_PROVIDER = "zai"
 DEVIN_PROVIDER = "devin"
 KIMI_PROVIDER = "kimi"
 MIMO_PROVIDER = "mimo"
+CLAUDE_PROVIDER = "claude"
 
 # OpenAI list prices (USD per million tokens) for the ChatGPT pool models:
 # model -> (input, cached_input, cache_write, output). GPT-5.6 charges cache
@@ -103,6 +104,17 @@ DEFAULT_MIMO_PRICING: dict[str, tuple[tuple, tuple | None]] = {
     "mimo-v2.5": (("0.14", "0.0028", None, "0.28"), None),
 }
 
+# Anthropic list prices (USD per million) for the Claude subscription pool.
+# input, cache read, cache write (1.25x), output. The plan itself is a subscription.
+DEFAULT_CLAUDE_PRICING: dict[str, tuple[tuple, tuple | None]] = {
+    "claude/claude-opus-4-6": (("5", "0.50", "6.25", "25"), None),
+    "claude/claude-sonnet-4-6": (("3", "0.30", "3.75", "15"), None),
+    "claude/claude-haiku-4-5": (("1", "0.10", "1.25", "5"), None),
+    "claude-opus-4-6": (("5", "0.50", "6.25", "25"), None),
+    "claude-sonnet-4-6": (("3", "0.30", "3.75", "15"), None),
+    "claude-haiku-4-5": (("1", "0.10", "1.25", "5"), None),
+}
+
 _LONG_CONTEXT_THRESHOLD = 272_000
 _GROK_LONG_THRESHOLD = 200_000
 
@@ -182,6 +194,7 @@ def ensure_default_prices() -> list[str]:
         (DEVIN_PROVIDER, DEFAULT_DEVIN_PRICING),
         (KIMI_PROVIDER, DEFAULT_KIMI_PRICING),
         (MIMO_PROVIDER, DEFAULT_MIMO_PRICING),
+        (CLAUDE_PROVIDER, DEFAULT_CLAUDE_PRICING),
     ):
         threshold = _GROK_LONG_THRESHOLD if provider == GROK_PROVIDER else _LONG_CONTEXT_THRESHOLD
         for model, (base, long_rates) in defaults.items():

@@ -19,6 +19,7 @@ from .zai import ZAI_MODELS, ZaiSource, ensure_zai_source, user_has_zai
 from .devin import DEVIN_MODELS, DevinSource, ensure_devin_source, user_has_devin
 from .kimi import KIMI_MODELS, KimiSource, ensure_kimi_source, user_has_kimi
 from .mimo import MIMO_MODELS, MimoSource, ensure_mimo_source, user_has_mimo
+from .claude import CLAUDE_MODELS, ClaudeSource, ensure_claude_source, user_has_claude
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,7 @@ _BUILDERS: dict[str, Callable] = {
     "devin": DevinSource,
     "kimi": KimiSource,
     "mimo": MimoSource,
+    "claude": ClaudeSource,
     "openrouter": OpenRouterSource,
 }
 
@@ -45,6 +47,7 @@ TYPES = {
     "devin": "Devin pool",
     "kimi": "Kimi pool",
     "mimo": "Xiaomi pool",
+    "claude": "Claude pool",
     "openrouter": "OpenRouter",
 }
 
@@ -58,11 +61,12 @@ PROVIDER_LABELS = {
     "devin": "Devin",
     "kimi": "Kimi",
     "mimo": "Xiaomi",
+    "claude": "Anthropic",
     "openrouter": "OpenRouter",
     "unknown": "Unknown",
 }
 
-POOL_TYPES = frozenset({"grok", "chatgpt", "zai", "devin", "kimi", "mimo"})
+POOL_TYPES = frozenset({"grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude"})
 POOL_RETRYABLE = frozenset({402, 429, 500, 502, 503, 529})
 _SEEDED_MODELS = {
     "grok": GROK_MODELS,
@@ -71,6 +75,7 @@ _SEEDED_MODELS = {
     "devin": DEVIN_MODELS,
     "kimi": KIMI_MODELS,
     "mimo": MIMO_MODELS,
+    "claude": CLAUDE_MODELS,
 }
 
 
@@ -252,6 +257,8 @@ def catalog_unavailable_for(model: str) -> bool:
         return "kimi" in _unavailable_types
     if model in MIMO_MODELS or model.startswith("mimo-"):
         return "mimo" in _unavailable_types
+    if model.startswith("claude/"):
+        return "claude" in _unavailable_types
     return bool(_unavailable_types)
 
 
@@ -263,6 +270,7 @@ def _sources(
     allow_devin: bool = False,
     allow_kimi: bool = False,
     allow_mimo: bool = False,
+    allow_claude: bool = False,
 ) -> list[Source]:
     return [
         s
@@ -273,6 +281,7 @@ def _sources(
         and (allow_devin or s.type_id != "devin")
         and (allow_kimi or s.type_id != "kimi")
         and (allow_mimo or s.type_id != "mimo")
+        and (allow_claude or s.type_id != "claude")
     ]
 
 
@@ -318,6 +327,7 @@ async def models_union(
     allow_devin: bool = False,
     allow_kimi: bool = False,
     allow_mimo: bool = False,
+    allow_claude: bool = False,
     user_id: int | None = None,
 ) -> list[str]:
     sources = _sources(
@@ -327,6 +337,7 @@ async def models_union(
         allow_devin=allow_devin,
         allow_kimi=allow_kimi,
         allow_mimo=allow_mimo,
+        allow_claude=allow_claude,
     )
     results = await asyncio.gather(*(_source_models(s, user_id) for s in sources))
     names: list[str] = []
@@ -356,17 +367,19 @@ async def pick(
     allow_devin: bool = False,
     allow_kimi: bool = False,
     allow_mimo: bool = False,
+    allow_claude: bool = False,
     user_id: int | None = None,
 ) -> tuple[Source, str] | None:
     from . import openrouter as openrouter_mod
     from . import devin as devin_mod
     from . import kimi as kimi_mod
     from . import mimo as mimo_mod
+    from . import claude as claude_mod
 
     route = db.fetchone("SELECT * FROM model_routes WHERE model=?", (model,))
     if route:
         src = get(route["source_id"])
-        if src and (allow_grok or src.type_id != "grok") and (allow_chatgpt or src.type_id != "chatgpt") and (allow_zai or src.type_id != "zai") and (allow_devin or src.type_id != "devin") and (allow_kimi or src.type_id != "kimi") and (allow_mimo or src.type_id != "mimo"):
+        if src and (allow_grok or src.type_id != "grok") and (allow_chatgpt or src.type_id != "chatgpt") and (allow_zai or src.type_id != "zai") and (allow_devin or src.type_id != "devin") and (allow_kimi or src.type_id != "kimi") and (allow_mimo or src.type_id != "mimo") and (allow_claude or src.type_id != "claude"):
             return src, route["upstream_model"] or model
     # Devin-prefixed ids never leave this pool — including GPT/Astra/Claude
     # slugs that would otherwise match ChatGPT or look like OpenRouter.
@@ -387,6 +400,12 @@ async def pick(
             for s in all_enabled():
                 if s.type_id == "mimo":
                     return s, model
+        return None
+    if claude_mod.is_claude_model(model):
+        if allow_claude:
+            for s in all_enabled():
+                if s.type_id == "claude":
+                    return s, claude_mod.upstream_id(model)
         return None
     if allow_grok and model.startswith("grok"):
         for s in all_enabled():
@@ -415,6 +434,7 @@ async def pick(
         allow_devin=allow_devin,
         allow_kimi=allow_kimi,
         allow_mimo=allow_mimo,
+        allow_claude=allow_claude,
         user_id=user_id,
     )
     for s in _sources(
@@ -424,11 +444,14 @@ async def pick(
         allow_devin=allow_devin,
         allow_kimi=allow_kimi,
         allow_mimo=allow_mimo,
+        allow_claude=allow_claude,
     ):
         hit = _cache.get(s.source_id)
         if hit and model in hit[1]:
             if s.type_id == "devin":
                 return s, devin_mod.listed_upstream(model)
+            if s.type_id == "claude":
+                return s, claude_mod.upstream_id(model)
             return s, model
     for s in _sources(allow_grok=False):
         if s.type_id != "llama":
@@ -479,6 +502,7 @@ async def models_by_source(
     allow_devin: bool = False,
     allow_kimi: bool = False,
     allow_mimo: bool = False,
+    allow_claude: bool = False,
     user_id: int | None = None,
 ) -> list[dict]:
     sources = _sources(
@@ -488,6 +512,7 @@ async def models_by_source(
         allow_devin=allow_devin,
         allow_kimi=allow_kimi,
         allow_mimo=allow_mimo,
+        allow_claude=allow_claude,
     )
     results = await asyncio.gather(*(_source_models(s, user_id) for s in sources))
     groups = [
@@ -552,6 +577,7 @@ async def bootstrap() -> None:
     ensure_devin_source()
     ensure_kimi_source()
     ensure_mimo_source()
+    ensure_claude_source()
     or_id = ensure_openrouter_source()
     from .openrouter import clear_global_key
 

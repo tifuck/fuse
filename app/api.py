@@ -22,6 +22,7 @@ from .sources import (
     user_has_grok,
     user_has_kimi,
     user_has_mimo,
+    user_has_claude,
     user_has_zai,
 )
 from .sources import pool_policy
@@ -30,6 +31,7 @@ from .sources import openrouter as openrouter_mod
 from .sources import devin as devin_mod
 from .sources import kimi as kimi_mod
 from .sources import mimo as mimo_mod
+from .sources import claude as claude_mod
 from .sources.pool_session import session_id_from
 
 router = APIRouter()
@@ -373,6 +375,7 @@ async def list_models(request: Request):
         allow_devin=user_has_devin(user["id"]),
         allow_kimi=user_has_kimi(user["id"]),
         allow_mimo=user_has_mimo(user["id"]),
+        allow_claude=user_has_claude(user["id"]),
         user_id=user["id"],
     )
     if not names and catalog_unavailable_for(""):
@@ -454,12 +457,14 @@ async def _invoke_chat(request: Request, user, body: dict, *, prefer_openrouter:
     devin_ok = user_has_devin(user["id"])
     kimi_ok = user_has_kimi(user["id"])
     mimo_ok = user_has_mimo(user["id"])
+    claude_ok = user_has_claude(user["id"])
     picked = None
     if (
         prefer_openrouter
         and not devin_mod.is_devin_model(model)
         and not kimi_mod.is_kimi_model(model)
         and not mimo_mod.is_mimo_model(model)
+        and not claude_mod.is_claude_model(model)
     ):
         picked = await openrouter_pool_fallback(model, user["id"])
     if picked is None:
@@ -471,6 +476,7 @@ async def _invoke_chat(request: Request, user, body: dict, *, prefer_openrouter:
             allow_devin=devin_ok,
             allow_kimi=kimi_ok,
             allow_mimo=mimo_ok,
+            allow_claude=claude_ok,
             user_id=user["id"],
         )
     if not picked:
@@ -495,6 +501,8 @@ async def _invoke_chat(request: Request, user, body: dict, *, prefer_openrouter:
         raise HTTPException(403, "Connect a Kimi membership to use Kimi models")
     if src.type_id == "mimo" and not mimo_ok:
         raise HTTPException(403, "Connect a Xiaomi Token Plan to use MiMo models")
+    if src.type_id == "claude" and not claude_ok:
+        raise HTTPException(403, "Connect a Claude account to use Claude models")
     requested = model
     body["model"] = upstream
     session_id = None
@@ -520,7 +528,7 @@ async def _invoke_chat(request: Request, user, body: dict, *, prefer_openrouter:
     ):
         fallback = None
         requested_id = str(requested)
-        if not devin_mod.is_devin_model(requested_id) and not kimi_mod.is_kimi_model(requested_id) and not mimo_mod.is_mimo_model(requested_id):
+        if not devin_mod.is_devin_model(requested_id) and not kimi_mod.is_kimi_model(requested_id) and not mimo_mod.is_mimo_model(requested_id) and not claude_mod.is_claude_model(requested_id):
             fallback = await openrouter_pool_fallback(requested_id, user["id"])
         if fallback:
             # The pool attempt may still have burned quota, so its tokens/cost

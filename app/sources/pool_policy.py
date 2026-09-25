@@ -1,4 +1,4 @@
-"""Admin and per-user policy for donated Grok, ChatGPT, Z.AI, Devin, Kimi, and Xiaomi pools.
+"""Admin and per-user policy for donated Grok, ChatGPT, Z.AI, Devin, Kimi, Xiaomi, and Claude pools.
 
 Two admin switches per pool, stored on sources.config:
 
@@ -18,7 +18,7 @@ import json
 
 from .. import db
 
-POOL_KINDS = ("grok", "chatgpt", "zai", "devin", "kimi", "mimo")
+POOL_KINDS = ("grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude")
 POOL_KIND_SET = frozenset(POOL_KINDS)
 POOL_LABELS = {
     "grok": "x.ai",
@@ -27,6 +27,7 @@ POOL_LABELS = {
     "devin": "Devin",
     "kimi": "Kimi",
     "mimo": "Xiaomi",
+    "claude": "Claude",
 }
 
 
@@ -65,6 +66,10 @@ def source_id(kind: str) -> int:
         from .mimo import ensure_mimo_source
 
         return ensure_mimo_source()
+    if kind == "claude":
+        from .claude import ensure_claude_source
+
+        return ensure_claude_source()
     raise ValueError(f"unknown pool kind {kind!r}")
 
 

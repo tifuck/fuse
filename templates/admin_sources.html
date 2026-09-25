@@ -213,10 +213,10 @@
 <section class="panel" id="pools">
   <p class="eyebrow">Shared pools</p>
   <h2>Who can use donated accounts</h2>
-  <p class="aside">Sharing on: eligible users are routed across every linked {{ pool_labels.grok }}, {{ pool_labels.chatgpt }}, {{ pool_labels.zai }}, {{ pool_labels.devin }}, {{ pool_labels.kimi }}, and {{ pool_labels.mimo }} account. Sharing off: each user only uses accounts they linked. Open access lets any registered user use that pool without contributing one. Users can opt out of sharing when it is on; they cannot opt back in when it is off. {{ grok_count }} x.ai · {{ chatgpt_count }} OpenAI · {{ zai_count }} Z.AI · {{ devin_count }} Devin · {{ kimi_count }} Kimi · {{ mimo_count }} Xiaomi linked.</p>
+  <p class="aside">Sharing on: eligible users are routed across every linked {{ pool_labels.grok }}, {{ pool_labels.chatgpt }}, {{ pool_labels.zai }}, {{ pool_labels.devin }}, {{ pool_labels.kimi }}, {{ pool_labels.mimo }}, and {{ pool_labels.claude }} account. Sharing off: each user only uses accounts they linked. Open access lets any registered user use that pool without contributing one. Users can opt out of sharing when it is on; they cannot opt back in when it is off. {{ grok_count }} x.ai · {{ chatgpt_count }} OpenAI · {{ zai_count }} Z.AI · {{ devin_count }} Devin · {{ kimi_count }} Kimi · {{ mimo_count }} Xiaomi · {{ claude_count }} Claude linked.</p>
   <form method="post" action="/admin/sources/pools" class="stack">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    {% for kind in ('grok', 'chatgpt', 'zai', 'devin', 'kimi', 'mimo') %}
+    {% for kind in ('grok', 'chatgpt', 'zai', 'devin', 'kimi', 'mimo', 'claude') %}
     {% set policy = pool_policies[kind] %}
     <div class="pool-policy">
       <h3>{{ pool_labels[kind] }}</h3>

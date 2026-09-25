@@ -9,6 +9,7 @@ from .sources import models_by_source
 from .sources import openrouter as openrouter_mod
 from .sources import kimi as kimi_mod
 from .sources import mimo as mimo_mod
+from .sources import claude as claude_mod
 from .sources import zai as zai_mod
 from .sources.grok import grok_access_state
 from .web.models import _model_display_name, _opencode_model_config
@@ -39,6 +40,7 @@ async def model_options(user_id: int, groups: list[dict] | None = None) -> list[
         devin = devin_mod.devin_access_state(user_id)
         kimi = kimi_mod.kimi_access_state(user_id)
         mimo = mimo_mod.mimo_access_state(user_id)
+        claude = claude_mod.claude_access_state(user_id)
         groups = await models_by_source(
             allow_grok=grok["ok"],
             allow_chatgpt=chatgpt["ok"],
@@ -46,6 +48,7 @@ async def model_options(user_id: int, groups: list[dict] | None = None) -> list[
             allow_devin=devin["ok"],
             allow_kimi=kimi["ok"],
             allow_mimo=mimo["ok"],
+            allow_claude=claude["ok"],
             user_id=user_id,
         )
     entries: list[dict] = []

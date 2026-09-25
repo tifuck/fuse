@@ -1054,6 +1054,7 @@ async def _consume_round(result, user, src, upstream: str, requested: str, *, co
     finish = None
     content = ""
     reasoning = ""
+    thinking: list[dict] = []
     usage = {}
     error = None
     if result.stream is None:
@@ -1075,6 +1076,7 @@ async def _consume_round(result, user, src, upstream: str, requested: str, *, co
             content = _text_of(message.get("content"))
             reasoning = _text_of(message.get("reasoning_content")) or _text_of(message.get("reasoning"))
             _take_calls(calls, message.get("tool_calls"))
+            _take_thinking(thinking, message.get("claude_thinking"))
         finish = choice.get("finish_reason") if isinstance(choice, dict) else None
         content, reasoning, native, finish = _finalize_assistant_payload(
             content, reasoning, [calls[i] for i in sorted(calls)], finish, coding=coding
@@ -1087,7 +1089,7 @@ async def _consume_round(result, user, src, upstream: str, requested: str, *, co
             error = _error_obj(503, {"error": {"message": (content or "upstream error").strip()}})
             content = ""
         if error:
-            yield ("done", {"calls": native, "finish": finish, "content": content, "reasoning": reasoning, "usage": usage, "error": error})
+            yield ("done", {"calls": native, "finish": finish, "content": content, "reasoning": reasoning, "thinking": thinking, "usage": usage, "error": error})
             return
         if body and isinstance(body.get("choices"), list) and body["choices"]:
             choice_out = dict(body["choices"][0]) if isinstance(body["choices"][0], dict) else {}
@@ -1100,7 +1102,7 @@ async def _consume_round(result, user, src, upstream: str, requested: str, *, co
         safe = _client_obj(body) if body else None
         if safe:
             yield ("out", safe)
-        yield ("done", {"calls": native, "finish": finish, "content": content, "reasoning": reasoning, "usage": usage, "error": error})
+        yield ("done", {"calls": native, "finish": finish, "content": content, "reasoning": reasoning, "thinking": thinking, "usage": usage, "error": error})
         return
 
     tapped = api._tap(
@@ -1159,6 +1161,7 @@ async def _consume_round(result, user, src, upstream: str, requested: str, *, co
                         else ""
                     )
                     _take_calls(calls, delta.get("tool_calls") or message.get("tool_calls"))
+                    _take_thinking(thinking, delta.get("claude_thinking") or message.get("claude_thinking"))
                     if choice.get("finish_reason"):
                         finish = choice.get("finish_reason")
                 safe = _client_obj(obj, hide_tool_calls=False)
@@ -1205,7 +1208,7 @@ async def _consume_round(result, user, src, upstream: str, requested: str, *, co
         for pending in held_out:
             yield ("out", pending)
         held_out.clear()
-    yield ("done", {"calls": native, "finish": finish, "content": content, "reasoning": reasoning, "usage": usage, "error": error})
+    yield ("done", {"calls": native, "finish": finish, "content": content, "reasoning": reasoning, "thinking": thinking, "usage": usage, "error": error})
 
 
 async def _terminated_chunks(stream):
@@ -1428,10 +1431,35 @@ def _tool_messages(jobs: list[ToolJob], content: str = "") -> list[dict]:
     return [assistant, *tools]
 
 
-def _native_reasoning(reasoning, model):
+def _take_thinking(bucket: list, raw) -> None:
+    if not isinstance(raw, list):
+        return
+    for block in raw:
+        if not isinstance(block, dict):
+            continue
+        text = str(block.get("thinking") or block.get("text") or "")
+        signature = str(block.get("signature") or "")
+        if text and signature:
+            bucket.append({"thinking": text, "signature": signature})
+
+
+def _native_reasoning(reasoning, model, thinking=None):
+    out = {}
     if reasoning and (model.startswith("glm-") or model.startswith("openrouter/z-ai/")):
-        return {"reasoning_content": str(reasoning), "_fuse_reasoning_model": model}
-    return {}
+        out["reasoning_content"] = str(reasoning)
+        out["_fuse_reasoning_model"] = model
+    blocks = []
+    for block in thinking or []:
+        if not isinstance(block, dict):
+            continue
+        text = str(block.get("thinking") or block.get("text") or "")
+        signature = str(block.get("signature") or "")
+        if text and signature:
+            blocks.append({"thinking": text, "signature": signature})
+    if blocks and (model.startswith("claude/") or model.startswith("claude-")):
+        out["claude_thinking"] = blocks
+        out["_fuse_reasoning_model"] = model
+    return out
 
 
 def _command_result_ids(envelopes: list[str]) -> list[str]:
@@ -1441,12 +1469,12 @@ def _command_result_ids(envelopes: list[str]) -> list[str]:
     return monitor_mod.envelope_receipts(envelopes)
 
 
-def _provider_snapshot(messages: list[dict], jobs: list[ToolJob] | None = None, *, reasoning="", model="") -> list[dict]:
+def _provider_snapshot(messages: list[dict], jobs: list[ToolJob] | None = None, *, reasoning="", model="", thinking=None) -> list[dict]:
     out = [m for m in messages if isinstance(m, dict) and m.get("role") != "system"]
     if not jobs:
         return out
     assistant = _tool_messages(jobs)[0]
-    assistant.update(_native_reasoning(reasoning, model))
+    assistant.update(_native_reasoning(reasoning, model, thinking))
     tools = [
         {"role": "tool", "tool_call_id": j.call_id, "content": _tool_result_clip(j.name, j.text or "")}
         for j in jobs
@@ -2607,7 +2635,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 assistant = {"role": "assistant", "content": response.get("content") or ""}
                 if response.get("calls"):
                     assistant["tool_calls"] = _tool_messages(jobs_from_calls(response["calls"], 0))[0]["tool_calls"]
-                assistant.update(_native_reasoning(response.get("reasoning"), model))
+                assistant.update(_native_reasoning(response.get("reasoning"), model, response.get("thinking")))
                 measured = [*current_messages, assistant]
             projected = chat_history.for_model(measured, model)
             added = _anchored(projected)
@@ -3280,7 +3308,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 extra_wrap = False
                 if run_id and not is_child and not store.close_steer_window(str(run_id)):
                     if summary.get("content"):
-                        current_messages.append({"role": "assistant", "content": str(summary["content"]), **_native_reasoning(summary.get("reasoning"), model)})
+                        current_messages.append({"role": "assistant", "content": str(summary["content"]), **_native_reasoning(summary.get("reasoning"), model, summary.get("thinking"))})
                     dropped_tools = True
                     extra_wrap = True
                     completion_i += 1
@@ -3295,7 +3323,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 length_salvages += 1
                 partial = str(summary.get("content") or "")
                 if partial:
-                    current_messages.append({"role": "assistant", "content": partial, **_native_reasoning(summary.get("reasoning"), model)})
+                    current_messages.append({"role": "assistant", "content": partial, **_native_reasoning(summary.get("reasoning"), model, summary.get("thinking"))})
                 if incomplete_calls:
                     # A response cut off mid-arguments must not be continued
                     # mid-string: the model would emit only the JSON tail and
@@ -3348,7 +3376,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     # A queued instruction may arrive during a text-only reply.
                     # Give it a real next round rather than finishing silently.
                     if summary.get("content"):
-                        current_messages.append({"role": "assistant", "content": str(summary["content"]), **_native_reasoning(summary.get("reasoning"), model)})
+                        current_messages.append({"role": "assistant", "content": str(summary["content"]), **_native_reasoning(summary.get("reasoning"), model, summary.get("thinking"))})
                     await persist_jobs()
                     completion_i += 1
                     extra_wrap = True
@@ -3367,7 +3395,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     )
                 if run_id and not is_child and not store.close_steer_window(str(run_id)):
                     if summary.get("content"):
-                        current_messages.append({"role": "assistant", "content": str(summary["content"]), **_native_reasoning(summary.get("reasoning"), model)})
+                        current_messages.append({"role": "assistant", "content": str(summary["content"]), **_native_reasoning(summary.get("reasoning"), model, summary.get("thinking"))})
                     dropped_tools = True
                     extra_wrap = True
                     completion_i += 1
@@ -3401,7 +3429,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                         yield _sse({"fuse": item})
             if jobs:
                 tool_msgs = _tool_messages(jobs, content=str(summary.get("content") or ""))
-                tool_msgs[0].update(_native_reasoning(summary.get("reasoning"), model))
+                tool_msgs[0].update(_native_reasoning(summary.get("reasoning"), model, summary.get("thinking")))
                 current_messages = current_messages + tool_msgs
                 agent["allowed_urls"] = list(allowed_urls)
                 agent["search_queries"] = budgets.get("search_queries", 0)
@@ -3625,7 +3653,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 and str(last.get("content") or "").strip() == str(final_text).strip()
             ):
                 current_messages.append({"role": "assistant", "content": final_text,
-                    **(_native_reasoning((summary or {}).get("reasoning"), model)
+                    **(_native_reasoning((summary or {}).get("reasoning"), model, (summary or {}).get("thinking"))
                        if (summary or {}).get("content") == final_text else {})})
         await persist_jobs()
         if total_usage:

@@ -15,6 +15,7 @@ from ..sources import devin as devin_mod
 from ..sources import openrouter as openrouter_mod
 from ..sources import kimi as kimi_mod
 from ..sources import mimo as mimo_mod
+from ..sources import claude as claude_mod
 from ..sources import zai as zai_mod
 from ..sources.grok import grok_access_state
 from .deps import (
@@ -247,6 +248,7 @@ async def api_docs(request: Request):
     devin_access = devin_mod.devin_access_state(user["id"])
     kimi_access = kimi_mod.kimi_access_state(user["id"])
     mimo_access = mimo_mod.mimo_access_state(user["id"])
+    claude_access = claude_mod.claude_access_state(user["id"])
     or_access = openrouter_mod.openrouter_access_state(user["id"])
     groups = await models_by_source(
         allow_grok=access["ok"],
@@ -255,6 +257,7 @@ async def api_docs(request: Request):
         allow_devin=devin_access["ok"],
         allow_kimi=kimi_access["ok"],
         allow_mimo=mimo_access["ok"],
+        allow_claude=claude_access["ok"],
         user_id=user["id"],
     )
     groups = [group for group in groups if group.get("models")]
@@ -288,6 +291,9 @@ async def api_docs(request: Request):
         mimo_ok=mimo_access["ok"],
         mimo_reason=mimo_access["reason"],
         mimo_listed=mimo_access["ok"] or any(g["type"] == "mimo" for g in groups),
+        claude_ok=claude_access["ok"],
+        claude_reason=claude_access["reason"],
+        claude_listed=claude_access["ok"] or any(g["type"] == "claude" for g in groups),
     )
 
 

@@ -64,7 +64,7 @@
         {% for g in groups %}
         <article class="panel catalog-family">
           <div class="section-heading">
-            <h2><img class="provider-logo" src="/static/logos/{{ g.type }}.svg" alt="" aria-hidden="true">{% if g.type == 'grok' %}Grok{% elif g.type == 'chatgpt' %}ChatGPT{% elif g.type == 'zai' %}Z.AI{% elif g.type == 'devin' %}Devin{% elif g.type == 'kimi' %}Kimi{% elif g.type == 'mimo' %}Xiaomi{% elif g.type == 'llama' %}Local inference{% elif g.type == 'ollama' %}Ollama Cloud{% elif g.type == 'openrouter' %}OpenRouter{% else %}{{ g.name }}{% endif %}</h2>
+            <h2><img class="provider-logo" src="/static/logos/{{ g.type }}.svg" alt="" aria-hidden="true">{% if g.type == 'grok' %}Grok{% elif g.type == 'chatgpt' %}ChatGPT{% elif g.type == 'zai' %}Z.AI{% elif g.type == 'devin' %}Devin{% elif g.type == 'kimi' %}Kimi{% elif g.type == 'mimo' %}Xiaomi{% elif g.type == 'claude' %}Claude{% elif g.type == 'llama' %}Local inference{% elif g.type == 'ollama' %}Ollama Cloud{% elif g.type == 'openrouter' %}OpenRouter{% else %}{{ g.name }}{% endif %}</h2>
             <span class="usage-sub">{{ g.models|length }}</span>
           </div>
           {% if g.models %}
@@ -105,6 +105,13 @@
         <strong>Kimi models are not listed for this key.</strong>
         <span>{% if kimi_reason == 'no_sub' %}The linked account does not currently report an active membership.{% elif kimi_reason == 'unauthed' %}The linked Kimi sign-in is no longer valid.{% else %}Link a Kimi membership on Sources to add K3 and Kimi for Coding to this catalog.{% endif %}</span>
         <a href="/sources">Manage Kimi access</a>
+      </div>
+      {% endif %}
+      {% if not claude_listed %}
+      <div class="docs-callout">
+        <strong>Claude models are not listed for this key.</strong>
+        <span>{% if claude_reason == 'unauthed' %}The linked Claude sign-in is no longer valid.{% else %}Link a Claude account on Sources to add Claude models to this catalog.{% endif %}</span>
+        <a href="/sources">Manage Claude access</a>
       </div>
       {% endif %}
       {% if not mimo_listed %}
