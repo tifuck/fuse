@@ -766,9 +766,28 @@ def _wake_stalled_child(row) -> None:
         logger.exception("Failed to schedule wake for stalled child %s", row["id"])
 
 
-_wake_lock = asyncio.Lock()
+_wake_locks: dict[tuple[int, object], asyncio.Lock] = {}
 _wake_tasks: dict[tuple[int, object], asyncio.Task] = {}
 _wake_again: set[tuple[int, object]] = set()
+
+
+def _thread_wake_lock(user_id: int, thread_id) -> asyncio.Lock:
+    # Wake ordering only matters within one thread; a completion storm across
+    # many threads must not queue behind a single process-wide lock.
+    key = (user_id, thread_id)
+    lock = _wake_locks.get(key)
+    if lock is None:
+        lock = _wake_locks[key] = asyncio.Lock()
+    return lock
+
+
+def _prune_wake_locks() -> None:
+    if len(_wake_locks) <= 1024:
+        return
+    busy = set(_wake_tasks)
+    for key, lock in list(_wake_locks.items()):
+        if key not in busy and not lock.locked():
+            _wake_locks.pop(key, None)
 
 
 def schedule_wake(user_id: int, thread_id) -> None:
@@ -795,6 +814,7 @@ def schedule_wake(user_id: int, thread_id) -> None:
         finally:
             _wake_tasks.pop(key, None)
             _wake_again.discard(key)
+            _prune_wake_locks()
 
     _wake_tasks[key] = loop.create_task(_run(), name=f"chat-wake-{thread_id}")
 
@@ -830,7 +850,7 @@ async def _wake_parent(user_id: int, thread_id) -> None:
 
     if _stopping:
         return
-    async with _wake_lock:
+    async with _thread_wake_lock(user_id, thread_id):
         if _stopping:
             return
         root = await asyncio.to_thread(chat_store.thread_root_run, user_id, thread_id)

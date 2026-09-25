@@ -59,7 +59,7 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         commands = [{"id": "first", "envelope": "<command_result>" + "A" * 20000 + "</command_result>"},
                     {"id": "later", "envelope": "<command_result>" + "B" * 40000 + "</command_result>"}]
         with patch.object(chats, "AUTO_CONTENT_MAX", 160000), \
-             patch.object(runs, "_wake_lock", asyncio.Lock()), \
+             patch.object(runs, "_wake_locks", {}), \
              patch.object(store, "wake_candidates", return_value=candidates), \
              patch.object(command_jobs, "pending_envelopes", return_value=commands), \
              patch.object(command_jobs, "mark_delivered") as acknowledge, \
