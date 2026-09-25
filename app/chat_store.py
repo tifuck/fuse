@@ -3874,6 +3874,36 @@ def save_turn_progress(run_id, messages, loaded_tools=None, extra=None):
             conn.execute("UPDATE chat_runs SET request=? WHERE id=?", (dumps(creq), cid))
 
 
+def _cancel_tree_rows(user_id, root, with_background):
+    """Lightweight root-tree scan for cancellation walks.
+
+    The request blob is only needed for its background flag; resolve it in
+    SQL so a fan-out finishing together does not ship every run's full
+    request transcript into memory. Malformed JSON in one row falls back to
+    decoding in Python with the original semantics."""
+    base = "SELECT id, parent_run_id, message_id, thread_id, cancel_requested, status"
+    if not with_background:
+        return db.fetchall(f"{base} FROM chat_runs WHERE user_id=? AND root_run_id=?", (user_id, root))
+    try:
+        return db.fetchall(
+            f"{base}, COALESCE(json_extract(request, '$.agent.background'), 0) AS background"
+            " FROM chat_runs WHERE user_id=? AND root_run_id=?",
+            (user_id, root),
+        )
+    except Exception:
+        out = []
+        for item in db.fetchall(f"{base}, request FROM chat_runs WHERE user_id=? AND root_run_id=?", (user_id, root)):
+            try:
+                agent = (json.loads(item["request"]) or {}).get("agent")
+            except (json.JSONDecodeError, TypeError):
+                agent = None
+            out.append({
+                **{key: item[key] for key in item.keys() if key != "request"},
+                "background": bool(isinstance(agent, dict) and agent.get("background")),
+            })
+        return out
+
+
 def request_cancel_descendants(user_id, run_id, skip_background=False):
     """Cancel a run's descendants. skip_background keeps background subagents
     (and their subtrees) alive past the end of the spawning turn."""
@@ -3890,10 +3920,7 @@ def request_cancel_descendants(user_id, run_id, skip_background=False):
     if row is None:
         return ids
     root = row["root_run_id"] or row["id"]
-    tree = db.fetchall(
-        "SELECT id, parent_run_id, message_id, thread_id, cancel_requested, status, request FROM chat_runs WHERE user_id=? AND root_run_id=?",
-        (user_id, root),
-    )
+    tree = _cancel_tree_rows(user_id, root, skip_background)
     by_parent: dict[str, list] = {}
     for item in tree:
         by_parent.setdefault(item["parent_run_id"], []).append(item)
@@ -3908,13 +3935,8 @@ def request_cancel_descendants(user_id, run_id, skip_background=False):
         item = next((r for r in tree if r["id"] == current), None)
         if item is None:
             continue
-        if skip_background:
-            try:
-                agent = (json.loads(item["request"]) or {}).get("agent")
-            except (json.JSONDecodeError, TypeError):
-                agent = None
-            if isinstance(agent, dict) and agent.get("background"):
-                continue
+        if skip_background and item["background"]:
+            continue
         ids.append(item["id"])
         if item["status"] in ACTIVE and not item["cancel_requested"]:
             doomed.append(item)

@@ -714,7 +714,12 @@ def reap_orphans(user_id=None):
     """Finish phantom active runs that no local worker owns, or that are stuck."""
     if _stopping:
         return
-    sql = "SELECT * FROM chat_runs WHERE status IN ('queued','running')"
+    # Light columns only: this scan runs every 60 s over every active run and
+    # would otherwise ship each run's request/message/provider blobs. Genuine
+    # orphans (no live worker) re-fetch their full row before recovery.
+    sql = """SELECT id,user_id,thread_id,parent_run_id,status,cancel_requested,
+                    cancel_requested_at,created_at,updated_at
+             FROM chat_runs WHERE status IN ('queued','running')"""
     args: tuple = ()
     if user_id is not None:
         sql += " AND user_id=?"
@@ -753,7 +758,11 @@ def _reap_one(row):
             chat_store.abort_active(ident, "interrupted", chat_store.STALL_NOTICE)
             _wake_stalled_child(row)
         return
-    chat_store.recover_one(row)
+    # No local worker: recover from the durable row, which needs the heavy
+    # blobs the scan no longer ships.
+    full = db.fetchone("SELECT * FROM chat_runs WHERE id=?", (ident,))
+    if full is not None:
+        chat_store.recover_one(full)
 
 
 def _wake_stalled_child(row) -> None:
@@ -1497,21 +1506,26 @@ async def resume_queued(user_id=None):
 
     if user_id is None:
         rows = await asyncio.to_thread(db.fetchall,
-            """SELECT * FROM chat_runs WHERE status='queued'
+            """SELECT id, user_id FROM chat_runs WHERE status='queued'
                ORDER BY created_at,id"""
         )
     else:
         rows = await asyncio.to_thread(db.fetchall,
-            """SELECT * FROM chat_runs WHERE status='queued' AND user_id=?
+            """SELECT id, user_id FROM chat_runs WHERE status='queued' AND user_id=?
                ORDER BY created_at,id""",
             (user_id,),
         )
     for row in rows:
-        run = chat_store.run_view(row)
-        if run is None or (run["id"] in _tasks and not _tasks[run["id"]].done()):
+        if row["id"] in _tasks and not _tasks[row["id"]].done():
             continue
-        owner = await asyncio.to_thread(accounts.get_user, run["user_id"])
+        owner = await asyncio.to_thread(accounts.get_user, row["user_id"])
         if owner is None:
+            continue
+        # Queued runs about to launch need their full request; fetch it only
+        # now so the periodic scan does not ship every blob every 60 s.
+        full = await asyncio.to_thread(db.fetchone, "SELECT * FROM chat_runs WHERE id=?", (row["id"],))
+        run = chat_store.run_view(full)
+        if run is None:
             continue
         await start(internal_request(run["user_id"]), dict(owner), run)
 
