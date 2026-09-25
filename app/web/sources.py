@@ -2026,9 +2026,9 @@ async def user_pool_prefs(
     pool_policy.set_user_own_only(user["id"], kind, own_only in ("1", "on", "true"))
     label = pool_policy.POOL_LABELS[kind]
     if own_only in ("1", "on", "true"):
-        msg = f"{label} will use only the accounts you have linked."
+        msg = f"{label} will use only the accounts you have linked. Other users cannot use them either."
     else:
-        msg = f"{label} will use the shared pool."
+        msg = f"{label} will use the shared pool, including accounts you linked."
     _pool_flash[user["id"]] = ("ok", msg, "pool")
     return RedirectResponse("/sources", status_code=303)
 

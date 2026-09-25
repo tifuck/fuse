@@ -363,14 +363,67 @@ label.check input[type="checkbox"] {
 label.check.is-locked {
   opacity: 0.7;
 }
-.pool-own-form {
+.pool-head {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 0.65rem 1rem;
-  margin: 0 0 0.75rem;
+  justify-content: space-between;
+  gap: 0.75rem 1.25rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.65rem;
 }
-.pool-own-form .btn { align-self: center; }
+.pool-head .section-heading { margin: 0; min-width: 0; }
+.pool-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-left: auto;
+  padding: 0.2rem;
+  background: var(--raise);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+.pool-bar,
+.pool-switch.source-mine-filter {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0;
+}
+label.pool-switch {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.4rem;
+  width: auto;
+  margin: 0;
+  padding: 0.22rem 0.7rem 0.22rem 0.45rem;
+  border-radius: 999px;
+  color: var(--mist);
+  font-size: 0.78rem;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.pool-switch:hover { background: color-mix(in srgb, var(--mist) 6%, transparent); }
+.pool-switch input[type="checkbox"] {
+  width: 0.9rem;
+  height: 0.9rem;
+  margin: 0;
+  accent-color: var(--brass);
+  flex-shrink: 0;
+}
+.pool-switch.is-locked { opacity: 0.62; cursor: default; }
+.pool-bar.is-locked { padding-right: 0.15rem; }
+.pool-bar-note {
+  padding: 0 0.65rem 0 0.15rem;
+  color: var(--mute);
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
 .pool-policy {
   display: flex;
   flex-direction: column;
@@ -1751,10 +1804,14 @@ body:has(.usage-tabs) .page-head {
   letter-spacing: 0;
   overflow-wrap: anywhere;
 }
-.source-mine-filter {
-  margin: 0 0 0.45rem;
-  width: fit-content;
-  font-size: 0.85rem;
+.pool-controls > .source-mine-filter {
+  border-left: 1px solid var(--line);
+  border-radius: 0 999px 999px 0;
+  padding-left: 0.65rem;
+}
+@media (max-width: 720px) {
+  .pool-head { align-items: flex-start; }
+  .pool-controls { margin-left: 0; }
 }
 .source-table-scroll {
   max-height: min(28rem, 62dvh);

@@ -85,6 +85,19 @@ class PoolPolicyTest(unittest.TestCase):
         own = pool_policy.filter_credentials(rows, "grok", self.alice["id"])
         self.assertEqual([r["id"] for r in own], [mine])
 
+    def test_own_only_withholds_donor_from_everyone_else(self):
+        sid = pool_policy.source_id("grok")
+        mine = accounts.add_credential(sid, "mine", "a", extra=GROK_EXTRA, donated_by=self.alice["id"])
+        other = accounts.add_credential(sid, "other", "b", extra=GROK_EXTRA, donated_by=self.donor["id"])
+        rows = db.fetchall("SELECT * FROM credentials WHERE source_id=?", (sid,))
+        pool_policy.set_user_own_only(self.alice["id"], "grok", True)
+        for caller in (self.bob["id"], self.donor["id"], None):
+            visible = {r["id"] for r in pool_policy.filter_credentials(rows, "grok", caller)}
+            self.assertNotIn(mine, visible, caller)
+            self.assertIn(other, visible, caller)
+        other_pool = pool_policy.filter_credentials(rows, "chatgpt", self.bob["id"])
+        self.assertEqual({r["id"] for r in other_pool}, {mine, other})
+
     def test_open_access_unlocks_without_own_account(self):
         self._add("devin", self.donor["id"], DEVIN_EXTRA)
         self.assertFalse(devin_mod.user_has_devin(self.alice["id"]))
@@ -254,7 +267,8 @@ class PoolPolicyHttpTest(unittest.TestCase):
         self._login("user@test.invalid")
         page = self.client.get("/sources")
         self.assertEqual(page.status_code, 200)
-        self.assertIn("Use only my linked", page.text)
+        self.assertIn("Use only my accounts", page.text)
+        self.assertIn("pool-controls", page.text)
         self.assertNotIn("disabled globally", page.text)
         csrf = self._csrf(page.text)
         saved = self.client.post(
@@ -267,7 +281,9 @@ class PoolPolicyHttpTest(unittest.TestCase):
 
         pool_policy.set_admin_policy("grok", pool_shared=False, open_access=False)
         page = self.client.get("/sources")
-        self.assertIn("disabled globally", page.text)
+        self.assertIn("Site-wide", page.text)
+        self.assertIn('action="/sources/pool/chatgpt/prefs"', page.text)
+        self.assertIn("data-pool-own", page.text)
         csrf = self._csrf(page.text)
         ignored = self.client.post(
             "/sources/pool/grok/prefs",
@@ -320,7 +336,7 @@ class PoolPolicyHttpTest(unittest.TestCase):
         page = self.client.get("/sources")
         self.assertEqual(page.status_code, 200)
         self.assertIn("source-table", page.text)
-        self.assertIn("Show only my accounts", page.text)
+        self.assertIn("Show only mine", page.text)
         self.assertIn("OpenAI paid", page.text)
         self.assertIn("OpenAI Free / Go", page.text)
         self.assertNotIn("source-card", page.text)

@@ -27,15 +27,13 @@
 {%- endmacro %}
 
 {% macro pool_own_toggle(ui) %}
-<form method="post" action="/sources/pool/{{ ui.kind }}/prefs" class="pool-own-form">
+<form method="post" action="/sources/pool/{{ ui.kind }}/prefs" class="pool-bar{% if not ui.can_override %} is-locked{% endif %}">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <label class="check{% if not ui.can_override %} is-locked{% endif %}">
-    <input type="checkbox" name="own_only" value="1"{% if not ui.can_override or ui.own_only %} checked{% endif %}{% if not ui.can_override %} disabled{% endif %}>
-    {% if ui.can_override %}Use only my linked {{ ui.label }} accounts{% else %}Use only my linked accounts — disabled globally{% endif %}
+  <label class="pool-switch{% if not ui.can_override %} is-locked{% endif %}"{% if not ui.can_override %} title="Sharing is off for this pool site-wide"{% endif %}>
+    <input type="checkbox" name="own_only" value="1"{% if not ui.can_override or ui.own_only %} checked{% endif %}{% if not ui.can_override %} disabled{% else %} data-pool-own{% endif %}>
+    <span>Use only my accounts</span>
   </label>
-  {% if ui.can_override %}
-  <button type="submit" class="btn ghost sm">Save</button>
-  {% endif %}
+  {% if not ui.can_override %}<span class="pool-bar-note">Site-wide</span>{% endif %}
 </form>
 {% endmacro %}
 
@@ -45,9 +43,9 @@
 
 {% macro mine_filter(ui, accounts, group='') %}
 {% if accounts %}
-<label class="check source-mine-filter">
+<label class="pool-switch source-mine-filter">
   <input type="checkbox" data-mine-only{% if group %} data-mine-group="{{ group }}"{% endif %}{% if ui.own_only %} checked{% endif %}>
-  Show only my accounts
+  <span>Show only mine</span>
 </label>
 {% endif %}
 {% endmacro %}
@@ -139,7 +137,6 @@
 
 {% macro source_table(accounts, kind, revoke_path, confirm, empty, ui=None, group='', show_filter=True) %}
 {% if accounts %}
-{% if ui and show_filter %}{{ mine_filter(ui, accounts, group) }}{% endif %}
 <div class="source-table-scroll{% if ui and ui.own_only %} is-mine-only{% endif %}" data-source-table{% if group %} data-mine-group="{{ group }}"{% endif %}>
   <table class="source-table">
     <colgroup>
@@ -291,11 +288,16 @@
     </div>
 
     <section class="stack-y">
-      <div class="section-heading">
-        <h2><img class="provider-logo" src="/static/logos/grok.svg" alt="" aria-hidden="true">x.ai</h2>
-        <span class="usage-sub">{{ pool_status(grok_ok, grok_ui, 'needs SuperGrok') }}</span>
+      <div class="pool-head">
+        <div class="section-heading">
+          <h2><img class="provider-logo" src="/static/logos/grok.svg" alt="" aria-hidden="true">x.ai</h2>
+          <span class="usage-sub">{{ pool_status(grok_ok, grok_ui, 'needs SuperGrok') }}</span>
+        </div>
+        <div class="pool-controls">
+          {{ pool_own_toggle(grok_ui) }}
+          {{ mine_filter(grok_ui, accounts) }}
+        </div>
       </div>
-      {{ pool_own_toggle(grok_ui) }}
       {% if grok_reason == 'no_sub' %}
       <p class="callout fault">A Grok account is linked, but x.ai is not showing an active SuperGrok subscription. Grok models stay locked.</p>
       {% elif grok_reason == 'unauthed' %}
@@ -305,16 +307,21 @@
     </section>
 
     <section class="stack-y">
-      <div class="section-heading">
-        <h2><img class="provider-logo" src="/static/logos/chatgpt.svg" alt="" aria-hidden="true">OpenAI paid</h2>
-        <span class="usage-sub">{{ pool_status(chatgpt_ok, chatgpt_ui, 'needs Plus or Pro') }}</span>
+      <div class="pool-head">
+        <div class="section-heading">
+          <h2><img class="provider-logo" src="/static/logos/chatgpt.svg" alt="" aria-hidden="true">OpenAI paid</h2>
+          <span class="usage-sub">{{ pool_status(chatgpt_ok, chatgpt_ui, 'needs Plus or Pro') }}</span>
+        </div>
+        <div class="pool-controls">
+          {{ pool_own_toggle(chatgpt_ui) }}
+          {% if chatgpt_paid_accounts or chatgpt_free_accounts %}{{ mine_filter(chatgpt_ui, chatgpt_accounts, 'chatgpt') }}{% endif %}
+        </div>
       </div>
-      {{ pool_own_toggle(chatgpt_ui) }}
       {% if chatgpt_own_failed %}
       <p class="callout fault">{% if chatgpt_own_failed == 1 %}A ChatGPT account you linked is no longer signed in.{% else %}{{ chatgpt_own_failed }} ChatGPT accounts you linked are no longer signed in.{% endif %} They stay out of the pool until you remove them and add them again.</p>
       {% endif %}
       {% if chatgpt_paid_accounts %}
-      {{ source_table(chatgpt_paid_accounts, 'OpenAI', '/sources/chatgpt', 'Remove this ChatGPT account from the shared pool?', 'No paid OpenAI accounts in this list.', chatgpt_ui, 'chatgpt') }}
+      {{ source_table(chatgpt_paid_accounts, 'OpenAI', '/sources/chatgpt', 'Remove this ChatGPT account from the shared pool?', 'No paid OpenAI accounts in this list.', chatgpt_ui, 'chatgpt', False) }}
       {% elif not chatgpt_accounts %}
       <section class="panel"><p class="empty">{% if chatgpt_ok and chatgpt_reason == 'open' %}Optional — OpenAI is already unlocked. Add a ChatGPT account if you want to donate one.{% elif chatgpt_ui.uses_shared %}Add a ChatGPT Plus or Pro account to join the shared pool.{% else %}Add a ChatGPT Plus or Pro account. This pool is limited to accounts you link.{% endif %}</p></section>
       {% endif %}
@@ -326,16 +333,21 @@
         <h2><img class="provider-logo" src="/static/logos/chatgpt.svg" alt="" aria-hidden="true">OpenAI Free / Go</h2>
         <span class="usage-sub">{{ chatgpt_free_pool.count_label }}</span>
       </div>
-      {{ source_table(chatgpt_free_accounts, 'OpenAI', '/sources/chatgpt', 'Remove this ChatGPT account from the shared pool?', 'No Free or Go accounts in this list.', chatgpt_ui, 'chatgpt', not chatgpt_paid_accounts) }}
+      {{ source_table(chatgpt_free_accounts, 'OpenAI', '/sources/chatgpt', 'Remove this ChatGPT account from the shared pool?', 'No Free or Go accounts in this list.', chatgpt_ui, 'chatgpt', False) }}
     </section>
     {% endif %}
 
     <section class="stack-y">
-      <div class="section-heading">
-        <h2><img class="provider-logo" src="/static/logos/zai.svg" alt="" aria-hidden="true">Z.AI</h2>
-        <span class="usage-sub">{{ pool_status(zai_ok, zai_ui, 'needs a live plan') }}</span>
+      <div class="pool-head">
+        <div class="section-heading">
+          <h2><img class="provider-logo" src="/static/logos/zai.svg" alt="" aria-hidden="true">Z.AI</h2>
+          <span class="usage-sub">{{ pool_status(zai_ok, zai_ui, 'needs a live plan') }}</span>
+        </div>
+        <div class="pool-controls">
+          {{ pool_own_toggle(zai_ui) }}
+          {{ mine_filter(zai_ui, zai_accounts) }}
+        </div>
       </div>
-      {{ pool_own_toggle(zai_ui) }}
       {% if zai_reason == 'no_sub' %}
       <p class="callout fault">A Z.AI key is linked, but it is not showing a live GLM Coding Plan. GLM models stay locked unless you also link a live x.ai or OpenAI subscription.</p>
       {% elif zai_reason == 'unauthed' %}
@@ -348,11 +360,16 @@
     </section>
 
     <section class="stack-y">
-      <div class="section-heading">
-        <h2><img class="provider-logo" src="/static/logos/devin.svg" alt="" aria-hidden="true">Devin</h2>
-        <span class="usage-sub">{{ pool_status(devin_ok, devin_ui, 'needs a Devin sign-in') }}</span>
+      <div class="pool-head">
+        <div class="section-heading">
+          <h2><img class="provider-logo" src="/static/logos/devin.svg" alt="" aria-hidden="true">Devin</h2>
+          <span class="usage-sub">{{ pool_status(devin_ok, devin_ui, 'needs a Devin sign-in') }}</span>
+        </div>
+        <div class="pool-controls">
+          {{ pool_own_toggle(devin_ui) }}
+          {{ mine_filter(devin_ui, devin_accounts) }}
+        </div>
       </div>
-      {{ pool_own_toggle(devin_ui) }}
       {% if devin_reason == 'unauthed' %}
       <p class="callout fault">The linked Devin sign-in is no longer valid. Remove it and add the account again.</p>
       {% endif %}
@@ -363,11 +380,16 @@
     </section>
 
     <section class="stack-y">
-      <div class="section-heading">
-        <h2><img class="provider-logo" src="/static/logos/kimi.svg" alt="" aria-hidden="true">Kimi</h2>
-        <span class="usage-sub">{{ pool_status(kimi_ok, kimi_ui, 'needs a membership') }}</span>
+      <div class="pool-head">
+        <div class="section-heading">
+          <h2><img class="provider-logo" src="/static/logos/kimi.svg" alt="" aria-hidden="true">Kimi</h2>
+          <span class="usage-sub">{{ pool_status(kimi_ok, kimi_ui, 'needs a membership') }}</span>
+        </div>
+        <div class="pool-controls">
+          {{ pool_own_toggle(kimi_ui) }}
+          {{ mine_filter(kimi_ui, kimi_accounts) }}
+        </div>
       </div>
-      {{ pool_own_toggle(kimi_ui) }}
       {% if kimi_reason == 'no_sub' %}
       <p class="callout fault">A Kimi account is linked, but it is not showing an active membership. Kimi models stay locked.</p>
       {% elif kimi_reason == 'unauthed' %}
@@ -380,11 +402,16 @@
     </section>
 
     <section class="stack-y">
-      <div class="section-heading">
-        <h2><img class="provider-logo" src="/static/logos/mimo.svg" alt="" aria-hidden="true">Xiaomi</h2>
-        <span class="usage-sub">{{ pool_status(mimo_ok, mimo_ui, 'needs a Token Plan') }}</span>
+      <div class="pool-head">
+        <div class="section-heading">
+          <h2><img class="provider-logo" src="/static/logos/mimo.svg" alt="" aria-hidden="true">Xiaomi</h2>
+          <span class="usage-sub">{{ pool_status(mimo_ok, mimo_ui, 'needs a Token Plan') }}</span>
+        </div>
+        <div class="pool-controls">
+          {{ pool_own_toggle(mimo_ui) }}
+          {{ mine_filter(mimo_ui, mimo_accounts) }}
+        </div>
       </div>
-      {{ pool_own_toggle(mimo_ui) }}
       {% if mimo_reason == 'no_sub' %}
       <p class="callout fault">A Xiaomi key is linked, but it is not showing a Token Plan. MiMo models stay locked.</p>
       {% elif mimo_reason == 'unauthed' %}
@@ -397,11 +424,16 @@
     </section>
 
     <section class="stack-y">
-      <div class="section-heading">
-        <h2><img class="provider-logo" src="/static/logos/claude.svg" alt="" aria-hidden="true">Claude</h2>
-        <span class="usage-sub">{{ pool_status(claude_ok, claude_ui, 'needs a Claude sign-in') }}</span>
+      <div class="pool-head">
+        <div class="section-heading">
+          <h2><img class="provider-logo" src="/static/logos/claude.svg" alt="" aria-hidden="true">Claude</h2>
+          <span class="usage-sub">{{ pool_status(claude_ok, claude_ui, 'needs a Claude sign-in') }}</span>
+        </div>
+        <div class="pool-controls">
+          {{ pool_own_toggle(claude_ui) }}
+          {{ mine_filter(claude_ui, claude_accounts) }}
+        </div>
       </div>
-      {{ pool_own_toggle(claude_ui) }}
       {% if claude_reason == 'unauthed' %}
       <p class="callout fault">The linked Claude sign-in is no longer valid. Remove it and add the account again.</p>
       {% endif %}

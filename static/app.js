@@ -1723,4 +1723,13 @@ if (usageDashboard) {
     input.addEventListener("change", () => apply(input));
     apply(input);
   });
+
+  document.querySelectorAll("[data-pool-own]").forEach((input) => {
+    input.addEventListener("change", () => {
+      const form = input.form;
+      if (!form) return;
+      input.disabled = true;
+      form.submit();
+    });
+  });
 })();

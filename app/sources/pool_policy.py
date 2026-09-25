@@ -10,6 +10,8 @@ Two admin switches per pool, stored on sources.config:
 
 Users may opt out of sharing (own_only) when the admin has sharing on.
 That override cannot turn sharing back on when the admin has turned it off.
+Opting out is two-way: the user is routed only to accounts they linked, and
+accounts they donated are withheld from every other user.
 """
 
 from __future__ import annotations
@@ -182,11 +184,41 @@ def _donated_by(row) -> int | None:
         return None
 
 
+def _private_donors(kind: str) -> set[int]:
+    """Donors who opted out. Their accounts stay off the shared pool."""
+    if kind not in POOL_KIND_SET:
+        return set()
+    out: set[int] = set()
+    for row in db.fetchall("SELECT id, pool_prefs FROM users"):
+        try:
+            data = json.loads(row["pool_prefs"] or "{}")
+        except (json.JSONDecodeError, TypeError, KeyError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        item = data.get(kind)
+        if isinstance(item, dict) and item.get("own_only") is True:
+            try:
+                out.add(int(row["id"]))
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
 def filter_credentials(rows, kind: str, user_id: int | None):
-    """Keep only the donated accounts this user may be routed onto."""
-    if uses_shared_pool(user_id, kind):
-        return list(rows)
+    """Keep only the donated accounts this user may be routed onto.
+
+    A donor who opted out is never routed onto anyone else's account, and
+    nobody else — including an anonymous caller — is routed onto theirs.
+    """
+    private = _private_donors(kind)
+    if user_id is None:
+        if not private:
+            return list(rows)
+        return [row for row in rows if _donated_by(row) not in private]
     uid = int(user_id)
+    if uses_shared_pool(uid, kind):
+        return [row for row in rows if _donated_by(row) not in private or _donated_by(row) == uid]
     return [row for row in rows if _donated_by(row) == uid]
 
 
