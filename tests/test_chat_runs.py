@@ -65,7 +65,15 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
              patch.object(command_jobs, "mark_delivered") as acknowledge, \
              patch.object(runs, "start", new_callable=AsyncMock):
             await runs._wake_parent(1, run["thread_id"])
-            wake = store.get_run(1, store.thread_root_run(1, run["thread_id"])["id"])
+            # Both roots share created_at (second granularity) and the uuid
+            # tie-break in thread_root_run is a coin flip; the wake turn is
+            # deterministically the root that is not the original run.
+            roots = db.fetchall(
+                "SELECT id FROM chat_runs WHERE user_id=1 AND thread_id=? AND parent_run_id IS NULL",
+                (run["thread_id"],),
+            )
+            wake_id = next(row["id"] for row in roots if row["id"] != run["id"])
+            wake = store.get_run(1, wake_id)
             seed = wake["request"]["messages"][-1]["content"]
             self.assertIn(candidates[0]["summary"], seed)
             self.assertIn(commands[0]["envelope"], seed)
