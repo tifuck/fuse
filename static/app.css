@@ -369,7 +369,7 @@ label.check.is-locked {
   justify-content: space-between;
   gap: 0.75rem 1.25rem;
   flex-wrap: wrap;
-  margin-bottom: 0.65rem;
+  margin: 0.85rem 0 0;
 }
 .pool-head .section-heading { margin: 0; min-width: 0; }
 .pool-controls {
@@ -1951,6 +1951,8 @@ body:has(.usage-tabs) .page-head {
 .source-card > .callout { margin: 0.85rem 0 0; }
 .sources-page .usage-note { margin: 0; }
 .sources-page .stack-y > .section-heading { margin-bottom: 0; }
+.sources-page .stack-y > .pool-head { margin-top: 1.35rem; }
+.sources-page .stack-y > .pool-head + * { margin-top: calc(0.4rem - var(--gap)); }
 
 /* —— Responsive —— */
 @media (max-width: 1100px) {
