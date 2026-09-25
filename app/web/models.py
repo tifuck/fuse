@@ -32,7 +32,7 @@ def _reasoning_efforts(type_id: str, model: str | None = None) -> tuple[str, ...
     if type_id == "mimo":
         return ("none", "high")
     if type_id == "claude":
-        return ("none", "low", "medium", "high", "xhigh", "max")
+        return claude_mod.efforts_for(model)
     if type_id == "ollama":
         return ("none", "low", "medium", "high", "max")
     return ("none", "minimal", "low", "medium", "high", "xhigh", "max")
@@ -41,6 +41,8 @@ def _reasoning_efforts(type_id: str, model: str | None = None) -> tuple[str, ...
 def _reasoning_default(type_id: str, model: str | None = None) -> str:
     if type_id == "kimi":
         return kimi_mod.default_effort(model)
+    if type_id == "claude":
+        return claude_mod.default_effort(model)
     efforts = _reasoning_efforts(type_id, model)
     if not efforts:
         return ""
@@ -174,9 +176,10 @@ _MODEL_NAMES = {
     "k3-256k": "Kimi K3 256K",
     "kimi-for-coding": "K2.8 Preview",
     "kimi-for-coding-highspeed": "K2.7 Code HighSpeed",
-    "claude/claude-opus-4-6": "Claude Opus 4.6",
-    "claude/claude-sonnet-4-6": "Claude Sonnet 4.6",
-    "claude/claude-haiku-4-5": "Claude Haiku 4.5",
+    "claude/claude-opus-5-5": "Opus 5.5",
+    "claude/claude-sonnet-5": "Sonnet 5",
+    "claude/claude-fable-5-1": "Fable 5.1",
+    "claude/claude-haiku-4-5-20251001": "Haiku 4.5",
     "qwen3.8-27b-abliterated": "Qwen 3.8 27B Obliterated",
 }
 

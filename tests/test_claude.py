@@ -123,6 +123,44 @@ class ClaudeParseTest(unittest.TestCase):
         self.assertNotIn("thinking", payload)
         self.assertEqual(payload["temperature"], 0.2)
 
+    def test_usage_windows_become_percent(self):
+        parsed = claude_mod.parse_usage_payload(
+            {
+                "five_hour": {"utilization": 0.2, "resets_at": "2026-09-26T00:00:00Z"},
+                "seven_day": {"utilization": 55},
+            }
+        )
+        self.assertEqual(parsed["five_hour_percent"], 20.0)
+        self.assertEqual(parsed["weekly_percent"], 55.0)
+        self.assertEqual(parsed["credit_usage_percent"], 55.0)
+        self.assertEqual(len(parsed["windows"]), 2)
+
+    def test_catalog_keeps_first_party_models(self):
+        rows = claude_mod.parse_catalog_payload(
+            {
+                "surfaces": {
+                    "cc": {
+                        "model_selector_config": [
+                            {
+                                "models": [
+                                    {
+                                        "id": "claude-opus-5-5",
+                                        "name": "Opus 5.5",
+                                        "offered_on": ["first_party"],
+                                        "runtime": {"max_input_tokens": 1000000, "effort_levels": ["low", "medium"], "default_effort": "medium"},
+                                    },
+                                    {"id": "claude-opus-4-1-20250805", "name": "Opus 4.1", "offered_on": ["bedrock"]},
+                                ]
+                            }
+                        ]
+                    }
+                }
+            }
+        )
+        self.assertEqual([row["id"] for row in rows], ["claude-opus-5-5"])
+        self.assertEqual(rows[0]["window"], 1_000_000)
+        self.assertEqual(rows[0]["default_effort"], "medium")
+
     def test_missing_signature_is_dropped(self):
         payload = claude_mod.build_messages_payload(
             {

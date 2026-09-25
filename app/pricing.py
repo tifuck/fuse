@@ -107,12 +107,14 @@ DEFAULT_MIMO_PRICING: dict[str, tuple[tuple, tuple | None]] = {
 # Anthropic list prices (USD per million) for the Claude subscription pool.
 # input, cache read, cache write (1.25x), output. The plan itself is a subscription.
 DEFAULT_CLAUDE_PRICING: dict[str, tuple[tuple, tuple | None]] = {
-    "claude/claude-opus-4-6": (("5", "0.50", "6.25", "25"), None),
-    "claude/claude-sonnet-4-6": (("3", "0.30", "3.75", "15"), None),
-    "claude/claude-haiku-4-5": (("1", "0.10", "1.25", "5"), None),
-    "claude-opus-4-6": (("5", "0.50", "6.25", "25"), None),
-    "claude-sonnet-4-6": (("3", "0.30", "3.75", "15"), None),
-    "claude-haiku-4-5": (("1", "0.10", "1.25", "5"), None),
+    "claude/claude-opus-5-5": (("5", "0.50", "6.25", "25"), None),
+    "claude/claude-sonnet-5": (("3", "0.30", "3.75", "15"), None),
+    "claude/claude-fable-5-1": (("10", "1.00", "12.50", "50"), None),
+    "claude/claude-haiku-4-5-20251001": (("1", "0.10", "1.25", "5"), None),
+    "claude-opus-5-5": (("5", "0.50", "6.25", "25"), None),
+    "claude-sonnet-5": (("3", "0.30", "3.75", "15"), None),
+    "claude-fable-5-1": (("10", "1.00", "12.50", "50"), None),
+    "claude-haiku-4-5-20251001": (("1", "0.10", "1.25", "5"), None),
 }
 
 _LONG_CONTEXT_THRESHOLD = 272_000

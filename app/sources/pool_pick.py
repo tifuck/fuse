@@ -261,6 +261,8 @@ def pick_account(
             pct = kimi_usage_percent(extra)
         elif kind == "mimo":
             pct = mimo_usage_percent(extra)
+        elif kind == "claude":
+            pct = kimi_usage_percent(extra)
         else:
             pct = grok_usage_percent(cred, extra)
         busy = pct is not None and pct >= USAGE_BUSY

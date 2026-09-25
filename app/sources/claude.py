@@ -35,16 +35,19 @@ _refresh_locks: dict[int, asyncio.Lock] = {}
 _models_cache: tuple[float, list[str]] | None = None
 
 CLAUDE_MODELS = [
-    "claude/claude-opus-4-6",
-    "claude/claude-sonnet-4-6",
-    "claude/claude-haiku-4-5",
+    "claude/claude-opus-5-5",
+    "claude/claude-sonnet-5",
+    "claude/claude-fable-5-1",
+    "claude/claude-haiku-4-5-20251001",
 ]
 
 CLAUDE_MODEL_META = {
-    "claude-opus-4-6": {"name": "Claude Opus 4.6", "window": 200_000},
-    "claude-sonnet-4-6": {"name": "Claude Sonnet 4.6", "window": 200_000},
-    "claude-haiku-4-5": {"name": "Claude Haiku 4.5", "window": 200_000},
+    "claude-opus-5-5": {"name": "Opus 5.5", "window": 1_000_000, "efforts": ("low", "medium", "high", "xhigh", "max"), "default_effort": "medium"},
+    "claude-sonnet-5": {"name": "Sonnet 5", "window": 1_000_000, "efforts": ("low", "medium", "high", "xhigh", "max"), "default_effort": "high"},
+    "claude-fable-5-1": {"name": "Fable 5.1", "window": 1_000_000, "efforts": ("low", "medium", "high", "xhigh", "max"), "default_effort": "high"},
+    "claude-haiku-4-5-20251001": {"name": "Haiku 4.5", "window": 200_000, "efforts": (), "default_effort": ""},
 }
+_catalog_meta: dict[str, dict] = {}
 
 SCOPES = (
     "org:create_api_key",
@@ -111,19 +114,33 @@ def fuse_id(model: str) -> str:
     return "claude/" + mid
 
 
-def model_label(model: str) -> str:
+def _meta_for(model: str) -> dict:
     slug = upstream_id(model)
-    return str(CLAUDE_MODEL_META.get(slug, {}).get("name") or "")
+    return _catalog_meta.get(slug) or CLAUDE_MODEL_META.get(slug) or {}
+
+
+def model_label(model: str) -> str:
+    return str(_meta_for(model).get("name") or "")
 
 
 def model_window(model: str) -> int | None:
-    slug = upstream_id(model)
-    raw = CLAUDE_MODEL_META.get(slug, {}).get("window")
+    raw = _meta_for(model).get("window")
     try:
         value = int(raw or 0)
     except (TypeError, ValueError):
         return None
     return value if value > 0 else None
+
+
+def efforts_for(model: str | None = None) -> tuple[str, ...]:
+    efforts = _meta_for(model or "").get("efforts")
+    if efforts is None:
+        return ("low", "medium", "high", "xhigh", "max")
+    return tuple(efforts)
+
+
+def default_effort(model: str | None = None) -> str:
+    return str(_meta_for(model or "").get("default_effort") or "")
 
 
 def _row_get(row, key, default=None):
@@ -323,6 +340,89 @@ def account_email(extra: dict | None) -> str:
     return ""
 
 
+def _window_percent(raw) -> float | None:
+    if not isinstance(raw, dict):
+        return None
+    value = raw.get("utilization")
+    if value is None:
+        value = raw.get("used_ratio")
+    try:
+        pct = float(value)
+    except (TypeError, ValueError):
+        return None
+    if pct <= 1:
+        pct *= 100
+    if pct < 0:
+        return None
+    return max(0.0, min(100.0, pct))
+
+
+def parse_usage_payload(data: dict) -> dict:
+    """Claude Code's /api/oauth/usage windows. Utilization is 0..1 or 0..100."""
+    data = data if isinstance(data, dict) else {}
+    windows = []
+    for key, label in (("five_hour", "5-hour"), ("seven_day", "Weekly"), ("seven_day_overage_included", "Weekly extra")):
+        raw = data.get(key)
+        pct = _window_percent(raw)
+        if pct is None:
+            continue
+        reset = ""
+        if isinstance(raw, dict):
+            reset = str(raw.get("resets_at") or raw.get("resetsAt") or "")
+        windows.append({"id": key, "label": label, "percent": pct, "resets_at": reset})
+    peak = max((row["percent"] for row in windows), default=None)
+    return {
+        "windows": windows,
+        "credit_usage_percent": peak,
+        "five_hour_percent": next((row["percent"] for row in windows if row["id"] == "five_hour"), None),
+        "weekly_percent": next((row["percent"] for row in windows if row["id"] == "seven_day"), None),
+        "resets_at": next((row["resets_at"] for row in windows if row["resets_at"]), ""),
+    }
+
+
+def parse_catalog_payload(data: dict) -> list[dict]:
+    """First-party models from the published Claude Code catalog."""
+    surfaces = data.get("surfaces") if isinstance(data, dict) else None
+    cc = surfaces.get("cc") if isinstance(surfaces, dict) else None
+    configs = cc.get("model_selector_config") if isinstance(cc, dict) else None
+    rows = []
+    seen = set()
+    for cfg in configs or []:
+        if not isinstance(cfg, dict):
+            continue
+        for model in cfg.get("models") or []:
+            if not isinstance(model, dict):
+                continue
+            offered = model.get("offered_on")
+            if isinstance(offered, list) and offered and "first_party" not in offered:
+                continue
+            mid = str(model.get("id") or "").strip()
+            if not mid or mid in seen or not mid.startswith("claude-"):
+                continue
+            seen.add(mid)
+            runtime = model.get("runtime") if isinstance(model.get("runtime"), dict) else {}
+            thinking = model.get("thinking") if isinstance(model.get("thinking"), dict) else {}
+            efforts = runtime.get("effort_levels")
+            if not isinstance(efforts, list):
+                options = thinking.get("effort_options") if isinstance(thinking.get("effort_options"), list) else []
+                efforts = [str(opt.get("id")) for opt in options if isinstance(opt, dict) and opt.get("id")]
+            efforts = tuple(str(item) for item in efforts if isinstance(item, str) and item)
+            try:
+                window = int(runtime.get("max_input_tokens") or 0)
+            except (TypeError, ValueError):
+                window = 0
+            rows.append(
+                {
+                    "id": mid,
+                    "name": str(model.get("name") or mid),
+                    "window": window or 200_000,
+                    "efforts": efforts,
+                    "default_effort": str(runtime.get("default_effort") or ""),
+                }
+            )
+    return rows
+
+
 def _profile_billing(profile: dict) -> dict:
     org = profile.get("organization") if isinstance(profile.get("organization"), dict) else {}
     account = profile.get("account") if isinstance(profile.get("account"), dict) else {}
@@ -367,6 +467,33 @@ async def fetch_profile(token: str) -> dict | None:
     except json.JSONDecodeError:
         return None
     return data if isinstance(data, dict) else None
+
+
+async def fetch_usage(token: str) -> tuple[dict | None, str]:
+    if not token:
+        return None, "missing token"
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(
+                settings.claude_api_base.rstrip("/") + "/api/oauth/usage",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/json",
+                    "anthropic-beta": "oauth-2025-04-20",
+                    "Cache-Control": "no-cache",
+                },
+            )
+    except httpx.HTTPError:
+        return None, "usage request failed"
+    if r.status_code != 200:
+        return None, f"usage http {r.status_code}"
+    try:
+        data = r.json()
+    except json.JSONDecodeError:
+        return None, "usage was not json"
+    if not isinstance(data, dict):
+        return None, "usage was not an object"
+    return parse_usage_payload(data), ""
 
 
 def _store_billing(cred_id: int, billing: dict) -> dict:
@@ -419,11 +546,21 @@ async def refresh_quota(cred, *, force: bool = False) -> dict | None:
                     extra = accounts.cred_extra(row)
         token = _bearer(row, extra)
         profile = await fetch_profile(token)
-        if not profile:
+        parsed, err = await fetch_usage(token)
+        if not profile and parsed is None:
             if billing.get("fetched_at"):
                 return billing
-            return _store_billing(row["id"], {"last_error": "profile unavailable", "fetched_at": ""})
-        return _store_billing(row["id"], _profile_billing(profile))
+            return _store_billing(row["id"], {"last_error": err or "usage unavailable", "fetched_at": ""})
+        merged = dict(billing)
+        if profile:
+            merged.update(_profile_billing(profile))
+        if parsed is not None:
+            merged.update(parsed)
+            merged["last_error"] = ""
+            merged["fetched_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        elif err:
+            merged["last_error"] = err
+        return _store_billing(row["id"], merged)
 
 
 async def exchange_code(code: str, verifier: str, state: str) -> dict:
@@ -545,6 +682,14 @@ async def _refresh_one_unlocked(cred) -> bool:
 async def refresh_one(cred) -> bool:
     async with _refresh_lock(int(cred["id"])):
         return await _refresh_one_unlocked(cred)
+
+
+async def refresh_pool_quota(*, force: bool = False) -> None:
+    rows = db.fetchall(
+        "SELECT c.* FROM credentials c JOIN sources s ON s.id=c.source_id WHERE s.type='claude' AND c.disabled=0"
+    )
+    if rows:
+        await asyncio.gather(*(refresh_quota(c, force=force) for c in rows), return_exceptions=True)
 
 
 async def refresh_due() -> None:
@@ -1198,18 +1343,43 @@ def _chat_headers(token: str) -> dict:
     }
 
 
-def _remember_models(names: list[str]) -> list[str]:
-    global _models_cache
-    cleaned = []
-    for name in names:
-        fid = fuse_id(name)
-        if fid and fid not in cleaned and is_claude_model(fid):
-            cleaned.append(fid)
-    for seeded in CLAUDE_MODELS:
-        if seeded not in cleaned:
-            cleaned.append(seeded)
-    _models_cache = (time.time(), cleaned)
-    return cleaned
+def _remember_models(rows: list[dict]) -> list[str]:
+    global _models_cache, _catalog_meta
+    names = []
+    meta = {}
+    for row in rows:
+        fid = fuse_id(str(row.get("id") or ""))
+        if not fid or not is_claude_model(fid) or fid in names:
+            continue
+        names.append(fid)
+        meta[upstream_id(fid)] = row
+    if not names:
+        names = list(CLAUDE_MODELS)
+        meta = {upstream_id(mid): {"id": upstream_id(mid), **CLAUDE_MODEL_META[upstream_id(mid)]} for mid in names}
+    else:
+        for seeded in CLAUDE_MODELS:
+            if seeded not in names:
+                names.append(seeded)
+            slug = upstream_id(seeded)
+            meta.setdefault(slug, {"id": slug, **CLAUDE_MODEL_META.get(slug, {})})
+    _catalog_meta = meta
+    _models_cache = (time.time(), names)
+    return names
+
+
+async def fetch_catalog() -> list[str]:
+    now = time.time()
+    if _models_cache and now - _models_cache[0] < 300 and _models_cache[1]:
+        return list(_models_cache[1])
+    rows: list[dict] = []
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.get("https://downloads.claude.ai/model-catalog/v1/catalog.json")
+            if r.status_code == 200 and isinstance(r.json(), dict):
+                rows = parse_catalog_payload(r.json())
+    except (httpx.HTTPError, json.JSONDecodeError, ValueError):
+        rows = []
+    return _remember_models(rows)
 
 
 class ClaudeSource:
@@ -1233,9 +1403,8 @@ class ClaudeSource:
         )
 
     async def models(self) -> list[str]:
-        if _models_cache and time.time() - _models_cache[0] < 60 and _models_cache[1]:
-            return list(_models_cache[1])
-        return _remember_models(list(CLAUDE_MODELS))
+        names = await fetch_catalog()
+        return names or list(CLAUDE_MODELS)
 
     async def _post(self, client: httpx.AsyncClient, token: str, payload: dict):
         url = settings.claude_api_base.rstrip("/") + "/v1/messages"
@@ -1244,6 +1413,7 @@ class ClaudeSource:
 
     async def chat(self, body: dict, *, session_id: str | None = None, user_id: int | None = None) -> ChatResult:
         await refresh_due()
+        await refresh_pool_quota()
         self.creds = pool_policy.filter_credentials(
             db.fetchall(
                 "SELECT * FROM credentials WHERE source_id=? AND disabled=0",

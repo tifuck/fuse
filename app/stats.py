@@ -944,7 +944,17 @@ def claude_pool_meter(rows) -> dict:
             unread += 1
             continue
         plans.append(str(billing.get("plan_type") or extra.get("subscription_type") or "Claude"))
-        unread += 1
+        pct = _as_float(billing.get("credit_usage_percent"))
+        if pct is None:
+            for win in billing.get("windows") or []:
+                if isinstance(win, dict):
+                    pct = _as_float(win.get("percent"))
+                    if pct is not None:
+                        break
+        if pct is None:
+            unread += 1
+            continue
+        percents.append(pct)
     return _finish_pool_meter(percents, plans, unread)
 
 

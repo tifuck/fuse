@@ -75,9 +75,10 @@ KNOWN_WINDOWS = {
     "mimo-v2.6-flash": 1_048_576,
     "mimo-v2.5-pro": 1_048_576,
     "mimo-v2.5": 1_048_576,
-    "claude/claude-opus-4-6": 200_000,
-    "claude/claude-sonnet-4-6": 200_000,
-    "claude/claude-haiku-4-5": 200_000,
+    "claude/claude-opus-5-5": 1_000_000,
+    "claude/claude-sonnet-5": 1_000_000,
+    "claude/claude-fable-5-1": 1_000_000,
+    "claude/claude-haiku-4-5-20251001": 200_000,
 }
 
 TYPE_WINDOWS = {
@@ -87,7 +88,7 @@ TYPE_WINDOWS = {
     "devin": 200_000,
     "kimi": 262_144,
     "mimo": 1_048_576,
-    "claude": 200_000,
+    "claude": 1_000_000,
     "openrouter": 128_000,
     "openai": 128_000,
     "ollama": 128_000,
