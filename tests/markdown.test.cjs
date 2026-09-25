@@ -132,3 +132,24 @@ test('looksLikeDiff detects unified hunks', () => {
   assert.equal(ctx.looksLikeDiff('--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new'), true);
   assert.equal(ctx.looksLikeDiff('plain output'), false);
 });
+
+test('loose ordered lists stay one list instead of restarting at 1', () => {
+  const html = md('1. first\n\n1. second\n   continued\n\n1. third\n\nAfter');
+  assert.equal((html.match(/<ol/g) || []).length, 1);
+  assert.equal((html.match(/<li>/g) || []).length, 3);
+  assert.match(html, /second continued/);
+  assert.match(html, /<\/ol><p>After<\/p>/);
+});
+
+test('ordered lists keep an explicit starting number', () => {
+  assert.match(md('3. three\n4. four'), /^<ol start="3"><li>three<\/li><li>four<\/li><\/ol>$/);
+  assert.match(md('1. one'), /^<ol><li>one<\/li><\/ol>$/);
+});
+
+test('a list may interrupt a paragraph without a blank line', () => {
+  assert.equal(md('**box** — host\n- Roots: /tmp\n- Projects: a\n**next** — x'),
+    '<p><strong>box</strong> — host</p><ul><li>Roots: /tmp</li><li>Projects: a</li></ul><p><strong>next</strong> — x</p>');
+  assert.equal(md('Steps:\n1. a\n2. b'), '<p>Steps:</p><ol><li>a</li><li>b</li></ol>');
+  // Only an ordered list starting at 1 may interrupt; "2024." is prose.
+  assert.equal(md('Year was\n2024. Then more'), '<p>Year was<br>2024. Then more</p>');
+});

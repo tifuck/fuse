@@ -22,15 +22,14 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,700&family=Red+Hat+Mono:ital,wght@0,400;0,500;1,400&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/app.css?v=261">
+  <link rel="stylesheet" href="/static/app.css?v=263">
   {% if is_settings %}
   <script src="/static/chat-appearance.js?v=16"></script>
-  <link rel="stylesheet" href="/static/chat-design.css?v=170">
+  <link rel="stylesheet" href="/static/chat-design.css?v=172">
   {% endif %}
   {% block head_extra %}{% endblock %}
 </head>
 <body class="{% if is_artifact %}is-artifact-page{% elif user %}is-app{% else %}is-auth{% endif %}{% if is_chat %} is-chat{% endif %}{% if is_settings %} is-settings{% endif %}">
-  <div class="fuse-wire" aria-hidden="true"></div>
   {% if user and not is_artifact %}
   <a class="skip" href="#content">Skip to content</a>
   {% endif %}

@@ -857,7 +857,26 @@
     const match = String(line || "").match(/^(\s*)([-*+]|\d+\.)\s+(.*)$/);
     if (!match) return null;
     const indent = match[1].replace(/\t/g, "  ").length;
-    return { indent, ordered: /^\d+\./.test(match[2]), text: match[3] };
+    const ordered = /^\d+\./.test(match[2]);
+    return { indent, ordered, number: ordered ? parseInt(match[2], 10) : 0, text: match[3] };
+  }
+
+  // Loose lists put blank lines between items; the block splitter would
+  // otherwise emit one list per item and restart every ordinal at 1.
+  function mergeListBlocks(blocks) {
+    const out = [];
+    blocks.forEach((block) => {
+      const prev = out[out.length - 1];
+      const lines = block.trim().split("\n");
+      if (prev !== undefined && block.trim() && looksLikeListBlock(prev.trim().split("\n")) &&
+          (parseListMarker(lines[0]) || /^\s{2,}\S/.test(block.replace(/^\n+/, ""))) &&
+          looksLikeListBlock([...prev.trim().split("\n"), ...block.replace(/^\n+/, "").split("\n")])) {
+        out[out.length - 1] = prev.replace(/\s+$/, "") + "\n" + block.replace(/^\n+/, "");
+        return;
+      }
+      out.push(block);
+    });
+    return out;
   }
 
   function looksLikeListBlock(lines) {
@@ -870,7 +889,7 @@
     lines.forEach((line) => {
       const marker = parseListMarker(line);
       if (marker) {
-        items.push({ indent: marker.indent, ordered: marker.ordered, parts: [marker.text] });
+        items.push({ indent: marker.indent, ordered: marker.ordered, number: marker.number, parts: [marker.text] });
         return;
       }
       if (items.length && line.trim()) items[items.length - 1].parts.push(line.trim());
@@ -884,30 +903,31 @@
         html += "</li></" + stack.pop().tag + ">";
       }
     };
+    const open = (tag, item) => (tag === "ol" && item.number > 1 ? `<ol start="${item.number}">` : `<${tag}>`);
     items.forEach((item) => {
       const indent = item.indent < rootIndent ? rootIndent : item.indent;
       const tag = item.ordered ? "ol" : "ul";
       const body = renderInline(item.parts.join(" "));
       if (!stack.length) {
-        html += `<${tag}><li>${body}`;
+        html += `${open(tag, item)}<li>${body}`;
         stack.push({ indent, tag });
         return;
       }
       const top = stack[stack.length - 1];
       if (indent > top.indent) {
-        html += `<${tag}><li>${body}`;
+        html += `${open(tag, item)}<li>${body}`;
         stack.push({ indent, tag });
         return;
       }
       closeTo(indent + 1);
       const parent = stack[stack.length - 1];
       if (!parent || parent.indent !== indent) {
-        html += `<${tag}><li>${body}`;
+        html += `${open(tag, item)}<li>${body}`;
         stack.push({ indent, tag });
         return;
       }
       if (parent.tag !== tag) {
-        html += `</li></${parent.tag}><${tag}><li>${body}`;
+        html += `</li></${parent.tag}>${open(tag, item)}<li>${body}`;
         parent.tag = tag;
         return;
       }
@@ -1082,12 +1102,43 @@
       const list = renderList(lines);
       if (list) return list;
     }
+    const mixed = splitParagraphLists(lines);
+    if (mixed) return mixed;
     return `<p>${renderInline(lines.join("\n")).replace(/\n/g, "<br>")}</p>`;
   }
 
+  // CommonMark lets a list interrupt a paragraph without a blank line
+  // ("Intro:\n- a\n- b"). Only bullets or an ordered list starting at 1 may.
+  function splitParagraphLists(lines) {
+    const opens = (line) => {
+      const marker = parseListMarker(line);
+      return Boolean(marker && (!marker.ordered || marker.number === 1));
+    };
+    if (!lines.some((line, index) => index > 0 && opens(line))) return "";
+    let html = "";
+    let para = [];
+    let list = [];
+    const flushPara = () => {
+      if (para.length) html += `<p>${renderInline(para.join("\n")).replace(/\n/g, "<br>")}</p>`;
+      para = [];
+    };
+    const flushList = () => {
+      if (list.length) html += renderList(list);
+      list = [];
+    };
+    lines.forEach((line) => {
+      if (list.length && (parseListMarker(line) || /^\s{2,}\S/.test(line))) { list.push(line); return; }
+      if (opens(line)) { flushPara(); list.push(line); return; }
+      flushList();
+      para.push(line);
+    });
+    flushList();
+    flushPara();
+    return html;
+  }
+
   function renderBlocks(text, catalog, streaming) {
-    return rewriteCites(String(text || ""), catalog, streaming)
-      .split(/\n{2,}/)
+    return mergeListBlocks(rewriteCites(String(text || ""), catalog, streaming).split(/\n{2,}/))
       .map((block) => {
         const trimmed = block.trim();
         if (!trimmed) return "";
@@ -1192,9 +1243,17 @@
     let fence = false, boundary = 0;
     for (let i = 0; i < text.length; i += 1) {
       if (text.startsWith("```", i)) { fence = !fence; i += 2; continue; }
-      if (!fence && text[i] === "\n" && text[i + 1] === "\n") boundary = i + 2;
+      // A list may continue past a blank line (loose items), so never freeze
+      // right after one: the renderer merges it with the next block.
+      if (!fence && text[i] === "\n" && text[i + 1] === "\n" && !mdEndsInList(text, i)) boundary = i + 2;
     }
     return boundary;
+  }
+
+  function mdEndsInList(text, end) {
+    const start = text.lastIndexOf("\n\n", end - 1);
+    const lines = text.slice(start < 0 ? 0 : start + 2, end).split("\n").filter((line) => line.trim());
+    return lines.length > 0 && looksLikeListBlock(lines);
   }
 
   function _mdNodeKey(node) {
@@ -3546,38 +3605,20 @@
 
   let chatBarFitRaf = 0;
 
+  // Mobile wraps the bar onto extra rows; publish its measured height so the
+  // thread and top fade clear it. Desktop is a fixed single row.
   function fitChatBar() {
     const bar = root.querySelector(".chat-bar");
     if (!bar) return;
     const following = stickToBottom;
     const savedTop = thread ? thread.scrollTop : 0;
     const beforeH = root.style.getPropertyValue("--chat-bar-h");
-    const beforeCompact = bar.classList.contains("is-compact");
     if (window.matchMedia("(max-width: 800px)").matches) {
-      bar.classList.remove("is-compact");
       root.style.setProperty("--chat-bar-h", Math.ceil(bar.getBoundingClientRect().height) + "px");
-      if (following && (beforeH !== root.style.getPropertyValue("--chat-bar-h") || beforeCompact)) restoreThreadScroll(true, savedTop);
-      return;
+    } else {
+      root.style.removeProperty("--chat-bar-h");
     }
-    root.style.removeProperty("--chat-bar-h");
-    const actions = bar.querySelector(".chat-bar-actions");
-    if (!actions) return;
-    bar.classList.remove("is-compact");
-    const overflow = bar.scrollWidth - bar.clientWidth > 1;
-    const actionsOverflow = actions.scrollWidth - actions.clientWidth > 1;
-    const titleWrap = titleEl && titleEl.closest(".chat-bar-title");
-    const titled = Boolean(
-      titleWrap &&
-      titleEl &&
-      !titleEl.classList.contains("is-untitled") &&
-      getComputedStyle(titleWrap).display !== "none"
-    );
-    const titleBox = titled ? titleWrap.getBoundingClientRect().width : 0;
-    const titleCrushed = titled && titleEl.scrollWidth - titleWrap.clientWidth > 1 && titleBox < 88;
-    bar.classList.toggle("is-compact", overflow || actionsOverflow || titleCrushed);
-    if (following && (beforeH !== root.style.getPropertyValue("--chat-bar-h") || beforeCompact !== bar.classList.contains("is-compact"))) {
-      restoreThreadScroll(true, savedTop);
-    }
+    if (following && beforeH !== root.style.getPropertyValue("--chat-bar-h")) restoreThreadScroll(true, savedTop);
   }
 
   function scheduleFitChatBar() {
@@ -3697,12 +3738,11 @@
     const next = tab === "projects" ? "projects" : "chats";
     const persist = !opts || opts.persist !== false;
     const silent = Boolean(opts && opts.silent);
+    if (next !== historyTab) showArchived = false;
     historyTab = next;
     if (persist) {
       try { localStorage.setItem(STORE_TAB, next); } catch (_) {}
     }
-    if (next === "chats") showArchived = showArchived;
-    else showArchived = false;
     syncHistoryChrome();
     if (!silent) renderHistory();
   }
@@ -3736,8 +3776,15 @@
     syncComposer();
   }
 
+  // Archived threads belong to the tab of their kind: project sessions under
+  // Projects, everything else under Chats.
+  function archivedForTab() {
+    const projectTab = historyTab === "projects";
+    return archivedThreads.filter((item) => (item.kind === "project") === projectTab);
+  }
+
   function filteredHistory() {
-    const source = showArchived ? archivedThreads : threads.filter((item) => item.kind !== "project");
+    const source = showArchived ? archivedForTab() : threads.filter((item) => item.kind !== "project");
     const q = historyQuery.trim().toLowerCase();
     if (!q) return [...source].sort(runningFirst);
     if (searchActiveQuery && searchActiveQuery.toLowerCase() === q) {
@@ -3883,7 +3930,7 @@
     const secs = Math.max(0, Math.floor((Date.now() - ts) / 1000));
     if (secs < 60) return "now";
     const mins = Math.floor(secs / 60);
-    if (mins < 60) return mins + "M";
+    if (mins < 60) return mins + "m";
     const hours = Math.floor(mins / 60);
     if (hours < 24) return hours + "h";
     const days = Math.floor(hours / 24);
@@ -4120,10 +4167,15 @@
         historyKicker.hidden = true;
       }
     }
+    const archived = archivedForTab();
     if (archivedBtn) {
-      archivedBtn.hidden = searching || historyTab !== "chats" || (archivedThreads.length === 0 && !showArchived);
+      archivedBtn.hidden = searching || (archived.length === 0 && !showArchived);
       archivedBtn.classList.toggle("is-on", showArchived);
-      archivedBtn.textContent = showArchived ? "Back to chats" : "Archived (" + archivedThreads.length + ")";
+      archivedBtn.setAttribute("aria-pressed", String(showArchived));
+      const label = archivedBtn.querySelector("[data-history-archived-label]");
+      const count = archivedBtn.querySelector("[data-history-archived-count]");
+      if (label) label.textContent = showArchived ? (historyTab === "projects" ? "Back to projects" : "Back to chats") : "Archived";
+      if (count) count.textContent = showArchived ? "" : String(archived.length);
     }
     if (searching) {
       const q = historyQuery.trim().toLowerCase();
@@ -4153,10 +4205,9 @@
       return;
     }
     if (showArchived) {
-      const items = archivedThreads;
-      historyList.innerHTML = items.length
-        ? items.map((item) => historyRow(item)).join("")
-        : `<p class="chat-history-empty">No archived chats.</p>`;
+      historyList.innerHTML = archived.length
+        ? archived.map((item) => historyRow(item)).join("")
+        : `<p class="chat-history-empty">${historyTab === "projects" ? "No archived project sessions." : "No archived chats."}</p>`;
       syncHistoryFooter();
       return;
     }
@@ -6061,6 +6112,7 @@
     watch: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="8" r="5.1" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8 5.2v3.1l2 1.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     tools: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M6.2 9.8L3.4 12.6M10.4 3.2l2.4 2.4-6.1 6.1H4.3V9.3z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>',
     skill: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3.1 3.2h3.5c.8 0 1.4.3 1.4 1.1 0-.8.6-1.1 1.4-1.1h3.5v9.1H9.5c-.9 0-1.5.3-1.5 1.1 0-.8-.6-1.1-1.5-1.1H3.1z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/><path d="M8 4.3v9.1" fill="none" stroke="currentColor" stroke-width="1.25"/></svg>',
+    await: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4.6 2.6h6.8M4.6 13.4h6.8M5.4 2.6c0 2.6 2.6 3.6 2.6 5.4S5.4 10.8 5.4 13.4M10.6 2.6c0 2.6-2.6 3.6-2.6 5.4s2.6 2.8 2.6 5.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     agent: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="5.2" cy="6.2" r="1.7" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="10.8" cy="6.2" r="1.7" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M3.5 12.2c.4-1.6 1.5-2.5 3-2.5s2.6.9 3 2.5M9.3 9.7c.5-.3 1.1-.5 1.7-.5 1.5 0 2.6.9 3 2.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
   };
   const STEP_CHEVRON =
@@ -7119,7 +7171,7 @@
   function toolIcon(name, failed, interrupted) {
     if (failed) return STEP_ICONS.error;
     if (interrupted) return STEP_ICONS.stop;
-    return STEP_ICONS[TOOL_ICON[name] || "tool"];
+    return STEP_ICONS[TOOL_ICON[name]] || STEP_ICONS.tool;
   }
 
   function toolPathLeaf(path) {
@@ -7174,18 +7226,21 @@
   function toolSubject(trace) {
     const name = trace.name;
     if (name === "monitor") return toolText(trace.url || displayCommand(trace) || executionIdentity(trace) || "watch");
-    if (isShellExecTool(name)) return toolText(displayCommand(trace) || executionIdentity(trace) || "command");
+    if (isShellExecTool(name)) return toolText(commandFor(trace) || "command");
     if (["read_file", "write_file", "search_replace", "list_dir"].includes(name)) {
       const range = name === "read_file" && Number.isFinite(trace.offset) ? ` :${trace.offset}${Number.isFinite(trace.limit) ? `–${trace.offset + trace.limit - 1}` : ""}` : "";
       return compactPath(trace.path || ".", trace) + range;
     }
     if (["grep", "glob"].includes(name)) return [toolText(trace.pattern || trace.query || "pattern", 90), trace.path ? `in ${compactPath(trace.path, trace, 36)}` : ""].filter(Boolean).join(" ");
     if (["spawn_subagent", "get_subagent_output", "kill_subagent"].includes(name)) {
-      const label = toolText(trace.description || executionIdentity(trace) || "subagent", 120);
+      const label = toolText(agentDescriptionFor(trace) || "subagent", 120);
       return name === "spawn_subagent" && trace.model ? `${label} · ${toolText(trace.model, 40)}` : label;
     }
     if (name === "read_url") { try { const u = new URL(trace.url); return u.hostname.replace(/^www\./, "") + (u.pathname === "/" ? "" : compactPath(u.pathname, {}, 45)); } catch { return trace.url || "page"; } }
-    if (isSearchTool(name)) return searchQueries(trace).length === 1 ? toolText(searchQueries(trace)[0], 100) : `${searchCountFor(trace)} queries`;
+    if (isSearchTool(name)) {
+      const n = searchCountFor(trace);
+      return searchQueries(trace).length === 1 ? toolText(searchQueries(trace)[0], 100) : `${n} ${n === 1 ? "query" : "queries"}`;
+    }
     if (name === "create_artifact" || name === "update_artifact") return trace.title || "artifact";
     if (name === "load_skill") return [trace.preview || "skill", trace.path ? compactPath(trace.path, trace) : ""].filter(Boolean).join(" / ");
     if (name === "fuse-steer") return trace.summary || "New instruction";
@@ -7196,7 +7251,7 @@
     const labels = { read_file: "Read", list_dir: "List", grep: "Grep", glob: "Glob", write_file: "Write", search_replace: "Edit",
       run_terminal_command: "Shell", get_command_output: "Output", kill_command: "Stop", monitor: "Watch", spawn_subagent: "Agent",
       get_subagent_output: "Result", kill_subagent: "Stop", list_subagents: "Agents", search_models: "Models", search_tools: "Tools",
-      load_skill: "Skill", propose_skill: "Draft", todo_write: "Tasks", read_url: "Page", web_search: "Search", search: "Search",
+      load_skill: "Skill", propose_skill: "Draft", todo_write: "Tasks", scratch: "Scratch", read_url: "Page", web_search: "Search", search: "Search",
       create_artifact: "Create", update_artifact: "Update", "fuse-steer": "Notice" };
     return labels[trace.name] || String(trace.name || "Tool").replaceAll("_", " ");
   }
@@ -7237,8 +7292,32 @@
     return shortToolText(text, max || 80);
   }
 
+  // Follow-up calls (await/stop) often carry only an id; the readable label
+  // lives on the call that started the work.
+  function relatedTrace(match) {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const found = (messages[i].tools || []).find(match);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  function agentDescriptionFor(trace) {
+    if (trace && trace.description) return trace.description;
+    const id = trace && trace.child_id;
+    return id ? relatedTrace((t) => t.name === "spawn_subagent" && t.child_id === id && t.description)?.description || "" : "";
+  }
+
+  function commandFor(trace) {
+    const own = displayCommand(trace);
+    if (own) return own;
+    const id = trace && (trace.command_id || trace.child_id || trace.job_id);
+    const origin = id ? relatedTrace((t) => (t.name === "run_terminal_command" || t.name === "monitor") && (t.command_id === id || t.child_id === id) && t.command) : null;
+    return origin ? displayCommand(origin) : "";
+  }
+
   function agentSubject(trace) {
-    const description = stripPreview(trace && trace.description, 60);
+    const description = stripPreview(agentDescriptionFor(trace), 60);
     if (description) return description;
     if (trace && trace.status === "error") return "";
     return stripPreview(trace && trace.preview, 80);
@@ -7282,6 +7361,110 @@
     return isCliView() || isConsoleView();
   }
 
+  // Tool output carries transport framing the reader never needs: a
+  // "From host X:" banner, and absolute project paths in listings.
+  function cleanToolOutput(trace, text) {
+    let out = String(text || "").replace(/^From host [^\n]*:\n/, "");
+    const root = String((trace && (trace.project_root || trace.cwd)) || "").replace(/\/+$/, "");
+    if (root.length > 1 && root !== "~" && ["grep", "glob", "list_dir"].includes(trace && trace.name)) {
+      out = out.split(root + "/").join("");
+    }
+    return out;
+  }
+
+  // read_file returns "NNN: text" lines. Split them so every view draws one
+  // gutter with the real file line numbers instead of numbering the numbers.
+  function splitNumberedLines(text) {
+    const lines = String(text || "").replace(/\s+$/, "").split("\n");
+    // A truncated read can end mid-line ("82"); drop that fragment.
+    if (lines.length > 1 && !/^\s*\d+:/.test(lines[lines.length - 1])) lines.pop();
+    const rows = lines.map((line) => line.match(/^\s*(\d+):\s?(.*)$/));
+    if (!lines.length || rows.some((row) => !row)) return null;
+    const start = Number(rows[0][1]);
+    if (!rows.every((row, i) => Number(row[1]) === start + i)) return null;
+    return { start, text: rows.map((row) => row[2]).join("\n") };
+  }
+
+  function fileBodyHtml(trace, body, limit) {
+    const parsed = trace.name === "read_file" ? splitNumberedLines(body) : null;
+    return consoleNumberedHtml(parsed ? parsed.text : body, { limit, lang: consoleLangForPath(trace.path), start: parsed ? parsed.start : 1 });
+  }
+
+  function kvListHtml(rows, limit = 12) {
+    const items = rows.filter((row) => row && row.title).map((row) =>
+      `<div class="chat-kv-row">${row.state ? `<span class="chat-kv-dot is-${escapeHtml(row.state)}" aria-hidden="true"></span>` : ""}` +
+      `<span class="chat-kv-title">${escapeHtml(row.title)}</span>${row.detail ? `<span class="chat-kv-detail">${escapeHtml(row.detail)}</span>` : ""}</div>`);
+    if (!items.length) return "";
+    const extra = items.length > limit ? `<div class="chat-console-more">… +${items.length - limit} more</div>` : "";
+    return `<div class="chat-kv-list">${items.slice(0, limit).join("")}</div>${extra}`;
+  }
+
+  // Several tools return model-facing payloads (JSON, XML-ish envelopes,
+  // safety preambles). Render the part a person wants; null = use raw text.
+  function structuredToolHtml(trace, output) {
+    const name = trace && trace.name;
+    const text = String(output || "").trim();
+    if (!text) return null;
+    const json = () => { try { return JSON.parse(text); } catch (_) { return null; } };
+    // Retained output can be cut mid-payload; salvage the complete objects.
+    const objects = () => (text.match(/\{[^{}]*\}/g) || []).map((raw) => { try { return JSON.parse(raw); } catch (_) { return null; } }).filter(Boolean);
+    if (name === "spawn_subagent" || name === "get_subagent_output") {
+      const result = text.match(/<task_result>([\s\S]*?)(?:<\/task_result>|$)/);
+      if (!result) return null;
+      const body = result[1].trim();
+      if (!body || /^The task is working in the background\./.test(body)) return `<p class="chat-tool-note">Running in the background.</p>`;
+      return `<div class="chat-tool-md chat-md">${renderMarkdown(body, false, [])}</div>`;
+    }
+    if (name === "list_subagents") {
+      const data = json();
+      const list = data ? [...(data.live || []), ...(data.finished || [])] : objects().filter((row) => row.id && row.status);
+      if (!data && !list.length) return null;
+      const rows = list.map((row) => ({
+        state: row.status === "running" || row.status === "queued" ? "live" : row.status === "completed" ? "done" : row.status === "failed" ? "fail" : "idle",
+        title: row.description || row.id,
+        detail: [row.status, row.model].filter(Boolean).join(" · "),
+      }));
+      return kvListHtml(rows) || `<p class="chat-tool-note">No subagents.</p>`;
+    }
+    if (name === "search_models") {
+      const data = json();
+      const models = data && Array.isArray(data.models) ? data.models : objects().filter((row) => row.id);
+      if (!models.length && !data) return null;
+      return kvListHtml(models.map((row) => ({ title: row.name || row.id, detail: [row.id, row.provider].filter(Boolean).join(" · ") }))) || `<p class="chat-tool-note">No matching models.</p>`;
+    }
+    if (name === "search_tools") {
+      const data = json();
+      if (!data) return null;
+      const loaded = [...(data.loaded || []), ...(data.already_loaded || [])];
+      return loaded.length ? kvListHtml(loaded.map((tool) => ({ title: tool }))) : `<p class="chat-tool-note">No tools loaded.</p>`;
+    }
+    if (name === "scratch") {
+      const data = json();
+      if (!data || typeof data.slots !== "object" || !data.slots) return null;
+      return kvListHtml(Object.entries(data.slots).map(([key, size]) => ({ title: key, detail: `${Number(size).toLocaleString()} chars` })));
+    }
+    if (name === "load_skill") {
+      const start = text.search(/^#\s/m);
+      if (start < 0) return null;
+      return `<div class="chat-tool-md chat-md">${renderMarkdown(text.slice(start), false, [])}</div>`;
+    }
+    if (name === "write_file" && /^wrote\s/i.test(text) && !text.includes("\n")) return "";
+    return null;
+  }
+
+  function webResultsHtml(results, limit = 8) {
+    const rows = (results || []).map((row) => {
+      const url = safeUrl(row.url);
+      if (!url || !/^https?:/i.test(url)) return "";
+      let domain = url;
+      try { domain = new URL(url).hostname.replace(/^www\./, ""); } catch (_) {}
+      return `<a class="chat-web-row" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer"><span class="chat-web-title">${escapeHtml(row.title || domain)}</span><span class="chat-web-domain">${escapeHtml(domain)}</span></a>`;
+    }).filter(Boolean);
+    if (!rows.length) return "";
+    const extra = rows.length > limit ? `<div class="chat-console-more">… +${rows.length - limit} more</div>` : "";
+    return `<div class="chat-web-list">${rows.slice(0, limit).join("")}</div>${extra}`;
+  }
+
   function consoleArgText(value, cap = 90) {
     return toolText(String(value || "").trim(), cap);
   }
@@ -7290,7 +7473,7 @@
     const name = trace && trace.name;
     const running = Boolean(presentation && presentation.running);
     const verb = consoleVerb(name, trace);
-    if (name === "kill_command" || name === "kill_subagent") {
+    if (["kill_command", "kill_subagent", "todo_write", "list_subagents", "scratch"].includes(name)) {
       return `<span class="chat-console-call"><span class="chat-tool-action">${escapeHtml(verb)}</span></span>`;
     }
     if (name === "run_terminal_command" && running && !toolBackground(trace)) {
@@ -7310,8 +7493,7 @@
       inner = consoleArgText(trace.url || "page", 100);
     } else if (isSearchTool(name)) {
       const queries = searchQueries(trace);
-      const q = queries.length === 1 ? queries[0] : `${queries.length} queries`;
-      inner = q ? `"${consoleArgText(q, 88)}"` : "";
+      inner = queries.length ? `"${consoleArgText(queries[0], 80)}"${queries.length > 1 ? ` +${queries.length - 1}` : ""}` : "";
     } else if (["spawn_subagent", "get_subagent_output"].includes(name)) {
       inner = consoleArgText(agentSubject(trace) || "subagent", 90);
     } else if (name === "create_artifact" || name === "update_artifact") {
@@ -7330,7 +7512,7 @@
 
   function consoleOutputText(trace, failed, running) {
     if (failed) return String(trace.error || trace.summary || trace.preview || "failed").trim();
-    if (typeof trace.output === "string" && trace.output) return trace.output;
+    if (typeof trace.output === "string" && trace.output) return cleanToolOutput(trace, trace.output);
     const preview = [trace.preview, trace.summary].filter((value) => {
       const text = String(value || "").trim();
       return text && text !== "still running" && text !== "background task started";
@@ -7357,7 +7539,7 @@
     const named = preview.match(/(\d+)\s+lines?\b/i);
     if (named) return Number(named[1]);
     const body = typeof trace.output === "string" && trace.output
-      ? trace.output
+      ? cleanToolOutput(trace, trace.output)
       : (looksLikeDiff(preview) ? "" : preview);
     if (!body) return 0;
     const text = String(body).replace(/\s+$/, "");
@@ -7394,7 +7576,9 @@
     return `<div class="chat-console-lines">${rows}</div>${extra}`;
   }
 
-  function consoleDiffHtml(text, { limit } = {}) {
+  // search_replace diffs are old_string vs new_string, so their hunk line
+  // numbers are snippet-relative; callers pass numbers: false for those.
+  function consoleDiffHtml(text, { limit, numbers = true } = {}) {
     const lines = String(text || "").split("\n");
     let oldN = 0;
     let newN = 0;
@@ -7425,7 +7609,8 @@
     const width = String(Math.max(...rows.map((row) => row.n), 1)).length;
     const table = rows.slice(0, cap).map((row) => {
       const mark = row.kind === "del" ? "-" : row.kind === "add" ? "+" : " ";
-      return `<div class="chat-console-nline is-${row.kind}"><span class="chat-console-n">${String(row.n).padStart(width, " ")}</span><span class="chat-console-mark">${mark}</span><span class="chat-console-nbody">${escapeHtml(row.text)}</span></div>`;
+      const gutter = numbers ? `<span class="chat-console-n">${String(row.n).padStart(width, " ")}</span>` : "";
+      return `<div class="chat-console-nline is-${row.kind}${numbers ? "" : " is-bare"}">${gutter}<span class="chat-console-mark">${mark}</span><span class="chat-console-nbody">${escapeHtml(row.text)}</span></div>`;
     }).join("");
     const extra = rows.length > cap
       ? `<div class="chat-console-more">… +${rows.length - cap} lines</div>`
@@ -7434,7 +7619,7 @@
   }
 
   function consoleFileBody(trace) {
-    if (typeof trace.output === "string" && trace.output) return trace.output;
+    if (typeof trace.output === "string" && trace.output) return cleanToolOutput(trace, trace.output);
     const preview = String(trace.preview || "").trim();
     if (preview && preview !== "still running" && preview !== "background task started" && !looksLikeDiff(preview)) return preview;
     return "";
@@ -7444,13 +7629,18 @@
     if (failed || running) return "";
     const name = trace && trace.name;
     if (name === "write_file") {
-      const body = consoleFileBody(trace);
-      if (!body) return "";
-      return consoleNumberedHtml(body, { limit: 10, lang: consoleLangForPath(trace.path) });
+      const body = typeof trace.content === "string" ? trace.content : "";
+      return body ? fileBodyHtml(trace, body, 10) : "";
+    }
+    if ((name === "run_terminal_command" || name === "get_command_output") && typeof trace.output === "string") {
+      const lines = cleanToolOutput(trace, trace.output).replace(/\s+$/, "").split("\n").filter((line, i, all) => line.trim() || i < all.length - 1);
+      if (lines.length < 2) return "";
+      const rows = lines.slice(0, 3).map((line) => `<div class="chat-console-stdout">${renderAnsi(line) || " "}</div>`).join("");
+      return `<div class="chat-console-lines is-stdout">${rows}</div>` + (lines.length > 3 ? `<div class="chat-console-more">… +${lines.length - 3} lines</div>` : "");
     }
     if (name === "search_replace") {
       const diff = [trace.preview, trace.output].find((value) => looksLikeDiff(value));
-      if (diff) return consoleDiffHtml(diff, { limit: 12 });
+      if (diff) return consoleDiffHtml(diff, { limit: 12, numbers: false });
       return "";
     }
     return "";
@@ -7460,19 +7650,29 @@
     if (trace && trace.name === "todo_write") {
       // Not wrapped in .chat-console-out: the list is always shown inline and
       // the step is never expandable, so the hang stays out of the band flow.
-      return todoListHtml(trace.todos, { live: running });
+      return todoListHtml(trace.todos, { live: running, console: true });
     }
-    if (trace && ["read_file", "write_file"].includes(trace.name)) {
-      const body = consoleFileBody(trace);
+    if (trace && ["read_file", "write_file"].includes(trace.name) && !failed) {
+      const body = trace.name === "write_file" ? (typeof trace.content === "string" ? trace.content : "") : consoleFileBody(trace);
       if (!body) return "";
-      return `<div class="chat-console-out is-file">${consoleNumberedHtml(body, { lang: consoleLangForPath(trace.path) })}</div>`;
+      return `<div class="chat-console-out is-file">${fileBodyHtml(trace, body)}</div>`;
+    }
+    if (trace && isSearchTool(trace.name) && !failed && trace.results?.length) {
+      return `<div class="chat-console-out is-web">${webResultsHtml(trace.results)}</div>`;
+    }
+    if (trace && trace.name === "read_url" && !failed && trace.results?.length) {
+      const row = trace.results[0];
+      const text = String(row.snippet || "").trim();
+      return `<div class="chat-console-out is-web">${webResultsHtml([row], 1)}${text ? `<pre class="chat-console-out is-stdout">${escapeHtml(toolText(text, 1200))}</pre>` : ""}</div>`;
     }
     if (trace && trace.name === "search_replace") {
       const diff = [trace.preview, trace.output].find((value) => looksLikeDiff(value));
-      if (diff) return `<div class="chat-console-out is-diff">${consoleDiffHtml(diff)}</div>`;
+      if (diff) return `<div class="chat-console-out is-diff">${consoleDiffHtml(diff, { numbers: trace.name !== "search_replace" })}</div>`;
     }
     let body = consoleOutputText(trace, failed, running);
     if (!body) return "";
+    const structured = failed || running ? null : structuredToolHtml(trace, body);
+    if (structured !== null) return structured ? `<div class="chat-console-out is-structured">${structured}</div>` : "";
     if ((trace.name === "grep" || trace.name === "glob") && !body.includes("\n") && (body.match(/:\d+:/g) || []).length > 1) {
       body = body.replace(/\s+(\/(?:home|Users|var|tmp|opt|usr)|[A-Za-z]:\\|\S+:\d+:)/g, "\n$1").trim();
     }
@@ -7518,8 +7718,8 @@
       return preview || "listed";
     }
     if (name === "write_file") {
-      const n = consoleLineCount(trace);
       const path = compactPath(trace.path || ".", trace, 72);
+      const n = typeof trace.content === "string" ? trace.content.replace(/\s+$/, "").split("\n").length : 0;
       if (n) return `Wrote ${n} line${n === 1 ? "" : "s"} to ${path}`;
       return path ? `Wrote ${path}` : "Wrote file";
     }
@@ -7529,8 +7729,10 @@
       if (Number.isFinite(added) || Number.isFinite(removed)) {
         return `Added ${Number.isFinite(added) ? added : 0} line${added === 1 ? "" : "s"}, removed ${Number.isFinite(removed) ? removed : 0} line${removed === 1 ? "" : "s"}`;
       }
-      const hunks = String(trace.preview || "").split("\n").filter((line) => line.startsWith("-") && !line.startsWith("---")).length;
-      if (hunks) return `Added ${hunks} line${hunks === 1 ? "" : "s"}, removed ${hunks} line${hunks === 1 ? "" : "s"}`;
+      const diffLines = String([trace.preview, trace.output].find((value) => looksLikeDiff(value)) || "").split("\n");
+      const adds = diffLines.filter((line) => line.startsWith("+") && !line.startsWith("+++")).length;
+      const dels = diffLines.filter((line) => line.startsWith("-") && !line.startsWith("---")).length;
+      if (adds || dels) return [adds ? `${adds} addition${adds === 1 ? "" : "s"}` : "", dels ? `${dels} removal${dels === 1 ? "" : "s"}` : ""].filter(Boolean).join(", ");
       return "Edited";
     }
     if (name === "todo_write") {
@@ -7552,12 +7754,25 @@
       return preview && preview !== "still running" ? shortToolText(preview, 100) : (displayCommand(trace) || "done");
     }
     if (name === "kill_command") {
-      const cmd = displayCommand(trace) || preview;
+      const cmd = commandFor(trace);
       return cmd ? `${cmd} · stopped` : "stopped";
     }
     if (name === "spawn_subagent") {
       const took = consoleDurationLabel(trace);
       return took ? `finished · ${took}` : "Backgrounded agent";
+    }
+    if (name === "load_skill") return "Loaded skill";
+    if (name === "search_tools") {
+      const loaded = String(trace.preview || "").split(",").map((v) => v.trim()).filter(Boolean).length;
+      return loaded ? `${loaded} tool${loaded === 1 ? "" : "s"} loaded` : "done";
+    }
+    if (name === "get_command_output") {
+      const text = preview && preview !== "still running" ? preview : "";
+      return text && text !== displayCommand(trace) ? shortToolText(text, 100) : "No output";
+    }
+    if (name === "create_artifact" || name === "update_artifact") {
+      const v = trace.version != null ? ` v${trace.version}` : "";
+      return `${name === "create_artifact" ? "Created" : "Updated"}${v}`;
     }
     if (name === "get_subagent_output") {
       const subject = agentSubject(trace) || "subagent";
@@ -7606,7 +7821,8 @@
     if (name === "load_skill") return "Skill";
     if (name === "grep") return "Grep";
     if (name === "glob") return "Glob";
-    if (name === "todo_write") return "Todo";
+    if (name === "todo_write") return "Update Todos";
+    if (name === "scratch") return "Scratch";
     if (name === "create_artifact" || name === "update_artifact") return "Artifact";
     if (name === "search_tools") return "Tools";
     return "Tool";
@@ -7706,6 +7922,7 @@
 
   function cliVerb(name, trace) {
     if (name === "fuse-steer") return "steer";
+    if (name === "scratch") return "scratch";
     if (isSearchTool(name)) return "web";
     if (name === "read_url") return "page";
     if (name === "read_file") return "read";
@@ -7896,17 +8113,18 @@
     return out;
   }
 
-  function todoListHtml(todos, { live = false } = {}) {
+  function todoListHtml(todos, { live = false, console = false } = {}) {
     const items = normalizeTodos(todos);
     if (!items.length) return "";
-    const done = items.filter((item) => item.status === "completed").length;
-    return `<ol class="chat-todo" data-todo-list>${items.map((item) => {
-      const mark = item.status === "completed" ? "✓" : item.status === "cancelled" ? "×" : item.status === "in_progress" ? "›" : "○";
+    return `<ol class="chat-todo${console ? " is-console" : ""}" data-todo-list>${items.map((item) => {
+      const mark = console
+        ? (item.status === "completed" || item.status === "cancelled" ? "☒" : "☐")
+        : item.status === "completed" ? "✓" : item.status === "cancelled" ? "×" : item.status === "in_progress" ? "›" : "○";
       return `<li class="chat-todo-item is-${item.status.replace("_", "-")}${live && item.status === "in_progress" ? " is-current" : ""}">` +
         `<span class="chat-todo-mark" aria-hidden="true">${mark}</span>` +
         `<span class="chat-todo-copy">${escapeHtml(item.content)}</span>` +
         `<span class="chat-todo-status">${TODO_STATUSES[item.status]}</span></li>`;
-    }).join("")}</ol><p class="chat-todo-count">${done}/${items.length} done</p>`;
+    }).join("")}</ol>`;
   }
 
 
@@ -7921,36 +8139,72 @@
     );
   }
 
+  function humanMs(ms) {
+    const n = Number(ms);
+    if (!Number.isFinite(n) || n < 0) return "";
+    if (n < 1000) return `${Math.round(n)}ms`;
+    const secs = n / 1000;
+    if (secs < 60) return `${secs < 10 ? secs.toFixed(1) : Math.round(secs)}s`;
+    return `${Math.floor(secs / 60)}m ${Math.round(secs % 60)}s`;
+  }
+
+  // Expanded tool body (terminal + compact). One block per kind of content:
+  // the error, then the result (command folded in as its first line), then a
+  // single quiet meta line. Inputs already shown in the row head are not
+  // repeated; ids, timeouts and call overhead stay out of the reading path.
   function toolDetailHtml(trace, failed, running) {
     const sections = [];
     const error = failed ? trace.error || trace.summary || trace.preview || "The tool failed without an error message."
       : ["interrupted", "cancelled"].includes(trace.status) || ["cancelled", "interrupted", "lost"].includes(executionState(trace)) ? trace.error || "" : "";
-    const inputs = [["Command", trace.command], ["Path", trace.path], ["Pattern", trace.pattern], ["URL", trace.url],
-      ["Query", searchQueries(trace).join("\n")], ["Task", trace.description], ["Title", trace.title]];
     if (error) sections.push(failNoteHtml(error));
-    if (trace.command) sections.push(detailSectionHtml("Command", trace.command, "is-command", 8000));
-    const context = [trace.host ? `Host ${trace.host}` : "", trace.cwd ? `Directory ${trace.cwd}` : "",
-      Number.isFinite(trace.offset) ? `From line ${trace.offset}${Number.isFinite(trace.limit) ? ` · up to ${trace.limit} lines` : ""}` : "",
-      trace.include ? `Include ${trace.include}` : "", trace.max_matches ? `Limit ${trace.max_matches} matches` : "",
-      running && trace.progressLabel ? trace.progressLabel : "",
-      ["write_file", "search_replace"].includes(trace.name) && trace.preview ? trace.preview : ""].filter(Boolean);
-    if (context.length) sections.push(`<div class="chat-tool-context">${context.map(value => `<span>${escapeHtml(value)}</span>`).join("")}</div>`);
-    const seen = new Set([error, ...inputs.map(([, value]) => value)].filter(Boolean).map(normErr));
+    const inputs = [trace.command, trace.path, trace.pattern, trace.url, searchQueries(trace).join("\n"), trace.description, trace.title];
+    const seen = new Set([error, ...inputs].filter(Boolean).map(normErr));
     const preview = trace.summary && String(trace.summary).startsWith(String(trace.preview || "")) ? "" : trace.preview;
     const authoritativeOutput = typeof trace.output === "string";
-    const output = authoritativeOutput ? trace.output : [preview, trace.summary].filter((value) => {
+    let output = authoritativeOutput ? cleanToolOutput(trace, trace.output) : [preview, trace.summary].filter((value) => {
       const key = normErr(value);
       if (!key || seen.has(key) || key === "still running" || key === "background task started") return false;
       seen.add(key);
       return true;
     }).join("\n\n");
-      const outputLabel = { read_file: "Contents", list_dir: "Entries", grep: "Matches", glob: "Matches", search_replace: "Change result", write_file: "Write result", todo_write: "Tasks", spawn_subagent: "Report", get_subagent_output: "Report", monitor: "Events" }[trace.name] || "Output";
+    if (error && normErr(output) === normErr(error)) output = "";
+    const outputLabel = { read_file: "Contents", list_dir: "Entries", grep: "Matches", glob: "Matches", search_replace: "Change result", write_file: "Write result", spawn_subagent: "Report", get_subagent_output: "Report", monitor: "Events" }[trace.name] || "Output";
+    const hasResults = Boolean(trace.results?.length) && (isSearchTool(trace.name) || trace.name === "read_url");
+    const diff = ["search_replace", "write_file"].includes(trace.name) && !failed
+      ? [trace.preview, trace.output].find((value) => looksLikeDiff(value)) : "";
+    const fileBody = trace.name === "write_file" && !failed && !diff
+      ? (looksLikeDiff(trace.preview) ? "" : String(trace.preview || "").trim()) : "";
+    let shownOutput = !hasResults;
     if (trace.name === "todo_write") {
       const list = todoListHtml(trace.todos, { live: running });
       if (list) sections.push(`<section class="chat-tool-section is-todos" data-tool-section="Tasks">${list}</section>`);
-    } else if (output) sections.push(detailSectionHtml(outputLabel, output, "is-result", authoritativeOutput ? 24000 : 4000));
-    if (authoritativeOutput) {
-      const retained = Array.from(output).length;
+    } else if (hasResults) {
+      const snippet = trace.name === "read_url" ? String(trace.results[0].snippet || "").trim() : "";
+      sections.push(`<section class="chat-tool-section is-sources" data-tool-section="Sources"><span class="chat-tool-section-label visually-hidden">Sources</span>${webResultsHtml(trace.results)}` +
+        (snippet ? `<pre class="chat-tool-out">${escapeHtml(toolText(snippet, 1600))}</pre>` : "") + "</section>");
+    } else if (diff) {
+      shownOutput = false;
+      sections.push(`<section class="chat-tool-section is-result is-file" data-tool-section="Changes"><div class="chat-tool-section-head"><span class="chat-tool-section-label">Changes</span>` +
+        `<button type="button" class="chat-tool-copy" data-copy-tool aria-label="Copy changes">Copy</button></div>` +
+        `<div class="chat-tool-out is-file">${consoleDiffHtml(diff, { numbers: trace.name !== "search_replace" })}</div></section>`);
+    } else if (fileBody) {
+      shownOutput = false;
+      sections.push(`<section class="chat-tool-section is-result is-file" data-tool-section="Contents"><div class="chat-tool-section-head"><span class="chat-tool-section-label">Contents</span>` +
+        `<button type="button" class="chat-tool-copy" data-copy-tool aria-label="Copy contents">Copy</button></div>` +
+        `<div class="chat-tool-out is-file">${fileBodyHtml(trace, fileBody)}</div></section>`);
+    } else if (!failed && output && structuredToolHtml(trace, output) !== null) {
+      shownOutput = false;
+      const body = structuredToolHtml(trace, output);
+      if (body) sections.push(`<section class="chat-tool-section is-result is-structured" data-tool-section="${outputLabel}"><span class="chat-tool-section-label visually-hidden">${outputLabel}</span>${body}</section>`);
+    } else if (trace.name === "read_file" && output && !failed) {
+      sections.push(`<section class="chat-tool-section is-result is-file" data-tool-section="${outputLabel}"><div class="chat-tool-section-head"><span class="chat-tool-section-label">${outputLabel}</span>` +
+        `<button type="button" class="chat-tool-copy" data-copy-tool aria-label="Copy ${outputLabel.toLowerCase()}">Copy</button></div>` +
+        `<div class="chat-tool-out is-file">${fileBodyHtml(trace, output)}</div></section>`);
+    } else if (output || (trace.command && !failed)) {
+      sections.push(detailSectionHtml(outputLabel, output || (running ? "Waiting for output" : "No output"), output ? "is-result" : "is-result is-empty", authoritativeOutput ? 24000 : 4000, trace.command || ""));
+    }
+    if (authoritativeOutput && shownOutput) {
+      const retained = Array.from(trace.output).length;
       const total = Number.isFinite(trace.output_chars) ? trace.output_chars : retained;
       let note = "";
       if (trace.output_mode === "partial" && (trace.truncated || total > retained)) note = `Partial output · ${retained.toLocaleString()} characters retained · total ${trace.output_chars_exact === true ? total.toLocaleString() : `unknown (at least ${total.toLocaleString()})`}.`;
@@ -7958,38 +8212,51 @@
       else if (trace.truncated || total > retained) note = `Output truncated · ${retained.toLocaleString()} of ${trace.output_chars_exact === false ? "at least " : ""}${total.toLocaleString()} characters retained.`;
       if (note) sections.push(`<span class="chat-tool-truncated">${escapeHtml(note)}</span>`);
     } else if (trace.output_truncated && output.length <= 4000) sections.push('<span class="chat-tool-truncated">Output preview was truncated before display.</span>');
-    if (trace.results?.length) sections.push(`<section class="chat-tool-section"><span class="chat-tool-section-label">Sources</span>${sourceList(trace.results)}</section>`);
-    if (!error && !output && !trace.results?.length) sections.push(detailSectionHtml("Output", running ? "Waiting for output"
-      : trace.child_id && ["spawn_subagent", "get_subagent_output"].includes(trace.name) ? "No inline output. Open agent for its transcript." : "No output", "is-empty"));
-    inputs.filter(([label]) => label !== "Command").forEach(([label, value]) => { if (value) sections.push(detailSectionHtml(label, value, "is-input")); });
+    if (!error && !output && !hasResults && !trace.command && !["todo_write", "create_artifact", "update_artifact"].includes(trace.name)) {
+      sections.push(detailSectionHtml("Output", running ? "Waiting for output"
+        : trace.child_id && ["spawn_subagent", "get_subagent_output"].includes(trace.name) ? "No inline output. Open agent for its transcript." : "No output", "is-empty"));
+    }
     const exit = shellExitCode(trace);
     const duration = Number.isFinite(trace.execution_duration_ms) ? trace.execution_duration_ms : Number.isFinite(trace.duration_ms) ? trace.duration_ms : trace.latency_ms;
-    const metadata = [toolBackground(trace) ? "Background execution" : "", executionIdentity(trace) ? `ID ${executionIdentity(trace)}` : "",
-      executionState(trace) ? `Execution ${executionState(trace)}` : "",
+    const state = executionState(trace);
+    const queries = searchQueries(trace);
+    const meta = [
+      trace.host ? `Host ${trace.host}` : "",
+      trace.cwd && trace.cwd !== trace.project_root ? `Directory ${trace.cwd}` : trace.cwd && !trace.host ? `Directory ${trace.cwd}` : "",
+      trace.path && ["read_file", "write_file", "search_replace", "list_dir", "grep", "glob"].includes(trace.name) ? trace.path : "",
+      Number.isFinite(trace.offset) ? `lines ${trace.offset}–${trace.offset + (Number.isFinite(trace.limit) ? trace.limit - 1 : 0)}` : "",
+      trace.include ? `include ${trace.include}` : "",
+      queries.length > 1 ? queries.join(" · ") : "",
+      running && trace.progressLabel ? trace.progressLabel : "",
+      toolBackground(trace) ? "background" : "",
+      state && !["completed", "running"].includes(state) ? state.replace(/_/g, " ") : "",
       trace.wake_state === "dropped" ? "Report not delivered to the main agent" : trace.wake_state === "retrying" ? "Report pending delivery" : "",
       trace.status === "done" && executionPending(trace) ? "Tool returned; execution continues" : "",
       trace.termination_confirmed === true ? "Termination confirmed" : trace.termination_confirmed === false ? "Termination not confirmed"
-        : isShellExecTool(trace.name) && executionState(trace) && !executionPending(trace) ? "Termination unknown" : "",
-      trace.version != null ? `Version ${trace.version}` : "", trace.visibility ? `Visibility ${trace.visibility}` : "",
-      exit !== null ? `Exit ${exit}` : "", Number.isFinite(duration) ? `${duration} ms` : "",
-      Number.isFinite(trace.call_duration_ms) && trace.call_duration_ms !== duration ? `Tool call ${trace.call_duration_ms} ms` : "",
-      running && Number.isFinite(trace.elapsed_ms) ? `Elapsed ${trace.elapsed_ms} ms` : "",
-      Number.isFinite(trace.timeout_ms) ? `Timeout ${trace.timeout_ms} ms` : "",
+        : isShellExecTool(trace.name) && state && !executionPending(trace) ? "Termination unknown" : "",
+      trace.version != null ? `v${trace.version}` : "", trace.visibility || "",
+      exit !== null ? `exit ${exit}` : "",
+      state === "timed_out" && Number.isFinite(trace.timeout_ms) ? `timeout ${humanMs(trace.timeout_ms)}` : "",
       trace.name === "monitor" && Number.isFinite(trace.event_count) ? `${trace.event_count} events` : "",
-      trace.name === "monitor" && trace.source ? `Source ${trace.source}` : ""].filter(Boolean);
-    if (metadata.length) sections.push(detailSectionHtml("Execution", metadata.join(" · "), "is-meta"));
+      trace.name === "todo_write" ? "" : humanMs(duration),
+      // The id matters when a run did not end cleanly (to find or stop it).
+      executionIdentity(trace) && ((state && !["completed", "running"].includes(state)) || trace.termination_confirmed === false) ? `ID ${executionIdentity(trace)}` : "",
+    ].filter(Boolean);
+    if (meta.length) sections.push(`<div class="chat-tool-context"${executionIdentity(trace) ? ` title="ID ${escapeHtml(executionIdentity(trace))}"` : ""}>${meta.map((value) => `<span>${escapeHtml(value)}</span>`).join("")}</div>`);
     return `<div class="chat-tool-details">${sections.join("")}</div>`;
   }
 
-  function detailSectionHtml(label, value, kind = "", cap = 4000) {
+  function detailSectionHtml(label, value, kind = "", cap = 4000, command = "") {
     const text = String(value || "");
     const characters = Array.from(text);
     const clipped = characters.slice(0, cap).join("");
-    const ansi = kind === "is-result" || kind === "is-command" || kind === "is-error";
+    const ansi = kind.includes("is-result") || kind === "is-command" || kind === "is-error";
+    const cmd = command ? `<span class="chat-tool-cmd">$ ${escapeHtml(command)}</span>\n` : "";
     const body = looksLikeDiff(clipped)
-      ? `<pre class="chat-tool-out is-diff"><code>${highlightCode("diff", clipped)}</code></pre>`
-      : `<pre class="chat-tool-out">${ansi ? renderAnsi(clipped) : escapeHtml(clipped)}</pre>`;
+      ? `<pre class="chat-tool-out is-diff">${cmd}<code>${highlightCode("diff", clipped)}</code></pre>`
+      : `<pre class="chat-tool-out">${cmd}${cmd ? `<span class="chat-tool-text">${ansi ? renderAnsi(clipped) : escapeHtml(clipped)}</span>` : ansi ? renderAnsi(clipped) : escapeHtml(clipped)}</pre>`;
     return `<section class="chat-tool-section ${kind}" data-tool-section="${escapeHtml(label)}"><div class="chat-tool-section-head"><span class="chat-tool-section-label">${escapeHtml(label)}</span>` +
+      (command ? `<button type="button" class="chat-tool-copy" data-copy-tool data-copy-value="${escapeHtml(command)}" aria-label="Copy command">Copy command</button>` : "") +
       `<button type="button" class="chat-tool-copy" data-copy-tool aria-label="Copy ${escapeHtml(label.toLowerCase())}">Copy</button></div>` +
       body +
       (characters.length > cap ? `<span class="chat-tool-truncated">Preview truncated at ${cap.toLocaleString()} characters.</span>` : "") + "</section>";
@@ -8008,7 +8275,7 @@
     const search = isSearchTool(trace.name);
     const label = artifact ? `${trace.name === "create_artifact" ? "Create artifact" : "Update artifact"} · ${trace.title || "artifact"}`
       : read ? `Page read · ${pageHost(trace.url) || "page"}`
-      : search ? `Search · ${searchCountFor(trace) === 1 && searchQueries(trace)[0] ? shortToolText(searchQueries(trace)[0], 72) : `${searchCountFor(trace)} queries`}`
+      : search ? `Search · ${searchCountFor(trace) === 1 && searchQueries(trace)[0] ? shortToolText(searchQueries(trace)[0], 72) : `${searchCountFor(trace)} ${searchCountFor(trace) === 1 ? "query" : "queries"}`}`
       : toolRowLabel(trace);
     const kind = artifact ? "artifact" : read ? "read" : search ? "search" : TOOL_KIND[trace.name] || "workspace";
     const openKind = artifact && trace.identifier && presentation.state === "done" ? "artifact"
@@ -8027,7 +8294,8 @@
         contextHost: "",
       });
       const hangOpen = revealed && expandable;
-      const status = result || (running ? "Running…" : "done");
+      const status = (trace.name === "todo_write" && normalizeTodos(trace.todos).length) || (preview && isShellExecTool(trace.name) && !running && !failed)
+        ? "" : result || (running ? "Running…" : "done");
       const showHang = true;
       return (
         `<li class="chat-step is-console-call is-${kind} is-${presentation.state}${hangOpen ? " is-console-expanded" : ""}" data-execution="${escapeHtml(executionIdentity(trace))}" data-tool="${escapeHtml(trace.name)}" data-state="${presentation.state}" data-step="${escapeHtml(index)}">` +
@@ -8039,7 +8307,7 @@
             `<div class="chat-console-hang${running ? " is-running" : ""}${failed ? " is-error" : ""}${hangOpen ? " is-expanded" : ""}">` +
             `<span class="chat-console-branch" aria-hidden="true">└</span>` +
             `<div class="chat-console-hang-body">` +
-            `<span class="chat-console-result-text">${escapeHtml(status)}</span>` +
+            (status ? `<span class="chat-console-result-text">${escapeHtml(status)}</span>` : "") +
             (preview ? `<div class="chat-console-preview">${preview}</div>` : "") +
             (inner ? inner : "") +
             `</div></div></div></div>`
@@ -8140,7 +8408,8 @@
     const nouns = { read_file: "file reads", list_dir: "directory listings", grep: "content searches", glob: "file matches",
       write_file: "file writes", search_replace: "file edits", run_terminal_command: "commands", get_command_output: "command checks",
       spawn_subagent: "subagents", get_subagent_output: "agent results", list_subagents: "agent listings", search_models: "model searches", read_url: "page reads" };
-    const label = isSearchTool(group.name) ? `${searchSiteCount(group)} web queries` : `${items.length} ${nouns[group.name] || "tools"}`;
+    const siteCount = isSearchTool(group.name) ? searchSiteCount(group) : 0;
+    const label = isSearchTool(group.name) ? `${siteCount} ${siteCount === 1 ? "web query" : "web queries"}` : `${items.length} ${nouns[group.name] || "tools"}`;
     const paths = ["read_file", "write_file", "search_replace", "list_dir"].includes(group.name);
     const subjects = paths ? [...new Set(items.map(i => String(i.trace.path || ".").replaceAll("\\", "/")))].map((path, _, all) => {
       const parts = path.replace(/\/$/, "").split("/");
@@ -8159,7 +8428,6 @@
       : items.some((entry) => stepOpenAt(openMap, toolKey(entry.trace, entry.index)));
     const inner = `<ol class="chat-tool-children">${items.map((entry, i) => workspaceSubRow(entry, groupIndex, i, live, openMap)).join("")}</ol>`;
     const allOpen = items.every(entry => stepOpenAt(openMap, toolKey(entry.trace, entry.index)));
-    const targetCount = paths ? `${subjects.length} ${group.name === "list_dir" ? (subjects.length === 1 ? "directory" : "directories") : (subjects.length === 1 ? "file" : "files")} · ${items.length} operations` : `${items.length} calls`;
     return (
       `<li class="chat-step is-workspace is-stack${kind}${state}" data-step="group-${escapeHtml(groupIndex)}">` +
       `<span class="chat-step-node" aria-hidden="true">${icon}</span>` +
@@ -8174,7 +8442,7 @@
         expandable: true,
         open,
       }) +
-      `<div class="chat-step-reveal${open ? " is-open" : ""}"><div class="chat-step-reveal-inner"><div class="chat-group-toolbar"><span>${escapeHtml(targetCount)} · ${escapeHtml(countsLabel(counts))}</span><button type="button" data-group-expand>${allOpen ? "Collapse results" : "Expand results"}</button></div>${inner}</div></div>` +
+      `<div class="chat-step-reveal${open ? " is-open" : ""}"><div class="chat-step-reveal-inner"><div class="chat-group-toolbar"><button type="button" data-group-expand>${allOpen ? "Collapse results" : "Expand results"}</button></div>${inner}</div></div>` +
       "</div></li>"
     );
   }
@@ -8282,8 +8550,17 @@
     const copy = event.target.closest("[data-copy-tool]");
     if (copy) {
       event.preventDefault();
-      const text = copy.closest(".chat-tool-section")?.querySelector("pre")?.textContent || "";
-      try { await navigator.clipboard.writeText(text); copy.textContent = "Copied"; setTimeout(() => { if (copy.isConnected) copy.textContent = "Copy"; }, 1400); }
+      const section = copy.closest(".chat-tool-section");
+      const lines = section ? [...section.querySelectorAll(".chat-console-nbody")] : [];
+      let text = copy.hasAttribute("data-copy-value") ? copy.getAttribute("data-copy-value")
+        : lines.length ? lines.map((line) => line.textContent).join("\n") : "";
+      if (!text && section?.querySelector("pre")) {
+        const pre = section.querySelector("pre").cloneNode(true);
+        pre.querySelector(".chat-tool-cmd")?.remove();
+        text = pre.textContent.replace(/^\n/, "");
+      }
+      const idle = copy.textContent;
+      try { await navigator.clipboard.writeText(text); copy.textContent = "Copied"; setTimeout(() => { if (copy.isConnected) copy.textContent = idle; }, 1400); }
       catch { copy.textContent = "Select to copy"; }
     }
   });
@@ -8303,13 +8580,6 @@
       '<div class="chat-foot" data-foot hidden><span class="chat-foot-meta" data-meta></span><div class="chat-msg-actions" data-actions-host></div></div>' +
       "</div>";
     article.addEventListener("click", (event) => {
-      const attention = event.target.closest("[data-activity-attention]");
-      if (attention) {
-        const activity = attention.closest("[data-activity]");
-        const rows = activity.querySelectorAll("[data-tool]:is(.is-running,.is-error,.is-warning,.is-interrupted)");
-        rows.forEach(revealToolRow);
-        return;
-      }
       const summaryBtn = event.target.closest("[data-activity-summary]");
       if (!summaryBtn || summaryBtn.tagName !== "BUTTON") return;
       const activityEl = summaryBtn.closest("[data-activity]");
@@ -9484,12 +9754,9 @@
           '<svg class="chat-activity-chevron" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M5 6.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
            "</button>"
          );
-    const attentionCount = traces.filter(t => { const p = toolPresentation(t, turnLive); return p.running || p.failed || p.interrupted || p.warning; }).length;
-    const attention = chatView === "compact" && !live && attentionCount
-      ? `<button type="button" class="chat-activity-attention" data-activity-attention>Inspect ${attentionCount} active / flagged ${attentionCount === 1 ? "call" : "calls"} ↗</button>` : "";
     return (
       `<section class="${classes.join(" ")}" data-activity data-activity-block="${key}">` +
-      summary + attention +
+      summary +
       `<div class="chat-activity-panel" id="${aid}" role="region" aria-label="Activity details"><div class="chat-activity-panel-inner"><ol class="chat-timeline">${steps}</ol></div></div>` +
       "</section>"
     );
@@ -11767,14 +12034,19 @@
     const dur = agentDurationSeconds(row);
     const err = String(row.error || "").trim();
     const wake = row.wake_state === "dropped" ? "report not delivered" : row.wake_state === "retrying" ? "report pending" : "";
-    const sum = err || wake || agentActivitySummary(row);
+    const alert = err || wake;
+    const activity = alert ? "" : agentActivitySummary(row);
+    const line = [agentStatusText(row), meta, activity].filter(Boolean).join(" · ");
     return (
       `<button type="button" class="chat-agents-row is-${escapeHtml(row.status || "unknown")}${row.wake_state === "dropped" ? " is-undelivered" : ""}${agentIsStalled(row) ? " is-stalled" : ""}" data-agent-id="${escapeHtml(row.id)}">` +
       '<span class="chat-agents-dot" aria-hidden="true"></span>' +
       `<span class="chat-agents-rowcopy"><span class="chat-agents-name">${escapeHtml(row.description || "Subagent")}</span>` +
-      `<span class="chat-agents-meta">${escapeHtml(agentStatusText(row))}${meta ? " · " + escapeHtml(meta) : ""}${dur != null ? " · " + formatActivityClock(dur) : ""}</span>` +
-      (sum ? `<span class="chat-agents-sum">${escapeHtml(sum.slice(0, 180))}</span>` : "") +
-      '</span><span class="chat-agents-open" aria-hidden="true">Open</span></button>'
+      `<span class="chat-agents-meta">${escapeHtml(line)}</span>` +
+      (alert ? `<span class="chat-agents-sum">${escapeHtml(alert.slice(0, 180))}</span>` : "") +
+      "</span>" +
+      (dur != null ? `<span class="chat-agents-time">${formatActivityClock(dur)}</span>` : "") +
+      '<svg class="chat-agents-chevron" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M6 3.5L10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
+      "</button>"
     );
   }
 
@@ -12278,15 +12550,20 @@
     const state = String(job.state || "running");
     const cancelling = state === "cancelling";
     const live = ["running", "queued", "cancelling"].includes(state);
-    const label = cancelling ? "Cancelling" : live ? "Background" : state.replace(/_/g, " ");
+    const label = cancelling ? "cancelling" : live ? "" : state.replace(/_/g, " ");
+    const meta = [
+      job.host || "",
+      job.kind === "monitor" || job.name === "monitor" ? "watch" : "",
+      label,
+      Number.isFinite(Number(job.event_count)) ? `${Number(job.event_count)} events` : "",
+    ].filter(Boolean).join(" · ");
     return (
       `<div class="chat-jobs-row is-${escapeHtml(state)}${live ? " is-running" : ""}">` +
       '<span class="chat-agents-dot" aria-hidden="true"></span>' +
-      '<span class="chat-jobs-copy">' +
-      `<button type="button" class="chat-jobs-output-link" data-show-job="${escapeHtml(job.command_id || job.id)}" title="Show command and output"><span class="chat-jobs-cmd">${escapeHtml(toolText(displayCommand(job) || job.id))}</span></button>` +
-      `<span class="chat-jobs-meta" title="${escapeHtml(job.command_id || job.id)}">${job.host ? escapeHtml(job.host) + " · " : ""}${job.kind === "monitor" || job.name === "monitor" ? "Watch · " : ""}${escapeHtml(label)}${Number.isFinite(Number(job.event_count)) ? " · " + Number(job.event_count) + " events" : ""} · View output ↗</span>` +
-      `<span class="chat-jobs-time" data-job-time="${escapeHtml(job.id)}">${formatActivityClock(secs)}</span>` +
-      "</span>" +
+      `<button type="button" class="chat-jobs-output-link" data-show-job="${escapeHtml(job.command_id || job.id)}" title="Show command and output">` +
+      `<span class="chat-jobs-cmd">${escapeHtml(toolText(displayCommand(job) || job.id))}</span>` +
+      `<span class="chat-jobs-meta" title="${escapeHtml(job.command_id || job.id)}">${escapeHtml(meta)}</span></button>` +
+      `<span class="chat-agents-time" data-job-time="${escapeHtml(job.id)}">${formatActivityClock(secs)}</span>` +
       `<button type="button" class="chat-jobs-kill" data-kill-job="${escapeHtml(job.command_id || job.id)}" title="Stop this background command">${cancelling ? "Cancelling" : "Stop"}</button>` +
       "</div>"
     );
@@ -12300,7 +12577,7 @@
       jobsRendered = sig;
       jobsListEl.hidden = !jobsRows.length;
       jobsListEl.innerHTML = jobsRows.length
-        ? '<p class="chat-agents-kicker">Background work · ' + jobsRows.length + "</p>" +
+        ? '<p class="chat-agents-kicker">Background commands · ' + jobsRows.length + "</p>" +
           jobsRows.map((job) => jobRowHtml(job, nowMs)).join("")
         : "";
       return;
@@ -12432,9 +12709,12 @@
       tab.setAttribute("aria-expanded", agentsOpen ? "true" : "false");
       tab.classList.toggle("is-live", workCount > 0);
       tab.title = workLabel || "Agents and background commands";
+      tab.setAttribute("aria-label", workLabel ? `Agents and commands: ${workLabel}` : "Agents and commands");
       const countEl = tab.querySelector("[data-agents-count]");
       if (countEl) {
-        const next = workLabel;
+        // The badge is a count only; the breakdown lives in the title so the
+        // badge keeps a fixed footprint inside the button.
+        const next = workCount ? String(workCount) : "";
         if (next && countEl.textContent !== next) {
           countEl.classList.remove("is-bump");
           void countEl.offsetWidth;
@@ -12660,7 +12940,6 @@
         btn.classList.toggle("is-on", btn.getAttribute("data-view") === chatView);
       });
     }
-    if (viewToggle) viewToggle.classList.toggle("is-on", chatView !== "cli");
     document.documentElement.dataset.chatTerminal = String(chatView === "cli");
     if (chatView === "console") document.documentElement.dataset.chatConsole = "true";
     else document.documentElement.removeAttribute("data-chat-console");

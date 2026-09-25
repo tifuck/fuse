@@ -113,7 +113,9 @@ const out = process.env.TOOL_UI_ARTIFACTS || '/tmp/opencode/tool-redesign';
       fuseToolFixture.mount([{ tools: [{ id: 'work-job', name: 'run_terminal_command', command_id: 'job-linked', status: 'running', state: 'running', background: true, command: 'npm test', output: 'Parent command output' }] }]);
       fuseToolFixture.work([{ id: 'job-linked', command_id: 'job-linked', state: 'running', command: 'npm test', output: 'Parent command output', background: true }]);
     });
-    assert.match(await page.locator('.chat-agents-bar [data-agents-count]').textContent(), /1 command/);
+    // The badge is a bare count; the breakdown is the button's accessible name.
+    assert.equal(await page.locator('.chat-agents-bar [data-agents-count]').textContent(), '1');
+    assert.match(await page.locator('.chat-agents-bar').getAttribute('aria-label'), /1 command/);
     await page.locator('[data-show-job="job-linked"]').click();
     assert.equal(await page.locator('[data-step="tool-work-job"] .chat-step-toggle').getAttribute('aria-expanded'), 'true');
     await page.evaluate(() => fuseToolFixture.work([{ id: 'job-child', command_id: 'job-child', state: 'running', host: 'workstation', cwd: '/repo', command: 'npm run build', output: 'Child command output', background: true }]));
