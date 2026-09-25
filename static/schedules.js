@@ -187,8 +187,11 @@
     return data;
   }
 
+  let previewSeq = 0;
   async function refreshPreview() {
     if (!preview) return;
+    // Latest edit wins: an older response must not overwrite a newer one.
+    const seq = ++previewSeq;
     const name = form.querySelector("[data-f-name]").value.trim();
     const prompt = form.querySelector("[data-f-prompt]").value.trim();
     if (!name || !prompt) {
@@ -197,9 +200,11 @@
     }
     try {
       const data = await api("/schedules/preview", { method: "POST", body: payload() });
+      if (seq !== previewSeq) return;
       const next = (data.preview || []).slice(0, 5).map(fmtWhen).join(" · ");
       preview.textContent = next ? `Next: ${next}` : data.when || "";
     } catch (error) {
+      if (seq !== previewSeq) return;
       preview.textContent = error.message || "";
     }
   }
@@ -293,8 +298,9 @@
   root.querySelector("[data-sched-new]")?.addEventListener("click", () => openModal(null));
   document.querySelector("[data-sched-new]")?.addEventListener("click", () => openModal(null));
   root.querySelectorAll("[data-sched-close]").forEach((btn) => btn.addEventListener("click", () => modal.close()));
-  form.querySelector("[data-f-builder]").addEventListener("change", () => { builderState(); refreshPreview(); });
-  form.querySelector("[data-f-target]").addEventListener("change", () => { builderState(); refreshPreview(); });
+  // `change` bubbles to the form listener below, which refreshes the preview.
+  form.querySelector("[data-f-builder]").addEventListener("change", () => builderState());
+  form.querySelector("[data-f-target]").addEventListener("change", () => builderState());
   form.querySelector("[data-f-coding]").addEventListener("change", () => builderState());
   form.addEventListener("change", () => refreshPreview());
   body?.addEventListener("click", async (event) => {

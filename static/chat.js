@@ -397,6 +397,8 @@
   let renameSaving = null;
   let transcriptDirty = false;
   const drafts = new Map();
+  // Composer attachments are drafts too: keyed by thread like the text.
+  const draftFiles = new Map();
   let stickToBottom = true;
   let pickerOpen = false;
   let pickerFilter = "";
@@ -2407,7 +2409,10 @@
           changed = true;
         }
       });
-      if (changed && index < messages.length && log.children[index]) updateAssistant(log.children[index], msg, Boolean(streaming && activeRun?.message_id === msg.id));
+      if (changed && index < messages.length) {
+        const article = articleFor(msg);
+        if (article) updateAssistant(article, msg, Boolean(streaming && activeRun?.message_id === msg.id));
+      }
       if (changed && index >= messages.length) childChanged = true;
     });
     if (childChanged && agentsOpen) scheduleAgentView();
@@ -2761,8 +2766,12 @@
         upsertLocal(updated);
         renderHistory();
       }
-      if (revision === savedRevision) { dirty = false; transcriptDirty = false; }
-      else queueSave();
+      // A transcript edit withheld during streaming is still unsaved.
+      // It stays dirty (no requeue loop mid-run) and is flushed once the run
+      // reaches a terminal event.
+      const transcriptSent = Boolean(payload.messages) || !transcriptDirty;
+      if (revision !== savedRevision) queueSave();
+      else if (transcriptSent) { dirty = false; transcriptDirty = false; }
       if (!dirty) defaultHint();
       syncStatus();
     } catch (error) {
@@ -2776,7 +2785,9 @@
       }
       if (error.status === 409) {
         pendingSave = null;
-        dirty = false;
+        // A transcript conflict yields to the server. A settings-only save
+        // stays dirty so the snapshot keeps the user's choice and re-saves it.
+        if (payload.messages) dirty = false;
         transcriptDirty = false;
         await reconcileThread();
         return;
@@ -3023,15 +3034,22 @@
     if (!runIsActive(activeRun) && (!activeRun || !stoppingRunId || activeRun.id === stoppingRunId)) stoppingRunId = "";
     setRunning(false);
     healStuckRun(activeRun);
-    threadContext = data.context || "";
-    searchOn = data.tools?.includes("web_search") ?? true;
-    const listed = resolveListedModel(data.model);
-    if (listed && modelId !== listed) { modelId = listed; renderPickerButton(); }
+    // Unsaved local settings (model, search, thread context) outrank the
+    // snapshot: it predates them. Keep them and re-save against the new
+    // revision instead of silently reverting what the user just changed.
+    const keepLocalSettings = dirty;
+    if (!keepLocalSettings) {
+      threadContext = data.context || "";
+      searchOn = data.tools?.includes("web_search") ?? true;
+      const listed = resolveListedModel(data.model);
+      if (listed && modelId !== listed) { modelId = listed; renderPickerButton(); }
+    }
     if (data.compaction && data.compaction.meter) acceptMeter(data.compaction.meter);
     else syncContextMeter();
-    dirty = false;
     transcriptDirty = false;
     pendingSave = null;
+    if (keepLocalSettings) queueSave();
+    else dirty = false;
     syncMemoryUi();
     if (same) {
       foldAutoCommandResults();
@@ -3225,7 +3243,8 @@
             const index = messages.findIndex((item) => item.id === update.id);
             if (index < 0) { await reconcileThread(); break; }
             Object.assign(messages[index], update);
-            if (log.children[index]) updateAssistant(log.children[index], messages[index], false);
+            const article = articleFor(messages[index]);
+            if (article) updateAssistant(article, messages[index], false);
           }
           viewCursor = event.id;
           threadWatermark = event.id;
@@ -3262,12 +3281,13 @@
         if (payload.revision != null) serverRevision = payload.revision;
         viewCursor = event.id;
         threadWatermark = event.id;
-        if (editingIndex < 0 && msg) {
-          const article = log.children[messages.indexOf(msg)];
+        if (editingIndex < 0 && msg && !msg.noActions) {
+          const article = articleFor(msg);
           if (article) mountActions(article, messages.indexOf(msg));
         }
         syncStatus();
         syncContextMeter();
+        if (transcriptDirty && !streaming) await flushSave().catch(() => {});
         await reconcileThread();
         if (isTracked) drainQueue();
       }
@@ -4635,6 +4655,7 @@
     if (expectedGeneration !== generation || nav !== navigation) return;
     if (!Number.isSafeInteger(data.event_cursor)) throw new Error("Thread snapshot is missing event_cursor.");
     drafts.set(currentId, input.value);
+    draftFiles.set(currentId, pendingAttachments);
     currentId = data.id;
     sessionId = "thread-" + data.id;
     const listed = resolveListedModel(data.model);
@@ -4687,6 +4708,8 @@
     pendingProject = null;
     pendingSave = null;
     input.value = drafts.get(currentId) || "";
+    pendingAttachments = draftFiles.get(currentId) || [];
+    renderAttachList();
     resizeInput();
     threadContext = data.context || "";
     searchOn = Array.isArray(data.tools) ? data.tools.includes("web_search") : true;
@@ -5578,6 +5601,8 @@
 
   function retryAssistant(index) {
     if (runIsActive(activeRun) || sending || messages[index - 1]?.role !== "user") return;
+    // Only the final turn is retryable; anything earlier would drop later turns.
+    if (index < messages.length - 1) return;
     const previous = messages[index - 1];
     const snap = snapshotMessages();
     messages = messages.slice(0, index - 1);
@@ -5612,7 +5637,7 @@
     if (!empty || runIsActive(activeRun) || messages.at(-2)?.role !== "user") { existing?.remove(); return; }
     if (existing?.dataset.emptyRetry === last.id) return;
     existing?.remove();
-    const host = log.children[messages.length - 2]?.querySelector(".chat-msg-actions");
+    const host = articleFor(messages.at(-2))?.querySelector(".chat-msg-actions");
     if (!host) return;
     const button = document.createElement("button");
     button.type = "button"; button.className = "chat-icon-btn";
@@ -6914,7 +6939,7 @@
         return;
       }
       const msg = activeAssistant();
-      const article = msg ? log.children[messages.indexOf(msg)] : null;
+      const article = articleFor(msg);
       if (!msg || msg.role !== "assistant" || !article || !article.classList.contains("is-assistant")) return;
       syncActivityElapsed(article, msg, true);
       syncActivitySpin(article, msg, true);
@@ -8732,10 +8757,21 @@
     return article;
   }
 
+  // The bar's closures capture `index`, and Retry exists only on the last
+  // message, so rebuild whenever either changes — a reused article otherwise
+  // keeps a Retry that truncates every later turn.
   function mountActions(article, index) {
     const host = article.querySelector("[data-actions-host]");
-    if (!host || host.childElementCount) return;
-    host.appendChild(msgActions(index, "assistant"));
+    if (!host || index < 0) return;
+    const key = index + ":" + (index === messages.length - 1);
+    if (host.childElementCount && article._actionKey === key) return;
+    host.replaceChildren(msgActions(index, "assistant"));
+    article._actionKey = key;
+  }
+
+  function articleFor(msg) {
+    if (!msg || !msg.id) return null;
+    return [...log.children].find((el) => el.dataset.messageId === msg.id) || null;
   }
 
   async function hydratePermissionCards(flow) {
@@ -8828,7 +8864,7 @@
       threadAuto = Boolean(data.auto_permissions);
     }
     syncPermChip();
-    permCards.clear();
+    clearMainAgentPermCards();
     const live = data && data.run && data.run.message;
     if (live) syncPermQueueFromMessage(live);
     renderPermQueue();
@@ -9209,8 +9245,28 @@
     });
   }
 
+  // Subagent asks live in child runs, which can outlive the parent turn and
+  // never appear in the parent snapshot; only the main agent's asks are
+  // settled by a parent snapshot or terminal event. Child cards still expire
+  // via expires_at or are resolved by their own agent.* permission updates.
+  function permFromSubagent(rec) {
+    const who = rec && (rec.requester_label || rec.requester);
+    if (who && typeof who === "object") return who.role === "subagent";
+    const text = String(who || "").trim();
+    if (!text || text.toLowerCase() === "main agent") return false;
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed === "object") return parsed.role === "subagent";
+    } catch (_) {}
+    return true;
+  }
+
+  function clearMainAgentPermCards() {
+    for (const [id, rec] of permCards) if (!permFromSubagent(rec)) permCards.delete(id);
+  }
+
   function sweepStuckPermCards() {
-    permCards.clear();
+    clearMainAgentPermCards();
     renderPermQueue();
   }
 
@@ -10145,8 +10201,7 @@
       keep.add(article);
       if (reusable && msg.role === "assistant") updateAssistant(article, msg, live);
       if (msg.role === "assistant" && !live && !msg.noActions) {
-        if (article._actionIndex !== index) article.querySelector("[data-actions-host]")?.replaceChildren();
-        mountActions(article, index); article._actionIndex = index;
+        mountActions(article, index);
       }
     });
     for (const article of [...log.children]) if (!keep.has(article)) { disposeThinking(article); historyObserver?.unobserve(article); article.remove(); }
@@ -11000,7 +11055,9 @@
     const origin = currentId;
     const settings = { model: modelId, tools: enabledTools(), context: threadContext };
     sending = true;
-    if (!opts?.queueId) {
+    // Only composer sends own the composer. Edits and retries carry their own
+    // text and must not overwrite an unrelated draft.
+    if (!opts?.queueId && usedPending && !opts?.undoSnap) {
       input.value = text;
       drafts.set(origin, text);
     }
@@ -11068,14 +11125,18 @@
       if (gen !== generation) return;
       pendingTurn = null;
       if (usedPending) {
-        pendingAttachments = [];
+        // Files pasted or dropped while this send was in flight stay queued.
+        const sent = new Set(attachments);
+        pendingAttachments = pendingAttachments.filter((att) => !sent.has(att));
         renderAttachList();
       }
-      if (!opts?.queueId && input.value === text) {
+      if (!opts?.queueId && usedPending && !opts?.undoSnap && input.value === text) {
         if (window.FuseComposerSpell) FuseComposerSpell.learnFromSent(text);
         input.value = "";
         drafts.delete(origin);
         drafts.delete(currentId);
+        draftFiles.delete(origin);
+        draftFiles.delete(currentId);
         if (window.FuseComposerSpell) {
           FuseComposerSpell.close();
           FuseComposerSpell.refresh();
@@ -11105,8 +11166,11 @@
       return false;
     } finally {
       pending.remove();
-      if (gen === generation) setActive(messages.length > 0);
-      if (gen === generation) { sending = false; syncComposer(); resizeInput(); syncStatus(); }
+      // `sending` is global, not per thread: a navigation away mid-send must
+      // still release it or every send/open/new-chat control stays locked.
+      sending = false;
+      if (gen === generation) { setActive(messages.length > 0); resizeInput(); }
+      syncStatus();
     }
   }
 
@@ -11391,6 +11455,7 @@
 
   function clearChatState() {
     drafts.set(currentId, input.value);
+    draftFiles.set(currentId, pendingAttachments);
     stoppingRunId = "";
     activeRun = null;
     setRunning();
@@ -11410,6 +11475,13 @@
     currentId = null;
     serverRevision = 0;
     viewCursor = 0;
+    threadWatermark = 0;
+    contextMessages = [];
+    contextLive = false;
+    // The queue belongs to the thread it was typed in (persisted under that
+    // thread's key); never let it drain into the next chat.
+    acceptedQueueCommands = new Set();
+    loadQueue();
     pendingCreate = null;
     pendingProject = null;
     pendingSave = null;
@@ -11427,7 +11499,7 @@
     contextAlertHidden = false;
     threadContext = "";
     searchOn = true;
-    pendingAttachments = [];
+    pendingAttachments = draftFiles.get(null) || [];
     renderAttachList();
     setThreadUrl(null);
     paint();
@@ -11736,13 +11808,25 @@
   async function addFiles(fileList) {
     const files = [...(fileList || [])];
     if (!files.length) return;
+    // Reading a file is async: the chat may change, and a second paste may
+    // run concurrently. Resolve the target list and the limit after the await.
+    const origin = currentId;
+    const target = () => {
+      if (origin === currentId) return pendingAttachments;
+      if (!draftFiles.has(origin)) draftFiles.set(origin, []);
+      return draftFiles.get(origin);
+    };
+    const full = () => {
+      if (target().length < ATTACH_MAX) return false;
+      setHint("Up to " + ATTACH_MAX + " attachments per message.", true, 4000);
+      return true;
+    };
     for (const file of files) {
-      if (pendingAttachments.length >= ATTACH_MAX) {
-        setHint("Up to " + ATTACH_MAX + " attachments per message.", true, 4000);
-        break;
-      }
+      if (full()) break;
       try {
-        pendingAttachments.push(await fileToAttachment(file));
+        const att = await fileToAttachment(file);
+        if (full()) break;
+        target().push(att);
       } catch (error) {
         showFailure("Could not attach file", error);
       }
@@ -11837,8 +11921,10 @@
     const last = latestArtifact();
     if (!last) {
       currentArtifact = null;
-      artifactOpen = false;
-      syncArtifactUi();
+      // Close through setArtifactOpen so the mobile overlay/history entry is
+      // dropped too; a bare flag write leaves a Back press that does nothing.
+      if (artifactOpen) setArtifactOpen(false);
+      else syncArtifactUi();
       return;
     }
     if (currentArtifact && currentArtifact.building) {
@@ -12707,8 +12793,9 @@
     });
     if (changed && repaint) {
       if (agentsOpen && agentRun) scheduleAgentView();
-      messages.forEach((msg, index) => {
-        const article = log.children[index];
+      const articles = new Map([...log.children].map((el) => [el.dataset.messageId, el]));
+      messages.forEach((msg) => {
+        const article = msg.id ? articles.get(msg.id) : null;
         if (article && msg.role === "assistant") {
           updateAssistant(article, msg, Boolean(streaming && activeRun && msg.id === activeRun.message_id));
         }
@@ -12807,9 +12894,12 @@
       overlayPush("agents");
       if (!agentsTimer) agentsTimer = setInterval(agentsTick, 1000);
       refreshAgents();
+      if (agentViewId) sendSyncView(agentViewId);
       if (agentViewId && agentRun) pollAgentView();
     } else {
       agentsViewGen += 1;
+      // Progress for a hidden view is discarded; stop the server streaming it.
+      sendSyncView("");
       if (!agentRun) { agentViewId = ""; agentMsgState = null; }
       armOverlayGhost(root.querySelector("[data-agents-close]"));
       overlayDrop("agent");
@@ -12832,6 +12922,7 @@
     jobsRows = [];
     completedJobs.clear();
     renderJobsList();
+    sendSyncView("");
     agentViewId = "";
     agentRun = null;
     agentMsgState = null;
