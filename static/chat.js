@@ -2011,11 +2011,12 @@
       // Android can resize both viewports; preserve the pre-keyboard height.
       viewportBaseline = Math.max(viewportBaseline, inner, Math.round(vvHeight + vvOffset));
       const occluded = viewportBaseline - vvHeight > 80;
-      // Focus opens the expanded composer immediately. A browser that shrinks
-      // the viewport confirms the keyboard; one that doesn't must not clear
-      // the flag focus just set. It drops only once the viewport is measurably
-      // open again, which is the keyboard closing while the field stays focused.
-      const keyboard = mobile && editing && (occluded || !vv || document.body.classList.contains("is-keyboard"));
+      // Focus opens the expanded composer immediately, and it stays open while
+      // there is text: some mobile browsers never resize the viewport, so a
+      // pure viewport test cannot be trusted to notice the keyboard. An empty
+      // field collapses again once the viewport is measurably open.
+      const typing = Boolean(input.value);
+      const keyboard = mobile && editing && (occluded || !vv || (typing && document.body.classList.contains("is-keyboard")));
       if (!keyboard && !editing) viewportBaseline = inner;
       // Keyboard open: do not apply offsetTop. Android Chrome/Brave with
       // interactive-widget=resizes-content already shrinks the layout; a
