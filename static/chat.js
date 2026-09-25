@@ -1954,6 +1954,7 @@
     const previousHeight = input.style.height;
     dockSpaceLocked = true;
     input.style.height = "auto";
+    syncComposerExpanded();
     const style = window.getComputedStyle(input);
     const min = parseFloat(style.minHeight) || 0;
     const max = parseFloat(style.maxHeight) || 192;
@@ -1988,11 +1989,55 @@
   let viewportWidth = window.innerWidth;
   let viewportBaseline = window.innerHeight;
 
-  function setComposerExpanded(expanded) {
-    const next = expanded && window.innerWidth <= 800;
-    if (root.classList.contains("is-composer-expanded") === next) return;
+  // Terminal and console composers are one row: [+] > [field] [controls].
+  // Once the text wraps there, the field takes its own full-width row above
+  // the controls. Content is the only input: taps, focus, and the keyboard
+  // never move the controls, so nothing slides under a finger, and a closed
+  // keyboard needs no detection. The row collapses only when the field is
+  // emptied; collapsing on "fits again" would flip at the width boundary.
+  // Called from resizeInput with the textarea at height:auto.
+  function syncComposerExpanded() {
+    const expanded = root.classList.contains("is-composer-expanded");
+    let next = false;
+    if (input.value) {
+      if (expanded || input.value.includes("\n")) next = true;
+      else {
+        const style = window.getComputedStyle(input);
+        const line = parseFloat(style.lineHeight) || 24;
+        const pad = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+        next = input.scrollHeight - pad > line * 1.5;
+      }
+    }
+    if (next === expanded) return;
+    const moving = composerFlipTargets();
+    const before = moving.map((el) => el.getBoundingClientRect());
     root.classList.toggle("is-composer-expanded", next);
-    resizeInput();
+    composerFlip(moving, before);
+  }
+
+  function composerFlipTargets() {
+    if (reduceMotion.matches || !form) return [];
+    const box = form.querySelector(".chat-box");
+    if (!box) return [];
+    return [box.querySelector(".chat-compose"), ...box.querySelectorAll(".chat-box-left > *, .chat-box-right > *")]
+      .filter((el) => el && el.offsetParent !== null);
+  }
+
+  // FLIP: every piece glides from where it was to where the new layout puts
+  // it, so the reflow reads as one motion instead of a jump. Transforms only;
+  // the caret and focus stay on the same textarea throughout.
+  function composerFlip(moving, before) {
+    moving.forEach((el, i) => {
+      const was = before[i];
+      const now = el.getBoundingClientRect();
+      const dx = was.left - now.left;
+      const dy = was.top - now.top;
+      if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+      el.animate(
+        [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }],
+        { duration: 200, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" },
+      );
+    });
   }
 
   function pinVisualViewport() {
@@ -10736,6 +10781,7 @@
           FuseComposerSpell.refresh();
         }
         restoreEnterKeyHint();
+        resizeInput();
       }
       pending.remove();
       acceptThread(data.thread);
@@ -11169,11 +11215,7 @@
     document.body.scrollTop = 0;
     pinVisualViewport();
   });
-  // Expand after the pointer is released. Doing it on pointerdown moves the
-  // controls under the finger, so one tap hits whichever button slid there.
-  input.addEventListener("pointerup", () => setComposerExpanded(true));
   input.addEventListener("blur", () => {
-    setComposerExpanded(false);
     window.setTimeout(syncEmptyComposer, 0);
   });
   ["focusin", "focusout"].forEach((type) => root.addEventListener(type, (event) => {
@@ -12623,6 +12665,7 @@
     if (chatView === "console") document.documentElement.dataset.chatConsole = "true";
     else document.documentElement.removeAttribute("data-chat-console");
     try { localStorage.setItem(STORE_VIEW, chatView); } catch (_) {}
+    if (previous !== chatView) resizeInput();
     if (previous !== chatView && messages.length) paint();
     if (previous !== chatView && agentViewId && agentRun) renderAgentView();
   }

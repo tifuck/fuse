@@ -1974,40 +1974,28 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-send:hover:not(:
 }
 html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-send:active,
 html[data-chat-console="true"] .chat[data-view="console"] .chat-send:active { transform: none; }
-/* Mobile focus: the field takes its own full-width row and the controls
-   drop to the line under it. Idle stays the single TUI row. Desktop is
-   unchanged. display:contents on the bar means the compose box itself has
-   to be the flex item that breaks the row. */
-@media (max-width: 800px) {
-  /* Explicit class, not :focus-within: hiding the mobile keyboard leaves the
-     field focused. The class is added on tap and removed when the keyboard
-     is dismissed or the field blurs. */
-  .chat.is-composer-expanded .chat-box:focus-within textarea,
-  .chat.is-composer-expanded .chat-box textarea {
-    min-height: 4.5rem;
-    max-height: min(9rem, 32dvh);
-  }
-  html[data-chat-terminal="true"] .chat.is-composer-expanded[data-view="cli"] .chat-box .chat-compose,
-  html[data-chat-console="true"] .chat.is-composer-expanded[data-view="console"] .chat-box .chat-compose {
-    flex: 1 1 100%;
-    width: 100%;
-    min-width: 100%;
-    order: -1;
-  }
-  html[data-chat-terminal="true"] .chat.is-composer-expanded[data-view="cli"] .chat-box::before,
-  html[data-chat-console="true"] .chat.is-composer-expanded[data-view="console"] .chat-box::before {
-    content: none;
-  }
-  html[data-chat-terminal="true"] .chat.is-composer-expanded[data-view="cli"] .chat-box .chat-attach-btn,
-  html[data-chat-console="true"] .chat.is-composer-expanded[data-view="console"] .chat-box .chat-attach-btn {
-    order: 1;
-    align-self: flex-end;
-  }
-  html[data-chat-terminal="true"] .chat.is-composer-expanded[data-view="cli"] .chat-box textarea,
-  html[data-chat-console="true"] .chat.is-composer-expanded[data-view="console"] .chat-box textarea {
-    min-height: 4.5rem;
-    max-height: min(9rem, 32dvh);
-  }
+/* Wrapped input: the field takes its own full-width row and the controls
+   drop to the line under it, [+] first, context and send held right. Idle
+   and single-line input stay the one TUI row. chat.js sets the class from
+   content alone (see syncComposerExpanded). display:contents on the bar means
+   the compose box itself is the flex item that breaks the row. */
+html[data-chat-terminal="true"] .chat.is-composer-expanded[data-view="cli"] .chat-box .chat-compose,
+html[data-chat-console="true"] .chat.is-composer-expanded[data-view="console"] .chat-box .chat-compose {
+  flex: 1 1 100%;
+  width: 100%;
+  order: -1;
+}
+html[data-chat-terminal="true"] .chat.is-composer-expanded[data-view="cli"] .chat-box::before,
+html[data-chat-console="true"] .chat.is-composer-expanded[data-view="console"] .chat-box::before {
+  content: none;
+}
+html[data-chat-terminal="true"] .chat.is-composer-expanded[data-view="cli"] .chat-box .chat-attach-btn,
+html[data-chat-console="true"] .chat.is-composer-expanded[data-view="console"] .chat-box .chat-attach-btn {
+  order: 1;
+}
+html[data-chat-terminal="true"] .chat.is-composer-expanded[data-view="cli"] .chat-box :is(.chat-context-wrap:not([hidden]), .chat-context-wrap[hidden] + .chat-send),
+html[data-chat-console="true"] .chat.is-composer-expanded[data-view="console"] .chat-box :is(.chat-context-wrap:not([hidden]), .chat-context-wrap[hidden] + .chat-send) {
+  margin-left: auto;
 }
 html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-box.is-drop,
 html[data-chat-console="true"] .chat[data-view="console"] .chat-box.is-drop {
@@ -3227,6 +3215,9 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box
   color: var(--mist);
   text-shadow: none;
 }
+html[data-chat-console="true"] body.is-chat .chat.is-composer-expanded[data-view="console"] .chat-box::before {
+  content: none;
+}
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box textarea {
   font: 0.82rem/1.55rem var(--mono);
   max-height: min(11rem, 34dvh);
@@ -3315,9 +3306,6 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-foo
   }
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box::before {
     font: 500 0.82rem/1.7rem var(--mono);
-  }
-  html[data-chat-console="true"] body.is-chat .chat.is-composer-expanded[data-view="console"] .chat-box::before {
-    content: none;
   }
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box textarea {
     font: 16px/1.7rem var(--mono);
