@@ -1992,6 +1992,18 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-send:active { tr
     flex: 1 1 100%;
     width: 100%;
     min-width: 100%;
+    order: -1;
+  }
+  /* The prompt glyph and the attach button belong to the control row while
+     the field is expanded, so the message starts flush at the top left. */
+  html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-box:focus-within::before,
+  html[data-chat-console="true"] .chat[data-view="console"] .chat-box:focus-within::before {
+    content: none;
+  }
+  html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-box:focus-within .chat-attach-btn,
+  html[data-chat-console="true"] .chat[data-view="console"] .chat-box:focus-within .chat-attach-btn {
+    order: 1;
+    align-self: flex-end;
   }
   html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-box:focus-within textarea,
   html[data-chat-console="true"] .chat[data-view="console"] .chat-box:focus-within textarea {
