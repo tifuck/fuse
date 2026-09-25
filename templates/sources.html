@@ -27,10 +27,11 @@
 {%- endmacro %}
 
 {% macro pool_own_toggle(ui) %}
-<form method="post" action="/sources/pool/{{ ui.kind }}/prefs" class="pool-bar{% if not ui.can_override %} is-locked{% endif %}">
+<form method="post" action="/sources/pool/{{ ui.kind }}/prefs" class="pool-bar{% if not ui.can_override %} is-locked{% endif %}"{% if ui.can_override %} data-pool-own-form{% endif %} id="pool-{{ ui.kind }}">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="own_only" value="{{ '1' if ui.own_only or not ui.can_override else '0' }}"{% if ui.can_override %} data-pool-own-value{% endif %}>
   <label class="pool-switch{% if not ui.can_override %} is-locked{% endif %}"{% if not ui.can_override %} title="Sharing is off for this pool site-wide"{% endif %}>
-    <input type="checkbox" name="own_only" value="1"{% if not ui.can_override or ui.own_only %} checked{% endif %}{% if not ui.can_override %} disabled{% else %} data-pool-own{% endif %}>
+    <input type="checkbox"{% if not ui.can_override or ui.own_only %} checked{% endif %}{% if not ui.can_override %} disabled{% else %} data-pool-own{% endif %}>
     <span>Use only my accounts</span>
   </label>
   {% if not ui.can_override %}<span class="pool-bar-note">Site-wide</span>{% endif %}

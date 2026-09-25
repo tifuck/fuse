@@ -277,7 +277,10 @@ class PoolPolicyHttpTest(unittest.TestCase):
             follow_redirects=False,
         )
         self.assertEqual(saved.status_code, 303)
+        self.assertEqual(saved.headers.get("location"), "/sources#pool-grok")
         self.assertTrue(pool_policy.user_own_only(self.user["id"], "grok"))
+        page = self.client.get("/sources")
+        self.assertRegex(page.text, r'id="pool-grok"[\s\S]*name="own_only" value="1"')
 
         pool_policy.set_admin_policy("grok", pool_shared=False, open_access=False)
         page = self.client.get("/sources")

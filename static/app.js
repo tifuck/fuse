@@ -1724,10 +1724,14 @@ if (usageDashboard) {
     apply(input);
   });
 
-  document.querySelectorAll("[data-pool-own]").forEach((input) => {
+  document.querySelectorAll("[data-pool-own-form]").forEach((form) => {
+    const input = form.querySelector("[data-pool-own]");
+    const value = form.querySelector("[data-pool-own-value]");
+    if (!input || !value) return;
     input.addEventListener("change", () => {
-      const form = input.form;
-      if (!form) return;
+      if (form.dataset.saving) return;
+      form.dataset.saving = "1";
+      value.value = input.checked ? "1" : "0";
       input.disabled = true;
       form.submit();
     });

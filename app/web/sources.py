@@ -2022,7 +2022,7 @@ async def user_pool_prefs(
             f"{pool_policy.POOL_LABELS[kind]} is limited to linked accounts site-wide.",
             "pool",
         )
-        return RedirectResponse("/sources", status_code=303)
+        return RedirectResponse(f"/sources#pool-{kind}", status_code=303)
     pool_policy.set_user_own_only(user["id"], kind, own_only in ("1", "on", "true"))
     label = pool_policy.POOL_LABELS[kind]
     if own_only in ("1", "on", "true"):
@@ -2030,7 +2030,7 @@ async def user_pool_prefs(
     else:
         msg = f"{label} will use the shared pool, including accounts you linked."
     _pool_flash[user["id"]] = ("ok", msg, "pool")
-    return RedirectResponse("/sources", status_code=303)
+    return RedirectResponse(f"/sources#pool-{kind}", status_code=303)
 
 
 @router.post("/admin/sources/grok")
