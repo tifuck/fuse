@@ -1974,6 +1974,36 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-send:hover:not(:
 }
 html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-send:active,
 html[data-chat-console="true"] .chat[data-view="console"] .chat-send:active { transform: none; }
+/* Mobile focus: the field takes its own full-width row and the controls
+   drop to the line under it. Idle stays the single TUI row. Desktop is
+   unchanged. display:contents on the bar means the compose box itself has
+   to be the flex item that breaks the row. */
+@media (max-width: 800px) {
+  .chat .chat-box:focus-within textarea {
+    min-height: 4.5rem;
+    max-height: min(10rem, 34dvh);
+  }
+  body.is-keyboard .chat .chat-box:focus-within textarea {
+    min-height: 4.5rem;
+    max-height: min(9rem, 32dvh);
+  }
+  html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-box:focus-within .chat-compose,
+  html[data-chat-console="true"] .chat[data-view="console"] .chat-box:focus-within .chat-compose {
+    flex: 1 1 100%;
+    width: 100%;
+    min-width: 100%;
+  }
+  html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-box:focus-within textarea,
+  html[data-chat-console="true"] .chat[data-view="console"] .chat-box:focus-within textarea {
+    min-height: 4.5rem;
+    max-height: min(10rem, 34dvh);
+  }
+  body.is-keyboard html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-box:focus-within textarea,
+  body.is-keyboard html[data-chat-console="true"] .chat[data-view="console"] .chat-box:focus-within textarea {
+    min-height: 4.5rem;
+    max-height: min(9rem, 32dvh);
+  }
+}
 html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-box.is-drop,
 html[data-chat-console="true"] .chat[data-view="console"] .chat-box.is-drop {
   border-color: var(--brass);

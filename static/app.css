@@ -5946,6 +5946,11 @@ a.chat-query-label:hover { color: var(--mist); }
     max-height: 5.5rem;
     padding: 0.2rem 0.25rem 0.3rem;
   }
+  /* Focused mobile composer owns its own row; don't collapse it back. */
+  body.is-keyboard .chat .chat-box:focus-within textarea {
+    min-height: 4.5rem;
+    max-height: min(9rem, 32dvh);
+  }
   body.is-keyboard .chat-hint { display: none; }
   body.is-keyboard .chat-empty-glyph,
   body.is-keyboard .chat-empty p { display: none; }
