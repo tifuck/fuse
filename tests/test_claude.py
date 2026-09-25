@@ -98,8 +98,10 @@ class ClaudeParseTest(unittest.TestCase):
         )
         self.assertEqual(payload["model"], "claude-sonnet-4-6")
         self.assertEqual(payload["max_tokens"], 1000)
-        self.assertEqual(payload["system"], [{"type": "text", "text": "be brief"}])
-        self.assertEqual(payload["thinking"], {"type": "adaptive"})
+        self.assertEqual(payload["system"][0]["text"], "You are Claude Code, Anthropic's official CLI for Claude.")
+        self.assertEqual(payload["system"][1], {"type": "text", "text": "be brief"})
+        self.assertEqual(payload["output_config"], {"effort": "high"})
+        self.assertNotIn("thinking", payload)
         self.assertNotIn("temperature", payload)
         self.assertEqual(payload["tool_choice"]["type"], "any")
         self.assertTrue(payload["tool_choice"]["disable_parallel_tool_use"])
@@ -147,6 +149,7 @@ class ClaudeParseTest(unittest.TestCase):
                                         "id": "claude-opus-5-5",
                                         "name": "Opus 5.5",
                                         "offered_on": ["first_party"],
+                                        "thinking": {"type": "effort"},
                                         "runtime": {"max_input_tokens": 1000000, "effort_levels": ["low", "medium"], "default_effort": "medium"},
                                     },
                                     {"id": "claude-opus-4-1-20250805", "name": "Opus 4.1", "offered_on": ["bedrock"]},

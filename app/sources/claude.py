@@ -60,7 +60,11 @@ SCOPES = (
 )
 
 _THINKING_OFF = frozenset({"none", "off", "disabled"})
-_BETA = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14"
+_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+# Claude Code's first-party allowlist for current models is claude-code plus
+# oauth-2025-04-20 when the token carries user:inference. The old adaptive
+# thinking beta is not on that list and these models reject it.
+_BETA = "claude-code-20250219,oauth-2025-04-20"
 _ANTHROPIC_VERSION = "2023-06-01"
 
 
@@ -418,6 +422,7 @@ def parse_catalog_payload(data: dict) -> list[dict]:
                     "window": window or 200_000,
                     "efforts": efforts,
                     "default_effort": str(runtime.get("default_effort") or ""),
+                    "thinking_type": str(thinking.get("type") or ""),
                 }
             )
     return rows
@@ -878,15 +883,24 @@ def _tool_choice(choice, parallel) -> dict | None:
     return mapped
 
 
-def _thinking_enabled(body: dict) -> bool:
+def _requested_effort(body: dict, model: str) -> str | None:
     effort = body.get("reasoning_effort")
     if effort is None and isinstance(body.get("reasoning"), dict):
         effort = body["reasoning"].get("effort")
-    if isinstance(effort, str) and effort.strip().lower() in _THINKING_OFF:
-        return False
-    if isinstance(effort, str) and effort.strip():
-        return True
-    return False
+    if not isinstance(effort, str) or not effort.strip():
+        # The CLI's non-interactive default for Opus 5.5 is low, and that is
+        # the effort a subscription token accepts. The catalog default (medium)
+        # is for the interactive picker, not this request.
+        effort = "low"
+    key = str(effort or "").strip().lower()
+    if not key or key in _THINKING_OFF:
+        return None
+    allowed = efforts_for(model) or _EFFORTS
+    if key not in allowed and key not in _EFFORTS:
+        return allowed[0] if allowed else "high"
+    if key not in allowed:
+        return allowed[0] if allowed else key
+    return key
 
 
 def build_messages_payload(body: dict, model: str) -> dict:
@@ -958,8 +972,15 @@ def build_messages_payload(body: dict, model: str) -> dict:
         "messages": messages,
         "stream": True,
     }
-    if system:
-        payload["system"] = system
+    # Subscription OAuth is only accepted for a Claude Code shaped request.
+    # A bare Messages call with the same token is refused as rate_limit_error
+    # even while the CLI on that account succeeds.
+    identity = {
+        "type": "text",
+        "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+        "cache_control": {"type": "ephemeral"},
+    }
+    payload["system"] = [identity, *system]
     tools = []
     for tool in body.get("tools") or []:
         if not isinstance(tool, dict) or tool.get("type") not in (None, "function"):
@@ -979,11 +1000,25 @@ def build_messages_payload(body: dict, model: str) -> dict:
     if tools:
         payload["tools"] = tools
     choice = _tool_choice(body.get("tool_choice"), body.get("parallel_tool_calls"))
+    effort = _requested_effort(body, model)
+    # A forced tool choice is illegal while thinking is on. Claude Code demotes it.
+    if choice and choice.get("type") == "tool" and effort:
+        choice = {"type": "auto"}
     if choice and tools:
         payload["tool_choice"] = choice
-    thinking = _thinking_enabled(body)
-    if thinking:
-        payload["thinking"] = {"type": "adaptive"}
+    # Current Claude Code models take effort in output_config. thinking.type
+    # stays adaptive only when the published catalog says so; older models
+    # reject a thinking block they did not ask for.
+    meta = _meta_for(model)
+    thinking_type = str(meta.get("thinking_type") or "")
+    if effort:
+        payload["output_config"] = {"effort": effort}
+        if thinking_type == "adaptive":
+            payload["thinking"] = {"type": "adaptive"}
+        elif thinking_type == "enabled":
+            budget = max(1024, min(max_tokens - 1, 8192))
+            if budget >= 1024:
+                payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
     else:
         if isinstance(body.get("temperature"), (int, float)) and not isinstance(body.get("temperature"), bool):
             payload["temperature"] = body["temperature"]
