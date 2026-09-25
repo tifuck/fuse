@@ -413,6 +413,11 @@ document.querySelectorAll("dialog.modal").forEach((dialog) => {
     if (event.target === dialog) dialog.close();
   });
   if (dialog.hasAttribute("data-auto-open")) dialog.showModal();
+  const auth = dialog.querySelector("[data-auth-open]");
+  if (auth && dialog.hasAttribute("data-auto-open")) {
+    const href = auth.getAttribute("href");
+    if (href) window.open(href, "_blank", "noopener");
+  }
 });
 
 function syncSourceForm() {

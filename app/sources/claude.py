@@ -54,8 +54,6 @@ SCOPES = (
     "user:mcp_servers",
     "user:file_upload",
     "user:plugins",
-    "user:projects:read",
-    "user:projects:write",
 )
 
 _THINKING_OFF = frozenset({"none", "off", "disabled"})

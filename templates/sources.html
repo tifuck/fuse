@@ -646,10 +646,10 @@
     <p class="callout fault" role="alert">{{ claude_flash_msg }}</p>
     {% endif %}
     {% if claude_pending %}
-    <p class="aside">Open Claude, sign in, and approve Fuse. If the page shows a code instead of returning here, paste the full code, including the part after #. This is the same sign-in as Claude Code.</p>
+    <p class="aside">Claude should have opened in a new tab. Sign in and approve Fuse. When the page shows a code instead of returning here, paste the full code, including the part after #.</p>
     <div class="modal-actions">
       {% if claude_auth_url %}
-      <a class="btn" href="{{ claude_auth_url }}" target="_blank" rel="noopener">Open Claude and connect</a>
+      <a class="btn" href="{{ claude_auth_url }}" target="_blank" rel="noopener" data-auth-open>Open Claude and connect</a>
       {% endif %}
       <form method="post" action="/sources/claude/cancel">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

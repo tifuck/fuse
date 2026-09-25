@@ -57,7 +57,8 @@ class ClaudeParseTest(unittest.TestCase):
 
     def test_authorize_url_is_manual_pkce(self):
         url = claude_mod.authorize_url(challenge="chal", state="st")
-        self.assertTrue(url.startswith("https://claude.com/cai/oauth/authorize?"))
+        self.assertTrue(url.startswith("https://claude.ai/oauth/authorize?"))
+        self.assertLessEqual(len(url), 500)
         self.assertIn("code_challenge=chal", url)
         self.assertIn("code_challenge_method=S256", url)
         self.assertIn("redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback", url)

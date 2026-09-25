@@ -177,7 +177,7 @@ def allowed_base_url(url: str) -> bool:
 
 def safe_verify_url(url: str) -> str:
     url = (url or "").strip()
-    if not url or len(url) > 500:
+    if not url or len(url) > 2048:
         return ""
     try:
         p = urlparse(url)
