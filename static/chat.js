@@ -277,6 +277,7 @@
   let syncState = "connecting";
   let syncLabel = "Connecting";
   let syncInitialized = false;
+  let historyLoaded = false;
   let heartbeatTimer = 0;
   let pendingDeletes = new Set();
   let pendingSave = null;
@@ -352,7 +353,10 @@
     if (overlayStack[overlayStack.length - 1] === kind) return;
     overlayStack.push(kind);
     overlayPopLock = true;
-    history.pushState({ fuseOverlay: kind }, "");
+    // Carry the chat marker so closing the overlay restores the chat entry
+    // instead of a bare one that back-navigation would treat as the list.
+    const inChat = Boolean(history.state && history.state.fuseChat);
+    history.pushState(inChat ? { fuseOverlay: kind, fuseChat: true } : { fuseOverlay: kind }, "");
     queueMicrotask(() => { overlayPopLock = false; });
   }
   function overlayDrop(kind) {
@@ -361,7 +365,8 @@
     overlayStack.splice(idx, 1);
     if (overlayIsMobile() && history.state && history.state.fuseOverlay === kind) {
       const prev = overlayStack[overlayStack.length - 1];
-      history.replaceState(prev ? { fuseOverlay: prev } : (history.state && history.state.fuseChat ? { fuseChat: true } : {}), "");
+      const inChat = Boolean(history.state.fuseChat);
+      history.replaceState(prev ? (inChat ? { fuseOverlay: prev, fuseChat: true } : { fuseOverlay: prev }) : (inChat ? { fuseChat: true } : {}), "");
     }
   }
   function overlayCloseKind(kind, fromPop) {
@@ -2799,11 +2804,17 @@
     }
   }
 
-  function setThreadUrl(id) {
+  function setThreadUrl(id, { stay = false } = {}) {
     const url = new URL(window.location.href);
     if (id) url.searchParams.set("t", String(id));
     else url.searchParams.delete("t");
-    const mark = id && historyMobile.matches ? { fuseChat: true } : {};
+    if (stay) {
+      // Still on the mobile list (the open chat was deleted or archived):
+      // update the address only, keep whatever entry we are on.
+      window.history.replaceState(window.history.state, "", url);
+      return;
+    }
+    const mark = historyMobile.matches ? { fuseChat: true } : {};
     if (mark.fuseChat && !(history.state && history.state.fuseChat)) {
       // Mobile: entering a chat leaves the previous entry (the chat list) below,
       // so a back swipe returns to the list instead of leaving the app.
@@ -3317,6 +3328,7 @@
         if (epoch !== syncEpoch) return;
         cursor = data.cursor;
         syncInitialized = true;
+        historyLoaded = true;
         threads = data.threads.filter((item) => !item.archived);
         archivedThreads = data.threads.filter((item) => item.archived);
         if (Array.isArray(data.projects)) projects = data.projects;
@@ -3462,7 +3474,7 @@
   function threadGone(id) {
     dropHistoryStacks(id);
     dropThread(id);
-    if (currentId === id) clearChatState();
+    if (currentId === id) clearChatState({ keepList: true });
     else renderHistory();
   }
 
@@ -4027,7 +4039,7 @@
     const working = running ? '<span class="visually-hidden">Working</span>' : "";
     const twoLine = Boolean(item.snippet || meta);
     const scheduledClass = item.schedule_id ? " is-task" : "";
-    return `<div class="chat-history-item${on}${twoLine ? " has-snip" : ""}${project ? " is-project" : ""}${groupedClass}${runningClass}${scheduledClass}" data-thread="${escapeHtml(String(item.id))}"${busy}><button type="button" class="open" title="${title}">${working}<span class="chat-history-title">${lead}<span class="chat-history-copy"><span class="chat-history-name">${title}</span>${meta}</span></span>${chip}${snip}</button><button type="button" class="more" aria-label="Chat actions">⋯</button></div>`;
+    return `<div class="chat-history-item${on}${twoLine ? " has-snip" : ""}${project ? " is-project" : ""}${groupedClass}${runningClass}${scheduledClass}" data-thread="${escapeHtml(String(item.id))}"${busy}><button type="button" class="open" title="${title}">${working}<span class="chat-history-title">${lead}<span class="chat-history-copy"><span class="chat-history-name">${title}</span>${meta}${snip}</span></span>${chip}</button><button type="button" class="more" aria-label="Chat actions">⋯</button></div>`;
   }
 
   function projectRow(item) {
@@ -4266,7 +4278,9 @@
       return;
     }
     const items = filteredHistory();
-    if (!items.length) {
+    if (!items.length && !historyLoaded) {
+      historyList.innerHTML = `<div class="chat-history-loading" aria-busy="true" aria-label="Loading chats">${"<span></span>".repeat(6)}</div>`;
+    } else if (!items.length) {
       historyList.innerHTML = `<p class="chat-history-empty">No chats yet.</p>`;
     } else {
       historyList.innerHTML = items.map((item) => historyRow(item)).join("");
@@ -4333,6 +4347,7 @@
     const before = cursor;
     const data = await api("/chat/threads");
     if (cursor !== before) return;
+    historyLoaded = true;
     threads = data.threads || [];
     archivedThreads = data.archived || [];
     if (Array.isArray(data.projects)) projects = data.projects;
@@ -4858,7 +4873,7 @@
             }),
           });
           upsertLocal(updated);
-          if (nav === navigation && currentId === id && updated.archived) clearChatState();
+          if (nav === navigation && currentId === id && updated.archived) clearChatState({ keepList: true });
           renderHistory();
         },
       },
@@ -11453,7 +11468,8 @@
     }
   }
 
-  function clearChatState() {
+  function clearChatState({ keepList = false } = {}) {
+    const stayOnList = keepList && historyMobile.matches && root.classList.contains("is-history");
     drafts.set(currentId, input.value);
     draftFiles.set(currentId, pendingAttachments);
     stoppingRunId = "";
@@ -11501,12 +11517,12 @@
     searchOn = true;
     pendingAttachments = draftFiles.get(null) || [];
     renderAttachList();
-    setThreadUrl(null);
+    setThreadUrl(null, { stay: stayOnList });
     paint();
     renderHistory();
     defaultHint();
     syncMemoryUi();
-    setHistoryOpen(false);
+    if (!stayOnList) setHistoryOpen(false);
     currentArtifact = null;
     setArtifactOpen(false);
     syncStatus();
@@ -13450,10 +13466,16 @@
     scheduleFitChatBar();
   }
 
-  function setHistoryOpen(open) {
+  // On mobile the chat list is the page's base screen ("home"): opened that way
+  // it adds no history entry, so back from the list leaves the app instead of
+  // bouncing into the chat underneath.
+  function setHistoryOpen(open, { home = false } = {}) {
     const next = Boolean(open);
     const was = root.classList.contains("is-history");
     root.classList.toggle("is-history", next);
+    // The home screen appears in place; only an explicit open slides in.
+    if (next && !was) root.classList.toggle("history-home", home);
+    if (!next) root.classList.remove("history-home");
     if (next && !was) {
       document.dispatchEvent(new Event("fuse:history-open"));
       closePop();
@@ -13461,13 +13483,13 @@
       if (skillsOpen && overlayIsMobile()) setSkillsOpen(false);
       if (artifactOpen && overlayIsMobile()) setArtifactOpen(false);
       if (agentsOpen && overlayIsMobile()) setAgentsOpen(false);
-      if (overlayIsMobile()) overlayPush("history");
+      if (overlayIsMobile() && !home) overlayPush("history");
     } else if (!next && was) {
       armOverlayGhost(historyCollapse);
       overlayDrop("history");
     }
     syncHistory();
-    if (next && overlayIsMobile()) historyCollapse?.focus({ preventScroll: true });
+    if (next && !home && overlayIsMobile()) historyCollapse?.focus({ preventScroll: true });
   }
 
   historyBackdrop?.addEventListener("click", () => setHistoryOpen(false));
@@ -13492,12 +13514,12 @@
       if (root.classList.contains("is-history")) setHistoryOpen(false);
       return;
     }
-    if (currentId && !root.classList.contains("is-history")) setHistoryOpen(true);
+    if (!root.classList.contains("is-history")) setHistoryOpen(true, { home: true });
   });
   // app.js closes history directly when opening global navigation.
   new MutationObserver(syncHistory).observe(root, { attributes: true, attributeFilter: ["class"] });
   historyMobile.addEventListener("change", () => {
-    setHistoryOpen(false);
+    setHistoryOpen(historyMobile.matches && !currentId && !messages.length, { home: true });
     pinVisualViewport();
   });
   pickerSheetQuery.addEventListener("change", () => {
@@ -13510,18 +13532,17 @@
   });
   syncHistory();
   let terminalHistoryState = null;
+  // Terminal and console are full-window on desktop, so they start with the
+  // sidebar collapsed. The mobile drawer is a separate screen and is left alone.
   function syncTerminalHistory() {
     if (isHarnessView() && terminalHistoryState === null) {
-      terminalHistoryState = {
-        collapsed: root.classList.contains("history-collapsed"),
-        drawer: root.classList.contains("is-history"),
-      };
+      terminalHistoryState = { collapsed: root.classList.contains("history-collapsed") };
       root.classList.add("history-collapsed");
-      setHistoryOpen(false);
+      syncHistory();
     } else if (!isHarnessView() && terminalHistoryState !== null) {
       root.classList.toggle("history-collapsed", terminalHistoryState.collapsed);
-      setHistoryOpen(historyMobile.matches && terminalHistoryState.drawer);
       terminalHistoryState = null;
+      syncHistory();
     }
   }
   new MutationObserver(syncTerminalHistory).observe(root, { attributes: true, attributeFilter: ["data-view"] });
@@ -13887,6 +13908,9 @@
     pinVisualViewport();
     window.setTimeout(pinVisualViewport, 350);
   });
+  if (historyMobile.matches && !new URLSearchParams(window.location.search).get("t")) {
+    setHistoryOpen(true, { home: true });
+  }
   const initialNavigation = navigation;
   connectSync(true)
     .then(() => {
