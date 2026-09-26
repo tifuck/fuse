@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -100,7 +101,8 @@ func TestStageUpdateBinaryExclusive(t *testing.T) {
 	if filepath.Base(p1) == "fuse-agent.exe.new" {
 		t.Fatal("staging path collides with historical fixed name")
 	}
-	if st, err := os.Stat(p1); err != nil || st.Mode().Perm() != 0755 {
+	// Unix permission bits only exist on POSIX; Windows reports rw-rw-rw-.
+	if st, err := os.Stat(p1); err != nil || (runtime.GOOS != "windows" && st.Mode().Perm() != 0755) {
 		t.Fatalf("staged mode %v err %v", st.Mode().Perm(), err)
 	}
 }
@@ -278,8 +280,11 @@ func runHandoff(t *testing.T, reply byte, wantExit int) {
 			t.Fatalf("abort exit = %v, want %d", err, wantExit)
 		}
 	}
-	// Ownership ended with the helper: re-acquirable.
-	if _, _, ok := acquireUpdateLock(self); !ok {
+	// Ownership ended with the helper: re-acquirable. Release it again so
+	// the handle closes (Windows cannot delete the temp dir around an open file).
+	release, _, ok := acquireUpdateLock(self)
+	if !ok {
 		t.Fatal("lock not re-acquirable after helper completion")
 	}
+	release()
 }

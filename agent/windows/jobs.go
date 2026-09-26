@@ -155,6 +155,11 @@ func jsonInt(m map[string]any, k string, fallback int) int {
 	}
 }
 
+func jsonFlag(m map[string]any, k string) bool {
+	b, _ := m[k].(bool)
+	return b
+}
+
 func jsonBool(m map[string]any) bool {
 	v, ok := m["replace_all"]
 	if !ok {
@@ -281,7 +286,7 @@ func (h *jobHub) run(s *session, msg map[string]any) {
 		}
 		s.sendRes(id, true, 0, "wrote", "", "")
 	case "list":
-		out, err := listDir(jsonStr(msg, "path", "."))
+		out, err := listTree(jsonStr(msg, "path", "."), jsonInt(msg, "depth", 1))
 		if err != nil {
 			s.sendRes(id, false, 1, "", err.Error(), "list failed")
 			return
@@ -297,7 +302,11 @@ func (h *jobHub) run(s *session, msg map[string]any) {
 	case "grep":
 		path := jsonStr(msg, "path", ".")
 		pattern := jsonStr(msg, "pattern", "")
-		out, err := grepDirOptions(path, pattern, jsonStr(msg, "include", ""), jsonInt(msg, "max_matches", 200))
+		out, err := grepDirMode(path, pattern, jsonStr(msg, "include", ""), jsonInt(msg, "max_matches", 200), grepOpts{
+			ignoreCase: jsonFlag(msg, "ignore_case"),
+			context:    jsonInt(msg, "context", 0),
+			mode:       jsonStr(msg, "mode", "content"),
+		})
 		if err != nil {
 			msg := err.Error()
 			if msg == "" {
@@ -308,7 +317,7 @@ func (h *jobHub) run(s *session, msg map[string]any) {
 		}
 		s.sendRes(id, true, 0, out, "", "")
 	case "glob":
-		out, err := globDir(jsonStr(msg, "path", "."), jsonStr(msg, "pattern", ""))
+		out, err := globDirSorted(jsonStr(msg, "path", "."), jsonStr(msg, "pattern", ""), jsonStr(msg, "sort", "path"))
 		if err != nil {
 			msg := err.Error()
 			if msg == "" {
@@ -319,7 +328,21 @@ func (h *jobHub) run(s *session, msg map[string]any) {
 		}
 		s.sendRes(id, true, 0, out, "", "")
 	case "replace":
-		msgOut, err := replaceFile(jsonStr(msg, "path", ""), jsonStr(msg, "old", ""), jsonStr(msg, "new", ""), jsonBool(msg))
+		var msgOut string
+		var err error
+		if raw, ok := msg["edits"].([]any); ok {
+			edits := make([]fileEdit, 0, len(raw))
+			for _, item := range raw {
+				m, _ := item.(map[string]any)
+				if m == nil {
+					m = map[string]any{}
+				}
+				edits = append(edits, fileEdit{jsonStr(m, "old_string", ""), jsonStr(m, "new_string", ""), jsonBool(m)})
+			}
+			msgOut, err = replaceEdits(jsonStr(msg, "path", ""), edits)
+		} else {
+			msgOut, err = replaceFile(jsonStr(msg, "path", ""), jsonStr(msg, "old", ""), jsonStr(msg, "new", ""), jsonBool(msg))
+		}
 		if err != nil {
 			s.sendRes(id, false, 1, "", "", err.Error())
 			return

@@ -10,9 +10,9 @@ import (
 )
 
 var (
-	iphlpapi          = windows.NewLazySystemDLL("iphlpapi.dll")
-	procNotifyIface   = iphlpapi.NewProc("NotifyIpInterfaceChange")
-	procCancelNotify  = iphlpapi.NewProc("CancelMibChangeNotify2")
+	iphlpapi         = windows.NewLazySystemDLL("iphlpapi.dll")
+	procNotifyIface  = iphlpapi.NewProc("NotifyIpInterfaceChange")
+	procCancelNotify = iphlpapi.NewProc("CancelMibChangeNotify2")
 )
 
 func startWatchOS() {

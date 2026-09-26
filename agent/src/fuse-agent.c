@@ -1101,6 +1101,63 @@ static int read_file_slice(const char *path, int offset, int limit, char *out, s
 
 static void handle_job(struct tls *t, cJSON *msg);
 
+/* The process umask without the umask(0)/umask(old) race (other threads may
+ * be creating files): Linux reports it in /proc/self/status. */
+static mode_t current_umask(void) {
+    unsigned int um = 022;
+    FILE *f = fopen("/proc/self/status", "r");
+    if (f) {
+        char line[256];
+        while (fgets(line, sizeof(line), f)) {
+            if (sscanf(line, "Umask:\t%o", &um) == 1) break;
+        }
+        fclose(f);
+    }
+    return (mode_t)(um & 0777);
+}
+
+static int write_all_fd(int fd, const char *content, size_t n) {
+    size_t done = 0;
+    while (done < n) {
+        ssize_t wrote = write(fd, content + done, n - done);
+        if (wrote < 0 && errno == EINTR) continue;
+        if (wrote <= 0) return -1;
+        done += (size_t)wrote;
+    }
+    return 0;
+}
+
+/* Rewrite an existing regular file in place: same inode, so hard links,
+ * owner, ACLs and xattrs are untouched. Not atomic; used only when a sibling
+ * temp file would break a hard link or cannot be created at all. */
+static int write_in_place(const char *path, const char *content, size_t n) {
+    int fd = open(path, O_WRONLY | O_TRUNC | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) return -1;
+    if (write_all_fd(fd, content, n) != 0 || fsync(fd) != 0) {
+        int e = errno;
+        close(fd);
+        errno = e;
+        return -1;
+    }
+    return close(fd);
+}
+
+/* mkdir -p for a new file's parent; the umask applies as for any mkdir. */
+static int mkdir_parents(const char *dir) {
+    char buf[PATH_MAX];
+    size_t n = strlen(dir);
+    if (n == 0 || n >= sizeof(buf)) return -1;
+    memcpy(buf, dir, n + 1);
+    for (size_t i = 1; i <= n; i++) {
+        if (buf[i] != '/' && buf[i] != 0) continue;
+        char saved = buf[i];
+        buf[i] = 0;
+        if (mkdir(buf, 0777) != 0 && errno != EEXIST) return -1;
+        buf[i] = saved;
+    }
+    return 0;
+}
+
 static int write_file_atomic_limit(const char *path, const char *content, long max) {
     if (content && (long)strlen(content) > max) { errno = EFBIG; return -1; }
     char expanded[PATH_MAX];
@@ -1118,22 +1175,32 @@ static int write_file_atomic_limit(const char *path, const char *content, long m
     } else {
         strcpy(dir, ".");
     }
-    if (snprintf(tmp, sizeof(tmp), "%s/.fuse-XXXXXX", dir) >= (int)sizeof(tmp)) return -1;
-    int fd = mkstemp(tmp);
-    if (fd < 0) return -1;
+    size_t n = content ? strlen(content) : 0;
     struct stat st;
-    mode_t mode = 0600;
+    int exists = 0;
+    /* New files get what any editor would create (0666 minus the umask), not
+     * mkstemp's 0600 that other service users cannot read. */
+    mode_t mode = 0666 & ~current_umask();
     if (lstat(path, &st) == 0) {
         if (!S_ISREG(st.st_mode)) {
-            close(fd);
-            unlink(tmp);
             errno = EINVAL;
             return -1;
         }
+        exists = 1;
         mode = st.st_mode & 0777;
+        /* A rename would split a hard-linked file into two copies. */
+        if (st.st_nlink > 1) return write_in_place(path, content ? content : "", n);
     } else if (errno != ENOENT) {
-        close(fd);
-        unlink(tmp);
+        return -1;
+    } else if (mkdir_parents(dir) != 0) {
+        return -1;
+    }
+    if (snprintf(tmp, sizeof(tmp), "%s/.fuse-XXXXXX", dir) >= (int)sizeof(tmp)) return -1;
+    int fd = mkstemp(tmp);
+    if (fd < 0) {
+        /* Directory not writable but the file is: edit the file itself. */
+        if (exists && (errno == EACCES || errno == EPERM))
+            return write_in_place(path, content ? content : "", n);
         return -1;
     }
     if (fchmod(fd, mode) != 0) {
@@ -1141,19 +1208,11 @@ static int write_file_atomic_limit(const char *path, const char *content, long m
         unlink(tmp);
         return -1;
     }
-    size_t n = content ? strlen(content) : 0;
-    size_t done = 0;
-    while (done < n) {
-        ssize_t wrote = write(fd, content + done, n - done);
-        if (wrote < 0 && errno == EINTR) continue;
-        if (wrote <= 0) {
-            close(fd);
-            unlink(tmp);
-            return -1;
-        }
-        done += (size_t)wrote;
-    }
-    if (fsync(fd) != 0) {
+    /* Keep the original owner where permitted (e.g. root editing a user's
+     * file); an unprivileged connector cannot, and that is not an error. */
+    if (exists && (st.st_uid != geteuid() || st.st_gid != getegid()))
+        if (fchown(fd, st.st_uid, st.st_gid) != 0) { /* not permitted: keep ours */ }
+    if (write_all_fd(fd, content ? content : "", n) != 0 || fsync(fd) != 0) {
         close(fd);
         unlink(tmp);
         return -1;
@@ -1430,6 +1489,87 @@ static char *crlf_expand(const char *s, size_t n) {
     return out;
 }
 
+/* Apply one exact replacement to a NUL-terminated heap buffer, replacing it
+ * on success. LF-only old/new against a CRLF text are converted to CRLF
+ * (read_file hides carriage returns) — deterministic, never fuzzy. */
+static int apply_edit(char **bufp, size_t *lenp, const char *old, const char *newv, int all,
+                      long *reps_out, char *why, size_t whylen) {
+    char *buf = *bufp;
+    size_t len = *lenp;
+    if (!old || !old[0]) {
+        snprintf(why, whylen, "old_string required");
+        return -1;
+    }
+    if (strcmp(old, newv) == 0) {
+        snprintf(why, whylen, "old_string and new_string are identical");
+        return -1;
+    }
+    char *old_crlf = NULL, *new_crlf = NULL;
+    const char *old_use = old, *new_use = newv;
+    size_t oldn = strlen(old), newn = strlen(newv);
+    long count = 0;
+    for (const char *p = buf; (p = strstr(p, old)); p += oldn) count++;
+    if (count == 0 && memmem(buf, len, "\r\n", 2) && !memchr(old, '\r', oldn) && memchr(old, '\n', oldn)) {
+        old_crlf = crlf_expand(old, oldn);
+        new_crlf = crlf_expand(newv, newn);
+        if (old_crlf && new_crlf) {
+            size_t o2 = strlen(old_crlf);
+            for (const char *q = buf; (q = strstr(q, old_crlf)); q += o2) count++;
+            if (count) {
+                old_use = old_crlf;
+                new_use = new_crlf;
+                oldn = o2;
+                newn = strlen(new_crlf);
+            }
+        }
+    }
+    if (count == 0) {
+        free(old_crlf); free(new_crlf);
+        snprintf(why, whylen, "old_string not found");
+        return -1;
+    }
+    if (count > 1 && !all) {
+        free(old_crlf); free(new_crlf);
+        snprintf(why, whylen, "old_string is not unique (%ld occurrences)", count);
+        return -1;
+    }
+    long reps = all ? count : 1;
+    long final = (long)len + reps * ((long)newn - (long)oldn);
+    if (final > EDIT_FILE_MAX) {
+        free(old_crlf); free(new_crlf);
+        snprintf(why, whylen,
+                 "replacement too large (maximum %ld bytes); apply the change with run_terminal_command",
+                 EDIT_FILE_MAX);
+        return -1;
+    }
+    char *nb = malloc((size_t)final + 1);
+    if (!nb) {
+        free(old_crlf); free(new_crlf);
+        snprintf(why, whylen, "out of memory");
+        return -1;
+    }
+    char *w = nb;
+    const char *r = buf;
+    for (long left = reps; left; left--) {
+        const char *hit = strstr(r, old_use);
+        if (!hit) break;
+        size_t pre = (size_t)(hit - r);
+        memcpy(w, r, pre);
+        w += pre;
+        memcpy(w, new_use, newn);
+        w += newn;
+        r = hit + oldn;
+    }
+    strcpy(w, r);
+    free(old_crlf); free(new_crlf);
+    free(buf);
+    *bufp = nb;
+    *lenp = strlen(nb);
+    *reps_out = reps;
+    return 0;
+}
+
+
 static void *job_worker(void *arg) {
     (void)arg;
     for (;;) {
@@ -1694,10 +1834,7 @@ static void handle_job_impl(struct tls *t, cJSON *msg) {
     }
     if (strcmp(op, "replace") == 0) {
         const char *path = json_cstr(msg, "path", "");
-        const char *old = json_cstr(msg, "old", "");
-        const char *newv = json_cstr(msg, "new", "");
-        int all = json_bool(msg, "replace_all");
-        char *buf = NULL, *old_crlf = NULL, *new_crlf = NULL;
+        char *buf = NULL;
         size_t len = 0;
         char expanded[PATH_MAX];
         struct stat before, after;
@@ -1713,8 +1850,12 @@ static void handle_job_impl(struct tls *t, cJSON *msg) {
             send_res(t, id, 0, 1, "", "", "edit target must be a regular file");
             return;
         }
-        if (!old[0]) {
-            send_res(t, id, 0, 1, "", "", "old_string required");
+        /* One edit (old/new/replace_all) or an ordered "edits" array applied
+         * to the same in-memory text and published once: all or nothing. */
+        cJSON *edits = cJSON_GetObjectItemCaseSensitive(msg, "edits");
+        int nedits = cJSON_IsArray(edits) ? cJSON_GetArraySize(edits) : 1;
+        if (nedits < 1 || nedits > 100) {
+            send_res(t, id, 0, 1, "", "", "edits must contain 1 to 100 items");
             return;
         }
         if (load_whole(path, &buf, &len) != 0) {
@@ -1730,92 +1871,35 @@ static void handle_job_impl(struct tls *t, cJSON *msg) {
             send_res(t, id, 0, 1, "", why, "replace failed");
             return;
         }
-        const char *old_use = old, *new_use = newv;
-        size_t oldn = strlen(old), newn = strlen(newv);
-        long count = 0;
-        const char *p = buf;
-        while ((p = strstr(p, old))) {
-            count++;
-            p += oldn;
-        }
-        if (count == 0 && memmem(buf, len, "\r\n", 2) && !memchr(old, '\r', oldn) && memchr(old, '\n', oldn)) {
-            /* read_file hides carriage returns, so an LF-only old_string can
-             * never match a CRLF file byte-for-byte. Convert LF to CRLF:
-             * deterministic line-ending repair, never a fuzzy match. */
-            old_crlf = crlf_expand(old, oldn);
-            new_crlf = crlf_expand(newv, newn);
-            if (old_crlf && new_crlf) {
-                size_t o2 = strlen(old_crlf);
-                const char *q = buf;
-                while ((q = strstr(q, old_crlf))) {
-                    count++;
-                    q += o2;
-                }
-                if (count) {
-                    old_use = old_crlf;
-                    new_use = new_crlf;
-                    oldn = o2;
-                    newn = strlen(new_crlf);
-                }
-            }
-        }
-        if (count == 0) {
-            free(buf); free(old_crlf); free(new_crlf);
-            send_res(t, id, 0, 1, "", "", "old_string not found");
-            return;
-        }
-        if (count > 1 && !all) {
-            free(buf); free(old_crlf); free(new_crlf);
-            send_res(t, id, 0, 1, "", "", "old_string is not unique");
-            return;
-        }
-        /* Publication caps at EDIT_FILE_MAX bytes; check the exact final size
-         * up front instead of failing after building the buffer. */
-        long reps = all ? count : 1;
-        long final = (long)len + reps * ((long)newn - (long)oldn);
-        if (final > EDIT_FILE_MAX) {
-            free(buf); free(old_crlf); free(new_crlf);
+        long total = 0;
+        for (int i = 0; i < nedits; i++) {
+            cJSON *item = cJSON_IsArray(edits) ? cJSON_GetArrayItem(edits, i) : msg;
+            const char *old = json_cstr(item, cJSON_IsArray(edits) ? "old_string" : "old", "");
+            const char *newv = json_cstr(item, cJSON_IsArray(edits) ? "new_string" : "new", "");
+            int all = json_bool(item, "replace_all");
             char why[320];
-            snprintf(why, sizeof(why),
-                     "replacement too large (maximum %ld bytes); apply the change with run_terminal_command",
-                     EDIT_FILE_MAX);
-            send_res(t, id, 0, 1, "", "", why);
-            return;
+            long reps = 0;
+            if (apply_edit(&buf, &len, old, newv, all, &reps, why, sizeof(why)) != 0) {
+                free(buf);
+                char msgbuf[400];
+                if (cJSON_IsArray(edits))
+                    snprintf(msgbuf, sizeof(msgbuf), "edit %d of %d: %s; no edits were applied", i + 1, nedits, why);
+                else
+                    snprintf(msgbuf, sizeof(msgbuf), "%s", why);
+                send_res(t, id, 0, 1, "", "", msgbuf);
+                return;
+            }
+            total += reps;
         }
-        size_t nlen = (size_t)(final > (long)len ? final : (long)len) + 8;
-        char *nb = malloc(nlen);
-        if (!nb) {
-            free(buf); free(old_crlf); free(new_crlf);
-            send_res(t, id, 0, 1, "", "", "out of memory");
-            return;
-        }
-        char *w = nb;
-        const char *r = buf;
-        long left = reps;
-        while (left) {
-            const char *hit = strstr(r, old_use);
-            if (!hit) break;
-            size_t pre = (size_t)(hit - r);
-            memcpy(w, r, pre);
-            w += pre;
-            memcpy(w, new_use, newn);
-            w += newn;
-            r = hit + oldn;
-            left--;
-        }
-        strcpy(w, r);
         if (lstat(expanded, &after) != 0 || before.st_dev != after.st_dev ||
             before.st_ino != after.st_ino || before.st_size != after.st_size ||
             before.st_mtim.tv_sec != after.st_mtim.tv_sec || before.st_mtim.tv_nsec != after.st_mtim.tv_nsec) {
-            free(buf); free(nb); free(old_crlf); free(new_crlf);
+            free(buf);
             send_res(t, id, 0, 1, "", "", "file changed during edit; read it again");
             return;
         }
-        int wr = write_file_atomic_limit(path, nb, EDIT_FILE_MAX);
+        int wr = write_file_atomic_limit(path, buf, EDIT_FILE_MAX);
         free(buf);
-        free(nb);
-        free(old_crlf);
-        free(new_crlf);
         if (wr != 0) {
             char why[288];
             if (errno == EFBIG)
@@ -1825,7 +1909,7 @@ static void handle_job_impl(struct tls *t, cJSON *msg) {
             send_res(t, id, 0, 1, "", why, "replace failed");
         }
         else {
-            snprintf(out, sizeof(out), "%ld replacement(s)", reps);
+            snprintf(out, sizeof(out), "%ld replacement(s)", total);
             send_res(t, id, 1, 0, out, "", "");
         }
         return;
@@ -2345,21 +2429,28 @@ static void *watch_thread(void *arg) {
 }
 #endif
 
-static void start_watch_thread(void) {
-    if (g_watch_started) return;
+/* Create the wake/stop pipes before any signal handler is installed: a
+ * SIGTERM that arrived before they existed would otherwise be dropped (the
+ * handler only writes pipes). Idempotent. */
+static void init_signal_pipes(void) {
     int p[2], q[2], r[2];
-    if (pipe2(p, O_CLOEXEC | O_NONBLOCK) == 0) {
+    if (g_wake_rd < 0 && pipe2(p, O_CLOEXEC | O_NONBLOCK) == 0) {
         g_wake_rd = p[0];
         g_wake_wr = p[1];
     }
-    if (pipe2(q, O_CLOEXEC | O_NONBLOCK) == 0) {
+    if (g_main_stop_rd < 0 && pipe2(q, O_CLOEXEC | O_NONBLOCK) == 0) {
         g_main_stop_rd = q[0];
         g_main_stop_wr = q[1];
     }
-    if (pipe2(r, O_CLOEXEC) == 0) {
+    if (g_watch_stop_rd < 0 && pipe2(r, O_CLOEXEC) == 0) {
         g_watch_stop_rd = r[0];
         g_watch_stop_wr = r[1];
     }
+}
+
+static void start_watch_thread(void) {
+    if (g_watch_started) return;
+    init_signal_pipes();
     pthread_t th;
     if (pthread_create(&th, NULL, watch_thread, NULL) == 0) {
         pthread_detach(th);
@@ -2434,6 +2525,15 @@ static int session_loop(void) {
     int64_t next_update_ms = now_mono_ms() + 60 * 1000;
     start_watch_thread();
     while (!g_stop_main) {
+        /* A stop that arrived before the first poll (e.g. during startup)
+         * is still queued in the stop pipe: honor it before any network work. */
+        if (g_main_stop_rd >= 0) {
+            struct pollfd sp = {g_main_stop_rd, POLLIN, 0};
+            if (poll(&sp, 1, 0) > 0 && (sp.revents & POLLIN)) {
+                record_main_stop();
+                break;
+            }
+        }
         attempts++;
         consume_wake();
         int wake = wake_take(); /* consume then take: no lost reset */
@@ -2947,6 +3047,7 @@ int main(int argc, char **argv) {
         }
     }
     signal(SIGPIPE, SIG_IGN);
+    init_signal_pipes();
     signal(SIGTERM, on_sig);
     signal(SIGINT, on_sig);
     signal(SIGUSR1, on_usr1);

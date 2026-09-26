@@ -9,6 +9,7 @@ import (
 	slashpath "path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -148,10 +149,16 @@ func writeFileAtomicLimit(path, content string, max int) error {
 		return fmt.Errorf("content must be UTF-8 text without NUL, maximum %d bytes", max)
 	}
 	path = expandHome(path)
+	// os.CreateTemp creates 0600: keep an existing file's mode, and give a
+	// new file the conventional 0644 instead.
+	mode := os.FileMode(0644)
+	exists := false
 	if st, err := os.Lstat(path); err == nil {
 		if !st.Mode().IsRegular() {
 			return fmt.Errorf("write target must be a regular file")
 		}
+		mode = st.Mode().Perm()
+		exists = true
 	} else if !os.IsNotExist(err) {
 		return err
 	}
@@ -161,9 +168,18 @@ func writeFileAtomicLimit(path, content string, max int) error {
 	}
 	tmp, err := os.CreateTemp(dir, ".fuse-*.tmp")
 	if err != nil {
+		// Directory not writable but the file is: rewrite the file itself.
+		if exists && os.IsPermission(err) {
+			return writeInPlace(path, content)
+		}
 		return err
 	}
 	tmpName := tmp.Name()
+	if err := tmp.Chmod(mode); err != nil && runtime.GOOS != "windows" {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
 	if _, err := tmp.WriteString(content); err != nil {
 		tmp.Close()
 		os.Remove(tmpName)
@@ -185,38 +201,88 @@ func writeFileAtomicLimit(path, content string, max int) error {
 	return nil
 }
 
+// writeInPlace rewrites an existing regular file without replacing it (same
+// file identity, attributes and ACLs). Not atomic; only a fallback.
+func writeInPlace(path, content string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(content); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
 func writeFileAtomic(path, content string) error {
 	return writeFileAtomicLimit(path, content, writeFileMax)
 }
 
+const listScanMax = 1500
+
 func listDir(path string) (string, error) {
+	return listTree(path, 1)
+}
+
+// listTree lists path to depth levels (1 = the directory itself). Paths are
+// relative with '/' separators and a trailing '/' on directories; vendor and
+// build directories are listed but never entered. Everything is collected
+// (up to listScanMax) and sorted before the server trims to its page, so the
+// page is the alphabetical start rather than an arbitrary readdir subset.
+func listTree(path string, depth int) (string, error) {
+	if depth < 1 {
+		depth = 1
+	}
+	if depth > 5 {
+		depth = 5
+	}
 	path = expandHome(path)
-	dir, err := os.Open(path)
-	if err != nil {
-		return "", err
+	var names []string
+	type item struct {
+		rel, full string
+		level     int
 	}
-	defer dir.Close()
-	ents, err := dir.ReadDir(400)
-	if err != nil && err != io.EOF {
-		return "", err
-	}
-	names := make([]string, 0, len(ents))
-	for _, e := range ents {
-		if len(names) >= 400 {
-			break
-		}
-		name := e.Name()
-		if name == "." || name == ".." {
+	queue := []item{{"", path, 1}}
+	for len(queue) > 0 && len(names) <= listScanMax {
+		cur := queue[0]
+		queue = queue[1:]
+		ents, err := os.ReadDir(cur.full)
+		if err != nil {
+			if cur.level == 1 {
+				return "", err
+			}
 			continue
 		}
-		if e.IsDir() {
-			name += "/"
-		} else if e.Type()&os.ModeSymlink != 0 {
-			if info, err := os.Stat(filepath.Join(path, e.Name())); err == nil && info.IsDir() {
-				name += "/"
+		for _, e := range ents {
+			name := e.Name()
+			if name == "." || name == ".." {
+				continue
+			}
+			isDir := e.IsDir()
+			if !isDir && e.Type()&os.ModeSymlink != 0 {
+				if info, err := os.Stat(filepath.Join(cur.full, name)); err == nil && info.IsDir() {
+					isDir = true
+				}
+			}
+			rel := cur.rel + name
+			if isDir {
+				names = append(names, rel+"/")
+				_, skip := searchSkipDirs[name]
+				if cur.level < depth && !skip && e.IsDir() {
+					queue = append(queue, item{rel + "/", filepath.Join(cur.full, name), cur.level + 1})
+				}
+			} else {
+				names = append(names, rel)
+			}
+			if len(names) > listScanMax {
+				break
 			}
 		}
-		names = append(names, name)
 	}
 	sort.Strings(names)
 	return strings.Join(names, "\n") + newlineIf(len(names) > 0), nil
@@ -304,24 +370,91 @@ func globOK(s string) bool {
 	if strings.Contains(s, "/..") || strings.Contains(s, `\..`) {
 		return false
 	}
+	// Patterns are matched in-process, never passed to a shell: refuse only
+	// control characters and pipeline/quoting characters that signal a
+	// shell command rather than a glob. +page.svelte, @scope, spaces are fine.
 	for i := 0; i < n; i++ {
 		c := s[i]
-		switch {
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
-		case strings.ContainsRune("_.*?/[]{}!,-\\", rune(c)):
-		default:
+		if c < 32 || strings.ContainsRune("|;<>`$\"", rune(c)) {
 			return false
 		}
 	}
 	return true
 }
 
+// expandBraces turns one {a,b} group at a time into alternatives:
+// "*.{ts,tsx}" -> ["*.ts", "*.tsx"]. Nested groups expand recursively.
+func expandBraces(pattern string) []string {
+	open := strings.IndexByte(pattern, '{')
+	if open < 0 {
+		return []string{pattern}
+	}
+	depth := 0
+	closeAt := -1
+	var parts []string
+	start := open + 1
+	for i := open; i < len(pattern); i++ {
+		switch pattern[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				closeAt = i
+			}
+		case ',':
+			if depth == 1 {
+				parts = append(parts, pattern[start:i])
+				start = i + 1
+			}
+		}
+		if closeAt >= 0 {
+			break
+		}
+	}
+	if closeAt < 0 {
+		return []string{pattern}
+	}
+	parts = append(parts, pattern[start:closeAt])
+	var out []string
+	for _, part := range parts {
+		out = append(out, expandBraces(pattern[:open]+part+pattern[closeAt+1:])...)
+	}
+	if len(out) > 64 {
+		out = out[:64]
+	}
+	return out
+}
+
+// matchAny matches rel against every brace alternative of pattern.
+func matchAny(pattern, rel string) (bool, error) {
+	for _, alt := range expandBraces(pattern) {
+		ok, err := pathMatch(alt, rel)
+		if err != nil || ok {
+			return ok, err
+		}
+	}
+	return false, nil
+}
+
+const globScanMax = 20000
+
 func globDir(root, pattern string) (string, error) {
+	return globDirSorted(root, pattern, "path")
+}
+
+// globDirSorted collects up to globScanMax matches, sorts them ("path", or
+// "modified" = newest first), and returns the first 400.
+func globDirSorted(root, pattern, order string) (string, error) {
 	root = expandHome(root)
 	if !globOK(pattern) {
 		return "", fmt.Errorf("invalid pattern")
 	}
-	var matches []string
+	type hit struct {
+		path string
+		mod  int64
+	}
+	var matches []hit
 	pat := filepath.ToSlash(pattern)
 	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -341,13 +474,19 @@ func globDir(root, pattern string) (string, error) {
 		if d.IsDir() {
 			return nil
 		}
-		ok, matchErr := pathMatch(pat, relSlash)
+		ok, matchErr := matchAny(pat, relSlash)
 		if matchErr != nil {
 			return matchErr
 		}
 		if ok {
-			matches = append(matches, p)
-			if len(matches) >= 400 {
+			var mod int64
+			if order == "modified" {
+				if info, err := d.Info(); err == nil {
+					mod = info.ModTime().UnixNano()
+				}
+			}
+			matches = append(matches, hit{p, mod})
+			if len(matches) >= globScanMax {
 				return io.EOF
 			}
 		}
@@ -356,14 +495,27 @@ func globDir(root, pattern string) (string, error) {
 	if err != nil && err != io.EOF {
 		return "", err
 	}
-	return strings.Join(matches, "\n") + newlineIf(len(matches) > 0), nil
+	sort.SliceStable(matches, func(i, j int) bool {
+		if order == "modified" && matches[i].mod != matches[j].mod {
+			return matches[i].mod > matches[j].mod
+		}
+		return matches[i].path < matches[j].path
+	})
+	if len(matches) > 400 {
+		matches = matches[:400]
+	}
+	names := make([]string, len(matches))
+	for i, m := range matches {
+		names[i] = m.path
+	}
+	return strings.Join(names, "\n") + newlineIf(len(names) > 0), nil
 }
 
 func pathMatch(pattern, rel string) (bool, error) {
 	pattern = strings.ReplaceAll(pattern, `\`, "/")
 	rel = strings.ReplaceAll(rel, `\`, "/")
 	if strings.ContainsAny(pattern, "{}") {
-		return false, fmt.Errorf("brace globs are not supported by this connector")
+		return matchAny(pattern, rel)
 	}
 	if !strings.Contains(pattern, "/") {
 		return slashpath.Match(pattern, slashpath.Base(rel))
@@ -407,12 +559,32 @@ func grepDir(root, pattern string) (string, error) {
 }
 
 func grepDirOptions(root, pattern, include string, maxMatches int) (string, error) {
-	if pattern == "" || len(pattern) > 200 {
+	return grepDirMode(root, pattern, include, maxMatches, grepOpts{})
+}
+
+// grepOpts mirrors the rg flags the Linux path uses: -i, -C, -l, -c.
+type grepOpts struct {
+	ignoreCase bool
+	context    int
+	mode       string // "content" (default), "files", "count"
+}
+
+func grepDirMode(root, pattern, include string, maxMatches int, opt grepOpts) (string, error) {
+	if pattern == "" || len(pattern) > 2000 {
 		return "", fmt.Errorf("invalid pattern or path")
+	}
+	if opt.ignoreCase {
+		pattern = "(?i)" + pattern
 	}
 	re, err := regexp.Compile(pattern)
 	if err != nil {
-		return "", fmt.Errorf("invalid pattern")
+		return "", fmt.Errorf("invalid pattern: %v", err)
+	}
+	if opt.context < 0 {
+		opt.context = 0
+	}
+	if opt.context > 10 {
+		opt.context = 10
 	}
 	root = expandHome(root)
 	if maxMatches < 1 || maxMatches > 200 {
@@ -446,7 +618,7 @@ func grepDirOptions(root, pattern, include string, maxMatches int) (string, erro
 			if rel == "." {
 				rel = d.Name()
 			}
-			ok, err := pathMatch(include, filepath.ToSlash(rel))
+			ok, err := matchAny(include, filepath.ToSlash(rel))
 			if err != nil {
 				return err
 			}
@@ -462,13 +634,65 @@ func grepDirOptions(root, pattern, include string, maxMatches int) (string, erro
 		if err != nil || !utf8.Valid(data) {
 			return nil
 		}
-		for i, line := range strings.Split(string(data), "\n") {
-			if re.MatchString(line) {
-				fmt.Fprintf(&b, "%s:%d:%s\n", p, i+1, line)
-				n++
-				if n >= maxMatches || b.Len() >= 65536 {
-					return io.EOF
+		lines := strings.Split(string(data), "\n")
+		switch opt.mode {
+		case "files", "count":
+			c := 0
+			for _, line := range lines {
+				if re.MatchString(strings.TrimSuffix(line, "\r")) {
+					c++
+					if opt.mode == "files" {
+						break
+					}
 				}
+			}
+			if c > 0 {
+				if opt.mode == "files" {
+					fmt.Fprintf(&b, "%s\n", p)
+				} else {
+					fmt.Fprintf(&b, "%s:%d\n", p, c)
+				}
+				n++
+			}
+			if n >= maxMatches || b.Len() >= 65536 {
+				return io.EOF
+			}
+			return nil
+		}
+		lastPrinted := -1
+		for i, line := range lines {
+			if !re.MatchString(strings.TrimSuffix(line, "\r")) {
+				continue
+			}
+			lo, hi := i-opt.context, i+opt.context
+			if lo < 0 {
+				lo = 0
+			}
+			if hi >= len(lines) {
+				hi = len(lines) - 1
+			}
+			if lastPrinted >= 0 && lo > lastPrinted+1 && opt.context > 0 {
+				b.WriteString("--\n")
+			}
+			if lo <= lastPrinted {
+				lo = lastPrinted + 1
+			}
+			for k := lo; k <= hi; k++ {
+				sep := "-"
+				if k == i || (k > i && re.MatchString(strings.TrimSuffix(lines[k], "\r"))) {
+					sep = ":"
+				}
+				if k > i && sep == ":" {
+					// a later match inside this window is printed by its own turn
+					hi = k - 1
+					break
+				}
+				fmt.Fprintf(&b, "%s%s%d%s%s\n", p, sep, k+1, sep, strings.TrimSuffix(lines[k], "\r"))
+				lastPrinted = k
+			}
+			n++
+			if n >= maxMatches || b.Len() >= 65536 {
+				return io.EOF
 			}
 		}
 		return nil
@@ -479,9 +703,53 @@ func grepDirOptions(root, pattern, include string, maxMatches int) (string, erro
 	return b.String(), nil
 }
 
+// fileEdit is one exact replacement; replaceEdits applies a list in order to
+// the same text and publishes once — all or nothing.
+type fileEdit struct {
+	Old string
+	New string
+	All bool
+}
+
 func replaceFile(path, old, newv string, all bool) (string, error) {
-	if old == "" {
-		return "", fmt.Errorf("old_string required")
+	return replaceEdits(path, []fileEdit{{old, newv, all}})
+}
+
+// applyEdit replaces old with newv in text. LF-only strings against a CRLF
+// text are converted to CRLF (read_file hides carriage returns) —
+// deterministic line-ending repair, never a fuzzy match.
+func applyEdit(text string, e fileEdit) (string, int, error) {
+	if e.Old == "" {
+		return "", 0, fmt.Errorf("old_string required")
+	}
+	if e.Old == e.New {
+		return "", 0, fmt.Errorf("old_string and new_string are identical")
+	}
+	oldUse, newUse := e.Old, e.New
+	count := strings.Count(text, oldUse)
+	if count == 0 && strings.Contains(text, "\r\n") && !strings.ContainsRune(e.Old, '\r') && strings.ContainsRune(e.Old, '\n') {
+		crlfOld := strings.ReplaceAll(e.Old, "\n", "\r\n")
+		crlfNew := strings.ReplaceAll(e.New, "\n", "\r\n")
+		if c := strings.Count(text, crlfOld); c > 0 {
+			oldUse, newUse = crlfOld, crlfNew
+			count = c
+		}
+	}
+	if count == 0 {
+		return "", 0, fmt.Errorf("old_string not found")
+	}
+	if count > 1 && !e.All {
+		return "", 0, fmt.Errorf("old_string is not unique (%d occurrences)", count)
+	}
+	if e.All {
+		return strings.ReplaceAll(text, oldUse, newUse), count, nil
+	}
+	return strings.Replace(text, oldUse, newUse, 1), 1, nil
+}
+
+func replaceEdits(path string, edits []fileEdit) (string, error) {
+	if len(edits) < 1 || len(edits) > 100 {
+		return "", fmt.Errorf("edits must contain 1 to 100 items")
 	}
 	path = expandHome(path)
 	before, err := os.Lstat(path)
@@ -495,8 +763,11 @@ func replaceFile(path, old, newv string, all bool) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
 	data, err := io.ReadAll(io.LimitReader(f, editFileMax+1))
+	// Close before publishing: Go opens files on Windows without
+	// FILE_SHARE_DELETE, so renaming the new content over a file this
+	// process still holds open fails with "Access denied".
+	f.Close()
 	if err != nil {
 		return "", err
 	}
@@ -507,34 +778,20 @@ func replaceFile(path, old, newv string, all bool) (string, error) {
 	if !utf8.ValidString(text) || strings.ContainsRune(text, 0) {
 		return "", fmt.Errorf("file is not UTF-8 text")
 	}
-	oldUse, newUse := old, newv
-	count := strings.Count(text, oldUse)
-	if count == 0 && strings.Contains(text, "\r\n") && !strings.ContainsRune(old, '\r') && strings.ContainsRune(old, '\n') {
-		// read_file hides carriage returns, so an LF-only old_string can never
-		// match a CRLF file byte-for-byte. Convert LF to CRLF: deterministic
-		// line-ending repair, never a fuzzy match.
-		crlfOld := strings.ReplaceAll(old, "\n", "\r\n")
-		crlfNew := strings.ReplaceAll(newv, "\n", "\r\n")
-		if c := strings.Count(text, crlfOld); c > 0 {
-			oldUse, newUse = crlfOld, crlfNew
-			count = c
+	total := 0
+	for i, e := range edits {
+		next, count, err := applyEdit(text, e)
+		if err != nil {
+			if len(edits) > 1 {
+				return "", fmt.Errorf("edit %d of %d: %v; no edits were applied", i+1, len(edits), err)
+			}
+			return "", err
 		}
-	}
-	if count == 0 {
-		return "", fmt.Errorf("old_string not found")
-	}
-	if count > 1 && !all {
-		return "", fmt.Errorf("old_string is not unique")
-	}
-	var next string
-	if all {
-		next = strings.ReplaceAll(text, oldUse, newUse)
-	} else {
-		next = strings.Replace(text, oldUse, newUse, 1)
-		count = 1
-	}
-	if len(next) > editFileMax {
-		return "", fmt.Errorf("replacement too large (maximum %d bytes); apply the change with run_terminal_command", editFileMax)
+		if len(next) > editFileMax {
+			return "", fmt.Errorf("replacement too large (maximum %d bytes); apply the change with run_terminal_command", editFileMax)
+		}
+		text = next
+		total += count
 	}
 	after, err := os.Lstat(path)
 	if err != nil {
@@ -543,8 +800,8 @@ func replaceFile(path, old, newv string, all bool) (string, error) {
 	if !os.SameFile(before, after) || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) {
 		return "", fmt.Errorf("file changed during edit; read it again")
 	}
-	if err := writeFileAtomicLimit(path, next, editFileMax); err != nil {
+	if err := writeFileAtomicLimit(path, text, editFileMax); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%d replacement(s)", count), nil
+	return fmt.Sprintf("%d replacement(s)", total), nil
 }

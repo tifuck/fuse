@@ -91,7 +91,7 @@ func swapAndRelaunch(self, neu, cfgPath string, lock *os.File) error {
 		if cmd.Process != nil {
 			cmd.Process.Kill()
 		}
-		_, _ = cmd.Wait()
+		_ = cmd.Wait()
 		return err
 	}
 	stdin.Close()
