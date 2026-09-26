@@ -111,15 +111,50 @@ def _rewrite(sql: str, lock_rows: bool = False) -> str:
     return rendered.replace("%", "%%").replace("__fuse_parameter__", "%s")
 
 
+# PyMySQL escapes str parameters in pure Python (~14 ms/MB, holding the GIL);
+# checkpoints bind megabyte transcripts several times a second per run. Large
+# strings are sent as introducer hex literals instead: encoded in C, and
+# _utf8mb4 X'..' keeps a plain literal's coercibility, so comparisons and
+# collation are unchanged. Hex doubles the bytes, so a statement that would
+# approach max_allowed_packet (16 MiB) keeps ordinary escaping.
+_HEX_MIN_CHARS = 65536
+_HEX_STATEMENT_MAX = 12 * 1024 * 1024
+
+
+class _Utf8Hex:
+    __slots__ = ("data",)
+
+    def __init__(self, data):
+        self.data = data
+
+
+def _escape_hex(value, mapping=None):
+    return "_utf8mb4 X'" + value.data.hex() + "'"
+
+
+def _hex_args(sql, args):
+    if not isinstance(args, (list, tuple)):
+        return args
+    if not any(type(arg) is str and len(arg) >= _HEX_MIN_CHARS for arg in args):
+        return args
+    # Same encoding PyMySQL applies to the rendered query.
+    out = [_Utf8Hex(arg.encode("utf-8", "surrogateescape")) if type(arg) is str and len(arg) >= _HEX_MIN_CHARS else arg
+           for arg in args]
+    size = len(sql) + sum(2 * len(arg.data) + 12 if isinstance(arg, _Utf8Hex) else len(arg) if type(arg) is str else 24
+                          for arg in out)
+    return args if size > _HEX_STATEMENT_MAX else out
+
+
 class Conn:
     def __init__(self, raw):
         self._raw = raw
         self._write_transaction = False
+        raw.encoders[_Utf8Hex] = _escape_hex
 
     def native(self, sql, args=()):
         try:
             with self._raw.cursor() as cursor:
-                cursor.execute(sql, args)
+                cursor.execute(sql, _hex_args(sql, args))
                 names = [column[0] for column in cursor.description or ()]
                 rows = [Row(zip(names, values)) for values in cursor.fetchall()] if names else []
                 return Cursor(rows, cursor.rowcount, cursor.lastrowid or 0)

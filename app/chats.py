@@ -67,14 +67,19 @@ class ChatValidationError(ValueError):
         self.status_code = status_code
 
 
+# Lone surrogates cannot be encoded as UTF-8. A compiled character class scans
+# in C; per-character Python loops dominated large transcript loads.
+_SURROGATE_RE = re.compile("[\ud800-\udfff]")
+
+
 def _has_surrogate(value: str) -> bool:
-    return any(0xD800 <= ord(char) <= 0xDFFF for char in value)
+    return _SURROGATE_RE.search(value) is not None
 
 
 def _legacy_text(value, limit: int) -> str:
     if not isinstance(value, str):
         return ""
-    return "".join("\ufffd" if 0xD800 <= ord(char) <= 0xDFFF else char for char in value[:limit])
+    return _SURROGATE_RE.sub("\ufffd", value[:limit])
 
 
 def _text(value, field: str, limit: int, *, strip: bool = False) -> str:

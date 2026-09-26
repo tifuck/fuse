@@ -3081,8 +3081,10 @@ def _message(message, message_id):
 # row": checkpoint stamps each run with the last committed cursor its state
 # write covers (_state_cursors), and snapshots clamp event_cursor to it so a
 # reconnecting client replays the intervening patches instead of skipping
-# them.
-STATE_WRITE_SECONDS = 0.5
+# them. Each snapshot rewrites the whole message (megabytes for long
+# subagents), so a short cadence made every flush a full row write once
+# flushes slowed under concurrency; replay covers the gap on reconnect.
+STATE_WRITE_SECONDS = 2.0
 _state_write_at: dict[str, float] = {}
 _state_cursors: dict[str, int] = {}
 # Runs whose latest flush published events but skipped the durable row
@@ -3138,7 +3140,8 @@ def checkpoint(run_id, message, events=None, durable=True, future=None):
         # every tool output on each 200ms tick is the dominant CPU cost of
         # many concurrent streams.
         message = {**message, "id": row["message_id"], "role": "assistant"}
-    request = json.loads(row["request"] or "{}")
+    stored_request, guard = _checkpoint_request(run_id, row)
+    request = _mutable_request(stored_request)
     request_changed = False
     for item in events or []:
         activity = item.get("fuse") or {}
@@ -3184,7 +3187,7 @@ def checkpoint(run_id, message, events=None, durable=True, future=None):
     if (request.get("agent") or {}).get("display_parts"):
         from .chat_runs import _segments_patch
 
-        previous = display_messages(json.loads(row["request"] or "{}"), json.loads(row["message"] or "{}"), row["message_id"], live=True)
+        previous = display_messages(stored_request, _checkpoint_message(run_id, row), row["message_id"], live=True)
         if set(projected) != set(previous):
             materialize_thread = True
         old, current = previous[row["message_id"]], projected[row["message_id"]]
@@ -3236,28 +3239,34 @@ def checkpoint(run_id, message, events=None, durable=True, future=None):
                     _state_write_at.pop(ident, None)
                     _state_cursors.pop(ident, None)
                     _state_dirty.discard(ident)
+                    _request_cache.pop(ident, None)
+    if request_changed and request == stored_request:
+        # e.g. a repeated heartbeat: rewriting identical bytes is pure cost.
+        request_changed = False
     if force_state:
         with transaction() as conn:
             # Optimistic concurrency: without the old cross-read row lock, a
             # concurrent finish/save_turn_progress/seal between our read and
             # this write must not be clobbered by stale state. updated_at has
-            # second granularity, so the request blob itself is the version.
+            # second granularity, so the request itself is the version: its
+            # stored digest (or, before that column exists, the blob).
             # Rowcount 0 means superseded — events still publish, the state
             # snapshot is simply skipped.
             # Lock order matches finish_run: chat_runs before chat_threads
             # before the event cursor.
             if request_changed:
                 cur = conn.execute(
-                    "UPDATE chat_runs SET message=?,request=?,status='running',updated_at=? WHERE id=? AND status IN ('queued','running') AND COALESCE(request,'')=?",
-                    (dumps(message), dumps(request), db.now(), run_id, row["request"] or ""),
+                    "UPDATE chat_runs SET message=?,request=?,status='running',updated_at=? WHERE id=? AND status IN ('queued','running') AND " + _request_guard_sql(guard),
+                    (dumps(message), dumps(request), db.now(), run_id, guard),
                 )
             else:
                 # Token-only flush: the request blob is byte-identical to the
                 # guarded value, so skip transporting and rewriting it.
                 cur = conn.execute(
-                    "UPDATE chat_runs SET message=?,status='running',updated_at=? WHERE id=? AND status IN ('queued','running') AND COALESCE(request,'')=?",
-                    (dumps(message), db.now(), run_id, row["request"] or ""),
+                    "UPDATE chat_runs SET message=?,status='running',updated_at=? WHERE id=? AND status IN ('queued','running') AND " + _request_guard_sql(guard),
+                    (dumps(message), db.now(), run_id, guard),
                 )
+            _remember_request(conn, run_id, request if request_changed else stored_request, cur, guard, request_changed)
             if materialize_thread and getattr(cur, "rowcount", 1):
                 from . import chats
 
@@ -3303,11 +3312,13 @@ def flush_pending_state(run_id, message, future=None):
             _resolve_future(future, None)
         return
     message = _message(message, row["message_id"])
+    stored_request, guard = _checkpoint_request(run_id, row)
     with transaction() as conn:
-        conn.execute(
-            "UPDATE chat_runs SET message=?,status='running',updated_at=? WHERE id=? AND status IN ('queued','running') AND COALESCE(request,'')=?",
-            (dumps(message), db.now(), run_id, row["request"] or ""),
+        cur = conn.execute(
+            "UPDATE chat_runs SET message=?,status='running',updated_at=? WHERE id=? AND status IN ('queued','running') AND " + _request_guard_sql(guard),
+            (dumps(message), db.now(), run_id, guard),
         )
+        _remember_request(conn, run_id, stored_request, cur, guard, False)
     _state_write_at[run_id] = time.monotonic()
     stamp_state_cursor(run_id, row["user_id"])
     _state_dirty.discard(run_id)
@@ -3315,11 +3326,101 @@ def flush_pending_state(run_id, message, future=None):
         _resolve_future(future, None)
 
 
+# Checkpoints run several times a second per live run. Reading the request and
+# message blobs back each time (megabytes for long subagents) dominated their
+# cost, so the row read carries only the request digest; the parsed request is
+# cached per run and re-read only when another writer changed it.
+_request_cache: dict[str, tuple[str, dict]] = {}
+_digest_column: tuple[object, bool] | None = None
+
+
+def _has_request_digest() -> bool:
+    """Whether chat_runs.request_digest exists (scripts/sql/2026-09-25-*)."""
+    global _digest_column
+    conn = db.connect()
+    if _digest_column is None or _digest_column[0] is not conn:
+        present = any(column[1] == "request_digest" for column in db.fetchall("PRAGMA table_info(chat_runs)"))
+        _request_cache.clear()
+        _digest_column = (conn, present)
+    return _digest_column[1]
+
+
 def _checkpoint_row(run_id):
-    return db.fetchone(
-        "SELECT id,status,message_id,user_id,thread_id,parent_run_id,root_run_id,request,message,updated_at FROM chat_runs WHERE id=?",
+    if not _has_request_digest():
+        return db.fetchone(
+            "SELECT id,status,message_id,user_id,thread_id,parent_run_id,root_run_id,request,message,updated_at FROM chat_runs WHERE id=?",
+            (run_id,),
+        )
+    row = db.fetchone(
+        "SELECT id,status,message_id,user_id,thread_id,parent_run_id,root_run_id,request_digest,updated_at FROM chat_runs WHERE id=?",
         (run_id,),
     )
+    if row is None or row["status"] not in ACTIVE:
+        _request_cache.pop(run_id, None)
+    return row
+
+
+def _checkpoint_request(run_id, row):
+    """Return (stored request, guard value) for a _checkpoint_row row.
+
+    The request is shared with the cache: callers copy it (_mutable_request)
+    before changing anything. The guard is the digest the request was read
+    at, or the raw blob when the digest column does not exist yet."""
+    if not _has_request_digest():
+        raw = row["request"] or ""
+        return json.loads(raw or "{}"), raw
+    cached = _request_cache.get(run_id)
+    if cached is not None and cached[0] == row["request_digest"]:
+        return cached[1], cached[0]
+    fresh = db.fetchone("SELECT request,request_digest FROM chat_runs WHERE id=?", (run_id,))
+    if fresh is None:
+        return {}, row["request_digest"]
+    request = json.loads(fresh["request"] or "{}")
+    _request_cache[run_id] = (fresh["request_digest"], request)
+    return request, fresh["request_digest"]
+
+
+def _checkpoint_message(run_id, row):
+    if "message" in row.keys():
+        return json.loads(row["message"] or "{}")
+    fresh = db.fetchone("SELECT message FROM chat_runs WHERE id=?", (run_id,))
+    return json.loads((fresh["message"] if fresh else "") or "{}")
+
+
+def _mutable_request(request):
+    """Copy every level checkpoint() mutates: top-level keys, agent keys and
+    steer display parts. Everything else stays shared with the cache."""
+    out = dict(request)
+    agent = out.get("agent")
+    if isinstance(agent, dict):
+        agent = dict(agent)
+        parts = agent.get("display_parts")
+        if isinstance(parts, list):
+            agent["display_parts"] = [dict(part) if isinstance(part, dict) else part for part in parts]
+        out["agent"] = agent
+    return out
+
+
+def _request_guard_sql(guard) -> str:
+    return "request_digest=?" if _has_request_digest() else "COALESCE(request,'')=?"
+
+
+def _remember_request(conn, run_id, request, cur, guard, rewritten):
+    """Keep the cache on the digest this transaction left, or drop it."""
+    if not _has_request_digest():
+        return
+    if not getattr(cur, "rowcount", 0):
+        _request_cache.pop(run_id, None)
+        return
+    if not rewritten:
+        # The guard matched and request was not written: digest unchanged.
+        _request_cache[run_id] = (guard, request)
+        return
+    row = conn.execute("SELECT request_digest FROM chat_runs WHERE id=?", (run_id,)).fetchone()
+    if row is None:
+        _request_cache.pop(run_id, None)
+    else:
+        _request_cache[run_id] = (row["request_digest"], request)
 
 
 def _merge_thread_loaded(thread_row, run_row) -> list[str]:
@@ -3385,6 +3486,7 @@ def finish_run(run_id, message, status):
         _state_write_at.pop(run_id, None)
         _forget_state_cursor(run_id)
         _state_dirty.discard(run_id)
+        _request_cache.pop(run_id, None)
         try:
             from .schedules import sync_run_status
 
@@ -4427,6 +4529,7 @@ def abort_active(run_id, status="cancelled", notice=None):
             workspace.cancel_run_jobs(run_id)
         except Exception:
             pass
+        _request_cache.pop(run_id, None)
         _finalize_abandoned(row, status, notice)
         return True
     except Exception:

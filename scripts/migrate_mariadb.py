@@ -137,6 +137,8 @@ def migrate(source, database):
         cursor.executemany("UPDATE chat_commands SET rowid=%s WHERE user_id=%s AND command_id=%s", src.execute("SELECT rowid,user_id,command_id FROM chat_commands").fetchall())
     dst.commit()
     dst.native("ALTER TABLE chat_commands MODIFY rowid BIGINT NOT NULL AUTO_INCREMENT, ADD UNIQUE INDEX chat_commands_rowid(rowid)")
+    # Checkpoint guard (scripts/sql/2026-09-25-chat-runs-request-digest.sql).
+    dst.native("ALTER TABLE chat_runs ADD COLUMN request_digest CHAR(32) CHARACTER SET ascii COLLATE ascii_bin GENERATED ALWAYS AS (MD5(request)) STORED")
     # All data is now loaded. Add foreign keys with checks enabled so MariaDB
     # validates every reference rather than silently accepting orphaned rows.
     for table, ident, seq, target, column, refcolumn, on_update, on_delete, match in foreign_keys:

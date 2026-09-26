@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 import secrets
 import time
 
@@ -144,11 +145,14 @@ def _invalid_json_constant(_value: str):
     raise ValueError("invalid JSON number")
 
 
+_SURROGATE_RE = re.compile("[\ud800-\udfff]")
+
+
 def _validate_json_unicode(value, depth: int = 0) -> None:
     if depth > 50:
         raise RecursionError
     if isinstance(value, str):
-        if any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+        if _SURROGATE_RE.search(value):
             raise UnicodeError("invalid Unicode surrogate")
     elif isinstance(value, float) and not math.isfinite(value):
         raise ValueError("invalid JSON number")
