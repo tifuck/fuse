@@ -37,7 +37,7 @@
     cli: "redhat",
     compact: "bricolage",
     console: "redhat",
-    prism: "bricolage",
+    prism: "redhat",
   };
   const VIEWS = Object.keys(VIEW_DEFAULT_FONT);
   const VIEW_LABELS = {
