@@ -3,7 +3,7 @@
 {% block page_title %}Chat{% endblock %}
 {% block head_extra %}
 <script src="/static/chat-appearance.js?v=16"></script>
-<link rel="stylesheet" href="/static/chat-design.css?v=176">
+<link rel="stylesheet" href="/static/chat-design.css?v=177">
 <link rel="stylesheet" href="/static/spinner-next.css?v=3">
 <link rel="stylesheet" href="/static/spinner-future.css?v=3">
 {% endblock %}
@@ -66,7 +66,7 @@
       </div>
     </div>
     <p class="chat-history-kicker" data-history-kicker hidden>Chats</p>
-    <div class="chat-history-list" data-history-list></div>
+    <div class="chat-history-list" data-history-list><div class="chat-history-loading" aria-busy="true" aria-label="Loading chats"><span></span><span></span><span></span><span></span><span></span><span></span></div></div>
     <div class="chat-project-picker" data-project-picker hidden>
       <div class="chat-project-picker-head">
         <button type="button" class="chat-project-picker-back" data-project-picker-back hidden>Back</button>
@@ -512,5 +512,5 @@
 <script src="/static/spinner-next.js?v=3"></script>
 <script src="/static/spinner-future.js?v=3"></script>
   <script src="/static/chat-dom.js?v=1"></script>
-  <script src="/static/chat.js?v=284"></script>
+  <script src="/static/chat.js?v=285"></script>
 {% endblock %}

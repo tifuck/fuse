@@ -24,6 +24,14 @@
   --control: 2.15rem;
   --sans: "Bricolage Grotesque", sans-serif;
   --mono: "Red Hat Mono", ui-monospace, monospace;
+  /* Motion. Three durations, two curves; every chat effect draws from these.
+     snap: small state changes (hover, press, popovers, fades).
+     glide: things that travel (drawers, sheets, the docking composer). */
+  --dur-1: 120ms;
+  --dur-2: 200ms;
+  --dur-3: 280ms;
+  --ease-snap: cubic-bezier(0.2, 0, 0, 1);
+  --ease-glide: cubic-bezier(0.32, 0.72, 0, 1);
 }
 
 * { box-sizing: border-box; }
@@ -2410,7 +2418,7 @@ body.is-chat main {
   flex: 0 1 0;
   min-height: 0;
   pointer-events: none;
-  transition: flex-grow 0.4s cubic-bezier(0.22, 0.8, 0.28, 1);
+  transition: flex-grow calc(var(--dur-3) + 80ms) var(--ease-glide);
 }
 .chat.is-empty .chat-stage::before,
 .chat.is-empty .chat-stage::after {
@@ -3511,11 +3519,11 @@ body.is-chat main {
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
   z-index: 8;
   overflow: hidden;
-  animation: chat-picker-in 150ms ease;
+  animation: chat-picker-in var(--dur-2) var(--ease-snap);
 }
 .chat-picker-menu[hidden] { display: none; }
 @keyframes chat-picker-in {
-  from { opacity: 0; transform: translateY(6px); }
+  from { opacity: 0; transform: translateY(6px) scale(0.985); }
   to { opacity: 1; transform: none; }
 }
 .chat-picker-head {
@@ -3982,7 +3990,7 @@ body.is-chat .topbar { flex-shrink: 0; }
 .chat > * { min-width: 0; }
 @keyframes chat-search-enter { from { opacity: 0; transform: translateY(-0.35rem); } to { opacity: 1; transform: none; } }
 .chat-bar .btn { height: 2.5rem; border-color: transparent; color: var(--chat-secondary); }
-.chat-thread { min-width: 0; flex: 1 1 0; scrollbar-width: thin; scroll-padding-block: 1.25rem 1.5rem; transition: flex-grow 0.4s cubic-bezier(0.22, 0.8, 0.28, 1); }
+.chat-thread { min-width: 0; flex: 1 1 0; scrollbar-width: thin; scroll-padding-block: 1.25rem 1.5rem; transition: flex-grow calc(var(--dur-3) + 80ms) var(--ease-glide); }
 .chat-log, .chat-dock, .chat-empty { width: min(var(--chat-col), calc(100% - 4rem)); }
 .chat-log { gap: 2.6rem; padding: 2rem 0 4.5rem; }
 .chat-assistant { gap: 1rem; min-width: 0; }
@@ -5309,8 +5317,6 @@ a.chat-query-label:hover { color: var(--mist); }
 .chat-hint { text-align: center; margin-top: 0.6rem; min-height: 0; overflow-wrap: anywhere; }
 .chat-hint:empty { display: none; }
 /* Anchor to the thread's grid area, not its scrolling content or a guessed dock height. */
-.chat-latest { position: relative; align-self: center; z-index: 4; min-height: 2.5rem; margin: 0.35rem 0 0.15rem; padding: 0.5rem 1rem; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); box-shadow: 0 4px 18px rgba(0, 0, 0, 0.3); color: var(--mist); font-size: 0.8rem; }
-.chat-latest:hover { background: var(--raise); }
 .chat-memory { position: absolute; z-index: 9; inset: auto 0 calc(100% + 0.65rem); margin: 0; padding: 1rem; max-height: min(34rem, 55dvh); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 12px 35px rgba(0, 0, 0, 0.35); gap: 1rem; }
 .chat-memory-head { align-items: center; }
 .chat-memory-head p { font-size: 1rem; }
@@ -5384,8 +5390,17 @@ a.chat-query-label:hover { color: var(--mist); }
   border-radius: 0;
 }
 .chat-thread:focus-visible { outline-offset: -3px; }
+/* Reduced motion removes travel (slides, rises, drops, scale) but keeps
+   color/opacity feedback, and keeps spinners and loaders turning so a
+   running request never looks frozen. */
 @media (prefers-reduced-motion: reduce) {
-  .chat *, .chat *::before, .chat *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  body.is-chat *, body.is-chat *::before, body.is-chat *::after {
+    transition-property: opacity, color, background-color, border-color, box-shadow !important;
+    scroll-behavior: auto !important;
+  }
+  body.is-chat :not(:where([class*="spin"], [class*="loader"], [class*="cas-"], .chat-history-loading, .chat-history-loading *, .chat-dock-dots, .chat-dock-dots *)),
+  body.is-chat :not(:where([class*="spin"], [class*="loader"], [class*="cas-"], .chat-history-loading, .chat-history-loading *))::before,
+  body.is-chat :not(:where([class*="spin"], [class*="loader"], [class*="cas-"], .chat-history-loading, .chat-history-loading *))::after { animation: none !important; }
 }
 
 /* The composer follows the visible viewport, including keyboard dismissal. */
@@ -5433,8 +5448,30 @@ a.chat-query-label:hover { color: var(--mist); }
   border: 0;
   border-radius: 0;
   box-shadow: none;
-  animation: chat-picker-sheet-in 150ms ease;
+  animation: none;
 }
+/* Full-screen sheets (model picker, view menu) share one motion: rise in,
+   fall away on close (display transitions discretely; older engines close
+   instantly), and follow a downward drag on the head. */
+.chat-picker-menu.is-sheet,
+.chat-view-menu.is-sheet-motion {
+  transition:
+    opacity var(--dur-3) var(--ease-glide),
+    translate var(--dur-3) var(--ease-glide),
+    display var(--dur-3) allow-discrete;
+}
+.chat-picker-menu.is-sheet[hidden],
+.chat-view-menu.is-sheet-motion[hidden] {
+  opacity: 0;
+  translate: 0 1.5rem;
+  transition-duration: var(--dur-2);
+}
+@starting-style {
+  .chat-picker-menu.is-sheet:not([hidden]),
+  .chat-view-menu.is-sheet-motion:not([hidden]) { opacity: 0; translate: 0 1.5rem; }
+}
+:is(.chat-picker-menu.is-sheet, .chat-view-menu.is-sheet-motion).is-dragging { transition: none; }
+:is(.chat-picker-menu.is-sheet .chat-picker-head, .chat-view-menu.is-sheet-motion .chat-view-sheet-head) { touch-action: none; }
 @keyframes chat-picker-sheet-in {
   from { opacity: 0; }
   to { opacity: 1; }
@@ -5596,7 +5633,7 @@ a.chat-query-label:hover { color: var(--mist); }
   padding: 0;
   background: rgb(8 10 9 / 42%);
   cursor: pointer;
-  animation: chat-fade-in 160ms ease;
+  animation: chat-fade-in var(--dur-2) var(--ease-snap);
 }
 .chat-memory {
   position: absolute;
@@ -5610,7 +5647,7 @@ a.chat-query-label:hover { color: var(--mist); }
   margin: 0;
   padding: 1rem 1.05rem 1.05rem;
   border-radius: 14px;
-  animation: chat-memory-in 180ms ease;
+  animation: chat-memory-in var(--dur-2) var(--ease-snap);
 }
 .chat-memory-head {
   align-items: flex-start;
@@ -6042,7 +6079,7 @@ body.is-artifact-page main > .panel { margin: 1.25rem auto; max-width: 28rem; }
   letter-spacing: -0.045em;
   line-height: 1.2;
   opacity: 1;
-  transition: opacity 0.28s ease, margin 0.4s cubic-bezier(0.22, 0.8, 0.28, 1), max-height 0.4s cubic-bezier(0.22, 0.8, 0.28, 1);
+  transition: opacity 0.28s ease, margin calc(var(--dur-3) + 80ms) var(--ease-glide), max-height calc(var(--dur-3) + 80ms) var(--ease-glide);
 }
 .chat:not(.is-empty) .chat-welcome {
   max-height: 0;
@@ -6164,19 +6201,48 @@ body.is-chat.is-keyboard .chat-dock {
 .chat-sync {
   padding: 0.02rem 0.15rem 0.12rem 0.55rem;
 }
+/* Jump to latest: anchored to the thread's grid area above the dock. */
 .chat-latest {
   position: absolute;
   left: 50%;
-  transform: translateX(calc(-50% - var(--chat-scroll-gutter, 0px) / 2));
   bottom: calc(var(--dock-h, 6.5rem) + 0.3rem);
   z-index: 5;
-  align-self: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
   min-height: 1.85rem;
   margin: 0;
   padding: 0.28rem 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.3);
+  color: var(--mist);
   font-size: 0.75rem;
+  transform: translateX(calc(-50% - var(--chat-scroll-gutter, 0px) / 2));
+  transition:
+    opacity var(--dur-2) var(--ease-snap),
+    translate var(--dur-2) var(--ease-snap),
+    scale var(--dur-1) var(--ease-snap),
+    background-color var(--dur-1) ease,
+    display var(--dur-2) allow-discrete;
 }
-.chat-latest[hidden] { display: none; }
+.chat-latest:hover { background: var(--raise); }
+.chat-latest:active { scale: 0.96; }
+.chat-latest[hidden] { display: none; opacity: 0; translate: 0 0.5rem; }
+@starting-style { .chat-latest:not([hidden]) { opacity: 0; translate: 0 0.5rem; } }
+.chat-latest::after {
+  content: "";
+  width: 0.375rem;
+  height: 0.375rem;
+  margin-right: -0.2rem;
+  border-radius: 50%;
+  background: var(--brass);
+  opacity: 0;
+  scale: 0.4;
+  transition: opacity var(--dur-2) var(--ease-snap), scale var(--dur-2) var(--ease-snap);
+}
+.chat-latest.has-new::after { opacity: 1; scale: 1; }
 /* Automated (wake) injections: collapsed chip instead of a user bubble. */
 .chat-turn.is-auto { align-items: flex-start; }
 .chat-auto-chip {
@@ -8091,7 +8157,7 @@ body.is-settings .page-head { display: none; }
   }
   .settings-shell.is-history .app-rail {
     display: flex;
-    animation: chat-drawer-enter 260ms cubic-bezier(0.22, 0.8, 0.28, 1);
+    animation: chat-drawer-enter var(--dur-3) var(--ease-glide);
   }
   .settings-shell.is-history .chat-history-collapse {
     display: grid;
@@ -9033,19 +9099,32 @@ body.is-settings .page-head { display: none; }
    filled chats keeps the dock parked and replays only the transcript fade.
    Terminal never centers the dock, so it skips this drop (see chat-design.css). */
 .chat.is-docking .chat-dock {
-  animation: chat-dock-drop 0.42s cubic-bezier(0.22, 0.8, 0.28, 1);
+  animation: chat-dock-drop calc(var(--dur-3) + 80ms) var(--ease-glide);
 }
 .chat.is-docking .chat-log,
 .chat.is-entering .chat-log {
-  animation: chat-transcript-in 0.3s ease both;
+  animation: chat-transcript-in var(--dur-3) var(--ease-snap) both;
 }
 @keyframes chat-dock-drop {
   from { transform: translate(calc(-50% - var(--chat-scroll-gutter, 0px) / 2), var(--dock-slide, -28dvh)); }
   to { transform: translate(calc(-50% - var(--chat-scroll-gutter, 0px) / 2), 0); }
 }
 @keyframes chat-transcript-in {
-  from { opacity: 0; transform: translateY(1.25rem); }
+  from { opacity: 0; transform: translateY(var(--transcript-rise, 0.75rem)); }
   to { opacity: 1; transform: none; }
+}
+/* Phones already animate the back swipe; a short, small settle is enough. */
+@media (max-width: 800px) {
+  .chat { --transcript-rise: 0.375rem; }
+  .chat.is-docking .chat-log,
+  .chat.is-entering .chat-log { animation-duration: var(--dur-2); }
+}
+/* A turn that arrives while the chat is open (new reply, pending send)
+   settles in instead of appearing. Full repaints and thread switches don't. */
+.chat-turn.is-arriving,
+.chat-pending-send > .chat-turn { animation: chat-turn-arrive var(--dur-2) var(--ease-snap) backwards; }
+@keyframes chat-turn-arrive {
+  from { opacity: 0; translate: 0 0.375rem; }
 }
 @media (prefers-reduced-motion: reduce) {
   .chat.is-docking .chat-dock,
@@ -9662,7 +9741,7 @@ dialog[data-sched-modal] input[type="checkbox"] {
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
   z-index: 8;
   overflow: hidden;
-  animation: chat-picker-in 150ms ease;
+  animation: chat-picker-in var(--dur-2) var(--ease-snap);
 }
 .chat-perms-menu[hidden] { display: none; }
 .chat-perms-menu .chat-picker-head {
@@ -9912,7 +9991,7 @@ dialog[data-sched-modal] input[type="checkbox"] {
      screen (list opened at load or by back-navigation) appears in place. */
   .chat .chat-history {
     transform: translateX(-100%);
-    transition: transform 240ms cubic-bezier(0.32, 0.72, 0, 1), display 240ms allow-discrete;
+    transition: transform var(--dur-3) var(--ease-glide), display var(--dur-3) allow-discrete;
   }
   .chat.is-history .chat-history {
     display: flex;
@@ -10013,7 +10092,7 @@ dialog[data-sched-modal] input[type="checkbox"] {
   color: var(--mute);
   font-size: 0.8125rem;
   font-weight: 500;
-  transition: background-color 120ms ease, color 120ms ease;
+  transition: background-color var(--dur-1) ease, color var(--dur-1) ease, box-shadow var(--dur-1) ease, scale var(--dur-1) var(--ease-snap);
 }
 .chat-history-tab:hover { color: var(--mist); }
 .chat-history-tab[aria-selected="true"] {
@@ -10131,9 +10210,14 @@ dialog[data-sched-modal] input[type="checkbox"] {
   align-items: center;
   width: 100%;
   border-radius: 6px;
-  transition: background-color 120ms ease;
+  transition: background-color var(--dur-1) ease;
 }
 .chat-history-item + .chat-history-item { margin-top: 1px; }
+.chat-history-item.is-running:not(.is-on) { animation: chat-history-running 2.8s ease-in-out infinite; }
+@keyframes chat-history-running {
+  0%, 100% { background-color: color-mix(in srgb, var(--brass) 3%, transparent); }
+  50% { background-color: color-mix(in srgb, var(--brass) 8%, transparent); }
+}
 .chat-history-item:hover { background: color-mix(in srgb, var(--mist) 5%, transparent); }
 .chat-history-item:has(> button.open:active) { background: color-mix(in srgb, var(--mist) 11%, transparent); transition-duration: 0ms; }
 .chat-history-item.is-on { background: color-mix(in srgb, var(--mist) 9%, transparent); }
@@ -10152,7 +10236,7 @@ dialog[data-sched-modal] input[type="checkbox"] {
   font-size: 0.8125rem;
   line-height: 1.3;
   text-align: left;
-  transition: color 120ms ease, padding-right 120ms ease;
+  transition: color var(--dur-1) ease, padding-right var(--dur-1) var(--ease-snap);
 }
 .chat-history-item:hover > button.open { color: var(--mist); }
 .chat-history-item.has-snip > button.open { min-height: 2.5rem; }
@@ -10223,7 +10307,7 @@ dialog[data-sched-modal] input[type="checkbox"] {
   opacity: 0;
   pointer-events: none;
   transform: translateY(-50%);
-  transition: opacity 120ms ease, background-color 120ms ease;
+  transition: opacity var(--dur-1) ease, background-color var(--dur-1) ease;
 }
 .chat-history-item:is(:hover, :focus-within, .is-menu) > button.more { opacity: 1; pointer-events: auto; color: var(--mist); }
 .chat-history-item:is(:hover, :focus-within, .is-menu) > button.open { padding-right: 1.9rem; }
@@ -10242,6 +10326,18 @@ dialog[data-sched-modal] input[type="checkbox"] {
   .chat-history-item:is(.is-on, .is-menu) > button.more { opacity: 1; }
   .chat-history-item:is(:hover, :focus-within, .is-menu) > button.open { padding-right: 0.625rem; }
 }
+/* Press feedback: every tap answers immediately. */
+.chat :is(.chat-send, .chat-attach-btn, .chat-search-btn, .chat-bar-btn, .chat-history-toggle, .chat-history-collapse, .chat-new, .chat-history-iconbtn, .chat-menu-close) {
+  transition-property: background-color, color, opacity, filter, scale;
+  transition-duration: var(--dur-1);
+  transition-timing-function: var(--ease-snap);
+}
+.chat :is(.chat-send, .chat-attach-btn, .chat-search-btn, .chat-bar-btn, .chat-history-toggle, .chat-history-collapse, .chat-new, .chat-history-iconbtn, .chat-menu-close):not(:disabled):active { scale: 0.92; transition-duration: 60ms; }
+.chat-history-tab:not([aria-selected="true"]):active { background: color-mix(in srgb, var(--mist) 6%, transparent); scale: 0.97; transition-duration: 60ms; }
+.chat-picker-row > button:active { background: color-mix(in srgb, var(--mist) 10%, transparent); transition-duration: 0ms; }
+.chat-history-foot:active,
+.user-dock-btn:active { background: color-mix(in srgb, var(--mist) 10%, transparent); transition-duration: 0ms; }
+
 /* First load: placeholder rows instead of a premature "No chats yet." */
 .chat-history-loading { display: flex; flex-direction: column; gap: 1px; padding-top: 0.25rem; }
 .chat-history-loading span {

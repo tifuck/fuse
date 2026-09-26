@@ -231,7 +231,7 @@ html[data-chat-backdrop="none"] .chat-scene,
   border-radius: 6px;
   background: none;
   color: var(--chat-secondary);
-  transition: background-color 140ms ease, color 140ms ease;
+  transition: background-color var(--dur-1) ease, color var(--dur-1) ease;
 }
 .chat .chat-bar-btn svg { width: 1.0625rem; height: 1.0625rem; }
 .chat .chat-bar-btn > span:not(.chat-agents-bar-count) {
@@ -278,10 +278,10 @@ html[data-chat-backdrop="none"] .chat-scene,
   pointer-events: none;
   opacity: 0;
   transform: scale(0.4);
-  transition: opacity 180ms ease, transform 240ms cubic-bezier(0.22, 0.8, 0.28, 1);
+  transition: opacity var(--dur-2) ease, transform var(--dur-3) var(--ease-glide);
 }
 .chat .chat-agents-bar-count.has-count { opacity: 1; transform: scale(1); }
-.chat .chat-agents-bar-count.is-bump { animation: chat-agents-bump 0.32s cubic-bezier(0.22, 0.8, 0.28, 1); }
+.chat .chat-agents-bar-count.is-bump { animation: chat-agents-bump var(--dur-3) var(--ease-glide); }
 @keyframes chat-agents-bump {
   0% { transform: scale(0.55); }
   55% { transform: scale(1.22); }
@@ -369,7 +369,7 @@ html[data-chat-backdrop="none"] .chat-scene,
   letter-spacing: -0.012em;
   opacity: 0;
   transform: translateY(6px);
-  transition: opacity 140ms ease, transform 240ms cubic-bezier(0.22, 0.8, 0.28, 1);
+  transition: opacity var(--dur-1) ease, transform var(--dur-3) var(--ease-glide);
 }
 .chat-queue {
   margin: 0 0.75rem 0.45rem;
@@ -537,7 +537,7 @@ body.is-chat .chat-view-menu {
   border-radius: 16px;
   box-shadow: 0 24px 64px color-mix(in srgb, #000 46%, transparent);
   transform: translate(-50%, -50%);
-  animation: chat-view-panel-in 0.18s ease;
+  animation: chat-view-panel-in var(--dur-2) var(--ease-snap);
 }
 .chat-view-menu[hidden] { display: none !important; }
 .chat-view-sheet-head {
@@ -1032,7 +1032,7 @@ html[data-chat-theme="ivory"] ::selection {
   }
   .chat[data-view="compact"] .chat-turn.is-user:not(:has(> :not(.chat-bubble, .chat-msg-actions))) > .chat-msg-actions { order: -1; }
   .chat[data-view="compact"] .chat-turn.is-user:not(:has(> :not(.chat-bubble, .chat-msg-actions))) > .chat-bubble { margin-left: 0; }
-  .chat[data-view="compact"] .chat-turn.is-user .chat-msg-actions { opacity: 0; transition: opacity 140ms ease; }
+  .chat[data-view="compact"] .chat-turn.is-user .chat-msg-actions { opacity: 0; transition: opacity var(--dur-1) ease; }
   .chat[data-view="compact"] .chat-turn.is-user:is(:hover, :focus-within) .chat-msg-actions { opacity: 1; }
 }
 .chat[data-view="compact"] .chat-activity { --row: calc(1.35rem * var(--chat-text-scale, 1)); --gap: calc(0.2rem * var(--chat-text-scale, 1)); }
@@ -1698,7 +1698,7 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-foot .chat-msg-a
   margin-left: 0.9rem;
 }
 html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-msg-actions button,
-html[data-chat-console="true"] .chat[data-view="console"] .chat-msg-actions button { color: color-mix(in srgb, var(--mist) 58%, var(--ink)); transition: color 140ms ease, background 140ms ease; }
+html[data-chat-console="true"] .chat[data-view="console"] .chat-msg-actions button { color: color-mix(in srgb, var(--mist) 58%, var(--ink)); transition: color var(--dur-1) ease, background var(--dur-1) ease; }
 html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-msg-actions button:hover,
 html[data-chat-console="true"] .chat[data-view="console"] .chat-msg-actions button:hover { color: var(--mist); }
 html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-project-chip,
@@ -1763,14 +1763,14 @@ html[data-chat-console="true"] .chat.is-queued[data-view="console"]:not(.is-empt
 }
 html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-step-reveal.is-revealing > .chat-step-reveal-inner,
 html[data-chat-console="true"] .chat[data-view="console"] .chat-step-reveal.is-revealing > .chat-step-reveal-inner {
-  animation: cli-output-reveal 160ms ease-out;
+  animation: cli-output-reveal var(--dur-1) ease-out;
 }
 html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-step.is-running > .chat-step-node,
 html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-running > .chat-step-node {
   animation: cli-running-pulse 1.6s ease-in-out infinite;
 }
 html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-step-chevron,
-html[data-chat-console="true"] .chat[data-view="console"] .chat-step-chevron { transition: transform 160ms ease, color 160ms ease; }
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step-chevron { transition: transform var(--dur-1) ease, color var(--dur-1) ease; }
 html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-box:focus-within::before,
 html[data-chat-console="true"] .chat[data-view="console"] .chat-box:focus-within::before {
   color: var(--mist);
@@ -1798,7 +1798,7 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-box {
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
   box-shadow: none;
-  transition: box-shadow 140ms ease;
+  transition: box-shadow var(--dur-1) ease;
 }
 html[data-chat-terminal="true"] .chat[data-view="cli"] :is(.chat-box-bar, .chat-box-left, .chat-box-right),
 html[data-chat-console="true"] .chat[data-view="console"] :is(.chat-box-bar, .chat-box-left, .chat-box-right) {
@@ -1987,7 +1987,7 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-send {
   border-radius: 0;
   background: none;
   color: var(--brass);
-  transition: color 140ms ease;
+  transition: color var(--dur-1) ease;
 }
 html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-send:disabled,
 html[data-chat-console="true"] .chat[data-view="console"] .chat-send:disabled {
@@ -2131,7 +2131,7 @@ html[data-chat-console="true"] body.is-chat:has(.chat[data-view="console"]) .cha
     border-radius: 0 !important;
     overscroll-behavior: contain;
     transform: none;
-    animation: chat-picker-sheet-in 150ms ease;
+    animation: none;
   }
   html[data-chat-terminal="true"] body.is-chat .chat-view-menu { border-radius: 0; }
   html[data-chat-console="true"] body.is-chat:has(.chat[data-view="console"]) .chat-view-menu { border-radius: 0; }
@@ -2184,12 +2184,12 @@ html[data-chat-console="true"] body.is-chat:has(.chat[data-view="console"]) .cha
   html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-think .chat-step-reveal.is-open > .chat-step-reveal-inner { padding: 0; }
 }
 
+/* Reduced motion for the chat surface lives in app.css (travel off, status
+   spinners kept). Ambient scenes are decoration only: stop them entirely. */
 @media (prefers-reduced-motion: reduce) {
-  body.is-chat *, body.is-chat *::before, body.is-chat *::after,
   .chat-scene, .chat-scene * {
     animation: none !important;
     transition: none !important;
-    scroll-behavior: auto !important;
   }
 }
 
@@ -2435,7 +2435,7 @@ html[data-chat-terminal] .chat[data-view] .chat-step:not(.is-think) .chat-step-r
 html[data-chat-console="true"] .chat[data-view="console"] .chat-step:not(.is-think) .chat-step-reveal { transition: none; }
 html[data-chat-terminal] .chat[data-view] .chat-step:not(.is-think) .chat-step-reveal-inner,
 html[data-chat-console="true"] .chat[data-view="console"] .chat-step:not(.is-think) .chat-step-reveal-inner { min-height: 0; }
-.chat .chat-step-caret .chat-step-chevron { transition: transform 180ms ease; transform: rotate(-90deg); }
+.chat .chat-step-caret .chat-step-chevron { transition: transform var(--dur-2) ease; transform: rotate(-90deg); }
 .chat .chat-step-caret[aria-expanded="true"] .chat-step-chevron { transform: rotate(0); }
 .chat .chat-tool-children { gap: 0; padding: 0 0.45rem 0.2rem; }
 .chat .chat-tool-children > .chat-step { margin: 0; padding: 0; }
@@ -3737,7 +3737,7 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-perm-card-grant 
   font: 0.625rem/1.5 var(--mono);
   cursor: pointer;
   opacity: 0;
-  transition: opacity 120ms ease;
+  transition: opacity var(--dur-1) ease;
 }
 :root .chat[data-view] .chat-tool-details .chat-tool-section:is(:hover, :focus-within) .chat-tool-copy { opacity: 1; }
 :root .chat[data-view] .chat-tool-details .chat-tool-copy:hover { color: var(--mist); }

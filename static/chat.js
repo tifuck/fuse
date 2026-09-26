@@ -325,6 +325,7 @@
     return source[Math.floor(Math.random() * source.length)];
   }
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const MOTION = { fast: 120, base: 200, slow: 280, snap: "cubic-bezier(0.2, 0, 0, 1)", glide: "cubic-bezier(0.32, 0.72, 0, 1)" };
   const pickerSheetQuery = window.matchMedia("(max-width: 800px)");
   const overlayMobile = pickerSheetQuery;
   let overlayStack = [];
@@ -347,6 +348,51 @@
     } else {
       overlayGhostRect = null;
     }
+  }
+  // Full-screen mobile sheets follow a downward drag on their head and close
+  // past a distance or flick; otherwise they spring back (CSS transition).
+  function attachSheetSwipe(sheet, headSelector, isSheet, close) {
+    let start = null;
+    const reset = () => {
+      sheet.classList.remove("is-dragging");
+      sheet.style.translate = "";
+      sheet.style.opacity = "";
+    };
+    new MutationObserver(() => { if (!sheet.hidden) reset(); }).observe(sheet, { attributes: true, attributeFilter: ["hidden"] });
+    sheet.addEventListener("pointerdown", (event) => {
+      if (!isSheet() || event.button !== 0 || event.pointerType === "mouse") return;
+      const head = event.target.closest(headSelector);
+      if (!head || !sheet.contains(head) || event.target.closest("button, input, select, a")) return;
+      start = { y: event.clientY, t: performance.now(), dy: 0, id: event.pointerId };
+      try { head.setPointerCapture(event.pointerId); } catch (_) {}
+    });
+    sheet.addEventListener("pointermove", (event) => {
+      if (!start || event.pointerId !== start.id) return;
+      const dy = Math.max(0, event.clientY - start.y);
+      if (!start.dy && dy < 4) return;
+      start.dy = dy;
+      sheet.classList.add("is-dragging");
+      sheet.style.translate = `0 ${dy}px`;
+      sheet.style.opacity = String(Math.max(0.5, 1 - dy / (sheet.clientHeight * 1.4)));
+    });
+    const end = (event) => {
+      if (!start || event.pointerId !== start.id) return;
+      const { dy, t } = start;
+      start = null;
+      const flick = dy / Math.max(1, performance.now() - t) > 0.6;
+      sheet.classList.remove("is-dragging");
+      if (dy > Math.min(140, sheet.clientHeight * 0.22) || (flick && dy > 24)) {
+        // Keep the dragged offset; the hide transition carries it off-screen.
+        sheet.style.translate = "0 100%";
+        sheet.style.opacity = "0";
+        close();
+      } else {
+        sheet.style.translate = "";
+        sheet.style.opacity = "";
+      }
+    };
+    sheet.addEventListener("pointerup", end);
+    sheet.addEventListener("pointercancel", end);
   }
   function overlayPush(kind) {
     if (!overlayIsMobile()) return;
@@ -2101,7 +2147,7 @@
       if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
       el.animate(
         [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }],
-        { duration: 200, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" },
+        { duration: MOTION.base, easing: MOTION.snap },
       );
     });
   }
@@ -3070,6 +3116,7 @@
           const live = messageRunLive(msg);
           const article = msg.role === "user" ? renderUser(msg, i, live) : renderAssistant(msg, live);
           article.dataset.messageId = msg.id || "";
+          if (msg.role === "assistant" && log.childElementCount) markArriving(article);
           log.appendChild(article);
           return;
         }
@@ -3502,9 +3549,21 @@
     else syncLatest();
   }
 
+  let latestBaseline = 0;
   function syncLatest() {
     const latest = root.querySelector("[data-chat-latest]");
-    if (latest) latest.hidden = !messages.length || thread.scrollHeight - thread.scrollTop - thread.clientHeight <= 1 || (stickToBottom && nearBottom());
+    if (!latest) return;
+    const hide = !messages.length || thread.scrollHeight - thread.scrollTop - thread.clientHeight <= 1 || (stickToBottom && nearBottom());
+    if (hide) {
+      latest.hidden = true;
+      latest.classList.remove("has-new");
+      latestBaseline = 0;
+      return;
+    }
+    if (latest.hidden || !latestBaseline) latestBaseline = thread.scrollHeight;
+    latest.hidden = false;
+    // New output arrived below while reading further up.
+    if (thread.scrollHeight > latestBaseline + 24) latest.classList.add("has-new");
   }
 
   function threadFollowTarget() {
@@ -8595,7 +8654,7 @@
     reveal.style.overflow = "hidden";
     const end = open ? reveal.scrollHeight : 0;
     const animation = reveal.animate([{ height: `${start}px`, opacity: open ? 0.3 : 1 }, { height: `${end}px`, opacity: open ? 1 : 0 }],
-      { duration: isHarnessView() ? 140 : 210, easing: "cubic-bezier(.2,.7,.2,1)" });
+      { duration: isHarnessView() ? MOTION.fast : MOTION.base, easing: MOTION.snap });
     reveal._disclosureAnimation = animation;
     if (owner) toolMotions.set(owner, (toolMotions.get(owner) || 0) + 1);
     const finish = () => {
@@ -10188,6 +10247,17 @@
     return contextMessages.concat([live]);
   }
 
+  // A reply that arrives in the open thread settles in (see .is-arriving).
+  function markArriving(article) {
+    article.classList.add("is-arriving");
+    const settle = (event) => {
+      if (event.target !== article) return;
+      article.classList.remove("is-arriving");
+      article.removeEventListener("animationend", settle);
+    };
+    article.addEventListener("animationend", settle);
+  }
+
   function paint() {
     if (toolGestureOwner && log.contains(toolGestureOwner)) { pendingFullPaint = true; return; }
     foldAutoCommandResults();
@@ -10205,6 +10275,7 @@
       if (!reusable) {
         const old = article;
         article = renderTranscriptMessage(msg, index, live);
+        if (!old && !cursor && msg.role === "assistant" && log._threadId === currentId && log.childElementCount) markArriving(article);
         if (old) { disposeThinking(old); historyObserver?.unobserve(old); old.replaceWith(article); if (cursor === old) cursor = article; }
       } else if (msg.role === "assistant") {
         for (const key of ["stepOpen", "activityOpenMap"]) if (!msg[key] && article._message?.[key]) msg[key] = article._message[key];
@@ -10481,6 +10552,9 @@
   function renderPickerButton() {
     const model = currentModel();
     pickerHost.innerHTML = "";
+    // On mobile the sheet lives on the chat root, outside pickerHost; drop it
+    // too or every re-render leaves an orphaned sheet behind.
+    pickerMenuEl?.remove();
     pickerMenuEl = null;
     const btn = document.createElement("button");
     btn.type = "button";
@@ -10528,6 +10602,7 @@
       '<div class="chat-picker-searchrow"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10.4 10.4L13.8 13.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><input type="search" class="chat-picker-search" placeholder="Search models" aria-label="Search models"></div>' +
       '<div class="chat-picker-list" role="listbox" aria-label="Models"></div>' +
       '<div class="chat-picker-thinking-host"></div>';
+    attachSheetSwipe(menu, ".chat-picker-head", () => menu.classList.contains("is-sheet"), closePicker);
     const search = menu.querySelector(".chat-picker-search");
     search.addEventListener("input", () => {
       pickerFilter = search.value;
@@ -10710,7 +10785,15 @@
   });
   root.querySelector("[data-chat-latest]")?.addEventListener("click", () => {
     stickToBottom = true;
-    scrollThread();
+    if (streaming || reduceMotion.matches) {
+      scrollThread();
+      return;
+    }
+    // Idle: glide the last stretch instead of teleporting. Far jumps first
+    // snap to a screen above the end so the glide stays short.
+    const target = threadFollowTarget();
+    if (target - thread.scrollTop > thread.clientHeight * 3) thread.scrollTop = target - thread.clientHeight * 1.5;
+    thread.scrollTo({ top: target, behavior: "smooth" });
   });
 
   function parseSlashCommand(text) {
@@ -13118,6 +13201,7 @@
     const mobile = overlayIsMobile();
     const wasOpen = !viewMenu.hidden;
     if (!wasOpen && !open) return;
+    viewMenu.classList.toggle("is-sheet-motion", mobile);
     viewMenu.hidden = !open;
     if (viewBackdrop) viewBackdrop.hidden = !open;
     viewToggle.setAttribute("aria-expanded", open ? "true" : "false");
@@ -13137,6 +13221,9 @@
     viewMenu.classList.remove("is-dragging");
     viewMenu.style.transform = "";
     if (!mobile) viewToggle.focus();
+  }
+  if (viewMenu) {
+    attachSheetSwipe(viewMenu, "[data-view-sheet-head]", () => viewMenu.classList.contains("is-sheet-motion"), () => setViewMenuOpen(false));
   }
 
   function startArtifactBuild(title) {
@@ -13531,19 +13618,25 @@
     }
   });
   syncHistory();
-  let terminalHistoryState = null;
-  // Terminal and console are full-window on desktop, so they start with the
-  // sidebar collapsed. The mobile drawer is a separate screen and is left alone.
+  // Desktop sidebar collapse is remembered per view. Terminal and console are
+  // full-window, so until the user chooses they start collapsed. The mobile
+  // drawer is a separate screen and is left alone.
+  const STORE_HISTORY_COLLAPSED = "fuse.chat.historyCollapsed.v1";
+  function historyCollapsedPrefs() {
+    try { return JSON.parse(localStorage.getItem(STORE_HISTORY_COLLAPSED) || "{}") || {}; } catch (_) { return {}; }
+  }
+  function saveHistoryCollapsed() {
+    const prefs = historyCollapsedPrefs();
+    prefs[chatView] = root.classList.contains("history-collapsed");
+    try { localStorage.setItem(STORE_HISTORY_COLLAPSED, JSON.stringify(prefs)); } catch (_) {}
+  }
+  let historyPrefView = null;
   function syncTerminalHistory() {
-    if (isHarnessView() && terminalHistoryState === null) {
-      terminalHistoryState = { collapsed: root.classList.contains("history-collapsed") };
-      root.classList.add("history-collapsed");
-      syncHistory();
-    } else if (!isHarnessView() && terminalHistoryState !== null) {
-      root.classList.toggle("history-collapsed", terminalHistoryState.collapsed);
-      terminalHistoryState = null;
-      syncHistory();
-    }
+    if (historyPrefView === chatView) return;
+    historyPrefView = chatView;
+    const saved = historyCollapsedPrefs()[chatView];
+    root.classList.toggle("history-collapsed", typeof saved === "boolean" ? saved : isHarnessView());
+    syncHistory();
   }
   new MutationObserver(syncTerminalHistory).observe(root, { attributes: true, attributeFilter: ["data-view"] });
   syncTerminalHistory();
@@ -13553,6 +13646,7 @@
       if (historyMobile.matches) setHistoryOpen(!root.classList.contains("is-history"));
       else {
         root.classList.toggle("history-collapsed");
+        saveHistoryCollapsed();
         syncHistory();
       }
     });

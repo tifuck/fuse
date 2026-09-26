@@ -18,6 +18,8 @@ const out = process.env.QUEUE_UI_ARTIFACTS || '/tmp/opencode/queue-ui-artifacts'
       page.on('pageerror', error => errors.push(error.message));
       await page.goto(origin);
       await page.locator('[data-sync-label]').filter({ hasText: 'Live sync' }).waitFor({ state: 'attached' });
+      // Phones open on the chat list; start a chat from it like a user would.
+      if (await page.locator('[data-chat].is-history').count()) await page.locator('.chat-history [data-chat-new]').click();
       await page.evaluate(view => fuseToolFixture.view(view), view);
       const input = page.locator('[data-chat-input]');
       const send = async text => { await input.fill(text); await page.locator('[data-chat-send]').click(); };

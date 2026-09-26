@@ -14,6 +14,8 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
     page.on('pageerror', error => errors.push(error.message));
     await page.goto(origin);
     await page.locator('[data-sync-label]').filter({ hasText: 'Live sync' }).waitFor({ state: 'attached' });
+    // Phones open on the chat list; start a chat from it like a user would.
+    if (await page.locator('[data-chat].is-history').count()) await page.locator('.chat-history [data-chat-new]').click();
     return page;
   };
   const transcript = page => page.locator('[data-chat-log]').innerText();
