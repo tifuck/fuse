@@ -37,12 +37,14 @@
     cli: "redhat",
     compact: "bricolage",
     console: "redhat",
+    prism: "bricolage",
   };
   const VIEWS = Object.keys(VIEW_DEFAULT_FONT);
   const VIEW_LABELS = {
     cli: "Terminal",
     compact: "Compact",
     console: "Console",
+    prism: "Prism",
   };
   const THEME_VARS = {
     ink: "--ink",
@@ -367,6 +369,7 @@
       clearThemeVars();
     }
     html.style.colorScheme = spec.scheme;
+    html.dataset.chatScheme = spec.scheme;
     document.querySelector('meta[name="color-scheme"]')?.setAttribute("content", spec.scheme);
     document.querySelector('meta[name="theme-color"]')?.setAttribute("content", spec.ink);
     const scene = ensureScene();

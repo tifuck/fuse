@@ -103,11 +103,12 @@
   let liveDockShowFrame = 0;
   let liveDockFollowFrame = 0;
   const STORE_VIEW = "fuse.chat.view.v2";
-  const CHAT_VIEWS = ["cli", "compact", "console"];
+  const CHAT_VIEWS = ["cli", "compact", "console", "prism"];
   const VIEW_LABELS = {
     cli: "Terminal",
     compact: "Compact",
     console: "Console",
+    prism: "Prism",
   };
   const artifactPanel = root.querySelector("[data-chat-artifact]");
   const artifactToggle = root.querySelector("[data-artifact-toggle]");
@@ -1462,7 +1463,7 @@
 
   function formatTurnMeta(msg) {
     const bits = [];
-    if (chatView === "console") {
+    if (isConsoleView()) {
       const split = usageInOut(msg && msg.usage);
       if (split && split.out) {
         const fmt = new Intl.NumberFormat();
@@ -7488,8 +7489,10 @@
     return chatView === "cli";
   }
 
+  // Prism renders the console transcript (same markup and disclosure
+  // behavior) under its own stylesheet; only Console sets data-chat-console.
   function isConsoleView() {
-    return chatView === "console";
+    return chatView === "console" || chatView === "prism";
   }
 
   function isHarnessView() {
@@ -7894,7 +7897,8 @@
     }
     if (name === "spawn_subagent") {
       const took = consoleDurationLabel(trace);
-      return took ? `finished · ${took}` : "Backgrounded agent";
+      if (took) return `finished · ${took}`;
+      return preview && preview !== "still running" ? shortToolText(preview, 100) : "finished";
     }
     if (name === "load_skill") return "Loaded skill";
     if (name === "search_tools") {

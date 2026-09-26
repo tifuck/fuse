@@ -2,8 +2,9 @@
 {% block title %}Chat · Fuse{% endblock %}
 {% block page_title %}Chat{% endblock %}
 {% block head_extra %}
-<script src="/static/chat-appearance.js?v=16"></script>
-<link rel="stylesheet" href="/static/chat-design.css?v=180">
+<script src="/static/chat-appearance.js?v=17"></script>
+<link rel="stylesheet" href="/static/chat-design.css?v=181">
+<link rel="stylesheet" href="/static/chat-prism.css?v=1">
 <link rel="stylesheet" href="/static/spinner-next.css?v=3">
 <link rel="stylesheet" href="/static/spinner-future.css?v=3">
 {% endblock %}
@@ -427,6 +428,7 @@
           <button type="button" data-view="cli"><span>Terminal</span><small>Full-window CLI</small></button>
           <button type="button" data-view="console"><span>Console</span><small>Claude-style TUI</small></button>
           <button type="button" data-view="compact"><span>Compact</span><small>Quick-scan ledger</small></button>
+          <button type="button" data-view="prism"><span>Prism</span><small>Console, refracted</small></button>
         </div>
       </section>
       <section class="chat-appearance-section">
@@ -512,5 +514,6 @@
 <script src="/static/spinner-next.js?v=3"></script>
 <script src="/static/spinner-future.js?v=3"></script>
   <script src="/static/chat-dom.js?v=1"></script>
-  <script src="/static/chat.js?v=288"></script>
+  <script src="/static/chat.js?v=289"></script>
+  <script src="/static/chat-prism.js?v=1"></script>
 {% endblock %}

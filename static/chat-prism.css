@@ -1,0 +1,920 @@
+/* Prism: the console transcript, refracted.
+
+   Same markup and disclosure behaviour as Console (chat.js renders both via
+   isConsoleView), a completely separate skin. Every rule here is scoped to
+   .chat[data-view="prism"]; Console's rules key off html[data-chat-console],
+   which Prism never sets, so neither view can leak into the other.
+
+   The palette is derived from the active theme: the "spectrum" is brass ->
+   steel -> ok, so every built-in and custom theme refracts in its own colors.
+   Motion is decorative only and switches off under prefers-reduced-motion. */
+
+@property --pz-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+.chat[data-view="prism"] {
+  --chat-col: 54rem;
+  --pz-s: var(--chat-text-scale, 1);
+  --pz-node: calc(1.55rem * var(--pz-s));
+  --pz-gap: calc(0.7rem * var(--pz-s));
+  --pz-row: calc(1.85rem * var(--pz-s));
+  --pz-type: calc(0.8rem * var(--pz-s));
+  --pz-small: calc(0.7rem * var(--pz-s));
+  --pz-lead: 1.55;
+  --pz-radius: 12px;
+  --pz-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --pz-spec: linear-gradient(100deg, var(--brass), var(--steel) 52%, var(--ok));
+  --pz-glass: color-mix(in srgb, var(--panel) 62%, transparent);
+  --pz-edge: color-mix(in srgb, var(--mist) 9%, transparent);
+  --pz-edge-hi: color-mix(in srgb, var(--mist) 18%, transparent);
+  --pz-dim: color-mix(in srgb, var(--mist) 56%, var(--ink));
+  --pz-code: color-mix(in srgb, var(--chat-code-bg, var(--ink)) 82%, transparent);
+  --pz-shadow: 0 1px 0 color-mix(in srgb, var(--mist) 6%, transparent) inset, 0 10px 30px -18px color-mix(in srgb, #000 70%, transparent);
+}
+
+/* —— Menu glyph: a small prism. —— */
+.chat-view-menu button[data-view="prism"]::before {
+  width: 0.8rem;
+  height: 0.7rem;
+  border: 0;
+  border-radius: 0;
+  background: conic-gradient(from 210deg at 50% 70%, var(--brass), var(--steel), var(--ok), var(--brass));
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+  opacity: 0.75;
+}
+.chat-view-menu button[data-view="prism"].is-on::before { opacity: 1; }
+
+/* —— Transcript rhythm —— */
+.chat[data-view="prism"] .chat-log { gap: calc(0.35rem * var(--pz-s)); padding-top: 1rem; }
+.chat[data-view="prism"] .chat-turn { padding-block: calc(0.55rem * var(--pz-s)); border: 0; }
+.chat[data-view="prism"] .chat-assistant { gap: calc(0.35rem * var(--pz-s)); }
+
+/* —— Your message: a glass card with a spectral spine. —— */
+.chat[data-view="prism"] .chat-turn.is-user { display: flex; justify-content: flex-end; }
+.chat[data-view="prism"] .chat-turn.is-user .chat-bubble {
+  position: relative;
+  max-width: min(100%, 40rem);
+  margin: 0;
+  padding: calc(0.7rem * var(--pz-s)) calc(0.95rem * var(--pz-s)) calc(0.7rem * var(--pz-s)) calc(1.15rem * var(--pz-s));
+  border: 1px solid var(--pz-edge);
+  border-radius: var(--pz-radius);
+  background:
+    radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--brass) 9%, transparent), transparent 55%),
+    var(--pz-glass);
+  box-shadow: var(--pz-shadow);
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+  backdrop-filter: blur(14px) saturate(1.2);
+  color: var(--mist);
+  font: calc(0.92rem * var(--pz-s))/1.55 var(--chat-view-font, var(--sans));
+  overflow-wrap: anywhere;
+}
+.chat[data-view="prism"] .chat-turn.is-user .chat-bubble::before {
+  content: "";
+  position: absolute;
+  inset: 0.55rem auto 0.55rem 0.45rem;
+  width: 2px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, var(--brass), var(--steel), var(--ok));
+  opacity: 0.85;
+}
+
+/* —— Activity: a beam of light with glass nodes. —— */
+.chat[data-view="prism"] .chat-activity { width: 100%; margin: 0; }
+.chat[data-view="prism"] .chat-cli-run { display: none; }
+.chat[data-view="prism"] .chat-activity-panel,
+.chat[data-view="prism"] .chat-activity-panel-inner { display: block; overflow: visible; }
+.chat[data-view="prism"] .chat-timeline {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: calc(0.12rem * var(--pz-s));
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+/* The beam: one continuous line through every node, brightest at the top. */
+.chat[data-view="prism"] .chat-activity > .chat-activity-panel .chat-timeline:not(.chat-console-bundle-tools)::before,
+.chat[data-view="prism"] .chat-activity > .chat-timeline::before {
+  content: "";
+  position: absolute;
+  top: calc(var(--pz-row) / 2);
+  bottom: calc(var(--pz-row) / 2);
+  left: calc(var(--pz-node) / 2 - 0.5px);
+  width: 1px;
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--brass) 55%, transparent),
+    color-mix(in srgb, var(--steel) 40%, transparent) 55%,
+    color-mix(in srgb, var(--ok) 12%, transparent));
+  pointer-events: none;
+}
+/* While a reply streams, a photon travels down the beam. */
+body.is-streaming .chat[data-view="prism"] .chat-turn:last-child .chat-activity > .chat-activity-panel .chat-timeline:not(.chat-console-bundle-tools)::after {
+  content: "";
+  position: absolute;
+  left: calc(var(--pz-node) / 2 - 1.5px);
+  top: 0;
+  width: 3px;
+  height: 3.5rem;
+  border-radius: 3px;
+  background: linear-gradient(180deg, transparent, var(--brass), transparent);
+  filter: drop-shadow(0 0 6px var(--brass));
+  animation: pz-photon 2.2s var(--pz-ease) infinite;
+  pointer-events: none;
+}
+@keyframes pz-photon {
+  from { transform: translateY(-1rem); opacity: 0; }
+  15% { opacity: 1; }
+  85% { opacity: 1; }
+  to { transform: translateY(calc(var(--pz-beam, 20rem))); opacity: 0; }
+}
+
+/* —— Steps —— */
+.chat[data-view="prism"] .chat-step {
+  --pz-k: var(--steel);
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--pz-node) minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  column-gap: var(--pz-gap);
+  align-items: start;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+}
+.chat[data-view="prism"] .chat-step::before { content: none; }
+.chat[data-view="prism"] .chat-step-main { display: contents; }
+.chat[data-view="prism"] .chat-step-head,
+.chat[data-view="prism"] .chat-step-reveal,
+.chat[data-view="prism"] .chat-console-bundle { grid-column: 2; min-width: 0; }
+.chat[data-view="prism"] .chat-step-head { grid-row: 1; }
+
+/* Tool kind -> tint. The tint drives the node ring, the verb and the glow. */
+.chat[data-view="prism"] .chat-step:is(.is-file, .is-read, .is-list) { --pz-k: var(--steel); }
+.chat[data-view="prism"] .chat-step:is(.is-edit, .is-write, .is-workspace, .is-artifact) { --pz-k: var(--brass); }
+.chat[data-view="prism"] .chat-step:is(.is-shell, .is-console-shell-group) { --pz-k: var(--ok); }
+.chat[data-view="prism"] .chat-step:is(.is-search, .is-grep, .is-glob) { --pz-k: color-mix(in srgb, var(--steel) 55%, var(--ok)); }
+.chat[data-view="prism"] .chat-step.is-agent { --pz-k: color-mix(in srgb, var(--brass) 45%, var(--steel)); }
+.chat[data-view="prism"] .chat-step:is(.is-think, .is-console-think) { --pz-k: var(--reason); }
+.chat[data-view="prism"] .chat-step:is(.is-interrupted, .is-warning) { --pz-k: var(--brass); }
+.chat[data-view="prism"] .chat-step.is-error { --pz-k: var(--fault); }
+
+/* Node: a glass orb carrying the tool icon. */
+.chat[data-view="prism"] .chat-step-node,
+.chat[data-view="prism"] .chat-step:is(.is-console-think, .is-console-shell-group) > .chat-step-main > .chat-step-head::before {
+  grid-column: 1;
+  grid-row: 1;
+  align-self: start;
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: var(--pz-node);
+  height: var(--pz-node);
+  margin-top: calc((var(--pz-row) - var(--pz-node)) / 2);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 32% 28%, color-mix(in srgb, var(--mist) 16%, transparent), transparent 60%),
+    color-mix(in srgb, var(--pz-k) 12%, var(--ink));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--pz-k) 38%, transparent) inset,
+    0 0 0 3px var(--ink),
+    0 0 14px -4px color-mix(in srgb, var(--pz-k) 55%, transparent);
+  color: var(--pz-k);
+  line-height: 0;
+  transition: box-shadow 220ms var(--pz-ease), transform 220ms var(--pz-ease);
+}
+.chat[data-view="prism"] .chat-step-node svg {
+  display: block;
+  width: calc(0.72rem * var(--pz-s));
+  height: calc(0.72rem * var(--pz-s));
+  margin: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+/* Rows without a node of their own (thinking, shell groups) draw one. */
+.chat[data-view="prism"] .chat-step:is(.is-console-think, .is-console-shell-group) > .chat-step-main > .chat-step-head {
+  position: relative;
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: var(--pz-node) minmax(0, 1fr) auto;
+  column-gap: var(--pz-gap);
+}
+.chat[data-view="prism"] .chat-step:is(.is-console-think, .is-console-shell-group) > .chat-step-main > .chat-step-head::before {
+  content: "";
+  margin-top: calc((var(--pz-row) - var(--pz-node)) / 2);
+  background:
+    radial-gradient(circle at 50% 50%, var(--pz-k) 0 2.5px, transparent 3.5px),
+    radial-gradient(circle at 32% 28%, color-mix(in srgb, var(--mist) 14%, transparent), transparent 60%),
+    color-mix(in srgb, var(--pz-k) 10%, var(--ink));
+}
+/* Shell group glyph: a prompt chevron over an underscore. */
+.chat[data-view="prism"] .chat-step.is-console-shell-group > .chat-step-main > .chat-step-head::before {
+  background:
+    linear-gradient(var(--pz-k), var(--pz-k)) 58% 64% / 4px 1.5px no-repeat,
+    linear-gradient(45deg, transparent 45%, var(--pz-k) 45% 60%, transparent 60%) 38% 38% / 4px 4px no-repeat,
+    linear-gradient(-45deg, transparent 45%, var(--pz-k) 45% 60%, transparent 60%) 38% 62% / 4px 4px no-repeat,
+    radial-gradient(circle at 32% 28%, color-mix(in srgb, var(--mist) 14%, transparent), transparent 60%),
+    color-mix(in srgb, var(--pz-k) 10%, var(--ink));
+}
+/* Thought glyph: a bright core inside a faint spectral halo. */
+.chat[data-view="prism"] .chat-step.is-console-think > .chat-step-main > .chat-step-head::before {
+  background:
+    radial-gradient(circle, var(--mist) 0 1.2px, var(--brass) 1.8px, transparent 2.6px),
+    radial-gradient(circle, transparent 0 4px, color-mix(in srgb, var(--steel) 70%, transparent) 4.5px 5.1px, transparent 5.6px),
+    radial-gradient(circle at 32% 28%, color-mix(in srgb, var(--mist) 14%, transparent), transparent 60%),
+    color-mix(in srgb, var(--pz-k) 10%, var(--ink));
+}
+
+/* Running: a spectral ring orbits the node. */
+.chat[data-view="prism"] .chat-step.is-running > .chat-step-node::after,
+.chat[data-view="prism"] .chat-step.is-console-think.is-live-think > .chat-step-main > .chat-step-head::after {
+  content: "";
+  position: absolute;
+  top: calc((var(--pz-row) - var(--pz-node)) / 2 - 3px);
+  left: -3px;
+  width: calc(var(--pz-node) + 6px);
+  height: calc(var(--pz-node) + 6px);
+  border-radius: 50%;
+  background: conic-gradient(from var(--pz-angle), transparent 0 55%, var(--brass) 70%, var(--steel) 85%, var(--ok) 100%);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 1.5px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 1.5px));
+  animation: pz-orbit 1.1s linear infinite;
+  pointer-events: none;
+}
+.chat[data-view="prism"] .chat-step.is-running > .chat-step-node::after { top: -3px; }
+@keyframes pz-orbit { to { --pz-angle: 360deg; } }
+.chat[data-view="prism"] .chat-step.is-error > .chat-step-node {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--fault) 60%, transparent) inset,
+    0 0 0 3px var(--ink),
+    0 0 16px -2px color-mix(in srgb, var(--fault) 60%, transparent);
+}
+/* Children of a group sit on the group's own sub-beam. */
+.chat[data-view="prism"] .chat-console-bundle > .chat-timeline {
+  position: relative;
+  margin: calc(0.15rem * var(--pz-s)) 0 calc(0.3rem * var(--pz-s));
+}
+.chat[data-view="prism"] .chat-console-bundle > .chat-timeline::before {
+  content: "";
+  position: absolute;
+  top: calc(var(--pz-row) / 2);
+  bottom: calc(var(--pz-row) / 2);
+  left: calc(var(--pz-node) / 2 - 0.5px);
+  width: 1px;
+  background: color-mix(in srgb, var(--pz-k, var(--steel)) 30%, transparent);
+}
+
+/* —— Row head: a glass chip that lights up under the pointer. —— */
+.chat[data-view="prism"] .chat-step-head {
+  --mx: 50%;
+  --my: 50%;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  min-height: var(--pz-row);
+  margin: 0;
+  padding: 0 0.55rem 0 0.6rem;
+  border-radius: 10px;
+  isolation: isolate;
+}
+.chat[data-view="prism"] .chat-step:is(.is-console-think, .is-console-shell-group) > .chat-step-main > .chat-step-head { padding: 0; }
+.chat[data-view="prism"] .chat-step:is(.is-console-think, .is-console-shell-group) > .chat-step-main > .chat-step-head > :is(.chat-step-toggle, .chat-step-static) {
+  grid-column: 2;
+  grid-row: 1;
+  padding: 0 0.55rem 0 0.6rem;
+  border-radius: 10px;
+}
+.chat[data-view="prism"] .chat-step:is(.is-console-think, .is-console-shell-group) > .chat-step-main > .chat-step-head > :is(.chat-think-size, .chat-step-caret) { grid-column: 3; grid-row: 1; }
+/* :where() keeps this base low-specificity so the lit states below win. */
+.chat[data-view="prism"] :where(.chat-step:not(.is-console-think):not(.is-console-shell-group) > .chat-step-main) > .chat-step-head::after,
+.chat[data-view="prism"] :where(.chat-step:is(.is-console-think, .is-console-shell-group) > .chat-step-main > .chat-step-head) > .chat-step-toggle::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  border: 1px solid var(--pz-edge);
+  background: var(--pz-glass);
+  opacity: 0;
+  transition: opacity 180ms var(--pz-ease);
+  pointer-events: none;
+}
+.chat[data-view="prism"] .chat-step:is(.is-console-think, .is-console-shell-group) > .chat-step-main > .chat-step-head > .chat-step-toggle { position: relative; isolation: isolate; }
+.chat[data-view="prism"] .chat-step-head:hover::after,
+.chat[data-view="prism"] .chat-step-head:has(:focus-visible)::after,
+.chat[data-view="prism"] .chat-step.is-console-expanded > .chat-step-main > .chat-step-head::after,
+.chat[data-view="prism"] .chat-step-head > .chat-step-toggle:is(:hover, :focus-visible)::before,
+.chat[data-view="prism"] .chat-step.is-console-expanded > .chat-step-main > .chat-step-head > .chat-step-toggle::before,
+.chat[data-view="prism"] .chat-step.is-console-think:not([data-think-mode="collapsed"]) > .chat-step-main > .chat-step-head > .chat-step-toggle::before { opacity: 1; }
+/* Under the pointer the glass catches light where the cursor is, and the
+   edge brightens toward it. Expanded rows keep plain glass (no stray spot). */
+.chat[data-view="prism"] .chat-step-head:hover::after,
+.chat[data-view="prism"] .chat-step-head > .chat-step-toggle:hover::before {
+  border-color: transparent;
+  background:
+    radial-gradient(9rem circle at var(--mx) var(--my), color-mix(in srgb, var(--pz-k) 14%, transparent), transparent 70%) padding-box,
+    linear-gradient(var(--pz-glass), var(--pz-glass)) padding-box,
+    radial-gradient(10rem circle at var(--mx) var(--my), color-mix(in srgb, var(--pz-k) 55%, transparent), var(--pz-edge) 70%) border-box;
+}
+.chat[data-view="prism"] .chat-step:has(> .chat-step-main > .chat-step-head:hover) > .chat-step-node {
+  transform: scale(1.08);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--pz-k) 60%, transparent) inset,
+    0 0 0 3px var(--ink),
+    0 0 18px -2px color-mix(in srgb, var(--pz-k) 70%, transparent);
+}
+
+.chat[data-view="prism"] :is(.chat-step-toggle, .chat-step-static) {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: var(--pz-row);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.chat[data-view="prism"] .chat-step-static { cursor: default; }
+.chat[data-view="prism"] .chat-step-toggle:focus-visible { outline: none; }
+.chat[data-view="prism"] .chat-step-head:has(.chat-step-toggle:focus-visible) { outline: 1px solid color-mix(in srgb, var(--pz-k) 70%, transparent); outline-offset: 1px; }
+.chat[data-view="prism"] .chat-step-label {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--mist);
+  font: var(--pz-type)/var(--pz-row) var(--mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat[data-view="prism"] .chat-console-call { display: inline; font: inherit; }
+.chat[data-view="prism"] .chat-tool-action {
+  display: inline;
+  flex: none;
+  padding: 0;
+  color: var(--pz-k);
+  font: inherit;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.chat[data-view="prism"] .chat-step:hover .chat-tool-action {
+  background: var(--pz-spec);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.chat[data-view="prism"] .chat-console-paren { color: var(--pz-dim); opacity: 0.7; }
+.chat[data-view="prism"] :is(.chat-console-sep, .chat-console-eq) { color: var(--pz-dim); }
+.chat[data-view="prism"] .chat-console-key { color: var(--steel); }
+.chat[data-view="prism"] .chat-console-val { color: color-mix(in srgb, var(--mist) 84%, var(--ink)); }
+.chat[data-view="prism"] .chat-step.is-console-call.is-console-expanded .chat-step-label { white-space: normal; overflow-wrap: anywhere; line-height: 1.45; padding-block: calc((var(--pz-row) - 1.45em) / 2); }
+.chat[data-view="prism"] .chat-step-state.is-empty,
+.chat[data-view="prism"] .chat-step-open.is-empty,
+.chat[data-view="prism"] .chat-step-caret.is-empty,
+.chat[data-view="prism"] .chat-step-host { display: none; }
+.chat[data-view="prism"] .chat-step-state:not(.is-empty) {
+  flex: 0 0 auto;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--pz-k) 14%, transparent);
+  color: var(--pz-k);
+  font: 500 var(--pz-small)/1.5 var(--mono);
+}
+/* Disclosure chevron: appears with the glass, rotates open. */
+.chat[data-view="prism"] .chat-step-caret {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 1.3rem;
+  height: 1.3rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--pz-dim);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 160ms var(--pz-ease), color 160ms var(--pz-ease);
+}
+.chat[data-view="prism"] .chat-step-caret .chat-step-chevron { transform: rotate(-90deg); transition: transform 260ms var(--pz-ease); }
+.chat[data-view="prism"] .chat-step-caret[aria-expanded="true"] .chat-step-chevron { transform: rotate(0); }
+.chat[data-view="prism"] .chat-step-head:hover .chat-step-caret,
+.chat[data-view="prism"] .chat-step-caret[aria-expanded="true"],
+.chat[data-view="prism"] .chat-step-caret:focus-visible { opacity: 1; color: var(--pz-k); }
+@media (hover: none) {
+  .chat[data-view="prism"] .chat-step-caret { opacity: 0.6; }
+}
+.chat[data-view="prism"] .chat-step-open {
+  flex: 0 0 auto;
+  padding: 0.12rem 0.55rem;
+  border: 1px solid color-mix(in srgb, var(--pz-k) 40%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--pz-k) 10%, transparent);
+  color: var(--pz-k);
+  font: 500 var(--pz-small)/1.5 var(--mono);
+  letter-spacing: 0.02em;
+  text-transform: none;
+  cursor: pointer;
+  transition: background 160ms var(--pz-ease), box-shadow 160ms var(--pz-ease);
+}
+.chat[data-view="prism"] .chat-step-open:hover {
+  background: color-mix(in srgb, var(--pz-k) 20%, transparent);
+  box-shadow: 0 0 14px -4px var(--pz-k);
+}
+.chat[data-view="prism"] .chat-step-open .chat-open-target { display: none; }
+
+/* —— Result line and bodies —— */
+.chat[data-view="prism"] .chat-step.is-console-call .chat-step-reveal,
+.chat[data-view="prism"] .chat-step.is-console-call .chat-step-reveal.is-open {
+  grid-row: 2;
+  display: block;
+  visibility: visible;
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+}
+.chat[data-view="prism"] .chat-step.is-console-call .chat-step-reveal-inner { overflow: visible; margin: 0; padding: 0; border: 0; background: none; }
+.chat[data-view="prism"] .chat-console-hang {
+  display: block;
+  min-width: 0;
+  margin: 0 0 calc(0.25rem * var(--pz-s));
+  padding: 0 0 0 0.6rem;
+  color: var(--pz-dim);
+  font: var(--pz-small)/1.5 var(--mono);
+}
+.chat[data-view="prism"] .chat-console-branch { display: none; }
+.chat[data-view="prism"] .chat-console-hang-body { min-width: 0; }
+.chat[data-view="prism"] .chat-console-result-text {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat[data-view="prism"] .chat-console-result-text::before {
+  content: "↳";
+  display: inline-block;
+  margin-right: 0.45em;
+  color: color-mix(in srgb, var(--pz-k) 70%, transparent);
+}
+.chat[data-view="prism"] .chat-console-hang.is-running .chat-console-result-text { color: var(--mist); }
+.chat[data-view="prism"] .chat-console-hang.is-error .chat-console-result-text { color: var(--fault); white-space: normal; overflow-wrap: anywhere; }
+/* Collapsed shows the short preview; expanded shows the full body. */
+.chat[data-view="prism"] .chat-console-hang:not(.is-expanded) .chat-console-out { display: none; }
+.chat[data-view="prism"] .chat-console-hang.is-expanded .chat-console-preview { display: none; }
+.chat[data-view="prism"] .chat-console-hang.is-expanded:has(.chat-console-out.is-stdout) .chat-console-result-text { display: none; }
+.chat[data-view="prism"] .chat-console-hang.is-expanded:has(.chat-console-out.is-stdout) .chat-console-out { margin-top: calc(0.2rem * var(--pz-s)); }
+
+/* Frosted panel for previews and bodies. */
+.chat[data-view="prism"] :is(.chat-console-preview, .chat-console-out, .chat-todo.is-console) {
+  position: relative;
+  display: block;
+  min-width: 0;
+  margin: calc(0.3rem * var(--pz-s)) 0 calc(0.1rem * var(--pz-s));
+  padding: calc(0.5rem * var(--pz-s)) calc(0.7rem * var(--pz-s));
+  border: 1px solid var(--pz-edge);
+  border-radius: 10px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--mist) 3%, transparent), transparent 40%),
+    var(--pz-code);
+  box-shadow: var(--pz-shadow);
+  color: var(--mist);
+  font: calc(0.74rem * var(--pz-s))/1.6 var(--mono);
+  white-space: normal;
+  overflow: hidden;
+}
+/* The panel's top edge catches the light in the tool's tint. */
+.chat[data-view="prism"] :is(.chat-console-preview, .chat-console-out, .chat-todo.is-console)::before {
+  content: "";
+  position: absolute;
+  inset: 0 12% auto;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--pz-k) 70%, transparent), transparent);
+  opacity: 0.8;
+  pointer-events: none;
+}
+.chat[data-view="prism"] .chat-console-out .chat-console-out { margin: 0; padding: 0; border: 0; background: none; box-shadow: none; }
+.chat[data-view="prism"] .chat-console-out .chat-console-out::before { content: none; }
+.chat[data-view="prism"] .chat-console-hang.is-expanded .chat-console-out {
+  max-height: 26rem;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--pz-k) 45%, transparent) transparent;
+  animation: pz-refract 420ms var(--pz-ease) both;
+}
+@keyframes pz-refract {
+  from { opacity: 0; transform: translateY(-4px) scale(0.995); filter: blur(6px) saturate(1.6); }
+  to { opacity: 1; transform: none; filter: none; }
+}
+.chat[data-view="prism"] .chat-console-hang.is-error .chat-console-out {
+  border-color: color-mix(in srgb, var(--fault) 35%, transparent);
+  background: color-mix(in srgb, var(--fault) 7%, var(--pz-code));
+  color: var(--fault);
+}
+.chat[data-view="prism"] pre.chat-console-out { white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat[data-view="prism"] .chat-console-stdout { min-height: 1.6em; white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat[data-view="prism"] .chat-console-more {
+  margin-top: 0.25rem;
+  color: var(--pz-dim);
+  font: var(--pz-small)/1.5 var(--mono);
+}
+
+/* Numbered file bodies and diffs. */
+.chat[data-view="prism"] .chat-console-lines { font: inherit; }
+.chat[data-view="prism"] .chat-console-nline {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 0.85rem;
+  margin-inline: calc(-0.7rem * var(--pz-s));
+  padding-inline: calc(0.7rem * var(--pz-s));
+}
+.chat[data-view="prism"] .chat-console-nline:hover { background: color-mix(in srgb, var(--mist) 4%, transparent); }
+.chat[data-view="prism"] .chat-console-nline:has(.chat-console-mark) { grid-template-columns: max-content max-content minmax(0, 1fr); column-gap: 0.5rem; }
+.chat[data-view="prism"] .chat-console-nline.is-bare { grid-template-columns: max-content minmax(0, 1fr); }
+.chat[data-view="prism"] .chat-console-n { color: color-mix(in srgb, var(--mute) 60%, transparent); text-align: right; font-variant-numeric: tabular-nums; user-select: none; white-space: pre; }
+.chat[data-view="prism"] .chat-console-nbody { min-width: 0; color: var(--mist); white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat[data-view="prism"] .chat-console-nline.is-add {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--ok) 22%, transparent), color-mix(in srgb, var(--ok) 7%, transparent));
+  box-shadow: 2px 0 0 var(--ok) inset;
+}
+.chat[data-view="prism"] .chat-console-nline.is-del {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--fault) 22%, transparent), color-mix(in srgb, var(--fault) 7%, transparent));
+  box-shadow: 2px 0 0 var(--fault) inset;
+}
+.chat[data-view="prism"] .chat-console-nline.is-add .chat-console-mark { color: var(--ok); }
+.chat[data-view="prism"] .chat-console-nline.is-del .chat-console-mark { color: var(--fault); }
+.chat[data-view="prism"] .chat-console-nline.is-del .chat-console-nbody { color: color-mix(in srgb, var(--mist) 70%, var(--fault)); }
+
+/* Web results: title and a domain pill. */
+.chat[data-view="prism"] .chat-web-list { display: grid; gap: 0.1rem; }
+.chat[data-view="prism"] .chat-web-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 0;
+  margin-inline: -0.4rem;
+  padding: 0.18rem 0.4rem;
+  border-radius: 6px;
+  color: var(--mist);
+  font: calc(0.76rem * var(--pz-s))/1.5 var(--chat-view-font, var(--sans));
+  text-decoration: none;
+  transition: background 140ms var(--pz-ease);
+}
+.chat[data-view="prism"] .chat-web-row:hover { background: color-mix(in srgb, var(--pz-k) 10%, transparent); }
+.chat[data-view="prism"] .chat-web-row:hover .chat-web-title { color: var(--mist); text-decoration: none; }
+.chat[data-view="prism"] .chat-web-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat[data-view="prism"] .chat-web-domain {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 0 0.45rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--pz-k) 12%, transparent);
+  color: var(--pz-k);
+  font: var(--pz-small)/1.6 var(--mono);
+}
+
+/* Todos: drawn checkboxes instead of ☒ / ☐ glyphs. */
+.chat[data-view="prism"] .chat-todo.is-console { display: grid; gap: 0.15rem; list-style: none; }
+.chat[data-view="prism"] .chat-todo.is-console .chat-todo-item {
+  display: grid;
+  grid-template-columns: 1rem minmax(0, 1fr);
+  column-gap: 0.55rem;
+  align-items: start;
+  color: var(--mist);
+  font: calc(0.78rem * var(--pz-s))/1.55 var(--chat-view-font, var(--sans));
+}
+.chat[data-view="prism"] .chat-todo.is-console .chat-todo-status { display: none; }
+.chat[data-view="prism"] .chat-todo.is-console .chat-todo-mark {
+  position: relative;
+  width: 0.8rem;
+  height: 0.8rem;
+  margin-top: calc((1.55em - 0.8rem) / 2 + 1px);
+  border: 1.5px solid color-mix(in srgb, var(--mute) 70%, transparent);
+  border-radius: 4px;
+  font-size: 0;
+  color: transparent;
+}
+.chat[data-view="prism"] .chat-todo.is-console .is-completed .chat-todo-mark {
+  border-color: transparent;
+  background: var(--ok);
+  box-shadow: 0 0 10px -3px var(--ok);
+}
+.chat[data-view="prism"] .chat-todo.is-console .is-completed .chat-todo-mark::after {
+  content: "";
+  position: absolute;
+  left: 0.22rem;
+  top: 0.06rem;
+  width: 0.2rem;
+  height: 0.42rem;
+  border: solid var(--on-brass, var(--ink));
+  border-width: 0 1.6px 1.6px 0;
+  transform: rotate(45deg);
+}
+.chat[data-view="prism"] .chat-todo.is-console .is-in-progress .chat-todo-mark {
+  border-color: var(--brass);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brass) 18%, transparent);
+  animation: pz-breathe 2.4s ease-in-out infinite;
+}
+.chat[data-view="prism"] .chat-todo.is-console .is-completed .chat-todo-copy { color: var(--pz-dim); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--mute) 60%, transparent); }
+.chat[data-view="prism"] .chat-todo.is-console .is-in-progress .chat-todo-copy { color: var(--mist); font-weight: 600; }
+@keyframes pz-breathe { 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--brass) 6%, transparent); } }
+
+/* Structured bodies (key/value, notes, markdown). */
+.chat[data-view="prism"] .chat-kv-row { font: calc(0.74rem * var(--pz-s))/1.6 var(--mono); padding: 0; }
+.chat[data-view="prism"] .chat-tool-md.chat-md { display: block; font-size: calc(0.8rem * var(--pz-s)); }
+.chat[data-view="prism"] .chat-tool-md.chat-md::before { content: none; }
+
+/* —— Thinking: a quiet row; the stream reads like light through glass. —— */
+.chat[data-view="prism"] .chat-step.is-console-think {
+  --think-line: calc(0.8rem * var(--pz-s) * 1.55);
+  grid-template-columns: minmax(0, 1fr);
+}
+.chat[data-view="prism"] .chat-step.is-console-think .chat-step-copy { display: flex; align-items: center; gap: 0.55rem; min-width: 0; }
+.chat[data-view="prism"] .chat-step.is-console-think .chat-step-kind { display: none; }
+.chat[data-view="prism"] .chat-step.is-console-think .chat-think-summary {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--reason);
+  font: italic 400 var(--pz-type)/var(--pz-row) var(--chat-view-font, var(--sans));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.chat[data-view="prism"] .chat-step.is-console-think.is-live-think .chat-think-summary {
+  background: linear-gradient(100deg, var(--reason) 0 35%, var(--brass) 45%, var(--steel) 52%, var(--ok) 58%, var(--reason) 68% 100%) 0 0 / 260% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: pz-shimmer 2.6s linear infinite;
+}
+@keyframes pz-shimmer { from { background-position: 100% 0; } to { background-position: -160% 0; } }
+.chat[data-view="prism"] .chat-step.is-console-think .chat-think-size {
+  flex: 0 0 auto;
+  padding: 0 0.5rem;
+  border: 0;
+  background: none;
+  color: var(--pz-dim);
+  font: var(--pz-small)/var(--pz-row) var(--mono);
+  cursor: pointer;
+}
+.chat[data-view="prism"] .chat-step.is-console-think .chat-think-size[hidden] { display: none; }
+.chat[data-view="prism"] .chat-step.is-console-think .chat-think-size:hover { color: var(--brass); }
+/* Bundles line up with tool panels: node column + gap + the row's inset. */
+.chat[data-view="prism"] .chat-step.is-console-think > .chat-step-main > .chat-console-bundle {
+  grid-column: 1;
+  padding: 0 0 0 calc(var(--pz-node) + var(--pz-gap) + 0.6rem);
+}
+.chat[data-view="prism"] .chat-step.is-console-think[data-think-mode="collapsed"] .chat-console-bundle,
+.chat[data-view="prism"] .chat-step.is-console-think[data-think-mode="collapsed"] .chat-think-window { display: none; }
+.chat[data-view="prism"] .chat-step.is-console-think .chat-think-window {
+  position: relative;
+  margin: calc(0.15rem * var(--pz-s)) 0 calc(0.35rem * var(--pz-s));
+  padding: calc(0.55rem * var(--pz-s)) calc(0.8rem * var(--pz-s)) calc(0.55rem * var(--pz-s)) calc(1rem * var(--pz-s));
+  border: 1px solid var(--pz-edge);
+  border-radius: 10px;
+  background:
+    radial-gradient(80% 120% at 0% 0%, color-mix(in srgb, var(--reason) 8%, transparent), transparent 60%),
+    var(--pz-glass);
+  cursor: pointer;
+}
+.chat[data-view="prism"] .chat-step.is-console-think .chat-think-window::before {
+  content: "";
+  position: absolute;
+  inset: 0.6rem auto 0.6rem 0.45rem;
+  width: 2px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, var(--brass), var(--steel), var(--ok));
+  opacity: 0.55;
+}
+.chat[data-view="prism"] .chat-step.is-console-think .chat-think-preview {
+  display: block;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+  color: color-mix(in srgb, var(--mist) 74%, var(--ink));
+  font: italic 400 calc(0.8rem * var(--pz-s))/1.55 var(--chat-view-font, var(--sans));
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.chat[data-view="prism"] .chat-step.is-console-think[data-think-mode="tail"] .chat-think-preview {
+  max-height: calc(3 * var(--think-line));
+  overflow: hidden;
+}
+.chat[data-view="prism"] .chat-step.is-console-think[data-think-mode="tail"] .chat-think-preview.is-clipped {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 var(--think-line));
+  mask-image: linear-gradient(to bottom, transparent 0, #000 var(--think-line));
+}
+.chat[data-view="prism"] .chat-step.is-console-think[data-think-mode="expanded"] .chat-think-window { animation: pz-refract 420ms var(--pz-ease) both; }
+.chat[data-view="prism"] .chat-think-markdown :is(p, ul, ol) { margin: 0; }
+.chat[data-view="prism"] .chat-think-markdown :is(p + p, ul + p, ol + p) { margin-top: 0.45em; }
+.chat[data-view="prism"] .chat-think-markdown code { padding: 0 0.25em; border-radius: 4px; background: color-mix(in srgb, var(--reason) 12%, transparent); font-style: normal; }
+.chat[data-view="prism"] .chat-step.is-console-think .chat-console-bundle-tools { margin: 0 0 0.5rem; padding: 0; list-style: none; }
+
+/* Shell group: a titled cluster of commands. */
+.chat[data-view="prism"] .chat-step.is-console-shell-group { grid-template-columns: minmax(0, 1fr); }
+.chat[data-view="prism"] .chat-step.is-console-shell-group .chat-step-label { color: var(--mist); font-weight: 500; }
+.chat[data-view="prism"] .chat-step.is-console-shell-group > .chat-step-main > .chat-console-bundle {
+  grid-column: 1;
+  display: none;
+  padding-left: calc(var(--pz-node) + var(--pz-gap));
+}
+.chat[data-view="prism"] .chat-step.is-console-shell-group.is-console-expanded > .chat-step-main > .chat-console-bundle { display: block; animation: pz-refract 380ms var(--pz-ease) both; }
+
+/* —— The answer —— */
+.chat[data-view="prism"] .chat-md {
+  color: var(--mist);
+  font: calc(0.94rem * var(--pz-s))/1.65 var(--chat-view-font, var(--sans));
+}
+.chat[data-view="prism"] .chat-md :is(h1, h2, h3) {
+  background: var(--pz-spec);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  letter-spacing: -0.01em;
+}
+.chat[data-view="prism"] .chat-md strong { color: var(--mist); font-weight: 650; }
+.chat[data-view="prism"] .chat-md a { color: var(--steel); text-decoration-color: color-mix(in srgb, var(--steel) 45%, transparent); text-underline-offset: 3px; }
+.chat[data-view="prism"] .chat-md a:hover { color: var(--brass); text-decoration-color: currentColor; }
+.chat[data-view="prism"] .chat-md :not(pre) > code {
+  padding: 0.08em 0.4em;
+  border: 1px solid color-mix(in srgb, var(--brass) 22%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--brass) 9%, transparent);
+  color: color-mix(in srgb, var(--brass) 70%, var(--mist));
+  font-size: 0.84em;
+}
+.chat[data-view="prism"] .chat-md li::marker { color: var(--brass); }
+.chat[data-view="prism"] .chat-md blockquote { border-left: 2px solid var(--steel); color: var(--pz-dim); }
+.chat[data-view="prism"] .chat-md hr { height: 1px; border: 0; background: linear-gradient(90deg, transparent, var(--pz-edge-hi), transparent); }
+.chat[data-view="prism"] .chat-md.is-writing::after {
+  content: "";
+  display: inline-block;
+  width: 0.5em;
+  height: 1.05em;
+  margin-left: 0.15em;
+  vertical-align: -0.15em;
+  border-radius: 2px;
+  background: var(--pz-spec);
+  animation: pz-caret 1s steps(2, jump-none) infinite;
+}
+@keyframes pz-caret { 50% { opacity: 0.15; } }
+
+/* Code blocks: frosted, with a spectral hairline. */
+.chat[data-view="prism"] .chat-md .chat-code {
+  position: relative;
+  margin-block: calc(0.6rem * var(--pz-s));
+  overflow: hidden;
+  border: 1px solid var(--pz-edge);
+  border-radius: var(--pz-radius);
+  background: var(--pz-code);
+  box-shadow: var(--pz-shadow);
+}
+.chat[data-view="prism"] .chat-md .chat-code::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 1px;
+  background: var(--pz-spec);
+  opacity: 0.6;
+}
+.chat[data-view="prism"] .chat-md .chat-code-head {
+  min-height: calc(1.9rem * var(--pz-s));
+  padding: 0 0.4rem 0 0.9rem;
+  border-bottom: 1px solid var(--pz-edge);
+  background: color-mix(in srgb, var(--mist) 3%, transparent);
+  color: var(--pz-dim);
+  font: 500 var(--pz-small)/1 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.chat[data-view="prism"] .chat-md .chat-code pre { padding: calc(0.8rem * var(--pz-s)) calc(0.95rem * var(--pz-s)); background: none; }
+
+/* Tables: glass with a lit header. */
+.chat[data-view="prism"] .chat-md table {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--pz-edge);
+  border-collapse: separate;
+  border-spacing: 0;
+  border-radius: 10px;
+  background: var(--pz-glass);
+  font-size: 0.9em;
+}
+.chat[data-view="prism"] .chat-md th {
+  background: color-mix(in srgb, var(--steel) 9%, transparent);
+  color: var(--mist);
+  font-weight: 600;
+  text-align: left;
+}
+.chat[data-view="prism"] .chat-md :is(th, td) { padding: 0.4rem 0.8rem; border: 0; border-bottom: 1px solid var(--pz-edge); }
+.chat[data-view="prism"] .chat-md tr:last-child td { border-bottom: 0; }
+.chat[data-view="prism"] .chat-md tbody tr:hover td { background: color-mix(in srgb, var(--mist) 3%, transparent); }
+
+/* Turn footer: small chips. */
+.chat[data-view="prism"] .chat-foot { margin-top: calc(0.2rem * var(--pz-s)); gap: 0.35rem; }
+.chat[data-view="prism"] .chat-meta,
+.chat[data-view="prism"] .chat-foot .chat-meta { color: var(--pz-dim); font: var(--pz-small)/1.5 var(--mono); }
+
+/* —— Live status line —— */
+.chat[data-view="prism"] :is(.chat-live-dock, .chat-agent-live-dock) {
+  gap: 0.6rem;
+  color: var(--mist);
+  font: italic 400 calc(0.8rem * var(--pz-s))/1.5 var(--chat-view-font, var(--sans));
+}
+.chat[data-view="prism"] :is(.chat-live-dock, .chat-agent-live-dock) .chat-activity-spin {
+  position: relative;
+  display: block;
+  flex: 0 0 auto;
+  width: 0.95rem;
+  height: 0.95rem;
+  border-radius: 50%;
+  background: conic-gradient(from var(--pz-angle), var(--brass), var(--steel), var(--ok), var(--brass));
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px));
+  animation: pz-orbit 1.1s linear infinite;
+}
+.chat[data-view="prism"] :is(.chat-live-dock, .chat-agent-live-dock) .chat-activity-spin[hidden] { display: none; }
+.chat[data-view="prism"] .chat-console-spin { display: none; }
+.chat[data-view="prism"] :is(.chat-live-dock, .chat-agent-live-dock) .chat-dock-dots { display: none; }
+.chat[data-view="prism"] :is(.chat-live-dock, .chat-agent-live-dock) .chat-status-shimmer {
+  --status-ink: color-mix(in srgb, var(--mist) 62%, var(--ink));
+  --status-gleam: var(--brass);
+}
+
+/* —— Composer: floating glass; a spectral ring wakes on focus and while a
+   reply streams. —— */
+.chat[data-view="prism"] .chat-box {
+  position: relative;
+  border: 1px solid var(--pz-edge-hi);
+  border-radius: calc(var(--pz-radius) + 4px);
+  background:
+    radial-gradient(120% 160% at 100% 0%, color-mix(in srgb, var(--steel) 7%, transparent), transparent 50%),
+    color-mix(in srgb, var(--panel) 78%, transparent);
+  box-shadow: 0 18px 44px -22px color-mix(in srgb, #000 75%, transparent), 0 1px 0 color-mix(in srgb, var(--mist) 7%, transparent) inset;
+  -webkit-backdrop-filter: blur(18px) saturate(1.25);
+  backdrop-filter: blur(18px) saturate(1.25);
+  transition: border-color 200ms var(--pz-ease), box-shadow 200ms var(--pz-ease);
+}
+.chat[data-view="prism"] .chat-box::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  padding: 1px;
+  border-radius: inherit;
+  background: conic-gradient(from var(--pz-angle), transparent 0 40%, var(--brass) 55%, var(--steel) 70%, var(--ok) 82%, transparent 95%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  opacity: 0;
+  transition: opacity 260ms var(--pz-ease);
+  pointer-events: none;
+}
+.chat[data-view="prism"] .chat-box:focus-within { border-color: transparent; box-shadow: 0 18px 50px -20px color-mix(in srgb, var(--brass) 30%, transparent), 0 1px 0 color-mix(in srgb, var(--mist) 7%, transparent) inset; }
+.chat[data-view="prism"] .chat-box:focus-within::after { opacity: 0.9; animation: pz-orbit 6s linear infinite; }
+body.is-streaming .chat[data-view="prism"] .chat-box::after { opacity: 1; animation: pz-orbit 2.4s linear infinite; }
+.chat[data-view="prism"] .chat-box textarea { font-family: var(--chat-view-font, var(--sans)); }
+
+/* Model logos keep their own paint: no plate behind them. */
+.chat[data-view="prism"] .chat-picker-btn .provider-logo { width: 1rem; height: 1rem; background: none; }
+
+/* —— Narrow screens —— */
+@media (max-width: 600px) {
+  .chat[data-view="prism"] {
+    --pz-node: calc(1.4rem * var(--pz-s));
+    --pz-gap: calc(0.5rem * var(--pz-s));
+  }
+  .chat[data-view="prism"] .chat-turn.is-user .chat-bubble { max-width: 100%; }
+  .chat[data-view="prism"] .chat-step-head { padding-inline: 0.45rem 0.3rem; }
+  .chat[data-view="prism"] .chat-console-hang { padding-inline: 0.45rem 0; }
+  .chat[data-view="prism"] .chat-step.is-console-think > .chat-step-main > .chat-console-bundle { padding: 0 0 0 calc(var(--pz-node) + var(--pz-gap) + 0.45rem); }
+  .chat[data-view="prism"] :is(.chat-console-preview, .chat-console-out, .chat-todo.is-console) { padding-inline: 0.55rem; }
+  .chat[data-view="prism"] .chat-console-nline { margin-inline: -0.55rem; padding-inline: 0.55rem; column-gap: 0.6rem; }
+  .chat[data-view="prism"] .chat-step-open { padding-inline: 0.45rem; }
+}
+
+/* —— Reduced motion: every effect holds still. —— */
+@media (prefers-reduced-motion: reduce) {
+  .chat[data-view="prism"] *,
+  .chat[data-view="prism"] *::before,
+  .chat[data-view="prism"] *::after { animation: none !important; transition: none !important; }
+  .chat[data-view="prism"] .chat-step.is-console-think.is-live-think .chat-think-summary {
+    background: none;
+    -webkit-text-fill-color: currentColor;
+  }
+  body.is-streaming .chat[data-view="prism"] .chat-turn:last-child .chat-activity .chat-timeline::after { content: none; }
+}
