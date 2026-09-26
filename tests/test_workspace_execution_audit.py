@@ -38,11 +38,30 @@ class ExecutionAudit(unittest.IsolatedAsyncioTestCase):
             call.assert_not_awaited()
 
     async def test_connector_clipped_read_is_not_paged_as_complete(self):
+        # A frame that stays clipped even at one line is refused, never shown as complete.
         for result in ({"ok": True, "out": "abc", "truncated": True},
                        {"ok": True, "out": "abc\n[fuse-agent: output truncated]\n"}):
             with patch.object(ws, "_is_agent", return_value=True), patch.object(ws, "_agent_call", AsyncMock(return_value=result)):
-                with self.assertRaisesRegex(ws.WorkspaceError, "truncated"):
+                with self.assertRaisesRegex(ws.WorkspaceError, "64KB read frame"):
                     await ws._read(1, 2, "host", {"path": "a"}, "/repo")
+
+    async def test_connector_oversized_page_shrinks_instead_of_failing(self):
+        calls = []
+
+        async def call(_uid, _hid, op, args, seconds=30):
+            calls.append((op, dict(args)))
+            if op == "read" and args["limit"] > 500:
+                return {"ok": False, "exit": 1, "out": "", "error": "read failed",
+                        "err": "read output exceeds 65536 bytes; use a smaller limit or grep"}
+            if op == "read" and args["limit"] == 1:
+                return {"ok": True, "out": "next\n"}
+            return {"ok": True, "out": "".join(f"line{i}\n" for i in range(args["limit"]))}
+
+        with patch.object(ws, "_is_agent", return_value=True), patch.object(ws, "_agent_call", call):
+            text, _ = await ws._read(1, 2, "host", {"path": "a"}, "/repo")
+        self.assertEqual([c[1]["limit"] for c in calls if c[0] == "read"], [2000, 1000, 500, 1])
+        self.assertIn("500: line499", text)
+        self.assertIn("Use offset=501 to continue", text)
 
     async def test_windows_native_glob_matches_are_not_filtered_again(self):
         result = {"ok": True, "out": "C:\\repo\\src\\a.py:1:hit\n"}
@@ -200,7 +219,7 @@ class JobAudit(unittest.IsolatedAsyncioTestCase):
     async def test_poll_timeout_does_not_cancel_job_and_user_isolation(self):
         gate = asyncio.Event()
         async def runner(sink):
-            sink("€" * 9000)
+            sink("€" * 30000)
             await gate.wait()
             sink("THE END")
             return SimpleNamespace(exit_status=7, output="")
@@ -211,8 +230,10 @@ class JobAudit(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(rec["task"].done())
         gate.set()
         await rec["task"]
-        self.assertEqual(rec["out_bytes"], 27007)
+        self.assertEqual(rec["out_bytes"], 90007)
         text, trace = await jobs.join(rec["id"], 1, 0)
-        self.assertIn("showing retained tail", text)
+        # Head and tail both survive, with the gap stated.
+        self.assertIn("characters of output omitted", text)
+        self.assertIn("€" * jobs.OUT_HEAD_CHARS, text)
         self.assertTrue(text.endswith("THE END"))
         self.assertEqual(trace["exit_code"], 7)

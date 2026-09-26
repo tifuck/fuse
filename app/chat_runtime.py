@@ -80,6 +80,10 @@ STATIONARITY_NUDGE = 8
 STATIONARITY_HALT = 12
 TOOL_RESULT_CHARS = 24_000
 SKILL_RESULT_CHARS = 24_000
+# read_file pages are bounded by workspace._READ_MAX_BYTES (50KB) and end with
+# the "Use offset=N to continue" footer; the safety clip must sit above that
+# budget or the footer is cut off mid-line.
+READ_RESULT_CHARS = 56_000
 # Subagent reports must reach the parent whole (chats.CONTENT_MAX plus the
 # task-envelope wrapper). Auto-compaction, not a byte cap, handles overflow.
 SUBAGENT_RESULT_CHARS = 120_000
@@ -101,6 +105,11 @@ _DURATION_SUFFIX_TOOLS = frozenset(
         "search_models",
     }
 )
+# Same-step ordering domains (see _run_tools.worker).
+_HOST_MUTATING_TOOLS = frozenset(
+    {"write_file", "search_replace", "run_terminal_command", "monitor", "kill_command"}
+)
+_HOST_READ_TOOLS = frozenset({"read_file", "list_dir", "grep", "glob"})
 _ARG_LIMIT_FILE = 400_000
 _ARG_LIMIT_ARTIFACT = 400_000
 _ARG_OVERFLOW = "[Fuse: tool arguments exceeded the 400000-character limit; call not executed]"
@@ -1268,6 +1277,8 @@ def _redact_tool_args(name: str, arguments: str) -> str:
 def _tool_result_clip(name: str, text: str) -> str:
     if name in _SUBAGENT_RESULT_TOOLS:
         limit = SUBAGENT_RESULT_CHARS
+    elif name == "read_file":
+        limit = READ_RESULT_CHARS
     else:
         limit = SKILL_RESULT_CHARS if name == "load_skill" else TOOL_RESULT_CHARS
     text = text or ""
@@ -2024,17 +2035,17 @@ async def _run_tools(
                     continue
             await persist_now()
             runnable = [j for j in jobs if j.orig_index < call_cap]
-            # Everything except read_url runs concurrently: the old phase
-            # chain (spawn → join → shell → search) made a 75s foreground
-            # spawn or a long join freeze every file/shell/search call in the
-            # same step. Fetches still run after searches so a page read in
-            # the same step sees this step's result URLs in allowed_urls, and
-            # stay bounded by the semaphore. read_url itself accepts any
-            # public HTTPS URL. Result ordering in the transcript comes from
-            # jobs[] order, not completion order.
-            non_fetch = [j for j in runnable if j.name != "read_url"]
-            fetches = [j for j in runnable if j.name == "read_url"]
-            non_fetch.sort(key=lambda j: 0 if j.name == "spawn_subagent" else 1)
+            # Independent calls run concurrently: the old phase chain (spawn →
+            # join → shell → search) made a 75s foreground spawn or a long
+            # join freeze every file/shell/search call in the same step.
+            # Host effects keep call order, though: a write, edit, shell
+            # command, or kill waits for every earlier host call, and a file
+            # read waits for earlier host mutations, so "edit A; edit A; run
+            # tests" in one step behaves as written. Artifact writes keep
+            # their own order. Fetches run after this step's searches so a
+            # page read sees their result URLs in allowed_urls, bounded by
+            # the semaphore. Transcript order comes from jobs[], not
+            # completion order.
             sem = asyncio.Semaphore(FETCH_CONCURRENCY)
 
             async def run_one(j):
@@ -2044,16 +2055,34 @@ async def _run_tools(
                 else:
                     await run_job(j, _job_phase(j.name))
 
-            if non_fetch:
-                async with asyncio.TaskGroup() as tg:
-                    for j in non_fetch:
-                        tg.create_task(run_one(j))
-            if cancel.is_set():
-                return
-            if fetches:
-                async with asyncio.TaskGroup() as tg:
-                    for j in fetches:
-                        tg.create_task(run_one(j))
+            async def run_after(deps, j):
+                if deps:
+                    await asyncio.gather(*deps, return_exceptions=True)
+                await run_one(j)
+
+            search_tasks: list[asyncio.Task] = []
+            host_seen: list[tuple[asyncio.Task, bool]] = []
+            artifact_seen: list[asyncio.Task] = []
+            ordered = [j for j in runnable if j.name != "read_url"] + [j for j in runnable if j.name == "read_url"]
+            async with asyncio.TaskGroup() as tg:
+                for j in ordered:
+                    if j.name == "read_url":
+                        deps = list(search_tasks)
+                    elif j.name in _HOST_MUTATING_TOOLS:
+                        deps = [t for t, _ in host_seen]
+                    elif j.name in _HOST_READ_TOOLS:
+                        deps = [t for t, mutating in host_seen if mutating]
+                    elif j.name in ARTIFACT_TOOL_IDS:
+                        deps = list(artifact_seen)
+                    else:
+                        deps = []
+                    task = tg.create_task(run_after(deps, j))
+                    if j.name == "web_search":
+                        search_tasks.append(task)
+                    elif j.name in _HOST_MUTATING_TOOLS or j.name in _HOST_READ_TOOLS:
+                        host_seen.append((task, j.name in _HOST_MUTATING_TOOLS))
+                    elif j.name in ARTIFACT_TOOL_IDS:
+                        artifact_seen.append(task)
         except asyncio.CancelledError:
             raise
         finally:

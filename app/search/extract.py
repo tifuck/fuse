@@ -12,11 +12,12 @@ from urllib.parse import urljoin, urlparse, urlunparse
 logger = logging.getLogger(__name__)
 
 FETCH_MAX_BYTES = 512_000
-FETCH_CHARS = 8_000
+# One page of extracted text per read_url call; pass offset to continue.
+FETCH_CHARS = 16_000
 FIND_MAX_CHARS = 80
 FIND_WINDOW = 400
 FIND_MAX_MATCHES = 8
-JSON_CHARS = 8_000
+JSON_CHARS = 16_000
 CODE_BLOCK_CHARS = 1_200
 TABLE_MAX_ROWS = 20
 MAX_LINKS = 40
@@ -101,6 +102,12 @@ class PageExtract:
     chars_in: int
     chars_out: int
     links: list[dict[str, str]] = field(default_factory=list)
+    # Paging over the full extracted text (plain page mode only; find/query
+    # passages are not paged). total_chars is the extracted length.
+    offset: int = 0
+    total_chars: int = 0
+    next_offset: int | None = None
+    paged: bool = False
 
 
 @dataclass(frozen=True)
@@ -592,6 +599,12 @@ def _spa_text(meta: dict[str, str]) -> str:
     return "\n".join(parts)
 
 
+def _window(full: str, offset: int, size: int) -> tuple[str, bool]:
+    """One page of text starting at offset; truncated means more follows."""
+    start = min(max(0, offset), len(full))
+    return full[start:start + size], len(full) > start + size
+
+
 def extract_page(
     raw: str,
     *,
@@ -599,8 +612,10 @@ def extract_page(
     url: str = "",
     find: str | None = None,
     query: str | None = None,
+    offset: int = 0,
 ) -> PageExtract:
     started = time.monotonic()
+    offset = max(0, int(offset or 0))
     raw = raw or ""
     ctype = (content_type or "").lower()
     used_find = bool(find and len(re.sub(r"\s+", " ", find).strip()) >= 2)
@@ -619,9 +634,7 @@ def extract_page(
         except (json.JSONDecodeError, TypeError, ValueError):
             kind = "text"
             full = re.sub(r"\s+", " ", raw).strip()
-        if len(full) > JSON_CHARS:
-            truncated = True
-        text = full[:JSON_CHARS]
+        text, truncated = _window(full, offset, JSON_CHARS)
     elif "html" in ctype or raw.lstrip()[:15].lower().startswith("<!doctype html") or raw.lstrip()[:6].lower().startswith("<html"):
         meta = _collect_metadata(raw)
         title = meta.get("og_title") or meta.get("title") or ""
@@ -670,15 +683,11 @@ def extract_page(
             if title and title.lower() not in picked[:400].lower():
                 picked = f"# {title}\n\n{picked}"
             full = picked
-            if len(full) > FETCH_CHARS:
-                truncated = True
-            text = full[:FETCH_CHARS]
+            text, truncated = _window(full, offset, FETCH_CHARS)
     else:
         kind = "text"
         full = re.sub(r"\s+", " ", raw).strip()
-        if len(full) > FETCH_CHARS:
-            truncated = True
-        text = full[:FETCH_CHARS]
+        text, truncated = _window(full, offset, FETCH_CHARS)
 
     if used_find:
         source = full or text
@@ -687,8 +696,13 @@ def extract_page(
         source = full or text
         text = select_passages(source, query=query)
 
-    if not text.strip() and kind != "spa":
+    paged = not used_find and not query and kind in ("html", "text", "json")
+    start = min(offset, len(full)) if paged else 0
+    if paged and full and offset >= len(full):
+        text = ""
+    elif not text.strip() and kind != "spa":
         kind = "empty"
+    window_end = start + len(text)
 
     out = PageExtract(
         title=title,
@@ -699,6 +713,10 @@ def extract_page(
         chars_in=len(raw),
         chars_out=len(text),
         links=links,
+        offset=start,
+        total_chars=len(full),
+        next_offset=window_end if paged and window_end < len(full) else None,
+        paged=paged,
     )
     host = ""
     try:

@@ -504,15 +504,37 @@ class AgentPathTest(unittest.TestCase):
             text, rec = self._run(workspace._list(1, 2, "box", {"path": "/tmp"}, "/tmp"))
         cmd = fake.calls[0][1]["cmd"]
         self.assertIn("ls -1ApU", cmd)
-        self.assertIn("head -n 400", cmd)
+        self.assertIn(f"head -n {workspace._LIST_SCAN_MAX + 1}", cmd)
         self.assertIn("src/", text)
         self.assertIn("main.py", text)
         self.assertNotIn("..\n", text.replace("From host box:\n", "", 1))
         self.assertNotIn("(no entries)", text)
         self.assertNotIn("showing 400", text)
 
-    def test_list_notes_when_capped(self):
+    def test_list_exactly_400_is_complete(self):
         listing = "\n".join(f"f{i}" for i in range(400)) + "\n"
+        fake = FakeAgent([("exec", {"ok": True, "exit": 0, "out": listing, "err": "", "error": ""})])
+        with patch.object(workspace, "_is_agent", return_value=True), patch.object(
+            workspace, "_agent_call", fake
+        ):
+            text, rec = self._run(workspace._list(1, 2, "box", {"path": "/tmp"}, "/tmp"))
+        self.assertNotIn("showing", text)
+
+    def test_list_sorts_before_truncating(self):
+        # readdir order: the alphabetical first entries arrive last.
+        names = [f"z{i:04d}" for i in range(500)] + ["a-first", "b-second"]
+        listing = "\n".join(names) + "\n"
+        fake = FakeAgent([("exec", {"ok": True, "exit": 0, "out": listing, "err": "", "error": ""})])
+        with patch.object(workspace, "_is_agent", return_value=True), patch.object(
+            workspace, "_agent_call", fake
+        ):
+            text, rec = self._run(workspace._list(1, 2, "box", {"path": "/tmp"}, "/tmp"))
+        body = text.split("\n")
+        self.assertEqual(body[1:3], ["a-first", "b-second"])
+        self.assertIn("showing 400 of 502 entries", text)
+
+    def test_list_notes_when_capped(self):
+        listing = "\n".join(f"f{i}" for i in range(401)) + "\n"
         fake = FakeAgent([("exec", {"ok": True, "exit": 0, "out": listing, "err": "", "error": ""})])
         with patch.object(workspace, "_is_agent", return_value=True), patch.object(
             workspace, "_agent_call", fake
@@ -529,7 +551,7 @@ class AgentPathTest(unittest.TestCase):
             text, rec = self._run(
                 workspace._grep(1, 2, "box", {"pattern": "x", "path": "."}, "/tmp")
             )
-        self.assertIn("showing 50 matches", text)
+        self.assertIn("showing the first 50 matches", text)
 
     def test_list_falls_back_to_list_op(self):
         fake = FakeAgent(

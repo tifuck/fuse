@@ -10,6 +10,9 @@ RESULT_CHARS = 24_000
 SNIPPET_CHARS = 280
 MAX_HITS_PER_QUERY = 8
 MAX_URLS_PER_BULK = 24
+# Model-visible read_url result: one extract page plus header, footer and
+# links; stays under the runtime's per-result clip.
+PAGE_BUDGET = 19_000
 
 
 def pack_search(results: list[QueryResult]) -> str:
@@ -97,18 +100,26 @@ def pack_page(url: str, extract: PageExtract) -> str:
         lines.append(f"title: {extract.title}")
     lines.append(f"truncated: {trunc}")
     prefix = "\n".join(lines) + "\n"
-    room = max(0, 8_000 - len(prefix))
+    room = max(0, PAGE_BUDGET - len(prefix) - 300)
     text = extract.text
+    if extract.paged and extract.total_chars and not text and extract.offset >= extract.total_chars:
+        text = f"(offset {extract.offset} is past the end; the extracted text has {extract.total_chars} characters)"
     if len(text) > room:
         marker = "\n[extract truncated]"
         text = text[: max(0, room - len(marker))].rstrip() + marker
     lines.append(text)
+    if extract.paged and extract.next_offset is not None:
+        lines.append(
+            f"(Showing characters {extract.offset}-{extract.next_offset} of {extract.total_chars}. "
+            f"Call read_url again with offset={extract.next_offset} to continue, or pass query/find "
+            "to jump to the relevant section.)"
+        )
     used = len("\n".join(lines))
-    if extract.links:
+    if extract.links and extract.offset == 0:
         link_lines = ["", "Links available for follow-up reading:"]
         for item in extract.links[:12]:
             line = f"- {item.get('text') or '(link)'}  {item.get('url') or ''}"
-            if used + sum(len(part) + 1 for part in link_lines) + len(line) + 1 > 8_000:
+            if used + sum(len(part) + 1 for part in link_lines) + len(line) + 1 > PAGE_BUDGET:
                 break
             link_lines.append(line)
         if len(link_lines) > 2:

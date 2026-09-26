@@ -86,7 +86,7 @@ class LifecycleContract(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(wait, original)
 
     async def test_terminal_identity_output_tail_survives_database_reload(self):
-        source = " \n" + "€" * 10000 + "  END\n "
+        source = " \n" + "€" * (jobs.OUT_TAIL_CHARS + 2000) + "  END\n "
         async def runner(sink):
             sink(source)
             return SimpleNamespace(exit_status=7)
@@ -114,7 +114,7 @@ class LifecycleContract(unittest.IsolatedAsyncioTestCase):
     async def test_partial_connector_output_is_never_called_a_stream_tail(self):
         runner = ws._make_agent_runner(1, 2, "mock", "/repo", 1000)
         with patch.object(ws, "_rate_ok"), patch.object(ws, "_agent_call", AsyncMock(return_value={
-                "ok": True, "exit": 0, "out": "prefix" * 2000, "truncated": True})):
+                "ok": True, "exit": 0, "out": "prefix" * 3000, "truncated": True})):
             rec = self.launch(runner)
             await rec["task"]
         text, view = jobs.render(rec)

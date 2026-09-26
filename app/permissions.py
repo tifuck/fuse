@@ -855,7 +855,10 @@ async def review(*, tool: str, args: dict, user_id: int,
     else:
         in_roots, resolved = scope_allows(target, root, roots, windows)
         display = resolved or target
-        if tool == "read_file":
+        # grep prints file contents too: naming a secret file directly needs
+        # the same approval as reading it (directory searches withhold
+        # secret-file matches in workspace._grep).
+        if tool in ("read_file", "grep"):
             base_name = (ntpath.basename(resolved.replace("/", "\\")) if windows else posixpath.basename(resolved))
             if is_secret_name(base_name):
                 secret = True
@@ -916,7 +919,7 @@ async def review(*, tool: str, args: dict, user_id: int,
             # Read-only directory probes are why Auto exists: listing /home or
             # a sibling folder should not stop the agent for a card. Writes
             # and shell still go through Jev.
-            if tool in _DIR_TOOLS or (tool == "read_file" and not secret):
+            if (tool in _DIR_TOOLS or tool == "read_file") and not secret:
                 logger.warning("auto-allow read tool=%s path=%s thread=%s", tool, payload.get("path"), gate.thread_id)
                 return ReviewResult(allowed=True, root_override="" if out_of_root else None)
             try:

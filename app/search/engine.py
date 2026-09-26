@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 MAX_QUERY = 400
 SEARCH_PER_MIN = 30
 SEARCH_PER_HOUR = 200
-FETCH_PER_MIN = 12
+FETCH_PER_MIN = 30  # per user, shared by a run and all of its subagents
 SEARCH_CONCURRENCY = 8
 MAX_QUERIES_PER_BULK = 8
 QUERY_DEADLINE = 6.0
@@ -132,10 +132,13 @@ def _with_find(
     content_type: str = "",
     url: str = "",
     query: str | None = None,
+    offset: int = 0,
 ) -> PageExtract:
     if not find or len(re.sub(r"\s+", " ", find).strip()) < 2:
         if query and raw:
             return extract_page(raw, content_type=content_type, url=url, query=query)
+        if offset and raw:
+            return extract_page(raw, content_type=content_type, url=url, offset=offset)
         return replace(extract, used_find=False)
     if raw:
         return extract_page(raw, content_type=content_type, url=url, find=find, query=query)
@@ -616,6 +619,7 @@ async def fetch_url(
     find: str | None = None,
     query: str | None = None,
     cancel: asyncio.Event | None = None,
+    offset: int = 0,
 ) -> tuple[PageExtract | None, str, str]:
     """Return (extract, wrapped_text, error). extract is None on hard failure."""
     clean = allowed_fetch_url(url)
@@ -637,6 +641,7 @@ async def fetch_url(
             content_type=content_type,
             url=final_url,
             query=query,
+            offset=offset,
         )
         return extract, pack_page(final_url, extract), ""
     if not _allow(user_id, "fetch"):
@@ -747,6 +752,7 @@ async def fetch_url(
                         content_type=ctype,
                         url=current,
                         query=query,
+                        offset=offset,
                     )
                     wrapped = pack_page(current, extract)
                     return extract, wrapped, ""

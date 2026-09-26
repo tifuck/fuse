@@ -29,7 +29,13 @@ PER_HOST_CAP = 8
 WS_MONITOR_CAP = 8
 WAKE_COMMAND_LIMIT = 4
 WAKE_MONITOR_LIMIT = 4
-OUT_TAIL_CHARS = 8_000
+OUT_TAIL_CHARS = 16_000
+# The first error of a build or test run is usually near the top; keep the
+# start of the output as well as the rolling tail (in memory only).
+OUT_HEAD_CHARS = 4_000
+# Model-visible body of a finished command: head + tail, under the runtime's
+# per-result clip (chat_runtime.TOOL_RESULT_CHARS).
+MODEL_TAIL_CHARS = 12_000
 RESULT_CHARS = 6_000
 RUNNING_TAIL_CHARS = 1_200
 DEFAULT_TIMEOUT_MS = 1_800_000
@@ -119,7 +125,10 @@ def _append_out(rec: dict, text: str) -> None:
     if not text:
         return
     rec["out_bytes"] = int(rec.get("out_bytes") or 0) + len(text.encode("utf-8"))
-    rec["out_chars"] = int(rec.get("out_chars") or 0) + len(text)
+    seen = int(rec.get("out_chars") or 0)
+    if seen < OUT_HEAD_CHARS:
+        rec["out_head"] = (rec.get("out_head") or "") + text[: OUT_HEAD_CHARS - seen]
+    rec["out_chars"] = seen + len(text)
     # Retain a true rolling tail: the newest text always lands in the buffer,
     # trimmed from the front once it passes the cap.
     buf = (rec.get("out") or "") + text
@@ -960,6 +969,34 @@ def _monitor_trace_fields(rec: dict) -> dict:
     return extra
 
 
+def _model_body(rec: dict, out: str) -> str:
+    """Head + tail of a finished command's output, with an explicit gap marker.
+
+    Only the tail is persisted; a job reloaded from the database (no head in
+    memory) shows its retained tail as before.
+    """
+    if not out:
+        return "(no output)"
+    fields = output_fields(rec)
+    total = int(fields["output_chars"])
+    head = str(rec.get("out_head") or "")
+    tail = out[-MODEL_TAIL_CHARS:]
+    tail_start = total - len(tail)
+    if fields["output_chars_exact"] and head and tail_start > len(head):
+        omitted = tail_start - len(head)
+        return f"{head}\n[... {omitted} characters of output omitted ...]\n{tail}"
+    if fields["output_chars_exact"] and head and tail_start >= 0:
+        # Head and tail overlap or touch: the whole output is known.
+        return head + tail[len(head) - tail_start:] if len(head) > tail_start else head + tail
+    # Label only when text is actually missing from what is shown: the
+    # retained buffer is a trimmed tail, or the display cut it further. A
+    # short connector result flagged incomplete is shown as-is.
+    if fields["output_mode"] == "tail" or len(out) > len(tail):
+        label = "showing the last part" if fields["output_chars_exact"] else "total unknown"
+        return f"[Output truncated; {label}]\n" + tail
+    return tail
+
+
 def render(rec: dict, *, tool: str = "run_terminal_command", host_label: bool = True) -> tuple[str, dict]:
     """Model-visible envelope + UI trace for a job in its current state."""
     status = str(rec.get("status") or "running")
@@ -985,12 +1022,7 @@ def render(rec: dict, *, tool: str = "run_terminal_command", host_label: bool = 
             meta.append(f"source: {source}")
             if rec.get("url"):
                 meta.append(f"url: {str(rec.get('url') or '')[:200]}")
-        body = out[-5000:] or "(no output)"
-        fields = output_fields(rec)
-        clipped = fields["output_mode"] == "tail" or len(out) > 5000
-        if clipped:
-            label = "showing retained tail" if fields["output_chars_exact"] else "total unknown"
-            body = f"[Output truncated; {label}]\n" + body
+        body = _model_body(rec, out)
         err = str(rec.get("err") or "").strip()
         if _is_monitor(rec) and err:
             body = body + "\n\n[stderr]\n" + err[-800:]
