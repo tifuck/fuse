@@ -3866,3 +3866,51 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-con
    bullet column. */
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-tool-md.chat-md { display: block; }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-tool-md.chat-md::before { content: none; }
+
+/* —— Console thinking: one quiet row. While reasoning streams, a shimmering
+   "Thinking…" sits over a three-line tail that follows the stream (top edge
+   fades once it overflows). When reasoning settles, the label becomes
+   "Pondered for 6s" and the tail folds away (chat.js animates the bundle).
+   Click the row or tail for the full stream. —— */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-think {
+  --think-line: calc(0.78rem * var(--chat-text-scale, 1) * 1.45);
+  --think-dim: color-mix(in srgb, var(--mist) 58%, var(--ink));
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-think .chat-think-summary {
+  display: block;
+  cursor: pointer;
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-think.is-live-think .chat-think-summary {
+  background: linear-gradient(90deg, var(--think-dim) 0 38%, var(--mist) 50%, var(--think-dim) 62% 100%) 0 0 / 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: chat-shimmer 2.4s linear infinite;
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-think[data-think-mode="tail"] > .chat-step-main > .chat-step-head { display: flex; }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-think[data-think-mode="tail"] .chat-console-bundle { display: block; }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-think:is([data-think-mode="tail"], [data-think-mode="expanded"]) .chat-think-window {
+  margin: 0.08rem 0 0.2rem 0.2rem;
+  padding-left: 0.65rem;
+  border-left: 1px solid color-mix(in srgb, var(--mist) 14%, var(--ink));
+  cursor: pointer;
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-think[data-think-mode="tail"] .chat-think-preview {
+  max-height: calc(3 * var(--think-line));
+  padding: 0;
+  overflow: hidden;
+  scrollbar-width: none;
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-think[data-think-mode="tail"] .chat-think-preview.is-clipped {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 var(--think-line));
+  mask-image: linear-gradient(to bottom, transparent 0, #000 var(--think-line));
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-think[data-think-mode="tail"] .chat-think-markdown :is(p, ul, ol, pre) { margin: 0; }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-think .chat-think-window:hover .chat-think-preview { color: color-mix(in srgb, var(--mist) 72%, var(--ink)); }
+@media (prefers-reduced-motion: reduce) {
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-think.is-live-think .chat-think-summary {
+    animation: none;
+    background: none;
+    -webkit-text-fill-color: currentColor;
+  }
+}

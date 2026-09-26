@@ -7116,13 +7116,16 @@
 
   function syncThinkingMode(li, msg, animate = false) {
     const windowEl = li.querySelector(".chat-think-window");
-    const height = animate ? windowEl.getBoundingClientRect().height : 0;
+    // Console hides the whole bundle when collapsed, so that is what moves.
+    const revealEl = isConsoleView() ? li.querySelector(".chat-console-bundle") || windowEl : windowEl;
+    const height = animate ? revealEl.getBoundingClientRect().height : 0;
     const previousMode = li.dataset.thinkMode;
     const key = li.dataset.step;
     const choice = msg.stepOpen?.[key];
     const live = li.classList.contains("is-live-think");
-    const mode = choice === true ? "expanded" : choice === false ? "collapsed" : live ? (isConsoleView() ? "expanded" : "tail") : "collapsed";
+    const mode = choice === true ? "expanded" : choice === false ? "collapsed" : live ? "tail" : "collapsed";
     li.dataset.thinkMode = mode;
+    if (isConsoleView()) li.classList.toggle("is-console-expanded", mode === "expanded");
     li.querySelectorAll(":scope > .chat-step-main > .chat-step-head [data-step-toggle]").forEach(button => button.setAttribute("aria-expanded", String(mode !== "collapsed")));
     const size = li.querySelector("[data-think-size]");
     size.hidden = !live || mode === "collapsed";
@@ -7135,7 +7138,7 @@
     const peek = li.querySelector("[data-reason-preview]");
     peek.tabIndex = mode === "collapsed" ? -1 : 0;
     windowEl.inert = mode === "collapsed";
-    if (animate && previousMode !== mode) setToolReveal(windowEl, mode !== "collapsed", height);
+    if (animate && previousMode !== mode) setToolReveal(revealEl, mode !== "collapsed", height);
     return mode;
   }
 
@@ -8793,7 +8796,7 @@
       if (isThink && li.dataset.thinkMode !== "collapsed" && String(window.getSelection() || "").trim()) return;
       event.preventDefault();
       const open = isThink
-        ? li.dataset.thinkMode === "collapsed"
+        ? (isConsoleView() ? li.dataset.thinkMode !== "expanded" : li.dataset.thinkMode === "collapsed")
         : isConsoleCall
           ? !hang?.classList.contains("is-expanded")
           : isShellGroup
@@ -9656,13 +9659,59 @@
     return bits;
   }
 
-  const CONSOLE_THOUGHT_VERBS = ["Thought", "Pondered", "Cogitated", "Ruminated", "Mused", "Considered"];
+  // [while streaming, once settled]. One pair is picked per thought, so
+  // "Pondering…" settles into "Pondered for 6s".
+  const CONSOLE_THOUGHT_VERBS = [
+    ["Thinking", "Thought"], ["Pondering", "Pondered"], ["Cogitating", "Cogitated"],
+    ["Ruminating", "Ruminated"], ["Musing", "Mused"], ["Considering", "Considered"],
+    ["Contemplating", "Contemplated"], ["Deliberating", "Deliberated"], ["Reflecting", "Reflected"],
+    ["Mulling", "Mulled"], ["Reasoning", "Reasoned"], ["Weighing", "Weighed"],
+    ["Puzzling", "Puzzled"], ["Brooding", "Brooded"], ["Meditating", "Meditated"],
+    ["Ideating", "Ideated"], ["Noodling", "Noodled"], ["Chewing", "Chewed on it"],
+    ["Percolating", "Percolated"], ["Marinating", "Marinated"], ["Simmering", "Simmered"],
+    ["Stewing", "Stewed"], ["Brewing", "Brewed"], ["Distilling", "Distilled"],
+    ["Deducing", "Deduced"], ["Inferring", "Inferred"], ["Theorizing", "Theorized"],
+    ["Hypothesizing", "Hypothesized"], ["Analyzing", "Analyzed"], ["Untangling", "Untangled"],
+    ["Unraveling", "Unraveled"], ["Decoding", "Decoded"], ["Deciphering", "Deciphered"],
+    ["Mapping", "Mapped"], ["Charting", "Charted"], ["Scheming", "Schemed"],
+    ["Plotting", "Plotted"], ["Strategizing", "Strategized"], ["Calculating", "Calculated"],
+    ["Computing", "Computed"], ["Crunching", "Crunched"], ["Synthesizing", "Synthesized"],
+    ["Connecting dots", "Connected dots"], ["Piecing together", "Pieced it together"],
+    ["Sifting", "Sifted"], ["Sorting", "Sorted"], ["Parsing", "Parsed"],
+    ["Examining", "Examined"], ["Scrutinizing", "Scrutinized"], ["Investigating", "Investigated"],
+    ["Probing", "Probed"], ["Exploring", "Explored"], ["Wondering", "Wondered"],
+    ["Daydreaming", "Daydreamed"], ["Imagining", "Imagined"], ["Envisioning", "Envisioned"],
+    ["Conjuring", "Conjured"], ["Divining", "Divined"], ["Intuiting", "Intuited"],
+    ["Grokking", "Grokked"], ["Discerning", "Discerned"], ["Evaluating", "Evaluated"],
+    ["Assessing", "Assessed"], ["Appraising", "Appraised"], ["Surveying", "Surveyed"],
+    ["Tinkering", "Tinkered"], ["Whittling", "Whittled"], ["Forging", "Forged"],
+    ["Crafting", "Crafted"], ["Architecting", "Architected"], ["Incubating", "Incubated"],
+    ["Fermenting", "Fermented"], ["Churning", "Churned"], ["Wrangling", "Wrangled"], ["Finagling", "Finagled"],
+    ["Cerebrating", "Cerebrated"], ["Ratiocinating", "Ratiocinated"], ["Excogitating", "Excogitated"],
+    ["Lucubrating", "Lucubrated"], ["Philosophizing", "Philosophized"], ["Speculating", "Speculated"],
+    ["Conceptualizing", "Conceptualized"], ["Formulating", "Formulated"], ["Composing", "Composed"],
+    ["Orchestrating", "Orchestrated"], ["Harmonizing", "Harmonized"], ["Calibrating", "Calibrated"],
+    ["Tuning", "Tuned"], ["Honing", "Honed"], ["Refining", "Refined"],
+    ["Polishing", "Polished"], ["Sharpening", "Sharpened"], ["Focusing", "Focused"],
+    ["Gathering thoughts", "Gathered thoughts"], ["Reckoning", "Reckoned"], ["Figuring", "Figured"],
+    ["Sussing", "Sussed it out"],
+  ];
 
-  function consoleThoughtVerb(key) {
-    const s = String(key || "thought");
+  function consoleThoughtPair(seed) {
+    const s = String(seed || "thought");
     let h = 2166136261;
     for (let i = 0; i < s.length; i += 1) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
     return CONSOLE_THOUGHT_VERBS[(h >>> 0) % CONSOLE_THOUGHT_VERBS.length];
+  }
+
+  // Seeded by message + step so each thought gets its own word, and the
+  // same word survives reloads.
+  function consoleThoughtSeed(msg, key) {
+    return `${(msg && msg.id) || ""}:${key}`;
+  }
+
+  function consoleThoughtLive(seed) {
+    return `${consoleThoughtPair(seed)[0]}…`;
   }
 
   function consoleThoughtClock(seconds) {
@@ -9673,8 +9722,25 @@
     return s ? `${m}m ${s}s` : `${m}m`;
   }
 
-  function consoleThoughtSummary(key, seconds) {
-    return `${consoleThoughtVerb(key)} for ${consoleThoughtClock(seconds)}`;
+  function consoleThoughtSummary(seed, seconds) {
+    return `${consoleThoughtPair(seed)[1]} for ${consoleThoughtClock(seconds)}`;
+  }
+
+  // The console think row is a DOM island (reconcile never patches it), so its
+  // label is owned here: "Pondering…" while it streams, then "Pondered for 6s".
+  function syncConsoleThinkSummary(li, msg, live, liveThink) {
+    const summary = li.querySelector(".chat-think-summary");
+    if (!summary) return;
+    const key = li.dataset.step;
+    const seed = consoleThoughtSeed(msg, key);
+    const text = liveThink ? consoleThoughtLive(seed) : consoleThoughtSummary(seed, (consoleFreezeThoughtTimes(msg, live)[key] || 1000) / 1000);
+    if (summary.textContent === text) return;
+    const settled = summary.textContent === consoleThoughtLive(seed);
+    summary.textContent = text;
+    if (settled && summary.isConnected && !reduceMotion.matches) {
+      summary.animate([{ opacity: 0, transform: "translateY(0.2em)" }, { opacity: 1, transform: "none" }],
+        { duration: MOTION.base, easing: MOTION.snap });
+    }
   }
 
   function consoleFreezeThoughtTimes(msg, live) {
@@ -9821,7 +9887,7 @@
           const key = `think-${last.segmentIndex}`;
           const open = Object.prototype.hasOwnProperty.call(stepOpen, key) ? thinkOpenAt(stepOpen, key) : isLiveThis;
           parts.push(consoleThinkStepHtml(joined, key, open, {
-            summary: isLiveThis ? "Thinking…" : consoleThoughtSummary(key, (times[key] || 1000) / 1000),
+            summary: isLiveThis ? consoleThoughtLive(consoleThoughtSeed(msg, key)) : consoleThoughtSummary(consoleThoughtSeed(msg, key), (times[key] || 1000) / 1000),
             reasonIds: reasons.map((item) => item.segmentIndex).join(","),
           }));
         }
@@ -10120,8 +10186,11 @@
       initThinking(peek);
       const later = normalized.some((entry) => entry.segmentIndex > part.segmentIndex);
       const liveThink = Boolean(live && !later);
+      const wasMode = li.dataset.thinkMode;
+      const settling = li.classList.contains("is-live-think") && !liveThink;
       li.classList.toggle("is-live-think", liveThink);
-      syncThinkingMode(li, msg);
+      syncThinkingMode(li, msg, settling && Boolean(wasMode) && !reduceMotion.matches);
+      if (isConsoleView()) syncConsoleThinkSummary(li, msg, live, liveThink);
       let source = String(part.text || "").trim();
       if (isConsoleView() && li.dataset.reasonIds) {
         const ids = new Set(li.dataset.reasonIds.split(","));
@@ -10134,6 +10203,7 @@
       if (peek._source !== source || peek._live !== liveThink) {
         peek._source = source; peek._live = liveThink;
         streamMarkdown(peek.firstElementChild, source, liveThink, catalog);
+        if (isConsoleView()) peek.classList.toggle("is-clipped", liveThink && peek.scrollHeight > peek.clientHeight + 1);
         if (!isConsoleView()) {
           const summary = li.querySelector(".chat-think-summary");
           if (summary) summary.innerHTML = thinkingSummaryHtml(source);
