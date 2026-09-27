@@ -302,7 +302,16 @@
     html.dataset.chatView = currentView;
     ensureFont(fontFor(currentView));
     html.style.setProperty("--chat-text-scale", String(textScale / 100));
-    html.style.setProperty("--chat-view-font", FONTS[fontFor(currentView)].stack);
+    // The reading font is the site font: it drives the --sans and --mono
+    // tokens every rule reads, not just the transcript. Code keeps a fixed
+    // pitch (--code): the chosen face when it is a mono, Red Hat Mono otherwise.
+    const fontId = fontFor(currentView);
+    const font = FONTS[fontId];
+    html.dataset.chatFont = fontId;
+    html.style.setProperty("--chat-view-font", font.stack);
+    html.style.setProperty("--sans", font.stack);
+    html.style.setProperty("--mono", font.stack);
+    html.style.setProperty("--code", font.kind === "mono" ? font.stack : FONTS.redhat.stack);
     html.style.setProperty("--chat-backdrop-strength", String(strength / 100));
     if (theme === "custom") {
       for (const [key, prop] of Object.entries(THEME_VARS)) html.style.setProperty(prop, spec[key]);

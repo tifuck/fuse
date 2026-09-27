@@ -108,6 +108,23 @@ html[data-chat-theme="ivory"] {
 html[data-chat-scheme="light"] { --diff-add: #2c8a4b; --diff-del: #c8453b; --call-done: #2c8a4b; --call-fail: #c8453b; }
 html[data-chat-theme="custom"] { --sans: "Bricolage Grotesque", sans-serif; --mono: "Red Hat Mono", ui-monospace, monospace; }
 
+/* The reading font (chat-appearance.js) replaces --sans and --mono site-wide.
+   Code is the one exception: blocks, inline code, tool output, diffs, line
+   gutters and terminal output keep a fixed pitch so columns stay aligned.
+   Web results and structured detail panes are prose, so they follow the font.
+   !important because dozens of view rules set their own font shorthand. */
+html[data-chat-font] :is(pre, code, kbd, samp, .hljs, .chat-code,
+  .chat-tool-out, .chat-tool-cmd, .chat-tool-command, .chat-terminal-output,
+  .chat-console-out:not(.is-web, .is-structured), .chat-console-preview, .chat-console-lines, .chat-console-stdout),
+html[data-chat-font] :is(pre, code, kbd, samp, .hljs, .chat-code,
+  .chat-tool-out, .chat-tool-cmd, .chat-tool-command, .chat-terminal-output,
+  .chat-console-out:not(.is-web, .is-structured), .chat-console-preview, .chat-console-lines, .chat-console-stdout) * {
+  font-family: var(--code, "Red Hat Mono", ui-monospace, monospace) !important;
+}
+/* A code block's language label and copy button are chrome, not code. */
+html[data-chat-font] .chat-code .chat-code-head,
+html[data-chat-font] .chat-code .chat-code-head * { font-family: var(--mono) !important; }
+
 /* Terminal keeps the selected palette. Monospace chrome is layout-only. */
 html[data-chat-terminal="true"] body.is-chat {
   --sans: var(--mono);
@@ -2414,7 +2431,7 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-think .c
 .chat-pending-send small {
   display: block;
   color: var(--steel);
-  font-family: "Red Hat Mono", monospace;
+  font-family: var(--mono);
   font-size: 11px;
   margin-top: 6px;
 }
