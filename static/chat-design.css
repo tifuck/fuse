@@ -9,6 +9,12 @@ html[data-chat-theme] {
      follow each palette (--ok is lime or amber in several), so diffs do not. */
   --diff-add: #6fcf87;
   --diff-del: #ef7f76;
+  /* Tool-call state marks share the diff pair: green done, red failed,
+     plain text color while running. Never the accent. */
+  --call-done: var(--diff-add);
+  --call-fail: var(--diff-del);
+  --call-live: var(--mist);
+  --call-idle: var(--mute);
   caret-color: var(--brass);
   accent-color: var(--brass);
 }
@@ -99,7 +105,7 @@ html[data-chat-theme="ivory"] {
   --ink: #fffcf7; --panel: #f4efe6; --raise: #e8e0d4; --mist: #1c1a28; --mute: #5c5868; --line: #d8d0c4;
   --brass: #3d4a9a; --steel: #3d6a80; --reason: #4e5a66; --fault: #c24b40; --ok: #2f7a48; --on-brass: #ffffff; --chat-code-bg: #faf6f0;
 }
-html[data-chat-scheme="light"] { --diff-add: #2c8a4b; --diff-del: #c8453b; }
+html[data-chat-scheme="light"] { --diff-add: #2c8a4b; --diff-del: #c8453b; --call-done: #2c8a4b; --call-fail: #c8453b; }
 html[data-chat-theme="custom"] { --sans: "Bricolage Grotesque", sans-serif; --mono: "Red Hat Mono", ui-monospace, monospace; }
 
 /* Terminal keeps the selected palette. Monospace chrome is layout-only. */
@@ -1384,9 +1390,9 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-step-state { dis
 html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-step.is-error :is(.chat-step-node),
 html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-query.is-error > .chat-query-icon,
 html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-error :is(.chat-step-node),
-html[data-chat-console="true"] .chat[data-view="console"] .chat-query.is-error > .chat-query-icon { color: var(--fault); }
+html[data-chat-console="true"] .chat[data-view="console"] .chat-query.is-error > .chat-query-icon { color: var(--call-fail); }
 html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-step.is-running .chat-step-node,
-html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-running .chat-step-node { color: var(--brass); }
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-running .chat-step-node { color: var(--call-live); }
 html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-step-open,
 html[data-chat-console="true"] .chat[data-view="console"] .chat-step-open { grid-row: 1; border: 0; text-transform: none; font-size: 0.75rem; color: var(--cli-secondary); }
 html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-step-head:has(:focus-visible),
@@ -2143,13 +2149,13 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-think.is
 }
 /* Scope state colors to the row itself, never to descendants of a mixed group. */
 html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-step.is-done > .chat-step-node,
-html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-done > .chat-step-node { color: var(--mute); }
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-done > .chat-step-node { color: var(--call-done); }
 html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-step.is-error > .chat-step-node,
-html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-error > .chat-step-node { color: var(--fault); }
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-error > .chat-step-node { color: var(--call-fail); }
 html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-step.is-running > .chat-step-node,
-html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-running > .chat-step-node { color: var(--steel); }
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-running > .chat-step-node { color: var(--call-live); }
 html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-step:is(.is-interrupted, .is-warning) > .chat-step-node,
-html[data-chat-console="true"] .chat[data-view="console"] .chat-step:is(.is-interrupted, .is-warning) > .chat-step-node { color: var(--brass); }
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step:is(.is-interrupted, .is-warning) > .chat-step-node { color: var(--call-idle); }
 @media (max-width: 600px) {
   .chat .chat-step:not(.is-think) .chat-step-state { max-width: 6.5rem; }
   .chat .chat-tool-children { padding-left: 0; }
@@ -2559,12 +2565,12 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-ste
   background: var(--mute);
   box-shadow: none;
 }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-call.is-done > .chat-step-node::after { background: var(--ok); }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-call.is-error > .chat-step-node::after { background: var(--fault); }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-call.is-interrupted > .chat-step-node::after { background: var(--mute); }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-call.is-warning > .chat-step-node::after { background: var(--status-live, #d9a441); }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-call.is-done > .chat-step-node::after { background: var(--call-done); }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-call.is-error > .chat-step-node::after { background: var(--call-fail); }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-call.is-interrupted > .chat-step-node::after { background: var(--call-idle); }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-call.is-warning > .chat-step-node::after { background: var(--call-idle); }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-call.is-running > .chat-step-node::after {
-  background: color-mix(in srgb, var(--mist) 42%, var(--ink));
+  background: var(--call-live);
   animation: console-call-pulse 1s ease-in-out infinite;
 }
 @keyframes console-call-pulse {
