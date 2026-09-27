@@ -1,0 +1,640 @@
+/* Mainframe: Console, taken further. The transcript is set on one character
+   grid (status gutter · verb · argument · result), and every block of output
+   lives in the same framed pane with a title bar. Color comes only from the
+   theme: brass marks the prompt, live work and focus; ok and fault mark
+   outcomes. No gradients, glass or glow; the only motion is the spinner.
+
+   Mainframe reuses Console's markup (chat.js isConsoleView covers both) but
+   every rule here is scoped to .chat[data-view="mainframe"], and Console's own
+   rules require html[data-chat-console], which Mainframe never sets. */
+
+.chat[data-view="mainframe"] {
+  --chat-col: 60rem;
+  --mf-s: var(--chat-text-scale, 1);
+  --mf-font: var(--chat-view-font, var(--mono));
+  --mf-size: calc(0.8125rem * var(--mf-s));
+  --mf-small: calc(0.72rem * var(--mf-s));
+  --mf-row: calc(1.4rem * var(--mf-s));
+  /* Grid columns: status gutter, then content. The gutter is 2ch wide in the
+     row's own font so glyphs sit on the character grid. */
+  --mf-gutter: 2ch;
+  --mf-gap: 1ch;
+  --mf-indent: calc(2ch + 1ch);
+  --mf-verb: 7ch;
+  --mf-pane: color-mix(in srgb, var(--panel) 55%, var(--ink));
+  --mf-bar: color-mix(in srgb, var(--mist) 16%, var(--ink));
+  --mf-hover: color-mix(in srgb, var(--mist) 4.5%, transparent);
+  --mf-dim: color-mix(in srgb, var(--mist) 55%, var(--ink));
+  --mf-rule: var(--line);
+}
+
+/* —— Menu glyph —— */
+.chat-view-menu button[data-view="mainframe"]::before {
+  content: "◧";
+  width: auto;
+  height: auto;
+  border: 0;
+  color: var(--mute);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+}
+.chat-view-menu button[data-view="mainframe"].is-on::before { color: var(--brass); }
+
+/* —— Transcript rhythm —— */
+.chat[data-view="mainframe"] .chat-log { gap: 0; padding-top: 0.5rem; }
+.chat[data-view="mainframe"] .chat-turn { padding-block: 0.3rem; border: 0; }
+.chat[data-view="mainframe"] .chat-assistant { gap: 0.2rem; }
+.chat[data-view="mainframe"] :is(.chat-turn, .chat-assistant, .chat-flow, .chat-activity) { min-width: 0; }
+
+/* —— Your message: the command that was entered. —— */
+.chat[data-view="mainframe"] .chat-turn.is-user { display: block; }
+.chat[data-view="mainframe"] .chat-turn.is-user:not(:first-child) {
+  margin-top: 0.6rem;
+  padding-top: 0.9rem;
+  border-top: 1px dashed color-mix(in srgb, var(--mf-rule) 80%, transparent);
+}
+.chat[data-view="mainframe"] .chat-turn.is-user .chat-bubble {
+  display: grid;
+  grid-template-columns: var(--mf-gutter) minmax(0, 1fr);
+  column-gap: var(--mf-gap);
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--mist);
+  font: var(--mf-size)/1.55 var(--mf-font);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.chat[data-view="mainframe"] .chat-turn.is-user .chat-bubble::before {
+  content: "❯";
+  color: var(--brass);
+  text-align: center;
+}
+.chat[data-view="mainframe"] .chat-turn.is-user .chat-bubble > * { grid-column: 2; min-width: 0; }
+
+/* —— Activity —— */
+.chat[data-view="mainframe"] .chat-activity { width: 100%; margin: 0; }
+.chat[data-view="mainframe"] .chat-cli-run { display: none; }
+.chat[data-view="mainframe"] :is(.chat-activity-panel, .chat-activity-panel-inner) { display: block; overflow: visible; }
+.chat[data-view="mainframe"] .chat-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* —— One row = one grid. Head, reveal and hang dissolve (display: contents)
+   so the verb, argument, result and controls land in shared columns:
+   gutter | argument | result | action | caret. —— */
+.chat[data-view="mainframe"] .chat-step {
+  --mf-state: var(--mf-dim);
+  --mf-glyph: "✓";
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  grid-template-columns: var(--mf-gutter) minmax(0, 1fr) auto auto 1.2rem;
+  grid-auto-rows: auto;
+  column-gap: var(--mf-gap);
+  align-items: start;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  font: var(--mf-size)/var(--mf-row) var(--mf-font);
+}
+.chat[data-view="mainframe"] .chat-step > .chat-step-node { display: none; }
+.chat[data-view="mainframe"] .chat-step > .chat-step-main,
+.chat[data-view="mainframe"] .chat-step > .chat-step-main > .chat-step-head,
+.chat[data-view="mainframe"] .chat-step.is-console-call > .chat-step-main > .chat-step-reveal,
+.chat[data-view="mainframe"] .chat-step.is-console-call > .chat-step-main > .chat-step-reveal > .chat-step-reveal-inner,
+.chat[data-view="mainframe"] .chat-step.is-console-call .chat-console-hang,
+.chat[data-view="mainframe"] .chat-step.is-console-call .chat-console-hang-body { display: contents; }
+.chat[data-view="mainframe"] .chat-console-branch { display: none; }
+
+/* Status glyph in the gutter. */
+.chat[data-view="mainframe"] .chat-step::before,
+.chat[data-view="mainframe"] .chat-step:is(:first-child, :last-child, :first-child:last-child)::before {
+  content: var(--mf-glyph);
+  position: static;
+  display: block;
+  inset: auto;
+  width: auto;
+  height: auto;
+  transform: none;
+  background: none;
+  grid-column: 1;
+  grid-row: 1;
+  justify-self: center;
+  color: var(--mf-state);
+  font: 400 var(--mf-size)/var(--mf-row) var(--mono);
+}
+.chat[data-view="mainframe"] .chat-step.is-done { --mf-state: color-mix(in srgb, var(--ok) 80%, var(--ink)); }
+.chat[data-view="mainframe"] .chat-step.is-error { --mf-glyph: "✗"; --mf-state: var(--fault); }
+.chat[data-view="mainframe"] .chat-step:is(.is-interrupted, .is-warning) { --mf-glyph: "◌"; --mf-state: var(--brass); }
+.chat[data-view="mainframe"] .chat-step.is-running { --mf-state: var(--brass); }
+.chat[data-view="mainframe"] .chat-step.is-running::before { animation: mf-spin 0.8s steps(1) infinite; }
+@keyframes mf-spin {
+  0% { content: "⠋"; } 10% { content: "⠙"; } 20% { content: "⠹"; } 30% { content: "⠸"; } 40% { content: "⠼"; }
+  50% { content: "⠴"; } 60% { content: "⠦"; } 70% { content: "⠧"; } 80% { content: "⠇"; } 90% { content: "⠏"; }
+}
+.chat[data-view="mainframe"] .chat-step.is-console-think { --mf-glyph: "∴"; --mf-state: var(--reason); }
+.chat[data-view="mainframe"] .chat-step.is-console-think.is-live-think { --mf-state: var(--brass); }
+.chat[data-view="mainframe"] .chat-step.is-console-think.is-live-think::before { animation: mf-spin 0.8s steps(1) infinite; }
+.chat[data-view="mainframe"] .chat-step.is-console-shell-group { --mf-glyph: "▸"; --mf-state: var(--mute); }
+.chat[data-view="mainframe"] .chat-step.is-console-shell-group.is-console-expanded { --mf-glyph: "▾"; }
+
+/* Selection bar: the first line of a row highlights like a TUI cursor. */
+.chat[data-view="mainframe"] .chat-step::after {
+  content: "";
+  grid-column: 1 / -1;
+  grid-row: 1;
+  align-self: stretch;
+  z-index: -1;
+  margin-inline: -0.5ch;
+  border-radius: 3px;
+  pointer-events: none;
+}
+.chat[data-view="mainframe"] .chat-step:has(> .chat-step-main > .chat-step-head :is(.chat-step-toggle, .chat-step-caret):hover)::after { background: var(--mf-hover); }
+.chat[data-view="mainframe"] .chat-step:has(> .chat-step-main > .chat-step-head :focus-visible)::after { box-shadow: inset 0 0 0 1px var(--brass); }
+
+/* Argument column: fixed-width verb, then the target. */
+.chat[data-view="mainframe"] .chat-step > .chat-step-main > .chat-step-head > :is(.chat-step-toggle, .chat-step-static) {
+  grid-column: 2;
+  grid-row: 1;
+  display: block;
+  min-width: 0;
+  height: auto;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.chat[data-view="mainframe"] .chat-step-static { cursor: default; }
+/* Dotted leaders run from the target to its result, like a directory listing. */
+.chat[data-view="mainframe"] .chat-step.is-console-call:not(.is-error):not(.is-console-expanded):has(.chat-console-result-text) > .chat-step-main > .chat-step-head > :is(.chat-step-toggle, .chat-step-static) {
+  display: flex;
+  align-items: baseline;
+}
+.chat[data-view="mainframe"] .chat-step.is-console-call:not(.is-error):not(.is-console-expanded):has(.chat-console-result-text) > .chat-step-main > .chat-step-head > :is(.chat-step-toggle, .chat-step-static) > .chat-step-label { flex: 0 1 auto; }
+.chat[data-view="mainframe"] .chat-step.is-console-call:not(.is-error):not(.is-console-expanded):has(.chat-console-result-text) > .chat-step-main > .chat-step-head > :is(.chat-step-toggle, .chat-step-static)::after {
+  content: "";
+  flex: 1 1 2ch;
+  min-width: 2ch;
+  margin-left: 1ch;
+  border-bottom: 1px dotted color-mix(in srgb, var(--mute) 45%, transparent);
+  transform: translateY(-0.3em);
+}
+.chat[data-view="mainframe"] .chat-step-toggle:focus-visible { outline: none; }
+.chat[data-view="mainframe"] .chat-step-label {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--mist);
+  font: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat[data-view="mainframe"] .chat-console-call { display: inline; font: inherit; }
+.chat[data-view="mainframe"] .chat-tool-action {
+  display: inline-block;
+  min-width: var(--mf-verb);
+  margin-right: 1ch;
+  padding: 0;
+  color: var(--steel);
+  font: inherit;
+  font-weight: 400;
+  vertical-align: top;
+}
+.chat[data-view="mainframe"] .chat-step.is-error .chat-tool-action { color: var(--fault); }
+.chat[data-view="mainframe"] .chat-console-paren { display: none; }
+.chat[data-view="mainframe"] :is(.chat-console-sep, .chat-console-eq) { color: var(--mute); }
+.chat[data-view="mainframe"] .chat-console-key { color: var(--mute); }
+.chat[data-view="mainframe"] .chat-console-val { color: var(--mist); }
+/* Expanded, a long target wraps with a hanging indent under the verb, at
+   reading leading; the first line stays on the row's baseline. */
+.chat[data-view="mainframe"] .chat-step.is-console-call.is-console-expanded .chat-step-label {
+  --mf-hang: calc(var(--mf-verb) + 1ch);
+  padding: calc((var(--mf-row) - 1.5em) / 2) 0 calc((var(--mf-row) - 1.5em) / 2) var(--mf-hang);
+  text-indent: calc(-1 * var(--mf-hang));
+  line-height: 1.5;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.chat[data-view="mainframe"] .chat-step.is-console-call.is-console-expanded .chat-tool-action { text-indent: 0; }
+
+/* Result column: the outcome, right-aligned and quiet. */
+.chat[data-view="mainframe"] .chat-step.is-console-call .chat-console-result-text {
+  grid-column: 3;
+  grid-row: 1;
+  justify-self: end;
+  max-width: 34ch;
+  overflow: hidden;
+  color: var(--mf-dim);
+  font: var(--mf-small)/var(--mf-row) var(--mf-font);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat[data-view="mainframe"] .chat-step.is-running .chat-console-result-text { color: var(--mist); }
+/* A failure reads in full on its own line, not squeezed into the column. */
+.chat[data-view="mainframe"] .chat-step.is-error .chat-console-result-text {
+  grid-column: 2 / -1;
+  grid-row: 2;
+  justify-self: stretch;
+  max-width: none;
+  color: var(--fault);
+  line-height: 1.5;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.chat[data-view="mainframe"] .chat-step.is-error .chat-console-hang.is-expanded .chat-console-result-text { display: none; }
+
+/* Controls. */
+.chat[data-view="mainframe"] .chat-step-state,
+.chat[data-view="mainframe"] .chat-step-host,
+.chat[data-view="mainframe"] .chat-step-open.is-empty,
+.chat[data-view="mainframe"] .chat-step-caret.is-empty { display: none; }
+.chat[data-view="mainframe"] .chat-step > .chat-step-main > .chat-step-head > .chat-step-open {
+  grid-column: 4;
+  grid-row: 1;
+  margin: 0;
+  padding: 0 0.8ch;
+  border: 1px solid var(--mf-rule);
+  border-radius: 2px;
+  background: none;
+  color: var(--mist);
+  font: var(--mf-small)/1.6 var(--mf-font);
+  text-transform: none;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+.chat[data-view="mainframe"] .chat-step-open:hover { border-color: var(--brass); color: var(--brass); }
+.chat[data-view="mainframe"] .chat-step-open .chat-open-target { display: none; }
+.chat[data-view="mainframe"] .chat-step > .chat-step-main > .chat-step-head > .chat-step-caret {
+  grid-column: 5;
+  grid-row: 1;
+  display: grid;
+  place-items: center;
+  width: 1.2rem;
+  height: var(--mf-row);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--mute);
+  opacity: 0;
+  cursor: pointer;
+}
+.chat[data-view="mainframe"] .chat-step-caret .chat-step-chevron { transform: rotate(-90deg); }
+.chat[data-view="mainframe"] .chat-step-caret[aria-expanded="true"] .chat-step-chevron { transform: none; }
+.chat[data-view="mainframe"] .chat-step:hover > .chat-step-main > .chat-step-head > .chat-step-caret,
+.chat[data-view="mainframe"] .chat-step-caret[aria-expanded="true"],
+.chat[data-view="mainframe"] .chat-step-caret:focus-visible { opacity: 1; }
+@media (hover: none) {
+  .chat[data-view="mainframe"] .chat-step > .chat-step-main > .chat-step-head > .chat-step-caret { opacity: 0.7; }
+}
+
+/* —— Bodies —— */
+/* Collapsed: a short preview under a single rule. Expanded: the full pane. */
+.chat[data-view="mainframe"] .chat-console-hang:not(.is-expanded) .chat-console-out { display: none; }
+.chat[data-view="mainframe"] .chat-console-hang.is-expanded .chat-console-preview { display: none; }
+.chat[data-view="mainframe"] .chat-step.is-console-call :is(.chat-console-preview, .chat-console-out, .chat-todo) {
+  grid-column: 2 / -1;
+  min-width: 0;
+}
+.chat[data-view="mainframe"] .chat-console-preview {
+  margin: 0 0 0.25rem;
+  padding: 0.1rem 0 0.1rem 1.5ch;
+  border-left: 1px solid var(--mf-rule);
+  color: var(--mf-dim);
+  font: var(--mf-small)/1.55 var(--mf-font);
+}
+.chat[data-view="mainframe"] .chat-console-preview .chat-console-nbody { color: var(--mf-dim); }
+
+/* The pane: one frame for every block of output, code and input. */
+.chat[data-view="mainframe"] .chat-console-out,
+.chat[data-view="mainframe"] .chat-md .chat-code {
+  position: relative;
+  display: block;
+  min-width: 0;
+  margin: 0.15rem 0 0.4rem;
+  padding: 0 1.5ch 0.4rem;
+  border: 1px solid var(--mf-rule);
+  border-radius: 2px;
+  background: var(--mf-pane);
+  color: var(--mist);
+  font: var(--mf-small)/1.6 var(--mf-font);
+  white-space: normal;
+  box-shadow: none;
+}
+.chat[data-view="mainframe"] .chat-console-out {
+  max-height: 24rem;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--mf-rule) transparent;
+}
+/* Title tab: inverse video on the frame, like an old window manager. It
+   names what the pane holds and stays put while the pane scrolls. */
+.chat[data-view="mainframe"] .chat-console-out::before {
+  content: "output";
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: block;
+  width: fit-content;
+  margin: 0 0 0.3rem -1ch;
+  padding: 0 1ch;
+  background: var(--mf-bar);
+  color: var(--mist);
+  font: var(--mf-small)/1.5 var(--mf-font);
+}
+.chat[data-view="mainframe"] .chat-console-out.is-diff::before { content: "diff"; }
+.chat[data-view="mainframe"] .chat-console-out.is-file::before { content: "file"; }
+.chat[data-view="mainframe"] .chat-console-out.is-web::before { content: "results"; }
+.chat[data-view="mainframe"] .chat-console-out.is-structured::before { content: "details"; }
+.chat[data-view="mainframe"] .chat-step.is-error .chat-console-out { border-color: color-mix(in srgb, var(--fault) 45%, var(--mf-rule)); color: var(--fault); }
+.chat[data-view="mainframe"] .chat-step.is-error .chat-console-out::before { content: "error"; background: color-mix(in srgb, var(--fault) 30%, var(--ink)); color: var(--mist); }
+.chat[data-view="mainframe"] .chat-console-out .chat-console-out { margin: 0; padding: 0; border: 0; background: none; max-height: none; overflow: visible; }
+.chat[data-view="mainframe"] .chat-console-out .chat-console-out::before { content: none; }
+.chat[data-view="mainframe"] pre.chat-console-out { white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat[data-view="mainframe"] .chat-console-stdout { min-height: 1.6em; white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat[data-view="mainframe"] .chat-console-more { color: var(--mute); font: var(--mf-small)/1.6 var(--mf-font); }
+
+/* Numbered lines and diffs. */
+.chat[data-view="mainframe"] .chat-console-lines { font: inherit; }
+.chat[data-view="mainframe"] .chat-console-nline {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 1.5ch;
+}
+.chat[data-view="mainframe"] .chat-console-nline:has(.chat-console-mark) { grid-template-columns: max-content 1ch minmax(0, 1fr); column-gap: 1ch; }
+.chat[data-view="mainframe"] .chat-console-nline.is-bare { grid-template-columns: 1ch minmax(0, 1fr); }
+.chat[data-view="mainframe"] .chat-console-n { color: var(--mute); opacity: 0.7; text-align: right; font-variant-numeric: tabular-nums; user-select: none; white-space: pre; }
+.chat[data-view="mainframe"] .chat-console-nbody { min-width: 0; color: var(--mist); white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat[data-view="mainframe"] .chat-console-nline:is(.is-add, .is-del) { margin-inline: -1.5ch; padding-inline: 1.5ch; }
+.chat[data-view="mainframe"] .chat-console-nline.is-add { background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.chat[data-view="mainframe"] .chat-console-nline.is-del { background: color-mix(in srgb, var(--fault) 12%, transparent); }
+.chat[data-view="mainframe"] .chat-console-nline.is-add .chat-console-mark { color: var(--ok); }
+.chat[data-view="mainframe"] .chat-console-nline.is-del .chat-console-mark { color: var(--fault); }
+.chat[data-view="mainframe"] .chat-console-preview .chat-console-nline:is(.is-add, .is-del) { margin-inline: 0; padding-inline: 0.5ch; }
+
+/* Web results: title left, domain right. */
+.chat[data-view="mainframe"] .chat-web-list { display: grid; gap: 0; }
+.chat[data-view="mainframe"] .chat-web-row {
+  display: flex;
+  align-items: baseline;
+  gap: 2ch;
+  min-width: 0;
+  padding: 0;
+  color: var(--mist);
+  font: inherit;
+  text-decoration: none;
+}
+.chat[data-view="mainframe"] .chat-web-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat[data-view="mainframe"] .chat-web-domain { flex: 0 0 auto; margin-left: auto; color: var(--mute); font: inherit; }
+.chat[data-view="mainframe"] .chat-web-row:hover .chat-web-title { color: var(--brass); text-decoration: underline; text-underline-offset: 3px; }
+
+/* Todos: a checklist on the grid. */
+.chat[data-view="mainframe"] .chat-todo.is-console {
+  display: grid;
+  gap: 0;
+  margin: 0 0 0.35rem;
+  padding: 0;
+  list-style: none;
+}
+.chat[data-view="mainframe"] .chat-todo.is-console .chat-todo-item {
+  display: grid;
+  grid-template-columns: 2ch minmax(0, 1fr);
+  column-gap: 1ch;
+  align-items: baseline;
+  color: var(--mist);
+  font: var(--mf-size)/1.6 var(--mf-font);
+}
+.chat[data-view="mainframe"] .chat-todo.is-console .chat-todo-status { display: none; }
+.chat[data-view="mainframe"] .chat-todo.is-console .chat-todo-mark { font-size: 0; }
+.chat[data-view="mainframe"] .chat-todo.is-console .chat-todo-mark::before { content: "·"; color: var(--mute); font-size: var(--mf-size); }
+.chat[data-view="mainframe"] .chat-todo.is-console .is-completed .chat-todo-mark::before { content: "✓"; color: var(--ok); }
+.chat[data-view="mainframe"] .chat-todo.is-console .is-in-progress .chat-todo-mark::before { content: "›"; color: var(--brass); }
+.chat[data-view="mainframe"] .chat-todo.is-console .is-completed .chat-todo-copy { color: var(--mute); text-decoration: line-through; }
+.chat[data-view="mainframe"] .chat-todo.is-console .is-in-progress .chat-todo-copy { color: var(--mist); }
+
+/* Structured bodies. */
+.chat[data-view="mainframe"] .chat-kv-row { padding: 0; font: inherit; }
+.chat[data-view="mainframe"] .chat-tool-md.chat-md { display: block; font-size: var(--mf-small); }
+.chat[data-view="mainframe"] .chat-tool-md.chat-md::before { content: none; }
+
+/* —— Thinking: one quiet row; the reasoning hangs under a single rule. —— */
+.chat[data-view="mainframe"] .chat-step.is-console-think .chat-step-copy { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat[data-view="mainframe"] .chat-step.is-console-think .chat-step-kind { display: none; }
+.chat[data-view="mainframe"] .chat-step.is-console-think .chat-think-summary {
+  display: inline;
+  color: var(--mf-dim);
+  font: inherit;
+  font-style: normal;
+  cursor: pointer;
+}
+.chat[data-view="mainframe"] .chat-step.is-console-think.is-live-think .chat-think-summary { color: var(--mist); }
+.chat[data-view="mainframe"] .chat-step.is-console-think > .chat-step-main > .chat-step-head > .chat-think-size {
+  grid-column: 3 / 5;
+  grid-row: 1;
+  justify-self: end;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--mute);
+  font: var(--mf-small)/var(--mf-row) var(--mf-font);
+  cursor: pointer;
+}
+.chat[data-view="mainframe"] .chat-step.is-console-think .chat-think-size[hidden] { display: none; }
+.chat[data-view="mainframe"] .chat-step.is-console-think .chat-think-size:hover { color: var(--brass); }
+.chat[data-view="mainframe"] .chat-step:is(.is-console-think, .is-console-shell-group) > .chat-step-main > .chat-console-bundle {
+  grid-column: 2 / -1;
+  grid-row: 2;
+  min-width: 0;
+}
+.chat[data-view="mainframe"] .chat-step.is-console-think[data-think-mode="collapsed"] :is(.chat-console-bundle, .chat-think-window) { display: none; }
+.chat[data-view="mainframe"] .chat-step.is-console-think .chat-think-window {
+  margin: 0 0 0.25rem;
+  padding: 0.1rem 0 0.1rem 1.5ch;
+  border-left: 1px solid var(--mf-rule);
+  cursor: pointer;
+}
+.chat[data-view="mainframe"] .chat-step.is-console-think .chat-think-preview {
+  display: block;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+  color: var(--mf-dim);
+  font: var(--mf-small)/1.6 var(--mf-font);
+  font-style: normal;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.chat[data-view="mainframe"] .chat-step.is-console-think[data-think-mode="tail"] .chat-think-preview {
+  max-height: calc(3 * 1.6 * var(--mf-small));
+  overflow: hidden;
+}
+.chat[data-view="mainframe"] .chat-step.is-console-think[data-think-mode="tail"] .chat-think-preview.is-clipped {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 1.6em);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 1.6em);
+}
+.chat[data-view="mainframe"] .chat-think-markdown :is(p, ul, ol) { margin: 0; }
+.chat[data-view="mainframe"] .chat-think-markdown :is(p + p, ul + p, ol + p) { margin-top: 0.5em; }
+.chat[data-view="mainframe"] .chat-think-markdown code { color: var(--mist); font-size: 1em; }
+.chat[data-view="mainframe"] .chat-step.is-console-think .chat-console-bundle-tools { margin: 0 0 0.4rem; padding: 0; list-style: none; }
+
+/* Shell group: a titled cluster; children sit on the same grid, indented. */
+.chat[data-view="mainframe"] .chat-step.is-console-shell-group .chat-step-label { color: var(--mist); }
+.chat[data-view="mainframe"] .chat-step.is-console-shell-group > .chat-step-main > .chat-console-bundle { display: none; }
+.chat[data-view="mainframe"] .chat-step.is-console-shell-group.is-console-expanded > .chat-step-main > .chat-console-bundle { display: block; margin-bottom: 0.2rem; }
+
+/* —— The answer: on the same grid, a bullet in the gutter. —— */
+.chat[data-view="mainframe"] .chat-md {
+  position: relative;
+  padding-left: var(--mf-indent);
+  color: var(--mist);
+  font: var(--mf-size)/1.6 var(--mf-font);
+}
+.chat[data-view="mainframe"] .chat-flow > .chat-md::before {
+  content: "●";
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 2ch;
+  color: var(--mist);
+  font: var(--mf-small)/calc(var(--mf-size) * 1.6) var(--mono);
+  text-align: center;
+}
+.chat[data-view="mainframe"] .chat-flow > .chat-md ~ .chat-md::before { content: none; }
+.chat[data-view="mainframe"] .chat-md :is(h1, h2, h3, h4) { color: var(--mist); font-size: 1em; font-weight: 500; margin: 1em 0 0.3em; }
+.chat[data-view="mainframe"] .chat-md :is(h1, h2)::before { content: "# "; color: var(--brass); }
+.chat[data-view="mainframe"] .chat-md h3::before { content: "## "; color: var(--brass); }
+.chat[data-view="mainframe"] .chat-md strong { color: var(--mist); font-weight: 500; }
+.chat[data-view="mainframe"] .chat-md a { color: var(--steel); text-underline-offset: 3px; }
+.chat[data-view="mainframe"] .chat-md a:hover { color: var(--brass); }
+.chat[data-view="mainframe"] .chat-md :not(pre) > code { padding: 0; border: 0; background: none; color: var(--brass); font-size: 1em; }
+.chat[data-view="mainframe"] .chat-md :is(ul, ol) { padding-left: 2ch; }
+.chat[data-view="mainframe"] .chat-md li::marker { color: var(--mute); }
+.chat[data-view="mainframe"] .chat-md blockquote { margin-inline: 0; padding-left: 1.5ch; border-left: 1px solid var(--mf-rule); color: var(--mf-dim); }
+.chat[data-view="mainframe"] .chat-md hr { border: 0; border-top: 1px solid var(--mf-rule); }
+.chat[data-view="mainframe"] .chat-md.is-writing::after {
+  content: "";
+  display: inline-block;
+  width: 1ch;
+  height: 1.15em;
+  margin-left: 0.1ch;
+  vertical-align: -0.2em;
+  background: var(--brass);
+  animation: mf-cursor 1s steps(1) infinite;
+}
+@keyframes mf-cursor { 50% { opacity: 0; } }
+
+/* Code blocks use the pane; the language is the title bar. */
+.chat[data-view="mainframe"] .chat-md .chat-code { padding: 0; overflow: hidden; margin-block: 0.4rem; }
+.chat[data-view="mainframe"] .chat-md .chat-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 0;
+  padding: 0 0.4ch 0 0.5ch;
+  border: 0;
+  background: none;
+  color: var(--mist);
+  font: var(--mf-small)/1.6 var(--mf-font);
+  letter-spacing: 0;
+  text-transform: none;
+}
+.chat[data-view="mainframe"] .chat-md .chat-code-head .chat-icon-btn { width: 1.4rem; height: 1.4rem; min-height: 0; color: var(--mute); }
+.chat[data-view="mainframe"] .chat-md .chat-code-head .chat-icon-btn:hover { color: var(--brass); }
+.chat[data-view="mainframe"] .chat-md .chat-code-head > span:first-child { padding: 0 1ch; background: var(--mf-bar); }
+.chat[data-view="mainframe"] .chat-md .chat-code-head > span:first-child:empty { display: none; }
+.chat[data-view="mainframe"] .chat-md .chat-code pre { margin: 0; padding: 0.3rem 1.5ch 0.45rem; background: none; font: var(--mf-small)/1.6 var(--mono); }
+
+/* Tables: header over a rule, columns on the grid. */
+.chat[data-view="mainframe"] .chat-md table {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--mf-rule);
+  border-collapse: collapse;
+  border-radius: 2px;
+  background: var(--mf-pane);
+  font-size: var(--mf-small);
+}
+.chat[data-view="mainframe"] .chat-md :is(th, td) { padding: 0.2rem 1.5ch; border: 0; text-align: left; }
+.chat[data-view="mainframe"] .chat-md th { border-bottom: 1px dashed var(--mf-rule); background: none; color: var(--mute); font-weight: 400; }
+.chat[data-view="mainframe"] .chat-md td { color: var(--mist); }
+
+/* Turn footer: on the argument column. */
+.chat[data-view="mainframe"] .chat-foot { margin-top: 0.15rem; padding-left: var(--mf-indent); font: var(--mf-size)/1.5 var(--mf-font); }
+.chat[data-view="mainframe"] .chat-foot :is(.chat-meta, span) { color: var(--mute); font: var(--mf-small)/1.5 var(--mf-font); }
+
+/* —— Live status line: Console's glyph, in the accent. —— */
+.chat[data-view="mainframe"] :is(.chat-live-dock, .chat-agent-live-dock) {
+  gap: 1ch;
+  color: var(--mist);
+  font: var(--mf-small)/1.6 var(--mf-font);
+  font-style: normal;
+}
+.chat[data-view="mainframe"] :is(.chat-live-dock, .chat-agent-live-dock) .chat-activity-spin {
+  display: grid;
+  place-items: center;
+  width: 2ch;
+  color: var(--brass);
+}
+.chat[data-view="mainframe"] :is(.chat-live-dock, .chat-agent-live-dock) .chat-activity-spin[hidden] { display: none; }
+.chat[data-view="mainframe"] .chat-console-spin { display: block; font: 400 var(--mf-size)/1 var(--mono); color: inherit; }
+.chat[data-view="mainframe"] :is(.chat-live-dock, .chat-agent-live-dock) .chat-dock-dots { display: none; }
+.chat[data-view="mainframe"] :is(.chat-live-dock, .chat-agent-live-dock) .chat-status-shimmer {
+  --status-ink: var(--mist);
+  --status-gleam: var(--brass);
+  font: inherit;
+}
+
+/* —— Composer: the input pane, with the prompt glyph. —— */
+.chat[data-view="mainframe"] .chat-box {
+  border: 1px solid var(--mf-rule);
+  border-radius: 2px;
+  background: var(--mf-pane);
+  box-shadow: none;
+}
+.chat[data-view="mainframe"] .chat-box:focus-within { border-color: color-mix(in srgb, var(--brass) 70%, var(--mf-rule)); box-shadow: none; }
+.chat[data-view="mainframe"] .chat-compose { position: relative; padding-left: 3ch; }
+.chat[data-view="mainframe"] .chat-compose::before {
+  content: "❯";
+  position: absolute;
+  left: 0.5ch;
+  top: 0;
+  color: var(--brass);
+  font: 400 var(--mf-size)/inherit var(--mono);
+  line-height: inherit;
+}
+.chat[data-view="mainframe"] .chat-box textarea { font-family: var(--mf-font); caret-color: var(--brass); caret-shape: block; }
+
+/* —— Narrow screens —— */
+@media (max-width: 600px) {
+  .chat[data-view="mainframe"] { --mf-verb: 6ch; }
+  .chat[data-view="mainframe"] .chat-step.is-console-call .chat-console-result-text { max-width: 14ch; }
+  /* Expanded, the pane already says what it holds; give the target the row. */
+  .chat[data-view="mainframe"] .chat-step.is-console-call:not(.is-error) .chat-console-hang.is-expanded .chat-console-result-text { display: none; }
+  .chat[data-view="mainframe"] .chat-console-out,
+  .chat[data-view="mainframe"] .chat-md .chat-code pre { padding-inline: 1ch; }
+  .chat[data-view="mainframe"] .chat-console-out::before { margin-inline: -1ch; padding-inline: 1ch; }
+  .chat[data-view="mainframe"] .chat-console-nline:is(.is-add, .is-del) { margin-inline: -1ch; padding-inline: 1ch; }
+}
+
+/* —— Reduced motion: the spinner holds a single frame. —— */
+@media (prefers-reduced-motion: reduce) {
+  .chat[data-view="mainframe"] .chat-step:is(.is-running, .is-live-think)::before { content: "⠿"; animation: none; }
+  .chat[data-view="mainframe"] .chat-md.is-writing::after { animation: none; }
+}

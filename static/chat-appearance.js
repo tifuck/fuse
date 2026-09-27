@@ -20,12 +20,15 @@
   };
   const BACKDROPS = {
     none: { label: "None", hint: "Solid" },
-    hush: { label: "Hush", hint: "Soft mesh" },
-    aurora: { label: "Aurora", hint: "Color drift" },
-    tide: { label: "Tide", hint: "Ocean + bubbles" },
-    veil: { label: "Veil", hint: "Cool wrap" },
-    ember: { label: "Glow", hint: "Warm glow" },
+    phosphor: { label: "Phosphor", hint: "CRT scanlines" },
+    dither: { label: "Dither", hint: "1-bit noise" },
+    glyphs: { label: "Glyphs", hint: "ASCII field" },
+    scope: { label: "Scope", hint: "Oscilloscope" },
+    life: { label: "Life", hint: "Cellular automaton" },
   };
+  // Saved choices from the retired gradient backdrops map to their nearest
+  // replacement instead of silently switching the wallpaper off.
+  const LEGACY_BACKDROPS = { hush: "phosphor", aurora: "dither", tide: "scope", veil: "glyphs", ember: "life" };
   const FONTS = {
     bricolage: { label: "Bricolage Grotesque", stack: '"Bricolage Grotesque", "Segoe UI", sans-serif' },
     system: { label: "System UI", stack: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif' },
@@ -37,14 +40,16 @@
     cli: "redhat",
     compact: "bricolage",
     console: "redhat",
-    prism: "redhat",
+    mainframe: "redhat",
   };
   const VIEWS = Object.keys(VIEW_DEFAULT_FONT);
+  // Renamed views: a saved old id (view or per-view font) moves to its successor.
+  const RENAMED_VIEWS = { prism: "mainframe" };
   const VIEW_LABELS = {
     cli: "Terminal",
     compact: "Compact",
     console: "Console",
-    prism: "Prism",
+    mainframe: "Mainframe",
   };
   const THEME_VARS = {
     ink: "--ink",
@@ -148,7 +153,11 @@
   try {
     const saved = localStorage.getItem(STORE_THEME);
     if (saved === "custom" || Object.prototype.hasOwnProperty.call(themes, saved)) theme = saved;
-    const storedView = localStorage.getItem("fuse.chat.view.v2");
+    let storedView = localStorage.getItem("fuse.chat.view.v2");
+    if (RENAMED_VIEWS[storedView]) {
+      storedView = RENAMED_VIEWS[storedView];
+      localStorage.setItem("fuse.chat.view.v2", storedView);
+    }
     if (VIEWS.includes(storedView)) currentView = storedView;
     terminal = currentView === "cli";
     consoleView = currentView === "console";
@@ -156,7 +165,8 @@
     if (Number.isFinite(storedSize) && storedSize >= SIZE_MIN && storedSize <= SIZE_MAX) textScale = Math.round(storedSize / 5) * 5;
     const storedFonts = JSON.parse(localStorage.getItem(STORE_FONTS) || "{}");
     if (storedFonts && typeof storedFonts === "object") {
-      for (const [view, id] of Object.entries(storedFonts)) {
+      for (const [saved, id] of Object.entries(storedFonts)) {
+        const view = RENAMED_VIEWS[saved] || saved;
         if (VIEWS.includes(view) && FONTS[id]) fontMap[view] = id;
       }
     }
@@ -167,7 +177,11 @@
         brass: clampHex(storedCustom.brass, custom.brass),
       };
     }
-    const storedBackdrop = localStorage.getItem(STORE_BACKDROP);
+    let storedBackdrop = localStorage.getItem(STORE_BACKDROP);
+    if (storedBackdrop && LEGACY_BACKDROPS[storedBackdrop]) {
+      storedBackdrop = LEGACY_BACKDROPS[storedBackdrop];
+      localStorage.setItem(STORE_BACKDROP, storedBackdrop);
+    }
     if (storedBackdrop && Object.prototype.hasOwnProperty.call(BACKDROPS, storedBackdrop)) backdrop = storedBackdrop;
     const storedStrength = Number(localStorage.getItem(STORE_STRENGTH));
     if (Number.isFinite(storedStrength) && storedStrength >= STRENGTH_MIN && storedStrength <= STRENGTH_MAX) {
@@ -190,149 +204,10 @@
   }
 
   const SCENE_MARKUP = '<span data-chat-scene-wash></span><canvas data-chat-scene-fx hidden></canvas><span data-chat-scene-veil></span>';
-  const fx = { canvas: null, ctx: null, bubbles: [], raf: 0, last: 0, w: 0, h: 0, listening: false };
-
-  function cssVarHex(prop, fallback) {
-    if (typeof getComputedStyle !== "function") return fallback;
-    const raw = getComputedStyle(html).getPropertyValue(prop).trim();
-    if (/^#/.test(raw)) return clampHex(raw, fallback);
-    const m = raw.match(/rgba?\(\s*([\d.]+)\s*[,\s]\s*([\d.]+)\s*[,\s]\s*([\d.]+)/);
-    if (m) return rgbToHex(Number(m[1]), Number(m[2]), Number(m[3]));
-    return fallback;
-  }
-
-  function seedBubbles(w, h) {
-    const count = Math.max(18, Math.min(36, Math.round(20 + Math.min(w, h) / 48)));
-    const list = [];
-    for (let i = 0; i < count; i += 1) {
-      list.push({
-        x: Math.random() * w,
-        y: Math.random() * h,
-        r: 2.4 + Math.random() * 8.5,
-        speed: 14 + Math.random() * 32,
-        wobble: 6 + Math.random() * 16,
-        phase: Math.random() * Math.PI * 2,
-        tint: Math.random(),
-        alpha: 0.16 + Math.random() * 0.32,
-      });
-    }
-    return list;
-  }
-
-  function sizeFxCanvas() {
-    if (!fx.canvas || !fx.ctx) return;
-    const dpr = Math.min((typeof window !== "undefined" && window.devicePixelRatio) || 1, 1.5);
-    const w = fx.canvas.clientWidth || (typeof window !== "undefined" ? window.innerWidth : 0);
-    const h = fx.canvas.clientHeight || (typeof window !== "undefined" ? window.innerHeight : 0);
-    if (w < 2 || h < 2) return;
-    const bw = Math.max(1, Math.round(w * dpr));
-    const bh = Math.max(1, Math.round(h * dpr));
-    if (fx.canvas.width !== bw || fx.canvas.height !== bh) {
-      fx.canvas.width = bw;
-      fx.canvas.height = bh;
-      fx.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      fx.w = w;
-      fx.h = h;
-      if (!fx.bubbles.length) fx.bubbles = seedBubbles(w, h);
-    }
-  }
-
-  function paintBubbles(dt) {
-    const ctx = fx.ctx;
-    if (!ctx) return;
-    const w = fx.w;
-    const h = fx.h;
-    if (w < 2 || h < 2) return;
-    const steel = hexToRgb(cssVarHex("--steel", "#7eb8d4"));
-    const mist = hexToRgb(cssVarHex("--mist", "#e8eef6"));
-    const brass = hexToRgb(cssVarHex("--brass", "#6ad4c8"));
-    ctx.clearRect(0, 0, w, h);
-    for (const b of fx.bubbles) {
-      b.phase += dt * 0.6;
-      b.y -= b.speed * dt;
-      const x = b.x + Math.sin(b.phase) * b.wobble;
-      if (b.y < -b.r * 3) {
-        b.y = h + b.r * 2;
-        b.x = Math.random() * w;
-      }
-      const src = b.tint > 0.72 ? brass : b.tint > 0.38 ? steel : mist;
-      const g = ctx.createRadialGradient(x - b.r * 0.28, b.y - b.r * 0.32, b.r * 0.12, x, b.y, b.r);
-      g.addColorStop(0, `rgba(255,255,255,${Math.min(0.55, b.alpha + 0.18)})`);
-      g.addColorStop(0.35, `rgba(${src.r},${src.g},${src.b},${b.alpha})`);
-      g.addColorStop(1, `rgba(${src.r},${src.g},${src.b},0)`);
-      ctx.beginPath();
-      ctx.fillStyle = g;
-      ctx.arc(x, b.y, b.r, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.beginPath();
-      ctx.strokeStyle = `rgba(255,255,255,${b.alpha * 0.35})`;
-      ctx.lineWidth = 0.7;
-      ctx.arc(x, b.y, b.r * 0.92, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-  }
-
-  function stopFx() {
-    if (fx.raf && typeof cancelAnimationFrame === "function") cancelAnimationFrame(fx.raf);
-    fx.raf = 0;
-    fx.last = 0;
-    if (fx.canvas) fx.canvas.hidden = true;
-  }
-
-  function fxFrame(now) {
-    if (!fx.canvas || fx.canvas.hidden) return;
-    const t = now * 0.001;
-    const dt = fx.last ? Math.min(0.05, t - fx.last) : 0.016;
-    fx.last = t;
-    sizeFxCanvas();
-    paintBubbles(dt);
-    fx.raf = requestAnimationFrame(fxFrame);
-  }
-
-  function startFx(scene) {
-    const canvas = scene.querySelector("canvas[data-chat-scene-fx]");
-    if (!canvas || typeof canvas.getContext !== "function") return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    fx.canvas = canvas;
-    fx.ctx = ctx;
-    canvas.hidden = false;
-    void canvas.offsetWidth;
-    sizeFxCanvas();
-    paintBubbles(0);
-    const reduce = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduce || (typeof document !== "undefined" && document.hidden)) return;
-    if (!fx.raf) fx.raf = requestAnimationFrame(fxFrame);
-  }
-
-  function onFxVisibility() {
-    if (document.hidden) {
-      if (fx.raf && typeof cancelAnimationFrame === "function") cancelAnimationFrame(fx.raf);
-      fx.raf = 0;
-      fx.last = 0;
-      return;
-    }
-    if (fx.canvas && !fx.canvas.hidden && backdrop === "tide") startFx(fx.canvas.parentElement);
-  }
-
-  function onFxResize() {
-    if (fx.canvas && !fx.canvas.hidden) sizeFxCanvas();
-  }
-
-  function bindFxListeners() {
-    if (fx.listening || typeof document === "undefined") return;
-    document.addEventListener("visibilitychange", onFxVisibility);
-    if (typeof window !== "undefined") window.addEventListener("resize", onFxResize);
-    fx.listening = true;
-  }
-
+  // Drawing lives in chat-backdrop.js (loaded after this file); until it
+  // arrives, the scene simply shows its CSS layers.
   function syncFx(scene) {
-    if (!scene || scene.hidden || backdrop !== "tide") {
-      stopFx();
-      return;
-    }
-    bindFxListeners();
-    startFx(scene);
+    if (window.FuseBackdrop) window.FuseBackdrop.sync(scene, scene && !scene.hidden ? backdrop : "none");
   }
 
   function ensureScene() {

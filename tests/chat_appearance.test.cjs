@@ -9,7 +9,7 @@ const source = readFileSync(resolve(__dirname, '../static/chat-appearance.js'), 
 function boot(saved = {}, blocked = false) {
   const storage = new Map(Object.entries(saved));
   const meta = {};
-  const html = { dataset: {}, style: { setProperty() {}, removeProperty() {} } };
+  const html = { dataset: {}, style: { setProperty() {}, removeProperty() {} }, removeAttribute(name) { delete this.dataset[name.replace(/^data-/, '').replace(/-([a-z])/g, (_, c) => c.toUpperCase())]; } };
   const buttons = ['cli', 'compact'].map(view => ({
     dataset: { view }, setAttribute(name, value) { this[name] = value; },
   }));
@@ -110,27 +110,40 @@ test('invalid or unavailable storage uses safe defaults', () => {
 });
 
 test('backdrop kind persists independently of theme', () => {
-  const ui = boot({ 'fuse.chat.backdrop.v1': 'tide', 'fuse.chat.backdrop.strength.v1': '40' });
-  assert.equal(ui.html.dataset.chatBackdrop, 'tide');
+  const ui = boot({ 'fuse.chat.backdrop.v1': 'scope', 'fuse.chat.backdrop.strength.v1': '40' });
+  assert.equal(ui.html.dataset.chatBackdrop, 'scope');
   ui.ready();
-  ui.appearance.setBackdrop('aurora');
-  assert.equal(ui.html.dataset.chatBackdrop, 'aurora');
-  assert.equal(ui.storage.get('fuse.chat.backdrop.v1'), 'aurora');
+  ui.appearance.setBackdrop('dither');
+  assert.equal(ui.html.dataset.chatBackdrop, 'dither');
+  assert.equal(ui.storage.get('fuse.chat.backdrop.v1'), 'dither');
   ui.change('void');
-  assert.equal(ui.html.dataset.chatBackdrop, 'aurora');
+  assert.equal(ui.html.dataset.chatBackdrop, 'dither');
+});
+
+test('a saved view that was renamed opens its successor', () => {
+  const ui = boot({ 'fuse.chat.view.v2': 'prism', 'fuse.chat.fonts.v1': JSON.stringify({ prism: 'serif' }) });
+  assert.equal(ui.storage.get('fuse.chat.view.v2'), 'mainframe');
+  assert.equal(ui.appearance.view, 'mainframe');
+});
+
+test('retired gradient backdrops migrate to their replacement', () => {
+  const ui = boot({ 'fuse.chat.backdrop.v1': 'tide' });
+  assert.equal(ui.html.dataset.chatBackdrop, 'scope');
+  assert.equal(ui.storage.get('fuse.chat.backdrop.v1'), 'scope');
 });
 
 test('backdrop wallpaper is a scene layer, not an opaque plate', () => {
   const css = readFileSync(resolve(__dirname, '../static/chat-design.css'), 'utf8');
   const js = readFileSync(resolve(__dirname, '../static/chat-appearance.js'), 'utf8');
-  assert.match(css, /\.chat-scene\[data-kind="tide"\] \[data-chat-scene-wash\]/);
-  assert.match(css, /html\[data-chat-backdrop\]:not\(\[data-chat-backdrop="none"\]\) body\.is-chat :is\(\.stage, \.stage-inner, main, \.chat, \.chat-stage, \.chat-thread\) \{\s*background:\s*transparent/);
+  assert.match(css, /\.chat-scene\[data-kind="phosphor"\] \[data-chat-scene-wash\]/);
+  assert.match(css, /html\[data-chat-backdrop\]:not\(\[data-chat-backdrop="none"\]\) body\.is-chat :is\(\.stage, \.stage-inner, main, \.chat, \.chat-stage, \.chat-thread\),[^{]*\{\s*background:\s*transparent/);
   assert.match(css, /html\[data-chat-backdrop\]:not\(\[data-chat-backdrop="none"\]\) body\.is-chat \.chat \.chat-dock \{\s*background:\s*transparent/);
   assert.doesNotMatch(css, /chat-stage, \.chat-thread\) \{\s*background:\s*color-mix\(in srgb, var\(--ink\) 82%/);
   assert.doesNotMatch(css, /chat-scene-bubbles/);
   assert.match(js, /canvas data-chat-scene-fx/);
-  assert.match(js, /function paintBubbles\(/);
-  assert.match(js, /tide: \{ label: "Tide"/);
+  assert.match(js, /scope: \{ label: "Scope"/);
+  const engine = readFileSync(resolve(__dirname, '../static/chat-backdrop.js'), 'utf8');
+  for (const kind of ['dither', 'glyphs', 'scope', 'life']) assert.match(engine, new RegExp(`\\n    ${kind}: \\{`));
 });
 
 test('tool rows collapse to one line; thinking unwraps in place', () => {
@@ -153,7 +166,6 @@ test('tool rows collapse to one line; thinking unwraps in place', () => {
   assert.doesNotMatch(css, /Terminal is an appearance invariant/);
   const js = readFileSync(resolve(__dirname, '../static/chat.js'), 'utf8');
   assert.match(js, /function thinkOpenAt\(/);
-  assert.match(js, /return chatView !== "cli"/);
   assert.match(js, /function thinkStepHtml\([\s\S]*?<\/div><\/li>/);
   assert.doesNotMatch(js, /function thinkStepHtml\([\s\S]*?chat-think-body/);
 });

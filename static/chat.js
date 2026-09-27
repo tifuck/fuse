@@ -103,12 +103,14 @@
   let liveDockShowFrame = 0;
   let liveDockFollowFrame = 0;
   const STORE_VIEW = "fuse.chat.view.v2";
-  const CHAT_VIEWS = ["cli", "compact", "console", "prism"];
+  const CHAT_VIEWS = ["cli", "compact", "console", "mainframe"];
+  // Views that were renamed; a saved old id opens its successor.
+  const RENAMED_VIEWS = { prism: "mainframe" };
   const VIEW_LABELS = {
     cli: "Terminal",
     compact: "Compact",
     console: "Console",
-    prism: "Prism",
+    mainframe: "Mainframe",
   };
   const artifactPanel = root.querySelector("[data-chat-artifact]");
   const artifactToggle = root.querySelector("[data-artifact-toggle]");
@@ -502,7 +504,8 @@
   let chatView = "cli";
   try {
     const storedView = localStorage.getItem(STORE_VIEW);
-    if (CHAT_VIEWS.includes(storedView)) chatView = storedView;
+    const view = RENAMED_VIEWS[storedView] || storedView;
+    if (CHAT_VIEWS.includes(view)) chatView = view;
   } catch (_) {}
   let artifactSourceLoaded = "";
   let agentsOpen = false;
@@ -7489,10 +7492,10 @@
     return chatView === "cli";
   }
 
-  // Prism renders the console transcript (same markup and disclosure
+  // Mainframe renders the console transcript (same markup and disclosure
   // behavior) under its own stylesheet; only Console sets data-chat-console.
   function isConsoleView() {
-    return chatView === "console" || chatView === "prism";
+    return chatView === "console" || chatView === "mainframe";
   }
 
   function isHarnessView() {
@@ -8420,13 +8423,20 @@
     const openKind = artifact && trace.identifier && presentation.state === "done" ? "artifact"
       : ["spawn_subagent", "get_subagent_output"].includes(trace.name) && trace.child_id ? "agent" : "";
     const openId = openKind === "artifact" ? trace.identifier : openKind === "agent" ? trace.child_id : "";
-    const inner = isConsoleView() ? consoleDetailHtml(trace, failed, running) : toolDetailHtml(trace, failed, running);
+    let inner = isConsoleView() ? consoleDetailHtml(trace, failed, running) : toolDetailHtml(trace, failed, running);
     // Todo lists are plain inline content in console view: always shown, no disclosure.
     const revealed = open || (!isConsoleView() && trace.name === "todo_write" && normalizeTodos(trace.todos).length > 0);
     const icon = failed ? STEP_ICONS.error : interrupted ? STEP_ICONS.stop : artifact ? STEP_ICONS.artifact : toolIcon(trace.name, false, false);
     if (isConsoleView()) {
       const result = consoleResultLine(trace, presentation);
       const preview = consoleCollapsedPreview(trace, failed, running);
+      // A shell call with no captured output would "expand" into the command
+      // or result line already on screen. Those rows get no disclosure.
+      if (isShellExecTool(trace.name) && !failed) {
+        const body = String(consoleOutputText(trace, failed, running) || "").trim();
+        const shown = [String(trace.command || "").trim(), String(result || "").trim(), `$ ${String(displayCommand(trace) || "").trim()}`, "Running…"];
+        if (!body || shown.includes(body)) inner = "";
+      }
       const expandable = openKind !== "agent" && trace.name !== "todo_write" && Boolean(inner) && inner !== preview;
       const head = toolHeadHtml({
         ...presentation, line: consoleCallHtml(trace, presentation), title: trace.command || trace.path || trace.url || label, expandable, open: revealed, openKind, openId,

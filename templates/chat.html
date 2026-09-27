@@ -3,8 +3,9 @@
 {% block page_title %}Chat{% endblock %}
 {% block head_extra %}
 <script src="/static/chat-appearance.js?v=19"></script>
+<script src="/static/chat-backdrop.js?v=1" defer></script>
 <link rel="stylesheet" href="/static/chat-design.css?v=182">
-<link rel="stylesheet" href="/static/chat-prism.css?v=3">
+<link rel="stylesheet" href="/static/chat-mainframe.css?v=1">
 <link rel="stylesheet" href="/static/spinner-next.css?v=3">
 <link rel="stylesheet" href="/static/spinner-future.css?v=3">
 {% endblock %}
@@ -428,7 +429,7 @@
           <button type="button" data-view="cli"><span>Terminal</span><small>Full-window CLI</small></button>
           <button type="button" data-view="console"><span>Console</span><small>Claude-style TUI</small></button>
           <button type="button" data-view="compact"><span>Compact</span><small>Quick-scan ledger</small></button>
-          <button type="button" data-view="prism"><span>Prism</span><small>Console on a character grid</small></button>
+          <button type="button" data-view="mainframe"><span>Mainframe</span><small>Framed panes, retro TUI</small></button>
         </div>
       </section>
       <section class="chat-appearance-section">

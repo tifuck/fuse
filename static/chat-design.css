@@ -144,59 +144,61 @@ html[data-chat-backdrop="none"] .chat-scene,
   background:
     radial-gradient(92% 78% at 50% 42%, transparent 42%, color-mix(in srgb, var(--ink) 32%, transparent) 100%);
 }
-.chat-scene[data-kind="hush"] [data-chat-scene-wash] {
+/* Backdrops. Canvas scenes (dither, glyphs, scope, life) are drawn by
+   chat-backdrop.js into [data-chat-scene-fx]; the wash and veil add the CSS
+   layers around them. Strength scales every layer. */
+.chat-scene[data-kind] [data-chat-scene-wash] { inset: 0; }
+/* Phosphor: a CRT at rest. Fine scanlines, a warm phosphor bloom, and one
+   refresh band rolling down the tube. */
+.chat-scene[data-kind="phosphor"] [data-chat-scene-wash] {
+  opacity: calc(var(--chat-backdrop-strength, 0.28) * 1.6);
   background:
-    radial-gradient(38% 44% at 16% 22%, color-mix(in srgb, var(--brass) 46%, transparent), transparent 72%),
-    radial-gradient(46% 40% at 86% 78%, color-mix(in srgb, var(--steel) 38%, transparent), transparent 74%),
-    radial-gradient(28% 32% at 58% 38%, color-mix(in srgb, var(--reason) 18%, transparent), transparent 70%);
-  animation: chat-scene-drift 42s ease-in-out infinite alternate;
+    repeating-linear-gradient(180deg, color-mix(in srgb, var(--mist) 13%, transparent) 0 1px, transparent 1px 3px),
+    radial-gradient(90% 75% at 50% 45%, color-mix(in srgb, var(--brass) 20%, transparent), transparent 72%);
 }
-.chat-scene[data-kind="aurora"] [data-chat-scene-wash] {
+.chat-scene[data-kind="phosphor"] [data-chat-scene-veil] {
   background:
-    radial-gradient(34% 40% at 22% 28%, color-mix(in srgb, var(--brass) 48%, transparent), transparent 70%),
-    radial-gradient(40% 36% at 78% 20%, color-mix(in srgb, var(--steel) 42%, transparent), transparent 72%),
-    radial-gradient(36% 42% at 54% 76%, color-mix(in srgb, var(--reason) 32%, transparent), transparent 72%),
-    radial-gradient(26% 30% at 88% 58%, color-mix(in srgb, var(--brass) 22%, transparent), transparent 68%);
-  animation: chat-scene-drift 36s ease-in-out infinite alternate;
+    linear-gradient(180deg, transparent, color-mix(in srgb, var(--brass) 7%, transparent) 45%, color-mix(in srgb, var(--mist) 10%, transparent) 50%, transparent) 0 0 / 100% 18vh no-repeat,
+    radial-gradient(110% 95% at 50% 50%, transparent 55%, color-mix(in srgb, var(--ink) 70%, transparent) 100%);
+  animation: chat-scene-refresh 9s linear infinite;
 }
-.chat-scene[data-kind="tide"] [data-chat-scene-wash] {
+@keyframes chat-scene-refresh {
+  from { background-position: 0 -20vh, 0 0; }
+  to { background-position: 0 120vh, 0 0; }
+}
+/* Scope: the graticule the beam draws over. Ten divisions, a brighter
+   centre cross, and minor ticks on the axes. */
+.chat-scene[data-kind="scope"] [data-chat-scene-wash] {
+  opacity: calc(var(--chat-backdrop-strength, 0.28) * 1.4);
   background:
-    radial-gradient(70% 48% at 50% 88%, color-mix(in srgb, var(--steel) 48%, transparent), transparent 72%),
-    radial-gradient(42% 36% at 16% 28%, color-mix(in srgb, var(--brass) 20%, transparent), transparent 70%),
-    radial-gradient(38% 34% at 84% 18%, color-mix(in srgb, var(--steel) 26%, transparent), transparent 68%),
-    linear-gradient(180deg, color-mix(in srgb, var(--steel) 10%, transparent) 0%, transparent 38%, color-mix(in srgb, var(--steel) 22%, transparent) 100%);
-  animation: chat-scene-swell 26s ease-in-out infinite alternate;
+    linear-gradient(90deg, transparent calc(50% - 0.5px), color-mix(in srgb, var(--ok) 38%, transparent) calc(50% - 0.5px) calc(50% + 0.5px), transparent calc(50% + 0.5px)),
+    linear-gradient(180deg, transparent calc(50% - 0.5px), color-mix(in srgb, var(--ok) 38%, transparent) calc(50% - 0.5px) calc(50% + 0.5px), transparent calc(50% + 0.5px)),
+    repeating-linear-gradient(90deg, color-mix(in srgb, var(--ok) 16%, transparent) 0 1px, transparent 1px 10vw),
+    repeating-linear-gradient(180deg, color-mix(in srgb, var(--ok) 16%, transparent) 0 1px, transparent 1px 10vh);
 }
-.chat-scene[data-kind="veil"] [data-chat-scene-wash] {
+/* Canvas scenes get a faint scanline pass and a vignette, so every backdrop
+   reads as the same tube. */
+.chat-scene:is([data-kind="dither"], [data-kind="glyphs"], [data-kind="scope"], [data-kind="life"]) [data-chat-scene-veil] {
   background:
-    conic-gradient(from 210deg at 42% 46%,
-      color-mix(in srgb, var(--steel) 32%, transparent),
-      transparent 16%,
-      color-mix(in srgb, var(--reason) 26%, transparent) 34%,
-      transparent 52%,
-      color-mix(in srgb, var(--brass) 22%, transparent) 70%,
-      transparent 88%);
-  animation: chat-scene-wrap 72s linear infinite;
+    repeating-linear-gradient(180deg, color-mix(in srgb, var(--ink) 35%, transparent) 0 1px, transparent 1px 3px),
+    radial-gradient(110% 95% at 50% 50%, transparent 50%, color-mix(in srgb, var(--ink) 75%, transparent) 100%);
 }
-.chat-scene[data-kind="ember"] [data-chat-scene-wash] {
-  background:
-    radial-gradient(52% 40% at 18% 86%, color-mix(in srgb, var(--brass) 46%, transparent), transparent 72%),
-    radial-gradient(36% 34% at 86% 16%, color-mix(in srgb, var(--fault) 22%, transparent), transparent 70%),
-    radial-gradient(44% 38% at 58% 54%, color-mix(in srgb, var(--steel) 16%, transparent), transparent 72%);
-  animation: chat-scene-drift 38s ease-in-out infinite alternate;
+/* The art lives in the margins: every canvas scene thins out through the
+   centre reading column so it never sits at full strength behind text. */
+.chat-scene[data-kind] [data-chat-scene-fx] {
+  -webkit-mask-image: linear-gradient(90deg, #000 0%, rgba(0, 0, 0, 0.22) 30%, rgba(0, 0, 0, 0.22) 70%, #000 100%);
+  mask-image: linear-gradient(90deg, #000 0%, rgba(0, 0, 0, 0.22) 30%, rgba(0, 0, 0, 0.22) 70%, #000 100%);
 }
-@keyframes chat-scene-drift {
-  from { transform: translate3d(-2.2%, -1.4%, 0) scale(1.04); }
-  to { transform: translate3d(2.8%, 2.2%, 0) scale(1.1); }
+@media (max-width: 800px) {
+  .chat-scene[data-kind] [data-chat-scene-fx] {
+    -webkit-mask-image: linear-gradient(180deg, #000, rgba(0, 0, 0, 0.3) 35%, rgba(0, 0, 0, 0.3) 100%);
+    mask-image: linear-gradient(180deg, #000, rgba(0, 0, 0, 0.3) 35%, rgba(0, 0, 0, 0.3) 100%);
+  }
 }
-@keyframes chat-scene-wrap {
-  from { transform: rotate(0deg) scale(1.2); }
-  to { transform: rotate(360deg) scale(1.2); }
-}
-@keyframes chat-scene-swell {
-  from { transform: translate3d(0, 1.6%, 0) scale(1.05); }
-  to { transform: translate3d(0, -2.4%, 0) scale(1.1); }
-}
+.chat-scene[data-kind="dither"] [data-chat-scene-fx] { opacity: calc(var(--chat-backdrop-strength, 0.28) * 1.1); }
+.chat-scene[data-kind="glyphs"] [data-chat-scene-fx] { opacity: calc(var(--chat-backdrop-strength, 0.28) * 1.35); }
+.chat-scene[data-kind="scope"] [data-chat-scene-fx] { opacity: calc(var(--chat-backdrop-strength, 0.28) * 2.2); }
+.chat-scene[data-kind="life"] [data-chat-scene-fx] { opacity: calc(var(--chat-backdrop-strength, 0.28) * 1.1); }
 .chat .chat-bar { background: var(--ink); }
 .chat.is-untitled .chat-bar-title {
   display: none;
@@ -666,35 +668,54 @@ body.is-chat .chat-view-menu {
 .chat-backdrop-preview {
   width: 100%;
   height: 1.15rem;
-  border-radius: 4px;
+  border-radius: 3px;
   background: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--line);
   overflow: hidden;
 }
 .chat-backdrop-preview[data-kind="none"] { background: var(--ink); }
-.chat-backdrop-preview[data-kind="hush"] {
+.chat-backdrop-preview[data-kind="phosphor"] {
   background:
-    radial-gradient(80% 120% at 18% 20%, color-mix(in srgb, var(--brass) 48%, transparent), transparent 70%),
-    radial-gradient(80% 120% at 86% 88%, color-mix(in srgb, var(--steel) 36%, var(--ink)), var(--ink));
+    repeating-linear-gradient(180deg, color-mix(in srgb, var(--mist) 22%, transparent) 0 1px, transparent 1px 3px),
+    radial-gradient(90% 120% at 50% 50%, color-mix(in srgb, var(--brass) 30%, var(--ink)), var(--ink));
 }
-.chat-backdrop-preview[data-kind="aurora"] {
+.chat-backdrop-preview[data-kind="dither"] {
   background:
-    radial-gradient(70% 90% at 18% 24%, color-mix(in srgb, var(--brass) 50%, transparent), transparent 70%),
-    radial-gradient(70% 90% at 78% 18%, color-mix(in srgb, var(--steel) 42%, transparent), transparent 70%),
-    radial-gradient(80% 90% at 58% 92%, color-mix(in srgb, var(--reason) 32%, var(--ink)), var(--ink));
+    conic-gradient(color-mix(in srgb, var(--brass) 70%, var(--ink)) 25%, transparent 0 50%, color-mix(in srgb, var(--brass) 70%, var(--ink)) 0 75%, transparent 0) 0 0 / 4px 4px,
+    linear-gradient(90deg, var(--ink) 20%, transparent 80%);
+  background-blend-mode: normal;
+  -webkit-mask: linear-gradient(90deg, transparent, #000 70%);
+  mask: linear-gradient(90deg, transparent, #000 70%);
 }
-.chat-backdrop-preview[data-kind="tide"] {
+.chat-backdrop-preview[data-kind="glyphs"] {
+  position: relative;
+  display: grid;
+  place-items: center;
+  color: var(--steel);
+  font: 0.6rem/1 var(--mono);
+  font-style: normal;
+  letter-spacing: 0.08em;
+}
+.chat-backdrop-preview[data-kind="glyphs"]::before { content: ".:=+*#%@#*+=:."; white-space: nowrap; }
+.chat-backdrop-preview[data-kind="scope"] {
   background:
-    radial-gradient(90% 70% at 50% 118%, color-mix(in srgb, var(--steel) 52%, transparent), transparent 70%),
-    radial-gradient(circle, color-mix(in srgb, var(--mist) 45%, transparent) 0 1.2px, transparent 2px) 30% 40% / 9px 9px,
-    linear-gradient(180deg, color-mix(in srgb, var(--steel) 16%, var(--ink)), var(--ink));
+    radial-gradient(ellipse 22% 40% at 50% 50%, transparent 84%, color-mix(in srgb, var(--ok) 90%, transparent) 87% 92%, transparent 95%),
+    linear-gradient(90deg, transparent calc(50% - 0.5px), color-mix(in srgb, var(--ok) 30%, transparent) 0 calc(50% + 0.5px), transparent 0),
+    linear-gradient(180deg, transparent calc(50% - 0.5px), color-mix(in srgb, var(--ok) 30%, transparent) 0 calc(50% + 0.5px), transparent 0),
+    var(--ink);
 }
-.chat-backdrop-preview[data-kind="veil"] {
-  background: conic-gradient(from 80deg, color-mix(in srgb, var(--steel) 38%, var(--ink)), var(--ink), color-mix(in srgb, var(--brass) 30%, var(--ink)), var(--ink));
-}
-.chat-backdrop-preview[data-kind="ember"] {
+/* A glider, mid-flight, with the cells it just left still cooling. */
+.chat-backdrop-preview[data-kind="life"] {
   background:
-    radial-gradient(80% 120% at 18% 92%, color-mix(in srgb, var(--brass) 50%, transparent), transparent 70%),
-    radial-gradient(60% 80% at 88% 12%, color-mix(in srgb, var(--fault) 22%, var(--ink)), var(--ink));
+    linear-gradient(var(--brass), var(--brass)) calc(50% + -2px) 1px / 4px 4px no-repeat,
+    linear-gradient(var(--brass), var(--brass)) calc(50% + 3px) 6px / 4px 4px no-repeat,
+    linear-gradient(var(--brass), var(--brass)) calc(50% + -7px) 11px / 4px 4px no-repeat,
+    linear-gradient(var(--brass), var(--brass)) calc(50% + -2px) 11px / 4px 4px no-repeat,
+    linear-gradient(var(--brass), var(--brass)) calc(50% + 3px) 11px / 4px 4px no-repeat,
+    linear-gradient(color-mix(in srgb, var(--steel) 45%, transparent), color-mix(in srgb, var(--steel) 45%, transparent)) calc(50% + -27px) 6px / 4px 4px no-repeat,
+    linear-gradient(color-mix(in srgb, var(--steel) 45%, transparent), color-mix(in srgb, var(--steel) 45%, transparent)) calc(50% + -22px) 11px / 4px 4px no-repeat,
+    linear-gradient(color-mix(in srgb, var(--steel) 45%, transparent), color-mix(in srgb, var(--steel) 45%, transparent)) calc(50% + -32px) 11px / 4px 4px no-repeat,
+    var(--ink);
 }
 .chat-custom-colors {
   display: grid;
