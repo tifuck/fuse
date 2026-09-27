@@ -577,7 +577,7 @@ async def summarize_conversation(request: Request, user, model: str, head: list[
 async def _summarize_once(request: Request, user, model: str, head: list[dict], instructions: str = "", *, tools=None, limit: int | None = None) -> str:
     payload = {
         "model": (model or "").strip(),
-        "messages": ctxmod.summarize_payload(head, instructions=instructions, limit=limit),
+        "messages": ctxmod.summarize_payload(head, instructions=instructions, limit=limit, tools=tools),
         "stream": False,
         # Summaries may run to the full MAX_SUMMARY_CHARS budget; reply caps
         # are about chat answers, not internal handoffs.
@@ -656,13 +656,13 @@ def _compact_focus(instructions: str = "", *, is_child: bool = False, agent: dic
     if note:
         bits.append(note)
     if is_child:
-        task = ""
-        if isinstance(agent, dict):
-            task = str(agent.get("description") or agent.get("prompt") or "").strip()
-        if task:
-            bits.append("Assigned subagent task (keep this goal and its evidence):\n" + task[:1500])
+        label = str((agent or {}).get("description") or "").strip() if isinstance(agent, dict) else ""
+        if label:
+            bits.append("Subagent task label: " + label[:200])
         bits.append(
-            "This is a subagent. Keep exact paths, commands, exit codes, errors, and file findings the parent still needs."
+            "This is a subagent. Its parent's assignment is carried verbatim beside this handoff, so "
+            "summarize progress against it rather than restating it. Keep exact paths, commands, exit "
+            "codes, errors, and file findings the parent still needs for the final report."
         )
     return "\n\n".join(bits)
 
@@ -723,10 +723,15 @@ async def _compact_current(
                 tokens_before=snap["used"],
                 provider=True,
                 keep_tail=cfg.keep_tail,
+                head=dropped,
+                tail=kept,
             ),
         )
     if checkpoint:
-        rebuilt = [*system, *ctxmod.continuation(checkpoint["summary"], kept)]
+        # The child's task arrived as its first user row, which is now in the
+        # dropped span; the summary alone would paraphrase scope and report format.
+        pinned = ctxmod.pinned_assignment(dropped, kept) if is_child else ""
+        rebuilt = [*system, *ctxmod.continuation(checkpoint["summary"], kept, pinned=pinned)]
         after = ctxmod.meter_from_messages(rebuilt, model=model, type_id=type_id, tools=tools, override=override, calibration=calibration)
         if ctxmod.should_compact(after["used"], after["limit"]):
             rebuilt, _ids, _freed = ctxmod.prune_tool_outputs(rebuilt)
@@ -2764,7 +2769,6 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             if real:
                 last_round_usage = {}
                 current["messages"] = current_messages
-                yield _sse({"fuse": {"event": "notice", "message": "Compacting conversation to free context…"}})
                 yield _sse(ctxmod.context_event({**boot, "compacting": False}, phase="compacted"))
                 yield _sse(ctxmod.compact_handoff_event(ctxmod.prior_handoff(current_messages)))
             else:
@@ -3506,7 +3510,6 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                         prior_used = tool_meter["used"]
                         tool_meter["standing"] = True
                         stored_meter = tool_meter
-                        yield _sse({"fuse": {"event": "notice", "message": "Compacting conversation to free context…"}})
                         yield _sse(ctxmod.compact_handoff_event(ctxmod.prior_handoff(current_messages)))
                     elif kind == "prune":
                         yield _sse({"fuse": {"event": "notice", "message": "Context pruning: older tool outputs were replaced with marked placeholders to free space."}})

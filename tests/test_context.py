@@ -846,5 +846,58 @@ class DurableCompactCurrentTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(persisted["provider"])
 
 
+def _tool_round(i: int, size: int) -> list[dict]:
+    return [
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": f"c{i}", "type": "function", "function": {"name": "read", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": f"c{i}", "content": "x" * size},
+    ]
+
+
+class SubagentHandoffTest(unittest.IsolatedAsyncioTestCase):
+    def test_assignment_is_pinned_verbatim_across_compactions(self):
+        task = "Audit app/foo.py. Report bugs with line numbers. Do not edit files."
+        src = [{"role": "user", "content": task}]
+        for i in range(8):
+            src += _tool_round(i, 30_000)
+        dropped, kept = ctx.split_recent(src, ctx.preserve_budget(128_000))
+        first = ctx.continuation("## Objective\n- audit", kept, pinned=ctx.pinned_assignment(dropped, kept))
+        self.assertIn(task, first[0]["content"])
+        self.assertEqual(ctx.compact_summary_body(first[0]["content"]), "## Objective\n- audit")
+        self.assertEqual(ctx.prior_handoff(first), "## Objective\n- audit")
+
+        src = [*first, {"role": "user", "content": "[Fuse] Follow-up from the parent — x:\n\nAlso check bar.py"},
+               {"role": "user", "content": "[Fuse] AUTOMATED EVENT — not written by the user. Background results"}]
+        for i in range(8, 14):
+            src += _tool_round(i, 30_000)
+        dropped, kept = ctx.split_recent(src, ctx.preserve_budget(128_000))
+        pin = ctx.pinned_assignment(dropped, kept)
+        self.assertEqual(pin.count(task), 1)
+        self.assertIn("Also check bar.py", pin)
+        self.assertNotIn("AUTOMATED EVENT", pin)
+
+    def test_preamble_says_compaction_is_not_completion(self):
+        self.assertIn("Compaction is not completion", ctx.COMPACT_PREAMBLE)
+        self.assertNotIn("\n\n", ctx.COMPACT_PREAMBLE.strip())
+
+    async def test_truncate_fallback_describes_the_actual_dropped_span(self):
+        head = [{"role": "user", "content": "first ask"}]
+        head += [{"role": "assistant", "content": f"step {i}"} for i in range(60)]
+        tail = [{"role": "user", "content": "latest"}]
+        cp = await ctx.build_checkpoint([*head, *tail], strategy="truncate", trigger="auto",
+                                        provider=True, head=head, tail=tail)
+        self.assertIn("first ask", cp["summary"])
+        self.assertIn("step 59", cp["summary"])
+        self.assertNotIn("step 30", cp["summary"])
+
+    def test_summary_budget_counts_tool_schemas(self):
+        tools = [{"type": "function", "function": {"name": f"t{i}", "description": "d" * 4000, "parameters": {}}}
+                 for i in range(40)]
+        rows = [{"role": "user", "content": "q"}, {"role": "tool", "tool_call_id": "a", "content": "z" * 400_000}]
+        fit = ctx.fit_summary_messages(rows, 128_000, tools=tools)
+        budget = 128_000 - ctx.config().output_reserve - 8_000
+        self.assertLessEqual(ctx.estimate_messages(fit) + ctx.estimate_tools(tools), budget + 64)
+
+
 if __name__ == "__main__":
     unittest.main()
