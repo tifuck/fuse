@@ -2,10 +2,10 @@
 {% block title %}Chat · Fuse{% endblock %}
 {% block page_title %}Chat{% endblock %}
 {% block head_extra %}
-<script src="/static/chat-appearance.js?v=20"></script>
+<script src="/static/chat-appearance.js?v=21"></script>
 <script src="/static/chat-backdrop.js?v=2" defer></script>
-<link rel="stylesheet" href="/static/chat-design.css?v=183">
-<link rel="stylesheet" href="/static/chat-mainframe.css?v=2">
+<link rel="stylesheet" href="/static/chat-design.css?v=184">
+<link rel="stylesheet" href="/static/chat-mainframe.css?v=3">
 <link rel="stylesheet" href="/static/spinner-next.css?v=3">
 <link rel="stylesheet" href="/static/spinner-future.css?v=3">
 {% endblock %}
@@ -297,8 +297,10 @@
       </button>
     </div>
     <div class="chat-agents-body">
-      <div class="chat-jobs-list" data-jobs-list hidden></div>
-      <div class="chat-agents-list" data-agents-list></div>
+      <div class="chat-agents-overview" data-agents-overview>
+        <section class="chat-work-section" data-jobs-list hidden aria-label="Main agent background commands"></section>
+        <section class="chat-agents-list" data-agents-list aria-label="Subagents"></section>
+      </div>
       <div class="chat-agent-view" data-agent-view hidden>
         <div class="chat-agent-view-head">
           <button type="button" class="chat-menu-close chat-agent-view-back" data-agent-back aria-label="Back">
@@ -312,6 +314,7 @@
           <button type="button" class="chat-agent-view-tool" data-agent-force hidden>Force stop</button>
           <button type="button" class="chat-agent-view-tool" data-agent-stop hidden>Stop</button>
         </div>
+        <section class="chat-work-section chat-agent-jobs" data-agent-jobs hidden aria-label="Subagent background commands"></section>
         <div class="chat-agent-error" data-agent-error role="alert" hidden>
           <p data-agent-error-text></p>
           <button type="button" class="chat-agent-view-tool" data-agent-retry>Retry</button>
@@ -422,83 +425,116 @@
         <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
       </button>
     </div>
-    <div class="chat-view-sheet-body">
-      <section class="chat-appearance-section">
-        <p class="chat-appearance-heading">Reading mode</p>
-        <div class="chat-view-modes">
-          <button type="button" data-view="cli"><span>Terminal</span><small>Full-window CLI</small></button>
-          <button type="button" data-view="console"><span>Console</span><small>Claude-style TUI</small></button>
-          <button type="button" data-view="compact"><span>Compact</span><small>Quick-scan ledger</small></button>
-          <button type="button" data-view="mainframe"><span>Mainframe</span><small>Framed panes, retro TUI</small></button>
+    <div class="chat-view-sheet-body ap">
+      <section class="ap-section" aria-labelledby="ap-h-mode">
+        <div class="ap-intro">
+          <h2 id="ap-h-mode">Reading mode</h2>
+          <p>How the conversation is laid out.</p>
+        </div>
+        <div class="ap-modes">
+          <button type="button" class="ap-mode" data-view="cli" aria-pressed="false">
+            <span class="ap-mode-art" data-art="cli" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+            <span class="ap-mode-name">Terminal</span><small>Full-window CLI</small>
+          </button>
+          <button type="button" class="ap-mode" data-view="console" aria-pressed="false">
+            <span class="ap-mode-art" data-art="console" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+            <span class="ap-mode-name">Console</span><small>Claude-style TUI</small>
+          </button>
+          <button type="button" class="ap-mode" data-view="compact" aria-pressed="false">
+            <span class="ap-mode-art" data-art="compact" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+            <span class="ap-mode-name">Compact</span><small>Quick-scan ledger</small>
+          </button>
+          <button type="button" class="ap-mode" data-view="mainframe" aria-pressed="false">
+            <span class="ap-mode-art" data-art="mainframe" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+            <span class="ap-mode-name">Mainframe</span><small>Framed panes</small>
+          </button>
         </div>
       </section>
-      <section class="chat-appearance-section">
-        <p class="chat-appearance-heading">Color theme</p>
-        <div class="chat-theme-swatches" data-chat-theme-swatches></div>
-        <div class="chat-custom-colors" data-chat-custom hidden>
-          <label class="chat-custom-color">
-            <span>Background</span>
-            <input type="color" data-chat-custom-ink value="#121212" aria-label="Background color">
-          </label>
-          <label class="chat-custom-color">
-            <span>Accent</span>
-            <input type="color" data-chat-custom-brass value="#c5df88" aria-label="Accent color">
-          </label>
-          <small class="chat-appearance-hint">Surfaces and type color follow these two.</small>
+      <section class="ap-section" aria-labelledby="ap-h-theme">
+        <div class="ap-intro">
+          <h2 id="ap-h-theme">Theme</h2>
+          <p>Every surface follows it, this window included.</p>
+        </div>
+        <div class="ap-body">
+          <div class="ap-themes" data-chat-theme-swatches></div>
+          <div class="ap-custom" data-chat-custom hidden>
+            <label class="ap-color">
+              <input type="color" data-chat-custom-ink value="#121212" aria-label="Background color">
+              <span>Background</span>
+            </label>
+            <label class="ap-color">
+              <input type="color" data-chat-custom-brass value="#c5df88" aria-label="Accent color">
+              <span>Accent</span>
+            </label>
+            <p class="ap-note">Surfaces and text colors are derived from these two.</p>
+          </div>
         </div>
       </section>
-      <section class="chat-appearance-section">
-        <p class="chat-appearance-heading">Backdrop</p>
-        <div class="chat-backdrop-swatches" data-chat-backdrop-swatches></div>
-        <div class="chat-appearance-control" data-chat-backdrop-strength-wrap hidden>
-          <div class="chat-appearance-label-row">
+      <section class="ap-section" aria-labelledby="ap-h-backdrop">
+        <div class="ap-intro">
+          <h2 id="ap-h-backdrop">Backdrop</h2>
+          <p>A moving field behind the transcript.</p>
+        </div>
+        <div class="ap-body">
+          <div class="ap-backdrops" data-chat-backdrop-swatches></div>
+          <div class="ap-slider" data-chat-backdrop-strength-wrap hidden>
             <label for="chat-backdrop-strength">Intensity</label>
+            <input id="chat-backdrop-strength" class="ap-range" data-chat-backdrop-strength type="range" min="12" max="55" step="1" value="28">
             <output for="chat-backdrop-strength" data-chat-backdrop-strength-value>28%</output>
           </div>
-          <input id="chat-backdrop-strength" class="chat-size-range" data-chat-backdrop-strength type="range" min="12" max="55" step="1" value="28" aria-label="Backdrop intensity">
         </div>
       </section>
-      <section class="chat-appearance-section">
-        <p class="chat-appearance-heading">Type</p>
-        <div class="chat-appearance-controls">
-          <div class="chat-appearance-control chat-size-control">
-            <div class="chat-appearance-label-row">
-              <label for="chat-text-size">Text size</label>
-              <output for="chat-text-size" data-chat-size-value>100%</output>
-            </div>
-            <div class="chat-size-row">
-              <button type="button" class="chat-size-step" data-size-step="-1" aria-label="Decrease text size">
+      <section class="ap-section" aria-labelledby="ap-h-type">
+        <div class="ap-intro">
+          <h2 id="ap-h-type">Type</h2>
+          <p>Size applies to every view. Each view keeps its own font.</p>
+        </div>
+        <div class="ap-body">
+          <div class="ap-slider">
+            <label for="chat-text-size">Text size</label>
+            <div class="ap-stepper">
+              <button type="button" class="ap-step" data-size-step="-1" aria-label="Decrease text size">
                 <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M3.5 8h9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
               </button>
-              <input id="chat-text-size" class="chat-size-range" data-chat-size type="range" min="30" max="130" step="5" value="100" aria-label="Text size" list="chat-size-ticks">
-              <datalist id="chat-size-ticks"><option value="100"></option></datalist>
-              <button type="button" class="chat-size-step" data-size-step="1" aria-label="Increase text size">
+              <input id="chat-text-size" class="ap-range" data-chat-size type="range" min="30" max="130" step="5" value="100">
+              <button type="button" class="ap-step" data-size-step="1" aria-label="Increase text size">
                 <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
               </button>
             </div>
+            <output for="chat-text-size" data-chat-size-value>100%</output>
           </div>
-          <div class="chat-appearance-control">
-            <label class="chat-appearance-label" for="chat-font-select">Font · <span data-chat-font-view>Conversation</span></label>
-            <select id="chat-font-select" class="chat-theme-select" data-chat-font-select></select>
-            <small class="chat-appearance-hint">Size applies to every view; each view keeps its own font.</small>
+          <div class="ap-fontbar">
+            <p class="ap-scope">Font for <strong data-chat-font-view>Terminal</strong></p>
+            <div class="ap-filters" role="group" aria-label="Filter fonts" data-chat-font-filters>
+              <button type="button" data-chat-font-filter="all" aria-pressed="true">All</button>
+              <button type="button" data-chat-font-filter="sans" aria-pressed="false">Sans</button>
+              <button type="button" data-chat-font-filter="serif" aria-pressed="false">Serif</button>
+              <button type="button" data-chat-font-filter="mono" aria-pressed="false">Mono</button>
+            </div>
           </div>
+          <p class="ap-sample" data-chat-font-sample aria-live="polite">The handler is async now, and the dev server is running on :5173.</p>
+          <div class="ap-fonts" data-chat-font-grid role="radiogroup" aria-label="Font"></div>
         </div>
       </section>
-      <section class="chat-appearance-section">
-        <p class="chat-appearance-heading">Composer</p>
-        <label class="chat-appearance-check">
-          <input type="checkbox" data-composer-pref="spell" checked>
-          Spell check
-        </label>
-        <label class="chat-appearance-check">
-          <input type="checkbox" data-composer-pref="palettes" checked>
-          Mentions and paths
-        </label>
-        <label class="chat-appearance-check">
-          <input type="checkbox" data-composer-pref="history" checked>
-          Earlier-prompt history
-        </label>
-        <small class="chat-appearance-hint">Spell check uses an on-device English dictionary in this browser. Slash commands stay on.</small>
+      <section class="ap-section" aria-labelledby="ap-h-composer">
+        <div class="ap-intro">
+          <h2 id="ap-h-composer">Composer</h2>
+          <p>Slash commands always stay on.</p>
+        </div>
+        <div class="ap-body ap-switches">
+          <label class="ap-switch">
+            <input type="checkbox" role="switch" data-composer-pref="spell" checked>
+            <span class="ap-switch-copy"><span>Spell check</span><small>Uses an on-device English dictionary.</small></span>
+          </label>
+          <label class="ap-switch">
+            <input type="checkbox" role="switch" data-composer-pref="palettes" checked>
+            <span class="ap-switch-copy"><span>Mentions and paths</span><small>Suggest agents after @ and files as you type a path.</small></span>
+          </label>
+          <label class="ap-switch">
+            <input type="checkbox" role="switch" data-composer-pref="history" checked>
+            <span class="ap-switch-copy"><span>Earlier-prompt history</span><small>Press ↑ in an empty box to reuse an earlier prompt.</small></span>
+          </label>
+        </div>
       </section>
     </div>
   </div>
@@ -515,5 +551,5 @@
 <script src="/static/spinner-next.js?v=3"></script>
 <script src="/static/spinner-future.js?v=3"></script>
   <script src="/static/chat-dom.js?v=1"></script>
-  <script src="/static/chat.js?v=294"></script>
+  <script src="/static/chat.js?v=295"></script>
 {% endblock %}

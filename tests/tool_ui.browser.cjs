@@ -300,9 +300,10 @@ let assertions = 0;
     }
     await page.evaluate(() => {
       FuseChatAppearance.setSize(100);
-      FuseChatAppearance.setFont('compact', 'serif');
+      FuseChatAppearance.setFont('compact', 'newsreader');
     });
-    assert.match(await page.locator('[data-chat-font-select] option').first().textContent(), /Bricolage Grotesque/, 'View default label must not change to the custom font');
+    assert.match(await page.locator('[data-chat-font-grid] .ap-font[data-font-id=""] small').textContent(), /Bricolage Grotesque/, 'View default card must not change to the custom font');
+    assert.match(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--chat-view-font')), /Newsreader/);
     await page.evaluate(() => FuseChatAppearance.setFont('compact', null));
     assert.match(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--chat-view-font')), /Bricolage Grotesque/);
 

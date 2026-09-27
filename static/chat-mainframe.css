@@ -28,18 +28,6 @@
   --mf-rule: var(--line);
 }
 
-/* —— Menu glyph —— */
-.chat-view-menu button[data-view="mainframe"]::before {
-  content: "◧";
-  width: auto;
-  height: auto;
-  border: 0;
-  color: var(--mute);
-  font-family: var(--mono);
-  font-size: 0.72rem;
-}
-.chat-view-menu button[data-view="mainframe"].is-on::before { color: var(--brass); }
-
 /* —— Transcript rhythm —— */
 .chat[data-view="mainframe"] .chat-log { gap: 0; padding-top: 0.5rem; }
 .chat[data-view="mainframe"] .chat-turn { padding-block: 0.3rem; border: 0; }
@@ -380,10 +368,10 @@
 .chat[data-view="mainframe"] .chat-console-n { color: var(--mute); opacity: 0.7; text-align: right; font-variant-numeric: tabular-nums; user-select: none; white-space: pre; }
 .chat[data-view="mainframe"] .chat-console-nbody { min-width: 0; color: var(--mist); white-space: pre-wrap; overflow-wrap: anywhere; }
 .chat[data-view="mainframe"] .chat-console-nline:is(.is-add, .is-del) { margin-inline: -1.5ch; padding-inline: 1.5ch; }
-.chat[data-view="mainframe"] .chat-console-nline.is-add { background: color-mix(in srgb, var(--ok) 12%, transparent); }
-.chat[data-view="mainframe"] .chat-console-nline.is-del { background: color-mix(in srgb, var(--fault) 12%, transparent); }
-.chat[data-view="mainframe"] .chat-console-nline.is-add .chat-console-mark { color: var(--ok); }
-.chat[data-view="mainframe"] .chat-console-nline.is-del .chat-console-mark { color: var(--fault); }
+.chat[data-view="mainframe"] .chat-console-nline.is-add { background: color-mix(in srgb, var(--diff-add) 12%, transparent); }
+.chat[data-view="mainframe"] .chat-console-nline.is-del { background: color-mix(in srgb, var(--diff-del) 12%, transparent); }
+.chat[data-view="mainframe"] .chat-console-nline.is-add .chat-console-mark { color: var(--diff-add); }
+.chat[data-view="mainframe"] .chat-console-nline.is-del .chat-console-mark { color: var(--diff-del); }
 .chat[data-view="mainframe"] .chat-console-preview .chat-console-nline:is(.is-add, .is-del) { margin-inline: 0; padding-inline: 0.5ch; }
 
 /* Web results: title left, domain right. */

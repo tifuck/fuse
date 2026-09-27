@@ -29,13 +29,74 @@
   // Saved choices from the retired gradient backdrops map to their nearest
   // replacement instead of silently switching the wallpaper off.
   const LEGACY_BACKDROPS = { hush: "phosphor", aurora: "dither", tide: "scope", veil: "glyphs", ember: "life" };
+  // Reading fonts. Bricolage Grotesque and Red Hat Mono ship with every page
+  // (base.html); the rest load from Google Fonts only when chosen, and the
+  // picker loads a tiny glyph subset of each so its cards render in their face.
+  const SANS = '"Segoe UI", system-ui, sans-serif';
+  const SERIF = 'Georgia, "Times New Roman", serif';
+  const MONO = 'ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace';
+  const W3 = "wght@400;500;700";
   const FONTS = {
-    bricolage: { label: "Bricolage Grotesque", stack: '"Bricolage Grotesque", "Segoe UI", sans-serif' },
-    system: { label: "System UI", stack: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif' },
-    serif: { label: "Georgia (serif)", stack: 'Georgia, "Times New Roman", serif' },
-    redhat: { label: "Red Hat Mono", stack: '"Red Hat Mono", ui-monospace, "Cascadia Mono", Menlo, monospace' },
-    sysmono: { label: "System Mono", stack: 'ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace' },
+    bricolage: { label: "Bricolage Grotesque", kind: "sans", spec: "", bundled: true },
+    geist: { label: "Geist", kind: "sans", spec: W3 },
+    instrument: { label: "Instrument Sans", kind: "sans", spec: W3 },
+    figtree: { label: "Figtree", kind: "sans", spec: W3 },
+    schibsted: { label: "Schibsted Grotesk", kind: "sans", spec: W3 },
+    spacegrotesk: { label: "Space Grotesk", kind: "sans", spec: W3 },
+    hanken: { label: "Hanken Grotesk", kind: "sans", spec: W3 },
+    onest: { label: "Onest", kind: "sans", spec: W3 },
+    manrope: { label: "Manrope", kind: "sans", spec: W3 },
+    atkinson: { label: "Atkinson Hyperlegible Next", kind: "sans", spec: W3 },
+    publicsans: { label: "Public Sans", kind: "sans", spec: W3 },
+    fraunces: { label: "Fraunces", kind: "serif", spec: W3 },
+    newsreader: { label: "Newsreader", kind: "serif", spec: W3 },
+    sourceserif: { label: "Source Serif 4", kind: "serif", spec: W3 },
+    literata: { label: "Literata", kind: "serif", spec: W3 },
+    garamond: { label: "EB Garamond", kind: "serif", spec: W3 },
+    plexserif: { label: "IBM Plex Serif", kind: "serif", spec: W3 },
+    redhat: { label: "Red Hat Mono", kind: "mono", spec: "", bundled: true },
+    jetbrains: { label: "JetBrains Mono", kind: "mono", spec: W3 },
+    geistmono: { label: "Geist Mono", kind: "mono", spec: W3 },
+    plexmono: { label: "IBM Plex Mono", kind: "mono", spec: W3 },
+    firacode: { label: "Fira Code", kind: "mono", spec: W3 },
+    martian: { label: "Martian Mono", kind: "mono", spec: W3 },
+    victor: { label: "Victor Mono", kind: "mono", spec: W3 },
+    sourcecode: { label: "Source Code Pro", kind: "mono", spec: W3 },
+    azeret: { label: "Azeret Mono", kind: "mono", spec: W3 },
+    splinemono: { label: "Spline Sans Mono", kind: "mono", spec: W3 },
+    spacemono: { label: "Space Mono", kind: "mono", spec: "wght@400;700" },
+    dmmono: { label: "DM Mono", kind: "mono", spec: "wght@400;500" },
+    sometype: { label: "Sometype Mono", kind: "mono", spec: W3 },
   };
+  for (const font of Object.values(FONTS)) {
+    font.stack = `"${font.label}", ${font.kind === "mono" ? MONO : font.kind === "serif" ? SERIF : SANS}`;
+  }
+  // Retired picks map to the closest face in the new catalog.
+  const LEGACY_FONTS = { system: "geist", serif: "newsreader", sysmono: "jetbrains" };
+  const FONT_KINDS = { sans: "Sans", serif: "Serif", mono: "Mono" };
+  const FONT_SUBSET = "AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPpQqRrSsTtUuVvWwXxYyZz0123456789 .,:;'\"!?-()[]{}<>/=+*&#@";
+  const fontLinks = new Set();
+  function addStylesheet(key, href) {
+    if (fontLinks.has(key) || !document.head) return;
+    fontLinks.add(key);
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = href;
+    document.head.append(link);
+  }
+  function familyParam(font) {
+    return "family=" + encodeURIComponent(font.label).replace(/%20/g, "+") + (font.spec ? ":" + font.spec : "");
+  }
+  function ensureFont(id) {
+    const font = FONTS[id];
+    if (!font || font.bundled) return;
+    addStylesheet("font:" + id, `https://fonts.googleapis.com/css2?${familyParam(font)}&display=swap`);
+  }
+  function ensurePreviewFonts() {
+    const families = Object.values(FONTS).filter((font) => !font.bundled)
+      .map((font) => "family=" + encodeURIComponent(font.label).replace(/%20/g, "+")).join("&");
+    addStylesheet("font:preview", `https://fonts.googleapis.com/css2?${families}&text=${encodeURIComponent(FONT_SUBSET)}&display=swap`);
+  }
   const VIEW_DEFAULT_FONT = {
     cli: "redhat",
     compact: "bricolage",
@@ -90,6 +151,8 @@
   let custom = { ink: "#121212", brass: "#c5df88" };
   let backdrop = "none";
   let strength = STRENGTH_DEFAULT;
+  let fontFilter = "all";
+  let fontHover = "";
 
   function clampHex(value, fallback) {
     const raw = String(value || "").trim();
@@ -165,8 +228,9 @@
     if (Number.isFinite(storedSize) && storedSize >= SIZE_MIN && storedSize <= SIZE_MAX) textScale = Math.round(storedSize / 5) * 5;
     const storedFonts = JSON.parse(localStorage.getItem(STORE_FONTS) || "{}");
     if (storedFonts && typeof storedFonts === "object") {
-      for (const [saved, id] of Object.entries(storedFonts)) {
+      for (const [saved, stored] of Object.entries(storedFonts)) {
         const view = RENAMED_VIEWS[saved] || saved;
+        const id = LEGACY_FONTS[stored] || stored;
         if (VIEWS.includes(view) && FONTS[id]) fontMap[view] = id;
       }
     }
@@ -235,6 +299,8 @@
     if (consoleView) html.dataset.chatConsole = "true";
     else html.removeAttribute("data-chat-console");
     html.dataset.chatBackdrop = backdrop;
+    html.dataset.chatView = currentView;
+    ensureFont(fontFor(currentView));
     html.style.setProperty("--chat-text-scale", String(textScale / 100));
     html.style.setProperty("--chat-view-font", FONTS[fontFor(currentView)].stack);
     html.style.setProperty("--chat-backdrop-strength", String(strength / 100));
@@ -315,14 +381,16 @@
   function paintSwatches() {
     const themeHost = document.querySelector("[data-chat-theme-swatches]");
     if (themeHost && !themeHost.childElementCount) {
-      const entries = [...Object.entries(themes), ["custom", { label: "Custom", ink: custom.ink, brass: custom.brass }]];
+      const entries = [...Object.entries(themes), ["custom", { label: "Custom" }]];
       for (const [id, spec] of entries) {
         const btn = document.createElement("button");
         btn.type = "button";
-        btn.className = "chat-theme-swatch";
+        btn.className = "ap-theme";
         btn.dataset.chatTheme = id;
         btn.setAttribute("aria-pressed", "false");
-        btn.innerHTML = `<i aria-hidden="true"></i><span>${spec.label}</span>`;
+        // A tiny window drawn in the theme's own colors: bar, prompt, text.
+        btn.innerHTML = '<span class="ap-theme-art" aria-hidden="true"><b></b><i></i><i></i><em></em></span>' +
+          `<span class="ap-theme-name">${spec.label}</span>`;
         themeHost.append(btn);
       }
     }
@@ -331,7 +399,7 @@
       for (const [id, spec] of Object.entries(BACKDROPS)) {
         const btn = document.createElement("button");
         btn.type = "button";
-        btn.className = "chat-backdrop-swatch";
+        btn.className = "ap-backdrop";
         btn.dataset.chatBackdrop = id;
         btn.setAttribute("aria-pressed", "false");
         btn.innerHTML = `<i class="chat-backdrop-preview" data-kind="${id}" aria-hidden="true"></i><span>${spec.label}</span><small>${spec.hint}</small>`;
@@ -340,12 +408,48 @@
     }
   }
 
+  function paintFonts() {
+    const grid = document.querySelector("[data-chat-font-grid]");
+    if (!grid) return;
+    if (!grid.childElementCount) {
+      const card = (id, name, kind, stack) =>
+        `<button type="button" class="ap-font" role="radio" aria-checked="false" data-font-id="${id}" data-font-kind="${kind}" style="--ap-face: ${stack.replace(/"/g, "&quot;")}">` +
+        `<span class="ap-font-glyph" aria-hidden="true">Ag</span><span class="ap-font-name">${name}</span><small>${FONT_KINDS[kind] || kind}</small></button>`;
+      grid.innerHTML = card("", "View default", "default", "inherit") +
+        Object.entries(FONTS).map(([id, font]) => card(id, font.label, font.kind, font.stack)).join("");
+    }
+    const fallback = FONTS[VIEW_DEFAULT_FONT[currentView]];
+    const selected = fontMap[currentView] || "";
+    grid.querySelectorAll(".ap-font").forEach((btn) => {
+      const id = btn.dataset.fontId;
+      if (!id) {
+        btn.style.setProperty("--ap-face", fallback.stack);
+        btn.querySelector("small").textContent = fallback.label;
+      }
+      const on = id === selected;
+      btn.setAttribute("aria-checked", String(on));
+      btn.tabIndex = on ? 0 : -1;
+      btn.hidden = fontFilter !== "all" && id !== "" && btn.dataset.fontKind !== fontFilter;
+    });
+    document.querySelectorAll("[data-chat-font-filter]").forEach((btn) => {
+      btn.setAttribute("aria-pressed", String(btn.dataset.chatFontFilter === fontFilter));
+    });
+    const sample = document.querySelector("[data-chat-font-sample]");
+    if (sample) {
+      const shown = fontHover !== "" && fontHover != null ? fontHover : fontFor(currentView);
+      const font = FONTS[shown] || fallback;
+      sample.style.fontFamily = font.stack;
+      sample.dataset.fontLabel = font.label;
+    }
+  }
+
   function syncSwatches() {
     document.querySelectorAll("[data-chat-theme-swatches] [data-chat-theme]").forEach((btn) => {
       const id = btn.dataset.chatTheme;
       const spec = specFor(id);
-      btn.style.setProperty("--swatch-ink", spec.ink);
-      btn.style.setProperty("--swatch-brass", spec.brass);
+      for (const key of ["ink", "panel", "raise", "mist", "mute", "line", "brass"]) {
+        btn.style.setProperty(`--t-${key}`, spec[key]);
+      }
       btn.setAttribute("aria-pressed", String(id === theme));
       btn.classList.toggle("is-on", id === theme);
     });
@@ -374,15 +478,7 @@
     if (range) range.value = String(textScale);
     const out = document.querySelector("[data-chat-size-value]");
     if (out) out.textContent = `${textScale}%`;
-    const select = document.querySelector("[data-chat-font-select]");
-    if (select) {
-      if (!select.options.length) {
-        select.append(new Option("View default", ""));
-        for (const [id, font] of Object.entries(FONTS)) select.append(new Option(font.label, id));
-      }
-      select.options[0].textContent = `View default · ${FONTS[VIEW_DEFAULT_FONT[currentView]].label}`;
-      select.value = fontMap[currentView] || "";
-    }
+    paintFonts();
     const label = document.querySelector("[data-chat-font-view]");
     if (label) label.textContent = viewLabel(currentView);
     const prefs = getComposerPrefs();
@@ -464,7 +560,7 @@
   document.addEventListener("DOMContentLoaded", () => {
     const root = document.querySelector("[data-chat]");
     const sizeRange = document.querySelector("[data-chat-size]");
-    const fontSelect = document.querySelector("[data-chat-font-select]");
+    const fontGrid = document.querySelector("[data-chat-font-grid]");
     if (!root) {
       apply();
       return;
@@ -497,9 +593,55 @@
         window.FuseChatAppearance.setSize(textScale + Number(btn.getAttribute("data-size-step")) * 5);
       });
     });
-    fontSelect?.addEventListener("change", () => {
-      window.FuseChatAppearance.setFont(currentView, fontSelect.value || null);
+    // Picking loads the full face; hovering or focusing a card previews it
+    // in the sample line without committing.
+    fontGrid?.addEventListener("click", (event) => {
+      const btn = event.target.closest(".ap-font");
+      if (!btn) return;
+      fontHover = "";
+      window.FuseChatAppearance.setFont(currentView, btn.dataset.fontId || null);
     });
+    const preview = (event) => {
+      const btn = event.target.closest?.(".ap-font");
+      const next = btn ? btn.dataset.fontId || VIEW_DEFAULT_FONT[currentView] : "";
+      if (next === fontHover) return;
+      fontHover = next;
+      if (next) ensureFont(next);
+      paintFonts();
+    };
+    fontGrid?.addEventListener("pointerover", preview);
+    fontGrid?.addEventListener("focusin", preview);
+    fontGrid?.addEventListener("pointerleave", () => { fontHover = ""; paintFonts(); });
+    fontGrid?.addEventListener("focusout", (event) => {
+      if (!fontGrid.contains(event.relatedTarget)) { fontHover = ""; paintFonts(); }
+    });
+    fontGrid?.addEventListener("keydown", (event) => {
+      const keys = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 };
+      if (!(event.key in keys)) return;
+      const cards = [...fontGrid.querySelectorAll(".ap-font:not([hidden])")];
+      const at = cards.indexOf(document.activeElement);
+      if (at < 0) return;
+      event.preventDefault();
+      const next = cards[(at + keys[event.key] + cards.length) % cards.length];
+      next.focus();
+      next.click();
+    });
+    document.querySelector("[data-chat-font-filters]")?.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-chat-font-filter]");
+      if (!btn) return;
+      fontFilter = btn.dataset.chatFontFilter;
+      paintFonts();
+    });
+    // Card faces load only once the window is first opened.
+    const menu = document.querySelector("[data-view-menu]");
+    if (menu) {
+      const loadOnOpen = new MutationObserver(() => {
+        if (menu.hidden) return;
+        ensurePreviewFonts();
+        loadOnOpen.disconnect();
+      });
+      loadOnOpen.observe(menu, { attributes: true, attributeFilter: ["hidden"] });
+    }
     document.querySelectorAll("[data-composer-pref]").forEach((el) => {
       el.addEventListener("change", () => {
         const key = el.getAttribute("data-composer-pref");

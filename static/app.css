@@ -2619,22 +2619,22 @@ body.is-chat main {
 .chat-code :is(.hljs-params, .hljs-subst, .hljs-punctuation, .hljs-tag) { color: var(--mist); }
 .chat-code :is(.hljs-section, .hljs-strong) { color: var(--mist); font-weight: 700; }
 .chat-code .hljs-emphasis { font-style: italic; }
-.chat-code .hljs-deletion { color: var(--fault); }
+.chat-code .hljs-deletion { color: var(--diff-del, var(--fault)); }
 .chat-code .hljs-addition,
 .chat-tool-out.is-diff .hljs-addition,
 .chat-console-out.is-diff .hljs-addition {
   display: inline-block;
   width: 100%;
-  background: color-mix(in srgb, var(--ok) 16%, transparent);
-  color: var(--ok);
+  background: color-mix(in srgb, var(--diff-add, var(--ok)) 16%, transparent);
+  color: var(--diff-add, var(--ok));
 }
 .chat-code .hljs-deletion,
 .chat-tool-out.is-diff .hljs-deletion,
 .chat-console-out.is-diff .hljs-deletion {
   display: inline-block;
   width: 100%;
-  background: color-mix(in srgb, var(--fault) 16%, transparent);
-  color: var(--fault);
+  background: color-mix(in srgb, var(--diff-del, var(--fault)) 16%, transparent);
+  color: var(--diff-del, var(--fault));
 }
 .chat-md-alert {
   margin: calc(0.7rem * var(--chat-text-scale, 1)) 0;
@@ -6670,27 +6670,67 @@ body.is-chat.is-keyboard .chat-dock {
   display: flex;
   flex-direction: column;
 }
-/* —— Work panel lists: agents and background commands share one row
-   system. Rows never shrink (the list scrolls instead), every text line is
+/* —— Work panel. The overview is one scroll area with two sections: the main
+   agent's background commands, then subagents. A subagent's own commands sit
+   inside its view, under its header. Agents and commands share one row
+   system: rows never shrink (the area scrolls), every text line is
    single-line with an ellipsis, and state is carried by the dot. —— */
+.chat-agents-overview {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+}
+.chat-agents-overview[hidden] { display: none; }
 .chat-agents-list,
-.chat-jobs-list {
+.chat-work-section {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  padding: 0.5rem 0.5rem 0.75rem;
+  padding: 0.35rem 0.5rem 0.6rem;
 }
-.chat-agents-list {
-  flex: 1;
-  min-height: 0;
+.chat-work-section { flex-shrink: 0; }
+.chat-work-section[hidden] { display: none; }
+.chat-work-section + .chat-agents-list { border-top: 1px solid var(--line); }
+.chat-agents-list > *,
+.chat-work-section > * { flex-shrink: 0; }
+.chat-work-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: 0.4rem 0.5rem 0.2rem;
+  min-width: 0;
+}
+.chat-work-head span {
+  font-family: var(--sans);
+  color: var(--mist);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+.chat-work-head small {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--chat-secondary);
+  font: 0.6875rem/1.4 var(--mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* A subagent's commands: a bounded strip between its header and transcript. */
+.chat-agent-jobs {
+  max-height: min(14rem, 32%);
   overflow: auto;
   overscroll-behavior: contain;
-  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+  padding-top: 0.15rem;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--ink) 35%, var(--panel));
 }
-.chat-jobs-list { flex-shrink: 0; border-bottom: 1px solid var(--line); }
-.chat-jobs-list[hidden] { display: none; }
-.chat-agents-list > *,
-.chat-jobs-list > * { flex-shrink: 0; }
 .chat-agents-kicker {
   margin: 0.75rem 0.5rem 0.3rem;
   color: var(--mute);
@@ -6698,7 +6738,8 @@ body.is-chat.is-keyboard .chat-dock {
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
-.chat-agents-kicker:first-child { margin-top: 0.25rem; }
+.chat-agents-kicker:first-child,
+.chat-work-head + .chat-agents-kicker { margin-top: 0.25rem; }
 .chat-agents-row,
 .chat-jobs-row {
   display: grid;
@@ -6751,7 +6792,36 @@ body.is-chat.is-keyboard .chat-dock {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.chat-agents-name { color: var(--mist); font-size: 0.8125rem; line-height: 1.35; }
+.chat-agents-name { color: var(--mist); font-size: 0.8125rem; font-weight: 550; line-height: 1.35; }
+.chat-agents-meta { display: flex; gap: 0.45rem; }
+.chat-agents-state { flex-shrink: 0; }
+.chat-agents-row.is-running .chat-agents-state,
+.chat-agents-row.is-queued .chat-agents-state { color: var(--status-live); }
+.chat-agents-row.is-completed .chat-agents-state { color: var(--status-done); }
+.chat-agents-row.is-failed .chat-agents-state { color: var(--status-fail); }
+.chat-agents-doing { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.chat-agents-doing::before { content: "· "; }
+.chat-agents-facts {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0.3rem;
+  min-width: 0;
+  overflow: hidden;
+  margin-top: 0.1rem;
+}
+.chat-agents-facts > span {
+  flex-shrink: 0;
+  padding: 0 0.3rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--chat-secondary);
+  font: 0.625rem/1.45 var(--mono);
+  white-space: nowrap;
+}
+.chat-agents-facts > .chat-agents-cmds {
+  border-color: color-mix(in srgb, var(--status-live) 45%, var(--line));
+  color: var(--status-live);
+}
 .chat-jobs-cmd { color: var(--mist); font: 0.75rem/1.4 var(--mono); }
 .chat-jobs-output-link:hover .chat-jobs-cmd { color: var(--brass); }
 .chat-agents-meta,
@@ -6760,6 +6830,8 @@ body.is-chat.is-keyboard .chat-dock {
 .chat-agents-row.is-undelivered .chat-agents-sum { color: var(--brass); }
 .chat-agents-time {
   align-self: start;
+  min-width: 2.5ch;
+  text-align: right;
   color: var(--chat-secondary);
   font: 0.6875rem/1.9 var(--mono);
   font-variant-numeric: tabular-nums;
@@ -6770,8 +6842,10 @@ body.is-chat.is-keyboard .chat-dock {
   opacity: 0.5;
   transition: opacity 120ms ease, transform 120ms ease;
 }
+.chat-agents-chevron { align-self: start; margin-top: 0.3rem; }
 .chat-agents-row:hover .chat-agents-chevron { opacity: 1; transform: translateX(1px); }
 .chat-jobs-kill {
+  align-self: start;
   padding: 0.2rem 0.5rem;
   border: 1px solid var(--line);
   border-radius: 5px;
@@ -7984,8 +8058,6 @@ body.is-settings .page-head { display: none; }
   border-radius: 16px;
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
 }
-.chat-view-menu button:hover,
-.chat-view-menu button.is-on { background: var(--raise); }
 
 /* Context + Skills: large centered editor on desktop, full screen on mobile. */
 .chat-sheet-backdrop {
@@ -8435,63 +8507,6 @@ body.is-settings .page-head { display: none; }
 }
 
 /* Chat view systems: terminal (primary) and compact (ledger). Isolated CSS. */
-.chat-view-modes .chat-view-menu button,
-.chat-view-menu button[data-view] {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 0.55rem;
-  height: auto;
-  min-height: 2.1rem;
-  padding: 0.28rem 0.6rem;
-}
-.chat-view-menu button[data-view]::before {
-  content: "";
-  flex: 0 0 auto;
-  width: 0.85rem;
-  height: 0.7rem;
-  border: 1px solid color-mix(in srgb, var(--mute) 72%, transparent);
-  border-radius: 3px;
-}
-.chat-view-menu button[data-view="compact"]::before {
-  border-width: 1px 0;
-  border-radius: 0;
-  box-shadow: inset 0 -2px 0 var(--ink), inset 0 -3px 0 color-mix(in srgb, var(--mute) 72%, transparent);
-}
-.chat-view-menu button[data-view="cli"]::before {
-  content: ">_";
-  width: auto;
-  height: auto;
-  border: 0;
-  color: var(--mute);
-  font-family: var(--mono);
-  font-size: 0.65rem;
-}
-.chat-view-menu button[data-view="console"]::before {
-  content: "❯";
-  width: auto;
-  height: auto;
-  border: 0;
-  color: var(--mute);
-  font-family: var(--mono);
-  font-size: 0.7rem;
-}
-.chat-view-menu button[data-view].is-on::before {
-  border-color: var(--brass);
-  color: var(--brass);
-}
-.chat-view-menu button[data-view] span { flex: 0 1 auto; color: var(--mist); font-weight: 550; white-space: nowrap; }
-.chat-view-menu button[data-view] small {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-align: right;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--mute);
-  font-size: 0.68rem;
-  font-weight: 400;
-}
 .chat-step-hint { display: none; }
 .chat-tool-command,
 .chat-tool-out {

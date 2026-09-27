@@ -133,6 +133,8 @@
   const agentsLiveEl = root.querySelector("[data-agents-live]");
   const agentsListEl = root.querySelector("[data-agents-list]");
   const jobsListEl = root.querySelector("[data-jobs-list]");
+  const agentsOverviewEl = root.querySelector("[data-agents-overview]");
+  const agentJobsEl = root.querySelector("[data-agent-jobs]");
   const completedJobs = new Map();
   const agentViewEl = root.querySelector("[data-agent-view]");
   const agentBackBtn = root.querySelector("[data-agent-back]");
@@ -12327,41 +12329,51 @@
     const ctx = row.context && Number(row.context.limit) > 0
       ? `${Math.round((Number(row.context.used) || 0) / Number(row.context.limit) * 100)}% ctx`
       : "";
-    const meta = [
+    const commands = jobsFor(row.id).length;
+    const facts = [
       row.subagent_type && row.subagent_type !== "general-purpose" ? row.subagent_type : "",
-      row.children ? `${row.children} spawn${row.children === 1 ? "" : "s"}` : "",
       row.model || "",
       ctx,
+      row.children ? `${row.children} spawn${row.children === 1 ? "" : "s"}` : "",
       row.resumable && !agentLive(row.status) ? "resumable" : "",
-    ].filter(Boolean).join(" · ");
+    ].filter(Boolean);
     const dur = agentDurationSeconds(row);
     const err = String(row.error || "").trim();
     const wake = row.wake_state === "dropped" ? "report not delivered" : row.wake_state === "held" ? "report waits for your next message" : row.wake_state === "retrying" ? "report pending" : "";
     const alert = err || wake;
     const activity = alert ? "" : agentActivitySummary(row);
-    const line = [agentStatusText(row), meta, activity].filter(Boolean).join(" · ");
+    const status = agentStatusText(row);
+    const doing = activity && !activity.startsWith(status) ? activity : "";
     return (
       `<button type="button" class="chat-agents-row is-${escapeHtml(row.status || "unknown")}${row.wake_state === "dropped" ? " is-undelivered" : ""}${agentIsStalled(row) ? " is-stalled" : ""}" data-agent-id="${escapeHtml(row.id)}">` +
       '<span class="chat-agents-dot" aria-hidden="true"></span>' +
       `<span class="chat-agents-rowcopy"><span class="chat-agents-name">${escapeHtml(row.description || "Subagent")}</span>` +
-      `<span class="chat-agents-meta">${escapeHtml(line)}</span>` +
+      `<span class="chat-agents-meta"><span class="chat-agents-state">${escapeHtml(status)}</span>${doing ? `<span class="chat-agents-doing">${escapeHtml(doing)}</span>` : ""}</span>` +
+      (facts.length || commands
+        ? `<span class="chat-agents-facts">${commands ? `<span class="chat-agents-cmds">${commands} command${commands === 1 ? "" : "s"}</span>` : ""}${facts.map((fact) => `<span>${escapeHtml(fact)}</span>`).join("")}</span>`
+        : "") +
       (alert ? `<span class="chat-agents-sum">${escapeHtml(alert.slice(0, 180))}</span>` : "") +
       "</span>" +
-      (dur != null ? `<span class="chat-agents-time">${formatActivityClock(dur)}</span>` : "") +
+      `<span class="chat-agents-time">${dur != null ? formatActivityClock(dur) : ""}</span>` +
       '<svg class="chat-agents-chevron" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M6 3.5L10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
       "</button>"
     );
+  }
+
+  function workHeadHtml(title, note) {
+    return `<header class="chat-work-head"><span>${escapeHtml(title)}</span>${note ? `<small>${escapeHtml(note)}</small>` : ""}</header>`;
   }
 
   function renderAgentsList() {
     if (!agentsListEl) return;
     if (toolGestureOwner === agentsListEl) { pendingAgentListPaint = true; return; }
     const { live, done } = agentRowsSorted();
-    let html = "";
-    if (live.length) html += '<p class="chat-agents-kicker">Live · longest first</p>' + live.map(agentRowHtml).join("");
+    const count = [live.length ? `${live.length} running` : "", done.length ? `${done.length} finished` : ""].filter(Boolean).join(" · ");
+    let html = workHeadHtml("Subagents", count);
+    if (live.length) html += '<p class="chat-agents-kicker">Running · longest first</p>' + live.map(agentRowHtml).join("");
     if (done.length) html += '<p class="chat-agents-kicker">Finished</p>' + done.map(agentRowHtml).join("");
-    FuseChatDOM.reconcile(agentsListEl,
-      html || '<p class="chat-agents-empty">No subagents yet. The main agent spawns them for isolated sub-tasks while it works.</p>');
+    if (!live.length && !done.length) html += '<p class="chat-agents-empty">No subagents yet. The main agent spawns them for isolated sub-tasks while it works.</p>';
+    FuseChatDOM.reconcile(agentsListEl, html);
   }
 
   function renderAgentHead() {
@@ -12816,12 +12828,18 @@
   let jobsRequest = null;
   let jobsRefreshAgain = false;
 
-  if (jobsListEl) jobsListEl.addEventListener("click", async (event) => {
+  async function onJobsClick(event) {
     const output = event.target.closest("[data-show-job]");
     if (output) {
       const id = output.dataset.showJob;
-      const row = log.querySelector(`[data-execution="${CSS.escape(id)}"]`);
-      if (row) {
+      // A subagent's command lives in that subagent's transcript, which is
+      // already on screen below its list; the main agent's lives in the thread.
+      const inAgent = Boolean(agentJobsEl && agentJobsEl.contains(output));
+      const row = (inAgent ? agentBodyEl : log)?.querySelector(`[data-execution="${CSS.escape(id)}"]`);
+      if (row && inAgent) {
+        revealToolRow(row);
+        setTimeout(() => { if (row.isConnected) { row.scrollIntoView({ block: "center", behavior: reduceMotion.matches ? "auto" : "smooth" }); row.classList.add("is-work-highlight"); setTimeout(() => row.classList.remove("is-work-highlight"), 1800); } }, reduceMotion.matches ? 0 : 230);
+      } else if (row) {
         setAgentsOpen(false);
         pauseThreadFollow();
         revealToolRow(row);
@@ -12852,7 +12870,9 @@
       button.disabled = false;
       showFailure("Could not stop background command", error);
     }
-  });
+  }
+  if (jobsListEl) jobsListEl.addEventListener("click", onJobsClick);
+  if (agentJobsEl) agentJobsEl.addEventListener("click", onJobsClick);
 
   function jobElapsedMs(job, nowMs) {
     const started = Number(job && job.started_ms);
@@ -12884,28 +12904,50 @@
     );
   }
 
+  // Background commands belong to the agent that started them: the overview
+  // lists the main agent's, and each subagent's view lists its own.
+  function jobsFor(agentId) {
+    const owner = String(agentId || "");
+    return jobsRows.filter((job) => String(job.agent_run_id || "") === owner);
+  }
+
+  let agentJobsRendered = "";
   function renderJobsList() {
-    if (!jobsListEl) return;
     const nowMs = Date.now();
-    const sig = JSON.stringify(jobsRows.map((job) => [job.id, job.command, job.host, job.state, job.event_count, job.kind]));
-    if (sig !== jobsRendered) {
-      jobsRendered = sig;
-      jobsListEl.hidden = !jobsRows.length;
-      jobsListEl.innerHTML = jobsRows.length
-        ? '<p class="chat-agents-kicker">Background commands · ' + jobsRows.length + "</p>" +
-          jobsRows.map((job) => jobRowHtml(job, nowMs)).join("")
-        : "";
-      return;
+    const sigOf = (rows) => JSON.stringify(rows.map((job) => [job.id, job.command, job.host, job.state, job.event_count, job.kind]));
+    if (jobsListEl) {
+      const rows = jobsFor("");
+      const sig = sigOf(rows);
+      if (sig !== jobsRendered) {
+        jobsRendered = sig;
+        jobsListEl.hidden = !rows.length;
+        jobsListEl.innerHTML = rows.length
+          ? workHeadHtml("Main agent", `${rows.length} background command${rows.length === 1 ? "" : "s"}`) +
+            rows.map((job) => jobRowHtml(job, nowMs)).join("")
+          : "";
+      }
+    }
+    if (agentJobsEl) {
+      const rows = agentViewId ? jobsFor(agentViewId) : [];
+      const sig = agentViewId + sigOf(rows);
+      if (sig !== agentJobsRendered) {
+        agentJobsRendered = sig;
+        agentJobsEl.hidden = !rows.length;
+        agentJobsEl.innerHTML = rows.length
+          ? `<p class="chat-agents-kicker">Background commands · ${rows.length}</p>` + rows.map((job) => jobRowHtml(job, nowMs)).join("")
+          : "";
+      }
     }
     tickJobTimes();
   }
 
   function tickJobTimes() {
-    if (!jobsListEl || jobsListEl.hidden || !jobsRows.length) return;
+    if (!agentsPanel || !jobsRows.length) return;
     const nowMs = Date.now();
     jobsRows.forEach((job) => {
-      const el = jobsListEl.querySelector('[data-job-time="' + job.id + '"]');
-      if (el) el.textContent = formatActivityClock(Math.round(jobElapsedMs(job, nowMs) / 1000));
+      agentsPanel.querySelectorAll('[data-job-time="' + CSS.escape(String(job.id)) + '"]').forEach((el) => {
+        el.textContent = formatActivityClock(Math.round(jobElapsedMs(job, nowMs) / 1000));
+      });
     });
   }
 
@@ -13019,7 +13061,7 @@
       agentsLiveEl.hidden = !liveCount;
       agentsLiveEl.textContent = liveCount ? `${liveCount} live` : "";
     }
-    if (agentsListEl) agentsListEl.hidden = Boolean(agentViewId);
+    if (agentsOverviewEl) agentsOverviewEl.hidden = Boolean(agentViewId);
     if (agentViewEl) agentViewEl.hidden = !agentViewId;
     for (const tab of agentsTabs) {
       tab.setAttribute("aria-expanded", agentsOpen ? "true" : "false");
@@ -13040,6 +13082,7 @@
         countEl.classList.toggle("has-count", Boolean(next));
       }
     }
+    renderJobsList();
     renderAgentsList();
     renderAgentHead();
   }

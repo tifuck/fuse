@@ -1227,6 +1227,18 @@ def list_thread_jobs(user_id: int, thread_id: int) -> list[dict]:
     )
     from datetime import datetime, timezone
 
+    # Jobs started by a subagent belong in that subagent's view, not the root's.
+    run_ids = sorted({str(row["run_id"]) for row in rows if row["run_id"]})
+    child_runs: set[str] = set()
+    if run_ids:
+        placeholders = ",".join("?" for _ in run_ids)
+        child_runs = {
+            str(item["id"]) for item in db.fetchall(
+                f"SELECT id FROM chat_runs WHERE id IN ({placeholders}) AND parent_run_id IS NOT NULL",
+                tuple(run_ids),
+            )
+        }
+
     out: list[dict] = []
     for row in rows:
         rec = _live.get(row["id"])
@@ -1249,6 +1261,7 @@ def list_thread_jobs(user_id: int, thread_id: int) -> list[dict]:
             "started_ms": started_ms,
             "elapsed_ms": elapsed or 0,
             "status": "running",
+            "agent_run_id": str(row["run_id"]) if row["run_id"] and str(row["run_id"]) in child_runs else None,
             **_identity_fields(rec if rec is not None else dict(row)),
         }
         live_rec = rec if rec is not None else dict(row)
