@@ -220,14 +220,23 @@ def _norm_remote_path(path: str) -> str:
     return text
 
 
-_FILE_PROMOTE_TOOLS = frozenset(
-    {"read_file", "list_dir", "grep", "glob", "write_file", "search_replace"}
-)
+# Writes only: reading a folder must not rebind the chat (and narrow its
+# working root) to that folder.
+_FILE_PROMOTE_TOOLS = frozenset({"write_file", "search_replace"})
 
 
 def _generic_remote_root(root: str) -> bool:
     text = _norm_remote_path(root)
     return text in ("", "/", "~", ".", "~/")
+
+
+def _temp_root(root: str) -> bool:
+    """Temp is always in scope and never a project: binding a chat to /tmp
+    would drop home/project access for the rest of the session."""
+    from .permissions import is_temp_path
+
+    text = _norm_remote_path(root)
+    return is_temp_path(text, False) or is_temp_path(text, True)
 
 
 def _session_root(cwd: str = "", path: str = "", *, tool: str = "") -> str:
@@ -2059,7 +2068,7 @@ def promote_working_session(user_id: int, thread_id, *, host_id=None, cwd: str =
     """Turn a regular chat into a project session. Messages and thread notes stay as they are."""
     from . import chat_store as store
 
-    if tool in ("run_terminal_command", "get_command_output", "kill_command"):
+    if tool and tool not in _FILE_PROMOTE_TOOLS:
         return None
     hid = None
     if host_id is not None and host_id != "":
@@ -2093,7 +2102,7 @@ def promote_working_session(user_id: int, thread_id, *, host_id=None, cwd: str =
         if host is None:
             return None
         hid = int(host["id"])
-        if not root:
+        if not root or _temp_root(root):
             return None
         proj = _match_project_row(conn, user_id, hid, root)
         if proj is None:

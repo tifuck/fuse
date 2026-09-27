@@ -231,6 +231,60 @@ class CommandDeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["id"] for item in candidates], [child["id"]])
         self.assertEqual(candidates[0]["summary"], "child report")
 
+    def _insert_job(self, job_id, thread_id, run_id):
+        now = db.now()
+        db.execute(
+            "INSERT INTO command_jobs (id,user_id,host_id,host,thread_id,run_id,command,cwd,background,"
+            " timeout_ms,status,exit_code,error,out,out_bytes,duration_ms,notify,delivered,created_at,started_at,finished_at)"
+            " VALUES (?,1,1,'box',?,?,'objdump -d x','',1,60000,"
+            " 'completed',0,'','done',4,2043,1,0,?,?,?)",
+            (job_id, thread_id, run_id, now, now, now),
+        )
+        return command_jobs._row_rec(db.fetchone("SELECT * FROM command_jobs WHERE id=?", (job_id,)))
+
+    async def test_subagent_command_never_reaches_main_agent(self):
+        thread = chats.create_thread(1, model="offline")
+        result = store.start_turn(1, thread["id"], "go", thread["revision"], "turn-child-cmd")
+        parent = result["run"]
+        tid = parent["thread_id"]
+        child = store.start_child_run(
+            user_id=1, thread_id=thread["id"], parent_run_id=parent["id"], prompt="bg", description="bg", background=True,
+        )
+        store.finish_run(parent["id"], {"content": "waiting on child", "tools": []}, "completed")
+        wakes = []
+        with patch.object(chat_runs, "schedule_wake", side_effect=lambda *a: wakes.append(a)):
+            # Live child: delivered to the child only; the idle main agent is not woken.
+            live = self._insert_job("jobchild1", tid, child["id"])
+            await command_jobs._deliver(live)
+            self.assertEqual(wakes, [])
+            pending = store.get_run(1, child["id"])["request"]["agent"].get("pending_child_results") or []
+            self.assertEqual([item["id"] for item in pending], ["jobchild1"])
+            self.assertEqual(command_jobs.pending_envelopes(1, tid), [])
+            # Finished child: nobody is waiting; it is settled, still no wake.
+            store.finish_run(child["id"], {"content": "child report", "tools": []}, "completed")
+            late = self._insert_job("jobchild2", tid, child["id"])
+            await command_jobs._deliver(late)
+            self.assertEqual(wakes, [])
+            row = db.fetchone("SELECT delivered FROM command_jobs WHERE id='jobchild2'")
+            self.assertEqual(int(row["delivered"]), 1)
+        self.assertEqual(command_jobs.pending_envelopes(1, tid), [])
+        # The main agent's own job still wakes it.
+        self._insert_job("jobmain1", tid, parent["id"])
+        self.assertEqual([item["id"] for item in command_jobs.pending_envelopes(1, tid)], ["jobmain1"])
+
+    async def test_job_tools_are_thread_scoped(self):
+        gate = asyncio.Event()
+        rec = self._launch(background=True, gate=gate, thread_id=7)
+        text, trace = await command_jobs.join(rec["id"], 1, 0, thread_id=8)
+        self.assertEqual(trace["status"], "error")
+        text, trace = command_jobs.kill(rec["id"], 1, thread_id=8)
+        self.assertEqual(trace["status"], "error")
+        self.assertEqual(rec["status"], "running")
+        text, trace = command_jobs.kill(rec["id"], 1, thread_id=7)
+        self.assertNotEqual(trace["status"], "error")
+        gate.set()
+        await asyncio.gather(rec["task"], return_exceptions=True)
+
 
 if __name__ == "__main__":
     unittest.main()

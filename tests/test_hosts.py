@@ -226,8 +226,12 @@ class HostsProjectsTest(unittest.TestCase):
         self.assertRegex(promoted["id"], r"^[A-Za-z0-9]{22}$")
         self.assertIsNone(chats.promote_working_session(1, thread["id"], host_id=h["id"], cwd="/srv/api"))
         orphan = chats.create_thread(1, title="scratch")
+        # Reads and temp folders never bind a chat to a project.
+        self.assertIsNone(chats.promote_working_session(1, orphan["id"], host_id=h["id"], cwd="/srv/scratch-app", tool="list_dir"))
+        self.assertIsNone(chats.promote_working_session(1, orphan["id"], host_id=h["id"], cwd="/tmp/scratch-app", tool="write_file"))
+        self.assertIsNone(chats.promote_working_session(1, orphan["id"], host_id=h["id"], cwd="/srv/api", tool="read_file"))
         created = chats.promote_working_session(
-            1, orphan["id"], host_id=h["id"], cwd="/tmp/scratch-app", tool="list_dir"
+            1, orphan["id"], host_id=h["id"], cwd="/srv/scratch-app", tool="write_file"
         )
         self.assertEqual(created["kind"], "project")
         self.assertEqual(created["project_name"], "scratch-app")
@@ -284,6 +288,10 @@ class HostsProjectsTest(unittest.TestCase):
             {"name": "docs", "remote_path": "/srv/docs", "permission_mode": "read_only"},
         )
         self.assertEqual(hosts.effective_permission(1, bound_host_id=h["id"], bound_cwd="/srv/docs"), "read_only")
+        # A subfolder (subagent cwd or write target) stays read-only; a
+        # sibling with a shared prefix does not.
+        self.assertEqual(hosts.effective_permission(1, bound_host_id=h["id"], bound_cwd="/srv/docs/sub"), "read_only")
+        self.assertEqual(hosts.effective_permission(1, bound_host_id=h["id"], bound_cwd="/srv/docsx"), "project")
         text, rec = asyncio.run(
             workspace.execute(
                 "write_file",
@@ -316,7 +324,7 @@ class PromotionBindingTest(unittest.TestCase):
                     store, "thread_event"
                 ), patch.object(store, "thread_view", return_value={"project_id": 5}):
                     transaction.return_value.__enter__.return_value = conn
-                    result = chats.promote_working_session(1, "thread", host_id=4, cwd=candidate, tool="list_dir")
+                    result = chats.promote_working_session(1, "thread", host_id=4, cwd=candidate, tool="write_file")
                 self.assertEqual(result["project_id"], 5)
                 updates = [call for call in conn.execute.call_args_list if call.args[0].startswith("UPDATE chat_runs")]
                 self.assertEqual(len(updates), 1)

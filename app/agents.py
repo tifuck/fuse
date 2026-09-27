@@ -323,6 +323,47 @@ async def resolve_spawn_model(*, user_id: int, slug: str, parent_model: str) -> 
     )
 
 
+def _same_host(a, b) -> bool:
+    if a is None or b is None:
+        return a is None and b is None
+    try:
+        return int(a) == int(b)
+    except (TypeError, ValueError):
+        return False
+
+
+async def _review_child_cwd(user_id: int, pagent: dict, host_id, cwd: str, gate) -> tuple[str, str]:
+    """A child's cwd becomes its working root, i.e. its allowed folder. Review
+    it against the parent's own scope, asking the user exactly as the parent
+    would for that folder. Returns (resolved cwd, error)."""
+    from . import permissions
+    from .hosts import get_host
+    from .workspace import _is_windows_row, host_root
+
+    if host_id is None:
+        return "", "cwd needs a host: bind a project or pass host with cwd."
+    row = await asyncio.to_thread(get_host, user_id, host_id)
+    if not row or row.get("disabled"):
+        return "", "unknown or disabled host for cwd."
+    windows = _is_windows_row(row)
+    parent_root = host_root(row, pagent.get("bound_host_id"), str(pagent.get("bound_cwd") or ""))
+    resolved = permissions._resolve_for_scope(cwd, parent_root or "~", windows)
+    if resolved.startswith(".."):
+        return "", "cwd escapes the home directory."
+    if gate is None:
+        ok, _ = permissions.scope_allows(cwd, parent_root or "~", permissions.compute_roots(parent_root, windows), windows)
+        if not ok:
+            return "", "cwd is outside this agent's allowed folders."
+        return resolved, ""
+    verdict = await permissions.review(
+        tool="spawn_subagent", args={"cwd": cwd}, user_id=user_id, host_id=int(row["id"]),
+        host_alias=str(row.get("alias") or ""), root=parent_root, windows=windows, gate=gate,
+    )
+    if not verdict.allowed:
+        return "", verdict.detail or "cwd is outside this agent's allowed folders."
+    return resolved, ""
+
+
 def _child_summary(row: dict) -> str:
     """Completed report or status-only notification from the shared delivery policy."""
     text = chat_store.child_writeup(row)
@@ -372,6 +413,7 @@ async def spawn(
     arguments: str,
     thread_id: int,
     on_started=None,
+    gate=None,
 ) -> tuple[str, dict]:
     try:
         args = json.loads(arguments or "{}")
@@ -416,7 +458,23 @@ async def spawn(
         if row is None:
             return "unknown host alias", {"name": "spawn_subagent", "status": "error", "error": "unknown host alias", "description": description}
         host_id = row["id"]
-    cwd = str(args.get("cwd") or pagent.get("bound_cwd") or "")
+    explicit_cwd = str(args.get("cwd") or "").strip() if isinstance(args.get("cwd"), str) else ""
+    if explicit_cwd:
+        cwd, cwd_error = await _review_child_cwd(user["id"], pagent, host_id, explicit_cwd, gate)
+        if cwd_error:
+            return cwd_error, {
+                "name": "spawn_subagent",
+                "status": "error",
+                "error": cwd_error,
+                "kind": "permission_denied",
+                "description": description,
+            }
+    elif _same_host(host_id, pagent.get("bound_host_id")):
+        cwd = str(pagent.get("bound_cwd") or "")
+    else:
+        # Another host: the parent's folder is a path on a different machine.
+        # The child uses that host's own default working directory.
+        cwd = ""
     background = bool(args.get("background"))
     resume_from = args.get("task_id") if isinstance(args.get("task_id"), str) else None
     if not resume_from and isinstance(args.get("resume_from"), str):

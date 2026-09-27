@@ -4,7 +4,9 @@ Every run_terminal_command becomes a job. Foreground calls wait a short window
 for completion, then hand off a running job id; background:true returns the id
 immediately. Terminal results are delivered to the owning run through the same
 mechanism as background subagent results (pending_child_results while the owner
-is generating, thread-scoped wake injection while it is idle).
+is generating, thread-scoped wake injection while it is idle). Thread-scoped
+delivery is the main agent's: a subagent's job goes only to that subagent,
+and is settled undelivered if the subagent has already finished.
 
 Monitor jobs are thread-owned background watches: stdout (or WebSocket text)
 is split into 200ms line batches and delivered as <monitor_event> envelopes
@@ -668,6 +670,19 @@ async def _finish(rec: dict, *, status: str, exit_code: int | None, error: str) 
         await asyncio.to_thread(_mark_delivered, [str(rec["id"])])
 
 
+def _child_run_state(run_id) -> str | None:
+    """'active' / 'finished' for a job a subagent started; None for the main
+    agent's (or an unowned) job. Thread-scoped delivery (wake turns, the next
+    user turn) belongs to the main agent only: a subagent's command result
+    must never surface there as if the main agent had started it."""
+    if not run_id:
+        return None
+    row = db.fetchone("SELECT parent_run_id, status FROM chat_runs WHERE id=?", (str(run_id),))
+    if row is None or not row["parent_run_id"]:
+        return None
+    return "active" if row["status"] in ("queued", "running") else "finished"
+
+
 async def _deliver(rec: dict) -> None:
     """Hand a terminal result to the owning run (active) or thread (idle).
 
@@ -684,16 +699,24 @@ async def _deliver(rec: dict) -> None:
     if rec.get("status") == "cancelled" and not _is_monitor(rec):
         return
     run_id = rec.get("run_id")
+    queued = False
     if run_id:
         from . import chat_store
 
         envelope = notification(rec)
         try:
-            await asyncio.to_thread(
+            queued = await asyncio.to_thread(
                 chat_store.queue_child_result, str(run_id), envelope, child_id=str(rec["id"])
             )
         except Exception:
             logger.exception("Queue command result failed for job %s", rec["id"])
+    if await asyncio.to_thread(_child_run_state, run_id) is not None:
+        if not queued:
+            # The subagent that started it has finished: nobody is waiting.
+            # The result stays readable in the jobs panel and by id.
+            logger.info("Command job %s outlived its subagent %s; not delivered", rec["id"], run_id)
+            await asyncio.to_thread(_mark_delivered, [str(rec["id"])])
+        return
     thread_id = rec.get("thread_id")
     if thread_id:
         try:
@@ -727,6 +750,9 @@ async def _deliver_monitor_event(rec: dict, envelope: str, seq: int) -> None:
         except Exception:
             logger.exception("Queue monitor event failed for job %s", rec["id"])
     if queued:
+        return
+    if await asyncio.to_thread(_child_run_state, run_id) is not None:
+        # A finished subagent's watch has no reader; never wake the main agent.
         return
     pending = rec.setdefault("pending_events", [])
     pending.append({"seq": int(seq), "envelope": envelope})
@@ -826,6 +852,7 @@ def pending_envelopes(user_id: int, thread_id: int) -> list[dict]:
     rows = db.fetchall(
         "SELECT * FROM command_jobs WHERE user_id=? AND thread_id=? AND notify=1"
         " AND delivered=0 AND status IN ('completed','timed_out','cancelled','interrupted','lost')"
+        " AND NOT EXISTS (SELECT 1 FROM chat_runs r WHERE r.id=command_jobs.run_id AND r.parent_run_id IS NOT NULL)"
         " ORDER BY finished_at",
         (int(user_id), int(thread_id)),
     )
@@ -842,6 +869,8 @@ def pending_envelopes(user_id: int, thread_id: int) -> list[dict]:
         if rec.get("user_id") != int(user_id) or rec.get("thread_id") != int(thread_id):
             continue
         if not _is_monitor(rec) or rec.get("status") in TERMINAL:
+            continue
+        if _child_run_state(rec.get("run_id")) is not None:
             continue
         acked = int(rec.get("delivered_event_seq") or 0)
         pending = list(rec.get("pending_events") or [])
@@ -892,6 +921,18 @@ def _get(job_id: str, user_id: int) -> dict | None:
         "SELECT * FROM command_jobs WHERE id=? AND user_id=?", (str(job_id), int(user_id))
     )
     return _row_rec(row)
+
+
+def _get_scoped(job_id: str, user_id: int, thread_id=None) -> dict | None:
+    """A job as seen from one chat: agents cannot join or kill another
+    thread's commands by id."""
+    rec = _get(job_id, user_id)
+    if rec is None or thread_id is None:
+        return rec
+    owner = rec.get("thread_id")
+    if owner is not None and str(owner) != str(thread_id):
+        return None
+    return rec
 
 
 def mark_notified(rec: dict) -> None:
@@ -1117,9 +1158,9 @@ def _acknowledge(rec: dict) -> None:
     _mark_delivered([str(rec["id"])])
 
 
-async def join(job_id: str, user_id: int, wait_s: float) -> tuple[str, dict]:
+async def join(job_id: str, user_id: int, wait_s: float, *, thread_id=None) -> tuple[str, dict]:
     """Wait for a job up to wait_s; returns a terminal or running envelope."""
-    rec = _get(str(job_id or ""), int(user_id))
+    rec = _get_scoped(str(job_id or ""), int(user_id), thread_id)
     if rec is None:
         return _NOT_FOUND, {
             "name": "get_command_output",
@@ -1147,8 +1188,8 @@ async def join(job_id: str, user_id: int, wait_s: float) -> tuple[str, dict]:
     return text, trace
 
 
-def kill(job_id: str, user_id: int) -> tuple[str, dict]:
-    rec = _get(str(job_id or ""), int(user_id))
+def kill(job_id: str, user_id: int, *, thread_id=None) -> tuple[str, dict]:
+    rec = _get_scoped(str(job_id or ""), int(user_id), thread_id)
     if rec is None:
         return _NOT_FOUND, {
             "name": "kill_command",

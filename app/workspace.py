@@ -850,7 +850,9 @@ def _confine(path: str, root: str, *, windows: bool = False) -> str:
 
 
 def _confine_win(path: str, root: str) -> str:
-    raw = (path or ".").replace("/", "\\")
+    from .permissions import expand_temp
+
+    raw = expand_temp(path or ".", True).replace("/", "\\")
     if raw.startswith("~"):
         rest = raw[1:]
         if rest and not rest.startswith("\\"):
@@ -925,9 +927,16 @@ def cancel_run_jobs(run_id: str) -> None:
     command_jobs.cancel_run(run_id)
 
 
-def _relax_paths(args: dict, base: str, windows: bool) -> None:
-    """After an approved out-of-scope call, rewrite relative targets absolute so
-    empty-root confinement accepts them (it rejects leftover '..' segments)."""
+def _relax_paths(args: dict, base: str, windows: bool, name: str = "") -> None:
+    """After an allowed call outside the working root, rewrite relative targets
+    absolute so empty-root confinement accepts them (it rejects leftover '..'
+    segments). Omitted targets keep defaulting to the working root rather
+    than to whatever the empty root means on the host (home)."""
+    if base and base not in ("~", "$HOME", "%USERPROFILE%"):
+        if name in ("run_terminal_command", "monitor") and not args.get("cwd"):
+            args["cwd"] = base
+        elif name in ("list_dir", "grep", "glob") and not args.get("path"):
+            args["path"] = base
     for key in ("path", "cwd"):
         raw = args.get(key)
         if not isinstance(raw, str) or not raw:
@@ -953,13 +962,13 @@ async def execute(name: str, arguments: str, *, user_id: int, bound_host_id=None
     except WorkspaceError as exc:
         return exc.detail, _error_rec(name, exc.detail, kind="invalid_arguments")
     if name == "get_command_output":
-        return await _job_output(user_id, args)
-    if name == "kill_command":
-        return _job_kill(user_id, args)
+        return await _job_output(user_id, args, thread_id=thread_id)
     mode = hosts.settings_for(user_id).get("permission_mode") or "project"
-    if mode == "read_only" and name in ("write_file", "search_replace", "run_terminal_command", "monitor"):
+    if mode == "read_only" and name in ("write_file", "search_replace", "run_terminal_command", "monitor", "kill_command"):
         msg = "permission mode is read_only"
         return msg, _error_rec(name, msg, kind="not_allowed")
+    if name == "kill_command":
+        return _job_kill(user_id, args, thread_id=thread_id)
     try:
         row = resolve_host_row(user_id, args.get("host") if isinstance(args.get("host"), str) else None, bound_host_id)
     except WorkspaceError as exc:
@@ -1010,9 +1019,17 @@ async def execute(name: str, arguments: str, *, user_id: int, bound_host_id=None
         )
         if not verdict.allowed:
             return verdict.detail, _error_rec(name, verdict.detail, host=alias, kind="permission_denied")
+        if name in ("write_file", "search_replace") and verdict.resolved and hosts.effective_permission(
+            user_id, bound_host_id=host_id, bound_cwd=verdict.resolved
+        ) == "read_only":
+            detail = "project is read-only"
+            return detail, _error_rec(name, detail, host=alias, kind="not_allowed")
         if verdict.root is not None:
-            _relax_paths(args, root, windows)
+            _relax_paths(args, root, windows, name)
             root = verdict.root
+        promote_path = verdict.resolved if verdict.promotable else ""
+    else:
+        promote_path = ""
     try:
         if name == "run_terminal_command":
             text, rec = await _shell(user_id, host_id, alias, args, root, windows=windows, run_id=run_id, thread_id=thread_id, on_started=on_started)
@@ -1057,6 +1074,8 @@ async def execute(name: str, arguments: str, *, user_id: int, bound_host_id=None
         rec["host_id"] = int(host_id)
         rec.setdefault("cwd", root)
         rec.setdefault("host", alias)
+        # Popped by chat_tools: only an in-scope write may bind the chat.
+        rec["promote_path"] = promote_path
         if name in ("write_file", "search_replace"):
             invalidate_agents_cache(user_id, host_id, rec.get("path") or "")
     return text, rec
@@ -1079,7 +1098,9 @@ def _agent_cwd(cwd: str) -> str:
 
 
 def _shell_cwd(args: dict, root: str, *, windows: bool = False) -> str:
-    raw = str(args.get("cwd") or "")
+    from .permissions import expand_temp
+
+    raw = expand_temp(str(args.get("cwd") or ""), windows)
     if raw in ("$HOME", "%USERPROFILE%"):
         return "~"
     if raw.startswith("~"):
@@ -1630,7 +1651,7 @@ async def _monitor(user_id, host_id, alias, args, root, *, windows: bool = False
     return command_jobs.render(rec, tool="monitor")
 
 
-async def _job_output(user_id: int, args: dict) -> tuple[str, dict]:
+async def _job_output(user_id: int, args: dict, *, thread_id: int | None = None) -> tuple[str, dict]:
     from . import command_jobs
 
     job_id = str(args.get("id") or args.get("child_id") or "")
@@ -1639,14 +1660,14 @@ async def _job_output(user_id: int, args: dict) -> tuple[str, dict]:
         wait = min(max(int(timeout_ms), 0), 120_000) / 1000 if timeout_ms is not None else 30
     except (TypeError, ValueError, OverflowError):
         wait = 30
-    return await command_jobs.join(job_id, user_id, wait)
+    return await command_jobs.join(job_id, user_id, wait, thread_id=thread_id)
 
 
-def _job_kill(user_id: int, args: dict) -> tuple[str, dict]:
+def _job_kill(user_id: int, args: dict, *, thread_id: int | None = None) -> tuple[str, dict]:
     from . import command_jobs
 
     job_id = str(args.get("id") or args.get("child_id") or "")
-    return command_jobs.kill(job_id, user_id)
+    return command_jobs.kill(job_id, user_id, thread_id=thread_id)
 
 
 def _browse_view(path: str, parent: str, home: str, entries: list) -> dict:

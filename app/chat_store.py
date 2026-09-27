@@ -4087,6 +4087,36 @@ def descendant_ids(run_id):
 _child_admission_lock = threading.Lock()
 
 
+def _same_host_id(a, b) -> bool:
+    if a is None or b is None:
+        return a is None and b is None
+    try:
+        return int(a) == int(b)
+    except (TypeError, ValueError):
+        return False
+
+
+def _child_host(host_id, resume_host_id, parent_agent: dict):
+    if host_id is not None:
+        return host_id
+    if resume_host_id is not None:
+        return resume_host_id
+    return parent_agent.get("bound_host_id")
+
+
+def _child_cwd(cwd: str, host_id, resume_host_id, resume_cwd: str, parent_agent: dict) -> str:
+    """A folder only means something on its own host: fall back to the resumed
+    session's or the parent's cwd only when the child runs on that host."""
+    if cwd:
+        return cwd
+    effective = _child_host(host_id, resume_host_id, parent_agent)
+    if resume_cwd and _same_host_id(effective, resume_host_id):
+        return resume_cwd
+    if _same_host_id(effective, parent_agent.get("bound_host_id")):
+        return str(parent_agent.get("bound_cwd") or "")
+    return ""
+
+
 def start_child_run(**kwargs):
     # Admission used to run without an await on the sole event loop. Preserve
     # that serialization when callers move the transaction to worker threads:
@@ -4300,10 +4330,8 @@ def _start_child_run(
                     "parent_run_id": parent_run_id,
                     "root_run_id": root,
                     "run_id": child_id,
-                    "bound_host_id": host_id if host_id is not None else (
-                        resume_host_id if resume_host_id is not None else parent_agent.get("bound_host_id")
-                    ),
-                    "bound_cwd": cwd or resume_cwd or parent_agent.get("bound_cwd") or "",
+                    "bound_host_id": _child_host(host_id, resume_host_id, parent_agent),
+                    "bound_cwd": _child_cwd(cwd, host_id, resume_host_id, resume_cwd, parent_agent),
                     "permission_mode": permission_mode,
                     "allow_nested_spawn": allow_nested_spawn,
                     "loaded_tools": loaded,
@@ -4385,8 +4413,8 @@ def _start_child_run(
                 "parent_run_id": parent_run_id,
                 "root_run_id": root,
                 "run_id": child_id,
-                "bound_host_id": host_id if host_id is not None else parent_agent.get("bound_host_id"),
-                "bound_cwd": cwd or parent_agent.get("bound_cwd") or "",
+                "bound_host_id": _child_host(host_id, None, parent_agent),
+                "bound_cwd": _child_cwd(cwd, host_id, None, "", parent_agent),
                 "permission_mode": permission_mode,
                 "allow_nested_spawn": allow_nested_spawn,
                 "loaded_tools": loaded,

@@ -9056,6 +9056,7 @@
       grep: "Search folder",
       glob: "Find files",
       run_terminal_command: "Run command",
+      spawn_subagent: "Start subagent in",
     })[tool] || (tool || "Action").replace(/_/g, " ");
   }
 
@@ -9063,7 +9064,7 @@
     if (rec.grant_kind === "file" || rec.grant_kind === "dir") return rec.grant_kind;
     if (rec.secret || rec.tool === "read_file" || rec.tool === "write_file" || rec.tool === "search_replace") return "file";
     if (rec.tool === "list_dir" || rec.tool === "grep" || rec.tool === "glob") return "dir";
-    return rec.tool === "run_terminal_command" ? "dir" : "";
+    return rec.tool === "run_terminal_command" || rec.tool === "spawn_subagent" ? "dir" : "";
   }
 
   function permGrantPath(rec) {

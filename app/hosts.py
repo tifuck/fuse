@@ -739,13 +739,25 @@ def effective_permission(user_id: int, *, bound_host_id=None, bound_cwd="") -> s
         return "read_only"
     if not bound_host_id or not bound_cwd:
         return mode if mode in ("project", "read_only") else "project"
+    # Prefix, not equality: a subfolder of a read-only project (a subagent
+    # spawned with cwd=<project>/sub, or a write target inside it) is still
+    # read-only.
     rows = db.fetchall(
-        "SELECT permission_mode FROM user_projects WHERE user_id=? AND host_id=? AND remote_path=?",
-        (user_id, int(bound_host_id), bound_cwd),
+        "SELECT remote_path FROM user_projects WHERE user_id=? AND host_id=? AND permission_mode='read_only'",
+        (user_id, int(bound_host_id)),
     )
-    if any((_row_get(r, "permission_mode") or "") == "read_only" for r in rows):
+    if any(_path_within(bound_cwd, _row_get(r, "remote_path") or "") for r in rows):
         return "read_only"
     return "project"
+
+
+def _path_within(path: str, parent: str) -> bool:
+    from .permissions import _norm, _under
+
+    if not path or not parent:
+        return False
+    windows = bool(re.match(r"^[A-Za-z]:", parent)) or "\\" in parent or bool(re.match(r"^[A-Za-z]:", path))
+    return _under(_norm(path, windows), _norm(parent, windows), windows)
 
 
 def host_by_alias(user_id: int, alias: str):

@@ -96,6 +96,8 @@ class MonitorJobs(unittest.IsolatedAsyncioTestCase):
             p.start()
             self.addCleanup(p.stop)
         command_jobs.ensure_schema()
+        # Delivery checks whether a job's owning run is a subagent.
+        self.conn.execute("CREATE TABLE chat_runs (id TEXT PRIMARY KEY, parent_run_id TEXT, status TEXT)")
 
     async def test_stdout_lines_become_events_stderr_does_not(self):
         delivered = []

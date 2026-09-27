@@ -10,6 +10,10 @@ read at gate time, so toggling it applies instantly to running subagents.
 Auto-approve (Jev) sits next to bypass: ordinary out-of-scope calls can be
 allowed without a card when the user has an OpenRouter key; secrets,
 destructive shells, and low-confidence answers still ask.
+
+A call the gate allows outside the working root (temp, a grant, an approval)
+returns root_override="" so workspace confinement does not reject it. A
+subagent's spawn cwd is reviewed here too: it becomes the child's working root.
 """
 from __future__ import annotations
 
@@ -44,7 +48,10 @@ _TEMPLATE_OK = frozenset({".env.example", ".env.sample", ".env.template"})
 _HOME_MARKERS = ("~", "$HOME", "%USERPROFILE%", "")
 _DIR_TOOLS = frozenset({"list_dir", "grep", "glob"})
 _FILE_TOOLS = frozenset({"read_file", "write_file", "search_replace"})
-_GATED_TOOLS = _DIR_TOOLS | _FILE_TOOLS | {"run_terminal_command", "monitor"}
+_WRITE_TOOLS = frozenset({"write_file", "search_replace"})
+# spawn_subagent's cwd becomes the child's working root, so it is reviewed
+# like a directory the parent itself wants to enter.
+_GATED_TOOLS = _DIR_TOOLS | _FILE_TOOLS | {"run_terminal_command", "monitor", "spawn_subagent"}
 
 _OPAQUE_SHELL = re.compile(r"[$`]|\$\{")
 _WIN_DRIVE = re.compile(r"^[A-Za-z]:")
@@ -101,6 +108,36 @@ def _under(path_n: str, root_n: str, windows: bool) -> bool:
     return path_n == root_n or path_n.startswith(root_n.rstrip(sep) + sep)
 
 
+# The Windows connector expands ~ and %USERPROFILE% but not %TEMP%, so the
+# server rewrites it to the per-user default before it reaches a host.
+WIN_TEMP_HOME = "~\\AppData\\Local\\Temp"
+_WIN_TEMP_ABS = re.compile(r"^(?:[a-z]:\\users\\[^\\]+\\appdata\\local\\temp|[a-z]:\\windows\\temp)(?:\\|$)")
+
+
+def expand_temp(path: str, windows: bool) -> str:
+    """%TEMP%\\x -> ~\\AppData\\Local\\Temp\\x on Windows; unchanged elsewhere."""
+    raw = str(path or "")
+    if not windows or not raw[:6].lower() == "%temp%":
+        return raw
+    rest = raw[6:].replace("/", "\\")
+    if rest and not rest.startswith("\\"):
+        return raw
+    return WIN_TEMP_HOME + rest
+
+
+def is_temp_path(path: str, windows: bool) -> bool:
+    """True for a normalized path inside the host's temp directory."""
+    raw = str(path or "")
+    if not raw:
+        return False
+    if windows:
+        low = ntpath.normpath(expand_temp(raw, True).replace("/", "\\")).lower()
+        home_tmp = WIN_TEMP_HOME.lower()
+        return low == home_tmp or low.startswith(home_tmp + "\\") or bool(_WIN_TEMP_ABS.match(low))
+    n = posixpath.normpath(raw)
+    return n == "/tmp" or n.startswith("/tmp/")
+
+
 def compute_roots(root: str, windows: bool) -> list[str]:
     """Allowed roots for a host given the workspace-computed working root."""
     roots: list[str] = []
@@ -117,14 +154,10 @@ def _in_roots(resolved: str, roots: list[str], windows: bool) -> bool:
     raw = str(resolved or "")
     if not raw:
         return True
+    if is_temp_path(raw, windows):
+        return True
     if _is_home_marker(raw) or raw.startswith("~") or raw.startswith("$HOME") or raw.startswith("%USERPROFILE%"):
         return any(_is_home_marker(r) for r in roots)
-    if windows:
-        if raw.replace("/", "\\").lower().startswith("%temp%"):
-            return True
-    else:
-        if raw == "/tmp" or raw.startswith("/tmp/"):
-            return True
     n = _norm(raw, windows)
     for r in roots:
         if _is_home_marker(r):
@@ -137,7 +170,7 @@ def _in_roots(resolved: str, roots: list[str], windows: bool) -> bool:
 def _resolve_for_scope(target: str, base: str, windows: bool) -> str:
     """Resolve a tool path the same way execution will: relative joins the base
     (project root / cwd), empty base means home. Dots collapse lexically."""
-    raw = str(target or "")
+    raw = expand_temp(str(target or ""), windows)
     if not raw or _is_home_marker(raw):
         return "~"
     if raw.startswith("$HOME"):
@@ -173,7 +206,23 @@ def _target_of(tool: str, args: dict) -> str:
         return str(args.get("path") or ".")
     if tool in _FILE_TOOLS:
         return str(args.get("path") or "")
+    if tool == "spawn_subagent":
+        return str(args.get("cwd") or "")
     return ""
+
+
+def under_work_root(resolved: str, root: str, windows: bool) -> bool:
+    """Lexically inside the working root, the only place workspace confinement
+    accepts without relaxing. An empty/home root holds only ~ paths."""
+    raw = str(resolved or "")
+    if not raw:
+        return True
+    home_path = raw.startswith(("~", "$HOME", "%USERPROFILE%"))
+    if not root or _is_home_marker(root):
+        return home_path
+    if home_path:
+        return False
+    return _under(_norm(raw, windows), _norm(root, windows), windows)
 
 
 def _grant_dir_for(tool: str, target: str, windows: bool) -> str:
@@ -183,7 +232,7 @@ def _grant_dir_for(tool: str, target: str, windows: bool) -> str:
         return "~"
     if _is_home_marker(raw) or raw.startswith(("~", "$HOME", "%USERPROFILE%")):
         return raw if not raw.startswith("$HOME") else "~" + raw[5:]
-    if tool in _DIR_TOOLS:
+    if tool in _DIR_TOOLS or tool == "spawn_subagent":
         return raw
     head = (ntpath.split(raw.replace("/", "\\")) if windows else posixpath.split(raw))[0]
     return head or raw
@@ -320,14 +369,20 @@ def set_auto(user_id: int, thread_id: int, enabled: bool, conn=None) -> None:
             "UPDATE chat_threads SET auto_permissions=? WHERE id=? AND user_id=?",
             (1 if enabled else 0, int(thread_id), int(user_id)),
         )
-        import logging
-        logging.getLogger(__name__).info("set_auto user=%s thread=%s enabled=%s", user_id, thread_id, enabled)
+        logger.info("set_auto user=%s thread=%s enabled=%s", user_id, thread_id, enabled)
         if enabled:
-            c.execute(
-                """UPDATE chat_permission_asks SET status='allowed', decision=?, resolved_at=?
-                   WHERE thread_id=? AND user_id=? AND status='pending' AND secret=0""",
-                ("allow", db.now(), int(thread_id), int(user_id)),
-            )
+            # Same exclusions as the live Auto path in review(): secrets and
+            # destructive shells always wait for the user.
+            rows = c.execute(
+                "SELECT id, command FROM chat_permission_asks WHERE thread_id=? AND user_id=? AND status='pending' AND secret=0",
+                (int(thread_id), int(user_id)),
+            ).fetchall()
+            ids = [row["id"] for row in rows if not _destructive_command(row["command"] or "")]
+            for ask_id in ids:
+                c.execute(
+                    "UPDATE chat_permission_asks SET status='allowed', decision=?, resolved_at=? WHERE id=? AND status='pending'",
+                    ("allow", db.now(), ask_id),
+                )
     if conn is not None:
         _run(conn)
         return
@@ -805,6 +860,16 @@ class ReviewResult(dict):
     def ask_id(self) -> str:
         return str(self.get("ask_id") or "")
 
+    @property
+    def resolved(self) -> str:
+        return str(self.get("resolved") or "")
+
+    @property
+    def promotable(self) -> bool:
+        """In scope on its own merits (no ask, grant, bypass, or temp): safe
+        to let a write bind the chat to its folder."""
+        return bool(self.get("promotable"))
+
 
 async def review(*, tool: str, args: dict, user_id: int,
                  host_id: int, host_alias: str, root: str, windows: bool,
@@ -823,7 +888,14 @@ async def review(*, tool: str, args: dict, user_id: int,
     perm_kind = "path"
     cwd = ""
     command = ""
+    resolved = ""
+    # Allowed but outside the working root (temp, a grant, an approval):
+    # workspace confinement must be relaxed or it rejects what the gate
+    # just allowed.
+    outside_work = False
 
+    if tool == "spawn_subagent" and not target:
+        return ReviewResult(allowed=True)
     if tool in ("run_terminal_command", "monitor"):
         perm_kind = "shell"
         command = str(args.get("command") or "")
@@ -833,6 +905,7 @@ async def review(*, tool: str, args: dict, user_id: int,
         cwd = raw_cwd or (root if root and not _is_home_marker(root) else "~")
         cwd_ok, resolved_cwd = scope_allows(raw_cwd or cwd, root or "~", roots, windows)
         cwd_in = (not raw_cwd) or cwd_ok
+        outside_work = bool(raw_cwd) and not under_work_root(resolved_cwd, root, windows)
         if not cwd_in:
             reasons.append(f"working directory {cwd} is outside the allowed roots")
             out_of_root = True
@@ -855,6 +928,7 @@ async def review(*, tool: str, args: dict, user_id: int,
     else:
         in_roots, resolved = scope_allows(target, root, roots, windows)
         display = resolved or target
+        outside_work = tool != "spawn_subagent" and not under_work_root(resolved, root, windows)
         # grep prints file contents too: naming a secret file directly needs
         # the same approval as reading it (directory searches withhold
         # secret-file matches in workspace._grep).
@@ -870,12 +944,14 @@ async def review(*, tool: str, args: dict, user_id: int,
             if not grant_value:
                 grant_kind, grant_value = "dir", _grant_dir_for(tool, resolved, windows)
 
+    relax = "" if (out_of_root or outside_work) else None
     if not reasons:
-        return ReviewResult(allowed=True)
+        promotable = tool in _WRITE_TOOLS and not outside_work and not is_temp_path(resolved, windows)
+        return ReviewResult(allowed=True, root_override=relax, resolved=resolved, promotable=promotable)
 
     bypass = await asyncio.to_thread(bypass_enabled, gate.user_id, gate.thread_id)
     if bypass:
-        return ReviewResult(allowed=True, root_override="" if out_of_root else None)
+        return ReviewResult(allowed=True, root_override=relax, resolved=resolved)
 
     covered = (
         await asyncio.to_thread(
@@ -885,7 +961,7 @@ async def review(*, tool: str, args: dict, user_id: int,
         else False
     )
     if covered:
-        return ReviewResult(allowed=True, root_override="" if out_of_root else None)
+        return ReviewResult(allowed=True, root_override=relax, resolved=resolved)
 
     label = display if perm_kind == "shell" else (display or cwd or command)
     if gate.unattended:
@@ -921,7 +997,7 @@ async def review(*, tool: str, args: dict, user_id: int,
             # and shell still go through Jev.
             if (tool in _DIR_TOOLS or tool == "read_file") and not secret:
                 logger.warning("auto-allow read tool=%s path=%s thread=%s", tool, payload.get("path"), gate.thread_id)
-                return ReviewResult(allowed=True, root_override="" if out_of_root else None)
+                return ReviewResult(allowed=True, root_override=relax, resolved=resolved)
             try:
                 allowed = await jev.judge(
                     gate.user_id,
@@ -944,10 +1020,10 @@ async def review(*, tool: str, args: dict, user_id: int,
                 allowed = False
             logger.warning("Jev verdict tool=%s path=%s allowed=%s", tool, payload.get("path") or payload.get("cwd"), allowed)
             if allowed:
-                return ReviewResult(allowed=True, root_override="" if out_of_root else None)
+                return ReviewResult(allowed=True, root_override=relax, resolved=resolved)
     action = await _ask_and_wait(gate, payload)
     if action in ("allow", "allow_session", "allow_host"):
-        return ReviewResult(allowed=True, root_override="" if out_of_root else None, ask_id="")
+        return ReviewResult(allowed=True, root_override=relax, resolved=resolved, ask_id="")
     if action == "cancelled":
         return ReviewResult(allowed=False, detail="Tool interrupted.", kind="interrupted")
     return ReviewResult(allowed=False, detail=_deny_detail(label, action), kind="permission_denied")

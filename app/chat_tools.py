@@ -28,9 +28,11 @@ from .search.engine import FETCH_PER_MIN, SEARCH_PER_HOUR, SEARCH_PER_MIN
 
 logger = logging.getLogger(__name__)
 
-_FILE_PROMOTE_TOOLS = frozenset(
-    {"read_file", "list_dir", "grep", "glob", "write_file", "search_replace"}
-)
+# Only a write the agent was already allowed to make binds a plain chat to
+# its folder. Reads, approvals ("Allow once" must not become a standing
+# root), temp paths, and subagents (who share the thread with the main
+# agent) never rebind the chat.
+_FILE_PROMOTE_TOOLS = frozenset({"write_file", "search_replace"})
 
 
 def _remember_project_session(session: dict | None, promoted, user_id: int) -> None:
@@ -975,14 +977,23 @@ async def execute_tool(
             gate=gate,
         )
         hid = rec.pop("host_id", None)
-        if thread_id and name in _FILE_PROMOTE_TOOLS and rec.get("status") in ("done", "running") and hid:
+        promote_path = rec.pop("promote_path", "")
+        is_child = ((session or {}).get("requester") or {}).get("role") == "subagent"
+        if (
+            thread_id
+            and name in _FILE_PROMOTE_TOOLS
+            and rec.get("status") in ("done", "running")
+            and hid
+            and promote_path
+            and not is_child
+        ):
             try:
                 promoted = chats.promote_working_session(
                     user_id,
                     thread_id,
                     host_id=hid,
                     cwd=str(rec.get("cwd") or bound_cwd or ""),
-                    path=str(rec.get("path") or ""),
+                    path=promote_path,
                     tool=name,
                 )
                 _remember_project_session(session, promoted, user_id)
@@ -1017,6 +1028,7 @@ async def execute_tool(
             arguments=arguments,
             thread_id=thread_id,
             on_started=on_started,
+            gate=gate,
         )
     if name in ARTIFACT_TOOL_IDS and coding:
         if loaded is not None and name not in loaded:

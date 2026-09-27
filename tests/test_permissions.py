@@ -250,6 +250,65 @@ class ReviewTest(PermSchemaTest):
         self.assertEqual(events[0]["requester_label"], "research api (explore)")
         self.assertEqual(events[0]["requester"]["role"], "subagent")
 
+    def test_tmp_outside_project_relaxes_confinement(self):
+        # /tmp is always allowed; workspace confinement must honour that even
+        # when the working root is a project (the subagent write_file bug).
+        from app import workspace
+
+        for root in ("/srv/app", "/tmp/work", "~"):
+            res = asyncio.run(self._review(_gate(), tool="write_file", args={"path": "/tmp/fuse/dz.py"}, root=root))
+            self.assertTrue(res.allowed, root)
+            self.assertEqual(res.root, "", root)
+            self.assertEqual(workspace._confine("/tmp/fuse/dz.py", res.root), "/tmp/fuse/dz.py")
+            self.assertFalse(res.promotable, root)
+
+    def test_tmp_shell_cwd_relaxes(self):
+        res = asyncio.run(self._review(_gate(), tool="run_terminal_command", args={"command": "ls", "cwd": "/tmp/fuse"}))
+        self.assertTrue(res.allowed)
+        self.assertEqual(res.root, "")
+        res = asyncio.run(self._review(_gate(), tool="run_terminal_command", args={"command": "ls"}))
+        self.assertIsNone(res.root)
+
+    def test_promotable_only_for_in_scope_writes(self):
+        res = asyncio.run(self._review(_gate(), tool="write_file", args={"path": "src/x.py"}))
+        self.assertTrue(res.promotable)
+        self.assertEqual(res.resolved, "/srv/app/src/x.py")
+        res = asyncio.run(self._review(_gate(), tool="read_file", args={"path": "src/x.py"}))
+        self.assertFalse(res.promotable)
+        permissions.add_grant(1, 1, 7, "dir", "/var/www")
+        res = asyncio.run(self._review(_gate(), tool="write_file", args={"path": "/var/www/x"}))
+        self.assertTrue(res.allowed)
+        self.assertFalse(res.promotable)
+
+    def test_spawn_cwd_outside_scope_is_reviewed(self):
+        res = asyncio.run(self._review(_gate(unattended=True), tool="spawn_subagent", args={"cwd": "/"}))
+        self.assertFalse(res.allowed)
+        res = asyncio.run(self._review(_gate(unattended=True), tool="spawn_subagent", args={"cwd": "/etc"}))
+        self.assertFalse(res.allowed)
+        for cwd in ("src", "/srv/app/lib", "/tmp/work", ""):
+            res = asyncio.run(self._review(_gate(unattended=True), tool="spawn_subagent", args={"cwd": cwd}))
+            self.assertTrue(res.allowed, cwd)
+
+    def test_windows_temp(self):
+        self.assertEqual(permissions.expand_temp("%TEMP%\\out\\a.txt", True), "~\\AppData\\Local\\Temp\\out\\a.txt")
+        self.assertEqual(permissions.expand_temp("%TEMP%\\a", False), "%TEMP%\\a")
+        self.assertTrue(permissions.is_temp_path("C:\\Users\\me\\AppData\\Local\\Temp\\x", True))
+        self.assertTrue(permissions.is_temp_path("%TEMP%", True))
+        self.assertFalse(permissions.is_temp_path("C:\\Users\\me\\Documents", True))
+        from app import workspace
+
+        self.assertEqual(workspace._confine("%TEMP%\\x.txt", "C:\\proj", windows=True), "~\\AppData\\Local\\Temp\\x.txt")
+
+        async def win():
+            return await permissions.review(
+                tool="write_file", args={"path": "C:\\Users\\me\\AppData\\Local\\Temp\\x.txt"}, user_id=1,
+                host_id=7, host_alias="win", root="C:\\proj", windows=True, gate=_gate(unattended=True),
+            )
+
+        res = asyncio.run(win())
+        self.assertTrue(res.allowed)
+        self.assertEqual(res.root, "")
+
 
 class ResolveTest(PermSchemaTest):
     def test_wrong_user_not_found(self):
@@ -294,6 +353,26 @@ class ResolveTest(PermSchemaTest):
         self.assertEqual(row["status"], "allowed")
         self.assertEqual(row["decision"], "allow")
         permissions.set_bypass(1, 1, False)
+
+    def test_set_auto_leaves_destructive_and_secret_pending(self):
+        with db.tx() as conn:
+            conn.execute("DELETE FROM chat_permission_asks")
+            for ask_id, command, secret in (("pa_ok", "ls /etc", 0), ("pa_rm", "rm -rf /var/www", 0), ("pa_sec", "", 1)):
+                conn.execute(
+                    """INSERT INTO chat_permission_asks(
+                           id,user_id,thread_id,run_id,status,decision,kind,tool,host_id,host,path,cwd,command,
+                           secret,requester,grant_kind,grant_value,created_at,expires_at)
+                       VALUES (?,1,1,'r','pending','','shell','run_terminal_command',7,'prod','','',?,?,'Main agent','','','2026-01-01T00:00:00Z','2099-01-01T00:00:00Z')""",
+                    (ask_id, command, secret),
+                )
+        permissions.set_auto(1, 1, True)
+        try:
+            status = {r["id"]: r["status"] for r in db.fetchall("SELECT id, status FROM chat_permission_asks")}
+            self.assertEqual(status, {"pa_ok": "allowed", "pa_rm": "pending", "pa_sec": "pending"})
+        finally:
+            permissions.set_auto(1, 1, False)
+            with db.tx() as conn:
+                conn.execute("DELETE FROM chat_permission_asks")
 
     def test_revoke_grant(self):
         with db.tx() as conn:

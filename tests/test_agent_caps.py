@@ -1298,6 +1298,54 @@ class AgentCapsTest(unittest.TestCase):
         self.assertEqual(agent["bound_cwd"], "/srv/app")
         self.assertEqual(resumed["created_at"], child["created_at"])
 
+    def test_child_on_other_host_does_not_inherit_parent_cwd(self):
+        thread, parent = self._parent()
+        req = parent["request"]
+        req.setdefault("agent", {})["bound_host_id"] = 3
+        req["agent"]["bound_cwd"] = "/srv/app"
+        db.execute("UPDATE chat_runs SET request=? WHERE id=?", (store.dumps(req), parent["id"]))
+        other = store.start_child_run(user_id=1, thread_id=thread["id"], parent_run_id=parent["id"],
+                                      prompt="p", description="d", host_id=9)
+        self.assertEqual(other["request"]["agent"]["bound_host_id"], 9)
+        self.assertEqual(other["request"]["agent"]["bound_cwd"], "")
+        same = store.start_child_run(user_id=1, thread_id=thread["id"], parent_run_id=parent["id"],
+                                     prompt="p", description="d", host_id=3)
+        self.assertEqual(same["request"]["agent"]["bound_cwd"], "/srv/app")
+
+    def test_spawn_cwd_is_reviewed_against_parent_scope(self):
+        from app import agents, chat_runs, permissions
+
+        with db.tx() as conn:
+            permissions.init_schema(conn)
+        thread, parent = self._parent()
+        req = parent["request"]
+        req.setdefault("agent", {})["bound_host_id"] = 3
+        req["agent"]["bound_cwd"] = "/srv/app"
+        db.execute("UPDATE chat_runs SET request=? WHERE id=?", (store.dumps(req), parent["id"]))
+        host = {"id": 3, "alias": "prod", "default_cwd": "", "agent_os": "linux", "disabled": False}
+        gate = permissions.Gate(user_id=1, thread_id=parent["thread_id"], run_id=parent["id"], requester={"role": "main"},
+                                unattended=True, notify=lambda event: None, cancel=None)
+
+        async def finish(_request, _user, child):
+            store.finish_run(child["id"], {"content": "ok"}, "completed")
+            return None
+
+        with patch("app.hosts.get_host", return_value=host), patch.object(chat_runs, "start", side_effect=finish):
+            for cwd in ("/", "/etc", "~"):
+                text, trace = asyncio.run(agents.spawn(
+                    user={"id": 1}, request=None, parent_run_id=parent["id"], thread_id=thread["id"],
+                    arguments=json.dumps({"prompt": "p", "cwd": cwd}), gate=gate,
+                ))
+                self.assertEqual(trace["status"], "error", cwd)
+                self.assertEqual(trace["kind"], "permission_denied", cwd)
+            text, trace = asyncio.run(agents.spawn(
+                user={"id": 1}, request=None, parent_run_id=parent["id"], thread_id=thread["id"],
+                arguments=json.dumps({"prompt": "p", "cwd": "lib"}), gate=gate,
+            ))
+        self.assertNotEqual(trace["status"], "error")
+        child = store.get_run(1, trace["child_id"])
+        self.assertEqual(child["request"]["agent"]["bound_cwd"], "/srv/app/lib")
+
     def test_resume_keeps_child_model(self):
         thread, parent = self._parent()
         child = store.start_child_run(
