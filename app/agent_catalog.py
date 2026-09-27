@@ -212,23 +212,26 @@ SCHEMAS = {
         "function": {
             "name": "scratch",
             "description": (
-                "Read or edit this run's in-memory scratch pad: named string slots that survive for this "
-                "run only (including across tool calls and a server restart of this run). Not shared with "
-                "the user, other chats, or a child you spawn. Use it to draft a long spawn_subagent prompt "
-                "in pieces, fix it, then pass scratch=<name> instead of repeating the whole prompt. "
-                "A failed spawn does not erase the slot, so retry with the same scratch name. "
-                "Omit ops to list names and sizes; pass name to read one slot."
+                "Private named text slots for drafting a long spawn_subagent prompt: put a draft, then append "
+                "or put again to revise, and pass scratch=<name> to spawn_subagent instead of repeating the "
+                "text. A failed spawn keeps the slot, so retry with the same name. Lasts for this turn only: "
+                "the next user message, an automated wake, and a resumed subagent all start with an empty "
+                "pad, so do not keep notes here for later. Not visible to the user, other chats, or children. "
+                "Without spawn_subagent there is little reason to use it. Call with no arguments to list "
+                "slot names and sizes, with name to read one slot, or with ops to edit (name is then "
+                "ignored). All ops in one call apply together or not at all. Up to 32 slots, 20000 "
+                "characters each."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "Slot to read. Ignored when ops is set.",
+                        "description": "Slot to read. Ignored when ops is set; omit both to list slots.",
                     },
                     "ops": {
                         "type": "array",
-                        "description": "Edits applied in order. put replaces, append adds to the end, clear deletes.",
+                        "description": "Edits applied in order, all or nothing. put replaces the slot, append adds to its end (creating it if missing), clear deletes it.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -239,7 +242,7 @@ SCHEMAS = {
                                 },
                                 "text": {
                                     "type": "string",
-                                    "description": "Required for put and append. Max 100000 characters per slot.",
+                                    "description": "Required for put and append. A slot holds at most 20000 characters after the edit.",
                                 },
                             },
                             "required": ["op", "name"],
@@ -318,6 +321,7 @@ SCHEMAS = {
                 "context adds surrounding lines. "
                 "Searches hidden files (.github, dotfiles). Always skips vendor/build dirs (node_modules, venv, "
                 ".git, dist, …) unless path points inside one; skips .gitignored files unless no_ignore. "
+                "Files over 1 MB are skipped unless path names that file. "
                 "Stops after max_matches; a search over 20 s "
                 "returns partial matches with a note. Matches inside secret files (.env, keys) are withheld. "
                 "Filter by file name with include. Complex include globs require ripgrep on Linux; "
@@ -383,9 +387,12 @@ SCHEMAS = {
         "function": {
             "name": "glob",
             "description": (
-                "Find files by glob on a host, e.g. **/*.py or src/**/+page.svelte. Returns paths relative to the "
-                "project directory, up to 400, sorted by path (or newest first with sort=modified). Includes "
-                "hidden files. Always skips vendor/build dirs "
+                "Find files (not directories; use list_dir for those) by glob on a host, e.g. *.py or "
+                "src/**/+page.svelte. A pattern without / matches file names at any depth: *.py finds every "
+                "Python file, same as **/*.py. A pattern with / must match the whole relative path; when "
+                "path narrows the search, start it with **/ (e.g. **/tests/*.py) so it matches on every host. "
+                "Returns up to 400 paths, sorted by path (or newest first with "
+                "sort=modified). Includes hidden files. Always skips vendor/build dirs "
                 "(node_modules, venv, dist, …) unless path points inside one; skips .gitignored files unless "
                 "no_ignore. One glob, not a comma-separated list. Brace globs like "
                 "*.{py,js} and ** need ripgrep on Linux; Windows connector brace globs are unsupported. "
@@ -397,9 +404,9 @@ SCHEMAS = {
                     "pattern": {
                         "type": "string",
                         "maxLength": 200,
-                        "description": "One glob, max 200 characters, e.g. \"**/*.py\". Not a regex.",
+                        "description": "One glob, max 200 characters, e.g. \"*.py\" or \"app/web/*.py\". Not a regex.",
                     },
-                    "path": {"type": "string", "description": "Directory to search. Default: bound project path."},
+                    "path": {"type": "string", "description": "Directory to search. Default: bound project path. With a narrower path, start a pattern containing / with **/."},
                     "no_ignore": {"type": "boolean", "description": "Also list files excluded by .gitignore. Default false."},
                     "sort": {
                         "type": "string",
@@ -661,8 +668,8 @@ SCHEMAS = {
                         "type": "string",
                         "description": (
                             "Name of a scratch slot whose text is the prompt. Draft and edit it with the scratch tool "
-                            "first; do not also paste that text into prompt. The slot is not cleared on success or failure, "
-                            "so a failed spawn retries with the same name."
+                            "first in this same turn; do not also paste that text into prompt. The slot is not cleared on "
+                            "success or failure, so a failed spawn retries with the same name."
                         ),
                     },
                     "description": {"type": "string", "description": "Short (3-5 words) label for the task."},

@@ -298,6 +298,41 @@ class AgentCapsTest(unittest.TestCase):
         self.assertEqual(rec["status"], "done")
         self.assertEqual(json.loads(listed)["slots"]["review"], len("Inspect the auth module. Report findings only."))
 
+    def test_scratch_slot_fits_one_read_and_ops_are_atomic(self):
+        from app.chat_runtime import TOOL_RESULT_CHARS, _tool_result_clip
+        from app.chat_tools import execute_tool
+
+        _, parent = self._parent()
+        session = {"run_id": parent["id"]}
+
+        def call(args):
+            return asyncio.run(execute_tool(
+                "scratch", json.dumps(args), user_id=1, allowed_urls=set(), coding=True, session=session,
+            ))
+
+        # A full slot reads back whole: the cap sits under the tool-result clip.
+        self.assertLess(store.SCRATCH_VALUE_MAX, TOOL_RESULT_CHARS)
+        full = "x" * store.SCRATCH_VALUE_MAX
+        _, rec = call({"ops": [{"op": "put", "name": "big", "text": full}]})
+        self.assertEqual(rec["status"], "done")
+        text, _ = call({"name": "big"})
+        self.assertEqual(_tool_result_clip("scratch", text), full)
+        _, rec = call({"ops": [{"op": "append", "name": "big", "text": "y"}]})
+        self.assertEqual(rec["status"], "error")
+        # A failing op rolls back earlier ops in the same call.
+        _, rec = call({"ops": [{"op": "put", "name": "a", "text": "1"}, {"op": "bogus", "name": "b"}]})
+        self.assertEqual(rec["status"], "error")
+        self.assertIsNone(store.scratch_read(parent["id"], "a"))
+        # ops sent as a JSON string or a single object still apply.
+        _, rec = call({"ops": json.dumps([{"op": "put", "name": "s", "text": "from string"}])})
+        self.assertEqual(rec["status"], "done")
+        _, rec = call({"ops": {"op": "append", "name": "s", "text": "!"}})
+        self.assertEqual(rec["status"], "done")
+        self.assertEqual(store.scratch_read(parent["id"], "s"), "from string!")
+        msg, rec = call({"ops": 5})
+        self.assertEqual(rec["kind"], "invalid_arguments")
+        self.assertIn("array", msg)
+
     def test_background_spawn_marks_progress_and_result(self):
         from app import agents
 

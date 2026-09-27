@@ -43,8 +43,10 @@ LIVE_USER_RUNS = 128
 LIVE_PROCESS_RUNS = 256
 # Named string slots for one run. Spawn prompts live here so a failed fan-out
 # can retry by id instead of re-emitting every prompt in the next tool call.
+# A slot must fit one scratch read: stay under chat_runtime.TOOL_RESULT_CHARS,
+# which would otherwise clip the text the model reads back.
 SCRATCH_MAX_SLOTS = 32
-SCRATCH_VALUE_MAX = 100_000
+SCRATCH_VALUE_MAX = 20_000
 _writes = threading.local()
 
 # Post-commit, in-process view of the per-user event cursor and per-thread
@@ -1118,8 +1120,9 @@ def scratch_apply(run_id: str, ops: list[dict]) -> dict:
     """Apply put/append/clear to this run's scratch pad. Returns the pad after the write.
 
     The pad is this run's only. A child does not see the parent's slots, and a
-    resumed child starts empty. Values are durable for the run so a failed
-    spawn can be retried from the same text.
+    resumed child starts empty, as does the next user turn or wake (each is a
+    new run). Values are durable for the run so a failed spawn can be retried
+    from the same text. A failing op rolls back the whole call.
     """
     if not run_id:
         raise ScratchError("no active session")

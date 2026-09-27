@@ -904,9 +904,20 @@ async def execute_tool(
                 msg = "no active session"
                 return msg, {"name": "scratch", "status": "error", "kind": "no_session", "error": msg}
             ops = args.get("ops")
-            if ops is not None:
+            if isinstance(ops, str) and ops.strip():
+                # Models often send the array as a JSON string.
                 try:
-                    pad = scratch_apply(run_id, ops if isinstance(ops, list) else [])
+                    ops = json.loads(ops)
+                except (ValueError, RecursionError):
+                    pass
+            if isinstance(ops, dict):
+                ops = [ops]
+            if ops is not None:
+                if not isinstance(ops, list):
+                    msg = "ops must be an array of {op, name, text} objects"
+                    return msg, {"name": "scratch", "status": "error", "kind": "invalid_arguments", "error": msg}
+                try:
+                    pad = scratch_apply(run_id, ops)
                 except ScratchError as exc:
                     msg = str(exc)
                     return msg, {"name": "scratch", "status": "error", "kind": "invalid_arguments", "error": msg}
