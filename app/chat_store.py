@@ -1199,7 +1199,10 @@ def queue_followup(run_id: str, text: str) -> bool:
             return False
         from . import chats as chats_mod
 
-        pending.append(str(text)[: chats_mod.CONTENT_MAX])
+        # A unique id marks delivery. Matching the text itself dropped any
+        # follow-up whose words already appeared in the child's transcript
+        # ("yes", a repeated "keep going") while telling the parent it was sent.
+        pending.append({"id": uuid4().hex[:12], "text": str(text)[: chats_mod.CONTENT_MAX]})
         agent["pending_followups"] = pending
         req["agent"] = agent
         conn.execute(
@@ -1207,6 +1210,27 @@ def queue_followup(run_id: str, text: str) -> bool:
             (dumps(req), db.now(), run_id),
         )
         return True
+
+
+def _followup_marker(item) -> str:
+    return f"(followup:{item.get('id')})" if isinstance(item, dict) and item.get("id") else ""
+
+
+def followup_text(item) -> str:
+    """The text a child sees for one queued follow-up (its delivery receipt)."""
+    if isinstance(item, dict):
+        body = str(item.get("text") or "").strip()
+        marker = _followup_marker(item)
+        return f"{marker} {body}" if marker and body else body
+    return str(item or "").strip()
+
+
+def _followup_delivered(item, transcript: str) -> bool:
+    marker = _followup_marker(item)
+    if marker:
+        return _json_needle(marker) in transcript
+    # Legacy plain-string entry queued before ids existed.
+    return _json_needle(str(item)) in transcript
 
 
 def take_followups(run_id: str) -> list[str]:
@@ -1229,9 +1253,11 @@ def take_followups(run_id: str) -> list[str]:
     pending = agent.get("pending_followups")
     if not isinstance(pending, list) or not pending:
         return []
-    out = [str(item) for item in pending if str(item).strip()]
     transcript = row["provider_messages"] or ""
-    leftover = [text for text in out if _json_needle(text) not in transcript]
+    leftover = [
+        followup_text(item) for item in pending
+        if followup_text(item) and not _followup_delivered(item, transcript)
+    ]
     if row["status"] not in ACTIVE:
         with transaction() as conn:
             current = conn.execute("SELECT id,status,request FROM chat_runs WHERE id=?", (run_id,)).fetchone()
@@ -1267,7 +1293,7 @@ def continue_child_with_followups(run_id: str, followups: list) -> bool:
     terminal when called (post-finish); pending_followups must already be
     drained by take_followups so the continued run cannot re-deliver them.
     """
-    texts = [str(t).strip() for t in (followups or []) if str(t or "").strip()]
+    texts = [followup_text(t) for t in (followups or []) if followup_text(t)]
     if not texts:
         return False
     with transaction() as conn:
@@ -1289,7 +1315,7 @@ def continue_child_with_followups(run_id: str, followups: list) -> bool:
             req = {}
         agent = req.get("agent") if isinstance(req.get("agent"), dict) else {}
         pending = agent.get("pending_followups")
-        if isinstance(pending, list) and any(str(t).strip() for t in pending):
+        if isinstance(pending, list) and any(followup_text(t) for t in pending):
             # Not drained yet: the wake envelope path owns the report.
             return False
         messages = None
@@ -1309,6 +1335,18 @@ def continue_child_with_followups(run_id: str, followups: list) -> bool:
             return False
         from . import chats
 
+        try:
+            finished_message = json.loads(row["message"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            finished_message = {}
+        # The report this leg just wrote was never delivered (the run is
+        # continuing instead); carry it so the continuation's report leads
+        # with it rather than silently replacing it.
+        prior = child_writeup({"id": row["id"], "status": "completed",
+                               "message": finished_message if isinstance(finished_message, dict) else {},
+                               "request": req})
+        if prior:
+            agent["carried_report"] = prior
         sealed = seal_provider_messages(messages)
         note = (
             f"{FOLLOWUP_FRAME_HEAD} — not written by the end user. "
@@ -1363,7 +1401,7 @@ def continue_child_with_followups(run_id: str, followups: list) -> bool:
 def flag_unconsumed_followups(run_id: str, followups: list) -> None:
     """Mark a terminal child with follow-ups it never consumed, so the wake
     envelope reports them (the parent may continue it with task_id)."""
-    texts = [str(t).strip() for t in (followups or []) if str(t or "").strip()]
+    texts = [followup_text(t) for t in (followups or []) if followup_text(t)]
     if not texts:
         return
     from . import chats
@@ -1397,6 +1435,9 @@ def flag_unconsumed_followups(run_id: str, followups: list) -> None:
             req = {}
         agent = req.get("agent") if isinstance(req.get("agent"), dict) else {}
         agent["background"] = True
+        # Stopped/failed writeups ignore message content; keep the list where
+        # child_writeup reports it for every terminal status.
+        agent["unconsumed_followups"] = texts[:8]
         req["agent"] = agent
         conn.execute(
             "UPDATE chat_runs SET message=?,request=?,updated_at=? WHERE id=?",
@@ -1798,7 +1839,7 @@ def mark_child_background_if_pending(run_id: str) -> bool:
             return False
         agent = req.get("agent") if isinstance(req.get("agent"), dict) else {}
         pending = agent.get("pending_followups")
-        if not isinstance(pending, list) or not any(str(t).strip() for t in pending):
+        if not isinstance(pending, list) or not any(followup_text(t) for t in pending):
             return False
         agent["background"] = True
         req["agent"] = agent
@@ -1841,6 +1882,49 @@ def promote_run_binding(run_id: str, host_id=None, cwd: str = "") -> None:
         )
 
 
+# A report is context for the parent, not an archive: past this it keeps the
+# head and tail. Deterministic, so every render of one report is identical
+# (delivery receipts match on the exact envelope text).
+REPORT_MAX = 60_000
+_REPORT_TAIL = 12_000
+
+
+def _cap_report(text: str) -> str:
+    text = str(text or "").strip()
+    if len(text) <= REPORT_MAX:
+        return text
+    head = text[: REPORT_MAX - _REPORT_TAIL]
+    omitted = len(text) - len(head) - _REPORT_TAIL
+    return f"{head}\n\n[… {omitted:,} characters of the report omitted …]\n\n{text[-_REPORT_TAIL:]}"
+
+
+def final_report_text(message: dict) -> str:
+    """The child's final answer: text written after its last tool call.
+
+    message.content concatenates every round's prose ("Let me check…"), but
+    the subagent contract is that the parent sees only the final report.
+    """
+    msg = message if isinstance(message, dict) else {}
+    segments = msg.get("segments") if isinstance(msg.get("segments"), list) else None
+    if not segments:
+        return str(msg.get("content") or "").strip()
+    tail: list[str] = []
+    for part in segments:
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") == "tool":
+            tail = []
+        elif part.get("type") == "content":
+            tail.append(str(part.get("text") or ""))
+    return "".join(tail).strip()
+
+
+def _row_agent(row: dict) -> dict:
+    req = row.get("request") if isinstance(row.get("request"), dict) else {}
+    agent = req.get("agent") if isinstance(req.get("agent"), dict) else {}
+    return agent
+
+
 def child_writeup(row: dict) -> str:
     """Deliver a completed report, or a status-only failure notification.
 
@@ -1849,8 +1933,8 @@ def child_writeup(row: dict) -> str:
     """
     msg = row.get("message") if isinstance(row.get("message"), dict) else {}
     err = str(msg.get("error") or "").strip()
-    text = str(msg.get("content") or "").strip()
     status = str(row.get("status") or msg.get("status") or "")
+    agent = _row_agent(row)
     if status != "completed" or err:
         reason = err or str(msg.get("notice") or "").strip()
         label = {
@@ -1860,9 +1944,25 @@ def child_writeup(row: dict) -> str:
             "running": "Subagent is still running",
             "queued": "Subagent is queued",
         }.get(status, "Subagent did not complete")
-        return f"{label}: {reason}. No completed report is available." if reason else f"{label}. No completed report is available."
-    if text:
-        return text
+        out = f"{label}: {reason}. No completed report is available." if reason else f"{label}. No completed report is available."
+        dropped = [str(t).strip() for t in (agent.get("unconsumed_followups") or []) if str(t).strip()]
+        if dropped:
+            out += "\n\nUnconsumed parent follow-up" + ("s" if len(dropped) > 1 else "") + ":\n" + "\n\n".join(dropped)
+        return _cap_report(out)
+    text = final_report_text(msg)
+    if not text:
+        text = _fallback_report(row, msg)
+    carried = str(agent.get("carried_report") or "").strip()
+    if carried and text:
+        # A follow-up continuation re-used this run: the report written
+        # before it was never delivered, so it leads the new one.
+        text = f"{carried}\n\n[Continued after parent follow-up]\n\n{text}"
+    elif carried:
+        text = carried
+    return _cap_report(text)
+
+
+def _fallback_report(row: dict, msg: dict) -> str:
     ident = row.get("id")
     transcript = []
     if ident:
@@ -1882,7 +1982,8 @@ def child_writeup(row: dict) -> str:
     text = last_assistant_text(transcript)
     if text:
         return text
-    return ""
+    # Last resort: everything the child wrote beats an empty report.
+    return str(msg.get("content") or "").strip()
 
 
 def thread_view(conn, user_id, thread_id):
@@ -2710,6 +2811,35 @@ def wake_candidates(user_id, thread_id):
                 ),
             }
         )
+    return out
+
+
+def queue_stranded_reports(user_id, thread_id, run_id: str, messages=None, limit: int = 8) -> list[str]:
+    """Queue undelivered child reports onto a live root run; return their envelopes.
+
+    Reports already present in messages (the turn's transcript, e.g. an
+    automated wake turn's seed) are skipped so the model never gets one twice.
+    """
+    candidates = wake_candidates(user_id, thread_id)[:limit]
+    if not candidates:
+        return []
+    seen_text = "\n".join(
+        m["content"] for m in (messages or [])
+        if isinstance(m, dict) and isinstance(m.get("content"), str)
+    )
+    out = []
+    for item in candidates:
+        envelope = render_task_output(
+            child_id=item["id"],
+            state=item["status"],
+            text=(item["summary"] or item["status"]).strip() or "Subagent finished without a report.",
+            description=item["description"],
+            generation=item.get("generation", ""),
+        )
+        if envelope in seen_text:
+            continue
+        if queue_child_result(str(run_id), envelope, child_id=item["id"]):
+            out.append(envelope)
     return out
 
 
@@ -3956,7 +4086,7 @@ def save_turn_progress(run_id, messages, loaded_tools=None, extra=None):
         if isinstance(pending_followups, list) and pending_followups:
             agent["pending_followups"] = [
                 item for item in pending_followups
-                if str(item).strip() and _json_needle(str(item)) not in scan
+                if followup_text(item) and not _followup_delivered(item, scan)
             ]
         req["agent"] = agent
         if tools_json is None:
@@ -4963,13 +5093,18 @@ def resume_run(user_id, run_id):
             parent_id = str(updated.get("parent_run_id") or "")
             if parent_id:
                 agent = (updated.get("request") or {}).get("agent") if isinstance(updated.get("request"), dict) else {}
+                # The generation makes each resume's notice distinct: receipts
+                # match on the envelope text, so a second resume of the same
+                # child would otherwise read as already delivered.
+                generation = str((agent or {}).get("delivery_generation") or "")
                 envelope = render_task_output(
                     child_id=run_id,
                     state="running",
-                    text="This subagent was resumed by the user. A fresh report will arrive when it finishes.",
+                    text=f"This subagent was resumed by the user (resume {int(updated.get('resume_count') or 0)}). "
+                    "A fresh report will arrive when it finishes.",
                     description=str((agent or {}).get("description") or ""),
                 )
-                queue_child_result(parent_id, envelope, child_id=f"resume-{run_id}")
+                queue_child_result(parent_id, envelope, child_id=f"resume-{run_id}-{generation[:8]}")
         except Exception:
             logger.exception("Failed to notify parent of child resume %s", run_id)
     return updated

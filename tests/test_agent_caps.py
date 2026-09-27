@@ -566,11 +566,16 @@ class AgentCapsTest(unittest.TestCase):
             description="explore",
         )
         self.assertTrue(store.queue_followup(child["id"], "also check tests"))
-        self.assertEqual(store.take_followups(child["id"]), ["also check tests"])
-        self.assertEqual(store.take_followups(child["id"]), ["also check tests"])
+        first = store.take_followups(child["id"])
+        self.assertEqual(len(first), 1)
+        self.assertRegex(first[0], r"^\(followup:[0-9a-f]{12}\) also check tests$")
+        self.assertEqual(store.take_followups(child["id"]), first)
+        # The text alone is not a receipt; the id marker is.
+        store.save_turn_progress(child["id"], [{"role": "user", "content": "also check tests"}])
+        self.assertEqual(store.take_followups(child["id"]), first)
         store.save_turn_progress(child["id"], [
             {"role": "user", "content": "look"},
-            {"role": "user", "content": "also check tests"},
+            {"role": "user", "content": first[0]},
         ])
         self.assertEqual(store.take_followups(child["id"]), [])
         store.finish_run(child["id"], {"content": "done", "tools": []}, "completed")
@@ -1298,6 +1303,123 @@ class AgentCapsTest(unittest.TestCase):
         self.assertEqual(agent["bound_cwd"], "/srv/app")
         self.assertEqual(resumed["created_at"], child["created_at"])
 
+    def _live_child(self, thread, parent, prompt="Audit the parser and fix bugs", **kw):
+        child = store.start_child_run(user_id=1, thread_id=thread["id"], parent_run_id=parent["id"],
+                                      prompt=prompt, description="worker", background=True, **kw)
+        db.execute("UPDATE chat_runs SET status='running' WHERE id=?", (child["id"],))
+        return child
+
+    def test_report_is_final_answer_only_and_capped(self):
+        thread, parent = self._parent()
+        child = self._live_child(thread, parent)
+        store.finish_run(child["id"], {
+            "content": "Let me look at the parser.Now checking tests.FINAL: 2 bugs fixed.",
+            "segments": [
+                {"type": "content", "text": "Let me look at the parser."},
+                {"type": "tool", "id": "t1"},
+                {"type": "content", "text": "Now checking tests."},
+                {"type": "tool", "id": "t2"},
+                {"type": "content", "text": "FINAL: 2 bugs fixed."},
+            ],
+            "tools": [{"id": "t1", "name": "read_file", "status": "done"},
+                      {"id": "t2", "name": "grep", "status": "done"}],
+        }, "completed")
+        self.assertEqual(store.child_writeup(store.get_run(1, child["id"])), "FINAL: 2 bugs fixed.")
+        huge = "x" * (store.REPORT_MAX + 5000)
+        capped = store._cap_report(huge)
+        self.assertLessEqual(len(capped), store.REPORT_MAX + 200)
+        self.assertIn("characters of the report omitted", capped)
+        self.assertEqual(capped, store._cap_report(huge))
+
+    def test_followups_are_acknowledged_by_id_not_text(self):
+        thread, parent = self._parent()
+        child = self._live_child(thread, parent)
+        store.save_turn_progress(child["id"], [
+            {"role": "user", "content": "Audit the parser and fix bugs"},
+            {"role": "assistant", "content": "Found 2 bugs. Continue with the tests next? yes"},
+        ])
+        for text in ("yes", "fix bugs", "yes"):
+            self.assertTrue(store.queue_followup(child["id"], text))
+        seen = store.take_followups(child["id"])
+        self.assertEqual(len(seen), 3)
+        self.assertEqual([t.split(") ", 1)[1] for t in seen], ["yes", "fix bugs", "yes"])
+        # Delivering the first two leaves only the third pending.
+        store.save_turn_progress(child["id"], [{"role": "user", "content": "\n\n".join(seen[:2])}])
+        self.assertEqual(store.take_followups(child["id"]), [seen[2]])
+
+    def test_followup_continuation_carries_the_undelivered_report(self):
+        thread, parent = self._parent()
+        child = self._live_child(thread, parent)
+        store.save_turn_progress(child["id"], [{"role": "user", "content": "Audit the parser and fix bugs"}])
+        store.queue_followup(child["id"], "also add a test")
+        store.finish_run(child["id"], {"content": "REPORT ONE", "tools": []}, "completed")
+        leftover = store.take_followups(child["id"])
+        self.assertTrue(store.continue_child_with_followups(child["id"], leftover))
+        resumed = store.get_run(1, child["id"])
+        self.assertEqual(resumed["request"]["agent"]["carried_report"], "REPORT ONE")
+        store.finish_run(child["id"], {"content": "TEST ADDED", "tools": []}, "completed")
+        report = store.child_writeup(store.get_run(1, child["id"]))
+        self.assertIn("REPORT ONE", report)
+        self.assertIn("TEST ADDED", report)
+        self.assertLess(report.index("REPORT ONE"), report.index("TEST ADDED"))
+
+    def test_stopped_child_reports_unconsumed_followups(self):
+        thread, parent = self._parent()
+        child = self._live_child(thread, parent)
+        store.queue_followup(child["id"], "check the lexer too")
+        store.finish_run(child["id"], {"content": "", "tools": []}, "cancelled")
+        store.flag_unconsumed_followups(child["id"], store.take_followups(child["id"]))
+        report = store.child_writeup(store.get_run(1, child["id"]))
+        self.assertIn("stopped by cancellation", report)
+        self.assertIn("check the lexer too", report)
+
+    def test_main_agent_follows_up_a_live_child_from_an_earlier_turn(self):
+        from app import agents
+
+        thread, root1 = self._parent()
+        child = self._live_child(thread, root1)
+        store.finish_run(root1["id"], {"content": "launched", "tools": []}, "completed")
+        rev = chats.get_thread(1, thread["id"])["revision"]
+        root2 = store.start_turn(1, thread["id"], "tell the worker to check Y", rev, "turn-2")["run"]
+        text, rec = asyncio.run(agents.spawn(user={"id": 1}, request=None, parent_run_id=root2["id"], thread_id=thread["id"],
+                                             arguments=json.dumps({"prompt": "also check Y", "task_id": child["id"]})))
+        self.assertEqual(rec["status"], "running", rec)
+        self.assertTrue(any("also check Y" in t for t in store.take_followups(child["id"])))
+
+    def test_subagent_cannot_join_kill_or_list_a_sibling(self):
+        from app import agents
+
+        thread, parent = self._parent()
+        a = self._live_child(thread, parent, prompt="a", allow_nested_spawn=True)
+        b = self._live_child(thread, parent, prompt="b")
+        grandchild = self._live_child(thread, a, prompt="a1", allow_nested_spawn=True)
+        args = json.dumps({"id": b["id"], "timeout_ms": 0})
+        _, rec = asyncio.run(agents.get_output(user_id=1, arguments=args, thread_id=thread["id"],
+                                               parent_run_id=a["id"], scope_run_id=a["id"]))
+        self.assertEqual(rec["status"], "error")
+        _, rec = asyncio.run(agents.kill(user_id=1, arguments=args, thread_id=thread["id"], scope_run_id=a["id"]))
+        self.assertEqual(rec["status"], "error")
+        self.assertIn(store.get_run(1, b["id"])["status"], store.ACTIVE)
+        text, _ = asyncio.run(agents.list_agents(user_id=1, thread_id=parent["thread_id"], scope_run_id=a["id"]))
+        listed = [item["id"] for item in json.loads(text)["live"]]
+        self.assertEqual(listed, [grandchild["id"]])
+        # Its own descendant stays reachable.
+        _, rec = asyncio.run(agents.get_output(user_id=1, arguments=json.dumps({"id": grandchild["id"], "timeout_ms": 0}),
+                                               thread_id=thread["id"], parent_run_id=a["id"], scope_run_id=a["id"]))
+        self.assertEqual(rec["status"], "running")
+
+    def test_hand_off_delivers_a_child_that_finished_in_the_race(self):
+        from app import agents
+
+        thread, parent = self._parent()
+        child = store.start_child_run(user_id=1, thread_id=thread["id"], parent_run_id=parent["id"],
+                                      prompt="p", description="racer")
+        self.assertFalse(child["request"]["agent"].get("background"))
+        store.finish_run(child["id"], {"content": "RACE REPORT", "tools": []}, "completed")
+        asyncio.run(agents._hand_off(1, parent["id"], child["id"], "racer"))
+        self.assertTrue(store.get_run(1, child["id"])["request"]["agent"]["background"])
+        self.assertTrue(any("RACE REPORT" in t for t in store.take_child_results(parent["id"])))
+
     def test_child_on_other_host_does_not_inherit_parent_cwd(self):
         thread, parent = self._parent()
         req = parent["request"]
@@ -1500,7 +1622,8 @@ class AgentCapsTest(unittest.TestCase):
         self.assertTrue(store.queue_followup(child["id"], "also tests"))
         store.finish_run(child["id"], {"content": "looked around", "tools": []}, "completed")
         leftover = store.take_followups(child["id"])
-        self.assertEqual(leftover, ["also tests"])
+        self.assertEqual(len(leftover), 1)
+        self.assertTrue(leftover[0].endswith(") also tests"))
         self.assertTrue(store.continue_child_with_followups(child["id"], leftover))
         row = store.get_run(1, child["id"])
         self.assertEqual(row["status"], "queued")

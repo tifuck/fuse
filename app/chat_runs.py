@@ -1542,6 +1542,15 @@ async def stop():
     for task in tasks:
         if getattr(task, "_fuse_started", False):
             task.cancel()
+    # Wake tasks query the database off-loop; left running they outlive the
+    # pool (or a test's connection) once shutdown closes it. Their durable
+    # writes are admission-guarded, and the next boot's sweep re-derives any
+    # wake that was cut short.
+    loop = asyncio.get_running_loop()
+    wakes = [task for task in _wake_tasks.values() if not task.done() and task.get_loop() is loop]
+    for task in wakes:
+        task.cancel()
+    tasks = [*tasks, *wakes]
     if tasks:
         # Bounded: workers still unwinding after the deadline are abandoned
         # (their rows keep the durable-transcript resume path), so shutdown

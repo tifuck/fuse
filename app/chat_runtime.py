@@ -2844,17 +2844,12 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     except Exception:
                         logger.debug("thread command result inject skipped", exc_info=True)
                     try:
-                        for item in store.wake_candidates(user["id"], int(thread_id))[:8]:
-                            envelope = store.render_task_output(
-                                child_id=item["id"],
-                                state=item["status"],
-                                text=(item["summary"] or item["status"]).strip()
-                                or "Subagent finished without a report.",
-                                description=item["description"],
-                                generation=item.get("generation", ""),
-                            )
-                            if store.queue_child_result(str(run_id), envelope, child_id=item["id"]):
-                                injected.append(envelope)
+                        # An automated wake turn already carries its reports in
+                        # its seed; they stay candidates until that turn
+                        # completes, so they must not be injected again.
+                        injected.extend(store.queue_stranded_reports(
+                            user["id"], int(thread_id), str(run_id), current_messages,
+                        ))
                     except Exception:
                         logger.debug("thread subagent result inject skipped", exc_info=True)
                 if injected:

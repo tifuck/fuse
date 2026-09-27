@@ -364,6 +364,21 @@ async def _review_child_cwd(user_id: int, pagent: dict, host_id, cwd: str, gate)
     return resolved, ""
 
 
+async def _hand_off(user_id: int, parent_run_id: str, child_id: str, description: str) -> None:
+    """Make a child the parent was told is "running" report in the background.
+
+    The child's finish path only queues or wakes for background children. If
+    it finished between the foreground wait expiring and this mark, it saw
+    background=False and queued nothing, so deliver its report here.
+    """
+    await durable_call(chat_store.mark_child_background, child_id)
+    row = await asyncio.to_thread(chat_store.get_run, user_id, child_id)
+    if row is not None and row.get("status") in chat_store.TERMINAL:
+        await durable_call(
+            chat_store.queue_child_result, parent_run_id, _envelope(row, description=description), child_id=child_id
+        )
+
+
 def _child_summary(row: dict) -> str:
     """Completed report or status-only notification from the shared delivery policy."""
     text = chat_store.child_writeup(row)
@@ -497,6 +512,11 @@ async def spawn(
             same_tree = bool(existing.get("parent_run_id")) and (
                 existing.get("root_run_id") == root or existing.get("parent_run_id") == parent_run_id
             )
+            if not same_tree and existing.get("parent_run_id") and not parent.get("parent_run_id"):
+                # A background child outlives the turn that spawned it; the
+                # main agent's later turns are new root runs but still own
+                # every subagent in the chat.
+                same_tree = str(existing.get("thread_id")) == str(parent.get("thread_id"))
             if not same_tree:
                 return "task_id is not a child of this session.", {
                     "name": "spawn_subagent",
@@ -658,7 +678,7 @@ async def spawn(
     if task is not None:
         done_set, _pending = await asyncio.wait({task}, timeout=FOREGROUND_BUDGET_S)
         if task not in done_set:
-            await durable_call(chat_store.mark_child_background, child["id"])
+            await _hand_off(user["id"], parent_run_id, child["id"], description)
             text = _envelope(child, fallback_id=child["id"], description=description, running=True)
             return text, _spawn_rec(
                 status="running",
@@ -676,7 +696,10 @@ async def spawn(
     if done:
         status = "done" if done.get("status") == "completed" else "error"
         if done.get("status") in chat_store.ACTIVE:
+            # The worker returned but the run continues (a follow-up
+            # continuation re-queued it): it now reports in the background.
             status = "running"
+            await _hand_off(user["id"], parent_run_id, child["id"], description)
         if done.get("status") in ("cancelled", "interrupted"):
             status = "interrupted"
         if done["status"] in chat_store.TERMINAL:
@@ -694,7 +717,21 @@ async def spawn(
     )
 
 
-async def get_output(*, user_id: int, arguments: str, thread_id=None, parent_run_id: str | None = None) -> tuple[str, dict]:
+def _descends_from(user_id: int, row: dict | None, ancestor_id: str) -> bool:
+    """True when row sits below ancestor_id in its spawn tree."""
+    current = row
+    for _ in range(16):
+        parent = str((current or {}).get("parent_run_id") or "")
+        if not parent:
+            return False
+        if parent == str(ancestor_id):
+            return True
+        current = chat_store.get_run(user_id, parent)
+    return False
+
+
+async def get_output(*, user_id: int, arguments: str, thread_id=None, parent_run_id: str | None = None,
+                     scope_run_id: str | None = None) -> tuple[str, dict]:
     try:
         args = json.loads(arguments or "{}")
         if not isinstance(args, dict):
@@ -721,6 +758,9 @@ async def get_output(*, user_id: int, arguments: str, thread_id=None, parent_run
             thread_id=thread_id,
             parent_run_id=parent_run_id,
         )
+        if row is not None and scope_run_id and not await asyncio.to_thread(_descends_from, user_id, row, scope_run_id):
+            row = None
+            break
         if row is None:
             misses += 1
             if misses >= 5 or time.monotonic() >= deadline:
@@ -757,7 +797,7 @@ async def get_output(*, user_id: int, arguments: str, thread_id=None, parent_run
     return text, {"name": "get_subagent_output", "status": "running", "child_id": child_id, "preview": "still running", "background": True}
 
 
-async def kill(*, user_id: int, arguments: str, thread_id=None) -> tuple[str, dict]:
+async def kill(*, user_id: int, arguments: str, thread_id=None, scope_run_id: str | None = None) -> tuple[str, dict]:
     try:
         args = json.loads(arguments or "{}")
         if not isinstance(args, dict):
@@ -766,6 +806,8 @@ async def kill(*, user_id: int, arguments: str, thread_id=None) -> tuple[str, di
         args = {}
     child_id = str(args.get("id") or args.get("child_id") or "")
     row = await asyncio.to_thread(chat_store.resolve_child_run, user_id, child_id, thread_id=thread_id)
+    if row is not None and scope_run_id and not await asyncio.to_thread(_descends_from, user_id, row, scope_run_id):
+        row = None
     if row is None:
         return "subagent not found", {"name": "kill_subagent", "status": "error", "error": "not found", "child_id": child_id}
     child_id = row["id"]
@@ -784,10 +826,20 @@ async def kill(*, user_id: int, arguments: str, thread_id=None) -> tuple[str, di
     return "cancelled", {"name": "kill_subagent", "status": "done", "child_id": child_id}
 
 
-async def list_agents(*, user_id: int, thread_id) -> tuple[str, dict]:
+async def list_agents(*, user_id: int, thread_id, scope_run_id: str | None = None) -> tuple[str, dict]:
     if thread_id is None:
         return "no active session", {"name": "list_subagents", "status": "error", "error": "no active session"}
     rows = await asyncio.to_thread(chat_store.list_thread_agents, user_id, thread_id)
+    if scope_run_id:
+        below = {str(scope_run_id)}
+        grew = True
+        while grew:
+            grew = False
+            for item in rows:
+                if str(item.get("parent_run_id") or "") in below and str(item["id"]) not in below:
+                    below.add(str(item["id"]))
+                    grew = True
+        rows = [item for item in rows if str(item["id"]) in below and str(item["id"]) != str(scope_run_id)]
     live = [item for item in rows if item["status"] in chat_store.ACTIVE]
     finished = [item for item in rows if item["status"] not in chat_store.ACTIVE]
 

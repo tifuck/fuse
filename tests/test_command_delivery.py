@@ -231,6 +231,23 @@ class CommandDeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["id"] for item in candidates], [child["id"]])
         self.assertEqual(candidates[0]["summary"], "child report")
 
+    async def test_wake_turn_does_not_reinject_its_seed_reports(self):
+        thread = chats.create_thread(1, model="offline")
+        parent = store.start_turn(1, thread["id"], "go", thread["revision"], "turn-dup")["run"]
+        child = store.start_child_run(
+            user_id=1, thread_id=thread["id"], parent_run_id=parent["id"], prompt="bg", description="bg", background=True,
+        )
+        store.finish_run(child["id"], {"content": "ONLY ONCE", "tools": []}, "completed")
+        store.finish_run(parent["id"], {"content": "ok", "tools": []}, "completed")
+        started = await self._wake(parent["thread_id"])
+        wake = store.get_run(1, started[0]["id"])
+        seed = wake["request"]["messages"]
+        self.assertTrue(any("ONLY ONCE" in str(m.get("content")) for m in seed))
+        # Still a candidate until the wake completes, but already in the seed.
+        self.assertEqual(store.queue_stranded_reports(1, parent["thread_id"], wake["id"], seed), [])
+        # A plain next-message turn (report not in its messages) does get it.
+        self.assertEqual(len(store.queue_stranded_reports(1, parent["thread_id"], wake["id"], [])), 1)
+
     async def test_user_resumed_child_wakes_stopped_main_agent(self):
         thread = chats.create_thread(1, model="offline")
         result = store.start_turn(1, thread["id"], "go", thread["revision"], "turn-resume")

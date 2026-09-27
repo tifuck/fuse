@@ -1005,16 +1005,25 @@ async def execute_tool(
             return unknown_tool_reply(name, arguments, coding=False)
         from . import agents
 
+        # A subagent sees only its own descendants: joining a sibling would
+        # acknowledge that sibling's report into the wrong transcript, and
+        # killing one would reach outside its delegation.
+        scope_run_id = (
+            parent_run_id
+            if ((session or {}).get("requester") or {}).get("role") == "subagent"
+            else None
+        )
         if name == "list_subagents":
-            return agents.list_agents(user_id=user_id, thread_id=thread_id)
+            return agents.list_agents(user_id=user_id, thread_id=thread_id, scope_run_id=scope_run_id)
         if name == "kill_subagent":
-            return await agents.kill(user_id=user_id, arguments=arguments, thread_id=thread_id)
+            return await agents.kill(user_id=user_id, arguments=arguments, thread_id=thread_id, scope_run_id=scope_run_id)
         if name == "get_subagent_output":
             return await agents.get_output(
                 user_id=user_id,
                 arguments=arguments,
                 thread_id=thread_id,
                 parent_run_id=parent_run_id,
+                scope_run_id=scope_run_id,
             )
         if not parent_run_id or http_request is None or user is None:
             return "spawn is not available", {"name": name, "status": "error", "kind": "unavailable", "error": "spawn is not available"}
