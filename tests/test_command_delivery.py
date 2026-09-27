@@ -231,6 +231,35 @@ class CommandDeliveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["id"] for item in candidates], [child["id"]])
         self.assertEqual(candidates[0]["summary"], "child report")
 
+    async def test_user_resumed_child_wakes_stopped_main_agent(self):
+        thread = chats.create_thread(1, model="offline")
+        result = store.start_turn(1, thread["id"], "go", thread["revision"], "turn-resume")
+        parent = result["run"]
+        tid = parent["thread_id"]
+        child = store.start_child_run(
+            user_id=1, thread_id=thread["id"], parent_run_id=parent["id"], prompt="bg", description="bg", background=True,
+        )
+        db.execute("UPDATE chat_runs SET provider_messages=? WHERE id=?",
+                   (store.dumps([{"role": "user", "content": "bg"}]), child["id"]))
+        store.finish_run(child["id"], {"content": "", "tools": []}, "cancelled")
+        store.finish_run(parent["id"], {"content": "stopped", "tools": []}, "cancelled")
+        # Stop is final: no wake, and the Work panel says the report is held.
+        self.assertEqual(await self._wake(tid), [])
+        rows = {row["id"]: row for row in store.list_thread_agents(1, tid)}
+        self.assertEqual(rows[child["id"]]["wake_state"], "held")
+        # The stop happened before the user resumed the child.
+        db.execute("UPDATE chat_runs SET cancel_requested_at='2000-01-01T00:00:00Z', updated_at='2000-01-01T00:00:00Z' WHERE id=?",
+                   (parent["id"],))
+        resumed = store.resume_run(1, child["id"])
+        self.assertTrue(resumed["request"]["agent"]["user_resumed_at"])
+        store.finish_run(child["id"], {"content": "fresh report", "tools": []}, "completed")
+        rows = {row["id"]: row for row in store.list_thread_agents(1, tid)}
+        self.assertEqual(rows[child["id"]]["wake_state"], "retrying")
+        started = await self._wake(tid)
+        self.assertEqual(len(started), 1)
+        text = self._auto_messages(thread["id"])[-1]["content"]
+        self.assertIn("fresh report", text)
+
     def _insert_job(self, job_id, thread_id, run_id):
         now = db.now()
         db.execute(

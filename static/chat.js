@@ -8372,7 +8372,7 @@
       running && trace.progressLabel ? trace.progressLabel : "",
       toolBackground(trace) ? "background" : "",
       state && !["completed", "running"].includes(state) ? state.replace(/_/g, " ") : "",
-      trace.wake_state === "dropped" ? "Report not delivered to the main agent" : trace.wake_state === "retrying" ? "Report pending delivery" : "",
+      trace.wake_state === "dropped" ? "Report not delivered to the main agent" : trace.wake_state === "held" ? "Main agent stopped; report goes with your next message" : trace.wake_state === "retrying" ? "Report pending delivery" : "",
       trace.status === "done" && executionPending(trace) ? "Tool returned; execution continues" : "",
       trace.termination_confirmed === true ? "Termination confirmed" : trace.termination_confirmed === false ? "Termination not confirmed"
         : isShellExecTool(trace.name) && state && !executionPending(trace) ? "Termination unknown" : "",
@@ -12336,7 +12336,7 @@
     ].filter(Boolean).join(" · ");
     const dur = agentDurationSeconds(row);
     const err = String(row.error || "").trim();
-    const wake = row.wake_state === "dropped" ? "report not delivered" : row.wake_state === "retrying" ? "report pending" : "";
+    const wake = row.wake_state === "dropped" ? "report not delivered" : row.wake_state === "held" ? "report waits for your next message" : row.wake_state === "retrying" ? "report pending" : "";
     const alert = err || wake;
     const activity = alert ? "" : agentActivitySummary(row);
     const line = [agentStatusText(row), meta, activity].filter(Boolean).join(" · ");

@@ -865,15 +865,19 @@ async def _wake_parent(user_id: int, thread_id) -> None:
         root = await asyncio.to_thread(chat_store.thread_root_run, user_id, thread_id)
         if root is None or root["status"] in chat_store.ACTIVE:
             return
-        if root["status"] == "cancelled":
+        candidates = await asyncio.to_thread(chat_store.wake_candidates, user_id, thread_id)
+        if root["status"] == "cancelled" and not any(
+            chat_store.resumed_after_stop(item, root.get("stopped_at") or "") for item in candidates
+        ):
             # A hard user stop is final: no automated turn may restart the
             # thread, no matter which sweep or child finishing asks. Stranded
             # reports wait as wake candidates and ride with the user's next
             # message (chat_runtime injects them). System interruptions (a
             # service restart or stall) end as interrupted/failed and still
-            # wake; only an explicit Stop suppresses delivery.
+            # wake; only an explicit Stop suppresses delivery. The exception
+            # is a subagent the user resumed after that Stop: resuming it is
+            # an explicit request to carry on, so its report wakes the thread.
             return
-        candidates = await asyncio.to_thread(chat_store.wake_candidates, user_id, thread_id)
         # A failed wake turn may retry each child once; after that the report
         # stays in the transcript and list_subagents instead of looping forever.
         candidates = [item for item in candidates if int(item.get("attempts") or 0) < 2]

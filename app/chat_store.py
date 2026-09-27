@@ -244,11 +244,22 @@ def _cancel_event_payload(item):
     return payload
 
 
-def _agent_wake_state(agent, status):
+def resumed_after_stop(agent, stopped_at: str) -> bool:
+    """The user resumed this child after the main agent was stopped: that is
+    an explicit request to carry on, so its report may wake the thread."""
+    resumed = str((agent or {}).get("user_resumed_at") or "")
+    return bool(resumed and stopped_at and resumed > stopped_at)
+
+
+def _agent_wake_state(agent, status, stopped_at: str = ""):
     if not isinstance(agent, dict) or not agent.get("background") or status in ACTIVE:
         return ""
     if agent.get("wake_sent"):
         return "delivered"
+    if stopped_at and not resumed_after_stop(agent, stopped_at):
+        # The main agent was stopped: no automated turn will run; the report
+        # rides with the user's next message.
+        return "held"
     if int(agent.get("wake_attempts") or 0) >= 2:
         return "dropped"
     return "retrying"
@@ -2692,6 +2703,7 @@ def wake_candidates(user_id, thread_id):
                 "status": row["status"],
                 "attempts": int(agent.get("wake_attempts") or 0),
                 "generation": str(agent.get("delivery_generation") or ""),
+                "user_resumed_at": str(agent.get("user_resumed_at") or ""),
                 "description": str(agent.get("description") or "subagent"),
                 "summary": child_writeup(
                     {"id": row["id"], "status": row["status"], "message": message if isinstance(message, dict) else {}, "request": {"agent": agent}}
@@ -2835,7 +2847,7 @@ def thread_root_run(user_id, thread_id):
     """Latest root run of a thread with its status."""
     try:
         row = db.fetchone(
-            """SELECT id, status, request FROM chat_runs
+            """SELECT id, status, request, updated_at, cancel_requested_at FROM chat_runs
                WHERE user_id=? AND thread_id=? AND parent_run_id IS NULL
                ORDER BY created_at DESC, id DESC LIMIT 1""",
             (user_id, thread_id),
@@ -2849,7 +2861,10 @@ def thread_root_run(user_id, thread_id):
     except (json.JSONDecodeError, TypeError):
         req = {}
     agent = req.get("agent") if isinstance(req, dict) and isinstance(req.get("agent"), dict) else {}
-    return {"id": row["id"], "status": row["status"], "wake": bool(agent.get("wake"))}
+    stopped_at = ""
+    if row["status"] == "cancelled":
+        stopped_at = str(row["cancel_requested_at"] or row["updated_at"] or "")
+    return {"id": row["id"], "status": row["status"], "wake": bool(agent.get("wake")), "stopped_at": stopped_at}
 
 
 def mark_run_wake(run_id, child_ids=None, receipts=None):
@@ -2916,6 +2931,8 @@ def list_thread_agents(user_id, thread_id, limit=100):
         (user_id, thread_id, user_id, thread_id, max(1, min(int(limit), 200))),
     )
     counts: dict[str, int] = {}
+    root = thread_root_run(user_id, thread_id) if rows else None
+    stopped_at = str(root.get("stopped_at") or "") if root else ""
     if rows:
         placeholders = ",".join("?" * len(rows))
         for item in db.fetchall(
@@ -2980,7 +2997,7 @@ def list_thread_agents(user_id, thread_id, limit=100):
             "tool_counts": tool_counts,
             "current": current,
             "quiet_s": round(quiet_s, 1),
-            "wake_state": _agent_wake_state(agent, row["status"]),
+            "wake_state": _agent_wake_state(agent, row["status"], stopped_at),
             "context": _agent_context_chip(req, agent, row),
         }
         out.append(entry)
@@ -4774,7 +4791,7 @@ def _with_resume_note(messages: list[dict], run_id: str, resume_count: int) -> l
     return [*messages, {"role": "user", "content": note}]
 
 
-def _requeue_for_resume(row, messages, allowed=None):
+def _requeue_for_resume(row, messages, allowed=None, *, by_user=False):
     from . import chats
 
     allowed = allowed or ACTIVE
@@ -4802,6 +4819,8 @@ def _requeue_for_resume(row, messages, allowed=None):
         agent["wake_sent"] = False
         agent["wake_attempts"] = 0
         agent["delivery_generation"] = uuid4().hex
+        if by_user:
+            agent["user_resumed_at"] = db.now()
     agent.setdefault("allowed_urls", agent.get("allowed_urls") or [])
     raw_loaded = row["loaded_tools"] if "loaded_tools" in row.keys() else None
     if raw_loaded:
@@ -4934,7 +4953,7 @@ def resume_run(user_id, run_id):
         )
         if active_root:
             raise chats.ChatValidationError("this chat already has an active run", 409)
-    _requeue_for_resume(row, messages, allowed=set(ACTIVE) | {"interrupted", "cancelled"})
+    _requeue_for_resume(row, messages, allowed=set(ACTIVE) | {"interrupted", "cancelled"}, by_user=True)
     updated = get_run(user_id, run_id)
     if is_child and updated is not None and updated["status"] in ACTIVE:
         # Tell a live parent the child is back; its real report still arrives
