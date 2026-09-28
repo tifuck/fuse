@@ -2083,6 +2083,7 @@
     if (ph !== wanted) input.placeholder = wanted;
     input.placeholder = "";
     const followGap = thread ? thread.scrollHeight - thread.scrollTop - thread.clientHeight : Infinity;
+    const threadTop = thread ? thread.scrollTop : 0;
     const previousHeight = input.style.height;
     dockSpaceLocked = true;
     input.style.height = "auto";
@@ -2094,11 +2095,17 @@
     input.style.height = nextHeight;
     dockSpaceLocked = false;
     input.placeholder = wanted;
+    // The height:auto measure collapses a wrapped field to one row for an
+    // instant. Where the dock is in flow (Console) that grows the transcript,
+    // and the browser clamps its scrollTop to the new max. Restore it before
+    // paint, or every keystroke drops the log a line and the eased follow
+    // drags it back: a per-key jitter while a reply streams.
+    if (thread && thread.scrollTop !== threadTop) thread.scrollTop = threadTop;
     // Keep the transcript glued while the row grows or shrinks: the eased
     // follow lags the layout change, so without this re-pin the log bounces
     // up and down on every new wrapped line. Skip the snap when height is
     // unchanged — overlay/focus remeasures used to bounce a settled log.
-    if (thread && followGap < 96 && previousHeight !== nextHeight) thread.scrollTop = Math.max(0, thread.scrollHeight - thread.clientHeight);
+    if (thread && (stickToBottom || followGap <= 1) && previousHeight !== nextHeight) thread.scrollTop = Math.max(0, thread.scrollHeight - thread.clientHeight);
     syncDockSpace();
     if (window.FuseComposerSpell) FuseComposerSpell.syncMetrics();
   }
@@ -3573,7 +3580,13 @@
   function syncLatest() {
     const latest = root.querySelector("[data-chat-latest]");
     if (!latest) return;
-    const hide = !messages.length || thread.scrollHeight - thread.scrollTop - thread.clientHeight <= 1 || (stickToBottom && nearBottom());
+    // A reader who nudged up a line is still at the end; the pill waits until
+    // they are genuinely away (or output piles up below), and once shown it
+    // holds until they are back near the bottom, so it never flickers at the
+    // threshold.
+    const gap = thread.scrollHeight - thread.scrollTop - thread.clientHeight;
+    const away = Math.max(160, thread.clientHeight * 0.35);
+    const hide = !messages.length || gap <= 1 || (stickToBottom && nearBottom()) || gap < (latest.hidden ? away : 48);
     if (hide) {
       latest.hidden = true;
       latest.classList.remove("has-new");
@@ -10894,7 +10907,21 @@
   }, { passive: false });
   log.addEventListener("touchend", () => { codeTouch = null; }, { passive: true });
 
+  // A gesture over a nested scroller (code pane, thinking peek, table) that
+  // can still move that way scrolls it, not the transcript, and must not
+  // break the follow.
+  function innerScrolls(target, dy) {
+    for (let el = target instanceof Element ? target : null; el && el !== thread; el = el.parentElement) {
+      if (el.scrollHeight <= el.clientHeight + 1) continue;
+      const oy = getComputedStyle(el).overflowY;
+      if (oy !== "auto" && oy !== "scroll") continue;
+      if (dy < 0 ? el.scrollTop > 0 : el.scrollTop + el.clientHeight < el.scrollHeight - 1) return true;
+    }
+    return false;
+  }
   thread.addEventListener("wheel", event => {
+    // Pinch/ctrl-zoom and sideways swipes are not a request to stop following.
+    if (event.ctrlKey || Math.abs(event.deltaX) > Math.abs(event.deltaY) || innerScrolls(event.target, event.deltaY)) return;
     if (event.deltaY < 0) pauseThreadFollow();
     else if (event.deltaY > 0) resumeFollowOnScroll = true;
   }, { passive: true });
@@ -10908,6 +10935,7 @@
   thread.addEventListener("touchstart", event => { threadTouchY = event.touches[0]?.clientY ?? null; }, { passive: true });
   thread.addEventListener("touchmove", event => {
     const y = event.touches[0]?.clientY;
+    if (y != null && threadTouchY != null && innerScrolls(event.target, threadTouchY - y)) { threadTouchY = y; return; }
     if (y != null && threadTouchY != null && y > threadTouchY + 1) pauseThreadFollow();
     else if (y != null && threadTouchY != null && y < threadTouchY - 1) resumeFollowOnScroll = true;
     threadTouchY = y ?? null;
