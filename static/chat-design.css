@@ -3512,9 +3512,9 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-con
   margin: 0.08rem 0 0;
   font: var(--console-type)/var(--console-leading) var(--mono);
 }
-/* An expanded completed thought drops its now-empty header row: the band
-   starts directly with the thinking text (click the text to collapse).
-   Live thoughts keep the header for the stream/hide control. */
+/* An expanded thought drops its header row: the band starts directly with
+   the thinking text (click the text to collapse). Live thoughts hide it too
+   (see Console thinking below). */
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-think:not(.is-live-think):not([data-think-mode="collapsed"]) > .chat-step-main > .chat-step-head {
   display: none;
 }
@@ -3767,11 +3767,11 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-con
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-tool-md.chat-md { display: block; }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-tool-md.chat-md::before { content: none; }
 
-/* —— Console thinking: one quiet row. While reasoning streams, a shimmering
-   "Thinking…" sits over a three-line tail that follows the stream (top edge
-   fades once it overflows). When reasoning settles, the label becomes
-   "Pondered for 6s" and the tail folds away (chat.js animates the bundle).
-   Click the row or tail for the full stream. —— */
+/* —— Console thinking: one quiet row. While reasoning streams, only a
+   three-line tail shows, following the stream (top edge fades once it
+   overflows); there is no label above it. When reasoning settles, the tail
+   folds away (chat.js animates the bundle) into "Pondered for 6s".
+   Click the tail for the full stream; click again to collapse. —— */
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-think {
   --think-line: calc(0.78rem * var(--chat-text-scale, 1) * 1.45);
   --think-dim: color-mix(in srgb, var(--mist) 58%, var(--ink));
@@ -3787,12 +3787,12 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-ste
   -webkit-text-fill-color: transparent;
   animation: chat-shimmer 2.4s linear infinite;
 }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-think[data-think-mode="tail"] > .chat-step-main > .chat-step-head { display: flex; }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-think.is-live-think:not([data-think-mode="collapsed"]) > .chat-step-main > .chat-step-head { display: none; }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-think[data-think-mode="tail"] .chat-console-bundle { display: block; }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-think:is([data-think-mode="tail"], [data-think-mode="expanded"]) .chat-think-window {
-  margin: 0.08rem 0 0.2rem 0.2rem;
-  padding-left: 0.65rem;
-  border-left: 1px solid color-mix(in srgb, var(--mist) 14%, var(--ink));
+  margin: 0.08rem 0 0.2rem;
+  padding-left: 0;
+  border-left: 0;
   cursor: pointer;
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-think[data-think-mode="tail"] .chat-think-preview {

@@ -8848,7 +8848,6 @@
       msg.stepOpen[li.dataset.step] = open;
       if (isThink) {
         syncThinkingMode(li, msg, true);
-        li.classList.toggle("is-console-expanded", li.dataset.thinkMode === "expanded");
         const peek = li.querySelector("[data-reason-preview]");
         if (open && li.classList.contains("is-live-think")) {
           peek._thinking.follow = true;
@@ -10180,6 +10179,14 @@
       const focusedSection = focused?.matches("[data-copy-tool]") ? focused.closest("[data-tool-section]")?.dataset.toolSection : "";
       const preKey = (el, i) => el.closest("[data-tool-section]") ? `${el.closest("[data-step]")?.dataset.step}:${el.closest("[data-tool-section]").dataset.toolSection}` : `pre-${i}`;
       const positions = new Map([...flow.querySelectorAll("pre")].map((el, i) => [preKey(el, i), [el.scrollLeft, el.scrollTop]]));
+      // Think rows are reconcile islands, so a view switch would keep the
+      // previous view's markup (Console's bundle landed in Terminal's 12px
+      // icon column). Rebuild from scratch when the view changes.
+      if (flow._view && flow._view !== chatView) {
+        disposeThinking(flow);
+        flow.replaceChildren();
+      }
+      flow._view = chatView;
       flow._sig = sig;
       const nextFlow = blocks.map((block, blockIndex) => {
         if (block.kind === "permission") {
