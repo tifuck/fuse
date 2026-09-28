@@ -209,6 +209,21 @@ def merge_usage(parsed: dict, extra: dict | None) -> dict:
     return merged
 
 
+def _error_object(status: int, raw: bytes) -> dict:
+    """Upstream error body as an error object. Keeps the upstream status: an
+    HTML 413/400 page is still the request's fault, not a retryable 502."""
+    try:
+        obj = json.loads(raw)
+    except (ValueError, RecursionError):
+        obj = None
+    if isinstance(obj, dict):
+        return obj
+    text = raw.decode("utf-8", errors="replace").strip() if isinstance(raw, (bytes, bytearray)) else ""
+    if text.lstrip().startswith("<"):
+        text = ""
+    return {"error": {"message": text[:500] or f"upstream returned HTTP {status}"}}
+
+
 async def openai_chat(
     client: httpx.AsyncClient,
     url: str,
@@ -236,7 +251,7 @@ async def openai_chat(
             if close_client:
                 await client.aclose()
             return 504, {"error": {"message": f"upstream timeout ({type(exc).__name__})"}}, None, {}, {}
-        except httpx.TransportError as exc:
+        except httpx.HTTPError as exc:
             if close_client:
                 await client.aclose()
             return 502, {"error": {"message": f"upstream transport failure ({type(exc).__name__})"}}, None, {}, {}
@@ -247,25 +262,14 @@ async def openai_chat(
             try:
                 err = await resp.aread()
             except httpx.TimeoutException as exc:
-                await resp.aclose()
-                if close_client:
-                    await client.aclose()
                 return 504, {"error": {"message": f"upstream timeout ({type(exc).__name__})"}}, None, {}, safe_headers
-            except httpx.TransportError as exc:
+            except httpx.HTTPError as exc:
+                return 502, {"error": {"message": f"upstream transport failure ({type(exc).__name__})"}}, None, {}, safe_headers
+            finally:
                 await resp.aclose()
                 if close_client:
                     await client.aclose()
-                return 502, {"error": {"message": f"upstream transport failure ({type(exc).__name__})"}}, None, {}, safe_headers
-            await resp.aclose()
-            if close_client:
-                await client.aclose()
-            try:
-                obj = json.loads(err)
-                if not isinstance(obj, dict):
-                    return 502, {"error": {"message": "upstream returned an invalid error schema"}}, None, {}, safe_headers
-            except json.JSONDecodeError:
-                return 502, {"error": {"message": "upstream returned a non-JSON error"}}, None, {}, safe_headers
-            return resp.status_code, obj, None, {}, safe_headers
+            return resp.status_code, _error_object(resp.status_code, err), None, {}, safe_headers
 
         collected: dict = {}
 
@@ -326,11 +330,16 @@ async def openai_chat(
             resp = await client.post(url, json=payload, headers=headers)
         except httpx.TimeoutException as exc:
             return 504, {"error": {"message": f"upstream timeout ({type(exc).__name__})"}}, None, {}, {}
-        except httpx.TransportError as exc:
+        except httpx.HTTPError as exc:
             return 502, {"error": {"message": f"upstream transport failure ({type(exc).__name__})"}}, None, {}, {}
+        if resp.status_code != 200:
+            safe_headers = {}
+            if resp.headers.get("retry-after"):
+                safe_headers["Retry-After"] = resp.headers["retry-after"][:128]
+            return resp.status_code, _error_object(resp.status_code, resp.content), None, {}, safe_headers
         try:
             obj = resp.json()
-        except json.JSONDecodeError:
+        except ValueError:
             return 502, {"error": {"message": "upstream returned non-JSON data"}}, None, {}, {}
         if not isinstance(obj, dict):
             return 502, {"error": {"message": "upstream returned an invalid JSON schema"}}, None, {}, {}

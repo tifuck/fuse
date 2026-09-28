@@ -27,7 +27,7 @@ from ..crypto import encrypt
 from ..proxy import UsageStream, usage_from_obj
 from .base import ChatResult
 from . import devin_proto as proto
-from .pool_pick import note_failure, pick_account, release, reserve
+from .pool_pick import Failover, auth_failure_confirmed, note_failure, pick_account, release, reserve
 from . import pool_policy
 from .pool_session import bind, drop_cache_routing_fields, lookup
 
@@ -1409,6 +1409,7 @@ class DevinSource:
                 model=model,
             )
         prefer_id = lookup("devin", session_id)
+        failover = Failover()
         while True:
             picked = self._pick(exclude=tried, prefer_id=prefer_id)
             if not picked:
@@ -1424,12 +1425,14 @@ class DevinSource:
                 result = await self._chat_one(token, payload, model, cred, session_id, attempts)
                 if result.stream is not None:
                     stream_reserved = True
+                    failover.served()
                     return self._stream_result_wrap(
                         result.stream, result.usage or {}, cred, session_id, model, attempts
                     )
                 last = result
                 if result.status == 401:
-                    disable_credential(cred["id"])
+                    if auth_failure_confirmed(cred["id"]):
+                        disable_credential(cred["id"])
                     last.status = 502
                     last.body = {"error": {"message": "Devin rejected the configured account"}}
                     attempts.append({"credential_id": cred["id"], "status": 401, "usage": result.usage or {}})
@@ -1438,11 +1441,11 @@ class DevinSource:
                     note_failure(cred["id"], cooldown_seconds=60)
                     attempts.append({"credential_id": cred["id"], "status": 429, "usage": result.usage or {}})
                     continue
-                if result.status >= 500:
-                    note_failure(cred["id"], cooldown_seconds=15)
+                if result.status >= 500 and failover.server_error(cred["id"], result.status, 15):
                     attempts.append({"credential_id": cred["id"], "status": result.status, "usage": result.usage or {}})
                     continue
                 if result.status == 200:
+                    failover.served()
                     bind("devin", session_id, cred["id"])
                 last.attempts = attempts
                 return last

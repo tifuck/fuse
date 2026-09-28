@@ -9,7 +9,7 @@ import httpx
 
 from ..client import read_limited
 from ..ssrf import public_http_url
-from .base import ProviderResponse, SearchHit
+from .base import ProviderResponse, SearchHit, empty_reason
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +96,7 @@ class YahooProvider:
             logger.error("fuse.search provider=yahoo error=%s", type(exc).__name__)
             return ProviderResponse(hits=[], status=0, error="http", last_timeout=timeout)
         hits = parse_yahoo_html(body)
-        if not hits:
-            logger.warning("fuse.search provider=yahoo status=200 error=empty body_len=%s", len(resp.text or ""))
-        return ProviderResponse(hits=hits, status=200, error=None if hits else "empty", last_timeout=timeout)
+        error = None if hits else empty_reason(body, "algo-sr")
+        if error:
+            logger.warning("fuse.search provider=yahoo status=200 error=%s body_len=%s", error, len(body or ""))
+        return ProviderResponse(hits=hits, status=200, error=error, last_timeout=timeout)

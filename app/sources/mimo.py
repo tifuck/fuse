@@ -30,7 +30,7 @@ from ..crypto import encrypt
 from ..proxy import UsageStream, openai_chat
 from .base import ChatResult
 from .grok import apply_usage_guard, is_held
-from .pool_pick import note_failure, pick_account, release, reserve
+from .pool_pick import Failover, auth_failure_confirmed, note_failure, pick_account, release, reserve
 from . import pool_policy
 from .pool_session import bind, drop_cache_routing_fields, lookup
 
@@ -642,6 +642,7 @@ class MimoSource:
         model = body.get("model") or MIMO_MODELS[0]
         payload = _chat_payload(body)
         prefer_id = lookup("mimo", session_id)
+        failover = Failover()
         while True:
             picked = self._pick(exclude=tried, prefer_id=prefer_id)
             if not picked:
@@ -668,12 +669,18 @@ class MimoSource:
                 )
                 if stream is not None:
                     stream_reserved = True
+                    failover.served()
                     return self._stream_result(stream, usage, cred, session_id, model, attempts)
                 last = ChatResult(status=status, body=obj, usage=usage, credential_id=cred["id"], model=model)
                 if status == 401:
-                    disable_credential(cred["id"])
+                    if auth_failure_confirmed(cred["id"]):
+                        disable_credential(cred["id"])
                     last.status = 502
                     last.body = {"error": {"message": "Xiaomi rejected the Token Plan key"}}
+                    last.response_headers = response_headers
+                    attempts.append({"credential_id": cred["id"], "status": status, "usage": usage or {}})
+                    last.attempts = attempts
+                    continue
                 if status == 429:
                     try:
                         await refresh_quota(cred, force=True)
@@ -684,13 +691,13 @@ class MimoSource:
                     attempts.append({"credential_id": cred["id"], "status": status, "usage": usage or {}})
                     last.attempts = attempts
                     continue
-                if status >= 500:
-                    note_failure(cred["id"], cooldown_seconds=15)
+                if status >= 500 and failover.server_error(cred["id"], status, 15):
                     last.response_headers = response_headers
                     attempts.append({"credential_id": cred["id"], "status": status, "usage": usage or {}})
                     last.attempts = attempts
                     continue
                 if status == 200:
+                    failover.served()
                     bind("mimo", session_id, cred["id"])
                 last.response_headers = response_headers
                 last.attempts = attempts

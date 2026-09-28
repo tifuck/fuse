@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import math
 
 from .. import accounts, db
+from ..crypto import DecryptionError
+
+logger = logging.getLogger(__name__)
+_unreadable_logged: set[int] = set()
 
 # Leave a little headroom so a long request doesn't start on a nearly spent plan
 # when another account is still under this. A pool whose every candidate is at
@@ -32,11 +37,69 @@ def note_failure(cred_id: int, *, cooldown_seconds: float = 30.0) -> None:
         _cooldown_until[int(cred_id)] = max(prev, until)
 
 
+# A 401 disables a credential only when it repeats within this window, after
+# the first one cooled the account for AUTH_RECHECK_SECONDS.
+AUTH_CONFIRM_WINDOW = 3600.0
+AUTH_RECHECK_SECONDS = 120.0
+_auth_strikes: dict[int, float] = {}
+
+
+def auth_failure_confirmed(cred_id: int) -> bool:
+    """True when a 401 should permanently disable the credential.
+
+    One 401 can be a transient upstream auth fault; disabling on it removed
+    donated credentials for good. The first strike only cools the account.
+    """
+    cid = int(cred_id)
+    now = time.time()
+    with _failure_lock:
+        first = _auth_strikes.get(cid)
+        if first is not None and now - first <= AUTH_CONFIRM_WINDOW:
+            _auth_strikes.pop(cid, None)
+            return True
+        _auth_strikes[cid] = now
+    note_failure(cid, cooldown_seconds=AUTH_RECHECK_SECONDS)
+    return False
+
+
+# A request that draws a 5xx from this many accounts is treated as the cause.
+FAILOVER_SERVER_ERRORS = 2
+
+
+class Failover:
+    """Per-request 5xx bookkeeping for pool failover.
+
+    A 5xx says nothing about whether the account or the request is at fault.
+    Cooling each account as it fails let one poisonous request walk (and
+    bill) every account and leave the pool empty for everyone. Cooldowns are
+    deferred until another account serves the same request, and failover
+    stops once the request has failed on FAILOVER_SERVER_ERRORS accounts.
+    A 504 (read timeout) never fails over: upstream may already have run it.
+    """
+
+    def __init__(self) -> None:
+        self._suspect: list[tuple[int, float]] = []
+
+    def server_error(self, cid: int, status: int, cooldown_seconds: float) -> bool:
+        """Record a 5xx; True when another account may be tried."""
+        if status == 504:
+            return False
+        self._suspect.append((int(cid), cooldown_seconds))
+        return len(self._suspect) < FAILOVER_SERVER_ERRORS
+
+    def served(self) -> None:
+        """Another account served the request: the earlier 5xx were the accounts'."""
+        for cid, seconds in self._suspect:
+            note_failure(cid, cooldown_seconds=seconds)
+        self._suspect.clear()
+
+
 def reset_health() -> None:
     """Clear cooldowns and in-flight reservations. Tests only."""
     with _failure_lock:
         _cooldown_until.clear()
         _in_flight.clear()
+        _auth_strikes.clear()
 
 
 def _cooling_down(cid: int) -> bool:
@@ -243,7 +306,14 @@ def pick_account(
             continue
         if _cooling_down(cid):
             continue
-        extra = accounts.cred_extra(cred)
+        try:
+            extra = accounts.cred_extra(cred)
+        except (DecryptionError, accounts.CredentialDataError):
+            # One unreadable row must not fail every request for the pool.
+            if cid not in _unreadable_logged:
+                _unreadable_logged.add(cid)
+                logger.error("Pool credential %s cannot be decrypted; skipping it", cid)
+            continue
         if is_held is not None and is_held(cred):
             continue
         if is_authed is not None and not is_authed(cred, extra):

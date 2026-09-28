@@ -1319,7 +1319,7 @@ def _has_load_skill_pair(messages: list[dict], name: str) -> bool:
                 continue
             try:
                 args = json.loads(fn.get("arguments") or "{}")
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, ValueError, RecursionError):
                 args = {}
             if isinstance(args, dict) and str(args.get("name") or "") == want:
                 return True
@@ -1402,7 +1402,7 @@ def fold_preload_skill(messages: list[dict]) -> list[dict]:
                 fn = call.get("function") if isinstance(call.get("function"), dict) else {}
                 try:
                     args = json.loads(fn.get("arguments") or "{}")
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, ValueError, RecursionError):
                     args = {}
                 if isinstance(args, dict):
                     slug = str(args.get("name") or slug)
@@ -1605,7 +1605,9 @@ def _running_event(job: ToolJob) -> dict:
     }
     try:
         parsed = json.loads(job.arguments or "{}")
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, ValueError, RecursionError):
+        # Runs before argument validation; malformed arguments are reported
+        # to the model by the executor, not raised out of the turn.
         parsed = {}
     if isinstance(parsed, dict):
         queries = parsed.get("queries")

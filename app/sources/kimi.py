@@ -18,9 +18,10 @@ from ..proxy import UsageStream, openai_chat
 from ..security import safe_verify_url
 from .base import ChatResult
 from .grok import apply_usage_guard, is_held
-from .pool_pick import note_failure, pick_account, release, reserve
+from .pool_pick import Failover, auth_failure_confirmed, note_failure, pick_account, release, reserve
 from . import pool_policy
 from .pool_session import bind, drop_cache_routing_fields, lookup
+from .token_store import expires_at, persist_rotated
 
 USAGE_TTL = 300
 HOLD_HOURS = 24
@@ -575,9 +576,7 @@ def store_tokens(source_id: int, tokens: dict, donated_by: int | None, label: st
         "auth_kind": "oauth",
         "access_token": tokens["access_token"],
         "refresh_token": tokens.get("refresh_token", ""),
-        "expires_at": (
-            datetime.now(timezone.utc) + timedelta(seconds=int(tokens.get("expires_in") or 21600))
-        ).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "expires_at": expires_at(tokens.get("expires_in"), 21600),
         "scope": tokens.get("scope", ""),
         "region": region if region in _REGIONS else "global",
         "device_id": device_id or _new_device_id(),
@@ -817,24 +816,21 @@ async def _refresh_one_unlocked(cred) -> bool:
         return False
     extra["access_token"] = data["access_token"]
     extra["refresh_token"] = data.get("refresh_token", rt)
-    extra["expires_at"] = (
-        datetime.now(timezone.utc) + timedelta(seconds=int(data.get("expires_in") or 21600))
-    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    extra["expires_at"] = expires_at(data.get("expires_in"), 21600)
     extra["auth_kind"] = "oauth"
-    if not _cas_update_tokens(int(row["id"]), row["extra"], encrypt(data["access_token"]), extra):
-        retry = db.fetchone("SELECT * FROM credentials WHERE id=?", (row["id"],))
-        if retry is not None and not retry["disabled"]:
-            merged = accounts.cred_extra(retry)
-            merged.update(
-                {
-                    "access_token": data["access_token"],
-                    "refresh_token": data.get("refresh_token", rt),
-                    "expires_at": extra["expires_at"],
-                    "auth_kind": "oauth",
-                }
-            )
-            _cas_update_tokens(int(row["id"]), retry["extra"], encrypt(data["access_token"]), merged)
-    return True
+    return persist_rotated(
+        _cas_update_tokens,
+        int(row["id"]),
+        row["extra"],
+        encrypt(data["access_token"]),
+        extra,
+        {
+            "access_token": data["access_token"],
+            "refresh_token": data.get("refresh_token", rt),
+            "expires_at": extra["expires_at"],
+            "auth_kind": "oauth",
+        },
+    )
 
 
 async def refresh_one(cred) -> bool:
@@ -1008,6 +1004,7 @@ class KimiSource:
         model = body.get("model") or KIMI_MODELS[0]
         payload = _chat_payload(body)
         prefer_id = lookup("kimi", session_id)
+        failover = Failover()
         while True:
             picked = self._pick(exclude=tried, prefer_id=prefer_id)
             if not picked:
@@ -1052,12 +1049,18 @@ class KimiSource:
                         )
                 if stream is not None:
                     stream_reserved = True
+                    failover.served()
                     return self._stream_result(stream, usage, cred, session_id, model, attempts)
                 last = ChatResult(status=status, body=obj, usage=usage, credential_id=cred["id"], model=model)
                 if status == 401:
-                    disable_credential(cred["id"])
+                    if auth_failure_confirmed(cred["id"]):
+                        disable_credential(cred["id"])
                     last.status = 502
                     last.body = {"error": {"message": "Kimi rejected the configured account"}}
+                    last.response_headers = response_headers
+                    attempts.append({"credential_id": cred["id"], "status": status, "usage": usage or {}})
+                    last.attempts = attempts
+                    continue
                 if status in (403, 429):
                     try:
                         await refresh_quota(cred, force=True)
@@ -1068,13 +1071,13 @@ class KimiSource:
                     attempts.append({"credential_id": cred["id"], "status": status, "usage": usage or {}})
                     last.attempts = attempts
                     continue
-                if status >= 500:
-                    note_failure(cred["id"], cooldown_seconds=15)
+                if status >= 500 and failover.server_error(cred["id"], status, 15):
                     last.response_headers = response_headers
                     attempts.append({"credential_id": cred["id"], "status": status, "usage": usage or {}})
                     last.attempts = attempts
                     continue
                 if status == 200:
+                    failover.served()
                     bind("kimi", session_id, cred["id"])
                 last.response_headers = response_headers
                 last.attempts = attempts

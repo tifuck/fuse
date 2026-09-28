@@ -25,9 +25,10 @@ from ..crypto import encrypt
 from ..proxy import UsageStream
 from .base import ChatResult
 from .grok import apply_usage_guard, is_held as credential_is_held
-from .pool_pick import note_failure, pick_account, release, reserve
+from .pool_pick import Failover, auth_failure_confirmed, note_failure, pick_account, release, reserve
 from . import pool_policy
 from .pool_session import bind, lookup
+from .token_store import persist_rotated
 
 USAGE_TTL = 300
 REFRESH_WINDOW = timedelta(minutes=5)
@@ -668,20 +669,19 @@ async def _refresh_one_unlocked(cred) -> bool:
     for key in ("account_id", "email", "organization_uuid"):
         if ident.get(key) and not extra.get(key):
             extra[key] = ident[key]
-    if not _cas_update_tokens(int(row["id"]), row["extra"], encrypt(data["access_token"]), extra):
-        retry = db.fetchone("SELECT * FROM credentials WHERE id=?", (row["id"],))
-        if retry is not None and not retry["disabled"]:
-            merged = accounts.cred_extra(retry)
-            merged.update(
-                {
-                    "access_token": extra["access_token"],
-                    "refresh_token": extra["refresh_token"],
-                    "expires_at": extra["expires_at"],
-                    "auth_kind": "oauth",
-                }
-            )
-            _cas_update_tokens(int(row["id"]), retry["extra"], encrypt(data["access_token"]), merged)
-    return True
+    return persist_rotated(
+        _cas_update_tokens,
+        int(row["id"]),
+        row["extra"],
+        encrypt(data["access_token"]),
+        extra,
+        {
+            "access_token": extra["access_token"],
+            "refresh_token": extra["refresh_token"],
+            "expires_at": extra["expires_at"],
+            "auth_kind": "oauth",
+        },
+    )
 
 
 async def refresh_one(cred) -> bool:
@@ -1466,6 +1466,7 @@ class ClaudeSource:
         payload = build_messages_payload(body, upstream)
         prefer_id = lookup("claude", session_id)
         signature_stripped = False
+        failover = Failover()
         while True:
             picked = self._pick(exclude=tried, prefer_id=prefer_id)
             if not picked:
@@ -1523,11 +1524,18 @@ class ClaudeSource:
                         model=fuse_id(upstream),
                     )
                     if status == 401:
-                        disable_credential(cred["id"])
+                        if auth_failure_confirmed(cred["id"]):
+                            disable_credential(cred["id"])
                         last.status = 502
                         last.body = {"error": {"message": "Claude rejected the configured account"}}
-                    if status in (429, 500, 502, 503, 529):
-                        note_failure(cred["id"], cooldown_seconds=60 if status == 429 else 15)
+                        attempts.append({"credential_id": cred["id"], "status": status, "usage": {}})
+                        last.attempts = attempts
+                        continue
+                    if status == 429 or (
+                        status in (500, 502, 503, 529) and failover.server_error(cred["id"], status, 15)
+                    ):
+                        if status == 429:
+                            note_failure(cred["id"], cooldown_seconds=60)
                         attempts.append({"credential_id": cred["id"], "status": status, "usage": {}})
                         last.attempts = attempts
                         continue
@@ -1537,6 +1545,7 @@ class ClaudeSource:
                     collected: dict = {}
                     stream = _translated_stream(resp, client, upstream, collected)
                     stream_reserved = True
+                    failover.served()
                     return self._stream_result(stream, collected, cred, session_id, fuse_id(upstream), attempts)
                 obj = await _aggregate(resp, client, upstream)
                 usage = obj.get("usage") if isinstance(obj.get("usage"), dict) else obj.get("_fuse_usage") or {}
@@ -1544,20 +1553,25 @@ class ClaudeSource:
                     last = ChatResult(status=502, body=obj, usage=usage if isinstance(usage, dict) else {}, credential_id=cred["id"], model=fuse_id(upstream))
                     last.attempts = attempts
                     return last
+                failover.served()
                 bind("claude", session_id, cred["id"])
                 last = ChatResult(status=200, body=obj, usage=usage if isinstance(usage, dict) else {}, credential_id=cred["id"], model=fuse_id(upstream))
                 last.attempts = attempts
                 return last
-            except httpx.HTTPError:
-                note_failure(cred["id"], cooldown_seconds=15)
-                attempts.append({"credential_id": cred["id"], "status": 502, "usage": {}})
-                last = ChatResult(status=502, body={"error": {"message": "Claude request failed"}}, credential_id=cred["id"], model=fuse_id(upstream))
+            except httpx.HTTPError as exc:
+                failed = 504 if isinstance(exc, httpx.TimeoutException) else 502
+                retry = failover.server_error(cred["id"], failed, 15)
+                if retry:
+                    attempts.append({"credential_id": cred["id"], "status": failed, "usage": {}})
+                last = ChatResult(status=failed, body={"error": {"message": f"Claude request failed ({type(exc).__name__})"}}, credential_id=cred["id"], model=fuse_id(upstream))
                 last.attempts = attempts
                 try:
                     await client.aclose()
                 except Exception:
                     pass
-                continue
+                if retry:
+                    continue
+                return last
             finally:
                 if not stream_reserved:
                     release(cred["id"])

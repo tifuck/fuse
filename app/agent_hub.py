@@ -401,8 +401,15 @@ async def handle_socket(ws, *, hello_timeout: float = HELLO_TIMEOUT) -> None:
                     ),
                 }
             )
-    except Exception:
-        logger.debug("agent socket ended", exc_info=True)
+    except Exception as exc:
+        from starlette.websockets import WebSocketDisconnect
+
+        if isinstance(exc, WebSocketDisconnect):
+            logger.debug("agent socket ended", exc_info=True)
+        else:
+            # Not a normal disconnect: a handler bug would otherwise look
+            # exactly like the connector going away.
+            logger.exception("agent socket loop failed")
     finally:
         # Mark before the pending leftover is handed off: a record whose
         # receive loop ended must not accept new jobs while awaiting cleanup.

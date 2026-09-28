@@ -3,6 +3,7 @@ import json
 import logging
 import math
 
+import anyio
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -36,6 +37,7 @@ from .sources.pool_session import session_id_from
 
 router = APIRouter()
 _LINE_CAP = 1_048_576
+_CLOSE_SECONDS = 5
 _MAX_MESSAGES = 1_000
 _MAX_MESSAGE_CHARS = 1_500_000
 _MAX_RETAINED_MESSAGES = 32_768
@@ -121,7 +123,7 @@ def _validate_messages(messages, *, retained=False) -> None:
     for index, message in enumerate(messages):
         if not isinstance(message, dict):
             raise HTTPException(400, f"messages[{index}] must be an object")
-        if message.get("role") not in roles:
+        if not isinstance(message.get("role"), str) or message["role"] not in roles:
             raise HTTPException(400, f"messages[{index}] has an unsupported role")
         content = message.get("content")
         if content is not None and not isinstance(content, (str, list)):
@@ -204,6 +206,16 @@ def _validate_messages(messages, *, retained=False) -> None:
             f"messages too large ({total} chars; max {max_chars}) - "
             "compact the conversation or start a new session",
         )
+
+
+def _ensure_encodable(body: dict) -> None:
+    """httpx encodes with allow_nan=False and strict UTF-8. A body it cannot
+    encode fails identically on every account, so reject it up front rather
+    than letting pools blame (and cool down) each credential in turn."""
+    try:
+        json.dumps(body, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError, RecursionError):
+        raise HTTPException(400, "Request body contains values that cannot be encoded as JSON") from None
 
 
 def _validate_reasoning(body: dict) -> None:
@@ -360,7 +372,11 @@ async def _tap(
         close = getattr(stream, "aclose", None)
         if close:
             try:
-                await close()
+                # After a client disconnect the enclosing anyio scope is
+                # cancelled and every further await would be re-cancelled,
+                # skipping the upstream close. Shield it, bounded.
+                with anyio.move_on_after(_CLOSE_SECONDS, shield=True):
+                    await close()
             except Exception:
                 logger.warning("Could not close upstream stream", exc_info=True)
 
@@ -503,6 +519,7 @@ async def _invoke_chat(request: Request, user, body: dict, *, prefer_openrouter:
         raise HTTPException(403, "Connect a Xiaomi Token Plan to use MiMo models")
     if src.type_id == "claude" and not claude_ok:
         raise HTTPException(403, "Connect a Claude account to use Claude models")
+    _ensure_encodable(body)
     requested = model
     body["model"] = upstream
     session_id = None
@@ -625,12 +642,17 @@ async def dispatch_chat(request: Request, user, body: dict):
 
 @router.post("/v1/chat/completions")
 async def chat_completions(request: Request):
+    from .web.deps import _json_object
+
     user = require_key(request)
     try:
-        body = await request.json()
-    except json.JSONDecodeError:
+        # Same strict parser as the dashboard: invalid UTF-8, lone surrogates,
+        # NaN/Infinity and pathological nesting are client errors, not 500s or
+        # upstream encode failures blamed on a pool account.
+        body = await _json_object(request)
+    except HTTPException as exc:
         logger.warning(
-            "Rejected chat request user=%s status=400 detail=unparseable JSON body", user["id"]
+            "Rejected chat request user=%s status=%s detail=%s", user["id"], exc.status_code, exc.detail
         )
-        raise HTTPException(400, "Invalid JSON")
+        raise
     return await dispatch_chat(request, user, body)

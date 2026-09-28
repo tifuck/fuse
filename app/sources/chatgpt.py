@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import math
 import time
 from datetime import datetime, timedelta, timezone
@@ -14,10 +15,12 @@ from ..config import settings
 from ..crypto import encrypt
 from ..proxy import UsageStream, usage_from_obj
 from .base import ChatResult
-from .pool_pick import note_failure, pick_account, release, reserve
+from .pool_pick import Failover, note_failure, pick_account, release, reserve
 from . import pool_policy
 from .pool_session import bind, lookup
+from .token_store import expires_at, persist_rotated
 
+logger = logging.getLogger(__name__)
 REFRESH_WINDOW = timedelta(minutes=5)
 _models_cache: tuple[float, list[str]] | None = None
 _refresh_locks: dict[int, asyncio.Lock] = {}
@@ -352,9 +355,7 @@ def store_tokens(source_id: int, tokens: dict, donated_by: int | None, label: st
     extra = {
         "access_token": tokens["access_token"],
         "refresh_token": tokens.get("refresh_token", ""),
-        "expires_at": (
-            datetime.now(timezone.utc) + timedelta(seconds=int(tokens.get("expires_in") or 3600))
-        ).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "expires_at": expires_at(tokens.get("expires_in"), 3600),
         "account_id": account_from_tokens(tokens) or "",
     }
     apply_profile(extra, tokens)
@@ -413,30 +414,26 @@ async def _refresh_one_unlocked(cred) -> bool:
         return False
     extra["access_token"] = data["access_token"]
     extra["refresh_token"] = data.get("refresh_token", rt)
-    extra["expires_at"] = (
-        datetime.now(timezone.utc) + timedelta(seconds=int(data.get("expires_in") or 3600))
-    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    extra["expires_at"] = expires_at(data.get("expires_in"), 3600)
     account = account_from_tokens(data) or extra.get("account_id") or ""
     extra["account_id"] = account
     apply_profile(extra, data)
-    if not _cas_update_tokens(int(row["id"]), row["extra"], encrypt(data["access_token"]), extra):
-        # `extra` changed while the token endpoint was in flight (re-link or
-        # another refresh). Re-merge onto the newest copy instead of
-        # overwriting it with tokens rotated from the old refresh token.
-        retry = db.fetchone("SELECT * FROM credentials WHERE id=?", (row["id"],))
-        if retry is not None and not retry["disabled"]:
-            merged = accounts.cred_extra(retry)
-            merged.update(
-                {
-                    "access_token": data["access_token"],
-                    "refresh_token": data.get("refresh_token", rt),
-                    "expires_at": extra["expires_at"],
-                    "account_id": account,
-                }
-            )
-            apply_profile(merged, data)
-            _cas_update_tokens(int(row["id"]), retry["extra"], encrypt(data["access_token"]), merged)
-    return True
+    # `extra` may change while the token endpoint is in flight (re-link or
+    # another refresh); persist_rotated re-merges onto the newest copy.
+    return persist_rotated(
+        _cas_update_tokens,
+        int(row["id"]),
+        row["extra"],
+        encrypt(data["access_token"]),
+        extra,
+        {
+            "access_token": data["access_token"],
+            "refresh_token": data.get("refresh_token", rt),
+            "expires_at": extra["expires_at"],
+            "account_id": account,
+        },
+        merge=lambda merged: apply_profile(merged, data),
+    )
 
 
 async def refresh_one(cred) -> bool:
@@ -1227,6 +1224,7 @@ class ChatGPTSource:
         attempts: list[dict] = []
         last = ChatResult(status=503, body={"error": "No ChatGPT accounts in the pool"})
         prefer_id = lookup("chatgpt", session_id)
+        failover = Failover()
         while True:
             picked = self._pick(model, exclude=tried, prefer_id=prefer_id)
             if not picked:
@@ -1253,9 +1251,9 @@ class ChatGPTSource:
                         credential_id=cred["id"],
                         model=model,
                     )
-                    note_failure(cred["id"], cooldown_seconds=30)
-                    attempts.append({"credential_id": cred["id"], "status": 504, "usage": {}})
-                    continue
+                    failover.server_error(cred["id"], 504, 30)
+                    last.attempts = attempts
+                    return last
                 except httpx.TransportError as exc:
                     await client.aclose()
                     last = ChatResult(
@@ -1264,9 +1262,11 @@ class ChatGPTSource:
                         credential_id=cred["id"],
                         model=model,
                     )
-                    note_failure(cred["id"], cooldown_seconds=30)
-                    attempts.append({"credential_id": cred["id"], "status": 502, "usage": {}})
-                    continue
+                    if failover.server_error(cred["id"], 502, 30):
+                        attempts.append({"credential_id": cred["id"], "status": 502, "usage": {}})
+                        continue
+                    last.attempts = attempts
+                    return last
                 if resp.status_code == 401:
                     await resp.aclose()
                     if await refresh_one(cred):
@@ -1301,15 +1301,21 @@ class ChatGPTSource:
                         payload.pop("prompt_cache_key", None)
                         tried.discard(int(cred["id"]))
                         continue
-                    if status == 401:
+                    rejected = status == 401
+                    if rejected:
                         status = 502
                         last.status = status
                         last.body = {"error": {"message": "ChatGPT rejected the configured account"}}
-                    if status == 402 or status == 429 or status >= 500:
+                    if status in (402, 429) or rejected:
                         note_failure(cred["id"], cooldown_seconds=30)
                         attempts.append({"credential_id": cred["id"], "status": status, "usage": {}})
                         continue
-                    note_failure(cred["id"], cooldown_seconds=120)
+                    if status >= 500 and failover.server_error(cred["id"], status, 30):
+                        attempts.append({"credential_id": cred["id"], "status": status, "usage": {}})
+                        continue
+                    # Remaining statuses (400/404/413/422...) describe this
+                    # request, not the account. Cooling the account here let a
+                    # handful of bad requests disable the whole pool.
                     last.attempts = attempts
                     return last
                 if wants_stream:
@@ -1327,6 +1333,7 @@ class ChatGPTSource:
                             self._bind_completed_stream(session_id, cred["id"], collected)
 
                     stream_reserved = True
+                    failover.served()
                     stream = UsageStream(
                         _bind_on_finish(),
                         collected,
@@ -1337,7 +1344,6 @@ class ChatGPTSource:
                     return result
                 obj = await _aggregate(resp, client, model)
                 if isinstance(obj.get("error"), dict):
-                    note_failure(cred["id"], cooldown_seconds=60)
                     partial_usage = obj.pop("_fuse_usage", {}) if isinstance(obj, dict) else {}
                     if partial_usage:
                         partial_usage["usage_status"] = "partial"
@@ -1348,24 +1354,44 @@ class ChatGPTSource:
                         credential_id=cred["id"],
                         model=model,
                     )
-                    attempts.append({"credential_id": cred["id"], "status": 502, "usage": partial_usage})
-                    continue
+                    if failover.server_error(cred["id"], 502, 60):
+                        attempts.append({"credential_id": cred["id"], "status": 502, "usage": partial_usage})
+                        continue
+                    last.attempts = attempts
+                    return last
+                failover.served()
                 usage = obj.get("usage") if isinstance(obj.get("usage"), dict) else {}
                 bind("chatgpt", session_id, cred["id"])
                 result = ChatResult(status=200, body=obj, usage=usage, credential_id=cred["id"], model=model)
                 result.attempts = attempts
                 return result
-            except Exception as exc:
+            except httpx.HTTPError as exc:
                 await client.aclose()
+                failed = 504 if isinstance(exc, httpx.TimeoutException) else 502
                 last = ChatResult(
-                    status=502,
+                    status=failed,
                     body={"error": {"message": f"upstream request failed ({type(exc).__name__})"}},
                     credential_id=cred["id"],
                     model=model,
                 )
-                note_failure(cred["id"], cooldown_seconds=30)
-                attempts.append({"credential_id": cred["id"], "status": 502, "usage": {}})
-                continue
+                if failover.server_error(cred["id"], failed, 30):
+                    attempts.append({"credential_id": cred["id"], "status": failed, "usage": {}})
+                    continue
+                last.attempts = attempts
+                return last
+            except Exception:
+                # A local failure (encoding, translation bug) would repeat on
+                # every account. Do not cool accounts or fail over; surface it.
+                await client.aclose()
+                logger.exception("ChatGPT request failed locally credential=%s", cred["id"])
+                last = ChatResult(
+                    status=500,
+                    body={"error": {"message": "Fuse could not process this ChatGPT request"}},
+                    credential_id=cred["id"],
+                    model=model,
+                )
+                last.attempts = attempts
+                return last
             finally:
                 if not stream_reserved:
                     release(cred["id"])

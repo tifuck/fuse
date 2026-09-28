@@ -42,6 +42,12 @@ _cancelled: set[str] = set()
 # instead of polling chat_runs for cancel_requested at streaming cadence.
 _cancel_signals: dict[str, tuple[asyncio.Event, asyncio.AbstractEventLoop]] = {}
 _stopping = False
+# Runs whose worker ended but whose terminal finish_run never committed:
+# run id -> (stored message, terminal status, reaper attempts). The reaper
+# retries this exact finish instead of resuming a turn that already ended.
+_unsettled: dict[str, tuple[dict, str, int]] = {}
+UNSETTLED_REAP_ATTEMPTS = 5
+_FINISH_BACKOFF = (0.0, 0.5, 2.0)
 _THINK = re.compile(r"</?(?:think|thinking|thought|reasoning)>", re.I)
 
 
@@ -710,6 +716,56 @@ async def cancel_wait(user_id, run_id, *, tree=True, force=False):
             await durable_call(chat_store.abort_active, ident, "cancelled")
 
 
+async def _finish_durably(ident: str, stored: dict, status: str) -> bool:
+    """Commit the terminal row, retrying transient failures.
+
+    finish_run is a no-op once the row left ACTIVE, so replaying it after an
+    uncertain commit is safe. On final failure the finish is parked in
+    _unsettled for the reaper (never left for recover_one to resume).
+    """
+    finished = False
+    try:
+        for attempt, delay in enumerate(_FINISH_BACKOFF, 1):
+            if delay:
+                await asyncio.sleep(delay)
+            try:
+                await durable_call(chat_store.finish_run, ident, stored, status)
+                finished = True
+                return True
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Chat finish_run failed for %s (attempt %s)", ident, attempt)
+        return False
+    finally:
+        if not finished:
+            _unsettled[ident] = (stored, status, 0)
+
+
+def _settle_unsettled(row) -> None:
+    """Retry a parked terminal finish. Leaves the row ACTIVE on failure."""
+    ident = row["id"]
+    stored, status, tries = _unsettled[ident]
+    try:
+        chat_store.finish_run(ident, stored, status)
+    except Exception:
+        tries += 1
+        logger.exception("Deferred finish_run failed for %s (reaper attempt %s)", ident, tries)
+        if tries < UNSETTLED_REAP_ATTEMPTS:
+            _unsettled[ident] = (stored, status, tries)
+            return
+        # Deterministic failure: settle the row terminal (last checkpoint)
+        # rather than keep it ACTIVE forever or let recovery re-run it.
+        _unsettled.pop(ident, None)
+        chat_store.abort_active(ident, status)
+        return
+    _unsettled.pop(ident, None)
+    try:
+        schedule_wake(row["user_id"], row["thread_id"])
+    except Exception:
+        logger.exception("Failed to schedule wake after deferred finish for %s", ident)
+
+
 def reap_orphans(user_id=None):
     """Finish phantom active runs that no local worker owns, or that are stuck."""
     if _stopping:
@@ -724,18 +780,31 @@ def reap_orphans(user_id=None):
     if user_id is not None:
         sql += " AND user_id=?"
         args = (user_id,)
-    for row in db.fetchall(sql, args):
+    rows = db.fetchall(sql, args)
+    if user_id is None:
+        # A parked finish whose row was settled elsewhere (Stop, abort) is done.
+        active = {row["id"] for row in rows}
+        for ident in [key for key in _unsettled if key not in active]:
+            _unsettled.pop(ident, None)
+    for row in rows:
         try:
             _reap_one(row)
         except Exception:
             logger.exception("Failed to reap chat run %s", row["id"])
-            chat_store.abort_active(row["id"], "interrupted")
+            try:
+                chat_store.abort_active(row["id"], "interrupted")
+            except Exception:
+                # Keep reaping the remaining rows; this one retries next tick.
+                logger.exception("Failed to abort chat run %s after reap error", row["id"])
 
 
 def _reap_one(row):
     ident = row["id"]
     task = _tasks.get(ident)
     live = task is not None and not task.done()
+    if not live and ident in _unsettled:
+        _settle_unsettled(row)
+        return
     if row["cancel_requested"]:
         # cancel_requested_at is stamped at request time and never refreshed
         # by streaming checkpoints (unlike updated_at), so a worker that keeps
@@ -992,6 +1061,7 @@ async def _run(request, user, run):
     iterator = worker = None
     title_task = None
     status = "failed"
+    persist_failed = False
     started = time.monotonic()
     elapsed_before = max(0, int(output.message.get("elapsedMs") or 0))
     agent = run.get("request", {}).get("agent") if isinstance(run.get("request"), dict) else {}
@@ -1101,6 +1171,7 @@ async def _run(request, user, run):
                 raise asyncio.CancelledError
 
     async def periodic():
+        nonlocal persist_failed
         flush_failures = 0
         next_poll = time.monotonic()
         while True:
@@ -1139,6 +1210,7 @@ async def _run(request, user, run):
                         flush_failures += 1
                         logger.exception("Chat checkpoint failed for %s", ident)
                         if flush_failures >= 3:
+                            persist_failed = True
                             task.cancel()
                             return
                 continue
@@ -1151,6 +1223,7 @@ async def _run(request, user, run):
                 flush_failures += 1
                 logger.exception("Chat checkpoint failed for %s", ident)
                 if flush_failures >= 3:
+                    persist_failed = True
                     task.cancel()
                     return
 
@@ -1244,11 +1317,25 @@ async def _run(request, user, run):
                     output.message["error"] = "The subagent finished without a report."
             status = "failed" if output.message.get("error") else "completed"
     except asyncio.CancelledError:
-        status = "cancelled" if ident in _cancelled else "interrupted"
-        output.message["stopped"] = True
+        if persist_failed and ident not in _cancelled:
+            # periodic() stopped the run because progress could not be saved;
+            # that is a failure, not a server shutdown.
+            status = "failed"
+            output.message["error"] = "Generation stopped: Fuse could not save its progress."
+        else:
+            status = "cancelled" if ident in _cancelled else "interrupted"
+            output.message["stopped"] = True
     except Exception as exc:
-        output.message["error"] = ("Generation exceeded its time limit." if isinstance(exc, TimeoutError)
-                                   else str(getattr(exc, "detail", exc)) or "Generation failed.")[:chats.ERROR_MAX]
+        if isinstance(exc, TimeoutError):
+            error = "Generation exceeded its time limit."
+        elif getattr(exc, "detail", None) or isinstance(exc, ValueError):
+            # HTTP/validation details and Fuse's own ValueErrors are written
+            # for the user. Anything else (driver, OS, bugs) stays in the log.
+            error = str(getattr(exc, "detail", None) or exc)
+        else:
+            logger.exception("Chat run %s failed", ident)
+            error = ""
+        output.message["error"] = (error or "Generation failed.")[:chats.ERROR_MAX]
     finally:
         if worker is not None:
             worker.cancel()
@@ -1376,10 +1463,12 @@ async def _run(request, user, run):
             from . import permissions as permissions_mod
 
             permissions_mod.cancel_run_asks(ident)
-            try:
-                await durable_call(chat_store.finish_run, ident, output.stored(), status)
-            except Exception:
-                logger.exception("Chat finish_run failed for %s", ident)
+            if not await _finish_durably(ident, output.stored(), status):
+                # The terminal row never committed. Leave it ACTIVE and parked
+                # in _unsettled: the reaper retries this finish rather than
+                # resuming a turn that already ended, and no push or wake
+                # announces a state that is not durable.
+                return
             current = await asyncio.to_thread(chat_store.get_run, user["id"], ident)
             if not parent and status in chat_store.TERMINAL and current is not None:
                 # Follow-ups that raced the finish line were never consumed.

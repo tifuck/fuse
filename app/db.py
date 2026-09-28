@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -8,6 +9,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from .config import settings
+
+logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
 _conn: sqlite3.Connection | None = None
@@ -1162,6 +1165,22 @@ def _backfill_hourly(conn: sqlite3.Connection) -> None:
     )
 
 
+def _rollback(conn) -> None:
+    """Roll back without masking the caller's exception.
+
+    If the rollback itself fails the session state is unknown; close it so the
+    next checkout reconnects instead of continuing an open transaction.
+    """
+    try:
+        conn.rollback()
+    except Exception:
+        logger.exception("Database rollback failed; discarding the connection")
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 @contextmanager
 def tx():
     conn = connect()
@@ -1171,8 +1190,11 @@ def tx():
         try:
             yield borrowed
             borrowed.commit()
-        except Exception:
-            borrowed.rollback()
+        except BaseException:
+            # BaseException too: a GeneratorExit/KeyboardInterrupt must not
+            # return a connection mid-transaction for the next borrower to
+            # commit.
+            _rollback(borrowed)
             raise
         finally:
             conn.release(borrowed)
@@ -1183,8 +1205,8 @@ def tx():
                 conn.ensure_connected()
             yield conn
             conn.commit()
-        except Exception:
-            conn.rollback()
+        except BaseException:
+            _rollback(conn)
             raise
 
 

@@ -45,6 +45,32 @@ def canonical_url(url: str) -> str:
     return urlunsplit((scheme, netloc, parts.path or "/", query, ""))
 
 
+_CHALLENGE_MARKERS = (
+    "captcha",
+    "unusual traffic",
+    "verify you are human",
+    "are you a robot",
+    "cf-chl",
+    "challenge-platform",
+    "/sorry/",
+)
+
+
+def empty_reason(body: str | None, result_marker: str) -> str:
+    """Why a 200 HTML page yielded no hits.
+
+    Only a page that looks like a genuine results page is "empty". A bot
+    challenge is "blocked" and a results page the parser missed is "parse";
+    both are provider failures, never "No results." for the model.
+    """
+    text = (body or "").lower()
+    if any(marker in text for marker in _CHALLENGE_MARKERS):
+        return "blocked"
+    if result_marker and result_marker.lower() in text:
+        return "parse"
+    return "empty"
+
+
 def source_id(url: str) -> str:
     """Stable public identifier shared by model evidence, traces, and UI."""
     import hashlib

@@ -10,7 +10,7 @@ import httpx
 
 from ..client import TIMEOUT_DDG, PROVIDER_BODY_MAX
 from ..ssrf import decode_ddg_url, host_of, public_http_url
-from .base import ProviderResponse, SearchHit
+from .base import ProviderResponse, SearchHit, empty_reason
 
 logger = logging.getLogger(__name__)
 
@@ -221,7 +221,9 @@ class DdgProvider:
             if found:
                 _record_ok()
                 return ProviderResponse(hits=found, status=200, error=None, last_timeout=last_timeout)
-            last_error = "empty" if resp.status_code == 200 else "challenge"
+            last_error = empty_reason(resp.text, "result__a") if resp.status_code == 200 else "challenge"
+            if last_error == "empty" and "anomaly" in (resp.text or "").lower():
+                last_error = "blocked"
             logger.warning(
                 "fuse.search provider=ddg status=%s method=%s error=%s body_len=%s",
                 resp.status_code,

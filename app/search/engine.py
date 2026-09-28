@@ -491,7 +491,9 @@ async def _one_query(
             if merged:
                 label = "+".join(used) if used else "mix"
                 return await finish(merged, label, 200, last_timeout)
-            if failures and all(item.endswith(":empty") or ":200:" in item for item in failures):
+            # Only providers that parsed a genuine results page count as "no
+            # results"; blocked/parse/http failures must surface as a failure.
+            if failures and all(item.endswith(":empty") for item in failures):
                 return await finish([], "mix", 200, last_timeout)
 
             ms = int((time.monotonic() - started) * 1000)
