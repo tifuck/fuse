@@ -106,7 +106,6 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
         provider_usage: { prompt_tokens: 60000, completion_tokens: 50, cached_tokens: 59000 } }), basis);
       await page.evaluate(() => window.fuseToolFixture.context.estimate());
       assert.equal(await used(), 60050, 'server measurement/calibration must survive local estimate ticks');
-      assert.match(await page.locator('[data-context-pop-last]').textContent(), /60k input tokens/);
     }
     // Every authoritative payload reading can replace the previous reading.
     await page.evaluate(() => window.fuseToolFixture.context.accept({ event: 'context', phase: 'round', scope: 'prompt', used: 9000, limit: 200000 }));

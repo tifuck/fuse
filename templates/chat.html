@@ -4,8 +4,8 @@
 {% block head_extra %}
 <script src="/static/chat-appearance.js?v=23"></script>
 <script src="/static/chat-backdrop.js?v=2" defer></script>
-<link rel="stylesheet" href="/static/chat-design.css?v=188">
-<link rel="stylesheet" href="/static/chat-mainframe.css?v=6">
+<link rel="stylesheet" href="/static/chat-design.css?v=191">
+<link rel="stylesheet" href="/static/chat-mainframe.css?v=9">
 <link rel="stylesheet" href="/static/spinner-next.css?v=3">
 <link rel="stylesheet" href="/static/spinner-future.css?v=3">
 {% endblock %}
@@ -236,16 +236,7 @@
                 <circle class="chat-context-fill" data-context-fill cx="16" cy="16" r="12" fill="none"></circle>
               </svg>
             </button>
-            <div class="chat-context-pop" id="chat-context-pop" data-context-pop hidden>
-              <div class="chat-context-pop-head">
-                <p class="chat-context-pop-kicker">Context</p>
-                <p class="chat-context-pop-meter" data-context-pop-meter></p>
-              </div>
-              <ul class="chat-context-pop-parts" data-context-pop-parts></ul>
-              <p class="chat-context-pop-last" data-context-pop-last hidden></p>
-              <p class="chat-context-pop-note" data-context-pop-note></p>
-              <button type="button" class="btn sm" data-context-pop-compact>Compact now</button>
-            </div>
+            <div class="chat-context-pop" id="chat-context-pop" data-context-pop role="dialog" aria-label="Context usage" hidden></div>
           </div>
           <button type="submit" class="chat-send" data-chat-send disabled aria-label="Send">
             <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M8 3.2v9.6M4.2 7l3.8-3.8L11.8 7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -324,13 +315,13 @@
           <span class="chat-activity-spin" data-agent-live-spin aria-hidden="true"></span>
           <span class="chat-status-shimmer"><span class="chat-activity-text"><span data-agent-live-label><span class="chat-status-verb">Working</span><span class="chat-status-meta" hidden></span></span><span class="chat-dock-dots" aria-hidden="true"><i></i><i></i><i></i></span></span></span>
           <span class="chat-agent-meter" data-agent-meter hidden>
-            <span class="chat-context chat-agent-context" data-agent-context aria-label="Subagent context usage" title="Subagent context usage">
+            <button type="button" class="chat-context chat-agent-context" data-agent-context aria-label="Subagent context usage" aria-expanded="false" aria-controls="chat-agent-context-pop" title="Subagent context usage">
               <svg viewBox="0 0 32 32" aria-hidden="true">
                 <circle class="chat-context-track" cx="16" cy="16" r="12" fill="none"></circle>
                 <circle class="chat-context-fill" data-agent-context-fill cx="16" cy="16" r="12" fill="none"></circle>
               </svg>
-            </span>
-            <span class="chat-agent-meter-label" data-agent-meter-label></span>
+            </button>
+            <div class="chat-context-pop" id="chat-agent-context-pop" data-agent-context-pop role="dialog" aria-label="Subagent context usage" hidden></div>
           </span>
         </div>
       </div>
@@ -551,5 +542,5 @@
 <script src="/static/spinner-next.js?v=3"></script>
 <script src="/static/spinner-future.js?v=3"></script>
   <script src="/static/chat-dom.js?v=1"></script>
-  <script src="/static/chat.js?v=296"></script>
+  <script src="/static/chat.js?v=300"></script>
 {% endblock %}

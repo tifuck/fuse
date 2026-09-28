@@ -85,7 +85,9 @@
   position: relative;
   isolation: isolate;
   display: grid;
-  grid-template-columns: var(--mf-gutter) minmax(0, 1fr) auto auto 1.2rem;
+  /* The argument keeps at least half the row; in a narrow pane the result
+     column clips first instead of squeezing the target to an ellipsis. */
+  grid-template-columns: var(--mf-gutter) minmax(min(36ch, 55%), 1fr) auto auto 1.2rem;
   grid-auto-rows: auto;
   column-gap: var(--mf-gap);
   align-items: start;
@@ -223,7 +225,11 @@
   grid-column: 3;
   grid-row: 1;
   justify-self: end;
-  max-width: 34ch;
+  /* 100% is the result column: end-aligned, the text would otherwise keep
+     its own width and spill left over the argument when the column is
+     narrower than it. */
+  min-width: 0;
+  max-width: min(34ch, 100%);
   overflow: hidden;
   color: var(--mf-dim);
   font: var(--mf-small)/var(--mf-row) var(--mf-font);
@@ -608,6 +614,32 @@
   line-height: inherit;
 }
 .chat[data-view="mainframe"] .chat-box textarea { font-family: var(--mf-font); caret-color: var(--brass); caret-shape: block; }
+
+/* Model menu: the composer's pane and rule, 2px corners, rows on the
+   mainframe line, the selection in brass. */
+.chat[data-view="mainframe"] .chat-picker-menu {
+  border-color: var(--mf-rule);
+  background: var(--mf-pane);
+  font-family: var(--mf-font);
+}
+.chat[data-view="mainframe"] .chat-picker-menu:not(.is-sheet) {
+  border-radius: 2px;
+  box-shadow: 0 14px 34px -16px rgba(0, 0, 0, 0.7);
+}
+.chat[data-view="mainframe"] :is(.chat-picker-searchrow, .chat-picker-thinking-host) { border-color: var(--mf-rule); }
+.chat[data-view="mainframe"] .chat-picker-search { font: var(--mf-size)/1 var(--mf-font); }
+.chat[data-view="mainframe"] .chat-picker-kbd { border-radius: 2px; }
+.chat[data-view="mainframe"] .chat-picker-list { padding-inline: 0.25rem; }
+.chat[data-view="mainframe"] .chat-picker-row > button {
+  min-height: calc(var(--mf-row) + 0.45rem);
+  padding: 0.2rem 0.55rem;
+  border-radius: 2px;
+  font: var(--mf-size)/var(--mf-row) var(--mf-font);
+}
+.chat[data-view="mainframe"] .chat-picker-row > button:is(:hover, .is-active) { background: color-mix(in srgb, var(--mist) 7%, transparent); }
+.chat[data-view="mainframe"] .chat-picker-row > button.is-selected > span { font-weight: 500; color: var(--brass); }
+.chat[data-view="mainframe"] .chat-picker-efforts-slider::-webkit-slider-thumb { border-radius: 2px; border-color: var(--mf-pane); }
+.chat[data-view="mainframe"] .chat-picker-efforts-slider::-moz-range-thumb { border-radius: 2px; border-color: var(--mf-pane); }
 
 /* —— Narrow screens —— */
 @media (max-width: 600px) {

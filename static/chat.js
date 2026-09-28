@@ -47,11 +47,6 @@
   const contextBtn = root.querySelector("[data-chat-context]");
   const contextFill = root.querySelector("[data-context-fill]");
   const contextPop = root.querySelector("[data-context-pop]");
-  const contextPopMeter = root.querySelector("[data-context-pop-meter]");
-  const contextPopParts = root.querySelector("[data-context-pop-parts]");
-  const contextPopLast = root.querySelector("[data-context-pop-last]");
-  const contextPopNote = root.querySelector("[data-context-pop-note]");
-  const contextPopCompact = root.querySelector("[data-context-pop-compact]");
   const contextAlert = root.querySelector("[data-context-alert]");
   const contextAlertText = root.querySelector("[data-context-alert-text]");
   const contextAlertCompact = root.querySelector("[data-context-alert-compact]");
@@ -152,7 +147,8 @@
   const agentLiveSpin = root.querySelector("[data-agent-live-spin]");
   const agentLiveLabel = root.querySelector("[data-agent-live-label]");
   const agentMeterEl = root.querySelector("[data-agent-meter]");
-  const agentMeterLabel = root.querySelector("[data-agent-meter-label]");
+  const agentContextBtn = root.querySelector("[data-agent-context]");
+  const agentContextPop = root.querySelector("[data-agent-context-pop]");
   const agentContextFill = root.querySelector("[data-agent-context-fill]");
 
   const STORE_MODEL = "fuse.chat.model";
@@ -1625,22 +1621,65 @@
     const schemas = Number(source.tools) || 0;
     const families = source.tool_families || {};
     if (liveMeter && !snap?.parts) return [["Context", snap.used - draft, ""], ...(draft ? [["Draft", draft, ""]] : [])];
-    const rows = [["System", system, ""]];
-    rows.push(["History", history, ""]);
-    if (messagesN || thinking || toolCalls) {
-      rows.push(["Messages", messagesN, "child"]);
-      if (thinking) rows.push(["Thinking", thinking, "child"]);
-      if (toolCalls) {
-        rows.push(["Tool calls", toolCalls, "child"]);
-        Object.keys(families).sort().forEach((name) => {
-          const n = Number(families[name]) || 0;
-          if (n) rows.push([name.replace(/\b\w/g, (ch) => ch.toUpperCase()), n, "grand"]);
-        });
-      }
-    }
-    if (schemas) rows.push(["Tool schemas", schemas, ""]);
+    const rows = partsRows({ system, history, messages: messagesN, thinking, tool_calls: toolCalls, tools: schemas, tool_families: families });
     if (draft) rows.push(["Draft", draft, ""]);
-    return rows.filter((row) => row[1] > 0 || row[0] === "History");
+    return rows;
+  }
+
+  // One fixed row set for every context card (main agent and subagents), so
+  // the breakdown keeps its shape between turns; empty rows dim, not vanish.
+  function partsRows(parts) {
+    const n = (key) => Math.max(0, Number(parts?.[key]) || 0);
+    const rows = [
+      ["System", n("system"), ""],
+      ["History", n("history"), ""],
+      ["Messages", n("messages"), "child"],
+      ["Thinking", n("thinking"), "child"],
+      ["Tool calls", n("tool_calls"), "child"],
+    ];
+    const families = parts?.tool_families || {};
+    Object.keys(families).sort().forEach((name) => {
+      const value = Number(families[name]) || 0;
+      if (value) rows.push([name.replace(/\b\w/g, (ch) => ch.toUpperCase()), value, "grand"]);
+    });
+    rows.push(["Tool schemas", n("tools"), ""]);
+    return rows;
+  }
+
+  // Shared context card: built once per popover, then only its numbers are
+  // updated, so the text is stable while a turn streams.
+  function fillContextCard(pop, card) {
+    if (!pop) return;
+    if (!pop.querySelector("[data-ctx-used]")) {
+      pop.innerHTML =
+        '<div class="chat-context-pop-head"><p class="chat-context-pop-kicker">Context</p>' +
+        '<p class="chat-context-pop-meter"><span data-ctx-used></span><span class="chat-context-pop-pct" data-ctx-pct></span></p></div>' +
+        '<div class="chat-context-pop-bar" aria-hidden="true"><i data-ctx-bar></i></div>' +
+        '<ul class="chat-context-pop-parts" data-ctx-parts></ul>' +
+        '<div class="chat-context-pop-foot"><p class="chat-context-pop-note" data-ctx-note></p>' +
+        (card.compact ? '<button type="button" class="btn sm" data-context-pop-compact>Compact now</button>' : "") +
+        "</div>";
+    }
+    const ratio = Math.max(0, Math.min(1, card.ratio || 0));
+    const pct = Math.round(ratio * 100);
+    pop.querySelector("[data-ctx-used]").textContent = `${formatTokens(card.used)} / ${formatTokens(card.limit)}`;
+    pop.querySelector("[data-ctx-pct]").textContent = `${pct}%`;
+    const bar = pop.querySelector("[data-ctx-bar]");
+    bar.style.width = `${(ratio * 100).toFixed(1)}%`;
+    pop.classList.toggle("is-warn", Boolean(card.warn) && !card.auto);
+    pop.classList.toggle("is-auto", Boolean(card.auto));
+    const list = pop.querySelector("[data-ctx-parts]");
+    const html = card.rows.map(([label, tokens, nest]) => {
+      const cls = [nest === "child" ? "is-child" : "", nest === "grand" ? "is-grand" : "", tokens <= 0 ? "is-zero" : ""].filter(Boolean).join(" ");
+      return `<li${cls ? ` class="${cls}"` : ""}><span>${escapeHtml(label)}</span><span>${formatTokens(tokens)}</span></li>`;
+    }).join("");
+    if (list.dataset.html !== html) {
+      list.innerHTML = html;
+      list.dataset.html = html;
+    }
+    pop.querySelector("[data-ctx-note]").textContent = card.autoEnabled
+      ? `Auto-compacts at ${Math.round((card.autoRatio || 0) * 100)}%`
+      : "Auto-compact is off";
   }
 
   let contextRecountPending = false;
@@ -1853,36 +1892,11 @@
       contextBtn.setAttribute("aria-label", "Context usage " + title);
       contextBtn.title = title;
     }
-    if (contextPopMeter) {
-      contextPopMeter.textContent = `${usedLabel} / ${limitLabel}${snap.refreshing ? " · updating" : ""}`;
-    }
-    if (contextPopParts && contextPop && !contextPop.hidden) {
-      const rows = occupancyRows(snap);
-      contextPopParts.innerHTML = rows.map(([label, tokens, nest]) => {
-        const cls = [nest === "child" ? "is-child" : "", nest === "grand" ? "is-grand" : "", tokens <= 0 ? "is-zero" : ""].filter(Boolean).join(" ");
-        return `<li${cls ? ` class="${cls}"` : ""}><span>${label}</span><span>${formatTokens(tokens)}</span></li>`;
-      }).join("");
-    }
-    if (contextPopLast) {
-      const usage = snap.provider_usage;
-      const prompt = Number(usage?.prompt_tokens ?? usage?.input_tokens) || 0;
-      contextPopLast.hidden = !prompt;
-      contextPopLast.textContent = prompt ? `Last request reported: ${formatTokens(prompt)} input tokens.` : "";
-    }
-    if (contextPopNote) {
-      const bits = [];
-      if (snap.refreshing) bits.push("Updating after a transcript change; showing the last server measurement");
-      bits.push(snap.estimated ? "Estimated active context" : "Provider-reported request usage");
-      bits.push(snap.scope === "prompt" ? "Current model request" : "Retained context for the next request");
-      bits.push("These can differ without compaction: output/reasoning replay and provider calibration can change the next request size");
-      if (!snap.estimated && snap.parts) bits.push("Category breakdown is estimated");
-      bits.push("Saved messages and tool results are retained across turns; reasoning replay depends on the provider");
-      if (snap.history_info?.trace_fallbacks) bits.push(`${snap.history_info.trace_fallbacks} older tool results were recovered from stored traces and may be incomplete`);
-      if (snap.history_info?.mode === "legacy") bits.push("This older run uses its saved context; full history is rebuilt on the next turn");
-      bits.push((pct || 0) + "% of this model's window");
-      if (snap.auto_enabled) bits.push("Auto-compact at " + Math.round(snap.auto_ratio * 100) + "%");
-      else bits.push("Auto-compact is off");
-      contextPopNote.textContent = bits.join(". ") + ".";
+    if (contextPop && !contextPop.hidden) {
+      fillContextCard(contextPop, {
+        used: snap.used, limit: snap.limit, ratio, rows: occupancyRows(snap), warn: snap.warn, auto: snap.auto,
+        autoEnabled: snap.auto_enabled, autoRatio: snap.auto_ratio, compact: true,
+      });
     }
     maybeContextWarn(snap);
   }
@@ -6968,7 +6982,8 @@
     }
     // "bash · 2 active" keeps the concurrency note with the counters.
     const [head, ...extra] = verb.split(" · ");
-    const meta = [...extra, `${seconds}s`, tokenText].filter(Boolean).join(" · ");
+    const clock = seconds < 60 ? `${seconds}s` : formatActivityClock(seconds);
+    const meta = [...extra, clock, tokenText].filter(Boolean).join(" · ");
     return { verb: `${head}…`, meta };
   }
 
@@ -10484,16 +10499,19 @@
     menu.innerHTML = groups
       .map(
         (group) =>
-          `<div class="chat-picker-group"><p>${escapeHtml(group.title)}</p>${group.items
+          // The provider mark sits once on the group label; rows carry the
+          // name and context window only, so the list stays dense.
+          `<div class="chat-picker-group"><p>${providerLogo(group.type)}<span>${escapeHtml(group.title)}</span></p>${group.items
             .map(({ model, index }) => {
               const selected = model.id === modelId;
+              const ctx = model.contextWindow ? formatTokens(model.contextWindow) : "";
               const row =
                 `<button type="button" role="option" data-id="${escapeHtml(model.id)}" aria-selected="${
                   selected ? "true" : "false"
                 }" class="${selected ? "is-selected" : ""}${index === pickerIndex ? " is-active" : ""}">` +
-                providerLogo(model.type) +
                 `<span>${escapeHtml(model.name)}</span>` +
-                (selected ? PICKER_CHECK : "") +
+                (ctx ? `<small class="chat-picker-meta" title="Context window">${ctx}</small>` : "") +
+                `<i class="chat-picker-mark" aria-hidden="true">${selected ? PICKER_CHECK : ""}</i>` +
                 `</button>`;
               return `<div class="chat-picker-row">${row}</div>`;
             })
@@ -10522,10 +10540,9 @@
       )
       .join("");
     host.innerHTML =
+      // One row: label, slider, value.
       `<section class="chat-picker-thinking" aria-label="Thinking mode">` +
-      `<div class="chat-picker-thinking-head"><p>Thinking mode</p><small class="chat-picker-thinking-value">${escapeHtml(
-        effortLabel(effort)
-      )}</small></div>` +
+      `<p class="chat-picker-thinking-label">Thinking</p>` +
       `<div class="chat-picker-efforts">` +
       `<div class="chat-picker-efforts-ticks" aria-hidden="true">${ticks}</div>` +
       `<input type="range" class="chat-picker-efforts-slider" data-effort-slider min="0" max="${
@@ -10533,7 +10550,7 @@
       }" step="1" value="${index}" aria-label="Thinking mode" aria-valuetext="${escapeHtml(
         effortLabel(effort)
       )}">` +
-      `</div></section>`;
+      `</div><small class="chat-picker-thinking-value">${escapeHtml(effortLabel(effort))}</small></section>`;
     syncEffortSlider(effort);
   }
 
@@ -10585,7 +10602,37 @@
       if (!pickerSheetQuery.matches) search.focus();
     }
     renderPickerList();
+    placePicker();
   }
+
+  // The popover hangs from the model button, which moves: it sits at the
+  // right of a one-line Terminal/Console composer but drops to the bottom
+  // left once the input wraps. Open toward whichever side has room and clamp
+  // to the viewport, instead of a fixed per-view side.
+  function placePicker() {
+    const menu = pickerMenuEl;
+    const btn = pickerHost.querySelector(".chat-picker-btn");
+    if (!menu || menu.hidden || !btn || menu.classList.contains("is-sheet")) return;
+    menu.style.left = "0px";
+    menu.style.right = "auto";
+    const gutter = 8;
+    const host = pickerHost.getBoundingClientRect();
+    const b = btn.getBoundingClientRect();
+    // Rise from the top of the whole composer, not the button, so a wrapped
+    // input (button on its last row) or a card composer is never covered,
+    // and fit the height to the room above it.
+    const box = pickerHost.closest(".chat-box");
+    const top = box ? box.getBoundingClientRect().top : b.top;
+    menu.style.bottom = Math.round(host.bottom - top + 6) + "px";
+    menu.style.maxHeight = Math.max(200, Math.min(26 * 16, Math.round(top - 6 - 48))) + "px";
+    const width = menu.offsetWidth;
+    const vw = document.documentElement.clientWidth;
+    let left = b.left;
+    if (left + width > vw - gutter) left = b.right - width;
+    left = Math.max(gutter, Math.min(left, vw - gutter - width));
+    menu.style.left = Math.round(left - host.left) + "px";
+  }
+  window.addEventListener("resize", () => { if (pickerOpen) placePicker(); });
 
   function selectModel(id, dismiss) {
     id = resolveListedModel(id) || id;
@@ -10676,7 +10723,10 @@
       pickerHost.appendChild(pickerMenuEl);
     }
     pickerMenuEl.hidden = !pickerOpen;
-    if (pickerOpen) renderPickerList();
+    if (pickerOpen) {
+      renderPickerList();
+      placePicker();
+    }
   }
 
   function renderPickerSheet() {
@@ -10686,7 +10736,7 @@
     menu.setAttribute("aria-label", "Model picker");
     menu.innerHTML =
       '<div class="chat-picker-head"><p>Model</p><button type="button" class="chat-menu-close chat-picker-done" data-picker-close aria-label="Close"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div>' +
-      '<div class="chat-picker-searchrow"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10.4 10.4L13.8 13.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><input type="search" class="chat-picker-search" placeholder="Search models" aria-label="Search models"></div>' +
+      '<div class="chat-picker-searchrow"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10.4 10.4L13.8 13.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><input type="search" class="chat-picker-search" placeholder="Search models" aria-label="Search models"><kbd class="chat-picker-kbd" aria-hidden="true">esc</kbd></div>' +
       '<div class="chat-picker-list" role="listbox" aria-label="Models"></div>' +
       '<div class="chat-picker-thinking-host"></div>';
     attachSheetSwipe(menu, ".chat-picker-head", () => menu.classList.contains("is-sheet"), closePicker);
@@ -11738,7 +11788,11 @@
       }
     });
   }
-  if (contextPopCompact) contextPopCompact.addEventListener("click", () => runCompact(""));
+  if (contextPop) {
+    contextPop.addEventListener("click", (event) => {
+      if (event.target.closest("[data-context-pop-compact]")) runCompact("");
+    });
+  }
   if (contextAlertCompact) contextAlertCompact.addEventListener("click", () => runCompact(""));
   if (contextAlertDismiss) {
     contextAlertDismiss.addEventListener("click", () => {
@@ -12473,6 +12527,7 @@
     const limit = Number(meter && meter.limit);
     if (!meter || !Number.isFinite(used) || !Number.isFinite(limit) || limit <= 0) {
       agentMeterEl.hidden = true;
+      closeAgentContextPop();
       return;
     }
     const ratio = Math.max(0, Math.min(1, used / limit));
@@ -12482,7 +12537,7 @@
       agentContextFill.style.strokeDasharray = String(CONTEXT_RING);
       agentContextFill.style.strokeDashoffset = String(CONTEXT_RING * (1 - ratio));
     }
-    const btn = agentMeterEl.querySelector("[data-agent-context]");
+    const btn = agentContextBtn;
     if (btn) {
       btn.classList.toggle("is-warn", Boolean(meter.warn) && !meter.auto);
       btn.classList.toggle("is-auto", Boolean(meter.auto));
@@ -12491,8 +12546,38 @@
       btn.setAttribute("aria-label", "Subagent context usage " + title);
       btn.title = title;
     }
-    if (agentMeterLabel) agentMeterLabel.textContent = `${formatTokens(used)} / ${formatTokens(limit)} · ${pct}%`;
+    if (agentContextPop && !agentContextPop.hidden) {
+      const parts = meter.parts && typeof meter.parts === "object" ? meter.parts : null;
+      fillContextCard(agentContextPop, {
+        used, limit, ratio, rows: parts ? partsRows(parts) : [["Context", used, ""]], warn: meter.warn, auto: meter.auto,
+        autoEnabled: meter.auto_enabled !== false, autoRatio: Number(meter.auto_ratio) || Number(compactCfg.auto_ratio) || 0.9,
+        compact: false,
+      });
+    }
   }
+
+  function closeAgentContextPop() {
+    if (agentContextPop) agentContextPop.hidden = true;
+    if (agentContextBtn) agentContextBtn.setAttribute("aria-expanded", "false");
+  }
+
+  if (agentContextBtn) {
+    agentContextBtn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!agentContextPop) return;
+      const open = agentContextPop.hidden;
+      agentContextPop.hidden = !open;
+      agentContextBtn.setAttribute("aria-expanded", String(open));
+      if (open) syncAgentMeter(agentRun);
+    });
+  }
+  document.addEventListener("click", (event) => {
+    if (agentContextPop && !agentContextPop.hidden && agentMeterEl && !agentMeterEl.contains(event.target)) closeAgentContextPop();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && agentContextPop && !agentContextPop.hidden) closeAgentContextPop();
+  });
 
   function agentNearBottom() {
     if (!agentLogEl) return true;
@@ -12698,6 +12783,7 @@
     if (agentBodyEl) { disposeThinking(agentBodyEl); agentBodyEl.innerHTML = ""; }
     if (agentLogEl) agentLogEl.scrollTop = 0;
     if (agentMeterEl) agentMeterEl.hidden = true;
+    closeAgentContextPop();
     if (agentTitleEl) agentTitleEl.textContent = "Subagent";
     if (agentStatusEl) {
       agentStatusEl.textContent = "loading";
@@ -14106,6 +14192,15 @@
       if (following && root.style.getPropertyValue("--dock-h") !== beforeDock) restoreThreadScroll(true, savedTop);
     });
     dockResizeObserver.observe(form);
+    // Opening a side pane (or resizing the window) narrows the transcript and
+    // reflows it taller without a scroll event; a reader following the bottom
+    // would otherwise be left with the last reply hidden under the dock.
+    if (thread) {
+      const threadResizeObserver = new ResizeObserver(() => {
+        if (stickToBottom && !threadFollowFrame) snapThread();
+      });
+      threadResizeObserver.observe(thread);
+    }
     const chatBar = root.querySelector(".chat-bar");
     if (chatBar) new ResizeObserver(() => scheduleFitChatBar()).observe(chatBar);
   }

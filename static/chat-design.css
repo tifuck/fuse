@@ -1719,17 +1719,46 @@ html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-picker-btn small,
 html[data-chat-console="true"] .chat[data-view="console"] .chat-picker-btn small { color: var(--mute); font-size: 0.66rem; letter-spacing: 0.08em; }
 html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-picker-chev,
 html[data-chat-console="true"] .chat[data-view="console"] .chat-picker-chev { color: var(--mute); }
-/* The model menu hangs off the right side of the row: open leftward so it
-   never overflows the viewport or covers the controls to its left. The
-   narrow-viewport sheet is a separate fixed overlay and is left alone. */
-html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-picker-menu:not(.is-sheet),
-html[data-chat-console="true"] .chat[data-view="console"] .chat-picker-menu:not(.is-sheet) {
-  left: auto;
-  right: 0;
-}
 /* The narrow-viewport model sheet is a full-screen overlay: no side gaps. */
 html[data-chat-terminal="true"] body.is-chat .chat-picker-menu.is-sheet,
 html[data-chat-console="true"] body.is-chat:has(.chat[data-view="console"]) .chat-picker-menu.is-sheet { max-width: none; }
+/* Terminal/Console model menu: a flat mono list. Square box, rows on the
+   text grid, the active row marked by a brass edge instead of a pill, and a
+   square slider thumb to match the block cursor. */
+html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-picker-menu,
+html[data-chat-console="true"] .chat[data-view="console"] .chat-picker-menu {
+  font-family: var(--mono);
+  animation-duration: var(--dur-1);
+}
+html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-picker-search,
+html[data-chat-console="true"] .chat[data-view="console"] .chat-picker-search { font: 0.8rem/1 var(--mono); }
+html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-picker-list,
+html[data-chat-console="true"] .chat[data-view="console"] .chat-picker-list { padding: 0.15rem 0 0.3rem; }
+html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-picker-group > p,
+html[data-chat-console="true"] .chat[data-view="console"] .chat-picker-group > p { padding-inline: 0.8rem; }
+html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-picker-row > button,
+html[data-chat-console="true"] .chat[data-view="console"] .chat-picker-row > button {
+  min-height: 1.85rem;
+  padding: 0.25rem 0.8rem;
+  border-radius: 0;
+  box-shadow: inset 2px 0 0 transparent;
+  font: 0.8rem/1.2 var(--mono);
+}
+html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-picker-row > button:is(:hover, .is-active),
+html[data-chat-console="true"] .chat[data-view="console"] .chat-picker-row > button:is(:hover, .is-active) {
+  background: color-mix(in srgb, var(--brass) 9%, transparent);
+  box-shadow: inset 2px 0 0 var(--brass);
+}
+html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-picker-row > button.is-selected > span,
+html[data-chat-console="true"] .chat[data-view="console"] .chat-picker-row > button.is-selected > span { font-weight: 500; color: var(--brass); }
+html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-picker-efforts-slider::-webkit-slider-thumb,
+html[data-chat-console="true"] .chat[data-view="console"] .chat-picker-efforts-slider::-webkit-slider-thumb { border-radius: 1px; border-color: var(--ink); }
+html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-picker-efforts-slider::-moz-range-thumb,
+html[data-chat-console="true"] .chat[data-view="console"] .chat-picker-efforts-slider::-moz-range-thumb { border-radius: 1px; border-color: var(--ink); }
+html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-picker-efforts-slider::-webkit-slider-runnable-track,
+html[data-chat-console="true"] .chat[data-view="console"] .chat-picker-efforts-slider::-webkit-slider-runnable-track { border-radius: 0; }
+html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-picker-kbd,
+html[data-chat-console="true"] .chat[data-view="console"] .chat-picker-kbd { border-radius: 0; }
 /* Wrapped input: the prompt and attach stay on line one, the controls ride
    the last line so a two- or three-row composer still reads as one unit. */
 html[data-chat-terminal="true"] .chat[data-view="cli"] :is(.chat-model, .chat-search-btn, .chat-perm-host, .chat-perm-btn, .chat-report-btn, .chat-context-wrap, .chat-send),
@@ -1917,6 +1946,13 @@ html[data-chat-console="true"] body.is-chat:has(.chat[data-view="console"]) .cha
   .chat :is(.chat-picker-btn, .project-overview-open, .project-overview-start),
   body.is-chat :is(.chat-pop button, .chat-picker-list button) { min-height: 44px; }
   .chat .chat-history-item > button.more { opacity: 1; width: 44px; height: 44px; }
+  /* The wrapped title sits on the bar's bottom edge here, so hold a short
+     solid band under it before the fade; otherwise the next line of the
+     transcript shows through right beneath the title. */
+  .chat .chat-edge-top {
+    height: 1.5rem;
+    background: linear-gradient(180deg, var(--ink) 0, var(--ink) 0.35rem, transparent 100%);
+  }
   .chat .chat-box { padding: 0.7rem 0.55rem 0.55rem 0.45rem; }
   .chat .chat-box-bar { gap: 0.3rem; align-items: center; }
   .chat .chat-box-left { gap: 0.3rem; flex: 1; flex-wrap: nowrap; min-width: 0; justify-content: flex-start; }
@@ -1975,7 +2011,7 @@ html[data-chat-console="true"] body.is-chat:has(.chat[data-view="console"]) .cha
   }
   .chat-view-sheet-body { padding: 0.65rem 0.85rem 1.35rem; }
   .chat.view-sheet-open .chat-thread { overflow: hidden; }
-  body.is-chat :is(.chat-pop, .chat-context-pop, .chat-picker-menu) { max-width: calc(100vw - 1rem); }
+  body.is-chat :is(.chat-pop, .chat-context-pop, .chat-picker-menu:not(.is-sheet)) { max-width: calc(100vw - 1rem); }
   .project-overview-item { padding: 0.75rem; }
   .project-overview-detail { font-size: 0.75rem; }
   html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-dock,
@@ -2239,6 +2275,9 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-step:not(.is-thi
 .chat .chat-command-prompt { color: var(--brass); }
 .chat .chat-tool-host { flex: 0 1 auto; max-width: 7rem; overflow: hidden; text-overflow: ellipsis; color: var(--mute); font: 0.65rem/1.5 var(--mono); }
 .chat .chat-tool-host::before { content: "@"; opacity: 0.65; }
+/* Console-style calls are inline text, not a gapped flex row: space the
+   host off the closing paren so it does not read as part of the argument. */
+.chat .chat-console-call + .chat-tool-host { margin-inline-start: 0.75ch; }
 .chat .chat-step-host { display: none; }
 .chat .chat-group-title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font: inherit; }
 .chat .chat-group-preview { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--mute); font: inherit; }
@@ -2838,9 +2877,22 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-liv
 /* Console status line: one animated glyph, a lowercase verb that carries the
    shimmer, and a quiet clock/token counter. The subagent dock uses the same
    pieces so a subagent chat reads exactly like the main chat. */
+/* Terminal and Console end both panes on a flat row under one rule, so the
+   subagent dock takes the composer's single-line height: its 1.75rem control
+   line plus the same padding and 1px rule. With the pane open the two rules
+   meet as one line. */
+html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-agent-live-dock {
+  box-sizing: border-box;
+  min-height: calc(1.75rem + 0.7rem + 1px);
+  padding-block: 0.35rem max(0.35rem, env(safe-area-inset-bottom));
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-agent-live-dock {
+  box-sizing: border-box;
+  min-height: calc(1.75rem + 0.48rem + 1px);
+  padding-block: 0.28rem max(0.2rem, env(safe-area-inset-bottom));
+}
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-agent-live-dock {
   gap: 0.45rem;
-  min-height: 1.55rem;
   font: 0.88rem/1.4 var(--mono);
   font-style: normal;
   letter-spacing: 0;
@@ -2933,7 +2985,7 @@ html[data-chat-console="true"] body.is-chat .chat.is-composer-expanded[data-view
   content: none;
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box textarea {
-  font: 0.82rem/1.55rem var(--mono);
+  font: 0.82rem/1.75rem var(--mono);
   max-height: min(11rem, 34dvh);
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box textarea::placeholder {
@@ -3270,7 +3322,7 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box::before {
   content: ">";
   color: color-mix(in srgb, var(--mist) 70%, var(--ink));
-  font: 500 0.9rem/1.55rem var(--mono);
+  font: 500 0.9rem/1.75rem var(--mono);
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-call .chat-step-label {
   white-space: nowrap;
