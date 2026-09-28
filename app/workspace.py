@@ -79,6 +79,8 @@ _GREP_DEFAULT_MATCHES = 50
 _GREP_MAX_MATCHES = 200
 _GREP_MAX_PATTERN = 2000
 _GREP_TIMEOUT = 20  # enforced on the host by coreutils timeout when present
+_GREP_WALK_MAX_FILESIZE = "1M"  # unfiltered directory walks only
+_CONNECTOR_CLIP = "[fuse-agent: output truncated]"
 _GLOB_MAX_PATHS = 400
 # Model-visible budget for grep/glob/list output. Stays under the runtime's
 # per-result clip (chat_runtime.TOOL_RESULT_CHARS) so footers always survive.
@@ -363,6 +365,11 @@ def _grep_search_cmd(
     grep_include = (" --include=" + shlex.quote(include)) if include else ""
     case = " -i" if ignore_case else ""
     ignore = " --no-ignore" if no_ignore else ""
+    # Only an unfiltered directory walk skips large files (minified bundles,
+    # logs). A search narrowed by include names the files it wants, so they
+    # are searched whatever their size; rg never size-filters a file named
+    # as the path itself.
+    size_cap = "" if include else f" --max-filesize {_GREP_WALK_MAX_FILESIZE}"
     if mode == "files_with_matches":
         rg_mode, grep_mode, grep_tail = " -l", " -l", ""
     elif mode == "count":
@@ -371,7 +378,7 @@ def _grep_search_cmd(
         ctx = f" -C {context}" if context else ""
         rg_mode, grep_mode, grep_tail = f" -n{ctx} -m {n}", f" -n{ctx}", ""
     rg = (
-        f"$T rg -H --no-heading --color=never --sort path --hidden{ignore}{case}{rg_mode} --max-filesize 1M "
+        f"$T rg -H --no-heading --color=never --sort path --hidden{ignore}{case}{rg_mode}{size_cap} "
         f"--max-columns {_SEARCH_MAX_COLUMNS} "
         f"{skip}{glob} -- {shlex.quote(pattern)} {_quote_host_path(path)}"
     )
@@ -2452,7 +2459,8 @@ async def _tool_exec(user_id, host_id, cmd: str, cwd: str, seconds: int) -> dict
             code = 0
         timed = _agent_timed_out(data) or code == 124
         return {"exit": code, "out": str(data.get("out") or ""), "err": str(data.get("err") or ""),
-                "error": str(data.get("error") or ""), "timed_out": timed}
+                "error": str(data.get("error") or ""), "timed_out": timed,
+                "clipped": bool(data.get("truncated")) or _CONNECTOR_CLIP in str(data.get("out") or "")}
     import asyncssh
 
     from . import ssh_pool
@@ -2501,6 +2509,28 @@ def _search_status(data: dict, op: str) -> list[str]:
     raise _agent_error(
         {"exit": code, "err": err, "out": out, "error": data.get("error") or "exit"},
         f"{op} failed",
+    )
+
+
+def _strip_connector_clip(out: str, clipped: bool) -> tuple[str, bool]:
+    """Drop a connector's truncation marker and the partial line before it.
+
+    The marker is not a result: left in place it reads as a match line."""
+    text = out or ""
+    if _CONNECTOR_CLIP not in text and not clipped:
+        return text, False
+    text = text.replace("\n" + _CONNECTOR_CLIP + "\n", "\n").replace(_CONNECTOR_CLIP, "")
+    text = text.rstrip("\n")
+    text = text.rsplit("\n", 1)[0] if "\n" in text else ""
+    return text, True
+
+
+def _clip_note(op: str) -> str:
+    return (
+        f"({op} output hit the connector's 64 KB limit; results are partial. Lower max_matches, "
+        "use output_mode files_with_matches, or narrow the pattern or path.)"
+        if op == "grep"
+        else f"({op} output hit the connector's 64 KB limit; results are partial. Narrow the pattern or path.)"
     )
 
 
@@ -2653,7 +2683,10 @@ async def _grep(user_id, host_id, alias, args, root, *, windows: bool = False):
         data = await _agent_call(user_id, host_id, "grep", req, _GREP_TIMEOUT + 2)
         if not data.get("ok"):
             raise _agent_error(data, "grep failed")
-        out = _render_grep_output(data.get("out") or "")
+        out, clipped = _strip_connector_clip(str(data.get("out") or ""), bool(data.get("truncated")))
+        out = _render_grep_output(out)
+        if clipped:
+            notes.append(_clip_note("grep"))
         strip_root = root
     else:
         cwd, target = _search_target(path, root, windows=windows)
@@ -2664,7 +2697,9 @@ async def _grep(user_id, host_id, alias, args, root, *, windows: bool = False):
         )
         data = await _tool_exec(user_id, host_id, cmd, cwd, _GREP_TIMEOUT)
         notes.extend(_search_status(data, "grep"))
-        out = data.get("out") or ""
+        out, clipped = _strip_connector_clip(str(data.get("out") or ""), bool(data.get("clipped")))
+        if clipped:
+            notes.append(_clip_note("grep"))
         strip_root = ""
     rows, hidden, more = _format_search_lines(
         out, root=strip_root, windows=windows, grep=True, hide_secrets=not target_secret,
@@ -2718,7 +2753,9 @@ async def _glob(user_id, host_id, alias, args, root, *, windows: bool = False):
         data = await _agent_call(user_id, host_id, "glob", req, 14)
         if not data.get("ok"):
             raise _agent_error(data, "glob failed")
-        out = data.get("out") or ""
+        out, clipped = _strip_connector_clip(str(data.get("out") or ""), bool(data.get("truncated")))
+        if clipped:
+            notes.append(_clip_note("glob"))
         strip_root = root
         order = native_order
     else:
@@ -2726,7 +2763,9 @@ async def _glob(user_id, host_id, alias, args, root, *, windows: bool = False):
         cmd = _glob_search_cmd(pattern, target, no_ignore=no_ignore, timeout_s=_GREP_TIMEOUT, order=order)
         data = await _tool_exec(user_id, host_id, cmd, cwd, _GREP_TIMEOUT)
         notes.extend(_search_status(data, "glob"))
-        out = data.get("out") or ""
+        out, clipped = _strip_connector_clip(str(data.get("out") or ""), bool(data.get("clipped")))
+        if clipped:
+            notes.append(_clip_note("glob"))
         strip_root = ""
     text = _glob_result(out, root=strip_root, windows=windows, notes=notes, order=order)
     return _label(alias, text or "(no matches)"), {

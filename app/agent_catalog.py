@@ -321,7 +321,8 @@ SCHEMAS = {
                 "context adds surrounding lines. "
                 "Searches hidden files (.github, dotfiles). Always skips vendor/build dirs (node_modules, venv, "
                 ".git, dist, …) unless path points inside one; skips .gitignored files unless no_ignore. "
-                "Files over 1 MB are skipped unless path names that file. "
+                "A search of a whole directory skips files over 1 MB; to search a large file, name it in path "
+                "(or name it in include). "
                 "Stops after max_matches; a search over 20 s "
                 "returns partial matches with a note. Matches inside secret files (.env, keys) are withheld. "
                 "Filter by file name with include. Complex include globs require ripgrep on Linux; "
@@ -345,7 +346,13 @@ SCHEMAS = {
                         "description": "Optional file filter, max 200 characters, e.g. \"*.py\". Brace globs need ripgrep on the host.",
                     },
                     "glob": {"type": "string", "maxLength": 200, "description": "Alias for include."},
-                    "path": {"type": "string", "description": "Directory or file to search. Default: bound project path."},
+                    "path": {
+                        "type": "string",
+                        "description": (
+                            "Directory or single file to search. To search one file, put its path here "
+                            "rather than in include. Default: bound project path."
+                        ),
+                    },
                     "case_insensitive": {"type": "boolean", "description": "Match case-insensitively. Default false."},
                     "output_mode": {
                         "type": "string",

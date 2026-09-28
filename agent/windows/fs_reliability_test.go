@@ -71,6 +71,24 @@ func TestGrepIncludeBeforeResultCap(t *testing.T) {
 	}
 }
 
+func TestGrepSearchesLargeFileWhenNamed(t *testing.T) {
+	dir := t.TempDir()
+	big := filepath.Join(dir, "big.py")
+	body := strings.Repeat("filler line\n", 200000) + "needle\n" // > 1 MB
+	if err := os.WriteFile(big, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if out, _ := grepDirOptions(dir, "needle", "", 10); out != "" {
+		t.Fatalf("unfiltered walk should skip files over 1 MB: %q", out)
+	}
+	if out, err := grepDirOptions(big, "needle", "", 10); err != nil || !strings.Contains(out, "needle") {
+		t.Fatalf("named file not searched: %q %v", out, err)
+	}
+	if out, err := grepDirOptions(dir, "needle", "big.py", 10); err != nil || !strings.Contains(out, "needle") {
+		t.Fatalf("include-selected file not searched: %q %v", out, err)
+	}
+}
+
 func TestReplacePreservesCRLFAndRejectsBinary(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "file")
 	if err := os.WriteFile(p, []byte("one\r\ntwo\r\n"), 0600); err != nil {

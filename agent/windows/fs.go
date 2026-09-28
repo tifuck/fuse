@@ -627,7 +627,17 @@ func grepDirMode(root, pattern, include string, maxMatches int, opt grepOpts) (s
 			}
 		}
 		info, err := d.Info()
-		if err != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 {
+		if err != nil || !info.Mode().IsRegular() {
+			return nil
+		}
+		// Only an unfiltered directory walk skips large files. A file named
+		// as root or selected by include is searched up to the edit ceiling
+		// (a RAM guard), matching the Linux rg path.
+		limit := int64(1 << 20)
+		if include != "" || filepath.Clean(p) == filepath.Clean(root) {
+			limit = editFileMax
+		}
+		if info.Size() > limit {
 			return nil
 		}
 		data, err := os.ReadFile(p)

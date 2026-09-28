@@ -125,6 +125,20 @@ class GrepSearchCmdTest(unittest.TestCase):
         self.assertIn("!node_modules", cmd)
         self.assertIn("--exclude-dir=venv", cmd)
 
+    def test_size_cap_only_for_unfiltered_walks(self):
+        # A file picked out by include must be searched even when it is large:
+        # the cap silently turned "grep this one file" into "(no matches)".
+        self.assertIn("--max-filesize 1M", workspace._grep_search_cmd("x", "."))
+        self.assertNotIn("--max-filesize", workspace._grep_search_cmd("x", ".", include="big.py"))
+        self.assertNotIn("--max-filesize", workspace._grep_search_cmd("x", ".", include="*.py"))
+
+    def test_connector_clip_marker_is_not_a_result(self):
+        raw = "a.py:1:one\na.py:2:tw\n[fuse-agent: output truncated]\n"
+        out, clipped = workspace._strip_connector_clip(raw, False)
+        self.assertTrue(clipped)
+        self.assertEqual(out, "a.py:1:one")
+        self.assertEqual(workspace._strip_connector_clip("a.py:1:x", False), ("a.py:1:x", False))
+
     def test_include_over_cap_names_the_limit(self):
         with self.assertRaises(WorkspaceError) as ctx:
             workspace._grep_include_arg({"include": "a" * 201})
