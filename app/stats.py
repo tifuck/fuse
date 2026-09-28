@@ -319,7 +319,10 @@ def _event_summary(user_id: int, start: str, end: str, provider: str, all_users:
                     COALESCE(SUM(e.output_tokens), 0) AS output,
                     COALESCE(SUM(e.reasoning_tokens), 0) AS reasoning,
                     COALESCE(SUM(e.cached_tokens), 0) AS cached,
+                    COALESCE(SUM(e.cache_write_tokens), 0) AS cache_write,
                     COALESCE(SUM(CASE WHEN e.count_request=1 AND e.request_status='success' THEN 1 ELSE 0 END), 0) AS ok_requests,
+                    COALESCE(SUM(CASE WHEN e.count_request=1 AND e.request_status='failed' THEN 1 ELSE 0 END), 0) AS failed,
+                    COALESCE(SUM(CASE WHEN e.count_request=1 AND e.request_status='cancelled' THEN 1 ELSE 0 END), 0) AS cancelled,
                     COALESCE(SUM(COALESCE(e.reported_cost_micros, e.estimated_cost_micros, 0)), 0) AS cost,
                     COALESCE(SUM(e.estimated_cost_micros), 0) AS estimated_cost,
                     COALESCE(SUM(CASE WHEN e.count_request=1 AND
@@ -347,11 +350,13 @@ def _blended(cost: int, tokens: int) -> float | None:
 def _token_mix(summary: dict) -> list[dict]:
     prompt = int(summary.get("prompt") or 0)
     cached = min(int(summary.get("cached") or 0), prompt)
+    cache_write = min(int(summary.get("cache_write") or 0), max(prompt - cached, 0))
     output = int(summary.get("output") or 0)
     reasoning = min(int(summary.get("reasoning") or 0), output)
     parts = [
-        ("uncached", "Uncached input", max(prompt - cached, 0)),
+        ("uncached", "Uncached input", max(prompt - cached - cache_write, 0)),
         ("cached", "Cached input", cached),
+        ("write", "Cache write", cache_write),
         ("visible", "Visible output", max(output - reasoning, 0)),
         ("reasoning", "Reasoning", reasoning),
     ]
@@ -365,6 +370,59 @@ def _token_mix(summary: dict) -> list[dict]:
         }
         for pid, name, val in parts
     ]
+
+
+def _rate(part: int, whole: int) -> float | None:
+    return round((part * 100) / whole, 1) if whole else None
+
+
+def _cache_savings(models: list[dict]) -> tuple[int, bool]:
+    """Approximate cost avoided by cache reads: cached tokens at (input - cached) base rates.
+
+    Only models with a known cached-input rate count; tiered and long-context
+    prices are ignored, so this is an estimate, labelled as such in the UI.
+    """
+    keys = [(m["provider"], m["name"]) for m in models if m["cached"] and m["provider"] != "openrouter"]
+    if not keys:
+        return 0, False
+    rows = db.fetchall(
+        "SELECT provider, model, input_micros_per_million, cached_input_micros_per_million, cached_input_known "
+        "FROM model_prices WHERE provider IN ({}) ".format(",".join("?" * len({k[0] for k in keys}))),
+        tuple(sorted({k[0] for k in keys})),
+    )
+    rates = {(r["provider"], r["model"]): r for r in rows}
+    saved = 0
+    known = False
+    for model in models:
+        rate = rates.get((model["provider"], model["name"]))
+        if not rate or not rate["cached_input_known"] or not model["cached"]:
+            continue
+        diff = int(rate["input_micros_per_million"] or 0) - int(rate["cached_input_micros_per_million"] or 0)
+        if diff > 0:
+            saved += (model["cached"] * diff) // 1_000_000
+            known = True
+    return saved, known
+
+
+_METRICS = ("tokens", "requests", "prompt", "completion", "output", "reasoning", "cached", "cache_write",
+            "failed", "cancelled", "cost", "estimated_cost", "priced")
+_EVENT_SUMS = """COALESCE(SUM(CASE WHEN e.total_tokens>0 THEN e.total_tokens
+                                     ELSE e.prompt_tokens+e.output_tokens END), 0) AS tokens,
+                   COALESCE(SUM(e.count_request), 0) AS requests,
+                   COALESCE(SUM(e.prompt_tokens), 0) AS prompt,
+                   COALESCE(SUM(e.completion_tokens), 0) AS completion,
+                   COALESCE(SUM(e.output_tokens), 0) AS output,
+                   COALESCE(SUM(e.reasoning_tokens), 0) AS reasoning,
+                   COALESCE(SUM(e.cached_tokens), 0) AS cached,
+                   COALESCE(SUM(e.cache_write_tokens), 0) AS cache_write,
+                   COALESCE(SUM(CASE WHEN e.count_request=1 AND e.request_status='failed' THEN 1 ELSE 0 END), 0) AS failed,
+                   COALESCE(SUM(CASE WHEN e.count_request=1 AND e.request_status='cancelled' THEN 1 ELSE 0 END), 0) AS cancelled,
+                   COALESCE(SUM(COALESCE(e.reported_cost_micros, e.estimated_cost_micros, 0)), 0) AS cost,
+                   COALESCE(SUM(e.estimated_cost_micros), 0) AS estimated_cost,
+                   COALESCE(SUM(CASE WHEN e.count_request=1 AND
+                                          (e.reported_cost_micros IS NOT NULL OR e.pricing_known=1)
+                                     THEN 1 ELSE 0 END), 0) AS priced"""
+_HEATMAP_MIN = timedelta(days=7)
 
 
 def usage_analytics(
@@ -389,19 +447,7 @@ def usage_analytics(
                    e.user_id, u.email,
                    COALESCE(NULLIF(e.source_type, ''), s.type, 'unknown') AS provider,
                    COALESCE(NULLIF(e.model, ''), 'Unknown') AS model,
-                   COALESCE(SUM(CASE WHEN e.total_tokens>0 THEN e.total_tokens
-                                     ELSE e.prompt_tokens+e.output_tokens END), 0) AS tokens,
-                    COALESCE(SUM(e.count_request), 0) AS requests,
-                   COALESCE(SUM(e.prompt_tokens), 0) AS prompt,
-                   COALESCE(SUM(e.completion_tokens), 0) AS completion,
-                   COALESCE(SUM(e.output_tokens), 0) AS output,
-                   COALESCE(SUM(e.reasoning_tokens), 0) AS reasoning,
-                   COALESCE(SUM(e.cached_tokens), 0) AS cached,
-                   COALESCE(SUM(COALESCE(e.reported_cost_micros, e.estimated_cost_micros, 0)), 0) AS cost,
-                   COALESCE(SUM(e.estimated_cost_micros), 0) AS estimated_cost,
-                    COALESCE(SUM(CASE WHEN e.count_request=1 AND
-                                           (e.reported_cost_micros IS NOT NULL OR e.pricing_known=1)
-                                      THEN 1 ELSE 0 END), 0) AS priced
+                   {_EVENT_SUMS}
             FROM usage_events e
             LEFT JOIN sources s ON s.id=e.source_id
             JOIN users u ON u.id=e.user_id
@@ -433,23 +479,7 @@ def usage_analytics(
     by_bucket: dict[int, list] = {}
     for row in rows:
         item = {key: row[key] for key in row.keys()}
-        item.update(
-            {
-                key: int(item[key] or 0)
-                for key in (
-                    "tokens",
-                    "requests",
-                    "prompt",
-                    "completion",
-                    "output",
-                    "reasoning",
-                    "cached",
-                    "cost",
-                    "estimated_cost",
-                    "priced",
-                )
-            }
-        )
+        item.update({key: int(item[key] or 0) for key in _METRICS})
         by_bucket.setdefault(int(item["bucket"]), []).append(item)
         model_key = f"{item['provider']}\x1f{item['model']}"
         model_item = model_totals.setdefault(
@@ -458,15 +488,8 @@ def usage_analytics(
                 "id": model_key,
                 "name": item["model"],
                 "provider": item["provider"],
-                "tokens": 0,
-                "requests": 0,
-                "cost": 0,
-                "prompt": 0,
-                "completion": 0,
-                "output": 0,
-                "reasoning": 0,
-                "cached": 0,
-                "priced": 0,
+                "provider_label": PROVIDER_LABELS.get(item["provider"], item["provider"]),
+                **{metric: 0 for metric in _METRICS if metric != "estimated_cost"},
             },
         )
         provider_item = provider_totals.setdefault(
@@ -477,6 +500,10 @@ def usage_analytics(
                 "tokens": 0,
                 "requests": 0,
                 "cost": 0,
+                "prompt": 0,
+                "cached": 0,
+                "failed": 0,
+                "priced": 0,
             },
         )
         user_item = user_totals.setdefault(
@@ -486,112 +513,141 @@ def usage_analytics(
         for target in (model_item, provider_item, user_item):
             for metric in ("tokens", "requests", "cost"):
                 target[metric] += item[metric]
-        model_item["priced"] += item["priced"]
-        for metric in ("prompt", "completion", "output", "reasoning", "cached"):
+        for metric in ("prompt", "completion", "output", "reasoning", "cached", "cache_write", "failed", "cancelled", "priced"):
             model_item[metric] += item[metric]
+        for metric in ("prompt", "cached", "failed", "priced"):
+            provider_item[metric] += item[metric]
         user_item["providers"][item["provider"]] = user_item["providers"].get(item["provider"], 0) + item["tokens"]
 
-    top_model_keys = [key for key, _ in sorted(model_totals.items(), key=lambda pair: pair[1]["tokens"], reverse=True)[:6]]
+    ranked_models = sorted(model_totals.values(), key=lambda item: item["tokens"], reverse=True)
+    top_model_keys = [item["id"] for item in ranked_models[:6]]
+    table_models = ranked_models[:15]
     first_bucket = (int(start_dt.timestamp()) // bucket_seconds) * bucket_seconds
     last_bucket = (int(end_dt.timestamp()) // bucket_seconds) * bucket_seconds
     points = []
+    model_sparks: dict[str, list[int]] = {item["id"]: [] for item in table_models}
     bucket = first_bucket
     while bucket <= last_bucket:
         bucket_rows = by_bucket.get(bucket, [])
         segments = {key: 0 for key in top_model_keys}
         cost_segments = {key: 0 for key in top_model_keys}
-        other = 0
-        other_cost = 0
+        request_segments = {key: 0 for key in top_model_keys}
+        other = other_cost = other_requests = 0
         point = {
             "at": datetime.fromtimestamp(bucket, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "tokens": 0,
             "requests": 0,
+            "failed": 0,
             "cost": 0,
             "prompt": 0,
             "cached": 0,
             "segments": segments,
             "cost_segments": cost_segments,
+            "request_segments": request_segments,
         }
+        bucket_models: dict[str, int] = {}
         for item in bucket_rows:
             key = f"{item['provider']}\x1f{item['model']}"
-            point["tokens"] += item["tokens"]
-            point["requests"] += item["requests"]
-            point["cost"] += item["cost"]
-            point["prompt"] += item["prompt"]
-            point["cached"] += item["cached"]
+            for metric in ("tokens", "requests", "failed", "cost", "prompt", "cached"):
+                point[metric] += item[metric]
+            bucket_models[key] = bucket_models.get(key, 0) + item["tokens"]
             if key in segments:
                 segments[key] += item["tokens"]
                 cost_segments[key] += item["cost"]
+                request_segments[key] += item["requests"]
             else:
                 other += item["tokens"]
                 other_cost += item["cost"]
+                other_requests += item["requests"]
         if other:
             segments["other"] = other
         if other_cost:
             cost_segments["other"] = other_cost
+        if other_requests:
+            request_segments["other"] = other_requests
+        for key, spark in model_sparks.items():
+            spark.append(bucket_models.get(key, 0))
         points.append(point)
         bucket += bucket_seconds
 
-    models = sorted(model_totals.values(), key=lambda item: item["tokens"], reverse=True)
     providers = sorted(provider_totals.values(), key=lambda item: item["tokens"], reverse=True)
     users = sorted(user_totals.values(), key=lambda item: item["tokens"], reverse=True) if all_users else []
     prev_provider_tokens: dict[str, int] = {}
     for key, tokens in prev_model_tokens.items():
         pid = key.split("\x1f", 1)[0]
         prev_provider_tokens[pid] = prev_provider_tokens.get(pid, 0) + tokens
-    for model in models:
+    for model in ranked_models:
         model["cost_known"] = model["priced"] >= model["requests"] and model["requests"] > 0
         prev_tokens = prev_model_tokens.get(model["id"], 0)
         model["token_change"] = _change(model["tokens"], prev_tokens)
         model["is_new"] = bool(model["tokens"] and not prev_tokens)
+        model["cache_hit"] = _hit_rate(model["cached"], model["prompt"])
+        model["error_rate"] = _rate(model["failed"], model["requests"])
+        model["per_million"] = (model["cost"] * 1_000_000 // model["tokens"]) if model["tokens"] and model["cost_known"] else None
+        model["per_request"] = model["tokens"] // model["requests"] if model["requests"] else None
+    for model in table_models:
+        model["spark"] = model_sparks.get(model["id"], [])
     for row in providers:
         prev_tokens = prev_provider_tokens.get(row["id"], 0)
         row["token_change"] = _change(row["tokens"], prev_tokens)
         row["is_new"] = bool(row["tokens"] and not prev_tokens)
+        row["cache_hit"] = _hit_rate(row["cached"], row["prompt"])
+        row["error_rate"] = _rate(row["failed"], row["requests"])
+        row["cost_known"] = row["priced"] >= row["requests"] and row["requests"] > 0
     available = db.fetchall(
         """SELECT DISTINCT provider FROM (
                SELECT type AS provider FROM sources
                UNION SELECT source_type AS provider FROM usage_events WHERE source_type<>''
            ) AS available_providers WHERE provider<>'' ORDER BY provider"""
     )
+    # NULL api_key_id is traffic from Fuse itself (dashboard chat, agents, tasks).
     key_rows = db.fetchall(
         f"""SELECT e.api_key_id AS id,
-                   COALESCE(k.name, 'Deleted key') AS name,
-                   COALESCE(k.prefix, '') AS prefix,
+                   MAX(k.name) AS name,
+                   MAX(k.prefix) AS prefix,
                    COALESCE(SUM(CASE WHEN e.total_tokens>0 THEN e.total_tokens
                                      ELSE e.prompt_tokens+e.output_tokens END), 0) AS tokens,
-                    COALESCE(SUM(e.count_request), 0) AS requests,
-                   COALESCE(SUM(COALESCE(e.reported_cost_micros, e.estimated_cost_micros, 0)), 0) AS cost
+                   COALESCE(SUM(e.count_request), 0) AS requests,
+                   COALESCE(SUM(CASE WHEN e.count_request=1 AND e.request_status='failed' THEN 1 ELSE 0 END), 0) AS failed,
+                   COALESCE(SUM(COALESCE(e.reported_cost_micros, e.estimated_cost_micros, 0)), 0) AS cost,
+                   MAX(e.created_at) AS last_at
             FROM usage_events e
             LEFT JOIN api_keys k ON k.id=e.api_key_id
             LEFT JOIN sources s ON s.id=e.source_id
-            WHERE {where} AND e.api_key_id IS NOT NULL
+            WHERE {where}
             GROUP BY e.api_key_id
             ORDER BY tokens DESC
-            LIMIT 8""",
+            LIMIT 10""",
         tuple(args),
     )
     keys = [
         {
             "id": int(row["id"] or 0),
-            "name": row["name"] or "Key",
+            "kind": "chat" if row["id"] is None else "key",
+            "name": "Fuse chat & agents" if row["id"] is None else (row["name"] or "Deleted key"),
             "prefix": row["prefix"] or "",
             "tokens": int(row["tokens"] or 0),
             "requests": int(row["requests"] or 0),
+            "failed": int(row["failed"] or 0),
             "cost": int(row["cost"] or 0),
+            "last_at": row["last_at"] or "",
         }
         for row in key_rows
     ]
     recent_rows = db.fetchall(
-        f"""SELECT e.created_at, e.model,
+        f"""SELECT e.created_at, e.model, e.api_key_id,
                    COALESCE(NULLIF(e.source_type, ''), s.type, 'unknown') AS provider,
-                   e.prompt_tokens, e.output_tokens, e.total_tokens,
+                   k.name AS key_name,
+                   e.prompt_tokens, e.cached_tokens, e.output_tokens, e.reasoning_tokens, e.total_tokens,
                    COALESCE(e.reported_cost_micros, e.estimated_cost_micros, 0) AS cost,
+                   e.pricing_known, e.reported_cost_micros,
                    e.request_status
-            FROM usage_events e LEFT JOIN sources s ON s.id=e.source_id
+            FROM usage_events e
+            LEFT JOIN sources s ON s.id=e.source_id
+            LEFT JOIN api_keys k ON k.id=e.api_key_id
             WHERE {where}
             ORDER BY e.created_at DESC
-            LIMIT 20""",
+            LIMIT 25""",
         tuple(args),
     )
     recent = [
@@ -600,20 +656,50 @@ def usage_analytics(
             "model": row["model"] or "Unknown",
             "provider": row["provider"] or "unknown",
             "provider_label": PROVIDER_LABELS.get(row["provider"], row["provider"] or "Unknown"),
+            "via": "Fuse chat" if row["api_key_id"] is None else (row["key_name"] or "Deleted key"),
+            "via_kind": "chat" if row["api_key_id"] is None else "key",
             "prompt": int(row["prompt_tokens"] or 0),
+            "cached": int(row["cached_tokens"] or 0),
             "output": int(row["output_tokens"] or 0),
+            "reasoning": int(row["reasoning_tokens"] or 0),
             "tokens": int(row["total_tokens"] or 0),
             "cost": int(row["cost"] or 0),
+            "cost_known": bool(row["pricing_known"]) or row["reported_cost_micros"] is not None,
             "status": row["request_status"] or "success",
         }
         for row in recent_rows
+    ]
+    # A weekday x hour pattern needs a week of history even when the chosen
+    # range is shorter, so the heatmap window is never under seven days.
+    heat_start_dt = min(start_dt, end_dt - _HEATMAP_MIN)
+    heat_where, heat_args = _window_filters(
+        user_id, heat_start_dt.strftime("%Y-%m-%dT%H:%M:%SZ"), end, provider, all_users
+    )
+    activity = [
+        [int(row["hour"]), int(row["tokens"] or 0), int(row["requests"] or 0)]
+        for row in db.fetchall(
+            f"""SELECT (CAST(strftime('%s', e.created_at) AS INTEGER) / 3600) * 3600 AS hour,
+                       COALESCE(SUM(CASE WHEN e.total_tokens>0 THEN e.total_tokens
+                                         ELSE e.prompt_tokens+e.output_tokens END), 0) AS tokens,
+                       COALESCE(SUM(e.count_request), 0) AS requests
+                FROM usage_events e LEFT JOIN sources s ON s.id=e.source_id
+                WHERE {heat_where}
+                GROUP BY hour""",
+            tuple(heat_args),
+        )
     ]
     cache_hit = _hit_rate(summary["cached"], summary["prompt"])
     prev_hit = _hit_rate(previous["cached"], previous["prompt"])
     blended = _blended(summary["cost"], summary["tokens"])
     prev_blended = _blended(previous["cost"], previous["tokens"])
+    success = _rate(summary["ok_requests"], summary["requests"])
+    prev_success = _rate(previous["ok_requests"], previous["requests"])
+    per_request = summary["tokens"] / summary["requests"] if summary["requests"] else None
+    prev_per_request = previous["tokens"] / previous["requests"] if previous["requests"] else None
+    saved, saved_known = _cache_savings(ranked_models)
+    peak = max(points, key=lambda point: point["tokens"], default=None)
     return {
-        "range": {"id": range_id, "from": start, "to": end, "bucket": bucket_label},
+        "range": {"id": range_id, "from": start, "to": end, "bucket": bucket_label, "bucket_seconds": bucket_seconds},
         "scope": "all" if all_users else "account",
         "provider": provider,
         "provider_options": [
@@ -629,21 +715,39 @@ def usage_analytics(
             "request_change": _change(summary["requests"], previous["requests"]),
             "cost_change": _change(summary["cost"], previous["cost"]),
             "cache_hit": cache_hit,
-            "cache_hit_change": _change(cache_hit, prev_hit) if cache_hit is not None else None,
+            "cache_hit_change": round(cache_hit - prev_hit, 1) if cache_hit is not None and prev_hit is not None else None,
             "blended": blended,
             "blended_change": _change(blended, prev_blended) if blended is not None else None,
+            "success_rate": success,
+            "success_change": round(success - prev_success, 1) if success is not None and prev_success is not None else None,
+            "per_request": per_request,
+            "per_request_change": _change(per_request, prev_per_request) if per_request is not None else None,
+            "cost_per_request": summary["cost"] / summary["requests"] if summary["requests"] else None,
+            "cache_saved": saved,
+            "cache_saved_known": saved_known,
+            "peak_at": peak["at"] if peak and peak["tokens"] else None,
+            "peak_tokens": peak["tokens"] if peak else 0,
+            "models_used": len(ranked_models),
             "empty": not (summary["requests"] or summary["tokens"]),
         },
+        "previous": {key: previous[key] for key in ("tokens", "requests", "cost")},
         "mix": _token_mix(summary),
         "series": points,
         "series_models": [
-            {"id": key, "name": model_totals[key]["name"], "provider": model_totals[key]["provider"]}
+            {
+                "id": key,
+                "name": model_totals[key]["name"],
+                "provider": model_totals[key]["provider"],
+                "provider_label": model_totals[key]["provider_label"],
+            }
             for key in top_model_keys
         ],
-        "models": models[:12],
+        "models": table_models,
         "providers": providers,
         "keys": keys,
         "recent": recent,
+        "activity": activity,
+        "activity_days": max(duration, _HEATMAP_MIN).days,
         "users": users[:20],
     }
 
