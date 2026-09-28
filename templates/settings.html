@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% block title %}Settings · Fuse{% endblock %}
+{% block page_title %}Settings{% endblock %}
+{% block page_lead %}<p>Your account and the defaults every chat starts from.</p>{% endblock %}
+{% block body %}
+<div class="set-page" data-settings-page data-context-revision="{{ context.revision }}">
+<nav class="settings-jump" aria-label="On this page">
+  <a href="#account">Account</a>
+  <a href="#chat">Chat defaults</a>
+  <a href="#alerts">Alerts</a>
+  <a href="#agents">Coding agents</a>
+  <a href="#appearance">Appearance</a>
+</nav>
+
+<section class="panel set" id="account" aria-labelledby="set-account-title">
+  <header class="set-head">
+    <h2 id="set-account-title">Account</h2>
+    <p>Who you are signed in as on this server.</p>
+  </header>
+  <div class="set-row">
+    <div class="set-label"><strong>Email</strong><span>Used to sign in. Ask an admin to change it.</span></div>
+    <div class="set-control">
+      <p class="set-value">{{ user['email'] }} {% if user['is_admin'] %}<span class="badge admin">Admin</span>{% else %}<span class="badge">User</span>{% endif %}</p>
+    </div>
+  </div>
+  <form class="set-row" data-password-form>
+    <div class="set-label"><strong>Password</strong><span>Also protects saved machine credentials. They are re-wrapped with the new password, so nothing needs re-entering.</span></div>
+    <div class="set-control">
+      <label>Current password
+        <input type="password" name="old_password" autocomplete="current-password" required maxlength="256">
+      </label>
+      <label>New password
+        <input type="password" name="new_password" autocomplete="new-password" required minlength="8" maxlength="256">
+      </label>
+      <label>Confirm new password
+        <input type="password" name="confirm_password" autocomplete="new-password" required minlength="8" maxlength="256">
+      </label>
+      <button type="submit" class="btn sm">Change password</button>
+      <p class="set-status" data-password-status role="status"></p>
+    </div>
+  </form>
+  <div class="set-row">
+    <div class="set-label"><strong>Session</strong><span>Signing out also locks saved machine credentials on this server until you sign in again.</span></div>
+    <div class="set-control">
+      <form method="post" action="/logout">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn ghost sm">Sign out</button>
+      </form>
+    </div>
+  </div>
+</section>
+
+<form class="panel set" id="chat" aria-labelledby="set-chat-title" data-context-form>
+  <header class="set-head">
+    <h2 id="set-chat-title">Chat defaults</h2>
+    <p>Sent with every chat and project. The Context button in chat edits the same text and also holds notes for a single chat. Neither can add tools or change routing.</p>
+  </header>
+  <div class="set-row">
+    <div class="set-label"><strong>Instructions</strong><span>How Fuse answers. Clear it to use the default style. For example: Be brief. Show diffs, not prose.</span></div>
+    <div class="set-control">
+      <label><span class="visually-hidden">Instructions</span>
+        <textarea name="instructions" maxlength="4000" rows="7" placeholder="How Fuse should answer you">{{ context.instructions }}</textarea>
+      </label>
+    </div>
+  </div>
+  <div class="set-row">
+    <div class="set-label"><strong>About you</strong><span>Who you are. For example: Berlin, CET. Solo dev on a Rails app.</span></div>
+    <div class="set-control">
+      <label><span class="visually-hidden">About you</span>
+        <textarea name="profile" maxlength="4000" rows="5" placeholder="Name, timezone, stack, preferences">{{ context.profile }}</textarea>
+      </label>
+    </div>
+  </div>
+  <div class="set-foot">
+    <button type="submit" class="btn sm">Save chat defaults</button>
+    <span class="set-status" data-context-status role="status"></span>
+  </div>
+</form>
+
+<section class="panel set" id="alerts" aria-labelledby="set-alerts-title">
+  <header class="set-head">
+    <h2 id="set-alerts-title">Alerts</h2>
+    <p>A notification when a chat finishes, even with the tab closed. On iPhone and iPad, install Fuse to the Home Screen first.</p>
+  </header>
+  <div class="set-row">
+    <div class="set-label"><strong>This device</strong><span>Each browser or installed app turns alerts on for itself. The bell in chat is the same switch.</span></div>
+    <div class="set-control">
+      <p class="set-link">
+        <button type="button" class="btn ghost sm" data-notif-toggle aria-pressed="false"><span>Alerts</span></button>
+        <span class="set-state" data-notif-state>Off</span>
+      </p>
+    </div>
+  </div>
+</section>
+
+<form class="panel set" id="agents" aria-labelledby="set-agents-title" data-agent-form>
+  <header class="set-head">
+    <h2 id="set-agents-title">Coding agents</h2>
+    <p>What chats may do on the machines you connected under <a href="/projects">Machines</a>. Read-only is set per project there.</p>
+  </header>
+  <div class="set-row">
+    <div class="set-label"><strong>Workspace tools</strong><span>Lets chats read files and run commands on your machines. Turned on automatically when you add your first machine.</span></div>
+    <div class="set-control">
+      <label class="check"><input type="checkbox" name="agent_coding"{% if agent.agent_coding %} checked{% endif %}> Allow workspace tools in chats</label>
+    </div>
+  </div>
+  <div class="set-row">
+    <div class="set-label"><strong>Nested subagents</strong><span>Off by default: subagents a chat starts cannot start more of their own.</span></div>
+    <div class="set-control">
+      <label class="check"><input type="checkbox" name="allow_nested_spawn"{% if agent.allow_nested_spawn %} checked{% endif %}> Allow subagents to start subagents</label>
+    </div>
+  </div>
+  <div class="set-foot">
+    <button type="submit" class="btn sm">Save coding agents</button>
+    <span class="set-status" data-agent-status role="status"></span>
+  </div>
+</form>
+
+<section class="panel set" id="appearance" aria-labelledby="set-appearance-title">
+  <header class="set-head">
+    <h2 id="set-appearance-title">Appearance</h2>
+    <p>Reading mode, theme, backdrop, fonts, text size and composer helpers. These are saved in this browser and preview live against a conversation, so they open in chat.</p>
+  </header>
+  <div class="set-row">
+    <div class="set-label"><strong>View &amp; appearance</strong><span>Same panel as the view button in the chat header.</span></div>
+    <div class="set-control">
+      <a class="btn ghost sm" href="/chat?appearance=1">Open in chat</a>
+    </div>
+  </div>
+</section>
+</div>
+{% endblock %}
+{% block scripts %}<script src="/static/settings.js?v=1"></script>{% endblock %}

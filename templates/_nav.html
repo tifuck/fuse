@@ -1,0 +1,42 @@
+{#- One definition of the settings navigation, shared by the side rail and the
+    account menu so the two cannot drift. Each entry: label, href, and the
+    path prefixes that mark it current. -#}
+{% set nav_groups = [
+  ("Workspace", [
+    ("Tasks", "/tasks", ["/tasks"]),
+    ("Artifacts", "/artifacts", ["/artifacts"]),
+    ("Skills", "/skills", ["/skills"]),
+    ("Machines", "/projects", ["/projects", "/hosts"]),
+  ]),
+  ("Models & usage", [
+    ("Usage", "/usage", ["/usage"]),
+    ("Models", "/models", ["/models"]),
+    ("Sources", "/sources", ["/sources", "/pool"]),
+  ]),
+  ("Developer", [
+    ("API keys", "/keys", ["/keys"]),
+    ("API reference", "/docs", ["/docs"]),
+    ("Desktop app", "/download", ["/download"]),
+  ]),
+  ("Account", [
+    ("Settings", "/settings", ["/settings"]),
+  ]),
+] %}
+{% set admin_group = ("Admin", [
+  ("Users", "/admin/users", ["/admin/users"]),
+  ("Providers", "/admin/sources", ["/admin/sources"]),
+  ("Pools", "/admin/pools", ["/admin/pools"]),
+  ("Pricing", "/admin/pricing", ["/admin/pricing"]),
+  ("Web access", "/admin/web", ["/admin/web"]),
+]) %}
+{% macro nav_links(path, user, label_class, item_attrs='') %}
+  {% set groups = nav_groups + ([admin_group] if user['is_admin'] else []) %}
+  {% for group, items in groups %}
+  <p class="{{ label_class }}">{{ group }}</p>
+  {% for label, href, prefixes in items %}
+  {% set ns = namespace(on=false) %}
+  {% for p in prefixes %}{% if path == p or path.startswith(p ~ '/') %}{% set ns.on = true %}{% endif %}{% endfor %}
+  <a href="{{ href }}"{{ item_attrs|safe }}{% if ns.on %} class="on" aria-current="page"{% endif %}>{{ label }}</a>
+  {% endfor %}
+  {% endfor %}
+{% endmacro %}

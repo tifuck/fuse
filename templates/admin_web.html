@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Web access · Fuse{% endblock %}
+{% block page_title %}Web access{% endblock %}
+{% block page_lead %}<p>Which sites chat may read when a model opens a page with <span class="mono">read_url</span>. Search results themselves are not filtered.</p>{% endblock %}
+{% block body %}
+{% if error %}<p class="callout fault" role="alert">{{ error }}</p>{% endif %}
+{% if notice %}<p class="callout ok">{{ notice }}</p>{% endif %}
+<div class="set-page">
+<form method="post" action="/admin/sources/fetch-domains" class="panel set" id="fetch">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <header class="set-head">
+    <h2>Page fetch domains</h2>
+    <p>Any public HTTPS URL is allowed unless it is blocked. One domain per line. <span class="mono">*.example.com</span> matches <span class="mono">a.example.com</span> but not <span class="mono">example.com</span>.</p>
+  </header>
+  <div class="set-row">
+    <div class="set-label">
+      <strong>Blocked</strong>
+      <span>Never fetched, even when also allowed.</span>
+    </div>
+    <div class="set-control">
+      <label><span class="visually-hidden">Blocked domains</span>
+        <textarea name="blacklist" rows="6" placeholder="ads.example.com&#10;*.tracker.test">{{ fetch_blacklist }}</textarea>
+      </label>
+    </div>
+  </div>
+  <div class="set-row">
+    <div class="set-label">
+      <strong>Allowed only</strong>
+      <span>Leave empty to allow every domain that is not blocked. Any entry here turns this into an allowlist.</span>
+    </div>
+    <div class="set-control">
+      <label><span class="visually-hidden">Allowed domains</span>
+        <textarea name="whitelist" rows="6" placeholder="Empty allows every domain that is not blocked.&#10;wikipedia.org&#10;*.gov">{{ fetch_whitelist }}</textarea>
+      </label>
+    </div>
+  </div>
+  <div class="set-foot">
+    <button type="submit" class="btn">Save fetch domains</button>
+  </div>
+</form>
+</div>
+{% endblock %}

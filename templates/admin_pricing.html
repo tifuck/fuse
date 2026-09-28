@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Pricing · Fuse{% endblock %}
+{% block page_title %}Pricing{% endblock %}
+{% block page_lead %}<p>Rates used to estimate cost on Usage, in USD per 1M tokens. They change reporting only, never routing or billing.</p>{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/usage.css?v=6">{% endblock %}
+{% block body %}
+<div class="uz">
+  {% if pricing_synced %}<p class="callout ok">Synced {{ pricing_synced }} model rates from OpenRouter.</p>{% endif %}
+  {% if pricing_sync_error %}<p class="callout fault" role="alert">Pricing sync failed. Existing rates were not changed.</p>{% endif %}
+
+  <section class="uz-card" aria-labelledby="pricing-sync-title">
+    <header class="uz-card-head">
+      <div><h2 id="pricing-sync-title">Sync catalog rates</h2><p class="uz-sub">xAI, OpenAI, Z.AI and OpenRouter, including cached-input, cache-write and long-context tiers</p></div>
+      <form method="post" action="/admin/pricing/openrouter">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn sm">Sync now</button>
+      </form>
+    </header>
+    <p class="uz-note">Sync reprices matching history. Manual entries are never overwritten. A missing cache-write rate bills writes at the input rate; an unknown model stays unknown.</p>
+  </section>
+
+  <section class="uz-card" aria-labelledby="pricing-add-title">
+    <header class="uz-card-head">
+      <div><h2 id="pricing-add-title">Add or replace a rate</h2><p class="uz-sub">A manual rate wins over a synced one for the same provider and model</p></div>
+    </header>
+    <form method="post" action="/admin/pricing" class="uz-price-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Provider <select name="provider" required>{% for id, label in provider_types.items() %}<option value="{{ id }}">{{ label }}</option>{% endfor %}</select></label>
+      <label class="uz-wide">Model <input type="text" name="model" required maxlength="200" placeholder="grok-4.5"></label>
+      <label>Input <input type="number" name="input_rate" min="0" step="0.000001" value="0" required></label>
+      <label>Cached <input type="number" name="cached_rate" min="0" step="0.000001" value="" placeholder="optional"></label>
+      <label>Cache write <input type="number" name="cache_write_rate" min="0" step="0.000001" value="" placeholder="optional"></label>
+      <label>Output <input type="number" name="output_rate" min="0" step="0.000001" value="0" required></label>
+      <label>Reasoning <input type="number" name="reasoning_rate" min="0" step="0.000001" value="" placeholder="optional"></label>
+      <button type="submit" class="btn sm">Save rate</button>
+    </form>
+  </section>
+
+  <section class="uz-card" aria-labelledby="pricing-rates-title">
+    <header class="uz-card-head">
+      <div><h2 id="pricing-rates-title">Rates</h2><p class="uz-sub">{{ pricing|length }} model{{ 's' if pricing|length != 1 else '' }} · USD per 1M tokens</p></div>
+    </header>
+    {% if pricing %}
+    <div class="uz-table-wrap uz-pricing-table">
+      <table class="uz-table">
+        <thead><tr><th scope="col">Provider</th><th scope="col">Model</th><th scope="col">Origin</th><th scope="col" class="num">Input</th><th scope="col" class="num">Cached</th><th scope="col" class="num">Cache W</th><th scope="col" class="num">Output</th><th scope="col" class="num">Reasoning</th><th scope="col">Long-context</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>
+        <tbody>{% for p in pricing %}<tr><td data-label="Provider">{{ p.provider_label }}</td><td data-label="Model" class="mono">{{ p.model }}</td><td data-label="Origin">{% if p.origin == 'openrouter' %}<span class="badge" title="Synced {{ p.synced_label }}">OpenRouter</span>{% else %}<span class="badge">Manual</span>{% endif %}</td><td data-label="Input" class="mono num">{{ p.input_usd }}</td><td data-label="Cached" class="mono num">{{ p.cached_usd }}</td><td data-label="Cache W" class="mono num">{{ p.write_usd }}</td><td data-label="Output" class="mono num">{{ p.output_usd }}</td><td data-label="Reasoning" class="mono num">{{ p.reasoning_usd }}</td><td data-label="Long-context" class="mono">{{ p.long_label }}</td><td><form method="post" action="/admin/pricing/delete" data-confirm="Delete pricing for {{ p.model }}?"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="provider" value="{{ p.provider }}"><input type="hidden" name="model" value="{{ p.model }}"><button class="btn danger sm" type="submit">Delete</button></form></td></tr>{% endfor %}</tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="uz-empty">No rates yet. Sync catalog rates or add one above.</p>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

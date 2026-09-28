@@ -73,7 +73,7 @@ td.uz-empty { text-align: center; padding: 1.5rem 0; }
 .uz-col { display: flex; flex-direction: column; gap: var(--uz-gap); min-width: 0; }
 .uz-col > .uz-card:last-child { flex: 1 0 auto; }
 .uz-sm-only { display: none; }
-.uz-row-2, .uz-row-account { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.uz-row-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .uz-row-activity { grid-template-columns: minmax(0, 1fr) 20rem; }
 
 /* —— Header / controls —— */
@@ -467,19 +467,10 @@ td.uz-empty { text-align: center; padding: 1.5rem 0; }
 .uz-lifetime .uz-card-head { margin-bottom: 0; }
 .uz-life-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; }
 .uz-life-stats dd { font-size: 1.15rem; font-weight: 600; letter-spacing: -0.02em; overflow: hidden; text-overflow: ellipsis; }
-.uz-endpoint { margin-top: auto; padding-top: 0.8rem; border-top: 1px solid var(--line); }
-.uz-endpoint .code-chip { margin: 0.35rem 0 0; overflow-wrap: anywhere; }
 
-/* —— Pricing (admin) —— */
-.uz-pricing summary { list-style: none; cursor: pointer; margin-bottom: 0; }
-.uz-pricing summary::-webkit-details-marker { display: none; }
-.uz-chevron { width: 0.55rem; height: 0.55rem; margin-top: 0.35rem; border-right: 1.5px solid var(--mute); border-bottom: 1.5px solid var(--mute); transform: rotate(45deg); transition: transform var(--dur-2) var(--ease-snap); }
-.uz-pricing[open] .uz-chevron { transform: rotate(-135deg); }
-.uz-pricing-body { display: grid; gap: 0.9rem; margin-top: 1rem; }
-.uz-pricing-bar { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
-.uz-pricing-bar form { margin: 0; flex: none; }
-.uz-pricing-table { max-height: 26rem; overflow: auto; }
-.uz-pricing-table thead th { position: sticky; top: 0; background: var(--panel); }
+/* —— Pricing (admin page) —— */
+.uz-card-head form { margin: 0; flex: none; }
+.uz-pricing-table { overflow-x: auto; }
 .uz-pricing-table form { margin: 0; }
 .uz-price-form { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 0.6rem; align-items: end; }
 .uz-price-form .uz-wide { grid-column: span 2; }
@@ -510,7 +501,7 @@ td.uz-empty { text-align: center; padding: 1.5rem 0; }
   .uz-hide-md { display: none; }
 }
 @media (max-width: 860px) {
-  .uz-row-2, .uz-row-account, .uz-cols { grid-template-columns: minmax(0, 1fr); }
+  .uz-row-2, .uz-cols { grid-template-columns: minmax(0, 1fr); }
   .uz-user { grid-template-columns: minmax(0, 1fr) auto; gap: 0.35rem 1rem; }
   .uz-user .uz-stack { grid-column: 1 / -1; grid-row: 2; }
 }

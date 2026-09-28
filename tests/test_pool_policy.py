@@ -236,14 +236,14 @@ class PoolPolicyHttpTest(unittest.TestCase):
 
     def test_admin_can_flip_pool_switches(self):
         self._login("admin@test.invalid")
-        page = self.client.get("/admin/sources")
+        page = self.client.get("/admin/pools")
         self.assertEqual(page.status_code, 200)
         self.assertIn("Who can use donated accounts", page.text)
         self.assertIn("devin_open_access", page.text)
         self.assertIn("kimi_open_access", page.text)
         csrf = self._csrf(page.text)
         saved = self.client.post(
-            "/admin/sources/pools",
+            "/admin/pools",
             data={
                 "csrf_token": csrf,
                 "grok_pool_shared": "1",

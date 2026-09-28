@@ -19,6 +19,7 @@ from . import notifications as notifications_routes
 from . import skills as skills_routes
 from . import sources as sources_routes
 from . import schedules as schedules_routes
+from . import settings as settings_routes
 
 router = APIRouter(dependencies=[Depends(csrf_guard)])
 router.include_router(auth.router)
@@ -32,6 +33,7 @@ router.include_router(chat_routes.router)
 router.include_router(notifications_routes.router)
 router.include_router(artifacts_routes.router)
 router.include_router(sources_routes.router)
+router.include_router(settings_routes.router)
 
 __all__ = [
     "router",

@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}API keys · Fuse{% endblock %}
+{% block page_title %}API keys{% endblock %}
+{% block page_lead %}<p>Keys let your own tools call Fuse's OpenAI-compatible <span class="mono">/v1</span> endpoint. Each key sees the same models as your account. The <a href="/docs">API reference</a> shows how to use them.</p>{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/usage.css?v=6">{% endblock %}
+{% block body %}
+<div class="uz">
+
+  {% if new_key %}
+  <section class="uz-card uz-reveal" role="status">
+    <div>
+      <h2>API key created</h2>
+      <p class="uz-sub">Copy it now. It will not be shown again.</p>
+    </div>
+    <p class="code-chip copy key" data-copy="{{ new_key }}">{{ new_key }}</p>
+  </section>
+  {% endif %}
+
+  <section class="uz-card" aria-labelledby="keys-endpoint-title">
+    <header class="uz-card-head">
+      <div><h2 id="keys-endpoint-title">Endpoint</h2><p class="uz-sub">Base URL for every key. Send the key as <span class="mono">Authorization: Bearer sk-…</span></p></div>
+    </header>
+    <p class="code-chip copy" data-copy="{{ base_url }}" title="Copy">{{ base_url }}</p>
+  </section>
+
+  <section class="uz-card" id="keys" aria-labelledby="uz-keys-title">
+    <header class="uz-card-head">
+      <div><h2 id="uz-keys-title">Your keys</h2><p class="uz-sub">Lifetime counters per key. Deleting a key stops requests that use it immediately.</p></div>
+    </header>
+    {% if usage.api_keys %}
+    <ul class="uz-keys">
+      {% for k in usage.api_keys %}
+      <li>
+        <div class="uz-key-id">
+          <strong>{{ k.name }}</strong>
+          <span class="mono">{{ k.prefix }}…{% if k.last_used_at %} · <time data-ago datetime="{{ k.last_used_at }}" title="{{ k.last_used_at }}">used {{ k.last_used_at[:10] }}</time>{% else %} · never used{% endif %}</span>
+        </div>
+        <dl class="uz-key-stats">
+          <div><dt>Tokens</dt><dd>{{ '{:,}'.format(k.total_tokens) }}</dd></div>
+          <div><dt>Requests</dt><dd>{{ '{:,}'.format(k.requests) }}</dd></div>
+          <div><dt>Cost</dt><dd>{{ k.cost_label or '—' }}</dd></div>
+        </dl>
+        <form method="post" action="/keys/{{ k.id }}/delete" data-confirm="Delete API key ‘{{ k.name }}’? Requests using it will stop immediately.">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="btn danger sm" aria-label="Delete key {{ k.name }}">Delete</button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}<p class="uz-empty">No API keys yet. Create one to call <span class="mono">/v1</span> from your tools.</p>{% endif %}
+    <form method="post" action="/keys" class="uz-key-create">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label class="visually-hidden" for="uz-key-name">Key name</label>
+      <input id="uz-key-name" type="text" name="name" value="{{ key_name }}" required maxlength="80" autocomplete="off" placeholder="New key name — Laptop, CI…">
+      <button type="submit" class="btn sm">Create key</button>
+    </form>
+    {% if key_error %}<p class="callout fault" role="alert">{{ key_error }}</p>{% endif %}
+  </section>
+</div>
+{% endblock %}

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Machines · Fuse{% endblock %}
 {% block page_title %}Machines{% endblock %}
-{% block page_lead %}<p>Connect a machine, then add project folders and open them from chat. Connector machines phone home over HTTPS; SSH still works if the box allows it.</p>{% endblock %}
+{% block page_lead %}<p>Connect a machine, then add project folders and open them from chat. Connector machines phone home over HTTPS; SSH still works if the box allows it. What chats may do here is under <a href="/settings#agents">Settings › Coding agents</a>.</p>{% endblock %}
 {% block page_actions %}
 <button type="button" class="btn sm" data-wizard-start data-hosts-add>Add a machine</button>
 {% endblock %}
@@ -142,22 +142,6 @@
 
     <div data-host-list class="stack-y"></div>
 
-    <details class="panel hosts-advanced">
-      <summary>Advanced</summary>
-      <form class="hosts-settings" data-settings>
-        <label class="check hosts-check">
-          <input type="checkbox" data-setting="agent_coding">
-          <span>Let chats load workspace tools on these machines</span>
-        </label>
-        <label class="check hosts-check">
-          <input type="checkbox" data-setting="allow_nested_spawn">
-          <span>Allow nested subagents (off by default: children cannot spawn more agents)</span>
-        </label>
-        <p class="callout" data-settings-ok hidden>Saved.</p>
-        <p class="callout fault" data-settings-error hidden></p>
-        <button type="submit" class="btn sm ghost">Save</button>
-      </form>
-    </details>
   </div>
 
   <dialog class="modal" data-edit-host-modal aria-labelledby="edit-host-title">
@@ -231,5 +215,5 @@
 <script type="application/json" id="hosts-config">{{ hosts_bundle | tojson }}</script>
 {% endblock %}
 {% block scripts %}
-<script src="/static/hosts.js?v=17"></script>
+<script src="/static/hosts.js?v=18"></script>
 {% endblock %}

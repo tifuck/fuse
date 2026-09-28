@@ -13642,6 +13642,14 @@
     viewBackdrop?.addEventListener("click", () => setViewMenuOpen(false));
   }
   applyChatView(chatView);
+  // Settings › Appearance links to /chat?appearance=1 to open this panel.
+  if (viewMenu && new URLSearchParams(location.search).has("appearance")) {
+    const params = new URLSearchParams(location.search);
+    params.delete("appearance");
+    const query = params.toString();
+    history.replaceState(history.state, "", location.pathname + (query ? `?${query}` : "") + location.hash);
+    setViewMenuOpen(true);
+  }
   if (artifactToggle) {
     artifactToggle.addEventListener("click", (event) => {
       event.preventDefault();

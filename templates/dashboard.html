@@ -1,19 +1,9 @@
 {% extends "base.html" %}
 {% block title %}Usage · Fuse{% endblock %}
 {% block page_title %}Usage{% endblock %}
-{% block head_extra %}<link rel="stylesheet" href="/static/usage.css?v=4">{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/usage.css?v=6">{% endblock %}
 {% block body %}
 <div class="uz" data-usage-dashboard data-admin="{{ 1 if user['is_admin'] else 0 }}">
-
-  {% if new_key %}
-  <section class="uz-card uz-reveal" role="status">
-    <div>
-      <h2>API key created</h2>
-      <p class="uz-sub">Copy it now. It will not be shown again.</p>
-    </div>
-    <p class="code-chip copy key" data-copy="{{ new_key }}">{{ new_key }}</p>
-  </section>
-  {% endif %}
 
   <header class="uz-head">
     <p class="uz-caption" data-usage-caption>Token activity, cost and reliability</p>
@@ -174,96 +164,17 @@
     <button type="button" class="uz-more" data-recent-more hidden></button>
   </section>
 
-  <div class="uz-row uz-row-account">
-    <section class="uz-card" id="keys" aria-labelledby="uz-keys-title">
-      <header class="uz-card-head">
-        <div><h2 id="uz-keys-title">API keys</h2><p class="uz-sub">Lifetime counters per key</p></div>
-      </header>
-      {% if usage.api_keys %}
-      <ul class="uz-keys">
-        {% for k in usage.api_keys %}
-        <li>
-          <div class="uz-key-id">
-            <strong>{{ k.name }}</strong>
-            <span class="mono">{{ k.prefix }}…{% if k.last_used_at %} · <time data-ago datetime="{{ k.last_used_at }}" title="{{ k.last_used_at }}">used {{ k.last_used_at[:10] }}</time>{% else %} · never used{% endif %}</span>
-          </div>
-          <dl class="uz-key-stats">
-            <div><dt>Tokens</dt><dd>{{ '{:,}'.format(k.total_tokens) }}</dd></div>
-            <div><dt>Requests</dt><dd>{{ '{:,}'.format(k.requests) }}</dd></div>
-            <div><dt>Cost</dt><dd>{{ k.cost_label or '—' }}</dd></div>
-          </dl>
-          <form method="post" action="/keys/{{ k.id }}/delete" data-confirm="Delete API key ‘{{ k.name }}’? Requests using it will stop immediately.">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button type="submit" class="btn danger sm" aria-label="Delete key {{ k.name }}">Delete</button>
-          </form>
-        </li>
-        {% endfor %}
-      </ul>
-      {% else %}<p class="uz-empty">No API keys yet. Create one to call <span class="mono">/v1</span> from your tools.</p>{% endif %}
-      <form method="post" action="/keys" class="uz-key-create">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <label class="visually-hidden" for="uz-key-name">Key name</label>
-        <input id="uz-key-name" type="text" name="name" value="{{ key_name }}" required maxlength="80" autocomplete="off" placeholder="New key name — Laptop, CI…">
-        <button type="submit" class="btn sm">Create key</button>
-      </form>
-      {% if key_error %}<p class="callout fault" role="alert">{{ key_error }}</p>{% endif %}
-    </section>
-
-    <section class="uz-card uz-lifetime" aria-labelledby="uz-life-title">
-      <header class="uz-card-head">
-        <div><h2 id="uz-life-title">Lifetime</h2><p class="uz-sub">This account, all time</p></div>
-      </header>
-      <dl class="uz-life-stats">
-        <div><dt>Tokens</dt><dd>{{ '{:,}'.format(usage.totals.total_tokens) }}</dd></div>
-        <div><dt>Requests</dt><dd>{{ '{:,}'.format(usage.totals.requests) }}</dd></div>
-        <div><dt>Cost</dt><dd>{{ usage.totals.cost_label or '—' }}</dd></div>
-      </dl>
-      {% if usage.totals.last_model %}<p class="uz-sub">Last model <span class="mono">{{ usage.totals.last_model }}</span></p>{% endif %}
-      <div class="uz-endpoint">
-        <p class="uz-label">Endpoint</p>
-        <p class="code-chip copy" data-copy="{{ base_url }}" title="Copy">{{ base_url }}</p>
-      </div>
-    </section>
-  </div>
-
-  {% if user['is_admin'] %}
-  <details class="uz-card uz-pricing" id="pricing"{% if pricing_synced or pricing_sync_error %} open{% endif %}>
-    <summary class="uz-card-head">
-      <div><h2>Model pricing</h2><p class="uz-sub">Admin · {{ pricing|length }} rates · USD per 1M tokens</p></div>
-      <span class="uz-chevron" aria-hidden="true"></span>
-    </summary>
-    <div class="uz-pricing-body">
-      <div class="uz-pricing-bar">
-        <p class="uz-note">Sync pulls xAI, OpenAI, Z.AI and OpenRouter catalog rates (cached-input, cache-write and long-context tiers included) and reprices matching history. Manual entries are never overwritten. A missing cache-write rate bills writes at the input rate; unknown stays unknown.</p>
-        <form method="post" action="/admin/pricing/openrouter">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <button type="submit" class="btn ghost sm">Sync OpenRouter rates</button>
-        </form>
-      </div>
-      {% if pricing_synced %}<p class="callout ok">Synced {{ pricing_synced }} model rates from OpenRouter.</p>{% endif %}
-      {% if pricing_sync_error %}<p class="callout fault" role="alert">Pricing sync failed. Existing rates were not changed.</p>{% endif %}
-      {% if pricing %}
-      <div class="uz-table-wrap uz-pricing-table">
-        <table class="uz-table">
-          <thead><tr><th scope="col">Provider</th><th scope="col">Model</th><th scope="col">Origin</th><th scope="col" class="num">Input</th><th scope="col" class="num">Cached</th><th scope="col" class="num">Cache W</th><th scope="col" class="num">Output</th><th scope="col" class="num">Reasoning</th><th scope="col">Long-context</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>
-          <tbody>{% for p in pricing %}<tr><td data-label="Provider">{{ p.provider_label }}</td><td data-label="Model" class="mono">{{ p.model }}</td><td data-label="Origin">{% if p.origin == 'openrouter' %}<span class="badge" title="Synced {{ p.synced_label }}">OpenRouter</span>{% else %}<span class="badge">Manual</span>{% endif %}</td><td data-label="Input" class="mono num">{{ p.input_usd }}</td><td data-label="Cached" class="mono num">{{ p.cached_usd }}</td><td data-label="Cache W" class="mono num">{{ p.write_usd }}</td><td data-label="Output" class="mono num">{{ p.output_usd }}</td><td data-label="Reasoning" class="mono num">{{ p.reasoning_usd }}</td><td data-label="Long-context" class="mono">{{ p.long_label }}</td><td><form method="post" action="/admin/pricing/delete" data-confirm="Delete pricing for {{ p.model }}?"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="provider" value="{{ p.provider }}"><input type="hidden" name="model" value="{{ p.model }}"><button class="btn danger sm" type="submit">Delete</button></form></td></tr>{% endfor %}</tbody>
-        </table>
-      </div>
-      {% endif %}
-      <form method="post" action="/admin/pricing" class="uz-price-form">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <label>Provider <select name="provider" required>{% for id, label in provider_types.items() %}<option value="{{ id }}">{{ label }}</option>{% endfor %}</select></label>
-        <label class="uz-wide">Model <input type="text" name="model" required maxlength="200" placeholder="grok-4.5"></label>
-        <label>Input <input type="number" name="input_rate" min="0" step="0.000001" value="0" required></label>
-        <label>Cached <input type="number" name="cached_rate" min="0" step="0.000001" value="" placeholder="optional"></label>
-        <label>Cache write <input type="number" name="cache_write_rate" min="0" step="0.000001" value="" placeholder="optional"></label>
-        <label>Output <input type="number" name="output_rate" min="0" step="0.000001" value="0" required></label>
-        <label>Reasoning <input type="number" name="reasoning_rate" min="0" step="0.000001" value="" placeholder="optional"></label>
-        <button type="submit" class="btn sm">Save rate</button>
-      </form>
-    </div>
-  </details>
-  {% endif %}
+  <section class="uz-card uz-lifetime" aria-labelledby="uz-life-title">
+    <header class="uz-card-head">
+      <div><h2 id="uz-life-title">Lifetime</h2><p class="uz-sub">This account, all time{% if usage.totals.last_model %} · last model <span class="mono">{{ usage.totals.last_model }}</span>{% endif %}</p></div>
+      <a class="btn ghost sm" href="/keys">Per-key totals</a>
+    </header>
+    <dl class="uz-life-stats">
+      <div><dt>Tokens</dt><dd>{{ '{:,}'.format(usage.totals.total_tokens) }}</dd></div>
+      <div><dt>Requests</dt><dd>{{ '{:,}'.format(usage.totals.requests) }}</dd></div>
+      <div><dt>Cost</dt><dd>{{ usage.totals.cost_label or '—' }}</dd></div>
+    </dl>
+  </section>
 </div>
 {% endblock %}
-{% block scripts %}<script src="/static/usage.js?v=5"></script>{% endblock %}
+{% block scripts %}<script src="/static/usage.js?v=6"></script>{% endblock %}

@@ -12,7 +12,6 @@ from ..config import settings
 from ..sources import TYPES, models_by_source
 from ..sources import chatgpt as chatgpt_mod
 from ..sources import devin as devin_mod
-from ..sources import openrouter as openrouter_mod
 from ..sources import kimi as kimi_mod
 from ..sources import mimo as mimo_mod
 from ..sources import claude as claude_mod
@@ -35,7 +34,7 @@ from .deps import (
 
 router = APIRouter()
 
-def _dashboard_response(
+def _keys_response(
     request: Request,
     user,
     *,
@@ -46,20 +45,27 @@ def _dashboard_response(
 ):
     return render(
         request,
-        "dashboard.html",
+        "keys.html",
         user,
         status_code=status_code,
         usage=stats.current_usage(user["id"]),
-        pricing=stats.pricing_views() if user["is_admin"] else [],
-        provider_types=TYPES,
-        pricing_synced=request.query_params.get("pricing_synced", ""),
-        pricing_sync_error=request.query_params.get("pricing_error") == "1",
         new_key=new_key,
         key_error=key_error,
         key_name=key_name,
         base_url=_public_base(request),
     )
 
+
+def _pricing_response(request: Request, user):
+    return render(
+        request,
+        "admin_pricing.html",
+        user,
+        pricing=stats.pricing_views(),
+        provider_types=TYPES,
+        pricing_synced=request.query_params.get("synced", ""),
+        pricing_sync_error=request.query_params.get("error") == "1",
+    )
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -72,8 +78,16 @@ async def dashboard(request: Request):
     user, redir = require_user(request)
     if redir:
         return redir
+    return render(request, "dashboard.html", user, usage=stats.current_usage(user["id"]))
+
+
+@router.get("/keys", response_class=HTMLResponse)
+async def api_keys(request: Request):
+    user, redir = require_user(request)
+    if redir:
+        return redir
     new_key = _peek_key_reveal(request, user["id"])
-    response = _dashboard_response(request, user, new_key=new_key)
+    response = _keys_response(request, user, new_key=new_key)
     if new_key:
         request.session.pop("key_reveal", None)
     return response
@@ -133,6 +147,14 @@ def _price_rate(value: str, *, optional: bool = False) -> int | None:
     return int((rate * 1_000_000).quantize(Decimal("1")))
 
 
+@router.get("/admin/pricing", response_class=HTMLResponse)
+async def pricing_page(request: Request):
+    user, redir = require_admin(request)
+    if redir:
+        return redir
+    return _pricing_response(request, user)
+
+
 @router.post("/admin/pricing")
 async def save_pricing(
     request: Request,
@@ -162,7 +184,7 @@ async def save_pricing(
     if input_v is None or output_v is None:
         raise HTTPException(400, "Input and output rates are required")
     db.save_model_price(provider, model, input_v, cached_v, output_v, reasoning_v, cache_write_rate=write_v)
-    return RedirectResponse("/usage#pricing", status_code=303)
+    return RedirectResponse("/admin/pricing", status_code=303)
 
 
 @router.post("/admin/pricing/openrouter")
@@ -173,8 +195,8 @@ async def sync_openrouter_pricing(request: Request):
     try:
         result = await pricing_mod.sync_openrouter_prices()
     except Exception:
-        return RedirectResponse("/usage?pricing_error=1#pricing", status_code=303)
-    return RedirectResponse(f"/usage?pricing_synced={result['count']}#pricing", status_code=303)
+        return RedirectResponse("/admin/pricing?error=1", status_code=303)
+    return RedirectResponse(f"/admin/pricing?synced={result['count']}", status_code=303)
 
 
 @router.post("/admin/pricing/delete")
@@ -184,7 +206,7 @@ async def remove_pricing(request: Request, provider: str = Form(), model: str = 
         return redir
     if provider in TYPES and model:
         db.delete_model_price(provider, model[:200])
-    return RedirectResponse("/usage#pricing", status_code=303)
+    return RedirectResponse("/admin/pricing", status_code=303)
 
 
 @router.post("/keys")
@@ -195,7 +217,7 @@ async def create_key(request: Request, name: str = Form()):
     try:
         raw = accounts.create_api_key(user["id"], name)
     except ValueError:
-        return _dashboard_response(
+        return _keys_response(
             request,
             user,
             key_error="Name must be 1–80 characters and cannot contain control characters.",
@@ -203,7 +225,7 @@ async def create_key(request: Request, name: str = Form()):
             status_code=400,
         )
     _stash_key_reveal(request, user["id"], raw)
-    return RedirectResponse("/usage", status_code=303)
+    return RedirectResponse("/keys?created=1", status_code=303)
 
 
 @router.post("/keys/{key_id}/delete")
@@ -212,7 +234,7 @@ async def delete_key(request: Request, key_id: int):
     if redir:
         return redir
     accounts.delete_api_key(user["id"], key_id)
-    return RedirectResponse("/usage", status_code=303)
+    return RedirectResponse("/keys", status_code=303)
 
 
 def _latest_release(suffix: str) -> str | None:
@@ -249,7 +271,6 @@ async def api_docs(request: Request):
     kimi_access = kimi_mod.kimi_access_state(user["id"])
     mimo_access = mimo_mod.mimo_access_state(user["id"])
     claude_access = claude_mod.claude_access_state(user["id"])
-    or_access = openrouter_mod.openrouter_access_state(user["id"])
     groups = await models_by_source(
         allow_grok=access["ok"],
         allow_chatgpt=chatgpt_access["ok"],
@@ -270,30 +291,8 @@ async def api_docs(request: Request):
         user,
         base_url=_public_base(request),
         site_url=site_url,
-        groups=groups,
         models=models,
         model_options=model_options,
-        grok_ok=access["ok"],
-        grok_reason=access["reason"],
-        zai_ok=zai_access["ok"],
-        zai_reason=zai_access["reason"],
-        openrouter_ok=or_access["ok"],
-        openrouter_reason=or_access["reason"],
-        openrouter_user_key=or_access["user_key"],
-        openrouter_free_models=or_access["free_models"],
-        grok_listed=access["ok"] or any(g["type"] == "grok" for g in groups),
-        zai_listed=zai_access["ok"] or any(g["type"] == "zai" for g in groups),
-        devin_ok=devin_access["ok"],
-        devin_listed=devin_access["ok"] or any(g["type"] == "devin" for g in groups),
-        kimi_ok=kimi_access["ok"],
-        kimi_reason=kimi_access["reason"],
-        kimi_listed=kimi_access["ok"] or any(g["type"] == "kimi" for g in groups),
-        mimo_ok=mimo_access["ok"],
-        mimo_reason=mimo_access["reason"],
-        mimo_listed=mimo_access["ok"] or any(g["type"] == "mimo" for g in groups),
-        claude_ok=claude_access["ok"],
-        claude_reason=claude_access["reason"],
-        claude_listed=claude_access["ok"] or any(g["type"] == "claude" for g in groups),
     )
 
 

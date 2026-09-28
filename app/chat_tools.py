@@ -1039,7 +1039,7 @@ async def execute_tool(
         if not parent_run_id or http_request is None or user is None:
             return "spawn is not available", {"name": name, "status": "error", "kind": "unavailable", "error": "spawn is not available"}
         if name == "spawn_subagent" and session is not None and not session.get("allow_spawn"):
-            msg = "Nested subagents are off. Enable them in Hosts → Advanced."
+            msg = "Nested subagents are off. Enable them in Settings → Coding agents."
             return msg, {"name": name, "status": "error", "kind": "denied", "error": msg}
         return await agents.spawn(
             user=user,

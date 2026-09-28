@@ -1,3 +1,4 @@
+{% import "_nav.html" as nav %}
 {% set email = user['email'] %}
 {% set initial = (email[:1] or '?')|upper %}
 {% set local = email.split('@')[0] %}
@@ -15,22 +16,7 @@
       </button>
     </div>
     <nav class="user-dock-nav">
-      <p class="user-dock-label">Workspace</p>
-      <a href="/usage" role="menuitem"{% if path == '/usage' %} class="on" aria-current="page"{% endif %}>Usage</a>
-      <a href="/models" role="menuitem"{% if path.startswith('/models') %} class="on" aria-current="page"{% endif %}>Models</a>
-      <a href="/tasks" role="menuitem"{% if path.startswith('/tasks') %} class="on" aria-current="page"{% endif %}>Tasks</a>
-      <p class="user-dock-label">Setup</p>
-      <a href="/sources" role="menuitem"{% if path.startswith('/sources') or path.startswith('/pool') %} class="on" aria-current="page"{% endif %}>Sources</a>
-      <a href="/skills" role="menuitem"{% if path.startswith('/skills') %} class="on" aria-current="page"{% endif %}>Skills</a>
-      <a href="/projects" role="menuitem"{% if path.startswith('/hosts') or path.startswith('/projects') %} class="on" aria-current="page"{% endif %}>Machines</a>
-      <a href="/artifacts" role="menuitem"{% if path.startswith('/artifacts') %} class="on" aria-current="page"{% endif %}>Artifacts</a>
-      <a href="/docs" role="menuitem"{% if path.startswith('/docs') %} class="on" aria-current="page"{% endif %}>API</a>
-      <a href="/download" role="menuitem"{% if path.startswith('/download') %} class="on" aria-current="page"{% endif %}>Desktop</a>
-      {% if user['is_admin'] %}
-      <p class="user-dock-label">Admin</p>
-      <a href="/admin/sources" role="menuitem"{% if path.startswith('/admin/sources') %} class="on" aria-current="page"{% endif %}>Config</a>
-      <a href="/admin/users" role="menuitem"{% if path.startswith('/admin/users') %} class="on" aria-current="page"{% endif %}>Users</a>
-      {% endif %}
+      {{ nav.nav_links(path, user, "user-dock-label", ' role="menuitem"') }}
     </nav>
     <form method="post" action="/logout" class="user-dock-out">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

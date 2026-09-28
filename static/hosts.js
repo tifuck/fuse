@@ -49,7 +49,6 @@
   const installWindows = root.querySelector("[data-install-windows]");
   const downloadWindows = root.querySelector("[data-download-windows]");
   const connectorWait = root.querySelector("[data-connector-wait]");
-  const settingsForm = root.querySelector("[data-settings]");
   const pageError = root.querySelector("[data-page-error]");
 
   let wizardHostId = null;
@@ -447,12 +446,6 @@
 
   function paint() {
     setVault(bundle.vault);
-    if (settingsForm) {
-      const coding = settingsForm.querySelector('[data-setting="agent_coding"]');
-      const nested = settingsForm.querySelector('[data-setting="allow_nested_spawn"]');
-      if (coding) coding.checked = Boolean(bundle.settings && bundle.settings.agent_coding);
-      if (nested) nested.checked = Boolean(bundle.settings && bundle.settings.allow_nested_spawn);
-    }
     const hosts = bundle.hosts || [];
     const pending = bundle.pending || [];
     const wizardOpen = wizard && !wizard.hidden;
@@ -853,27 +846,6 @@
   });
   wizard.querySelector("[data-wizard-next]").addEventListener("click", wizardNext);
   wizard.querySelector("[data-w-auth]").addEventListener("change", syncWizardAuth);
-
-  settingsForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const ok = settingsForm.querySelector("[data-settings-ok]");
-    const bad = settingsForm.querySelector("[data-settings-error]");
-    showErr(ok, "");
-    showErr(bad, "");
-    try {
-      bundle.settings = await api("/hosts/settings", {
-        method: "POST",
-        body: JSON.stringify({
-          agent_coding: settingsForm.querySelector('[data-setting="agent_coding"]').checked,
-          allow_nested_spawn: settingsForm.querySelector('[data-setting="allow_nested_spawn"]').checked,
-        }),
-      });
-      ok.hidden = false;
-      ok.textContent = "Saved.";
-    } catch (err) {
-      showErr(bad, err.message || "Could not save");
-    }
-  });
 
   const hostModal = root.querySelector("[data-edit-host-modal]");
   const projModal = root.querySelector("[data-edit-project-modal]");

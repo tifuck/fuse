@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Sources · Fuse{% endblock %}
 {% block page_title %}Sources{% endblock %}
-{% block page_lead %}<p>Link a subscription to unlock models, or add a personal OpenRouter key. Admins control whether donated x.ai, OpenAI, Z.AI, Devin, Kimi, Xiaomi, and Claude accounts are shared. OpenRouter stays on your account only.</p>{% endblock %}
+{% block page_lead %}<p>Link your own subscriptions to unlock their models, or add a personal OpenRouter key. Linked subscriptions join a shared pool when the server allows it; your OpenRouter key is never shared. See what each unlocks on <a href="/models">Models</a>.</p>{% endblock %}
 {% block page_actions %}
 <div class="head-actions">
   <button type="button" class="btn sm" data-dialog-open="grok-connect-dialog">{{ 'Continue x.ai' if pending else 'Add x.ai' }}</button>

@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Pools · Fuse{% endblock %}
+{% block page_title %}Pools{% endblock %}
+{% block page_lead %}<p>Rules for subscriptions that users link on <a href="/sources">Sources</a>: who may route through them, and when an account is pulled out.</p>{% endblock %}
+{% block body %}
+{% if notice %}<p class="callout ok">{{ notice }}</p>{% endif %}
+<div class="set-page">
+<nav class="settings-jump" aria-label="On this page">
+  <a href="#access">Access</a>
+  <a href="#guards">Off-site usage guards</a>
+</nav>
+
+<form method="post" action="/admin/pools" class="panel set" id="access">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <header class="set-head">
+    <h2>Who can use donated accounts</h2>
+    <p><strong>Share</strong> routes eligible users across every linked account of that type; off means each user only uses accounts they linked. Users can opt out of sharing when it is on, but cannot opt in when it is off. <strong>Open access</strong> lets any registered user use the pool without linking an account.</p>
+  </header>
+  {% for kind in pool_kinds %}
+  {% set policy = pool_policies[kind] %}
+  <div class="set-row">
+    <div class="set-label">
+      <strong>{{ pool_labels[kind] }}</strong>
+      <span>{{ pool_counts[kind] }} linked account{{ 's' if pool_counts[kind] != 1 else '' }}</span>
+    </div>
+    <div class="set-control">
+      <label class="check">
+        <input type="checkbox" name="{{ kind }}_pool_shared" value="1"{% if policy.pool_shared %} checked{% endif %}>
+        Share linked accounts across users
+      </label>
+      <label class="check">
+        <input type="checkbox" name="{{ kind }}_open_access" value="1"{% if policy.open_access %} checked{% endif %}>
+        Open access — no linked account required
+      </label>
+    </div>
+  </div>
+  {% endfor %}
+  <div class="set-foot">
+    <button type="submit" class="btn">Save pool access</button>
+  </div>
+</form>
+
+<section class="panel set" id="guards">
+  <header class="set-head">
+    <h2>Off-site usage guards</h2>
+    <p>Pull a donated account out of the pool for 24 hours when its provider quota rises without Fuse traffic, which means the owner is using it elsewhere. Turning a guard off releases every held account of that type.</p>
+  </header>
+  <form method="post" action="/admin/sources/grok" class="set-row">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="set-label">
+      <strong>{{ pool_labels.grok }}</strong>
+      <span>{{ pool_counts.grok }} linked</span>
+    </div>
+    <div class="set-control">
+      <label class="check">
+        <input type="checkbox" name="offpool_usage_guard" value="1"{% if grok_usage_guard %} checked{% endif %}>
+        Hold accounts when usage rises off-site
+      </label>
+      <button type="submit" class="btn ghost sm">Save</button>
+    </div>
+  </form>
+  <form method="post" action="/admin/sources/zai" class="set-row">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="set-label">
+      <strong>{{ pool_labels.zai }}</strong>
+      <span>{{ pool_counts.zai }} linked</span>
+    </div>
+    <div class="set-control">
+      <label class="check">
+        <input type="checkbox" name="offpool_usage_guard" value="1"{% if zai_usage_guard %} checked{% endif %}>
+        Hold keys when usage rises off-site
+      </label>
+      <button type="submit" class="btn ghost sm">Save</button>
+    </div>
+  </form>
+</section>
+</div>
+{% endblock %}

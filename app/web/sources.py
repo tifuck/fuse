@@ -177,57 +177,17 @@ def _ollama_page(keys: list[dict], page: int, size: int = _OLLAMA_PAGE) -> dict:
 
 
 def _admin_sources_ctx(error: str | None = None, notice: str | None = None, ollama_page: int = 1) -> dict:
-    from ..search.policy import domain_lists_text
     from ..sources import ensure_llama_source, ensure_ollama_source
-
-    fetch_lists = domain_lists_text()
 
     llama_id = ensure_llama_source()
     ollama_id = ensure_ollama_source()
-    grok_id = ensure_grok_source()
-    chatgpt_id = chatgpt_mod.ensure_chatgpt_source()
-    zai_id = zai_mod.ensure_zai_source()
-    devin_id = devin_mod.ensure_devin_source()
-    kimi_id = kimi_mod.ensure_kimi_source()
-    mimo_id = mimo_mod.ensure_mimo_source()
-    claude_id = claude_mod.ensure_claude_source()
     openrouter_id = openrouter_mod.ensure_openrouter_source()
     llama = db.fetchone("SELECT * FROM sources WHERE id=?", (llama_id,))
     ollama = db.fetchone("SELECT * FROM sources WHERE id=?", (ollama_id,))
-    grok = db.fetchone("SELECT * FROM sources WHERE id=?", (grok_id,))
-    chatgpt = db.fetchone("SELECT * FROM sources WHERE id=?", (chatgpt_id,))
-    zai = db.fetchone("SELECT * FROM sources WHERE id=?", (zai_id,))
-    devin = db.fetchone("SELECT * FROM sources WHERE id=?", (devin_id,))
-    kimi = db.fetchone("SELECT * FROM sources WHERE id=?", (kimi_id,))
-    mimo = db.fetchone("SELECT * FROM sources WHERE id=?", (mimo_id,))
-    claude = db.fetchone("SELECT * FROM sources WHERE id=?", (claude_id,))
     openrouter = db.fetchone("SELECT * FROM sources WHERE id=?", (openrouter_id,))
     llama_cfg = _source_cfg(llama)
     ollama_cfg = _source_cfg(ollama)
-    grok_cfg = _source_cfg(grok)
-    zai_cfg = _source_cfg(zai)
     llama_key = db.fetchone("SELECT id FROM credentials WHERE source_id=? AND disabled=0", (llama_id,))
-    grok_n = db.fetchone(
-        "SELECT COUNT(*) AS n FROM credentials WHERE source_id=? AND disabled=0", (grok_id,)
-    )
-    chatgpt_n = db.fetchone(
-        "SELECT COUNT(*) AS n FROM credentials WHERE source_id=? AND disabled=0", (chatgpt_id,)
-    )
-    zai_n = db.fetchone(
-        "SELECT COUNT(*) AS n FROM credentials WHERE source_id=? AND disabled=0", (zai_id,)
-    )
-    devin_n = db.fetchone(
-        "SELECT COUNT(*) AS n FROM credentials WHERE source_id=? AND disabled=0", (devin_id,)
-    )
-    kimi_n = db.fetchone(
-        "SELECT COUNT(*) AS n FROM credentials WHERE source_id=? AND disabled=0", (kimi_id,)
-    )
-    mimo_n = db.fetchone(
-        "SELECT COUNT(*) AS n FROM credentials WHERE source_id=? AND disabled=0", (mimo_id,)
-    )
-    claude_n = db.fetchone(
-        "SELECT COUNT(*) AS n FROM credentials WHERE source_id=? AND disabled=0", (claude_id,)
-    )
     openrouter_user_n = db.fetchone(
         """SELECT COUNT(*) AS n FROM credentials
            WHERE source_id=? AND disabled=0 AND donated_by IS NOT NULL""",
@@ -265,24 +225,6 @@ def _admin_sources_ctx(error: str | None = None, notice: str | None = None, olla
         "ollama_has_prev": paged["has_prev"],
         "ollama_has_next": paged["has_next"],
         "ollama_catalog": ollama_access.catalog_summary(ollama_id) if ollama_id else {"free": [], "gated": []},
-        "grok": grok,
-        "grok_usage_guard": grok_cfg.get("offpool_usage_guard", True) is not False,
-        "grok_count": int(grok_n["n"] if grok_n else 0),
-        "chatgpt": chatgpt,
-        "chatgpt_count": int(chatgpt_n["n"] if chatgpt_n else 0),
-        "zai": zai,
-        "zai_usage_guard": zai_cfg.get("offpool_usage_guard", True) is not False,
-        "zai_count": int(zai_n["n"] if zai_n else 0),
-        "devin": devin,
-        "devin_count": int(devin_n["n"] if devin_n else 0),
-        "kimi": kimi,
-        "kimi_count": int(kimi_n["n"] if kimi_n else 0),
-        "mimo": mimo,
-        "mimo_count": int(mimo_n["n"] if mimo_n else 0),
-        "claude": claude,
-        "claude_count": int(claude_n["n"] if claude_n else 0),
-        "pool_policies": {kind: pool_policy.admin_policy(kind) for kind in pool_policy.POOL_KINDS},
-        "pool_labels": pool_policy.POOL_LABELS,
         "openrouter": openrouter,
         "openrouter_user_count": int(openrouter_user_n["n"] if openrouter_user_n else 0),
         "extras": extras,
@@ -290,9 +232,43 @@ def _admin_sources_ctx(error: str | None = None, notice: str | None = None, olla
         "error": error,
         "notice": notice,
         "types": TYPES,
-        "fetch_blacklist": fetch_lists[0],
-        "fetch_whitelist": fetch_lists[1],
     }
+
+
+def _admin_pools_ctx(notice: str | None = None) -> dict:
+    grok_cfg = _source_cfg(db.fetchone("SELECT config FROM sources WHERE id=?", (ensure_grok_source(),)))
+    zai_cfg = _source_cfg(db.fetchone("SELECT config FROM sources WHERE id=?", (zai_mod.ensure_zai_source(),)))
+    ensure = {
+        "grok": ensure_grok_source,
+        "chatgpt": chatgpt_mod.ensure_chatgpt_source,
+        "zai": zai_mod.ensure_zai_source,
+        "devin": devin_mod.ensure_devin_source,
+        "kimi": kimi_mod.ensure_kimi_source,
+        "mimo": mimo_mod.ensure_mimo_source,
+        "claude": claude_mod.ensure_claude_source,
+    }
+    counts = {}
+    for kind in pool_policy.POOL_KINDS:
+        row = db.fetchone(
+            "SELECT COUNT(*) AS n FROM credentials WHERE source_id=? AND disabled=0", (ensure[kind](),)
+        )
+        counts[kind] = int(row["n"] if row else 0)
+    return {
+        "pool_kinds": pool_policy.POOL_KINDS,
+        "pool_policies": {kind: pool_policy.admin_policy(kind) for kind in pool_policy.POOL_KINDS},
+        "pool_labels": pool_policy.POOL_LABELS,
+        "pool_counts": counts,
+        "grok_usage_guard": grok_cfg.get("offpool_usage_guard", True) is not False,
+        "zai_usage_guard": zai_cfg.get("offpool_usage_guard", True) is not False,
+        "notice": notice,
+    }
+
+
+def _admin_web_ctx(error: str | None = None, notice: str | None = None) -> dict:
+    from ..search.policy import domain_lists_text
+
+    black, white = domain_lists_text()
+    return {"fetch_blacklist": black, "fetch_whitelist": white, "error": error, "notice": notice}
 
 
 def _pending_for(uid: int):
@@ -1790,6 +1766,24 @@ async def admin_sources(request: Request):
     )
 
 
+@router.get("/admin/pools", response_class=HTMLResponse)
+async def admin_pools(request: Request):
+    user, redir = require_admin(request)
+    if redir:
+        return redir
+    notice = _notices.pop(user["id"], None)
+    return render(request, "admin_pools.html", user, **_admin_pools_ctx(notice=notice))
+
+
+@router.get("/admin/web", response_class=HTMLResponse)
+async def admin_web(request: Request):
+    user, redir = require_admin(request)
+    if redir:
+        return redir
+    notice = _notices.pop(user["id"], None)
+    return render(request, "admin_web.html", user, **_admin_web_ctx(notice=notice))
+
+
 @router.post("/admin/sources")
 async def admin_sources_create(
     request: Request,
@@ -1907,9 +1901,9 @@ async def admin_fetch_domains(
     if len(blacklist) > 20_000 or len(whitelist) > 20_000:
         return render(
             request,
-            "admin_sources.html",
+            "admin_web.html",
             user,
-            **_admin_sources_ctx(error="Domain lists must be at most 20,000 characters."),
+            **_admin_web_ctx(error="Domain lists must be at most 20,000 characters."),
             status_code=400,
         )
     black = parse_domain_list(blacklist)
@@ -1919,7 +1913,7 @@ async def admin_fetch_domains(
         f"Fetch domains saved. {len(black)} blocked"
         + (f", {len(white)} allowed." if white else ". Whitelist empty — every other public domain is allowed.")
     )
-    return RedirectResponse("/admin/sources#fetch", status_code=303)
+    return RedirectResponse("/admin/web", status_code=303)
 
 
 @router.post("/admin/sources/ollama")
@@ -1969,40 +1963,21 @@ async def admin_ollama_save(
 
 
 @router.post("/admin/sources/pools")
-async def admin_pools_save(
-    request: Request,
-    grok_pool_shared: str = Form("0"),
-    grok_open_access: str = Form("0"),
-    chatgpt_pool_shared: str = Form("0"),
-    chatgpt_open_access: str = Form("0"),
-    zai_pool_shared: str = Form("0"),
-    zai_open_access: str = Form("0"),
-    devin_pool_shared: str = Form("0"),
-    devin_open_access: str = Form("0"),
-    kimi_pool_shared: str = Form("0"),
-    kimi_open_access: str = Form("0"),
-    mimo_pool_shared: str = Form("0"),
-    mimo_open_access: str = Form("0"),
-):
+@router.post("/admin/pools")
+async def admin_pools_save(request: Request):
     user, redir = require_admin(request)
     if redir:
         return redir
-    flags = {
-        "grok": (grok_pool_shared, grok_open_access),
-        "chatgpt": (chatgpt_pool_shared, chatgpt_open_access),
-        "zai": (zai_pool_shared, zai_open_access),
-        "devin": (devin_pool_shared, devin_open_access),
-        "kimi": (kimi_pool_shared, kimi_open_access),
-        "mimo": (mimo_pool_shared, mimo_open_access),
-    }
-    for kind, (shared, open_access) in flags.items():
+    form = await request.form()
+    on = ("1", "on", "true")
+    for kind in pool_policy.POOL_KINDS:
         pool_policy.set_admin_policy(
             kind,
-            pool_shared=shared in ("1", "on", "true"),
-            open_access=open_access in ("1", "on", "true"),
+            pool_shared=form.get(f"{kind}_pool_shared", "0") in on,
+            open_access=form.get(f"{kind}_open_access", "0") in on,
         )
     _notices[user["id"]] = "Shared pool access saved."
-    return RedirectResponse("/admin/sources", status_code=303)
+    return RedirectResponse("/admin/pools", status_code=303)
 
 
 @router.post("/sources/pool/{kind}/prefs")
@@ -2050,7 +2025,7 @@ async def admin_grok_save(
         if not enabled:
             conn.execute("UPDATE credentials SET pool_held_until=NULL WHERE source_id=?", (sid,))
     _notices[user["id"]] = "Grok outside-usage guard saved."
-    return RedirectResponse("/admin/sources", status_code=303)
+    return RedirectResponse("/admin/pools#guards", status_code=303)
 
 
 @router.post("/admin/sources/zai")
@@ -2070,7 +2045,7 @@ async def admin_zai_save(
         if not enabled:
             conn.execute("UPDATE credentials SET pool_held_until=NULL WHERE source_id=?", (sid,))
     _notices[user["id"]] = "Z.AI outside-usage guard saved."
-    return RedirectResponse("/admin/sources", status_code=303)
+    return RedirectResponse("/admin/pools#guards", status_code=303)
 
 
 @router.post("/admin/sources/openrouter")

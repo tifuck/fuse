@@ -1,6 +1,6 @@
 /* Usage page: fetches /usage.json for the chosen range/provider/scope and
-   paints every analytic section. Server-rendered parts (keys, lifetime,
-   pricing) need no script. Relies on escapeText() from app.js. */
+   paints every analytic section. The server-rendered lifetime card needs
+   no script. Relies on escapeText() from app.js. */
 (() => {
   const root = document.querySelector("[data-usage-dashboard]");
   if (!root) return;
@@ -105,8 +105,6 @@
   }
   function syncUrl() {
     const q = new URLSearchParams(location.search);
-    q.delete("pricing_synced");
-    q.delete("pricing_error");
     state.range === "24h" ? q.delete("range") : q.set("range", state.range);
     state.provider ? q.set("provider", state.provider) : q.delete("provider");
     state.scope === "all" ? q.set("scope", "all") : q.delete("scope");
