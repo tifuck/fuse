@@ -333,6 +333,54 @@ class AgentCapsTest(unittest.TestCase):
         self.assertEqual(rec["kind"], "invalid_arguments")
         self.assertIn("array", msg)
 
+    def test_scratch_edit_and_delete_ops(self):
+        _, parent = self._parent()
+        rid = parent["id"]
+        store.scratch_apply(rid, [{"op": "put", "name": "plan", "text": "step one; step two"}])
+        store.scratch_apply(rid, [{"op": "edit", "name": "plan", "old": "two", "new": "2"}])
+        self.assertEqual(store.scratch_read(rid, "plan"), "step one; step 2")
+        with self.assertRaisesRegex(store.ScratchError, "exactly once"):
+            store.scratch_apply(rid, [{"op": "edit", "name": "plan", "old": "step", "new": "s"}])
+        with self.assertRaisesRegex(store.ScratchError, "not found"):
+            store.scratch_apply(rid, [{"op": "edit", "name": "nope", "old": "a", "new": "b"}])
+        store.scratch_apply(rid, [{"op": "put", "name": "plan", "text": "overwritten"}])
+        self.assertEqual(store.scratch_read(rid, "plan"), "overwritten")
+        store.scratch_apply(rid, [{"op": "delete", "name": "plan"}])
+        self.assertIsNone(store.scratch_read(rid, "plan"))
+
+    def test_scratch_carries_into_next_turn_and_wake(self):
+        from app import hosts
+
+        coding = patch.object(hosts, "settings_for", return_value={"agent_coding": True})
+        coding.start()
+        self.addCleanup(coding.stop)
+        thread, first = self._parent()
+        self.assertTrue(first["request"]["agent"]["coding"])
+        store.scratch_apply(first["id"], [{"op": "put", "name": "w2", "text": "next wave"}])
+        store.finish_run(first["id"], {"content": "done"}, "completed")
+        rev = chats.get_thread(1, thread["id"])["revision"]
+        second = store.start_turn(1, thread["id"], "wake", rev, "wake-1", auto=True)["run"]
+        self.assertEqual(store.scratch_read(second["id"], "w2"), "next wave")
+        # Edits and deletes in the new turn are what the following turn sees.
+        store.scratch_apply(second["id"], [{"op": "clear", "name": "w2"}, {"op": "put", "name": "plan", "text": "p"}])
+        store.finish_run(second["id"], {"content": "done"}, "completed")
+        rev = chats.get_thread(1, thread["id"])["revision"]
+        third = store.start_turn(1, thread["id"], "again", rev, "turn-3")["run"]
+        self.assertEqual(store.scratch_list(third["id"]), {"plan": "p"})
+
+    def test_scratch_survives_subagent_resume(self):
+        thread, parent = self._parent()
+        child = store.start_child_run(user_id=1, thread_id=thread["id"], parent_run_id=parent["id"],
+                                      prompt="first", description="worker", background=True)
+        store.scratch_apply(child["id"], [{"op": "put", "name": "notes", "text": "child notes"}])
+        # The child's pad is its own.
+        self.assertIsNone(store.scratch_read(parent["id"], "notes"))
+        store.save_turn_progress(child["id"], [{"role": "user", "content": "first"}, {"role": "assistant", "content": "ok"}])
+        store.finish_run(child["id"], {"content": "report"}, "completed")
+        store.start_child_run(user_id=1, thread_id=thread["id"], parent_run_id=parent["id"], prompt="again",
+                              description="worker", background=True, resume_from_id=child["id"])
+        self.assertEqual(store.scratch_read(child["id"], "notes"), "child notes")
+
     def test_background_spawn_marks_progress_and_result(self):
         from app import agents
 

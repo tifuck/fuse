@@ -212,15 +212,22 @@ SCHEMAS = {
         "function": {
             "name": "scratch",
             "description": (
-                "Private named text slots for drafting a long spawn_subagent prompt: put a draft, then append "
-                "or put again to revise, and pass scratch=<name> to spawn_subagent instead of repeating the "
-                "text. A failed spawn keeps the slot, so retry with the same name. Lasts for this turn only: "
-                "the next user message, an automated wake, and a resumed subagent all start with an empty "
-                "pad, so do not keep notes here for later. Not visible to the user, other chats, or children. "
-                "Without spawn_subagent there is little reason to use it. Call with no arguments to list "
-                "slot names and sizes, with name to read one slot, or with ops to edit (name is then "
-                "ignored). All ops in one call apply together or not at all. Up to 32 slots, 20000 "
-                "characters each."
+                "Your private, persistent notepad of named text slots. It lasts for this whole chat: the "
+                "next user message and every automated wake (e.g. a subagent reporting back) see the same "
+                "slots, and a resumed subagent keeps its own. Each agent has its own pad; the user, other "
+                "chats, and your subagents never see it, and you never see theirs.\n"
+                "Use it for text you will reuse or refine across calls or turns: long spawn_subagent prompts "
+                "(pass scratch=<name> instead of repeating the text; a failed spawn keeps the slot, so retry "
+                "with the same name), a shared context block or the next wave of prompts you will send after "
+                "current subagents report, and a working plan or findings you will build on in later turns.\n"
+                "Do not use it for: anything the user should see (write it in your reply), files or code "
+                "that belong on a host (write the file), task tracking (todo_write), passing data to a "
+                "child (put it in the child's prompt), secrets or credentials, or dumping raw tool output. "
+                "Slots persist until you change them: clear slots you no longer need, and do not trust a "
+                "slot's contents over newer facts.\n"
+                "Call with no arguments to list slot names and sizes, with name to read one slot, or with "
+                "ops to change slots (name is then ignored). All ops in one call apply together or not at "
+                "all. Up to 32 slots, 20000 characters each."
             ),
             "parameters": {
                 "type": "object",
@@ -231,18 +238,30 @@ SCHEMAS = {
                     },
                     "ops": {
                         "type": "array",
-                        "description": "Edits applied in order, all or nothing. put replaces the slot, append adds to its end (creating it if missing), clear deletes it.",
+                        "description": (
+                            "Changes applied in order, all or nothing. put creates or overwrites a slot; append adds "
+                            "to its end (creating it if missing); edit replaces the one exact occurrence of old with "
+                            "new inside an existing slot; clear (alias delete) removes the slot."
+                        ),
                         "items": {
                             "type": "object",
                             "properties": {
-                                "op": {"type": "string", "enum": ["put", "append", "clear"]},
+                                "op": {"type": "string", "enum": ["put", "append", "edit", "clear", "delete"]},
                                 "name": {
                                     "type": "string",
                                     "description": "Slot name, 1-64 chars: letters, digits, underscore, hyphen.",
                                 },
                                 "text": {
                                     "type": "string",
-                                    "description": "Required for put and append. A slot holds at most 20000 characters after the edit.",
+                                    "description": "Required for put and append. A slot holds at most 20000 characters after the change.",
+                                },
+                                "old": {
+                                    "type": "string",
+                                    "description": "edit only: exact text to replace; must occur exactly once in the slot.",
+                                },
+                                "new": {
+                                    "type": "string",
+                                    "description": "edit only: replacement text (may be empty to delete old).",
                                 },
                             },
                             "required": ["op", "name"],
@@ -674,9 +693,9 @@ SCHEMAS = {
                     "scratch": {
                         "type": "string",
                         "description": (
-                            "Name of a scratch slot whose text is the prompt. Draft and edit it with the scratch tool "
-                            "first in this same turn; do not also paste that text into prompt. The slot is not cleared on "
-                            "success or failure, so a failed spawn retries with the same name."
+                            "Name of a slot in your scratch pad whose text is the prompt. Draft and edit it with the scratch "
+                            "tool first (in this turn or an earlier one); do not also paste that text into prompt. The slot "
+                            "is not cleared on success or failure, so a failed spawn retries with the same name."
                         ),
                     },
                     "description": {"type": "string", "description": "Short (3-5 words) label for the task."},

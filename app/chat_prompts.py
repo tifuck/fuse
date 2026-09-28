@@ -454,10 +454,13 @@ def build_system_prompt(
         parts.append(_WORKING_DIRS)
     if spawn_tools:
         parts.append(
-            "Scratch pad: `scratch` holds named strings for this turn only (the next user message or wake "
-            "starts empty). Draft a long subagent prompt there (put, then append or put to revise) and pass "
-            "`scratch=<name>` to `spawn_subagent` instead of repeating the prompt. A failed spawn keeps the "
-            "slot, so retry with the same name. "
+            "Scratch pad: `scratch` is your private notepad of named text slots, kept for this whole chat "
+            "(later user messages and wakes see the same slots; each agent has its own). Use it to draft "
+            "long subagent prompts and pass `scratch=<name>` to `spawn_subagent` instead of repeating the "
+            "text (a failed spawn keeps the slot; retry with the same name), to hold the next wave of "
+            "prompts while subagents run, and to keep a plan or findings you will build on later. Revise "
+            "with put (overwrite), append, or edit (exact replace); clear slots you are done with. Not "
+            "for user-facing output, files, task tracking (todo_write), secrets, or raw tool dumps. "
             "Subagents: `spawn_subagent` runs a child with its own context and turn budget. Delegate "
             "substantial, independent work where parallelism or a fresh context pays for itself — not "
             "simple lookups or tightly coupled edits; do those yourself. Give each child a self-contained "

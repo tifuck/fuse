@@ -1081,6 +1081,35 @@ def _scratch_of(agent: dict) -> dict:
     return out
 
 
+def _carried_scratch(conn, thread_id, messages) -> dict:
+    """The pad of this thread's latest top-level run, for the next turn or wake.
+
+    "Latest" follows thread message order: created_at has one-second
+    resolution, so a wake started right after a turn could tie with it."""
+    order = [
+        str(m.get("id")) for m in reversed(messages or [])
+        if isinstance(m, dict) and m.get("role") == "assistant" and m.get("id")
+    ][:50]
+    if not order:
+        return {}
+    rows = conn.execute(
+        f"SELECT message_id,request FROM chat_runs WHERE thread_id=? AND parent_run_id IS NULL "
+        f"AND message_id IN ({','.join('?' for _ in order)})",
+        (thread_id, *order),
+    ).fetchall()
+    by_message = {row["message_id"]: row["request"] for row in rows}
+    for message_id in order:
+        if message_id not in by_message:
+            continue
+        try:
+            req = json.loads(by_message[message_id] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        agent = req.get("agent") if isinstance(req, dict) and isinstance(req.get("agent"), dict) else {}
+        return _scratch_of(agent)
+    return {}
+
+
 def scratch_list(run_id: str) -> dict[str, str]:
     """Every slot on this run. Empty when the run or pad is missing."""
     if not run_id:
@@ -1117,12 +1146,12 @@ def scratch_read(run_id: str, name: str) -> str | None:
 
 
 def scratch_apply(run_id: str, ops: list[dict]) -> dict:
-    """Apply put/append/clear to this run's scratch pad. Returns the pad after the write.
+    """Apply put/append/edit/clear to this run's scratch pad. Returns the pad after the write.
 
-    The pad is this run's only. A child does not see the parent's slots, and a
-    resumed child starts empty, as does the next user turn or wake (each is a
-    new run). Values are durable for the run so a failed spawn can be retried
-    from the same text. A failing op rolls back the whole call.
+    Each agent has its own pad. The main agent's pad carries into the thread's
+    next turn and every wake (start_turn copies it from the previous top-level
+    run); a subagent's pad carries into its resume. A child never sees the
+    parent's slots. A failing op rolls back the whole call.
     """
     if not run_id:
         raise ScratchError("no active session")
@@ -1145,7 +1174,7 @@ def scratch_apply(run_id: str, ops: list[dict]) -> dict:
         for index, op in enumerate(ops):
             if not isinstance(op, dict):
                 raise ScratchError(f"ops[{index}] must be an object")
-            extra = set(op) - {"op", "name", "text"}
+            extra = set(op) - {"op", "name", "text", "old", "new"}
             if extra:
                 raise ScratchError(f"ops[{index}] has unknown keys: {', '.join(sorted(extra))}")
             kind = str(op.get("op") or "").strip().lower()
@@ -1153,13 +1182,32 @@ def scratch_apply(run_id: str, ops: list[dict]) -> dict:
             if not _SCRATCH_ID.match(name):
                 raise ScratchError(f"ops[{index}].name must match { _SCRATCH_ID.pattern }")
             text = op.get("text")
+            if kind == "delete":
+                kind = "clear"
+            if kind == "edit":
+                find, repl = op.get("old"), op.get("new")
+                if not isinstance(find, str) or not find or not isinstance(repl, str):
+                    raise ScratchError(f"ops[{index}] edit needs old (non-empty) and new strings")
+                if name not in pad:
+                    raise ScratchError(f"ops[{index}]: scratch slot {name!r} not found")
+                hits = pad[name].count(find)
+                if hits != 1:
+                    raise ScratchError(
+                        f"ops[{index}]: old must match exactly once in {name!r} (found {hits}); "
+                        "add surrounding text to make it unique, or put the whole slot"
+                    )
+                text = pad[name].replace(find, repl, 1)
+                if len(text) > SCRATCH_VALUE_MAX:
+                    raise ScratchError(f"ops[{index}] exceeds {SCRATCH_VALUE_MAX} characters")
+                pad[name] = text
+                continue
             if kind in ("put", "append"):
                 if not isinstance(text, str):
                     raise ScratchError(f"ops[{index}].text is required")
                 if len(text) > SCRATCH_VALUE_MAX:
                     raise ScratchError(f"ops[{index}].text exceeds {SCRATCH_VALUE_MAX} characters")
             elif kind != "clear":
-                raise ScratchError(f"ops[{index}].op must be put, append, or clear")
+                raise ScratchError(f"ops[{index}].op must be put, append, edit, or clear")
             if kind == "clear":
                 pad.pop(name, None)
                 continue
@@ -2468,6 +2516,9 @@ def start_turn(user_id, thread_id, text, expected_revision, command_id, model=No
                 "spawns_used": 0,
                 "vault_unlocked": vault_ok,
             }
+            carried = _carried_scratch(conn, thread_id, messages)
+            if carried:
+                request["agent"]["scratch"] = carried
             if auto or scheduled:
                 request["agent"]["auto"] = True
             if scheduled:
@@ -4357,6 +4408,7 @@ def _start_child_run(
         resume_loaded: list[str] = []
         resume_host_id = None
         resume_cwd = ""
+        resume_scratch: dict = {}
         retype = False
         if resume_from_id:
             source = conn.execute(
@@ -4440,6 +4492,7 @@ def _start_child_run(
             if src_agent.get("bound_host_id") is not None:
                 resume_host_id = src_agent.get("bound_host_id")
             resume_cwd = str(src_agent.get("bound_cwd") or "")
+            resume_scratch = _scratch_of(src_agent)
         if resume_messages:
             # OpenCode task_id: continue the prior transcript AND see the new prompt.
             seed = [*resume_messages, {"role": "user", "content": prompt}]
@@ -4497,6 +4550,7 @@ def _start_child_run(
                     "delivery_generation": uuid4().hex,
                     "auto": bool(auto),
                     "scheduled": bool(scheduled),
+                    **({"scratch": resume_scratch} if resume_scratch else {}),
                 },
             }
             # created_at is kept so the session keeps its identity and list
