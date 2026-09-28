@@ -2,7 +2,8 @@
 
 Usage: python -m scripts.clone_db_to_dev
 Credentials come from the production DATABASE_URL. The target name is fixed;
-this never writes to fuse_live. Stop fuse-dev before running it.
+this never writes to fuse_live. Stop fuse-dev before running it. Afterwards it
+re-creates the permanent QA login (scripts.dev_qa_account) from the dev tree.
 """
 from __future__ import annotations
 
@@ -11,12 +12,15 @@ import re
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 from app.config import settings
 
 SOURCE = "fuse_live"
 TARGET = "fuse_dev"
+DEV_TREE = Path("/root/fuse-dev")
+QA_SCRIPT = DEV_TREE / "scripts" / "dev_qa_account.py"
 
 
 def quote(value):
@@ -79,6 +83,14 @@ def main():
         if not check.stdout.strip():
             raise SystemExit("clone failed: schema_meta stamp missing; fuse_dev dropped")
     print(f"cloned {SOURCE} -> {TARGET}")
+    # The clone replaces fuse_dev wholesale; restore the permanent QA login and
+    # its fixture chats from the dev tree (password persists in its data/).
+    if QA_SCRIPT.exists():
+        result = subprocess.run(
+            [str(DEV_TREE / "venv" / "bin" / "python"), "-m", "scripts.dev_qa_account"], cwd=DEV_TREE, check=False
+        )
+        if result.returncode:
+            print("warning: QA account reseed failed; run scripts.dev_qa_account from /root/fuse-dev", file=sys.stderr)
 
 
 if __name__ == "__main__":
