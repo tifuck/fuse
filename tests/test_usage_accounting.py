@@ -137,6 +137,42 @@ class UsageParsingTest(unittest.TestCase):
         self.assertEqual(u["output_tokens"], 1000)  # 2000 - 1000
         self.assertEqual(u["total_tokens"], 2000)
 
+    def test_total_overrides_forced_disjoint_hint(self):
+        # Kimi Code sets reasoning_separate but reports total = prompt +
+        # completion with reasoning inside completion (live data, all rows).
+        u = usage_from_obj(
+            {"usage": {
+                "prompt_tokens": 77642,
+                "completion_tokens": 173,
+                "total_tokens": 77815,
+                "completion_tokens_details": {"reasoning_tokens": 87},
+            }},
+            reasoning_separate=True,
+        )
+        self.assertEqual(u["output_tokens"], 173)
+        self.assertEqual(u["visible_tokens"], 86)
+        self.assertEqual(u["total_tokens"], 77815)
+
+    def test_total_beats_reasoning_exceeds_completion_guess(self):
+        # OpenRouter occasionally reports reasoning > completion while its
+        # total still says prompt + completion; never add reasoning on top.
+        u = usage_from_obj(
+            {"usage": {
+                "prompt_tokens": 257904,
+                "completion_tokens": 484,
+                "total_tokens": 258388,
+                "completion_tokens_details": {"reasoning_tokens": 538},
+            }}
+        )
+        self.assertEqual(u["output_tokens"], 538)
+        self.assertEqual(u["total_tokens"], 257904 + 538)
+
+    def test_total_never_below_prompt_plus_output(self):
+        u = usage_from_obj(
+            {"usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 120}}
+        )
+        self.assertEqual(u["total_tokens"], 150)
+
     def test_cache_fields_clamped_to_prompt(self):
         u = usage_from_obj(
             {"usage": {

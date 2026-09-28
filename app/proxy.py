@@ -110,11 +110,17 @@ def usage_from_obj(obj: dict, *, reasoning_separate: bool = False) -> dict:
     # OpenAI folds reasoning into completion_tokens. xAI reports them as
     # disjoint (visible completion + reasoning). Detect that even when the
     # caller did not pass reasoning_separate, so stream taps stay correct.
+    # A reported total is the provider's own statement of which it is, so it
+    # outranks both the caller's hint and the reasoning > completion guess
+    # (Kimi, OpenRouter and MiMo report total = prompt + completion with
+    # reasoning inside completion; adding it again double-counts output).
     disjoint = reasoning_separate
-    if not disjoint and reasoning:
+    if reasoning:
         if total and total == prompt + completion + reasoning:
             disjoint = True
-        elif reasoning > completion:
+        elif total and total == prompt + completion:
+            disjoint = False
+        elif not disjoint and reasoning > completion:
             disjoint = True
     output = min(completion + reasoning, _MAX_USAGE_VALUE) if disjoint else max(completion, reasoning)
     visible = completion if disjoint else max(completion - reasoning, 0)
@@ -125,6 +131,7 @@ def usage_from_obj(obj: dict, *, reasoning_separate: bool = False) -> dict:
     # tokens represented by that total.
     if total > prompt + output:
         output = total - prompt
+    total = max(total, min(prompt + output, _MAX_USAGE_VALUE))
     reported_cost = _cost_micros(u)
     if reported_cost is None:
         reported_cost = _cost_micros(obj)

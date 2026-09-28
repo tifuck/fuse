@@ -83,3 +83,21 @@ def test_provider_filter_and_empty_range():
         empty = stats.usage_analytics(1, range_id="30m", provider="kimi")
         assert empty["summary"]["empty"] and empty["summary"]["success_rate"] is None
         assert empty["models"] == [] and empty["recent"] == []
+
+
+def test_rates_use_priced_traffic_and_openrouter_is_not_unpriced():
+    with isolated_database():
+        _seed()
+        _event(_ago(hours=1), prompt=1000, cached=0, output=0, cost=2000)  # priced: 1000 tokens, $0.002
+        _event(_ago(hours=1), model="qwen3", provider="llama", prompt=9000, cached=0, output=0, cost=0)
+        db.execute("UPDATE usage_events SET pricing_known=0 WHERE source_type='llama'")
+        _event(_ago(hours=1), model="openrouter/x/y", provider="openrouter", prompt=5000, cached=0, output=0, cost=0)
+        db.execute("UPDATE usage_events SET pricing_known=0 WHERE source_type='openrouter'")
+        s = stats.usage_analytics(1, range_id="24h")["summary"]
+        # $2000 micros over the 1000 priced tokens, not all 15,000.
+        assert s["blended"] == 2.0
+        assert s["cost_per_request"] == 2000
+        # OpenRouter bills the user's own key: 1 of 2 costable requests priced.
+        assert s["pricing_coverage"] == 50
+        models = {m["provider"]: m for m in stats.usage_analytics(1, range_id="24h")["models"]}
+        assert models["openrouter"]["cost_tracked"] is False and models["zai"]["cost_tracked"] is True

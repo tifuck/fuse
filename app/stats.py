@@ -327,7 +327,14 @@ def _event_summary(user_id: int, start: str, end: str, provider: str, all_users:
                     COALESCE(SUM(e.estimated_cost_micros), 0) AS estimated_cost,
                     COALESCE(SUM(CASE WHEN e.count_request=1 AND
                                            (e.reported_cost_micros IS NOT NULL OR e.pricing_known=1)
-                                      THEN 1 ELSE 0 END), 0) AS priced
+                                      THEN 1 ELSE 0 END), 0) AS priced,
+                    COALESCE(SUM(CASE WHEN e.reported_cost_micros IS NOT NULL OR e.pricing_known=1
+                                      THEN CASE WHEN e.total_tokens>0 THEN e.total_tokens
+                                                ELSE e.prompt_tokens+e.output_tokens END
+                                      ELSE 0 END), 0) AS priced_tokens,
+                    COALESCE(SUM(CASE WHEN e.count_request=1 AND
+                                           COALESCE(NULLIF(e.source_type, ''), s.type, 'unknown')='openrouter'
+                                      THEN 1 ELSE 0 END), 0) AS untracked
              FROM usage_events e LEFT JOIN sources s ON s.id=e.source_id
              WHERE {where}""",
         tuple(args),
@@ -578,6 +585,7 @@ def usage_analytics(
         prev_provider_tokens[pid] = prev_provider_tokens.get(pid, 0) + tokens
     for model in ranked_models:
         model["cost_known"] = model["priced"] >= model["requests"] and model["requests"] > 0
+        model["cost_tracked"] = model["provider"] != "openrouter"
         prev_tokens = prev_model_tokens.get(model["id"], 0)
         model["token_change"] = _change(model["tokens"], prev_tokens)
         model["is_new"] = bool(model["tokens"] and not prev_tokens)
@@ -690,8 +698,11 @@ def usage_analytics(
     ]
     cache_hit = _hit_rate(summary["cached"], summary["prompt"])
     prev_hit = _hit_rate(previous["cached"], previous["prompt"])
-    blended = _blended(summary["cost"], summary["tokens"])
-    prev_blended = _blended(previous["cost"], previous["tokens"])
+    # Rates only describe priced traffic: dividing by unpriced tokens or
+    # requests (llama, Ollama, OpenRouter on the user's own key) understates them.
+    blended = _blended(summary["cost"], summary["priced_tokens"])
+    prev_blended = _blended(previous["cost"], previous["priced_tokens"])
+    trackable = summary["requests"] - summary["untracked"]
     success = _rate(summary["ok_requests"], summary["requests"])
     prev_success = _rate(previous["ok_requests"], previous["requests"])
     per_request = summary["tokens"] / summary["requests"] if summary["requests"] else None
@@ -710,7 +721,9 @@ def usage_analytics(
             **summary,
             "cost_label": format_usd_micros(summary["cost"]),
             "estimated_cost_label": format_usd_micros(summary["estimated_cost"]),
-            "pricing_coverage": round((summary["priced"] * 100) / summary["requests"]) if summary["requests"] else 0,
+            # OpenRouter is billed on the caller's own key and deliberately not
+            # costed, so it is neither priced nor missing a rate.
+            "pricing_coverage": round((summary["priced"] * 100) / trackable) if trackable > 0 else 0,
             "token_change": _change(summary["tokens"], previous["tokens"]),
             "request_change": _change(summary["requests"], previous["requests"]),
             "cost_change": _change(summary["cost"], previous["cost"]),
@@ -722,7 +735,7 @@ def usage_analytics(
             "success_change": round(success - prev_success, 1) if success is not None and prev_success is not None else None,
             "per_request": per_request,
             "per_request_change": _change(per_request, prev_per_request) if per_request is not None else None,
-            "cost_per_request": summary["cost"] / summary["requests"] if summary["requests"] else None,
+            "cost_per_request": summary["cost"] / summary["priced"] if summary["priced"] else None,
             "cache_saved": saved,
             "cache_saved_known": saved_known,
             "peak_at": peak["at"] if peak and peak["tokens"] else None,

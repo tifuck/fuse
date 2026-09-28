@@ -1041,6 +1041,26 @@ def account_email(extra: dict) -> str:
     return str(extra.get("email") or extra.get("account_name") or "").strip()
 
 
+_USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "cached_tokens", "cache_write_tokens")
+
+
+def _merge_usage_frame(acc: dict, frame: dict) -> dict:
+    """Fold one streamed usage frame into the running per-request usage.
+
+    Devin can send usage on more than one frame, and a later frame may carry
+    only part of the counts (e.g. output with a zero or partial prompt).
+    Replacing the running value with the last frame dropped the prompt and
+    cache reads; keeping each field's maximum is exact for cumulative
+    snapshots and never smaller than last-frame-wins for anything else.
+    """
+    merged = dict(acc)
+    for key in _USAGE_FIELDS:
+        merged[key] = max(int(merged.get(key) or 0), int(frame.get(key) or 0))
+    if frame.get("model_uid"):
+        merged["model_uid"] = frame["model_uid"]
+    return merged
+
+
 def _openai_usage(u: dict | None) -> dict:
     if not u:
         return {}
@@ -1633,6 +1653,7 @@ class DevinSource:
         book = _ToolBook()
         stop = 0
         stop_terminal = False
+        raw_usage: dict = {}
         try:
             async for chunk in resp.aiter_bytes():
                 pending += chunk
@@ -1685,7 +1706,8 @@ class DevinSource:
                             _debug_tool_call(cid, msg, tc)
                         book.add(tc)
                     if msg.get("usage"):
-                        collected.update(_openai_usage(msg["usage"]))
+                        raw_usage = _merge_usage_frame(raw_usage, msg["usage"])
+                        collected.update(_openai_usage(raw_usage))
                     if msg.get("stop_reason"):
                         stop = msg["stop_reason"]
                         stop_terminal = True
@@ -1764,6 +1786,7 @@ class DevinSource:
         stop = 0
         stop_terminal = False
         usage: dict = {}
+        raw_usage: dict = {}
         trailer_error = ""
         async for chunk in resp.aiter_bytes():
             pending += chunk
@@ -1804,7 +1827,8 @@ class DevinSource:
                         stop_terminal = False
                     book.add(tc)
                 if msg.get("usage"):
-                    usage = _openai_usage(msg["usage"])
+                    raw_usage = _merge_usage_frame(raw_usage, msg["usage"])
+                    usage = _openai_usage(raw_usage)
                 if msg.get("stop_reason"):
                     stop = msg["stop_reason"]
                     stop_terminal = True

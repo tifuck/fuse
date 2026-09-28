@@ -220,7 +220,11 @@
     setKpi(
       "cost",
       noRates ? "—" : esc(s.cost_label),
-      empty ? none : noRates ? { html: "<span>No rates for these models</span>" } : delta(s.cost_change),
+      empty
+        ? none
+        : noRates
+          ? { html: `<span>${s.untracked >= s.requests ? "Billed to your OpenRouter key" : "No rates for these models"}</span>` }
+          : delta(s.cost_change),
       series.map((p) => p.cost),
       { note: !noRates && s.pricing_coverage < 100 && s.requests ? `${s.pricing_coverage}% priced` : "" }
     );
@@ -425,9 +429,11 @@
       : '<p class="uz-empty">No tokens in this range.</p>';
     const facts = [];
     const priced = s.pricing_coverage > 0 || s.cost > 0;
-    if (priced && s.blended !== null) facts.push(["Cost per 1M tokens", money(s.blended * 1e6)]);
-    if (priced && s.cost_per_request !== null) facts.push(["Cost per request", money(s.cost_per_request)]);
-    if (s.cache_saved_known && s.cache_saved) facts.push(["Saved by cache (est.)", money(s.cache_saved), "good"]);
+    // Rates cover priced traffic only; say so when some of the range is unpriced.
+    const partial = s.priced < s.requests ? " (priced)" : "";
+    if (priced && s.blended !== null) facts.push(["Cost per 1M tokens" + partial, money(s.blended * 1e6)]);
+    if (priced && s.cost_per_request !== null) facts.push(["Cost per request" + partial, money(s.cost_per_request)]);
+    if (s.cache_saved_known && s.cache_saved) facts.push(["Saved by cache (list rates)", money(s.cache_saved), "good"]);
     if (s.prompt) facts.push(["Output per 1K input", compact((s.output * 1000) / s.prompt) + " tok"]);
     if (s.output) facts.push(["Reasoning share of output", pct((s.reasoning * 100) / s.output)]);
     if (s.peak_at) facts.push(["Busiest bucket", `${tickLabel(s.peak_at)} · ${compact(s.peak_tokens)}`]);
@@ -475,7 +481,11 @@
         const errors = m.failed
           ? `<span class="${m.error_rate >= 5 ? "uz-warn" : ""}">${pct(m.error_rate)}</span><span class="uz-cell-sub">${m.failed} failed</span>`
           : '<span class="mute">0%</span>';
-        const cost = m.cost_known || m.cost ? money(m.cost) : '<span class="uz-rate-needed" title="No price configured for this model">no rate</span>';
+        const cost = !m.cost_tracked
+          ? '<span class="uz-rate-needed" title="Billed to your own OpenRouter key; Fuse does not cost it">own key</span>'
+          : m.cost_known || m.cost
+            ? money(m.cost)
+            : '<span class="uz-rate-needed" title="No price configured for this model">no rate</span>';
         const perM = m.per_million !== null && m.per_million !== undefined ? money(m.per_million, { zero: "$0" }) : "—";
         return `<tr>
           <td class="uz-cell-name"><div class="uz-name"><i class="uz-dot" style="background:${color}"></i><div><strong title="${esc(m.name)}">${esc(m.name)}</strong><small>${esc(m.provider_label)}${m.failed ? `<span class="uz-sm-only uz-warn"> · ${m.failed} failed (${pct(m.error_rate, 0)})</span>` : ""}</small></div></div></td>

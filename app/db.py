@@ -1420,9 +1420,9 @@ def record_usage(
 
 
 def _event_total(prompt: int, output: int, total: int) -> int:
-    if total:
-        return min(total, SQLITE_INT_MAX)
-    return min(prompt + output, SQLITE_INT_MAX)
+    # A provider total that leaves out reasoning (or anything else already in
+    # prompt/output) would make totals disagree with the token breakdown.
+    return min(max(total, prompt + output), SQLITE_INT_MAX)
 
 
 def _estimated_cost(
