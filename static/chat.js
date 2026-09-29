@@ -396,6 +396,35 @@
     sheet.addEventListener("pointerup", end);
     sheet.addEventListener("pointercancel", end);
   }
+  // Composer popovers (model, permissions, context) share one placement:
+  // rise from the top of the whole composer, line up with the button's left
+  // edge (or its right edge when that runs out of room), and clamp to the
+  // viewport. The origin is measured rather than assumed, because a chat
+  // backdrop gives .chat-box a backdrop-filter, which makes it the containing
+  // block for even position:fixed children.
+  function placeComposerPop(menu, anchor, maxHeight) {
+    if (!menu || menu.hidden || !anchor || menu.classList.contains("is-sheet")) return;
+    const gutter = 8;
+    menu.style.top = "auto";
+    menu.style.right = "auto";
+    menu.style.left = "0px";
+    menu.style.bottom = "0px";
+    // The open animation translates the box; measure it at rest.
+    menu.style.setProperty("transform", "none", "important");
+    const origin = menu.getBoundingClientRect();
+    menu.style.removeProperty("transform");
+    const b = anchor.getBoundingClientRect();
+    const box = anchor.closest(".chat-box");
+    const top = (box ? box.getBoundingClientRect().top : b.top) - 6;
+    menu.style.maxHeight = Math.max(200, Math.min(maxHeight, Math.round(top - 48))) + "px";
+    const width = menu.offsetWidth;
+    const vw = document.documentElement.clientWidth;
+    let left = b.left;
+    if (left + width > vw - gutter) left = b.right - width;
+    left = Math.max(gutter, Math.min(left, vw - gutter - width));
+    menu.style.left = Math.round(left - origin.left) + "px";
+    menu.style.bottom = Math.round(origin.bottom - top) + "px";
+  }
   function overlayPush(kind) {
     if (!overlayIsMobile()) return;
     if (overlayStack[overlayStack.length - 1] === kind) return;
@@ -9629,23 +9658,16 @@
       '<div class="chat-perms-section"><p class="chat-perms-heading">Working directories</p><div class="chat-perms-tabs" data-perms-tabs role="tablist" aria-label="Hosts"></div><ul class="chat-perms-paths" data-perms-paths></ul><p class="chat-perms-empty" data-perms-empty hidden>No access on this host.</p></div>' +
       "</div>";
     bindPermsMenu(menu);
+    // Phones get the model picker's full-screen sheet, portaled to the chat
+    // root for the same reason (composer ancestors would contain it).
+    attachSheetSwipe(menu, ".chat-picker-head", () => menu.classList.contains("is-sheet"), () => setPermsOpen(false));
     if (pickerSheetQuery.matches) root.appendChild(menu);
     else permHost.appendChild(menu);
     permsMenuEl = menu;
   }
 
   function placePermsMenu() {
-    if (!permsMenuEl || !permChip || pickerSheetQuery.matches) return;
-    const chip = permChip.getBoundingClientRect();
-    const width = Math.min(384, Math.max(280, window.innerWidth - 24));
-    let left = Math.round(chip.right - width);
-    left = Math.max(12, Math.min(left, window.innerWidth - width - 12));
-    permsMenuEl.style.position = "fixed";
-    permsMenuEl.style.left = left + "px";
-    permsMenuEl.style.right = "auto";
-    permsMenuEl.style.bottom = Math.max(12, window.innerHeight - chip.top + 8) + "px";
-    permsMenuEl.style.width = width + "px";
-    permsMenuEl.style.zIndex = "40";
+    placeComposerPop(permsMenuEl, permChip, 28 * 16);
   }
 
   function setPermsOpen(open) {
@@ -9666,6 +9688,7 @@
       if (threadPermData) paintPermsPanel();
       refreshPerms();
     } else {
+      armOverlayGhost(permsMenuEl?.querySelector("[data-perms-close]"));
       overlayDrop("perms");
       if (permsMenuEl) permsMenuEl.hidden = true;
     }
@@ -10816,27 +10839,7 @@
   // left once the input wraps. Open toward whichever side has room and clamp
   // to the viewport, instead of a fixed per-view side.
   function placePicker() {
-    const menu = pickerMenuEl;
-    const btn = pickerHost.querySelector(".chat-picker-btn");
-    if (!menu || menu.hidden || !btn || menu.classList.contains("is-sheet")) return;
-    menu.style.left = "0px";
-    menu.style.right = "auto";
-    const gutter = 8;
-    const host = pickerHost.getBoundingClientRect();
-    const b = btn.getBoundingClientRect();
-    // Rise from the top of the whole composer, not the button, so a wrapped
-    // input (button on its last row) or a card composer is never covered,
-    // and fit the height to the room above it.
-    const box = pickerHost.closest(".chat-box");
-    const top = box ? box.getBoundingClientRect().top : b.top;
-    menu.style.bottom = Math.round(host.bottom - top + 6) + "px";
-    menu.style.maxHeight = Math.max(200, Math.min(26 * 16, Math.round(top - 6 - 48))) + "px";
-    const width = menu.offsetWidth;
-    const vw = document.documentElement.clientWidth;
-    let left = b.left;
-    if (left + width > vw - gutter) left = b.right - width;
-    left = Math.max(gutter, Math.min(left, vw - gutter - width));
-    menu.style.left = Math.round(left - host.left) + "px";
+    placeComposerPop(pickerMenuEl, pickerHost.querySelector(".chat-picker-btn"), 26 * 16);
   }
   window.addEventListener("resize", () => { if (pickerOpen) placePicker(); });
 
@@ -12007,8 +12010,10 @@
         closeSlash();
         closeRewind();
         syncContextMeter();
+        placeComposerPop(contextPop, contextBtn, 30 * 16);
       }
     });
+    window.addEventListener("resize", () => placeComposerPop(contextPop, contextBtn, 30 * 16));
   }
   if (contextPop) {
     contextPop.addEventListener("click", (event) => {

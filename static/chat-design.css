@@ -503,7 +503,7 @@ html[data-chat-backdrop="none"] .chat-scene,
 .chat :is(.chat-attach-btn, .chat-search-btn, .chat-picker-btn) { border-radius: 5px; }
 .chat .chat-search-btn.is-on { color: var(--brass); background: transparent; }
 
-body.is-chat :is(.chat-pop, .chat-picker-menu, .chat-context-pop,
+body.is-chat :is(.chat-pop, .chat-picker-menu, .chat-perms-menu, .chat-context-pop,
   .chat-slash, .chat-rewind, .chat-sheet, .chat-project-picker, .chat-agents,
   .chat-artifact, .chat-latest) {
   background: var(--panel);
@@ -512,7 +512,7 @@ body.is-chat :is(.chat-pop, .chat-picker-menu, .chat-context-pop,
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
-body.is-chat :is(.chat-pop, .chat-picker-menu:not(.is-sheet), .chat-context-pop,
+body.is-chat :is(.chat-pop, .chat-picker-menu:not(.is-sheet), .chat-perms-menu:not(.is-sheet), .chat-context-pop,
   .chat-slash, .chat-rewind) {
   border-radius: 12px;
 }
