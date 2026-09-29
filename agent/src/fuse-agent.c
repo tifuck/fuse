@@ -1416,20 +1416,6 @@ static int list_dir(const char *path, char *out, size_t cap) {
     return 0;
 }
 
-static int glob_ok(const char *s) {
-    size_t n = strlen(s);
-    if (n == 0 || n > 200) return 0;
-    if (s[0] == '/' || s[0] == '~' || (n >= 2 && s[0] == '.' && s[1] == '.')) return 0;
-    if (strstr(s, "/..")) return 0;
-    for (size_t i = 0; i < n; i++) {
-        unsigned char c = (unsigned char)s[i];
-        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
-              strchr("_.*?/[]{}!,-", c)))
-            return 0;
-    }
-    return 1;
-}
-
 static int load_whole(const char *path, char **buf, size_t *len) {
     char expanded[PATH_MAX];
     if (expand_home(path, expanded, sizeof(expanded)) != 0) return -1;
@@ -1747,89 +1733,12 @@ static void handle_job_impl(struct tls *t, cJSON *msg) {
         }
         return;
     }
-    if (strcmp(op, "grep") == 0) {
-        const char *path = json_cstr(msg, "path", ".");
-        const char *pattern = json_cstr(msg, "pattern", "");
-        if (strchr(pattern, '\'') || strchr(path, '\'') ||
-            strlen(pattern) > 200 || strlen(path) > 300) {
-            send_res(t, id, 0, 1, "", "", "invalid pattern or path");
-            return;
-        }
-        /* Never `rg || grep`: rg exits 1 on no match, and grep -R then walks
-         * node_modules/venv with no ignore file. Cap output with head so rg
-         * gets SIGPIPE instead of searching the rest of the tree. */
-        char line[2048];
-        int w = snprintf(line, sizeof(line),
-                         "set -o pipefail; if command -v rg >/dev/null 2>&1; then "
-                         "rg -n --no-heading --color=never --max-filesize 1M -m 20 "
-                         "--glob '!node_modules' --glob '!.git' --glob '!venv' --glob '!.venv' "
-                         "--glob '!dist' --glob '!build' --glob '!__pycache__' --glob '!target' "
-                         "-e '%s' -- '%s' | head -n 200; "
-                         "else grep -R -n --binary-files=without-match "
-                         "--exclude-dir=node_modules --exclude-dir=.git --exclude-dir=venv "
-                         "--exclude-dir=.venv --exclude-dir=dist --exclude-dir=build "
-                         "--exclude-dir=__pycache__ --exclude-dir=target -- '%s' '%s' | head -n 200; "
-                         "fi",
-                         pattern, path, pattern, path);
-        if (w < 0 || (size_t)w >= sizeof(line)) {
-            send_res(t, id, 0, 1, "", "", "pattern or path too long");
-            return;
-        }
-        if (run_exec(".", line, 12000, out, EXEC_CAP, err, EXEC_CAP, &code, NULL, NULL, 0, NULL) != 0)
-            send_res(t, id, 0, 1, "", "", "grep failed");
-        else if (code != 0 && code != 1 && code != 141)
-            send_res(t, id, 0, code, out, err, "grep failed");
-        else
-            send_res(t, id, 1, code, out, "", "");
-        return;
-    }
-    if (strcmp(op, "glob") == 0) {
-        const char *path = json_cstr(msg, "path", ".");
-        const char *pattern = json_cstr(msg, "pattern", "");
-        if (strchr(path, '\'') || strchr(pattern, '\'') || strlen(path) > 300 || !glob_ok(pattern)) {
-            send_res(t, id, 0, 1, "", "", "invalid pattern");
-            return;
-        }
-        /* find(1) fallback must honor the pattern too: -name for basename
-         * globs, -path for patterns that span directories. */
-        char find_expr[1024];
-        int fw;
-        if (strchr(pattern, '/')) {
-            fw = snprintf(find_expr, sizeof(find_expr),
-                          "find '%s' \\( -name node_modules -o -name .git -o -name venv -o -name .venv "
-                          "-o -name dist -o -name __pycache__ -o -name build -o -name target \\) -prune "
-                          "-o -path '%s/%s' -type f -print",
-                          path, path, pattern);
-        } else {
-            fw = snprintf(find_expr, sizeof(find_expr),
-                          "find '%s' \\( -name node_modules -o -name .git -o -name venv -o -name .venv "
-                          "-o -name dist -o -name __pycache__ -o -name build -o -name target \\) -prune "
-                          "-o -name '%s' -type f -print",
-                          path, pattern);
-        }
-        if (fw < 0 || (size_t)fw >= sizeof(find_expr)) {
-            send_res(t, id, 0, 1, "", "", "pattern or path too long");
-            return;
-        }
-        char line[3072];
-        int w = snprintf(line, sizeof(line),
-                         "set -o pipefail; if command -v rg >/dev/null 2>&1; then "
-                         "rg --files --color=never --glob '!node_modules' --glob '!.git' "
-                         "--glob '!venv' --glob '!.venv' --glob '!dist' --glob '!__pycache__' "
-                         "-g '%s' -- '%s' | head -n 400; "
-                         "else %s | head -n 400; "
-                         "fi",
-                         pattern, path, find_expr);
-        if (w < 0 || (size_t)w >= sizeof(line)) {
-            send_res(t, id, 0, 1, "", "", "pattern or path too long");
-            return;
-        }
-        if (run_exec(".", line, 12000, out, EXEC_CAP, err, EXEC_CAP, &code, NULL, NULL, 0, NULL) != 0)
-            send_res(t, id, 0, 1, "", "", "glob failed");
-        else if (code != 0 && code != 1 && code != 141)
-            send_res(t, id, 0, code, out, err, "glob failed");
-        else
-            send_res(t, id, 1, 0, out, "", "");
+    if (strcmp(op, "grep") == 0 || strcmp(op, "glob") == 0) {
+        /* The server runs Linux searches as exec commands (rg, or a git/find
+         * listing + grep) so they share one implementation with SSH hosts.
+         * A native copy here drifted (20 matches per file, 200-char
+         * patterns); refuse clearly instead of answering differently. */
+        send_res(t, id, 0, 1, "", "", "native grep/glob is not supported on Linux connectors; use exec");
         return;
     }
     if (strcmp(op, "replace") == 0) {

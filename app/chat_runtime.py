@@ -1648,8 +1648,9 @@ def _running_event(job: ToolJob) -> dict:
         for key in ("offset", "limit", "max_matches"):
             if type(parsed.get(key)) is int:
                 event[key] = parsed[key]
-        if isinstance(parsed.get("include"), str):
-            event["include"] = parsed["include"][:200]
+        include = (parsed.get("include") or parsed.get("glob")) if job.name == "grep" else parsed.get("include")
+        if isinstance(include, str) and include:
+            event["include"] = include[:200]
         if isinstance(parsed.get("background"), bool):
             event["background"] = parsed["background"]
         if job.name == "monitor":

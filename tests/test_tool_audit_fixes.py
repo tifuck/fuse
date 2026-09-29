@@ -803,7 +803,7 @@ class GlobSortTest(unittest.TestCase):
     def test_modified_uses_rg_sortr_and_keeps_order(self):
         cmd = ws._glob_search_cmd("**/*.py", ".", order="modified")
         self.assertIn("--sortr modified", cmd)
-        self.assertIn("-printf '%T@ %p\\n' | sort -rn", cmd)
+        self.assertIn("-printf \"%T@ %p\\n\"' _ | sort -rn", cmd)
         self.assertEqual(ws._glob_result("z.py\na.py\n", order="modified").split(), ["z.py", "a.py"])
         self.assertEqual(ws._glob_result("z.py\na.py\n").split(), ["a.py", "z.py"])
 

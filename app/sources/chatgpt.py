@@ -841,12 +841,17 @@ def build_responses_payload(body: dict, model: str, session_id: str | None = Non
             fn = t.get("function") if isinstance(t.get("function"), dict) else t
             if not fn.get("name"):
                 continue
+            # Responses function tools default to strict, which makes every
+            # property required: the model then fills optional arguments with
+            # placeholders (both edits and old_string, include and glob, a
+            # dummy edit). Codex itself sends strict=false.
             mapped.append(
                 {
                     "type": "function",
                     "name": str(fn.get("name")),
                     "description": str(fn.get("description") or ""),
                     "parameters": fn.get("parameters") or {"type": "object", "properties": {}},
+                    "strict": False,
                 }
             )
         if mapped:

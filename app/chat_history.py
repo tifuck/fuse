@@ -101,7 +101,15 @@ def _trace_rows(message):
         if not isinstance(trace, dict) or not trace.get("name") or trace.get("name") == "fuse-steer":
             continue
         ident = "hist_" + hashlib.sha256(f"{message.get('id')}:{index}".encode()).hexdigest()[:24]
-        details = {k: trace[k] for k in ("command", "path", "pattern", "query", "url", "description", "model") if trace.get(k)}
+        # Keep the scoping arguments too: a recovered read_file without its
+        # offset, or a grep without its include, reads to the model as a tool
+        # that ignored them.
+        details = {
+            k: trace[k]
+            for k in ("command", "path", "pattern", "include", "offset", "limit", "max_matches",
+                      "query", "url", "description", "model")
+            if trace.get(k) not in (None, "")
+        }
         arguments = trace.get("arguments")
         if not isinstance(arguments, str):
             arguments = _json({"recorded_details": details})

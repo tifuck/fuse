@@ -590,11 +590,20 @@ func grepDirMode(root, pattern, include string, maxMatches int, opt grepOpts) (s
 	if maxMatches < 1 || maxMatches > 200 {
 		maxMatches = 200
 	}
+	// A plain file name (no wildcards) that sits directly in root means
+	// "search that file", the same rule the Linux path applies.
+	if include != "" && !strings.ContainsAny(include, "*?[]{}") {
+		candidate := filepath.Join(root, filepath.FromSlash(strings.ReplaceAll(include, `\`, "/")))
+		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() {
+			root, include = candidate, ""
+		}
+	}
 	if include != "" {
 		if _, err := pathMatch(include, ""); err != nil {
 			return "", err
 		}
 	}
+	rootClean := filepath.Clean(root)
 	var b strings.Builder
 	n := 0
 	walkErr := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
@@ -607,7 +616,10 @@ func grepDirMode(root, pattern, include string, maxMatches int, opt grepOpts) (s
 			}
 			return nil
 		}
-		if d.Type()&os.ModeSymlink != 0 {
+		// Links are not followed during a walk (rg does the same), but a
+		// symlink named as the search root itself is searched.
+		isRoot := filepath.Clean(p) == rootClean
+		if d.Type()&os.ModeSymlink != 0 && !isRoot {
 			return nil
 		}
 		if include != "" {
@@ -627,6 +639,9 @@ func grepDirMode(root, pattern, include string, maxMatches int, opt grepOpts) (s
 			}
 		}
 		info, err := d.Info()
+		if isRoot {
+			info, err = os.Stat(p)
+		}
 		if err != nil || !info.Mode().IsRegular() {
 			return nil
 		}
@@ -634,7 +649,7 @@ func grepDirMode(root, pattern, include string, maxMatches int, opt grepOpts) (s
 		// as root or selected by include is searched up to the edit ceiling
 		// (a RAM guard), matching the Linux rg path.
 		limit := int64(1 << 20)
-		if include != "" || filepath.Clean(p) == filepath.Clean(root) {
+		if include != "" || isRoot {
 			limit = editFileMax
 		}
 		if info.Size() > limit {

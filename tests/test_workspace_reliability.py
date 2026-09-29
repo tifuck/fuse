@@ -128,11 +128,23 @@ class SearchReliabilityTest(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertEqual(proc.stdout.splitlines(), [f"{p}:1:alpha", f"{p}:2:beta"])
 
-    def test_complex_glob_without_rg_is_not_silently_broadened(self):
-        cmd = "command() { return 1; }; " + ws._glob_search_cmd("src/**/*.py", ".")
-        proc = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=5)
-        self.assertEqual(proc.returncode, 2)
-        self.assertIn("needs ripgrep", proc.stderr)
+    def test_complex_glob_without_rg_is_exact(self):
+        # Hosts without rg used to refuse ** and brace globs outright, so
+        # models dropped the filter and searched everything.
+        with tempfile.TemporaryDirectory() as root:
+            for rel in ("src/a.py", "src/x/b.py", "src/d.js", "other/c.py", "srcx/e.py"):
+                Path(root, rel).parent.mkdir(parents=True, exist_ok=True)
+                Path(root, rel).write_text("x\n")
+
+            def run(pattern):
+                cmd = "command() { return 1; }; " + ws._glob_search_cmd(pattern, ".")
+                proc = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=5, cwd=root)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                return sorted(line.removeprefix("./") for line in proc.stdout.split())
+
+            self.assertEqual(run("src/**/*.py"), ["src/a.py", "src/x/b.py"])
+            self.assertEqual(run("src/*.{py,js}"), ["src/a.py", "src/d.js"])
+            self.assertEqual(run("*.py"), ["other/c.py", "src/a.py", "src/x/b.py", "srcx/e.py"])
 
     def test_grep_pipeline_survives_head_close_with_sigpipe_ignored(self):
         # Connectors exec with SIGPIPE ignored, so head closing the pipe leaves

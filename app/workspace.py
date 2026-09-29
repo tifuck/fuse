@@ -159,6 +159,10 @@ def _int_arg(args: dict, key: str, default: int, lo: int, hi: int) -> int:
         val = int(float(raw))
     except (TypeError, ValueError, OverflowError):
         return default
+    if val < lo and lo >= 1:
+        # 0 from a model that fills every property means "unset", not
+        # "one line" or "one match".
+        return default
     return max(lo, min(val, hi))
 
 
@@ -281,15 +285,6 @@ def _rg_skip_globs(path: str) -> str:
     return " ".join(parts)
 
 
-def _grep_exclude_dirs(path: str) -> str:
-    base = _search_skip_name(path)
-    return " ".join(
-        "--exclude-dir=" + shlex.quote(name)
-        for name in _SEARCH_SKIP_DIRS
-        if name != base
-    )
-
-
 def _grep_include_arg(args: dict) -> str:
     raw = args.get("include")
     if raw in (None, ""):
@@ -298,6 +293,103 @@ def _grep_include_arg(args: dict) -> str:
     if include and (len(include) > 200 or "\n" in include or "\x00" in include):
         raise WorkspaceError("include exceeds 200 characters or contains a newline; use one glob like *.py")
     return include
+
+
+def _scope_glob(pattern: str, path: str, target: str, *, windows: bool = False) -> str:
+    """Make an include/glob relative to the searched directory, the one
+    meaning every host shares. Tolerates the spellings models use for the
+    same thing: a leading ./, or the searched directory repeated in front
+    (path app + include app/web/*.py)."""
+    text = (pattern or "").strip()
+    if not text:
+        return ""
+    # Only Windows uses \ as a separator; on POSIX it escapes a glob character.
+    sep_text = text.replace("\\", "/") if windows else text
+    while sep_text.startswith("./"):
+        sep_text = sep_text[2:]
+    for base in (path, target):
+        base = str(base or "")
+        base = (base.replace("\\", "/") if windows else base).rstrip("/")
+        if not base or base == ".":
+            continue
+        head = base + "/"
+        if (sep_text.lower() if windows else sep_text).startswith(head.lower() if windows else head) and sep_text != head:
+            sep_text = sep_text[len(head):]
+            break
+    if windows:
+        return sep_text.replace("/", "\\") if "\\" in text else sep_text
+    return sep_text
+
+
+def _literal_glob(pattern: str) -> bool:
+    return bool(pattern) and not any(c in pattern for c in "*?[]{}")
+
+
+def _ere_char(c: str) -> str:
+    # Escape only ERE metacharacters: GNU grep warns about a stray \ before
+    # anything else (re.escape also escapes &, ~, # and spaces).
+    return "\\" + c if c in ".^$+()|{}[]*?\\" else c
+
+
+def _glob_to_ere(pattern: str) -> str:
+    """Translate one rg/gitignore-style glob to a POSIX ERE over a path
+    relative to the searched directory: * and ? stop at /, **/ spans zero or
+    more directories, [..] classes and nested {a,b} alternatives work."""
+    out: list[str] = []
+    i, n = 0, len(pattern)
+    depth = 0
+    while i < n:
+        c = pattern[i]
+        if pattern.startswith("**/", i) and (i == 0 or pattern[i - 1] == "/"):
+            out.append("(.*/)?")
+            i += 3
+            continue
+        if pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+            continue
+        if c == "*":
+            out.append("[^/]*")
+        elif c == "?":
+            out.append("[^/]")
+        elif c == "[":
+            end = pattern.find("]", i + 2 if pattern[i + 1:i + 2] in ("!", "^") else i + 1)
+            if end < 0:
+                out.append("\\[")
+            else:
+                body = pattern[i + 1:end]
+                neg = body[:1] in ("!", "^")
+                body = body[1:] if neg else body
+                body = body.replace("\\", "\\\\")
+                out.append("[" + ("^" if neg else "") + body + "]")
+                i = end + 1
+                continue
+        elif c == "{":
+            depth += 1
+            out.append("(")
+        elif c == "}" and depth:
+            depth -= 1
+            out.append(")")
+        elif c == "," and depth:
+            out.append("|")
+        elif c == "\\" and i + 1 < n:
+            i += 1
+            out.append(_ere_char(pattern[i]))
+        else:
+            out.append(_ere_char(c))
+        i += 1
+    out.append(")" * depth)
+    return "".join(out)
+
+
+def _include_ere(pattern: str) -> str:
+    """ERE for a listed path ('./rel'): a glob without / matches the file
+    name at any depth, one with / matches the whole path under the searched
+    directory."""
+    body = _glob_to_ere(pattern)
+    if "/" in pattern:
+        return "^\\./" + body + "$"
+    return "(^|/)" + body + "$"
 
 
 def _grep_max_matches(args: dict) -> int:
@@ -315,13 +407,15 @@ def _quote_host_path(path: str) -> str:
 
 def _remote_timeout_prefix(seconds: int | None) -> str:
     """Bound a search on the host itself so a timeout still returns the
-    matches printed so far (exit 124) instead of losing the whole call."""
-    if not seconds:
-        return 'T=""; '
-    return (
-        'T=""; if command -v timeout >/dev/null 2>&1; then '
-        f'T="timeout -k 2 {int(seconds)}"; fi; '
+    matches printed so far (exit 124) instead of losing the whole call.
+    FUSE_DL/FUSE_TO carry the same deadline into xargs children."""
+    limit = int(seconds) if seconds else 3600
+    head = (
+        'T=""; FUSE_TO=""; if command -v timeout >/dev/null 2>&1; then '
+        + (f'T="timeout -k 2 {int(seconds)}"; ' if seconds else "")
+        + 'FUSE_TO=1; fi; '
     )
+    return head + f"FUSE_DL=$(( $(date +%s) + {limit} )); export FUSE_TO FUSE_DL; "
 
 
 _GREP_MODES = ("content", "files_with_matches", "count")
@@ -336,6 +430,55 @@ def _grep_line_cap(mode: str, max_matches: int, context: int) -> int:
     return min(_GREP_MAX_LINES, max_matches * (2 * context + 2))
 
 
+def _enter_dir_sh(target: str, include: str = "") -> str:
+    """Search a directory from inside it, so include/glob patterns are
+    relative to the searched path on every host (the Windows connector's
+    rule) and results print as ./rel. A literal include naming a file right
+    there narrows the search to that one file."""
+    literal = ""
+    if include and _literal_glob(include):
+        literal = f"if [ -f {shlex.quote('./' + include)} ]; then TGT={shlex.quote('./' + include)}; fi; "
+    return (
+        f"TGT={_quote_host_path(target)}; "
+        f'if [ -d "$TGT" ]; then cd -- "$TGT" || exit 2; TGT=.; {literal}fi; '
+    )
+
+
+def _list_files_sh(skip_base: str, *, no_ignore: bool, size_cap: bool, include: str) -> str:
+    """NUL-separated './rel' file list for a no-rg search of the current
+    directory. Inside a git work tree `git ls-files` honors .gitignore the
+    way rg does (no_ignore walks with find instead). Vendor/build dirs are
+    skipped unless they are the searched directory itself; symlinks and
+    deleted-but-tracked files are dropped, like rg's walk."""
+    names = [d for d in _SEARCH_SKIP_DIRS if d != skip_base]
+    size = f" -size -{1024 + 1}k" if size_cap else ""
+    prunes = " -o ".join(f"-name {shlex.quote(d)}" for d in names)
+    find = f"find -P . \\( -type d \\( {prunes} \\) -prune \\) -o -type f{size} -print0"
+    skip_re = "(^|/)(" + "|".join(re.escape(d) for d in names) + ")/"
+    git = (
+        "git ls-files -z -co --exclude-standard 2>/dev/null | sed -z 's|^|./|' "
+        f"| grep -zvE {shlex.quote(skip_re)} "
+        f"| xargs -0 -r sh -c 'find -P \"$@\" -maxdepth 0 -type f{size} -print0 2>/dev/null; exit 0' _"
+    )
+    listing = (
+        f"{{ if {'false' if no_ignore else 'git rev-parse --is-inside-work-tree >/dev/null 2>&1'}; "
+        f"then {git}; else {find}; fi; }}"
+    )
+    if include:
+        listing += f" | grep -zE {shlex.quote(_include_ere(include))}"
+    return listing + " | LC_ALL=C sort -z"
+
+
+# Runs grep over one xargs batch under the shared deadline. No-match (1) and
+# a closed pipe (SIGPIPE) are not failures; a spent deadline stops xargs
+# (255 -> xargs exit 124, which reads as a timeout).
+_XARGS_GREP = (
+    'l=$((FUSE_DL - $(date +%s))); [ "$l" -gt 0 ] || exit 255; '
+    'if [ -n "$FUSE_TO" ]; then timeout -k 2 "$l" grep "$@"; else grep "$@"; fi; '
+    'r=$?; case $r in 0|1) exit 0;; 124) exit 255;; esac; [ "$r" -ge 128 ] && exit 0; exit "$r"'
+)
+
+
 def _grep_search_cmd(
     pattern: str,
     path: str,
@@ -347,22 +490,30 @@ def _grep_search_cmd(
     timeout_s: int | None = None,
     context: int = 0,
     mode: str = "content",
+    skip_base: str | None = None,
 ) -> str:
-    """rg if present, else grep -R. Never `rg || grep`: rg exits 1 on no match
+    """rg if present, else grep. Never `rg || grep`: rg exits 1 on no match
     and that would walk node_modules/venv with no ignore file.
 
-    Hidden files are searched (dot-config, .github, .env.example); the skip
-    list still prunes .git and vendor trees. .gitignore is honored by rg
-    unless no_ignore. rg sorts by path so the first N results are the same on
-    every call. The grep fallback prefers PCRE (-P) so \\d, \\s, \\b and (?i)
-    mean the same thing they do in rg."""
+    A directory is searched from inside it, so matches print as ./rel and
+    include is relative to the searched directory. Hidden files are searched
+    (dot-config, .github, .env.example); the skip list still prunes .git and
+    vendor trees. .gitignore is honored unless no_ignore (include uses an rg
+    type filter for that reason: a positive --glob would override it). rg
+    sorts by path so the first N results are the same on every call. The
+    grep fallback prefers PCRE (-P) so \\d, \\s, \\b and (?i) mean the same
+    thing they do in rg."""
     n = max(1, min(int(max_matches or _GREP_DEFAULT_MATCHES), _GREP_MAX_MATCHES))
     context = max(0, min(int(context or 0), _GREP_MAX_CONTEXT))
     cap = _grep_line_cap(mode, n, context)
-    skip = _rg_skip_globs(path)
-    excludes = _grep_exclude_dirs(path)
-    glob = (" --glob " + shlex.quote(include)) if include else ""
-    grep_include = (" --include=" + shlex.quote(include)) if include else ""
+    base = _search_skip_name(path) if skip_base is None else skip_base
+    skip = _rg_skip_globs(base)
+    if not include:
+        rg_filter = ""
+    elif "/" in include:
+        rg_filter = " --glob " + shlex.quote(include)
+    else:
+        rg_filter = " --type-add " + shlex.quote("fuseinc:" + include) + " -t fuseinc"
     case = " -i" if ignore_case else ""
     ignore = " --no-ignore" if no_ignore else ""
     # Only an unfiltered directory walk skips large files (minified bundles,
@@ -380,66 +531,79 @@ def _grep_search_cmd(
     rg = (
         f"$T rg -H --no-heading --color=never --sort path --hidden{ignore}{case}{rg_mode}{size_cap} "
         f"--max-columns {_SEARCH_MAX_COLUMNS} "
-        f"{skip}{glob} -- {shlex.quote(pattern)} {_quote_host_path(path)}"
+        f'{skip}{rg_filter} -- {shlex.quote(pattern)} "$TGT"'
+    )
+    grep_flags = f"-H $GF{case}{grep_mode} --binary-files=without-match -e {shlex.quote(pattern)} --"
+    one_file = f'$T grep {grep_flags} "$TGT"{grep_tail} | head -n {cap}'
+    walk = (
+        _list_files_sh(base, no_ignore=no_ignore, size_cap=not include, include=include)
+        + f" | xargs -0 -r sh -c {shlex.quote(_XARGS_GREP)} _ {grep_flags}{grep_tail} | head -n {cap}; "
+        # xargs 123 = some grep batch failed (unreadable file): grep's own 2.
+        'rc=$?; [ "$rc" -eq 123 ] && rc=2; exit "$rc"'
     )
     fallback = (
         "GF=-E; if printf 'a1\\n' | grep -qP '\\d' 2>/dev/null; then GF=-P; fi; "
-        f"$T grep -r -H $GF{case}{grep_mode} --binary-files=without-match "
-        f"{excludes}{grep_include} -- {shlex.quote(pattern)} {_quote_host_path(path)}{grep_tail}"
+        f'if [ -f "$TGT" ]; then {one_file}; else {walk}; fi'
     )
-    if any(c in include for c in "{}/"):
-        fallback = (
-            "{ printf '%s\\n' "
-            + shlex.quote(
-                f"include {include[:80]} needs ripgrep (rg), which is not installed. "
-                "Use one suffix glob like *.py, or omit include."
-            )
-            + " >&2; exit 2; }"
-        )
     return (
         "set -o pipefail; "
         + _remote_timeout_prefix(timeout_s)
+        + _enter_dir_sh(path, include)
         + f"if command -v rg >/dev/null 2>&1; then {rg} | head -n {cap}; "
-        f"else {fallback} | head -n {cap}; fi"
+        f"else {fallback}; fi"
     )
-
-
-def _glob_find_fallback(pattern: str, path: str, order: str = "path") -> str:
-    """Simple filename globs without rg; reject unsupported semantics explicitly."""
-    name = pattern.removeprefix("**/")
-    if "/" in name or "**" in name or any(c in name for c in "{}"):
-        return (
-            "{ printf '%s\\n' "
-            + shlex.quote(
-                f"glob {pattern[:80]} needs ripgrep (rg), which is not installed. "
-                "Use one filename glob like *.py."
-            )
-            + " >&2; exit 2; }"
-        )
-    prunes = " -o ".join(f"-name {shlex.quote(d)}" for d in _SEARCH_SKIP_DIRS if d != _search_skip_name(path))
-    base = f"$T find {_quote_host_path(path)} \\( {prunes} \\) -prune -o -type f -name {shlex.quote(name)}"
-    if order == "modified":
-        return f"{base} -printf '%T@ %p\\n' | sort -rn | cut -d' ' -f2-"
-    return f"{base} -print | LC_ALL=C sort"
 
 
 def _glob_search_cmd(
-    pattern: str, path: str, *, no_ignore: bool = False, timeout_s: int | None = None, order: str = "path"
+    pattern: str,
+    path: str,
+    *,
+    no_ignore: bool = False,
+    timeout_s: int | None = None,
+    order: str = "path",
+    skip_base: str | None = None,
 ) -> str:
-    skip = _rg_skip_globs(path)
+    """Files under a directory matching one glob, relative to that
+    directory. A pattern without / matches file names at any depth (an rg
+    type filter, so .gitignore still applies); one with / matches the whole
+    relative path. Without rg the same semantics come from a git/find
+    listing filtered by an ERE translation of the glob."""
+    base = _search_skip_name(path) if skip_base is None else skip_base
+    skip = _rg_skip_globs(base)
     ignore = " --no-ignore" if no_ignore else ""
     sort = " --sortr modified" if order == "modified" else " --sort path"
-    rg = (
-        f"$T rg --files --hidden{ignore}{sort} --color=never {skip} -g {shlex.quote(pattern)} "
-        f"-- {_quote_host_path(path)}"
-    )
-    fallback = _glob_find_fallback(pattern, path, order)
+    if "/" in pattern:
+        rg_filter = "-g " + shlex.quote(pattern)
+    else:
+        rg_filter = "--type-add " + shlex.quote("fuseglob:" + pattern) + " -t fuseglob"
+    rg = f'$T rg --files --hidden{ignore}{sort} --color=never {skip} {rg_filter} -- "$TGT"'
+    listing = _list_files_sh(base, no_ignore=no_ignore, size_cap=False, include=pattern)
+    if order == "modified":
+        fallback = (
+            f"{listing} | xargs -0 -r sh -c 'find -P \"$@\" -maxdepth 0 -printf \"%T@ %p\\n\"' _ "
+            "| sort -rn | cut -d' ' -f2-"
+        )
+    else:
+        fallback = f"{listing} | tr '\\0' '\\n'"
     return (
         "set -o pipefail; "
         + _remote_timeout_prefix(timeout_s)
+        + f"TGT={_quote_host_path(path)}; "
+        + 'if [ -d "$TGT" ]; then cd -- "$TGT" || exit 2; TGT=.; fi; '
         + f"if command -v rg >/dev/null 2>&1; then {rg} | head -n {_GLOB_MAX_PATHS}; "
-        f"else {fallback} | head -n {_GLOB_MAX_PATHS}; fi"
+        f'elif [ -d "$TGT" ]; then {fallback} | head -n {_GLOB_MAX_PATHS}; '
+        f'else printf \'%s\\n\' "$TGT"; fi'
     )
+
+
+def _reroot_lines(out: str, prefix: str) -> str:
+    """Results of a directory search print as ./rel; put the searched
+    directory back in front so paths stay relative to the project root (or
+    absolute outside it), the form read_file accepts."""
+    if not out or prefix in ("", "."):
+        return out
+    head = prefix.rstrip("/") + "/"
+    return "\n".join(head + line[2:] if line.startswith("./") else line for line in out.split("\n"))
 
 
 def _filter_grep_include(out: str, include: str) -> str:
@@ -2675,6 +2839,7 @@ async def _grep(user_id, host_id, alias, args, root, *, windows: bool = False):
     notes: list[str] = []
     if _is_agent(user_id, host_id) and windows:
         # Windows connector grep is native WalkDir; bash `command -v rg` is not.
+        include = _scope_glob(include, path, _search_target(path, root, windows=True)[1], windows=True)
         req = {"path": path, "pattern": ("(?i)" + pattern) if ignore_case else pattern, "include": include, "max_matches": max_matches}
         if mode != "content" or context:
             if not _connector_supports(user_id, host_id, "grep_modes"):
@@ -2690,14 +2855,16 @@ async def _grep(user_id, host_id, alias, args, root, *, windows: bool = False):
         strip_root = root
     else:
         cwd, target = _search_target(path, root, windows=windows)
+        include = _scope_glob(include, path, target)
         cmd = _grep_search_cmd(
             pattern, target, include=include, max_matches=max_matches,
             ignore_case=ignore_case, no_ignore=no_ignore, timeout_s=_GREP_TIMEOUT,
-            context=context, mode=mode,
+            context=context, mode=mode, skip_base=_search_skip_name(path),
         )
         data = await _tool_exec(user_id, host_id, cmd, cwd, _GREP_TIMEOUT)
         notes.extend(_search_status(data, "grep"))
         out, clipped = _strip_connector_clip(str(data.get("out") or ""), bool(data.get("clipped")))
+        out = _reroot_lines(out, target)
         if clipped:
             notes.append(_clip_note("grep"))
         strip_root = ""
@@ -2715,6 +2882,11 @@ async def _grep(user_id, host_id, alias, args, root, *, windows: bool = False):
     if more and not any("timed out" in n for n in notes):
         unit = "files" if mode != "content" else "matches"
         notes.insert(0, f"(showing the first {max_matches} {unit}; pass max_matches up to {_GREP_MAX_MATCHES} or narrow path/include)")
+    if not rows and include and not no_ignore and not windows:
+        notes.append(
+            f"(include {include} is relative to path; .gitignored files are skipped — pass no_ignore:true "
+            "to search them, or set path to one file to search just that file)"
+        )
     body, _ = _pack_search_rows(rows, notes)
     preview = "\n".join(body.splitlines()[:20])[:800]
     empty = "(no matches)" if mode != "files_with_matches" else "(no matching files)"
@@ -2743,6 +2915,7 @@ async def _glob(user_id, host_id, alias, args, root, *, windows: bool = False):
     order = _glob_order_arg(args)
     notes: list[str] = []
     if _is_agent(user_id, host_id) and windows:
+        pattern = _scope_glob(pattern, path, _search_target(path, root, windows=True)[1], windows=True)
         req = {"path": path, "pattern": pattern}
         native_order = "path"
         if order == "modified":
@@ -2760,10 +2933,15 @@ async def _glob(user_id, host_id, alias, args, root, *, windows: bool = False):
         order = native_order
     else:
         cwd, target = _search_target(path, root, windows=windows)
-        cmd = _glob_search_cmd(pattern, target, no_ignore=no_ignore, timeout_s=_GREP_TIMEOUT, order=order)
+        pattern = _scope_glob(pattern, path, target)
+        cmd = _glob_search_cmd(
+            pattern, target, no_ignore=no_ignore, timeout_s=_GREP_TIMEOUT, order=order,
+            skip_base=_search_skip_name(path),
+        )
         data = await _tool_exec(user_id, host_id, cmd, cwd, _GREP_TIMEOUT)
         notes.extend(_search_status(data, "glob"))
         out, clipped = _strip_connector_clip(str(data.get("out") or ""), bool(data.get("clipped")))
+        out = _reroot_lines(out, target)
         if clipped:
             notes.append(_clip_note("glob"))
         strip_root = ""
@@ -3024,9 +3202,21 @@ _EDITS_MAX = 100
 def _parse_edits(args: dict) -> list[tuple[str, str, bool]]:
     """One edit (old_string/new_string/replace_all) or an ordered edits list."""
     raw = args.get("edits")
+    single = args.get("old_string") not in (None, "")
+    # Schema-filling models send every property: an empty edits list next to
+    # a real old_string, or empty old_string/new_string next to real edits.
+    if raw in ([], "") and single:
+        raw = None
     if raw is not None:
-        if any(k in args for k in ("old_string", "new_string")):
-            raise WorkspaceError("pass either edits or old_string/new_string, not both")
+        if single:
+            first = raw[0] if isinstance(raw, list) and raw and isinstance(raw[0], dict) else {}
+            same = (
+                len(raw) == 1
+                and first.get("old_string") == args.get("old_string")
+                and first.get("new_string") == args.get("new_string")
+            )
+            if not same:
+                raise WorkspaceError("pass either edits or old_string/new_string, not both")
         if not isinstance(raw, list) or not 1 <= len(raw) <= _EDITS_MAX:
             raise WorkspaceError(f"edits must be a list of 1 to {_EDITS_MAX} objects")
         items = raw

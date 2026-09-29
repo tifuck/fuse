@@ -108,3 +108,50 @@ func TestReplacePreservesCRLFAndRejectsBinary(t *testing.T) {
 		t.Fatal("binary edit accepted")
 	}
 }
+
+func TestGrepLiteralIncludeNarrowsToFileInRoot(t *testing.T) {
+	dir := t.TempDir()
+	for _, rel := range []string{"main.py", filepath.Join("web", "main.py")} {
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("hit\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err := grepDirOptions(dir, "hit", "main.py", 10)
+	if err != nil || strings.Count(out, "hit") != 1 || strings.Contains(out, "web") {
+		t.Fatalf("literal include should search only the file in root: %q %v", out, err)
+	}
+	// Not directly in root: every file of that name below it.
+	out, err = grepDirOptions(filepath.Join(dir), "hit", "*.py", 10)
+	if err != nil || strings.Count(out, "hit") != 2 {
+		t.Fatalf("%q %v", out, err)
+	}
+	out, err = grepDirOptions(dir, "hit", "web/main.py", 10)
+	if err != nil || !strings.Contains(out, filepath.Join("web", "main.py")) || strings.Count(out, "hit") != 1 {
+		t.Fatalf("include relative to root: %q %v", out, err)
+	}
+}
+
+func TestGrepSearchesSymlinkNamedAsRoot(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real.py")
+	if err := os.WriteFile(target, []byte("hit\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.py")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skip("symlinks unavailable:", err)
+	}
+	out, err := grepDirOptions(link, "hit", "", 10)
+	if err != nil || !strings.Contains(out, "link.py:1:hit") {
+		t.Fatalf("symlink named as path not searched: %q %v", out, err)
+	}
+	// A walk still does not follow links.
+	out, _ = grepDirOptions(dir, "hit", "", 10)
+	if strings.Contains(out, "link.py") {
+		t.Fatalf("walk followed a symlink: %q", out)
+	}
+}

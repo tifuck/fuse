@@ -123,7 +123,8 @@ class GrepSearchCmdTest(unittest.TestCase):
         self.assertNotIn("-m 20", cmd)
         self.assertIn("--max-filesize 1M", cmd)
         self.assertIn("!node_modules", cmd)
-        self.assertIn("--exclude-dir=venv", cmd)
+        # The no-rg walk prunes the same vendor dirs.
+        self.assertIn("-name venv", cmd)
 
     def test_size_cap_only_for_unfiltered_walks(self):
         # A file picked out by include must be searched even when it is large:
@@ -146,9 +147,10 @@ class GrepSearchCmdTest(unittest.TestCase):
 
     def test_include_and_glob_alias(self):
         cmd = workspace._grep_search_cmd("x", ".", include="*.py", max_matches=20)
-        self.assertIn("--glob", cmd)
-        self.assertIn("--include", cmd)
-        self.assertIn("*.py", cmd)
+        # A file-name include is an rg type filter, not --glob: a positive
+        # --glob overrides .gitignore.
+        self.assertIn("--type-add 'fuseinc:*.py' -t fuseinc", cmd)
+        self.assertIn("--glob 'web/*.py'", workspace._grep_search_cmd("x", ".", include="web/*.py"))
         self.assertIn("head -n 20", cmd)
         self.assertEqual(workspace._grep_include_arg({"include": "*.ts"}), "*.ts")
         self.assertEqual(workspace._grep_include_arg({"glob": "*.go"}), "*.go")
@@ -159,7 +161,8 @@ class GrepSearchCmdTest(unittest.TestCase):
         self.assertEqual(workspace._grep_max_matches({"max_matches": 12}), 12)
         self.assertEqual(workspace._grep_max_matches({"head_limit": 8}), 50)
         self.assertEqual(workspace._grep_max_matches({"max_matches": 999}), 200)
-        self.assertEqual(workspace._grep_max_matches({"max_matches": 0}), 1)
+        # 0 from a model that fills every property means unset, not one match.
+        self.assertEqual(workspace._grep_max_matches({"max_matches": 0}), 50)
 
     def test_long_alternation_is_quoted_not_rejected(self):
         pattern = "def download_file_logic|def download_folder_logic|def check_folder_access|" + ("def _can_access|" * 40)
@@ -406,8 +409,7 @@ class AgentPathTest(unittest.TestCase):
         ops = [c[0] for c in fake.calls]
         self.assertEqual(ops, ["exec"])
         cmd = fake.calls[0][1]["cmd"]
-        self.assertIn("--glob", cmd)
-        self.assertIn("--include", cmd)
+        self.assertIn("-t fuseinc", cmd)
         self.assertIn("command -v rg", cmd)
         self.assertNotIn("|| grep", cmd)
         self.assertIn("a.py:1:x", text)

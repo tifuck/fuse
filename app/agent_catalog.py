@@ -344,8 +344,11 @@ SCHEMAS = {
                 "(or name it in include). "
                 "Stops after max_matches; a search over 20 s "
                 "returns partial matches with a note. Matches inside secret files (.env, keys) are withheld. "
-                "Filter by file name with include. Complex include globs require ripgrep on Linux; "
-                "Windows connector brace globs are unsupported. Prefer this over shell rg/grep."
+                "To search one file, set path to that file. include filters the files under path: a glob "
+                "without / (\"*.py\", \"*.{ts,tsx}\") matches file names at any depth under path; a glob with / "
+                "(\"web/*.py\", \"**/tests/*.py\") matches the path relative to path. A plain file name as include "
+                "searches just that file when it sits directly in path, else every file of that name below it. "
+                "Prefer this over shell rg/grep."
             ),
             "parameters": {
                 "type": "object",
@@ -362,14 +365,18 @@ SCHEMAS = {
                     "include": {
                         "type": "string",
                         "maxLength": 200,
-                        "description": "Optional file filter, max 200 characters, e.g. \"*.py\". Brace globs need ripgrep on the host.",
+                        "description": (
+                            "Optional file filter relative to path, max 200 characters, e.g. \"*.py\", "
+                            "\"*.{js,ts}\" or \"web/**/*.py\". Not a way to pick one file: set path for that."
+                        ),
                     },
                     "glob": {"type": "string", "maxLength": 200, "description": "Alias for include."},
                     "path": {
                         "type": "string",
                         "description": (
                             "Directory or single file to search. To search one file, put its path here "
-                            "rather than in include. Default: bound project path."
+                            "(e.g. app/main.py) rather than in include. Default: bound project path. "
+                            "Result paths are relative to the project directory whatever path is."
                         ),
                     },
                     "case_insensitive": {"type": "boolean", "description": "Match case-insensitively. Default false."},
@@ -414,14 +421,14 @@ SCHEMAS = {
             "name": "glob",
             "description": (
                 "Find files (not directories; use list_dir for those) by glob on a host, e.g. *.py or "
-                "src/**/+page.svelte. A pattern without / matches file names at any depth: *.py finds every "
-                "Python file, same as **/*.py. A pattern with / must match the whole relative path; when "
-                "path narrows the search, start it with **/ (e.g. **/tests/*.py) so it matches on every host. "
+                "src/**/+page.svelte. The pattern is relative to path. A pattern without / matches file names "
+                "at any depth: *.py finds every Python file under path, same as **/*.py. A pattern with / must "
+                "match the whole path relative to path (path app + web/*.py finds app/web/x.py). "
+                "Returned paths are relative to the project directory. "
                 "Returns up to 400 paths, sorted by path (or newest first with "
                 "sort=modified). Includes hidden files. Always skips vendor/build dirs "
                 "(node_modules, venv, dist, …) unless path points inside one; skips .gitignored files unless "
-                "no_ignore. One glob, not a comma-separated list. Brace globs like "
-                "*.{py,js} and ** need ripgrep on Linux; Windows connector brace globs are unsupported. "
+                "no_ignore. One glob, not a comma-separated list; use braces for alternatives (*.{py,js}). "
                 "Prefer this over shell find/ls."
             ),
             "parameters": {
@@ -432,7 +439,7 @@ SCHEMAS = {
                         "maxLength": 200,
                         "description": "One glob, max 200 characters, e.g. \"*.py\" or \"app/web/*.py\". Not a regex.",
                     },
-                    "path": {"type": "string", "description": "Directory to search. Default: bound project path. With a narrower path, start a pattern containing / with **/."},
+                    "path": {"type": "string", "description": "Directory to search; pattern is relative to it. Default: bound project path."},
                     "no_ignore": {"type": "boolean", "description": "Also list files excluded by .gitignore. Default false."},
                     "sort": {
                         "type": "string",
