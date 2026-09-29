@@ -9184,7 +9184,7 @@
   let threadAuto = false;
   let autoAvailable = Boolean(config.openrouter);
   let threadPermData = null;
-  let permsHostTab = null;
+  let permsFilter = "";
 
   function acceptPermThread(data) {
     if (data && Object.prototype.hasOwnProperty.call(data, "bypass_permissions")) {
@@ -9213,6 +9213,7 @@
     permChip.setAttribute("title", title);
     permChip.setAttribute("aria-label", title);
     if (permChipLabel) permChipLabel.textContent = mode === "bypass" ? "Bypass on" : (mode === "auto" ? "Auto" : "Bypass");
+    paintPermsMode();
   }
 
   const permCards = new Map();
@@ -9601,45 +9602,54 @@
     renderPermQueue();
   }
 
+  const PERMS_ICON_X = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+  const PERMS_ICON_LOCK = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><rect x="3.5" y="7" width="9" height="6.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5.5 7V5.3a2.5 2.5 0 0 1 5 0V7" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>';
+  const PERMS_ICON_DIR = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2 4.5c0-.6.4-1 1-1h3.2l1.4 1.5H13c.6 0 1 .4 1 1v6c0 .6-.4 1-1 1H3c-.6 0-1-.4-1-1z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>';
+  const PERMS_ICON_FILE = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 2h5l3 3v9H4z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M9 2v3h3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>';
+  const PERMS_MODES = [
+    { id: "ask", label: "Ask", hint: "Calls outside these directories wait for your answer." },
+    { id: "auto", label: "Auto", hint: "Jev allows ordinary out-of-scope calls. Unsure or dangerous still asks." },
+    { id: "bypass", label: "Bypass", hint: "No prompts. Read-only projects still apply." },
+  ];
+  const PERMS_TAGS = { temp: "temp", work: "workspace", session: "this chat", host: "always" };
+
+  function permMode() {
+    return threadBypass ? "bypass" : (threadAuto ? "auto" : "ask");
+  }
+
+  // The permissions menu mirrors the model picker: filter row on top, one
+  // group per machine (the chat's own machine first), single-line rows, and
+  // the mode control at the foot where the picker keeps thinking effort.
   function bindPermsMenu(menu) {
-    const bypass = menu.querySelector("[data-perms-bypass]");
-    const auto = menu.querySelector("[data-perms-auto]");
-    const closeBtn = menu.querySelector("[data-perms-close]");
-    const tabsEl = menu.querySelector("[data-perms-tabs]");
-    const pathsEl = menu.querySelector("[data-perms-paths]");
+    const search = menu.querySelector("[data-perms-search]");
     menu.addEventListener("click", (event) => event.stopPropagation());
-    if (closeBtn) closeBtn.addEventListener("click", () => setPermsOpen(false));
-    if (bypass) bypass.addEventListener("change", () => setThreadBypass(bypass.checked));
-    if (auto) auto.addEventListener("change", () => setThreadAuto(auto.checked));
-    if (tabsEl) {
-      tabsEl.addEventListener("click", (event) => {
-        const btn = event.target.closest("[data-perms-host]");
-        if (!btn) return;
-        event.preventDefault();
-        event.stopPropagation();
-        const hid = Number(btn.getAttribute("data-perms-host"));
-        if (!Number.isFinite(hid) || hid === permsHostTab) return;
-        permsHostTab = hid;
-        paintPermsPanel();
-      });
-    }
-    if (pathsEl) {
-      pathsEl.addEventListener("click", async (event) => {
-        const btn = event.target.closest("[data-perm-revoke]");
-        if (!btn) return;
-        const row = btn.closest("[data-perm-grant]");
-        const gid = row && row.getAttribute("data-perm-grant");
-        if (!gid) return;
-        btn.disabled = true;
-        try {
-          await api(`/chat/permissions/grants/${encodeURIComponent(gid)}`, { method: "DELETE" });
-          refreshPerms();
-        } catch (error) {
-          btn.disabled = false;
-          showFailure("Could not revoke grant", error);
-        }
-      });
-    }
+    menu.querySelector("[data-perms-close]")?.addEventListener("click", () => setPermsOpen(false));
+    search.addEventListener("input", () => {
+      permsFilter = search.value;
+      paintPermsList();
+    });
+    menu.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (search.value) {
+        search.value = "";
+        permsFilter = "";
+        paintPermsList();
+        search.focus();
+        return;
+      }
+      setPermsOpen(false);
+      if (permChip) permChip.focus();
+    });
+    menu.querySelector("[data-perms-modes]").addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-perms-mode]");
+      if (btn && !btn.disabled) setPermMode(btn.getAttribute("data-perms-mode"));
+    });
+    menu.querySelector("[data-perms-list]").addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-perm-revoke]");
+      if (btn) revokePermGrant(btn);
+    });
   }
 
   function renderPermsMenu() {
@@ -9652,11 +9662,11 @@
     menu.hidden = true;
     menu.innerHTML =
       '<div class="chat-picker-head"><p>Permissions</p><button type="button" class="chat-menu-close" data-perms-close aria-label="Close"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div>' +
-      '<div class="chat-perms-body">' +
-      '<label class="chat-perms-check"><input type="checkbox" data-perms-bypass><span class="chat-perms-check-box" aria-hidden="true"></span><span class="chat-perms-check-copy"><strong>Bypass prompts</strong><small>Skip asking. Read-only projects still apply.</small></span></label>' +
-      '<label class="chat-perms-check"><input type="checkbox" data-perms-auto><span class="chat-perms-check-box" aria-hidden="true"></span><span class="chat-perms-check-copy"><strong>Auto-approve</strong><small data-perms-auto-hint>Jev allows ordinary out-of-scope calls. Unsure or dangerous still asks.</small></span></label>' +
-      '<div class="chat-perms-section"><p class="chat-perms-heading">Working directories</p><div class="chat-perms-tabs" data-perms-tabs role="tablist" aria-label="Hosts"></div><ul class="chat-perms-paths" data-perms-paths></ul><p class="chat-perms-empty" data-perms-empty hidden>No access on this host.</p></div>' +
-      "</div>";
+      '<div class="chat-picker-searchrow"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10.4 10.4L13.8 13.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><input type="search" class="chat-picker-search" data-perms-search placeholder="Filter machines and directories" aria-label="Filter machines and directories" autocomplete="off" spellcheck="false"><kbd class="chat-picker-kbd" aria-hidden="true">esc</kbd></div>' +
+      '<div class="chat-perms-list" data-perms-list></div>' +
+      '<div class="chat-perms-foot"><div class="chat-perms-mode"><p class="chat-perms-mode-label" aria-hidden="true">Mode</p><div class="chat-perms-modes" data-perms-modes role="radiogroup" aria-label="Permission mode">' +
+      PERMS_MODES.map((m) => `<button type="button" role="radio" aria-checked="false" data-perms-mode="${m.id}">${m.label}</button>`).join("") +
+      '</div></div><p class="chat-perms-hint" data-perms-hint></p></div>';
     bindPermsMenu(menu);
     // Phones get the model picker's full-screen sheet, portaled to the chat
     // root for the same reason (composer ancestors would contain it).
@@ -9664,10 +9674,11 @@
     if (pickerSheetQuery.matches) root.appendChild(menu);
     else permHost.appendChild(menu);
     permsMenuEl = menu;
+    paintPermsPanel();
   }
 
   function placePermsMenu() {
-    placeComposerPop(permsMenuEl, permChip, 28 * 16);
+    placeComposerPop(permsMenuEl, permChip, 30 * 16);
   }
 
   function setPermsOpen(open) {
@@ -9683,9 +9694,14 @@
       overlayPush("perms");
       if (!permsMenuEl) renderPermsMenu();
       else permsMenuEl.classList.toggle("is-sheet", pickerSheetQuery.matches);
+      const search = permsMenuEl && permsMenuEl.querySelector("[data-perms-search]");
+      if (search) search.value = "";
+      permsFilter = "";
       if (permsMenuEl) permsMenuEl.hidden = false;
+      paintPermsPanel();
       placePermsMenu();
-      if (threadPermData) paintPermsPanel();
+      // Same rule as the model picker: focus would pop the phone keyboard.
+      if (search && !pickerSheetQuery.matches) search.focus({ preventScroll: true });
       refreshPerms();
     } else {
       armOverlayGhost(permsMenuEl?.querySelector("[data-perms-close]"));
@@ -9699,79 +9715,105 @@
     return Array.isArray(threadPermData && threadPermData.hosts) ? threadPermData.hosts : [];
   }
 
-  function permSelectedHost() {
-    const hosts = permHostList();
-    if (!hosts.length) return null;
-    const wanted = Number(permsHostTab);
-    const match = hosts.find((h) => Number(h.id) === wanted);
-    if (match) return match;
-    const threadId = Number(threadPermData && threadPermData.thread_host_id);
-    return hosts.find((h) => Number(h.id) === threadId) || hosts.find((h) => h.active) || hosts[0];
+  function paintPermsPanel() {
+    paintPermsMode();
+    paintPermsList();
   }
 
-  function paintPermsPanel() {
+  function paintPermsMode() {
     if (!permsMenuEl) return;
-    const tabsEl = permsMenuEl.querySelector("[data-perms-tabs]");
-    const pathsEl = permsMenuEl.querySelector("[data-perms-paths]");
-    const emptyEl = permsMenuEl.querySelector("[data-perms-empty]");
-    const bypassInput = permsMenuEl.querySelector("[data-perms-bypass]");
-    const autoInput = permsMenuEl.querySelector("[data-perms-auto]");
-    const autoHint = permsMenuEl.querySelector("[data-perms-auto-hint]");
-    const hosts = permHostList();
-    const selected = permSelectedHost();
-    if (selected) permsHostTab = Number(selected.id);
-    if (bypassInput) bypassInput.checked = threadBypass;
-    if (autoInput) {
-      autoInput.checked = threadAuto;
-      autoInput.disabled = !autoAvailable;
-    }
-    if (autoHint) {
-      autoHint.textContent = autoAvailable
-        ? "Jev allows ordinary out-of-scope calls. Unsure or dangerous still asks."
-        : "Add an OpenRouter key on Sources to enable auto-approve.";
-    }
-    if (tabsEl) {
-      tabsEl.hidden = hosts.length === 0;
-      const want = hosts.map((h) => String(h.id));
-      const have = [...tabsEl.querySelectorAll("[data-perms-host]")].map((el) => el.getAttribute("data-perms-host"));
-      const same = want.length === have.length && want.every((id, i) => id === have[i]);
-      if (!same) {
-        tabsEl.innerHTML = hosts.map((h) => {
-          const on = selected && Number(h.id) === Number(selected.id);
-          return `<button type="button" class="chat-perms-tab${on ? " is-on" : ""}" role="tab" aria-selected="${on ? "true" : "false"}" data-perms-host="${Number(h.id)}">${escapeHtml(h.host || "host")}</button>`;
-        }).join("");
-      } else {
-        [...tabsEl.querySelectorAll("[data-perms-host]")].forEach((el) => {
-          const on = selected && Number(el.getAttribute("data-perms-host")) === Number(selected.id);
-          el.classList.toggle("is-on", on);
-          el.setAttribute("aria-selected", on ? "true" : "false");
-        });
-      }
-    }
-    const roots = (selected && selected.roots) || [];
-    const grants = (selected && selected.grants) || [];
-    const rows = [];
-    roots.forEach((root) => {
-      const path = String((root && root.path) || "");
-      if (!path) return;
-      rows.push(`<li class="is-root" title="${escapeHtml(path)}"><span class="mono chat-perms-path">${escapeHtml(path)}</span></li>`);
+    const mode = permMode();
+    permsMenuEl.querySelectorAll("[data-perms-mode]").forEach((btn) => {
+      const id = btn.getAttribute("data-perms-mode");
+      const on = id === mode;
+      btn.classList.toggle("is-on", on);
+      btn.setAttribute("aria-checked", on ? "true" : "false");
+      btn.disabled = id === "auto" && !autoAvailable && !on;
+      btn.title = btn.disabled ? "Add an OpenRouter key on Sources to enable auto-approve." : "";
     });
-    grants.forEach((g) => {
-      const path = String(g.value || "");
-      const scope = g.scope === "host" ? "always" : "session";
-      rows.push(`<li class="is-grant" data-perm-grant="${Number(g.id)}" title="${escapeHtml(path)}">
-        <span class="mono chat-perms-path">${escapeHtml(path)}</span>
-        <span class="chat-perms-scope">${escapeHtml(scope)}</span>
-        <button type="button" class="chat-perms-revoke" data-perm-revoke aria-label="Revoke ${escapeHtml(path)}">
-          <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-        </button>
-      </li>`);
-    });
-    if (pathsEl) {
-      pathsEl.innerHTML = rows.join("");
-      pathsEl.hidden = rows.length === 0;
+    const hint = permsMenuEl.querySelector("[data-perms-hint]");
+    if (hint) {
+      const spec = PERMS_MODES.find((m) => m.id === mode) || PERMS_MODES[0];
+      hint.textContent = spec.hint + (autoAvailable ? "" : " Auto needs an OpenRouter key on Sources.");
     }
-    if (emptyEl) emptyEl.hidden = rows.length > 0;
+  }
+
+  // Middle-truncate paths: the leading directories give way first so the
+  // last segment (the part that tells two grants apart) stays readable.
+  function permPathHtml(path) {
+    const trimmed = path.replace(/[\\/]+$/, "");
+    const cut = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+    const head = cut > 0 ? path.slice(0, cut + 1) : "";
+    const tail = cut > 0 ? path.slice(cut + 1) : path;
+    return (head ? `<span class="chat-perms-path-head">${escapeHtml(head)}</span>` : "") +
+      `<span class="chat-perms-path-tail">${escapeHtml(tail)}</span>`;
+  }
+
+  function permRowHtml(row) {
+    const action = row.grant
+      ? `<button type="button" class="chat-perms-x" data-perm-revoke aria-label="Remove access to ${escapeHtml(row.path)}" title="Remove access">${PERMS_ICON_X}</button>`
+      : `<span class="chat-perms-x is-fixed" role="img" aria-label="Built in" title="Built in: always allowed">${PERMS_ICON_LOCK}</span>`;
+    return `<li class="chat-perms-row${row.grant ? "" : " is-fixed"}"${row.grant ? ` data-perm-grant="${Number(row.grant)}"` : ""}>` +
+      `<span class="chat-perms-icon">${row.kind === "file" ? PERMS_ICON_FILE : PERMS_ICON_DIR}</span>` +
+      `<span class="chat-perms-path" title="${escapeHtml(row.path)}">${permPathHtml(row.path)}</span>` +
+      `<span class="chat-perms-tag is-${row.tag}">${PERMS_TAGS[row.tag]}</span>${action}</li>`;
+  }
+
+  function paintPermsList() {
+    const listEl = permsMenuEl && permsMenuEl.querySelector("[data-perms-list]");
+    if (!listEl) return;
+    if (!threadPermData) {
+      listEl.innerHTML = '<p class="chat-perms-empty">Loading…</p>';
+      return;
+    }
+    const q = permsFilter.trim().toLowerCase();
+    const threadHost = Number(threadPermData.thread_host_id);
+    const hosts = [...permHostList()].sort((a, b) => (Number(b.id) === threadHost) - (Number(a.id) === threadHost));
+    const groups = hosts.map((h) => {
+      const name = String(h.host || "host");
+      const rows = [];
+      (h.roots || []).forEach((r) => {
+        if (r && r.path) rows.push({ path: String(r.path), kind: "dir", tag: r.kind === "work" ? "work" : "temp" });
+      });
+      (h.grants || []).forEach((g) => {
+        rows.push({ path: String(g.value || ""), kind: g.kind === "file" ? "file" : "dir", tag: g.scope === "host" ? "host" : "session", grant: g.id });
+      });
+      const shown = q && !name.toLowerCase().includes(q) ? rows.filter((r) => r.path.toLowerCase().includes(q)) : rows;
+      if (!shown.length) return "";
+      const granted = (h.grants || []).length;
+      return `<section class="chat-perms-group"><p><span class="chat-perms-host">${escapeHtml(name)}</span>` +
+        (Number(h.id) === threadHost ? '<span class="chat-perms-here">this chat</span>' : "") +
+        `<span class="chat-perms-count">${granted ? `${granted} granted` : ""}</span></p>` +
+        `<ul aria-label="${escapeHtml(name)}">${shown.map(permRowHtml).join("")}</ul></section>`;
+    }).join("");
+    listEl.innerHTML = groups || `<p class="chat-perms-empty">${q ? "Nothing matches." : "No machines yet."}</p>`;
+  }
+
+  async function revokePermGrant(btn) {
+    const row = btn.closest("[data-perm-grant]");
+    const gid = Number(row && row.getAttribute("data-perm-grant"));
+    if (!gid || !threadPermData) return;
+    // Drop the row at once; a failure reloads the real list.
+    const neighbour = (row.nextElementSibling && row.nextElementSibling.matches("[data-perm-grant]") && row.nextElementSibling) ||
+      (row.previousElementSibling && row.previousElementSibling.matches("[data-perm-grant]") && row.previousElementSibling);
+    const nextId = neighbour && neighbour.getAttribute("data-perm-grant");
+    threadPermData = {
+      ...threadPermData,
+      hosts: permHostList().map((h) => ({ ...h, grants: (h.grants || []).filter((g) => Number(g.id) !== gid) })),
+    };
+    paintPermsList();
+    if (!pickerSheetQuery.matches && permsMenuEl) {
+      const target = (nextId && permsMenuEl.querySelector(`[data-perm-grant="${nextId}"] [data-perm-revoke]`)) ||
+        permsMenuEl.querySelector("[data-perms-search]");
+      if (target) target.focus({ preventScroll: true });
+    }
+    try {
+      await api(`/chat/permissions/grants/${encodeURIComponent(gid)}`, { method: "DELETE" });
+    } catch (error) {
+      if (error && error.status === 404) return;
+      showFailure("Could not remove access", error);
+      refreshPerms();
+    }
   }
 
   async function refreshPerms() {
@@ -9787,59 +9829,41 @@
       syncPermChip();
       paintPermsPanel();
     } catch (error) {
-      if (permsMenuEl) {
-        const pathsEl = permsMenuEl.querySelector("[data-perms-paths]");
-        const tabsEl = permsMenuEl.querySelector("[data-perms-tabs]");
-        if (pathsEl) pathsEl.innerHTML = "";
-        if (tabsEl) tabsEl.innerHTML = "";
-      }
+      const listEl = permsMenuEl && permsMenuEl.querySelector("[data-perms-list]");
+      if (listEl && !threadPermData) listEl.innerHTML = '<p class="chat-perms-empty">Could not load permissions.</p>';
     }
   }
 
-  async function setThreadBypass(next) {
-    if (!currentId) return;
-    const bypassInput = permsMenuEl && permsMenuEl.querySelector("[data-perms-bypass]");
+  async function setPermMode(mode) {
+    if (!currentId || mode === permMode()) return;
+    if (mode === "auto" && !autoAvailable) return;
+    const body = { expected_revision: serverRevision };
+    if (mode === "bypass") body.bypass_permissions = true;
+    else {
+      if (threadBypass) body.bypass_permissions = false;
+      if (threadAuto !== (mode === "auto")) body.auto_permissions = mode === "auto";
+    }
+    const prev = [threadBypass, threadAuto];
+    threadBypass = mode === "bypass";
+    if (mode !== "bypass") threadAuto = mode === "auto";
+    syncPermChip();
     try {
       const data = await api(`/chat/threads/${encodeURIComponent(currentId)}`, {
         method: "PATCH",
-        body: JSON.stringify({ bypass_permissions: next, expected_revision: serverRevision }),
+        body: JSON.stringify(body),
       });
-      threadBypass = Boolean(data && data.bypass_permissions);
+      if (data && Object.prototype.hasOwnProperty.call(data, "bypass_permissions")) threadBypass = Boolean(data.bypass_permissions);
+      if (data && Object.prototype.hasOwnProperty.call(data, "auto_permissions")) threadAuto = Boolean(data.auto_permissions);
       if (data && data.revision != null) serverRevision = data.revision;
-      syncPermChip();
-      if (bypassInput) bypassInput.checked = threadBypass;
-      if (next) {
+      if (threadBypass) {
         permCards.clear();
         renderPermQueue();
       }
     } catch (error) {
-      showFailure("Could not change bypass", error);
-      if (bypassInput) bypassInput.checked = threadBypass;
+      [threadBypass, threadAuto] = prev;
+      showFailure("Could not change permission mode", error);
     }
-  }
-
-  async function setThreadAuto(next) {
-    if (!currentId) return;
-    const autoInput = permsMenuEl && permsMenuEl.querySelector("[data-perms-auto]");
-    if (!autoAvailable) {
-      if (autoInput) autoInput.checked = false;
-      return;
-    }
-    try {
-      const data = await api(`/chat/threads/${encodeURIComponent(currentId)}`, {
-        method: "PATCH",
-        body: JSON.stringify({ auto_permissions: next, expected_revision: serverRevision }),
-      });
-      threadAuto = data && Object.prototype.hasOwnProperty.call(data, "auto_permissions")
-        ? Boolean(data.auto_permissions)
-        : Boolean(next);
-      if (data && data.revision != null) serverRevision = data.revision;
-      syncPermChip();
-      if (autoInput) autoInput.checked = threadAuto;
-    } catch (error) {
-      showFailure("Could not change auto-approve", error);
-      if (autoInput) autoInput.checked = threadAuto;
-    }
+    syncPermChip();
   }
 
   if (permChip) {
@@ -11925,7 +11949,7 @@
     threadBypass = false;
     threadAuto = false;
     threadPermData = null;
-    permsHostTab = null;
+    permsFilter = "";
     syncPermChip();
     navigation += 1;
     loading = false;

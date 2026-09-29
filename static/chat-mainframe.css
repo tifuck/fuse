@@ -627,7 +627,7 @@
   box-shadow: 0 14px 34px -16px rgba(0, 0, 0, 0.7);
 }
 .chat[data-view="mainframe"] :is(.chat-picker-searchrow, .chat-picker-thinking-host) { border-color: var(--mf-rule); }
-.chat[data-view="mainframe"] :is(.chat-perms-tabs, .chat-perms-tab, .chat-perms-paths, .chat-perms-check-box) { border-radius: 2px; }
+.chat[data-view="mainframe"] :is(.chat-perms-row, .chat-perms-x, .chat-perms-modes, .chat-perms-modes button) { border-radius: 2px; }
 .chat[data-view="mainframe"] .chat-picker-search { font: var(--mf-size)/1 var(--mf-font); }
 .chat[data-view="mainframe"] .chat-picker-kbd { border-radius: 2px; }
 .chat[data-view="mainframe"] .chat-picker-list { padding-inline: 0.25rem; }

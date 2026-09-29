@@ -1841,16 +1841,8 @@ html[data-chat-theme="matcha"] .chat .chat-code,
 html[data-chat-theme="ivory"] .chat .chat-code { border-color: var(--line); }
 html[data-chat-terminal="true"] body.is-chat :is(.chat-pop, .chat-picker-menu, .chat-context-pop, .chat-perms-menu) { border-radius: 0; box-shadow: none; background: var(--ink); }
 html[data-chat-console="true"] body.is-chat:has(.chat[data-view="console"]) :is(.chat-pop, .chat-picker-menu, .chat-context-pop, .chat-perms-menu) { border-radius: 0; box-shadow: none; background: var(--ink); }
-html[data-chat-terminal="true"] body.is-chat .chat-perms-check-box,
-html[data-chat-console="true"] body.is-chat:has(.chat[data-view="console"]) .chat-perms-check-box,
-html[data-chat-terminal="true"] body.is-chat .chat-perms-tabs,
-html[data-chat-console="true"] body.is-chat:has(.chat[data-view="console"]) .chat-perms-tabs,
-html[data-chat-terminal="true"] body.is-chat .chat-perms-tab,
-html[data-chat-console="true"] body.is-chat:has(.chat[data-view="console"]) .chat-perms-tab,
-html[data-chat-terminal="true"] body.is-chat .chat-perms-paths,
-html[data-chat-console="true"] body.is-chat:has(.chat[data-view="console"]) .chat-perms-paths,
-html[data-chat-terminal="true"] body.is-chat .chat-perms-revoke,
-html[data-chat-console="true"] body.is-chat:has(.chat[data-view="console"]) .chat-perms-revoke { border-radius: 0; }
+html[data-chat-terminal="true"] body.is-chat :is(.chat-perms-row, .chat-perms-x, .chat-perms-modes, .chat-perms-modes button),
+html[data-chat-console="true"] body.is-chat:has(.chat[data-view="console"]) :is(.chat-perms-row, .chat-perms-x, .chat-perms-modes, .chat-perms-modes button) { border-radius: 0; }
 html[data-chat-terminal="true"] body.is-chat .chat-view-menu { background: var(--panel); }
 html[data-chat-console="true"] body.is-chat:has(.chat[data-view="console"]) .chat-view-menu { background: var(--panel); }
 
