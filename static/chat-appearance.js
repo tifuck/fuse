@@ -23,23 +23,24 @@
     glyphs: { label: "Glyphs", hint: "ASCII field" },
     life: { label: "Life", hint: "Cellular automaton" },
     rain: { label: "Rain", hint: "Falling glyphs" },
-    topo: { label: "Topo", hint: "ASCII contours" },
     ripple: { label: "Ripple", hint: "Braille waves" },
+    pulsar: { label: "Pulsar", hint: "Ridgelines" },
     circuit: { label: "Circuit", hint: "Signal traces" },
-    loom: { label: "Loom", hint: "Woven automaton" },
-    wind: { label: "Wind", hint: "Arrow field" },
+    garden: { label: "Garden", hint: "Self-drawing blooms" },
     warp: { label: "Warp", hint: "Glyph starfield" },
-    maze: { label: "Maze", hint: "Dig and flood" },
     coral: { label: "Coral", hint: "Reaction–diffusion" },
+    ink: { label: "Ink", hint: "Marbled flow · multicolor" },
+    aurora: { label: "Aurora", hint: "Light curtains · multicolor" },
+    mandala: { label: "Mandala", hint: "Glyph rosette · multicolor" },
     spiral: { label: "Spiral", hint: "Cyclic automaton · multicolor" },
     riso: { label: "Riso", hint: "Halftone inks · multicolor" },
-    ants: { label: "Ants", hint: "Langton's ants · multicolor" },
   };
   // Saved choices from retired backdrops map to their nearest replacement
   // instead of silently switching the wallpaper off.
   const LEGACY_BACKDROPS = {
-    hush: "glyphs", aurora: "riso", tide: "ripple", veil: "glyphs", ember: "life",
+    hush: "glyphs", tide: "ripple", veil: "glyphs", ember: "life",
     phosphor: "rain", dither: "riso", scope: "ripple",
+    topo: "pulsar", loom: "mandala", wind: "ink", maze: "garden", ants: "spiral",
   };
   // Reading fonts. Bricolage Grotesque and Red Hat Mono ship with every page
   // (base.html); the rest load from Google Fonts only when chosen, and the

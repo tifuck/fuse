@@ -194,42 +194,6 @@
     const o = i * 4;
     px[o] = c[0]; px[o + 1] = c[1]; px[o + 2] = c[2]; px[o + 3] = a * 255;
   }
-  // 16 arrows, one per direction, for the wind field.
-  function arrowAtlas(s, g, colors) {
-    const dpr = s.dpr;
-    const a = document.createElement("canvas");
-    a.width = Math.ceil(16 * g * dpr);
-    a.height = Math.ceil(colors.length * g * dpr);
-    const c = a.getContext("2d");
-    c.scale(dpr, dpr);
-    c.lineCap = "round";
-    c.lineJoin = "round";
-    colors.forEach((color, row) => {
-      c.strokeStyle = color;
-      c.lineWidth = Math.max(1, g * 0.07);
-      for (let i = 0; i < 16; i += 1) {
-        const ang = (i / 16) * TAU;
-        const cx = i * g + g / 2;
-        const cy = row * g + g / 2;
-        const L = g * 0.34;
-        const dx = Math.cos(ang) * L;
-        const dy = Math.sin(ang) * L;
-        c.beginPath();
-        c.moveTo(cx - dx, cy - dy);
-        c.lineTo(cx + dx, cy + dy);
-        const hx = Math.cos(ang + 2.6) * g * 0.16;
-        const hy = Math.sin(ang + 2.6) * g * 0.16;
-        const kx = Math.cos(ang - 2.6) * g * 0.16;
-        const ky = Math.sin(ang - 2.6) * g * 0.16;
-        c.moveTo(cx + dx + hx, cy + dy + hy);
-        c.lineTo(cx + dx, cy + dy);
-        c.lineTo(cx + dx + kx, cy + dy + ky);
-        c.stroke();
-      }
-    });
-    return { canvas: a, cw: g, ch: g, dpr };
-  }
-
   // —— Scenes ——
   const SCENES = {
     // ASCII flow field: a glyph per cell, chosen by the field's brightness.
@@ -399,64 +363,6 @@
             if (h < 0.05) continue;
             const tone = h > 0.985 ? 4 : h > 0.7 ? 3 : h > 0.4 ? 2 : h > 0.18 ? 1 : 0;
             stamp(ctx, A, glyph[i], tone, c * cw, r * ch);
-          }
-        }
-      },
-    },
-
-    // Topographic map in box-drawing characters: marching squares over a
-    // drifting height field. Every fourth contour is an index line, drawn
-    // brighter.
-    topo: {
-      fps: 10,
-      cases: " ╲╱─╲╳│╱╱│╳╲─╱╲ ",
-      levels: 7,
-      setup(s) {
-        s.cw = 9 * s.k;
-        s.ch = 16 * s.k;
-      },
-      resize(s) {
-        s.cols = Math.ceil(s.w / s.cw);
-        s.rows = Math.ceil(s.h / s.ch);
-        const pal = s.pal;
-        s.A = atlas(s, this.cases + "·+", [
-          css(pal.mute, 0.35), css(mix(pal.mute, pal.steel, 0.6), 0.7), css(pal.steel, 0.9), css(pal.brass, 1), css(pal.tint, 1),
-        ], s.cw, s.ch, 14 * s.k);
-        s.lv = new Uint8Array((s.cols + 1) * (s.rows + 1));
-      },
-      draw(s, t) {
-        const { ctx, cols, rows, cw, ch, A, lv } = s;
-        const L = this.levels;
-        const W = cols + 1;
-        for (let y = 0; y <= rows; y += 1) {
-          for (let x = 0; x <= cols; x += 1) {
-            const fx = x * cw * 0.0026;
-            const fy = y * ch * 0.0026;
-            const tt = t * 0.035;
-            let v = 0.78 * noise(fx + tt, fy - tt * 0.4) + 0.22 * noise(fx * 2.3 - tt * 0.6, fy * 2.3 + tt * 0.5);
-            v = (v - 0.18) * 1.6;
-            lv[y * W + x] = Math.max(0, Math.min(L + 2, Math.floor(v * L)));
-          }
-        }
-        ctx.clearRect(0, 0, s.w, s.h);
-        const dot = this.cases.length;
-        for (let y = 0; y < rows; y += 1) {
-          for (let x = 0; x < cols; x += 1) {
-            const a = lv[y * W + x];
-            const b = lv[y * W + x + 1];
-            const c = lv[(y + 1) * W + x + 1];
-            const d = lv[(y + 1) * W + x];
-            const hi = Math.max(a, b, c, d);
-            if (hi === Math.min(a, b, c, d)) {
-              // Survey grid between the lines.
-              if (x % 6 === 0 && y % 3 === 0) stamp(ctx, A, (x % 24 === 0 && y % 12 === 0) ? dot + 1 : dot, 0, x * cw, y * ch);
-              continue;
-            }
-            const code = (a >= hi ? 8 : 0) | (b >= hi ? 4 : 0) | (c >= hi ? 2 : 0) | (d >= hi ? 1 : 0);
-            const u = hi / L;
-            let tone = u < 0.3 ? 1 : u < 0.62 ? 2 : 3;
-            if (hi % 4 === 0) tone = Math.min(4, tone + 1);
-            stamp(ctx, A, code, tone, x * cw, y * ch);
           }
         }
       },
@@ -743,90 +649,6 @@
       },
     },
 
-    // A sampler cloth of elementary cellular automata: the width is split
-    // into panels, each weaving its own rule in its own spectrum ink. Every
-    // new generation lands at the bottom and the cloth scrolls up; a panel
-    // changes rule now and then, leaving a seam.
-    loom: {
-      fps: 14,
-      rules: [30, 110, 54, 45, 150, 73, 105, 90, 106, 62, 225, 137, 18, 126],
-      resize(s) {
-        cells(s, Math.max(3, Math.round(6 * s.k)));
-        const { cols, rows } = s;
-        s.buf = new Uint8Array(cols * rows);
-        s.ink = new Uint8Array(cols * rows);
-        s.head = 0;
-        const n = Math.max(1, Math.round(cols / 48));
-        const gap = n > 1 ? 2 : 0;
-        const wide = (cols - gap * (n - 1)) / n;
-        s.panels = Array.from({ length: n }, (_, i) => ({
-          x0: Math.round(i * (wide + gap)),
-          x1: Math.round(i * (wide + gap) + wide),
-          rule: Math.floor(Math.random() * this.rules.length),
-          ink: i % s.pal.spectrum.length,
-          age: Math.floor(Math.random() * 200),
-        }));
-        for (let x = 0; x < cols; x += 1) s.buf[x] = Math.random() < 0.5 ? 1 : 0;
-        for (let i = 1; i < rows; i += 1) this.weave(s);
-      },
-      weave(s) {
-        const { cols, rows, buf, ink } = s;
-        const prev = s.head * cols;
-        const nextRow = (s.head + 1) % rows;
-        const out = nextRow * cols;
-        buf.fill(0, out, out + cols);
-        for (const pan of s.panels) {
-          pan.age += 1;
-          if (pan.age > 220) {
-            pan.age = Math.floor(Math.random() * 60);
-            pan.rule = (pan.rule + 1 + Math.floor(Math.random() * 4)) % this.rules.length;
-            pan.ink = (pan.ink + 1) % s.pal.spectrum.length;
-          }
-          const rule = this.rules[pan.rule];
-          const { x0, x1 } = pan;
-          const w = x1 - x0;
-          let alive = 0;
-          for (let x = x0; x < x1; x += 1) {
-            const l = buf[prev + (x === x0 ? x1 - 1 : x - 1)];
-            const c = buf[prev + x];
-            const r = buf[prev + (x === x1 - 1 ? x0 : x + 1)];
-            let v = (rule >> ((l << 2) | (c << 1) | r)) & 1;
-            if (Math.random() < 0.0008) v ^= 1;
-            buf[out + x] = v;
-            ink[out + x] = pan.ink;
-            alive += v;
-          }
-          // A dead or saturated panel gets fresh thread.
-          if (alive < w * 0.03 || alive > w * 0.97) for (let x = x0; x < x1; x += 1) buf[out + x] = Math.random() < 0.5 ? 1 : 0;
-        }
-        s.head = nextRow;
-      },
-      draw(s) {
-        this.weave(s);
-        const { cols, rows, buf, ink, img, pal } = s;
-        const px = img.data;
-        const sp = pal.spectrum;
-        for (let r = 0; r < rows; r += 1) {
-          const src = (s.head + 1 + r) % rows;
-          const u = r / (rows - 1);
-          const newest = r === rows - 1;
-          const a = newest ? 1 : 0.14 + 0.72 * u * u;
-          const row = src * cols;
-          for (let x = 0; x < cols; x += 1) {
-            const i = r * cols + x;
-            if (!buf[row + x]) {
-              px[i * 4 + 3] = 0;
-              continue;
-            }
-            // Lone threads burn brighter than solid runs.
-            const run = (x > 0 ? buf[row + x - 1] : 0) + (x < cols - 1 ? buf[row + x + 1] : 0);
-            put(px, i, newest ? pal.tint : sp[ink[row + x]], a * (run === 0 ? 1 : run === 1 ? 0.78 : 0.5));
-          }
-        }
-        blit(s);
-      },
-    },
-
     // A cyclic cellular automaton: every cell advances when a neighbour is one
     // state ahead, and random soup organises itself into rotating spirals.
     // Each state takes a colour from the theme's spectrum.
@@ -1085,307 +907,6 @@
       },
     },
 
-    // Langton's ants: each ant turns on the colour under it, flips it, and
-    // steps on. Chaos, then a highway. Every ant lays its own spectrum ink,
-    // and old ants retire while their ground dissolves.
-    ants: {
-      fps: 24,
-      setup(s) {
-        s.nextId = 1;
-      },
-      resize(s) {
-        cells(s, Math.max(2, Math.round(5 * s.k)));
-        const n = s.cols * s.rows;
-        s.state = new Uint8Array(n);
-        s.owner = new Uint8Array(n);
-        s.heat = new Float32Array(n);
-        s.fading = new Uint8Array(256);
-        s.ants = [];
-        for (let i = 0; i < 5; i += 1) this.hatch(s);
-      },
-      hatch(s) {
-        const id = s.nextId;
-        s.nextId = (s.nextId % 255) + 1;
-        s.fading[id] = 0;
-        s.ants.push({
-          id,
-          x: Math.floor(Math.random() * s.cols),
-          y: Math.floor(Math.random() * s.rows),
-          dir: Math.floor(Math.random() * 4),
-          life: Math.floor(rand(14000, 26000)),
-        });
-      },
-      warm(s) {
-        for (let i = 0; i < 200; i += 1) this.step(s);
-      },
-      step(s) {
-        const { cols, rows, state, owner, heat } = s;
-        const steps = 30;
-        for (const a of s.ants) {
-          for (let k = 0; k < steps; k += 1) {
-            const i = a.y * cols + a.x;
-            a.dir = (a.dir + (state[i] ? 3 : 1)) % 4;
-            state[i] ^= 1;
-            owner[i] = a.id;
-            heat[i] = 1;
-            if (a.dir === 0) a.y = (a.y - 1 + rows) % rows;
-            else if (a.dir === 1) a.x = (a.x + 1) % cols;
-            else if (a.dir === 2) a.y = (a.y + 1) % rows;
-            else a.x = (a.x - 1 + cols) % cols;
-          }
-          a.life -= steps;
-        }
-        for (const a of s.ants) if (a.life <= 0) s.fading[a.id] = 1;
-        s.ants = s.ants.filter((a) => a.life > 0);
-        while (s.ants.length < 4) this.hatch(s);
-        // A retired ant's ground dissolves over a couple of seconds.
-        for (let i = 0; i < state.length; i += 1) {
-          if (state[i] && s.fading[owner[i]] && Math.random() < 0.04) state[i] = 0;
-          heat[i] *= 0.9;
-        }
-      },
-      draw(s) {
-        this.step(s);
-        const { state, owner, heat, img, pal } = s;
-        const px = img.data;
-        const sp = pal.spectrum;
-        for (let i = 0; i < state.length; i += 1) {
-          const h = heat[i];
-          if (state[i]) put(px, i, h > 0.3 ? mix(sp[owner[i] % sp.length], pal.tint, h * 0.5) : sp[owner[i] % sp.length], 0.5 + h * 0.5);
-          else if (h > 0.08) put(px, i, pal.mute, h * 0.4);
-          else px[i * 4 + 3] = 0;
-        }
-        for (const a of s.ants) put(px, a.y * s.cols + a.x, pal.tint, 1);
-        blit(s, s.cell >= 5);
-      },
-    },
-
-    // A labyrinth carved live by a backtracking digger, then flooded from a
-    // random spring, the flood banded in the theme's spectrum. The route to the farthest point lights up, the maze
-    // fades, and a new one is dug.
-    maze: {
-      fps: 30,
-      setup(s) {
-        s.phase = "carve";
-      },
-      resize(s) {
-        cells(s, Math.max(3, Math.round(7 * s.k)));
-        this.reset(s);
-      },
-      reset(s) {
-        const n = s.cols * s.rows;
-        s.open = new Uint8Array(n);
-        s.dist = new Int32Array(n).fill(-1);
-        s.path = new Uint8Array(n);
-        s.heat = new Float32Array(n);
-        s.mw = Math.max(1, Math.floor((s.cols - 1) / 2));
-        s.mh = Math.max(1, Math.floor((s.rows - 1) / 2));
-        const sx = Math.floor(Math.random() * s.mw);
-        const sy = Math.floor(Math.random() * s.mh);
-        s.stack = [[sx, sy]];
-        s.open[(sy * 2 + 1) * s.cols + sx * 2 + 1] = 1;
-        s.phase = "carve";
-        s.fade = 1;
-        s.hold = 0;
-        s.front = [];
-        s.level = 0;
-        s.trail = [];
-      },
-      carve(s, budget) {
-        const { cols, open } = s;
-        const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-        while (budget-- > 0 && s.stack.length) {
-          const [x, y] = s.stack[s.stack.length - 1];
-          const options = [];
-          for (const [dx, dy] of DIRS) {
-            const nx = x + dx;
-            const ny = y + dy;
-            if (nx < 0 || ny < 0 || nx >= s.mw || ny >= s.mh) continue;
-            if (!open[(ny * 2 + 1) * cols + nx * 2 + 1]) options.push([nx, ny, dx, dy]);
-          }
-          if (!options.length) {
-            s.stack.pop();
-            continue;
-          }
-          const [nx, ny, dx, dy] = pick(options);
-          const wall = (y * 2 + 1 + dy) * cols + x * 2 + 1 + dx;
-          const cell = (ny * 2 + 1) * cols + nx * 2 + 1;
-          open[wall] = 1;
-          open[cell] = 1;
-          s.heat[wall] = 1;
-          s.heat[cell] = 1;
-          s.stack.push([nx, ny]);
-        }
-        if (!s.stack.length) {
-          const sx = Math.floor(Math.random() * s.mw);
-          const sy = Math.floor(Math.random() * s.mh);
-          const i = (sy * 2 + 1) * cols + sx * 2 + 1;
-          s.dist[i] = 0;
-          s.front = [i];
-          s.phase = "flood";
-        }
-      },
-      flood(s, budget) {
-        const { cols, open, dist } = s;
-        while (budget-- > 0 && s.front.length) {
-          const next = [];
-          for (const i of s.front) {
-            for (const j of [i + 1, i - 1, i + cols, i - cols]) {
-              if (j < 0 || j >= open.length || !open[j] || dist[j] >= 0) continue;
-              dist[j] = dist[i] + 1;
-              next.push(j);
-            }
-          }
-          if (!next.length) {
-            // Trace back from the last cell the flood reached.
-            let i = s.front[0];
-            s.trail = [i];
-            while (dist[i] > 0) {
-              for (const j of [i + 1, i - 1, i + cols, i - cols]) {
-                if (j >= 0 && j < open.length && dist[j] === dist[i] - 1) { i = j; break; }
-              }
-              s.trail.push(i);
-            }
-            s.phase = "trace";
-            s.front = [];
-            break;
-          }
-          s.level += 1;
-          s.front = next;
-        }
-      },
-      warm(s) {
-        this.carve(s, Math.ceil(s.mw * s.mh * 0.6));
-      },
-      draw(s, t, dt) {
-        const area = s.mw * s.mh;
-        if (s.phase === "carve") this.carve(s, Math.max(2, Math.ceil(area / (this.fps * 11))));
-        else if (s.phase === "flood") this.flood(s, Math.max(1, Math.ceil(area / (this.fps * 16))));
-        else if (s.phase === "trace") {
-          for (let k = Math.max(1, Math.ceil(s.trail.length / (this.fps * 2.5))); k > 0 && s.trail.length; k -= 1) s.path[s.trail.pop()] = 1;
-          if (!s.trail.length) s.phase = "hold";
-        } else if (s.phase === "hold") {
-          s.hold += dt;
-          if (s.hold > 5) s.phase = "fade";
-        } else if (s.phase === "fade") {
-          s.fade -= dt / 1.6;
-          if (s.fade <= 0) this.reset(s);
-        }
-        const { open, dist, path, heat, img, pal, cols } = s;
-        const px = img.data;
-        const band = Math.max(40, (s.mw + s.mh) * 1.2);
-        const head = s.phase === "carve" && s.stack.length ? s.stack[s.stack.length - 1] : null;
-        const headAt = head ? (head[1] * 2 + 1) * cols + head[0] * 2 + 1 : -1;
-        for (let i = 0; i < open.length; i += 1) {
-          if (!open[i]) {
-            px[i * 4 + 3] = 0;
-            continue;
-          }
-          const h = heat[i];
-          heat[i] = h * 0.94;
-          let c = h > 0.02 ? mix(pal.steel, pal.tint, h) : pal.steel;
-          let a = 0.3 + 0.7 * h;
-          if (path[i]) {
-            c = pal.tint;
-            a = 1;
-          } else if (dist[i] >= 0) {
-            const behind = s.level - dist[i];
-            c = ring(pal, dist[i] / band);
-            a = s.phase === "flood" ? 0.45 + 0.55 * Math.exp(-behind / 6) : 0.5;
-          }
-          if (i === headAt) {
-            c = pal.tint;
-            a = 1;
-          }
-          put(px, i, c, a * s.fade);
-        }
-        blit(s, false);
-      },
-    },
-
-    // A weather chart: an arrow per cell along the curl of a drifting field,
-    // with gusts streaming through and lighting the arrows they pass.
-    wind: {
-      fps: 15,
-      setup(s) {
-        s.g = Math.max(8, 22 * s.k);
-      },
-      resize(s) {
-        s.cols = Math.ceil(s.w / s.g);
-        s.rows = Math.ceil(s.h / s.g);
-        const pal = s.pal;
-        s.A = arrowAtlas(s, s.g, [css(pal.mute, 0.4), css(mix(pal.mute, pal.steel, 0.6), 0.75), css(pal.steel, 0.95), css(pal.brass, 1), css(pal.tint, 1)]);
-        const n = s.cols * s.rows;
-        s.heat = new Float32Array(n);
-        s.vx = new Float32Array(n);
-        s.vy = new Float32Array(n);
-        s.psi = new Float32Array((s.cols + 1) * (s.rows + 1));
-        const count = Math.round(n / 10);
-        s.gusts = Array.from({ length: count }, () => ({ x: Math.random() * s.w, y: Math.random() * s.h, life: rand(2, 7) }));
-      },
-      // Velocity is the curl of a stream function sampled at cell corners, so
-      // the flow has no sources or sinks: it only swirls.
-      flow(s, t) {
-        const { cols, rows, g, psi, vx, vy } = s;
-        const k = 0.0032 / s.k;
-        const W = cols + 1;
-        for (let y = 0; y <= rows; y += 1) for (let x = 0; x <= cols; x += 1) psi[y * W + x] = field(x * g * k, y * g * k, t * 0.04);
-        const gain = 4.8 / (g * k);
-        for (let y = 0; y < rows; y += 1) {
-          for (let x = 0; x < cols; x += 1) {
-            const a = psi[y * W + x];
-            const b = psi[y * W + x + 1];
-            const c = psi[(y + 1) * W + x];
-            const d = psi[(y + 1) * W + x + 1];
-            vx[y * cols + x] = ((c + d) - (a + b)) * 0.5 * gain;
-            vy[y * cols + x] = -((b + d) - (a + c)) * 0.5 * gain;
-          }
-        }
-      },
-      warm(s) {
-        for (let i = 0; i < 40; i += 1) this.step(s, 60 + i / 15, 1 / 15);
-      },
-      step(s, t, dt) {
-        this.flow(s, t);
-        const { cols, rows, heat, g, vx, vy } = s;
-        const fade = Math.exp(-dt * 1.3);
-        for (let i = 0; i < heat.length; i += 1) heat[i] *= fade;
-        const speed = 170 * s.k;
-        for (const q of s.gusts) {
-          const i = Math.floor(q.y / g) * cols + Math.floor(q.x / g);
-          if (q.life <= 0 || q.x < 0 || q.y < 0 || q.x >= s.w || q.y >= s.h || i < 0 || i >= cols * rows) {
-            q.x = Math.random() * s.w;
-            q.y = Math.random() * s.h;
-            q.life = rand(2, 7);
-            continue;
-          }
-          heat[i] = Math.min(1, heat[i] + 0.35);
-          q.x += vx[i] * speed * dt;
-          q.y += vy[i] * speed * dt;
-          q.life -= dt;
-        }
-      },
-      draw(s, t, dt) {
-        this.step(s, t, Math.min(dt, 0.1));
-        const { ctx, cols, rows, g, heat, vx, vy, A } = s;
-        const d = A.dpr;
-        ctx.clearRect(0, 0, s.w, s.h);
-        for (let y = 0; y < rows; y += 1) {
-          for (let x = 0; x < cols; x += 1) {
-            const i = y * cols + x;
-            const u = vx[i];
-            const v = vy[i];
-            const h = heat[i];
-            const m = Math.sqrt(u * u + v * v) * 0.9 + h;
-            if (m < 0.12) continue;
-            const dir = Math.round((Math.atan2(v, u) / TAU) * 16 + 16) % 16;
-            const tone = h > 0.75 ? 4 : h > 0.4 ? 3 : h > 0.15 ? 2 : m > 0.5 ? 1 : 0;
-            ctx.drawImage(A.canvas, dir * g * d, tone * g * d, g * d, g * d, x * g, y * g, g, g);
-          }
-        }
-      },
-    },
-
     // A glyph starfield flying out of a vanishing point: far stars are dots,
     // near ones become stars with a streak behind them. The vanishing point
     // wanders slowly around the middle of the screen.
@@ -1452,6 +973,384 @@
           // Remember a point a little behind, so streaks have length.
           st.px = x - (x - cx) * 0.06;
           st.py = y - (y - cy) * 0.06;
+        }
+      },
+    },
+
+    // Ridgelines, after the pulsar plot on the Unknown Pleasures sleeve:
+    // stacked traces displaced by drifting peaks, each one hiding the lines
+    // behind it. The terrain rolls slowly toward the viewer.
+    pulsar: {
+      fps: 20,
+      setup(s) {
+        s.gap = Math.max(4, 13 * s.k);
+        s.step = Math.max(2, 5 * s.k);
+      },
+      resize(s) {
+        s.lines = Math.ceil(s.h / s.gap) + 6;
+        s.xs = Math.ceil(s.w / s.step) + 2;
+        s.horizon = new Float32Array(s.xs);
+      },
+      draw(s, t) {
+        const { ctx, pal, gap, step, lines, xs, horizon } = s;
+        const amp = gap * 9;
+        const kx = 0.006 / s.k;
+        const roll = t * 0.35;
+        ctx.clearRect(0, 0, s.w, s.h);
+        ctx.lineJoin = "round";
+        ctx.lineWidth = Math.max(1, 1.3 * s.k);
+        // Floating horizon: front to back, a line only shows where it rises
+        // above everything nearer, so the hidden parts are never drawn.
+        horizon.fill(Infinity);
+        for (let i = lines - 1; i >= 0; i -= 1) {
+          const base = (i + 1) * gap;
+          const row = i - roll;
+          const u = i / lines;
+          ctx.beginPath();
+          let pen = false;
+          let px = 0;
+          let py = 0;
+          let pv = false;
+          for (let j = 0; j < xs; j += 1) {
+            const x = j * step;
+            // Peaks cluster in bands that wander across the width.
+            const band = Math.pow(noise(x * kx * 0.35 + 40, row * 0.05), 2.4);
+            const n = Math.pow(field(x * kx, row * 0.19, t * 0.02), 3);
+            const y = base - amp * n * (0.35 + 2.2 * band);
+            const vis = y < horizon[j];
+            if (vis && !pen) {
+              if (j && !pv) ctx.moveTo(px, Math.min(py, horizon[j - 1]));
+              else ctx.moveTo(x, y);
+              pen = true;
+            }
+            if (vis || pen) ctx.lineTo(x, vis ? y : horizon[j]);
+            if (!vis) pen = false;
+            if (vis) horizon[j] = y;
+            px = x;
+            py = y;
+            pv = vis;
+          }
+          ctx.strokeStyle = css(mix(pal.steel, pal.brass, u), 0.35 + 0.65 * u);
+          ctx.stroke();
+        }
+      },
+    },
+
+    // Ink: thousands of particles follow a slowly turning flow field and
+    // leave hairline strokes that fade like wet ink, so the field paints
+    // itself as combed, marbled currents. Each stroke takes the spectrum ink
+    // of the region it was born in.
+    ink: {
+      fps: 30,
+      setup(s) {
+        s.inks = 5;
+      },
+      resize(s) {
+        s.ctx.clearRect(0, 0, s.w, s.h);
+        const n = Math.round(Math.max(120, Math.min(3200, (s.w * s.h) / 700)));
+        s.p = Array.from({ length: n }, () => this.spawn(s, {}, 0));
+        s.colors = s.pal.spectrum.map((c) => css(c, 0.42));
+      },
+      spawn(s, q, t) {
+        q.x = Math.random() * s.w;
+        q.y = Math.random() * s.h;
+        q.life = rand(3, 9);
+        q.ink = Math.floor(field(q.x * 0.0016 / s.k, q.y * 0.0016 / s.k, t * 0.01) * 1.7 * s.inks) % s.inks;
+        return q;
+      },
+      warm(s, t) {
+        for (let i = 0; i < 90; i += 1) this.tick(s, t - (90 - i) / 30, 1 / 30);
+      },
+      tick(s, t, dt) {
+        const { ctx, p } = s;
+        ctx.globalCompositeOperation = "destination-out";
+        ctx.fillStyle = `rgba(0,0,0,${Math.min(0.2, dt * 0.9)})`;
+        ctx.fillRect(0, 0, s.w, s.h);
+        ctx.globalCompositeOperation = "source-over";
+        const k = 0.0019 / s.k;
+        const speed = 46 * s.k;
+        const paths = Array.from({ length: s.inks }, () => new Path2D());
+        for (const q of p) {
+          const a = field(q.x * k, q.y * k, t * 0.015) * TAU * 2.2;
+          const nx = q.x + Math.cos(a) * speed * dt;
+          const ny = q.y + Math.sin(a) * speed * dt;
+          paths[q.ink].moveTo(q.x, q.y);
+          paths[q.ink].lineTo(nx, ny);
+          q.x = nx;
+          q.y = ny;
+          q.life -= dt;
+          if (q.life <= 0 || nx < -4 || ny < -4 || nx > s.w + 4 || ny > s.h + 4) this.spawn(s, q, t);
+        }
+        ctx.lineWidth = Math.max(0.6, 0.9 * s.k);
+        ctx.lineCap = "round";
+        paths.forEach((path, i) => {
+          ctx.strokeStyle = s.colors[i];
+          ctx.stroke(path);
+        });
+      },
+      draw(s, t, dt) {
+        this.tick(s, t, Math.min(dt, 0.1));
+      },
+    },
+
+    // A mandala of glyphs: twelve mirrored wedges of a drifting field, so the
+    // noise folds into petals and lattices that bloom and close. The rosette
+    // turns very slowly, and each ring burns in its own spectrum ink.
+    mandala: {
+      fps: 12,
+      chars: "·∙:+*✦◆",
+      folds: 12,
+      setup(s) {
+        s.pitch = Math.max(5, 15 * s.k);
+      },
+      resize(s) {
+        const size = Math.round(s.pitch);
+        s.A = atlas(s, this.chars, s.pal.spectrum.map((c) => css(c, 0.95)), size, size, 12 * s.k);
+        s.cx = s.w / 2;
+        s.cy = s.h / 2;
+        s.R = Math.hypot(s.w, s.h) / 2 + s.pitch;
+        // Sample points of one mirrored half-wedge, ring by ring.
+        const pts = [];
+        const wedge = Math.PI / this.folds;
+        for (let r = s.pitch * 2; r < s.R; r += s.pitch) {
+          const count = Math.max(1, Math.round((r * wedge) / s.pitch));
+          for (let m = 0; m < count; m += 1) pts.push([r, ((m + 0.5) / count) * wedge]);
+        }
+        s.pts = pts;
+      },
+      draw(s, t) {
+        const { ctx, A, pts, cx, cy, R, pitch } = s;
+        const folds = this.folds;
+        const n = A.n;
+        const spin = t * 0.012;
+        const size = A.cw;
+        const d = A.dpr;
+        ctx.clearRect(0, 0, s.w, s.h);
+        for (const [r, a] of pts) {
+          const u = r / R;
+          // Polar field: rings breathe outward, petals come from the angle.
+          let v = field(u * 6 - t * 0.05, Math.cos(a * folds) * 1.8 + Math.sin(a * 3) * 0.6, t * 0.05);
+          v = (v - 0.42) * 2.4 + 0.25 * Math.sin(u * 22 - t * 0.4);
+          if (v <= 0.05) continue;
+          const g = Math.min(n - 1, Math.floor(v * n));
+          const ink = Math.floor((u * 3.2 + t * 0.01) * 5) % 5;
+          for (let f = 0; f < folds; f += 1) {
+            const base = (f / folds) * TAU + spin;
+            for (const ang of [base + a, base - a]) {
+              const x = cx + Math.cos(ang) * r;
+              const y = cy + Math.sin(ang) * r;
+              if (x < -pitch || y < -pitch || x > s.w + pitch || y > s.h + pitch) continue;
+              ctx.drawImage(A.canvas, g * A.cw * d, ink * A.ch * d, A.cw * d, A.ch * d, x - size / 2, y - size / 2, size, size);
+            }
+          }
+        }
+      },
+    },
+
+    // Aurora: curtains of light hang from a wandering arc, brightest along
+    // their lower hem and combed into fine vertical rays. Two curtains drift
+    // at their own pace, their colour sliding along the theme's spectrum.
+    aurora: {
+      fps: 20,
+      setup(s) {
+        s.cell = Math.max(2, Math.round(4 * s.k));
+      },
+      resize(s) {
+        s.cols = Math.ceil(s.w / s.cell);
+        s.rows = Math.ceil(s.h / s.cell);
+        s.off = document.createElement("canvas");
+        s.off.width = s.cols;
+        s.off.height = s.rows;
+        s.offCtx = s.off.getContext("2d");
+        s.img = s.offCtx.createImageData(s.cols, s.rows);
+        s.acc = new Float32Array(s.cols * s.rows * 3);
+        s.lut = Array.from({ length: 64 }, (_, i) => ring(s.pal, i / 64));
+      },
+      draw(s, t) {
+        const { cols, rows, acc, img, lut } = s;
+        acc.fill(0);
+        const kx = 1 / cols;
+        for (let layer = 0; layer < 2; layer += 1) {
+          const tt = t * (0.03 + layer * 0.017);
+          const off = layer * 17.3;
+          for (let x = 0; x < cols; x += 1) {
+            const u = x * kx;
+            const hem = rows * (0.34 + 0.3 * noise(u * 2.2 + off, tt) + 0.08 * Math.sin(u * 9 + tt * 6));
+            const height = rows * (0.18 + 0.32 * noise(u * 1.4 - off, tt * 1.3 + 5));
+            let glow = Math.pow(field(u * 3.5 + off, layer * 3, tt * 1.6), 2.2) * 2.2;
+            // Fine rays combed through the curtain.
+            glow *= 0.55 + 0.45 * noise(x * 0.35 + off, tt * 4);
+            if (glow < 0.02) continue;
+            const c = lut[Math.floor((u * 0.9 + layer * 0.35 + tt * 0.4) * 64) & 63];
+            const top = Math.max(0, Math.floor(hem - height));
+            const bottom = Math.min(rows - 1, Math.ceil(hem + 14));
+            for (let y = top; y <= bottom; y += 1) {
+              // Bright hem, fading up into the sky; a thin fall-off below.
+              const f = y <= hem ? Math.pow(Math.max(0, (y - (hem - height)) / height), 2.4) : Math.exp(-(y - hem) / 3.5);
+              const a = glow * f;
+              if (a < 0.01) continue;
+              const i = (y * cols + x) * 3;
+              acc[i] += c[0] * a;
+              acc[i + 1] += c[1] * a;
+              acc[i + 2] += c[2] * a;
+            }
+          }
+        }
+        const px = img.data;
+        for (let i = 0, o = 0; i < acc.length; i += 3, o += 4) {
+          const r = acc[i];
+          const g = acc[i + 1];
+          const b = acc[i + 2];
+          const m = Math.max(r, g, b);
+          if (m < 3) {
+            px[o + 3] = 0;
+            continue;
+          }
+          // Keep the hue, carry the intensity in alpha.
+          const a = Math.min(1, m / 255);
+          const sc = 255 / m;
+          px[o] = r * sc; px[o + 1] = g * sc; px[o + 2] = b * sc; px[o + 3] = a * 255;
+        }
+        s.offCtx.putImageData(img, 0, 0);
+        s.ctx.clearRect(0, 0, s.w, s.h);
+        s.ctx.imageSmoothingEnabled = true;
+        s.ctx.drawImage(s.off, 0, 0, cols * s.cell, rows * s.cell);
+      },
+    },
+
+    // A garden that draws itself: stems rise from the edges of the screen,
+    // lean and fork like a pen sketch, and finish in small blooms of spectrum
+    // ink. When the bed is full it rests, fades away, and is planted again.
+    garden: {
+      fps: 30,
+      setup(s) {
+        s.phase = "grow";
+      },
+      resize(s) {
+        this.reset(s);
+      },
+      reset(s) {
+        s.ctx.clearRect(0, 0, s.w, s.h);
+        s.tips = [];
+        s.planted = 0;
+        s.want = Math.max(3, Math.round(s.w / (150 * s.k)));
+        s.clock = 0;
+        s.nextPlant = 0;
+        s.phase = "grow";
+        s.rest = 0;
+      },
+      plant(s) {
+        // Most rise from the floor; some lean in from the side walls.
+        const side = Math.random();
+        let x;
+        let y;
+        let ang;
+        if (side < 0.7) {
+          x = rand(0.02, 0.98) * s.w;
+          y = s.h + 2;
+          ang = -Math.PI / 2 + rand(-0.25, 0.25);
+        } else {
+          const left = side < 0.85;
+          x = left ? -2 : s.w + 2;
+          y = rand(0.35, 0.95) * s.h;
+          ang = left ? rand(-0.9, -0.3) : Math.PI + rand(0.3, 0.9);
+        }
+        const len = rand(0.16, 0.3) * s.h;
+        s.tips.push({ x, y, ang, left: len, len, width: 2.2 * s.k + 0.6, depth: 0, seed: Math.random() * 100 });
+        s.planted += 1;
+      },
+      bloom(s, x, y) {
+        const { ctx, pal } = s;
+        const ink = pick(pal.spectrum);
+        const petals = 5 + Math.floor(Math.random() * 3);
+        const r = rand(3, 7) * s.k + 1;
+        const turn = Math.random() * TAU;
+        ctx.fillStyle = css(ink, 0.7);
+        for (let i = 0; i < petals; i += 1) {
+          const a = turn + (i / petals) * TAU;
+          ctx.beginPath();
+          ctx.ellipse(x + Math.cos(a) * r, y + Math.sin(a) * r, r * 0.75, r * 0.38, a, 0, TAU);
+          ctx.fill();
+        }
+        ctx.fillStyle = css(pal.tint, 0.95);
+        ctx.beginPath();
+        ctx.arc(x, y, Math.max(0.8, r * 0.3), 0, TAU);
+        ctx.fill();
+      },
+      grow(s, dt) {
+        const { ctx, pal } = s;
+        s.clock += dt;
+        if (s.planted < s.want && s.clock >= s.nextPlant) {
+          this.plant(s);
+          s.nextPlant = s.clock + rand(0.6, 1.8);
+        }
+        const speed = 70 * s.k;
+        const next = [];
+        ctx.lineCap = "round";
+        for (const tip of s.tips) {
+          const stepLen = Math.min(tip.left, speed * dt * (1 - tip.depth * 0.12));
+          // A pen's wobble, and a gentle pull back toward the sky.
+          tip.ang += (noise(tip.seed + s.clock * 0.9, tip.depth) - 0.5) * 0.18;
+          const up = -Math.PI / 2;
+          tip.ang += Math.sin(up - tip.ang) * 0.01;
+          const nx = tip.x + Math.cos(tip.ang) * stepLen;
+          const ny = tip.y + Math.sin(tip.ang) * stepLen;
+          ctx.beginPath();
+          ctx.moveTo(tip.x, tip.y);
+          ctx.lineTo(nx, ny);
+          ctx.lineWidth = tip.width;
+          ctx.strokeStyle = css(mix(pal.steel, pal.brass, Math.min(1, tip.depth / 4)), 0.8);
+          ctx.stroke();
+          tip.x = nx;
+          tip.y = ny;
+          tip.left -= stepLen;
+          if (tip.left > 0.01) {
+            next.push(tip);
+            // Leaves: a short stroke off the stem now and then.
+            if (Math.random() < dt * 1.4 && tip.depth < 4) {
+              const side = Math.random() < 0.5 ? 1 : -1;
+              const la = tip.ang + side * rand(0.7, 1.2);
+              const ll = rand(4, 9) * s.k + 2;
+              ctx.beginPath();
+              ctx.moveTo(nx, ny);
+              ctx.quadraticCurveTo(nx + Math.cos(la - side * 0.5) * ll, ny + Math.sin(la - side * 0.5) * ll, nx + Math.cos(la) * ll * 1.3, ny + Math.sin(la) * ll * 1.3);
+              ctx.lineWidth = Math.max(0.7, tip.width * 0.6);
+              ctx.strokeStyle = css(pal.steel, 0.55);
+              ctx.stroke();
+            }
+            continue;
+          }
+          if (tip.depth >= 4 || tip.len < 10 * s.k) {
+            this.bloom(s, nx, ny);
+            continue;
+          }
+          const forks = Math.random() < 0.3 ? 3 : 2;
+          for (let f = 0; f < forks; f += 1) {
+            const spread = forks === 3 ? (f - 1) * 0.55 : (f ? 1 : -1) * rand(0.3, 0.6);
+            const len = tip.len * rand(0.55, 0.78);
+            next.push({ x: nx, y: ny, ang: tip.ang + spread + rand(-0.12, 0.12), left: len, len, width: tip.width * 0.72, depth: tip.depth + 1, seed: Math.random() * 100 });
+          }
+        }
+        s.tips = next;
+        if (s.planted >= s.want && !s.tips.length) s.phase = "rest";
+      },
+      warm(s) {
+        for (let i = 0; i < 360 && s.phase === "grow"; i += 1) this.grow(s, 1 / 30);
+      },
+      draw(s, t, dt) {
+        dt = Math.min(dt, 0.1);
+        if (s.phase === "grow") this.grow(s, dt);
+        else if (s.phase === "rest") {
+          s.rest += dt;
+          if (s.rest > 9) s.phase = "fade";
+        } else {
+          const { ctx } = s;
+          ctx.globalCompositeOperation = "destination-out";
+          ctx.fillStyle = `rgba(0,0,0,${Math.min(0.3, dt * 1.4)})`;
+          ctx.fillRect(0, 0, s.w, s.h);
+          ctx.globalCompositeOperation = "source-over";
+          s.rest += dt;
+          if (s.rest > 12.5) this.reset(s);
         }
       },
     },
