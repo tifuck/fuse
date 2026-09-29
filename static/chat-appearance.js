@@ -20,15 +20,27 @@
   };
   const BACKDROPS = {
     none: { label: "None", hint: "Solid" },
-    phosphor: { label: "Phosphor", hint: "CRT scanlines" },
-    dither: { label: "Dither", hint: "1-bit noise" },
     glyphs: { label: "Glyphs", hint: "ASCII field" },
-    scope: { label: "Scope", hint: "Oscilloscope" },
     life: { label: "Life", hint: "Cellular automaton" },
+    rain: { label: "Rain", hint: "Falling glyphs" },
+    topo: { label: "Topo", hint: "ASCII contours" },
+    ripple: { label: "Ripple", hint: "Braille waves" },
+    circuit: { label: "Circuit", hint: "Signal traces" },
+    loom: { label: "Loom", hint: "Woven automaton" },
+    wind: { label: "Wind", hint: "Arrow field" },
+    warp: { label: "Warp", hint: "Glyph starfield" },
+    maze: { label: "Maze", hint: "Dig and flood" },
+    coral: { label: "Coral", hint: "Reaction–diffusion" },
+    spiral: { label: "Spiral", hint: "Cyclic automaton · multicolor" },
+    riso: { label: "Riso", hint: "Halftone inks · multicolor" },
+    ants: { label: "Ants", hint: "Langton's ants · multicolor" },
   };
-  // Saved choices from the retired gradient backdrops map to their nearest
-  // replacement instead of silently switching the wallpaper off.
-  const LEGACY_BACKDROPS = { hush: "phosphor", aurora: "dither", tide: "scope", veil: "glyphs", ember: "life" };
+  // Saved choices from retired backdrops map to their nearest replacement
+  // instead of silently switching the wallpaper off.
+  const LEGACY_BACKDROPS = {
+    hush: "glyphs", aurora: "riso", tide: "ripple", veil: "glyphs", ember: "life",
+    phosphor: "rain", dither: "riso", scope: "ripple",
+  };
   // Reading fonts. Bricolage Grotesque and Red Hat Mono ship with every page
   // (base.html); the rest load from Google Fonts only when chosen, and the
   // picker loads a tiny glyph subset of each so its cards render in their face.
@@ -414,6 +426,7 @@
         btn.innerHTML = `<i class="chat-backdrop-preview" data-kind="${id}" aria-hidden="true"></i><span>${spec.label}</span><small>${spec.hint}</small>`;
         backHost.append(btn);
       }
+      window.FuseBackdrop?.previews(backHost);
     }
   }
 
