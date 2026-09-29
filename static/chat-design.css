@@ -3238,8 +3238,16 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box
   border: 0;
   border-top: 1px solid color-mix(in srgb, var(--mist) 22%, var(--ink));
   border-radius: 0;
-  background: var(--ink);
   box-shadow: none;
+}
+/* The composer strip matches the console top bar's solid fill. Without the
+   backdrop selector a wallpaper theme swaps in the translucent glass fill,
+   which reads as a lighter band than the bar. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box,
+html[data-chat-backdrop]:not([data-chat-backdrop="none"])[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box {
+  background: color-mix(in srgb, var(--ink) 92%, var(--panel));
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 /* The dock keeps the transcript gutter for its other rows; the composer bleeds
    across it so its rule and glass meet both edges, as in Terminal. */
