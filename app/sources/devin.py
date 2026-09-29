@@ -712,8 +712,9 @@ def _remember_models(names: list[str], labels: dict[str, str]) -> list[str]:
     global _models_cache, _model_labels
     if not names and _models_cache and _models_cache[1]:
         return list(_models_cache[1])
-    merged = list(_models_cache[1]) if _models_cache and _models_cache[1] else []
-    for name in names:
+    # Upstream order first, then ids an earlier catalog listed and this omits.
+    merged = []
+    for name in names + (list(_models_cache[1]) if _models_cache and _models_cache[1] else []):
         if name and name not in merged:
             merged.append(name)
     if labels:

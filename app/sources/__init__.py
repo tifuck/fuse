@@ -121,7 +121,12 @@ _cache: dict[int, tuple[float, list[str]]] = {}
 _MODEL_TTL = 300.0
 _model_cache: dict[tuple[int, int | None], tuple[float, list[str]]] = {}
 _unavailable_types: set[str] = set()
-_refreshing: set[tuple[int, int | None]] = set()
+_refreshing: dict[tuple[int, int | None], asyncio.Task] = {}
+# Keys whose live catalog has loaded, or whose first load was already waited
+# on once. A failing provider must not stall every page for the full wait.
+_live: set[tuple[int, int | None]] = set()
+# How long a page waits for a pool's first live catalog before showing seeds.
+_FIRST_FETCH_WAIT = 4.0
 
 
 def _cache_key(s: Source, user_id: int | None) -> tuple[int, int | None]:
@@ -130,12 +135,13 @@ def _cache_key(s: Source, user_id: int | None) -> tuple[int, int | None]:
 
 def _sticky_names(key: tuple[int, int | None], names: list[str]) -> list[str]:
     """Pool catalogs only grow. A short or failed upstream list must not drop a
-    model the picker already showed; new upstream ids are appended."""
+    model the picker already showed. The upstream order leads, so a new model
+    sits where the provider lists it rather than after every older id."""
     prev = _model_cache.get(key)
     if not prev:
         return names
-    merged = list(prev[1])
-    for name in names:
+    merged = list(names)
+    for name in prev[1]:
         if name not in merged:
             merged.append(name)
     return merged
@@ -178,18 +184,19 @@ async def _refresh_source_models(s: Source, user_id: int | None) -> list[str]:
     else:
         _unavailable_types.discard(s.type_id)
     _store_models(key, m, sticky=s.type_id in POOL_TYPES)
+    _live.add(key)
     return _model_cache[key][1]
 
 
-def _schedule_model_refresh(s: Source, user_id: int | None) -> None:
+def _schedule_model_refresh(s: Source, user_id: int | None) -> asyncio.Task | None:
     key = _cache_key(s, user_id)
-    if key in _refreshing:
-        return
+    running = _refreshing.get(key)
+    if running is not None:
+        return running
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        return
-    _refreshing.add(key)
+        return None
 
     async def _run():
         try:
@@ -199,9 +206,27 @@ def _schedule_model_refresh(s: Source, user_id: int | None) -> None:
         except Exception:
             logger.warning("Background model catalog refresh failed for source id=%s", s.source_id, exc_info=True)
         finally:
-            _refreshing.discard(key)
+            _refreshing.pop(key, None)
 
-    loop.create_task(_run())
+    task = loop.create_task(_run())
+    _refreshing[key] = task
+    return task
+
+
+async def _await_first_fetch(s: Source, user_id: int | None) -> None:
+    """Give a pool still on its seed list a moment to load the live catalog.
+
+    Without this, the first page after every restart showed only the seeds
+    (no Sonnet 5.5, no gpt-6.1-sol) and the live list appeared on reload.
+    """
+    task = _schedule_model_refresh(s, user_id)
+    if task is None:
+        return
+    try:
+        await asyncio.wait_for(asyncio.shield(task), _FIRST_FETCH_WAIT)
+    except (asyncio.TimeoutError, Exception):
+        pass
+    _live.add(_cache_key(s, user_id))
 
 
 def _fallback_models(s: Source) -> list[str]:
@@ -218,14 +243,18 @@ def _fallback_models(s: Source) -> list[str]:
 async def _source_models(s: Source, user_id: int | None) -> list[str]:
     key = _cache_key(s, user_id)
     hit = _model_cache.get(key)
+    if hit and key not in _live and s.type_id in POOL_TYPES:
+        await _await_first_fetch(s, user_id)
+        hit = _model_cache.get(key) or hit
     if hit:
         if time.time() - hit[0] >= _MODEL_TTL:
             _schedule_model_refresh(s, user_id)
         return hit[1]
     fallback = _fallback_models(s)
     if fallback:
-        _schedule_model_refresh(s, user_id)
-        return fallback
+        await _await_first_fetch(s, user_id)
+        hit = _model_cache.get(key)
+        return hit[1] if hit else fallback
     return await _refresh_source_models(s, user_id)
 
 
@@ -243,12 +272,14 @@ def invalidate_model_cache(source_type: str | None = None) -> None:
     if source_type is None:
         _model_cache.clear()
         _cache.clear()
+        _live.clear()
         return
     sids = [s.source_id for s in all_enabled() if s.type_id == source_type]
     for sid in sids:
         _cache.pop(sid, None)
     for key in [k for k in _model_cache if k[0] in sids]:
         _model_cache.pop(key, None)
+        _live.discard(key)
 
 
 def catalog_unavailable_for(model: str) -> bool:

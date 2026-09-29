@@ -449,7 +449,9 @@ def _remember_models(names: list[str]) -> list[str]:
         return list(_models_cache[1])
     base = list(_models_cache[1]) if _models_cache and _models_cache[1] else list(GROK_MODELS)
     merged: list[str] = []
-    for name in base + fresh:
+    # Upstream order first (new models sit where the provider puts them),
+    # then ids an earlier catalog listed and this one omits.
+    for name in fresh + base:
         if name not in merged:
             merged.append(name)
     if merged:

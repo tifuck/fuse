@@ -194,3 +194,33 @@ def test_new_free_catalog_model_routes_and_lists_for_free_plans():
         assert _listable(_plan_rows("free"), ["gpt-6.1-sol", "gpt-6.1-luna"]) == ["gpt-6.1-luna"]
     finally:
         pool_pick._live_free_models = saved
+
+
+def test_first_page_waits_for_the_live_pool_catalog():
+    """After a restart the cache holds only seeds; the first load must not."""
+    from app import sources
+
+    class Src:
+        type_id = "claude"
+        source_id = 991
+
+    async def live():
+        return ["claude/claude-opus-5-5", "claude/claude-sonnet-5-5", "claude/claude-sonnet-5"]
+
+    src = Src()
+    src.models = live
+    key = (991, None)
+    sources._model_cache[key] = (0.0, ["claude/claude-opus-5-5", "claude/claude-sonnet-5"])
+    try:
+        names = asyncio.run(sources._source_models(src, None))
+        # Upstream order leads; a seed the catalog dropped stays listed.
+        assert names == ["claude/claude-opus-5-5", "claude/claude-sonnet-5-5", "claude/claude-sonnet-5"]
+        assert key in sources._live
+    finally:
+        sources._model_cache.pop(key, None)
+        sources._cache.pop(991, None)
+        sources._live.discard(key)
+
+
+def test_live_catalog_order_leads_seeds(fresh_chatgpt_cache):
+    assert chatgpt._remember_models(["gpt-6.1-sol", "gpt-6-sol"])[:2] == ["gpt-6.1-sol", "gpt-6-sol"]
