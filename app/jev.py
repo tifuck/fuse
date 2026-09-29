@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 
 import httpx
 
@@ -54,21 +53,6 @@ QUESTIONS = {
     },
 }
 
-_DESTRUCTIVE = re.compile(
-    r"(?is)("
-    r"\brm\s+(?:-[^\s]*[rf][^\s]*\s*)+"
-    r"|mkfs\b"
-    r"|\bdd\s+if="
-    r"|git\s+push\b[^\n]*--force"
-    r"|chmod\s+777\b"
-    r"|:\(\)\{:\|:&\};:"
-    r"|\bformat\s+[a-z]:"
-    r"|diskpart\b"
-    r"|remove-item\b[^\n]*-recurse"
-    r")"
-)
-
-
 def user_can_auto(user_id: int | None) -> bool:
     if not user_id:
         return False
@@ -82,8 +66,9 @@ def user_can_auto(user_id: int | None) -> bool:
 
 
 def looks_destructive(command: str) -> bool:
-    text = str(command or "").strip()
-    return bool(text) and bool(_DESTRUCTIVE.search(text))
+    from .permissions import _destructive_command
+
+    return _destructive_command(command)
 
 
 def _noul(answers: dict, key: str) -> float | None:
@@ -213,6 +198,8 @@ async def evaluate(user_id: int, state: dict, questions: dict | None = None, tim
 async def judge(user_id: int, thread_id: int, action: dict, *, roots: list[str] | None = None) -> bool:
     """True only when Jev is confident the action is a safe auto-allow."""
     try:
+        if len(str((action or {}).get("command") or "")) > COMMAND_CLIP:
+            return False
         if looks_destructive(str((action or {}).get("command") or "")):
             logger.warning("Jev skip regex-destructive tool=%s", (action or {}).get("tool"))
             return False

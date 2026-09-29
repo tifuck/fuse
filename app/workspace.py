@@ -2594,7 +2594,7 @@ def _format_search_lines(
 
     For grep content output with context, only match lines (path:N:) count
     toward cap_lines; context (path-N-) and '--' separators ride along."""
-    from .permissions import is_secret_name
+    from .permissions import is_secret_path
 
     rows: list[str] = []
     hidden = 0
@@ -2609,8 +2609,8 @@ def _format_search_lines(
             continue
         if hide_secrets:
             loc = _grep_line_path(line, mode) if grep else line
-            name = ntpath.basename(loc) if windows else posixpath.basename(loc)
-            if is_secret_name(name):
+            full_path = ntpath.join(root, loc) if windows else posixpath.join(root, loc)
+            if is_secret_path(full_path):
                 if not grep or mode != "content" or _MATCH_LINE.match(line):
                     hidden += 1
                 continue
@@ -2667,11 +2667,11 @@ async def _grep(user_id, host_id, alias, args, root, *, windows: bool = False):
     mode = _grep_mode_arg(args)
     context = _int_arg(args, "context", 0, 0, _GREP_MAX_CONTEXT) if mode == "content" else 0
     path = _confine(str(args.get("path") or "."), root, windows=windows)
-    from .permissions import is_secret_name
+    from .permissions import is_secret_path
 
     # An explicitly named secret file went through the permission gate's
     # secret prompt; directory searches never print secret-file contents.
-    target_secret = is_secret_name(ntpath.basename(path) if windows else posixpath.basename(path))
+    target_secret = is_secret_path(path)
     notes: list[str] = []
     if _is_agent(user_id, host_id) and windows:
         # Windows connector grep is native WalkDir; bash `command -v rg` is not.

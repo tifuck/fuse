@@ -9,9 +9,11 @@ donor re-links it.
 from __future__ import annotations
 
 import logging
+import json
 from datetime import datetime, timedelta, timezone
 
 from .. import accounts, db
+from ..crypto import encrypt
 
 logger = logging.getLogger(__name__)
 
@@ -40,16 +42,32 @@ def persist_rotated(cas, cred_id: int, old_extra_raw, secret: str, extra: dict, 
     cid = int(cred_id)
     if cas(cid, old_extra_raw, secret, extra):
         return True
+    original = accounts.cred_extra({"extra": old_extra_raw})
     for _ in range(CAS_ATTEMPTS):
         row = db.fetchone("SELECT * FROM credentials WHERE id=?", (cid,))
         if row is None:
             logger.warning("Credential %s was removed during token refresh; rotated tokens dropped", cid)
             return False
         merged = accounts.cred_extra(row)
+        if row["disabled"] or merged.get("refresh_token") != original.get("refresh_token"):
+            return False  # Removed/re-linked credentials supersede this refresh.
         merged.update(rotated)
         if merge is not None:
             merge(merged)
         if cas(cid, row["extra"], secret, merged):
             return True
-    logger.error("Credential %s: rotated tokens could not be stored after %s attempts", cid, CAS_ATTEMPTS)
-    return False
+    # Serialize only the final merge, never the provider request. A row lock
+    # prevents unrelated metadata writers from starving token persistence.
+    with db.tx() as conn:
+        row = conn.execute("SELECT * FROM credentials WHERE id=? FOR UPDATE", (cid,)).fetchone()
+        if row is None or row["disabled"]:
+            return False
+        merged = accounts.cred_extra(row)
+        if merged.get("refresh_token") != original.get("refresh_token"):
+            return False
+        merged.update(rotated)
+        if merge is not None:
+            merge(merged)
+        conn.execute("UPDATE credentials SET secret=?, extra=? WHERE id=?",
+                     (secret, encrypt(json.dumps(merged)), cid))
+    return True

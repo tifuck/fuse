@@ -40,6 +40,8 @@ _STATUSES = ("pending", "allowed", "denied", "timeout", "cancelled")
 _SECRET_EXACT = frozenset({
     ".env", "env", ".netrc", ".npmrc", ".htpasswd", "credentials.json",
     "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
+    "shadow", "gshadow", ".pgpass", ".my.cnf", ".git-credentials",
+    "credentials", "secrets.json", "token.json", "kubeconfig",
 })
 _SECRET_SUFFIX = (".pem", ".key", ".keystore", ".env")
 _SECRET_DOTENV = re.compile(r"^\.env([._-]|$)")
@@ -66,6 +68,8 @@ _DESTRUCTIVE_SHELL = re.compile(
     r"|\bformat\s+[a-z]:"
     r"|diskpart\b"
     r"|remove-item\b[^\n]*-recurse"
+    r"|\bfind\b[^\n]*-(?:delete|exec|execdir)\b"
+    r"|\b(?:wipefs|shred|truncate)\b"
     r")"
 )
 
@@ -88,6 +92,13 @@ def is_secret_name(name: str) -> bool:
     if low.endswith(_SECRET_SUFFIX):
         return True
     return bool(_SECRET_DOTENV.match(low))
+
+
+def is_secret_path(path: str) -> bool:
+    parts = str(path or "").replace("\\", "/").lower().split("/")
+    if is_secret_name(parts[-1]):
+        return True
+    return any(part in {".aws", ".docker", ".kube", ".ssh", ".gnupg"} for part in parts[:-1])
 
 
 def _norm(path: str, windows: bool) -> str:
@@ -238,7 +249,7 @@ def _grant_dir_for(tool: str, target: str, windows: bool) -> str:
     return head or raw
 
 
-# --- best-effort shell path extraction (fail-open) ---
+# --- shell path extraction (opaque commands require approval) ---
 
 def _looks_like_path(token: str, windows: bool) -> bool:
     low = token.lower()
@@ -255,7 +266,7 @@ def _looks_like_path(token: str, windows: bool) -> bool:
     return "/" in token
 
 
-def extract_shell_paths(command: str, cwd: str, windows: bool, limit: int = 6) -> list[tuple[str, bool]] | None:
+def extract_shell_paths(command: str, cwd: str, windows: bool) -> list[tuple[str, bool]] | None:
     """Path-looking tokens as (path, is_dir). None = opaque command.
     is_dir marks cd/pushd targets (a directory by construction); everything
     else is treated as a file-ish target."""
@@ -288,7 +299,7 @@ def extract_shell_paths(command: str, cwd: str, windows: bool, limit: int = 6) -
             if stripped and stripped not in ("&&", ";", "||", "&") and not stripped.startswith("-"):
                 out.append((stripped, True))
             continue
-        if _looks_like_path(stripped, windows):
+        if _looks_like_path(stripped, windows) or is_secret_path(stripped):
             out.append((stripped, False))
     resolved: list[tuple[str, bool]] = []
     seen: list[str] = []
@@ -301,8 +312,6 @@ def extract_shell_paths(command: str, cwd: str, windows: bool, limit: int = 6) -
         if cand and cand not in seen:
             seen.append(cand)
             resolved.append((cand, is_dir))
-        if len(resolved) >= limit:
-            break
     return resolved
 
 
@@ -912,8 +921,17 @@ async def review(*, tool: str, args: dict, user_id: int,
             grant_kind, grant_value = "dir", resolved_cwd
         base = resolved_cwd if resolved_cwd and not _is_home_marker(resolved_cwd) else "~"
         paths = extract_shell_paths(command, base, windows)
+        # Shell programs can access paths that never appear as operands. Only
+        # simple read-only commands can pass without explicit authorization.
+        simple = re.fullmatch(r"\s*(?:cat|head|tail|ls|pwd|wc|stat|file|echo)\b[^;&|<>\n*?\[\]{}]*", command)
+        restricted_shell = paths is None or not simple or _destructive_command(command)
+        if restricted_shell:
+            reasons.append("shell command requires approval")
         if paths is not None:
             for cand, is_dir in paths:
+                if is_secret_path(cand):
+                    secret = True
+                    reasons.append("secret-named file")
                 ok, resolved_cand = scope_allows(cand, base, roots, windows)
                 if ok:
                     continue
@@ -933,8 +951,7 @@ async def review(*, tool: str, args: dict, user_id: int,
         # the same approval as reading it (directory searches withhold
         # secret-file matches in workspace._grep).
         if tool in ("read_file", "grep"):
-            base_name = (ntpath.basename(resolved.replace("/", "\\")) if windows else posixpath.basename(resolved))
-            if is_secret_name(base_name):
+            if is_secret_path(resolved):
                 secret = True
                 reasons.append("secret-named file")
                 grant_kind, grant_value = "file", resolved
@@ -957,7 +974,7 @@ async def review(*, tool: str, args: dict, user_id: int,
         await asyncio.to_thread(
             grant_covers, gate.user_id, gate.thread_id, host_id, grant_kind, grant_value, windows
         )
-        if grant_value
+        if grant_value and not (perm_kind == "shell" and (restricted_shell or secret))
         else False
     )
     if covered:
@@ -987,6 +1004,7 @@ async def review(*, tool: str, args: dict, user_id: int,
         await asyncio.to_thread(auto_enabled, gate.user_id, gate.thread_id)
         and not secret
         and not _destructive_command(command)
+        and not (perm_kind == "shell" and restricted_shell)
     ):
         from . import jev
         from . import chat_runs as chat_runs_mod

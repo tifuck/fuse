@@ -49,6 +49,8 @@ class RateLimiter:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._hits: dict[str, list[float]] = defaultdict(list)
+        self._expires: dict[str, float] = {}
+        self._next_cleanup = 0.0
 
     def allow(self, key: str, limit: int, window: float) -> bool:
         now = time.monotonic()
@@ -60,10 +62,13 @@ class RateLimiter:
                 return False
             stamps.append(now)
             self._hits[key] = stamps
-            if len(self._hits) > 8192:
-                stale = [k for k, v in self._hits.items() if not v or v[-1] < cutoff]
-                for k in stale[:4096]:
+            self._expires[key] = now + window
+            if len(self._hits) > 8192 and now >= self._next_cleanup:
+                self._next_cleanup = now + 60
+                stale = [k for k, expiry in self._expires.items() if expiry <= now]
+                for k in stale:
                     self._hits.pop(k, None)
+                    self._expires.pop(k, None)
             return True
 
 

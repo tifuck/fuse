@@ -257,9 +257,12 @@ def _count(conn, user_id: int) -> int:
 def _link_thread(conn, artifact_id: int, thread_id: int | None) -> None:
     if not thread_id:
         return
-    exists = conn.execute("SELECT 1 AS ok FROM chat_threads WHERE id=?", (thread_id,)).fetchone()
+    exists = conn.execute(
+        "SELECT 1 AS ok FROM chat_threads t JOIN artifacts a ON a.user_id=t.user_id WHERE t.id=? AND a.id=?",
+        (thread_id, artifact_id),
+    ).fetchone()
     if not exists:
-        return
+        raise ArtifactError("thread not found", 404)
     conn.execute(
         "INSERT OR IGNORE INTO artifact_threads (artifact_id, thread_id) VALUES (?,?)",
         (artifact_id, thread_id),
@@ -401,10 +404,7 @@ def attach_thread(user_id: int, public_id: str, thread_id: int) -> dict | None:
 
     pk = chats.resolve_thread_pk(user_id, thread_id)
     if pk is None:
-        try:
-            pk = int(thread_id)
-        except (TypeError, ValueError):
-            return None
+        return None
     with db.tx() as conn:
         _link_thread(conn, int(row["id"]), pk)
         if row["thread_id"] is None:

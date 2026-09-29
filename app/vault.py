@@ -146,13 +146,13 @@ def unpin_run(user_id: int, run_id: str) -> None:
 
 def unlocked(user_id: int) -> bool:
     try:
-        get_dek(user_id)
+        get_dek(user_id, touch=False)
         return True
     except VaultLocked:
         return False
 
 
-def get_dek(user_id: int) -> bytes:
+def get_dek(user_id: int, *, touch: bool = True) -> bytes:
     uid = int(user_id)
     now = time.monotonic()
     with _lock:
@@ -164,7 +164,8 @@ def get_dek(user_id: int) -> bytes:
         if idle > IDLE_SECONDS and not pinned:
             _vault.pop(uid, None)
             raise VaultLocked("vault locked")
-        rec["last_seen"] = now
+        if touch:
+            rec["last_seen"] = now
         return rec["dek"]
 
 

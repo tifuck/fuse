@@ -196,7 +196,7 @@ class TokenStoreTest(unittest.TestCase):
             return old == "v2"
 
         with (
-            patch.object(token_store.db, "fetchone", return_value={"id": 1, "extra": "v2"}),
+            patch.object(token_store.db, "fetchone", return_value={"id": 1, "extra": "v2", "disabled": 0}),
             patch.object(token_store.accounts, "cred_extra", return_value={"label": "kept"}),
         ):
             ok = token_store.persist_rotated(cas, 1, "v1", "s", {"x": 1}, {"refresh_token": "new"})
@@ -204,7 +204,7 @@ class TokenStoreTest(unittest.TestCase):
         self.assertEqual(calls[-1][1], {"label": "kept", "refresh_token": "new"})
 
     def test_removed_row_reports_failure(self):
-        with patch.object(token_store.db, "fetchone", return_value=None):
+        with patch.object(token_store.db, "fetchone", return_value=None), patch.object(token_store.accounts, "cred_extra", return_value={}):
             ok = token_store.persist_rotated(lambda *a: False, 1, "v1", "s", {}, {"refresh_token": "new"})
         self.assertFalse(ok)
 
