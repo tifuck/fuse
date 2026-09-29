@@ -140,6 +140,18 @@ CHATGPT_FREE_MODELS = frozenset(
 )
 # Observed unsupported on both Free and Plus ChatGPT OAuth.
 CHATGPT_BLOCKED_MODELS = frozenset({"gpt-5.3-codex-spark"})
+# Slugs a Free/Go account's live Codex catalog lists, so a new free model
+# routes to Free/Go without a code change.
+_live_free_models: frozenset[str] = frozenset()
+
+
+def note_free_models(names) -> None:
+    global _live_free_models
+    _live_free_models = _live_free_models | frozenset(names)
+
+
+def chatgpt_free_model(model: str) -> bool:
+    return model in CHATGPT_FREE_MODELS or model in _live_free_models
 
 
 def _as_float(v) -> float | None:
@@ -158,7 +170,7 @@ def chatgpt_allows_model(plan: str | None, model: str) -> bool:
         return False
     plan = (plan or "").strip().lower()
     if plan in CHATGPT_FREE_PLANS:
-        return model in CHATGPT_FREE_MODELS
+        return chatgpt_free_model(model)
     return True
 
 
@@ -169,7 +181,7 @@ def chatgpt_plan_rank(plan: str | None, model: str) -> int:
     account is eligible. Paid-only models never rank Free/Go (those plans
     are filtered out by chatgpt_allows_model).
     """
-    if (model or "") not in CHATGPT_FREE_MODELS:
+    if not chatgpt_free_model(model or ""):
         return 0
     return 0 if (plan or "").strip().lower() in CHATGPT_FREE_PLANS else 1
 

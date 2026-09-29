@@ -15,7 +15,17 @@ from ..config import settings
 from ..crypto import encrypt
 from ..proxy import UsageStream, usage_from_obj
 from .base import ChatResult
-from .pool_pick import Failover, note_failure, pick_account, release, reserve
+from .pool_pick import (
+    CHATGPT_FREE_PLANS,
+    Failover,
+    chatgpt_allows_model,
+    chatgpt_plan_type,
+    note_failure,
+    note_free_models,
+    pick_account,
+    release,
+    reserve,
+)
 from . import pool_policy
 from .pool_session import bind, lookup
 from .token_store import expires_at, persist_rotated
@@ -219,6 +229,25 @@ def chatgpt_own_access(user_id: int) -> dict:
         if credential_is_authed(row):
             return {"ok": True, "reason": "ok"}
     return {"ok": False, "reason": "unauthed"}
+
+
+def listable_models(names: list[str], user_id: int | None) -> list[str]:
+    """The pool catalog narrowed to what this user's accounts can serve.
+
+    A user routed only onto Free/Go accounts sees only free models; one
+    with any paid account in reach sees the paid models too. Same rule
+    pick_account applies when the request is routed.
+    """
+    if user_id is None:
+        return names
+    plans = set()
+    for row in pool_policy.load_credentials(ensure_chatgpt_source(), "chatgpt", user_id):
+        extra = _safe_extra(row)
+        if extra and credential_is_authed(row, extra):
+            plans.add(chatgpt_plan_type(extra))
+    if not plans:
+        return names
+    return [name for name in names if any(chatgpt_allows_model(plan, name) for plan in plans)]
 
 
 def _chatgpt_pool_ready() -> bool:
@@ -515,26 +544,38 @@ def _remember_models(names: list[str]) -> list[str]:
     return merged or list(CHATGPT_MODELS)
 
 
+def _safe_extra(cred) -> dict:
+    """Credential extra, or {} for a row that cannot be read."""
+    try:
+        return accounts.cred_extra(cred)
+    except Exception:
+        return {}
+
+
+async def _fetch_slugs(token: str, account_id: str | None = None) -> list[str]:
+    """One account's listed slugs, uncached. [] on any failure."""
+    if not token:
+        return []
+    try:
+        async with _client() as client:
+            r = await client.get(
+                _models_url(),
+                params={"client_version": settings.openai_codex_client_version},
+                headers=_chat_headers(token, account_id),
+            )
+        if r.status_code == 200:
+            return parse_catalog_payload(r.json())
+        logger.warning("ChatGPT model catalog returned HTTP %s", r.status_code)
+    except (httpx.HTTPError, json.JSONDecodeError, ValueError, AttributeError):
+        pass
+    return []
+
+
 async def fetch_catalog(token: str, account_id: str | None = None) -> list[str]:
     now = time.time()
     if _models_cache and now - _models_cache[0] < 300:
         return list(_models_cache[1])
-    names: list[str] = []
-    if token:
-        try:
-            async with _client() as client:
-                r = await client.get(
-                    _models_url(),
-                    params={"client_version": settings.openai_codex_client_version},
-                    headers=_chat_headers(token, account_id),
-                )
-            if r.status_code == 200:
-                names = parse_catalog_payload(r.json())
-            else:
-                logger.warning("ChatGPT model catalog returned HTTP %s", r.status_code)
-        except (httpx.HTTPError, json.JSONDecodeError, ValueError, AttributeError):
-            names = []
-    return _remember_models(names)
+    return _remember_models(await _fetch_slugs(token, account_id))
 
 
 def _window_name(seconds) -> str:
@@ -1197,13 +1238,25 @@ class ChatGPTSource:
         now = time.time()
         if _models_cache and now - _models_cache[0] < 300:
             return list(_models_cache[1])
-        picked = self._pick()
-        names: list[str] = []
-        if picked:
-            cred, extra = picked
-            token = extra.get("access_token") or accounts.cred_secret(cred)
-            names = await fetch_catalog(token, extra.get("account_id") or None)
-        return _remember_models(names)
+        # Codex lists only what the account's plan can call, and the pool is
+        # mostly Free. Read one paid and one Free/Go account so paid-only
+        # models (gpt-6.1-sol) list; pick_account then routes them to paid.
+        tiers = (
+            [c for c in self.creds if chatgpt_plan_type(_safe_extra(c)) not in CHATGPT_FREE_PLANS],
+            [c for c in self.creds if chatgpt_plan_type(_safe_extra(c)) in CHATGPT_FREE_PLANS],
+        )
+        picks = []
+        for creds in tiers:
+            picked = pick_account(creds, kind="chatgpt", is_authed=credential_is_authed) if creds else None
+            if picked:
+                cred, extra = picked
+                token = extra.get("access_token") or accounts.cred_secret(cred)
+                picks.append(_fetch_slugs(token, extra.get("account_id") or None))
+            else:
+                picks.append(asyncio.sleep(0, []))
+        paid, free = await asyncio.gather(*picks)
+        note_free_models(free)
+        return _remember_models(paid + [name for name in free if name not in paid])
 
     async def _post(self, token: str, account_id: str | None, payload: dict, client: httpx.AsyncClient):
         # Streaming send: the body stays unread until the translator iterates

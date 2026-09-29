@@ -129,3 +129,68 @@ def test_auto_price_fills_gaps_and_reprices_history(fresh_chatgpt_cache):
         assert pricing.auto_price(catalog) == []
         assert _price("chatgpt", "gpt-6.1-sol")["origin"] == "openrouter"
         assert _price("devin", "claude-opus-5")["input_micros_per_million"] == 1_000_000
+
+
+def test_catalog_reads_paid_and_free_accounts(fresh_chatgpt_cache):
+    """Free accounts do not list paid-only models; the pool is mostly Free."""
+    creds = [
+        {"id": 1, "plan": "free", "token": "free-token"},
+        {"id": 2, "plan": "prolite", "token": "paid-token"},
+    ]
+    listed = {"free-token": ["gpt-6-luna"], "paid-token": ["gpt-6.1-sol", "gpt-6-luna"]}
+
+    def extra(cred):
+        return {"access_token": cred["token"], "billing": {"plan_type": cred["plan"]}}
+
+    def pick(pool, **_kw):
+        return (pool[0], extra(pool[0])) if pool else None
+
+    async def slugs(token, account_id=None):
+        return listed[token]
+
+    src = chatgpt.ChatGPTSource.__new__(chatgpt.ChatGPTSource)
+    src.creds = creds
+    with patch.object(chatgpt, "_safe_extra", side_effect=extra), patch.object(
+        chatgpt, "pick_account", side_effect=pick
+    ), patch.object(chatgpt, "_fetch_slugs", side_effect=slugs):
+        names = asyncio.run(src.models())
+    assert "gpt-6.1-sol" in names
+    assert chatgpt.is_chatgpt_model("gpt-6.1-sol")
+
+
+def _plan_rows(*plans):
+    return [
+        {"id": i, "disabled": 0, "extra": {"refresh_token": "r", "billing": {"plan_type": plan}}}
+        for i, plan in enumerate(plans, 1)
+    ]
+
+
+def _listable(rows, names):
+    with patch.object(chatgpt, "ensure_chatgpt_source", return_value=1), patch.object(
+        chatgpt.pool_policy, "load_credentials", return_value=rows
+    ), patch.object(chatgpt, "_safe_extra", side_effect=lambda row: row["extra"]), patch.object(
+        chatgpt, "_billing_auth_failed", return_value=False
+    ):
+        return chatgpt.listable_models(names, 7)
+
+
+def test_free_only_users_list_only_free_models():
+    names = ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-terra"]
+    assert _listable(_plan_rows("free", "go"), names) == ["gpt-6-luna", "gpt-5.6-terra"]
+    assert _listable(_plan_rows("free", "prolite"), names) == names
+    # Anonymous callers and users with no readable account are not narrowed.
+    assert chatgpt.listable_models(names, None) == names
+    assert _listable([], names) == names
+
+
+def test_new_free_catalog_model_routes_and_lists_for_free_plans():
+    from app.sources import pool_pick
+
+    saved = pool_pick._live_free_models
+    try:
+        assert not pool_pick.chatgpt_allows_model("free", "gpt-6.1-luna")
+        pool_pick.note_free_models(["gpt-6.1-luna"])
+        assert pool_pick.chatgpt_allows_model("free", "gpt-6.1-luna")
+        assert _listable(_plan_rows("free"), ["gpt-6.1-sol", "gpt-6.1-luna"]) == ["gpt-6.1-luna"]
+    finally:
+        pool_pick._live_free_models = saved

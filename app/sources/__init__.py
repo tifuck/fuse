@@ -229,6 +229,15 @@ async def _source_models(s: Source, user_id: int | None) -> list[str]:
     return await _refresh_source_models(s, user_id)
 
 
+async def _user_source_models(s: Source, user_id: int | None) -> list[str]:
+    names = await _source_models(s, user_id)
+    if s.type_id == "chatgpt":
+        from . import chatgpt as chatgpt_mod
+
+        return chatgpt_mod.listable_models(names, user_id)
+    return names
+
+
 def invalidate_model_cache(source_type: str | None = None) -> None:
     """Drop cached model lists, e.g. after a per-user key or preference change."""
     if source_type is None:
@@ -339,7 +348,7 @@ async def models_union(
         allow_mimo=allow_mimo,
         allow_claude=allow_claude,
     )
-    results = await asyncio.gather(*(_source_models(s, user_id) for s in sources))
+    results = await asyncio.gather(*(_user_source_models(s, user_id) for s in sources))
     names: list[str] = []
     for m in results:
         for n in m:
@@ -517,7 +526,7 @@ async def models_by_source(
         allow_mimo=allow_mimo,
         allow_claude=allow_claude,
     )
-    results = await asyncio.gather(*(_source_models(s, user_id) for s in sources))
+    results = await asyncio.gather(*(_user_source_models(s, user_id) for s in sources))
     groups = [
         {
             "type": s.type_id,
