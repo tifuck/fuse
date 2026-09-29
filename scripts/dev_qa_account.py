@@ -8,7 +8,8 @@ Run from /root/fuse-dev. Refuses any schema but fuse_dev. The login lives in
 data/dev-qa-login.json (0600, not in git) and is reused across runs, so the
 password stays stable after scripts.clone_db_to_dev recreates fuse_dev (that
 script runs this one afterwards). Fixture threads are synthetic and owned
-only by the QA account; every run deletes and recreates them.
+only by the QA account; every run deletes and recreates them. "Heavy
+transcript" is a ~5 MB, 200-message thread with subagents for load-time checks.
 """
 from __future__ import annotations
 
@@ -220,6 +221,147 @@ def _child_message(desc, status):
     }
 
 
+_WORDS = ("the dock pane layout reconcile cursor thread render message tool output schema migration "
+          "subagent stream patch event socket snapshot height scroll markdown code block reasoning "
+          "watchdog queue compaction meter context window provider replay trace job command host").split()
+
+
+def _prose(rng, words):
+    out, line = [], []
+    for _ in range(words):
+        line.append(rng.choice(_WORDS))
+        if len(line) > rng.randint(9, 16):
+            out.append(" ".join(line).capitalize() + ".")
+            line = []
+    return " ".join(out + [" ".join(line)]).strip()
+
+
+def _heavy_thread(turns=100, subagent_every=10):
+    """A long transcript shaped like the heaviest real threads (~5 MB): long
+    reasoning, many tool traces with output, code blocks, and subagents."""
+    import random
+
+    rng = random.Random(7)
+    messages, spawns = [], []
+    for turn in range(turns):
+        messages.append({"id": _mid(), "role": "user", "content": f"Step {turn + 1}: " + _prose(rng, 40), "reasoning": "", "error": ""})
+        tools = []
+        for k in range(rng.randint(3, 7)):
+            ident = f"th_{turn}_{k}"
+            if k % 3 == 0:
+                out = "\n".join(f"{n}: " + _prose(rng, 12) for n in range(1, 60))
+                tools.append(_command(ident, f"qah{turn:04d}{k:04d}", f"pytest -q tests/test_step_{turn}.py -k case_{k}", out))
+            elif k % 3 == 1:
+                out = "\n".join(f"{n}: " + _prose(rng, 10) for n in range(1, 80))
+                tools.append(_tool(ident, "read_file", path=f"/srv/fuse-qa/app/module_{turn}_{k}.py", cwd="/srv/fuse-qa",
+                                   host="qa-box", platform="posix", project_root="/srv/fuse-qa", offset=1, limit=200,
+                                   output=out, preview=out[:120]))
+            else:
+                out = "\n".join(f"app/f{n}.py:{n * 7}: " + _prose(rng, 8) for n in range(30))
+                tools.append(_tool(ident, "grep", pattern="reconcile|snapshot", path="/srv/fuse-qa/app", cwd="/srv/fuse-qa",
+                                   host="qa-box", platform="posix", project_root="/srv/fuse-qa", max_matches=50,
+                                   output=out, preview="30 matches"))
+        if turn % subagent_every == subagent_every - 1:
+            for j in range(2):
+                cid = _mid()
+                desc = f"Review area {turn}-{j}: " + _prose(rng, 8)
+                spawns.append((desc, cid))
+                tools.append(_tool(f"th_{turn}_s{j}", "spawn_subagent", description=desc, preview=desc, child_id=cid,
+                                   model="qa/fixture-model", background=True, summary="", output=f"spawned {cid}"))
+        code = "```python\n" + "\n".join(f"def step_{turn}_{n}(rows):\n    return [r for r in rows if r.id > {n}]  # " + _prose(rng, 6)
+                                          for n in range(12)) + "\n```"
+        content = f"## Result {turn + 1}\n\n" + _prose(rng, 180) + "\n\n" + code + "\n\n- " + "\n- ".join(_prose(rng, 14) for _ in range(5))
+        reasoning = [_prose(rng, 400), _prose(rng, 300)]
+        segments = [{"type": "reasoning", "text": reasoning[0]},
+                    *[{"type": "tool", "id": t["id"]} for t in tools[:3]],
+                    {"type": "reasoning", "text": "\n\n" + reasoning[1]},
+                    *[{"type": "tool", "id": t["id"]} for t in tools[3:]],
+                    {"type": "content", "text": content}]
+        messages.append({
+            "id": _mid(), "role": "assistant", "content": content,
+            "reasoning": "".join(s["text"] for s in segments if s["type"] == "reasoning"),
+            "error": "", "model": "qa/fixture-model", "elapsedMs": 60000 + turn,
+            "usage": {"prompt_tokens": 40000 + turn * 900, "completion_tokens": 1800, "total_tokens": 41800 + turn * 900},
+            "tools": tools, "segments": segments,
+        })
+    return messages, spawns
+
+
+def _heavy_child_message(rng_seed, desc):
+    import random
+
+    rng = random.Random(rng_seed)
+    msg = _child_message(desc, "completed")
+    msg["content"] = f"Finished: {desc}.\n\n" + "\n\n".join(_prose(rng, 120) for _ in range(12))
+    msg["reasoning"] = _prose(rng, 1500)
+    msg["segments"][0]["text"] = msg["reasoning"]
+    msg["segments"][-1]["text"] = msg["content"]
+    return msg
+
+
+def _heavy_child_transcript(rng_seed, desc, rounds=80):
+    """Provider history for a subagent with a lot of context: many tool rounds
+    with sizeable results, across two legs (a parent follow-up in between)."""
+    import random
+
+    rng = random.Random(1000 + rng_seed)
+    rows = [{"role": "user", "content": f"Task: {desc}"}]
+    for leg in range(2):
+        for k in range(rounds // 2):
+            call = f"call_{leg}_{k}"
+            rows.append({"role": "assistant", "content": _prose(rng, 30) if k % 3 == 0 else "", "tool_calls": [
+                {"id": call, "type": "function", "function": {"name": "read_file", "arguments": json.dumps(
+                    {"path": f"/srv/fuse-qa/app/part_{leg}_{k}.py", "offset": 1, "limit": 200})}}]})
+            rows.append({"role": "tool", "tool_call_id": call,
+                         "content": "\n".join(f"{n}: " + _prose(rng, 12) for n in range(1, 70))})
+        rows.append({"role": "assistant", "content": "## Leg summary\n\n" + _prose(rng, 200)})
+        if leg == 0:
+            rows.append({"role": "user", "content": "Follow-up from the parent: " + _prose(rng, 30)})
+    return rows
+
+
+def _insert_children(conn, uid, tid, root_id, subs, now, dumps, make_message, make_transcript=None):
+    for i, ((desc, status), cid) in enumerate(subs):
+        msg = make_message(i, desc, status)
+        req = {"model": "qa/fixture-model", "run_id": cid, "thread_id": tid,
+               "messages": [{"role": "user", "content": f"Task: {desc}"}],
+               "agent": {"depth": 1, "run_id": cid, "parent_run_id": root_id, "root_run_id": root_id,
+                         "description": desc, "subagent_type": "general-purpose", "background": True,
+                         "wake_sent": True}}
+        cts = _iso(now - timedelta(minutes=4, seconds=-i * 10))
+        conn.execute(
+            """INSERT INTO chat_runs(id,thread_id,user_id,status,request,message_id,message,created_at,updated_at,
+               parent_run_id,root_run_id,agent_depth,provider_messages) VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?)""",
+            (cid, tid, uid, status, dumps(req), msg["id"], dumps(msg), cts, cts, root_id, root_id,
+             dumps(make_transcript(i, desc)) if make_transcript
+             else dumps(req["messages"]) if status == "interrupted" else None),
+        )
+
+
+def _insert_root(conn, uid, tid, root_id, message, ts, dumps):
+    conn.execute(
+        """INSERT INTO chat_runs(id,thread_id,user_id,status,request,message_id,message,created_at,updated_at,
+           parent_run_id,root_run_id,agent_depth) VALUES(?,?,?,?,?,?,?,?,?,NULL,?,0)""",
+        (root_id, tid, uid, "completed", dumps({"model": "qa/fixture-model", "run_id": root_id, "thread_id": tid,
+         "agent": {"depth": 0, "run_id": root_id, "root_run_id": root_id}}),
+         message["id"], dumps(message), ts, ts, root_id),
+    )
+
+
+def _insert_commands(conn, uid, tid, root_id, tools, ts):
+    for tool in tools:
+        if tool["name"] != "run_terminal_command":
+            continue
+        conn.execute(
+            """INSERT INTO command_jobs(id,user_id,host_id,host,thread_id,run_id,command,cwd,background,timeout_ms,
+               status,exit_code,error,out,out_bytes,duration_ms,created_at,started_at,finished_at,out_chars,
+               termination_confirmed) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (tool["job_id"], uid, 0, "qa-box", tid, root_id, tool["command"], tool["cwd"], int(tool["background"]),
+             tool["timeout_ms"], tool["state"], tool["exit_code"], tool["error"], tool["output"], len(tool["output"]),
+             900, ts, ts, ts, len(tool["output"]), 1),
+        )
+
+
 def _seed(uid: int):
     from app import chats, db
 
@@ -248,38 +390,20 @@ def _seed(uid: int):
     root_id = _mid()
     ts = _iso(now - timedelta(minutes=5))
     with db.tx() as conn:
-        conn.execute(
-            """INSERT INTO chat_runs(id,thread_id,user_id,status,request,message_id,message,created_at,updated_at,
-               parent_run_id,root_run_id,agent_depth) VALUES(?,?,?,?,?,?,?,?,?,NULL,?,0)""",
-            (root_id, tid, uid, "completed", dumps({"model": "qa/fixture-model", "run_id": root_id, "thread_id": tid,
-             "agent": {"depth": 0, "run_id": root_id, "root_run_id": root_id}}),
-             messages[1]["id"], dumps(messages[1]), ts, ts, root_id),
-        )
-        for i, ((desc, status), cid) in enumerate(subs):
-            msg = _child_message(desc, status)
-            req = {"model": "qa/fixture-model", "run_id": cid, "thread_id": tid,
-                   "messages": [{"role": "user", "content": f"Task: {desc}"}],
-                   "agent": {"depth": 1, "run_id": cid, "parent_run_id": root_id, "root_run_id": root_id,
-                             "description": desc, "subagent_type": "general-purpose", "background": True,
-                             "wake_sent": True}}
-            cts = _iso(now - timedelta(minutes=4, seconds=-i * 10))
-            conn.execute(
-                """INSERT INTO chat_runs(id,thread_id,user_id,status,request,message_id,message,created_at,updated_at,
-                   parent_run_id,root_run_id,agent_depth,provider_messages) VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?)""",
-                (cid, tid, uid, status, dumps(req), msg["id"], dumps(msg), cts, cts, root_id, root_id,
-                 dumps(req["messages"]) if status == "interrupted" else None),
-            )
-        for tool in tools:
-            if tool["name"] != "run_terminal_command":
-                continue
-            conn.execute(
-                """INSERT INTO command_jobs(id,user_id,host_id,host,thread_id,run_id,command,cwd,background,timeout_ms,
-                   status,exit_code,error,out,out_bytes,duration_ms,created_at,started_at,finished_at,out_chars,
-                   termination_confirmed) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (tool["job_id"], uid, 0, "qa-box", tid, root_id, tool["command"], tool["cwd"], int(tool["background"]),
-                 tool["timeout_ms"], tool["state"], tool["exit_code"], tool["error"], tool["output"], len(tool["output"]),
-                 900, ts, ts, ts, len(tool["output"]), 1),
-            )
+        _insert_root(conn, uid, tid, root_id, messages[1], ts, dumps)
+        _insert_children(conn, uid, tid, root_id, subs, now, dumps, lambda i, desc, status: _child_message(desc, status))
+        _insert_commands(conn, uid, tid, root_id, tools, ts)
+
+    heavy, spawns = _heavy_thread()
+    heavy_view = chats.create_thread(uid, title=FIXTURE_PREFIX + "Heavy transcript", model="qa/fixture-model", messages=heavy)
+    htid = chats.resolve_thread_pk(uid, heavy_view["id"])
+    hroot = _mid()
+    with db.tx() as conn:
+        _insert_root(conn, uid, htid, hroot, heavy[-1], ts, dumps)
+        _insert_children(conn, uid, htid, hroot, [((d, "completed"), c) for d, c in spawns], now, dumps,
+                         lambda i, desc, status: _heavy_child_message(i, desc), _heavy_child_transcript)
+        _insert_commands(conn, uid, htid, hroot, [t for m in heavy for t in m.get("tools") or []], ts)
+    print(f"heavy thread: https://127.0.0.1:8089/chat?t={heavy_view['id']}")
     return view["id"]
 
 

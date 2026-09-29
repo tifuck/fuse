@@ -256,6 +256,7 @@
   let contextSaving = null;
   let sending = false;
   let loading = false;
+  let partialTranscript = false;
   let healRunId = "";
   let stoppingRunId = "";
   let pendingTurn = null;
@@ -621,6 +622,105 @@
     return data;
   }
 
+  // Packed snapshots (?pack=1) carry each text/reasoning segment's length in
+  // place of a second copy of its text; slice it back out of the message.
+  function unpackSegments(list) {
+    if (!Array.isArray(list)) return;
+    for (const msg of list) {
+      if (!msg || !Array.isArray(msg.segments)) continue;
+      const at = { content: 0, reasoning: 0 };
+      msg.segments = msg.segments.map((seg) => {
+        if (!seg || !(seg.type in at)) return seg;
+        if (typeof seg.text === "string" || typeof seg.n !== "number") {
+          at[seg.type] += typeof seg.text === "string" ? seg.text.length : 0;
+          return seg;
+        }
+        const { n, ...rest } = seg;
+        rest.text = String(msg[seg.type] || "").slice(at[seg.type], at[seg.type] + n);
+        at[seg.type] += n;
+        return rest;
+      });
+    }
+  }
+
+  function unpackThread(data) {
+    if (data && data.segments_packed) {
+      unpackSegments(data.messages);
+      unpackSegments(data.context_messages);
+      delete data.segments_packed;
+    }
+    return data;
+  }
+
+  // A streamed snapshot (?stream=1) is NDJSON: for long threads a partial line
+  // with only the newest messages, then the complete snapshot from the same
+  // server build. Resolves with the complete one.
+  async function readThreadStream(res, onPartial) {
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let parts = [];
+    let full = null;
+    const take = (line) => {
+      if (!line.trim()) return;
+      const data = unpackThread(JSON.parse(line));
+      if (data.partial) onPartial(data);
+      else full = data;
+    };
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      // Only the new chunk is scanned for the line break; the multi-megabyte
+      // second line is joined once instead of being rescanned per chunk.
+      let text = decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = text.indexOf("\n")) >= 0) {
+        parts.push(text.slice(0, nl));
+        take(parts.join(""));
+        parts = [];
+        text = text.slice(nl + 1);
+      }
+      if (text) parts.push(text);
+    }
+    parts.push(decoder.decode());
+    take(parts.join(""));
+    if (!full) throw new Error("Thread snapshot was incomplete.");
+    return full;
+  }
+
+  // chat-boot.js starts the linked thread's download from <head>.
+  function takeBootThread(id) {
+    const boot = window.__fuseBootThread;
+    window.__fuseBootThread = null;
+    return boot && boot.id === id ? boot.response : null;
+  }
+
+  // Command ids still waiting in a thread's local send queue. The snapshot
+  // reports which of them the server already accepted (accepted_queue_ids).
+  function queuedParam(id) {
+    try {
+      const items = JSON.parse(localStorage.getItem(queueStoreKey(id)) || "[]");
+      const ids = Array.isArray(items) ? items.map((item) => item && item.id).filter((v) => typeof v === "string" && v).slice(0, 64) : [];
+      return ids.length ? "&queued=" + encodeURIComponent(ids.join(",")) : "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  async function fetchThreadSnapshot(id, onPartial) {
+    const queued = queuedParam(id);
+    const boot = takeBootThread(id);
+    const res = await ((!queued && boot) || fetch("/chat/threads/" + encodeURIComponent(id) + "?pack=1&stream=1" + queued, {
+      headers: { "X-CSRF-Token": csrfToken() },
+    }).catch(() => null));
+    const streamed = res && res.ok && res.body && (res.headers.get("Content-Type") || "").includes("ndjson");
+    if (streamed) {
+      try { return await readThreadStream(res, onPartial); } catch (_) {}
+    }
+    // Errors, redirects to sign-in and interrupted streams take the ordinary
+    // request path so they surface exactly as before.
+    return unpackThread(await api("/chat/threads/" + id + "?pack=1" + queued));
+  }
+
   function isLive() {
     return syncState === "live" && socket && socket.readyState === WebSocket.OPEN;
   }
@@ -835,8 +935,13 @@
   const _hljsCache = new Map();
   const _HLJS_CACHE_MAX = 600;
 
+  // True while tool detail HTML is built only to learn whether a collapsed
+  // row has any details (see toolStepHtml): skip highlighting and markdown.
+  let detailProbe = false;
+
   function highlightCode(lang, code) {
     const source = String(code || "");
+    if (detailProbe) return escapeHtml(source);
     const language = codeLanguage(lang);
     if (!window.hljs || !language || source.length > 100000 || !window.hljs.getLanguage(language)) {
       return escapeHtml(source);
@@ -1224,6 +1329,7 @@
   }
 
   function renderMarkdown(src, streaming, catalog) {
+    if (detailProbe) return escapeHtml(String(src || ""));
     const text = String(src || "").replace(/\r\n/g, "\n");
     return renderDetailsBlocks(text, catalog, streaming) || (streaming ? "" : "<p></p>");
   }
@@ -2610,6 +2716,7 @@
   }
 
   function serialMessages() {
+    if (partialTranscript) throw new Error("This chat is still loading. Try again in a moment.");
     return messages
       .filter((msg) => msg && (msg.role === "user" || msg.role === "assistant"))
       .map((msg) => {
@@ -3068,6 +3175,7 @@
   function acceptThread(data) {
     if (data && !Number.isSafeInteger(data.event_cursor)) throw new Error("Thread snapshot is missing event_cursor; live sync requires a consistent snapshot.");
     if (!data || data.id !== currentId) return;
+    setPartialTranscript(false);
     // A snapshot may carry an older durable replay cursor than the patches
     // already applied (server state writes are throttled). Accept it and let
     // the socket replay the gap; the snapshot is the authoritative base.
@@ -3180,10 +3288,10 @@
     let data;
     // Keep the race-healing read, but avoid rebuilding/downloading a snapshot
     // already represented by this view (including in-flight run progress).
-    const query = !dirty && !transcriptDirty
-      ? "?observed_cursor=" + viewCursor + "&observed_thread_cursor=" + threadWatermark
-      : "";
-    try { data = await api("/chat/threads/" + id + query); }
+    const query = (!dirty && !transcriptDirty
+      ? "?observed_cursor=" + viewCursor + "&observed_thread_cursor=" + threadWatermark + "&pack=1"
+      : "?pack=1") + queuedParam(id);
+    try { data = unpackThread(await api("/chat/threads/" + id + query)); }
     catch (error) {
       if (id !== currentId || gen !== generation || load !== loadEpoch) return;
       if (error.status !== 404) throw error;
@@ -4758,9 +4866,42 @@
     await flushPending();
     if (nav !== navigation) return;
     const expectedGeneration = ++generation;
-    const data = await api("/chat/threads/" + id);
-    if (expectedGeneration !== generation || nav !== navigation) return;
+    const current = () => expectedGeneration === generation && nav === navigation;
+    // Long threads stream their newest messages first: paint those at once,
+    // then merge the complete transcript through the snapshot reconcile path.
+    let opened = false;
+    const data = await fetchThreadSnapshot(id, (partial) => {
+      if (opened || !current()) return;
+      opened = true;
+      showOpenedThread(partial);
+    });
+    if (!current()) return;
+    if (!opened) showOpenedThread(data);
+    else if (partialTranscript) acceptThread(data);
+    if (window.FuseComposerSpell) {
+      // Learning from every earlier prompt is not needed for the first paint.
+      const prompts = messages.filter((m) => m.role === "user" && !m.auto).map((m) => m.content);
+      whenIdle(() => {
+        if (!current()) return;
+        FuseComposerSpell.rebuildLearned(prompts);
+        FuseComposerSpell.refresh();
+      });
+    }
+    refreshProjectListing();
+    // Covers events consumed while the navigation snapshot was in flight.
+    reconcileThread().catch(syncFailure);
+    } finally {
+      if (nav === navigation) {
+        loading = false;
+        syncComposer();
+        if (!streaming) drainQueue();
+      }
+    }
+  }
+
+  function showOpenedThread(data) {
     if (!Number.isSafeInteger(data.event_cursor)) throw new Error("Thread snapshot is missing event_cursor.");
+    setPartialTranscript(Boolean(data.partial));
     drafts.set(currentId, input.value);
     draftFiles.set(currentId, pendingAttachments);
     currentId = data.id;
@@ -4852,22 +4993,19 @@
     if (window.matchMedia("(hover: hover) and (pointer: fine)").matches) input.focus();
     defaultHint();
     syncStatus();
-    if (window.FuseComposerSpell) {
-      FuseComposerSpell.rebuildLearned(
-        messages.filter((m) => m.role === "user" && !m.auto).map((m) => m.content)
-      );
-      FuseComposerSpell.refresh();
-    }
-    refreshProjectListing();
-    // Covers events consumed while the navigation snapshot was in flight.
-    reconcileThread().catch(syncFailure);
-    } finally {
-      if (nav === navigation) {
-        loading = false;
-        syncComposer();
-        if (!streaming) drainQueue();
-      }
-    }
+  }
+
+  // While only the newest messages of a streamed snapshot are loaded, the
+  // transcript is display-only: a save would replace the whole thread with
+  // the tail. acceptThread clears it when the complete snapshot lands.
+  function setPartialTranscript(on) {
+    partialTranscript = on;
+    root.toggleAttribute("data-transcript-partial", on);
+  }
+
+  function whenIdle(fn) {
+    if (typeof window.requestIdleCallback === "function") window.requestIdleCallback(fn, { timeout: 2000 });
+    else window.setTimeout(fn, 200);
   }
 
   function startRename(row, thread) {
@@ -5766,6 +5904,8 @@
       btn.innerHTML = svg;
       btn.addEventListener("click", (event) => {
         event.preventDefault();
+        // Indices address the complete transcript; wait until it has loaded.
+        if (partialTranscript) return;
         act(btn);
       });
       bar.appendChild(btn);
@@ -8453,9 +8593,17 @@
     const openKind = artifact && trace.identifier && presentation.state === "done" ? "artifact"
       : ["spawn_subagent", "get_subagent_output"].includes(trace.name) && trace.child_id ? "agent" : "";
     const openId = openKind === "artifact" ? trace.identifier : openKind === "agent" ? trace.child_id : "";
-    let inner = isConsoleView() ? consoleDetailHtml(trace, failed, running) : toolDetailHtml(trace, failed, running);
     // Todo lists are plain inline content in console view: always shown, no disclosure.
     const revealed = open || (!isConsoleView() && trace.name === "todo_write" && normalizeTodos(trace.todos).length > 0);
+    let inner;
+    if (isConsoleView()) inner = consoleDetailHtml(trace, failed, running);
+    else if (revealed) inner = toolDetailHtml(trace, failed, running);
+    else {
+      // Collapsed: only whether details exist matters here; they are built
+      // for real when the row opens (fillLazyDetail).
+      detailProbe = true;
+      try { inner = toolDetailHtml(trace, failed, running); } finally { detailProbe = false; }
+    }
     const icon = failed ? STEP_ICONS.error : interrupted ? STEP_ICONS.stop : artifact ? STEP_ICONS.artifact : toolIcon(trace.name, false, false);
     if (isConsoleView()) {
       const result = consoleResultLine(trace, presentation);
@@ -8498,11 +8646,15 @@
       ...presentation, line: toolLabelHtml(trace), title: trace.command || trace.path || trace.url || label, expandable: Boolean(inner), open: revealed, openKind, openId,
       contextHost: trace.host && trace.host !== sessionProject()?.host_alias ? trace.host : "",
     });
+    // A collapsed row's details (file bodies, highlighted output) are most of
+    // a long transcript's DOM; build them when the row is first opened.
+    const body = inner && !revealed ? `<div class="chat-step-reveal-inner" data-lazy-detail="${lazyDetailToken(trace, failed, running)}"></div>`
+      : `<div class="chat-step-reveal-inner">${inner}</div>`;
     return (
        `<li class="chat-step is-${kind} is-${presentation.state}" data-execution="${escapeHtml(executionIdentity(trace))}" data-tool="${escapeHtml(trace.name)}" data-state="${presentation.state}" data-step="${escapeHtml(index)}">` +
       `<span class="chat-step-node" aria-hidden="true">${icon}</span>` +
       `<div class="chat-step-main">${head}` +
-      (inner ? `<div class="chat-step-reveal${revealed ? " is-open" : ""}"><div class="chat-step-reveal-inner">${inner}</div></div>` : "") +
+      (inner ? `<div class="chat-step-reveal${revealed ? " is-open" : ""}">${body}</div>` : "") +
       "</div></li>"
     );
   }
@@ -8690,8 +8842,37 @@
     const toggle = row.querySelector(":scope > .chat-step-main > .chat-step-head > [data-step-toggle]");
     if (toggle?.getAttribute("aria-expanded") !== "true") toggle?.click();
   }
+  // Collapsed tool rows render an empty details body carrying a token for
+  // their trace (see toolStepHtml). Weak references keep the registry from
+  // pinning traces of threads that are no longer shown.
+  const lazyDetailTokens = new WeakMap();
+  const lazyDetails = new Map();
+  let lazyDetailSeq = 0;
+  function lazyDetailToken(trace, failed, running) {
+    let token = lazyDetailTokens.get(trace);
+    if (!token) {
+      token = "d" + (++lazyDetailSeq).toString(36);
+      lazyDetailTokens.set(trace, token);
+      if (lazyDetails.size > 20000) {
+        for (const [key, entry] of lazyDetails) if (!entry.ref.deref()) lazyDetails.delete(key);
+      }
+    }
+    lazyDetails.set(token, { ref: new WeakRef(trace), failed, running });
+    return token;
+  }
+
+  function fillLazyDetail(reveal) {
+    const body = reveal && reveal.querySelector(":scope > [data-lazy-detail]");
+    if (!body) return;
+    const entry = lazyDetails.get(body.dataset.lazyDetail);
+    const trace = entry && entry.ref.deref();
+    body.removeAttribute("data-lazy-detail");
+    body.innerHTML = trace ? toolDetailHtml(trace, entry.failed, entry.running) : "";
+  }
+
   function setToolReveal(reveal, open, fromHeight) {
     if (!reveal) return;
+    if (open) fillLazyDetail(reveal);
     const owner = reveal.closest(".chat-turn");
     const start = fromHeight ?? reveal.getBoundingClientRect().height;
     reveal._disclosureAnimation?.cancel();
@@ -10234,15 +10415,8 @@
       const peek = flow.querySelector(`[data-reason-preview="${part.segmentIndex}"]`);
       const li = flow.querySelector(`[data-step="think-${part.segmentIndex}"]`);
       if (!li || !peek) return;
-      const saved = reasoningPositions?.get(String(part.segmentIndex)) || (peek._thinking ? thinkingPosition(peek) : null);
-      initThinking(peek);
       const later = normalized.some((entry) => entry.segmentIndex > part.segmentIndex);
       const liveThink = Boolean(live && !later);
-      const wasMode = li.dataset.thinkMode;
-      const settling = li.classList.contains("is-live-think") && !liveThink;
-      li.classList.toggle("is-live-think", liveThink);
-      syncThinkingMode(li, msg, settling && Boolean(wasMode) && !reduceMotion.matches);
-      if (isConsoleView()) syncConsoleThinkSummary(li, msg, live, liveThink);
       let source = String(part.text || "").trim();
       if (isConsoleView() && li.dataset.reasonIds) {
         const ids = new Set(li.dataset.reasonIds.split(","));
@@ -10252,6 +10426,18 @@
           .filter(Boolean)
           .join("\n\n");
       }
+      // A settled preview whose text is unchanged kept its node and scroll
+      // offset through the patch. Reading its position anyway forced a
+      // layout per message whenever a snapshot repainted a long transcript.
+      const unchanged = !reasoningPositions && peek._thinking && !liveThink && peek._source === source && peek._live === liveThink;
+      const saved = unchanged ? null : reasoningPositions?.get(String(part.segmentIndex)) || (peek._thinking ? thinkingPosition(peek) : null);
+      initThinking(peek);
+      const wasMode = li.dataset.thinkMode;
+      const settling = li.classList.contains("is-live-think") && !liveThink;
+      li.classList.toggle("is-live-think", liveThink);
+      syncThinkingMode(li, msg, settling && Boolean(wasMode) && !reduceMotion.matches);
+      if (isConsoleView()) syncConsoleThinkSummary(li, msg, live, liveThink);
+      if (unchanged) return;
       if (peek._source !== source || peek._live !== liveThink) {
         peek._source = source; peek._live = liveThink;
         streamMarkdown(peek.firstElementChild, source, liveThink, catalog);
@@ -11725,6 +11911,7 @@
 
   function clearChatState({ keepList = false } = {}) {
     const stayOnList = keepList && historyMobile.matches && root.classList.contains("is-history");
+    setPartialTranscript(false);
     drafts.set(currentId, input.value);
     draftFiles.set(currentId, pendingAttachments);
     stoppingRunId = "";

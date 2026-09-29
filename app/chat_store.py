@@ -2037,7 +2037,36 @@ def _fallback_report(row: dict, msg: dict) -> str:
     return str(msg.get("content") or "").strip()
 
 
-def thread_view(conn, user_id, thread_id):
+def accepted_commands(conn, user_id, thread_id, queued):
+    """Of the command ids a client still holds queued, those this thread accepted.
+
+    Looks up exactly those ids by primary key. Scanning the ledger with
+    json_extract instead read every stored result (tens of megabytes for an
+    active account) on every thread view. An accepted send missing from this
+    list is still safe to resend: the ledger dedupes it by command_id.
+    """
+    ids = []
+    for item in queued or ():
+        if isinstance(item, str) and item and len(item) <= 120:
+            ids.extend((item, item + ":turn"))
+    ids = list(dict.fromkeys(ids))[:256]
+    if not ids:
+        return []
+    accepted = []
+    marks = ",".join("?" for _ in ids)
+    for row in conn.execute(f"SELECT command_id, result FROM chat_commands WHERE user_id=? AND command_id IN ({marks})",
+                            (user_id, *ids)):
+        try:
+            result = json.loads(row["result"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if (isinstance(result, dict) and str(result.get("thread_id")) == str(thread_id)
+                and (result.get("message_id") is not None or result.get("run_id") is not None)):
+            accepted.append(row["command_id"])
+    return accepted
+
+
+def thread_view(conn, user_id, thread_id, *, queued=()):
     from . import chats
 
     row = conn.execute(
@@ -2084,11 +2113,7 @@ def thread_view(conn, user_id, thread_id):
     result["messages"] = settle_command_traces(conn, user_id, thread_id, result["messages"])
     # Lets reconnecting senders retire locally queued items after a lost HTTP
     # acknowledgment. The command ledger remains the idempotency authority.
-    result["accepted_queue_ids"] = [row["command_id"] for row in conn.execute(
-        """SELECT command_id FROM chat_commands WHERE user_id=?
-           AND json_extract(result,'$.thread_id')=?
-           AND (json_extract(result,'$.message_id') IS NOT NULL OR json_extract(result,'$.run_id') IS NOT NULL)
-           ORDER BY rowid DESC LIMIT 128""", (user_id, thread_id))]
+    result["accepted_queue_ids"] = accepted_commands(conn, user_id, thread_id, queued)
     high = conn.execute("SELECT cursor FROM chat_event_cursors WHERE user_id=?", (user_id,)).fetchone()
     result["event_cursor"] = int(high[0]) if high else 0
     if result.get("run") and result["run"].get("status") in ACTIVE:
@@ -2192,15 +2217,41 @@ def settle_command_traces(conn, user_id, thread_id, messages):
     return messages
 
 
+_SETTLED_TRACE = ("done", "error", "interrupted")
+
+
 def historical_command_jobs(user_id, thread_id):
-    """All referenced jobs for reconciliation, including old foreground jobs."""
+    """Referenced jobs whose saved trace is still unsettled, including old
+    foreground jobs, for reconciliation.
+
+    Reads the stored transcript and the live root run directly rather than
+    building a full thread view: this backs a 3 s poll, and a view rebuild of
+    a multi-megabyte thread per poll was the dominant cost. A trace saved in a
+    settled state is already final in every snapshot the client can hold, so
+    only unsettled traces need their job row. ``output`` carries the same
+    retained tail the old ``out`` alias did; the client prefers ``output``.
+    """
     with transaction() as conn:
-        view = thread_view(conn, user_id, thread_id)
-        if view is None:
+        row = conn.execute("SELECT messages FROM chat_threads WHERE user_id=? AND id=?", (user_id, thread_id)).fetchone()
+        if row is None:
             return []
-        ids = [t.get("job_id") or t.get("child_id") for m in view["messages"] for t in m.get("tools") or []
-               if t.get("name") in COMMAND_TOOLS and (t.get("job_id") or t.get("child_id"))]
-        return [{**command_trace(row), "id": row["id"], "state": row["status"], "out": str(row.get("out") or "")[-24000:]}
+        sources = []
+        try:
+            sources.extend(json.loads(row["messages"] or "[]"))
+        except (json.JSONDecodeError, TypeError):
+            pass
+        for run in conn.execute(
+            """SELECT message FROM chat_runs WHERE thread_id=? AND user_id=? AND status IN ('queued','running')
+               AND parent_run_id IS NULL""", (thread_id, user_id)):
+            try:
+                sources.append(json.loads(run["message"] or "{}"))
+            except (json.JSONDecodeError, TypeError):
+                pass
+        ids = [t.get("job_id") or t.get("child_id")
+               for m in sources if isinstance(m, dict) for t in m.get("tools") or []
+               if isinstance(t, dict) and t.get("name") in COMMAND_TOOLS and (t.get("job_id") or t.get("child_id"))
+               and (t.get("status") not in _SETTLED_TRACE or t.get("execution_status") in ("running", "cancelling", "queued"))]
+        return [{**command_trace(row), "id": row["id"], "state": row["status"]}
                 for row in command_rows(conn, user_id, thread_id, ids).values()
                 if row["status"] not in ("running", "cancelling")]
 

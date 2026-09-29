@@ -1107,6 +1107,49 @@ def align_segments(segments, content, reasoning) -> list[dict]:
     return out
 
 
+def _utf16_len(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
+
+
+def pack_segment_text(messages) -> list:
+    """Drop text/reasoning segment bodies that duplicate the message fields.
+
+    Segments normally concatenate exactly to ``content`` and ``reasoning``, so
+    a transcript carries every reply's text twice. When that holds, each such
+    segment keeps only ``n``, its length in UTF-16 code units (JavaScript
+    string indices), and the client slices the text back out in order. A
+    message whose segments do not concatenate exactly is sent unchanged.
+    """
+    out = []
+    for msg in messages if isinstance(messages, list) else []:
+        segments = msg.get("segments") if isinstance(msg, dict) else None
+        if not isinstance(segments, list) or not segments:
+            out.append(msg)
+            continue
+        parts = {"content": [], "reasoning": []}
+        exact = True
+        for seg in segments:
+            if isinstance(seg, dict) and seg.get("type") in parts:
+                if not isinstance(seg.get("text"), str):
+                    exact = False
+                    break
+                parts[seg["type"]].append(seg["text"])
+        if (not exact or "".join(parts["content"]) != (msg.get("content") or "")
+                or "".join(parts["reasoning"]) != (msg.get("reasoning") or "")):
+            out.append(msg)
+            continue
+        packed = []
+        for seg in segments:
+            if isinstance(seg, dict) and seg.get("type") in parts:
+                row = {k: v for k, v in seg.items() if k != "text"}
+                row["n"] = _utf16_len(seg["text"])
+                packed.append(row)
+            else:
+                packed.append(seg)
+        out.append({**msg, "segments": packed})
+    return out
+
+
 TOOL_OUTPUT_MAX = 24_000
 
 
@@ -1618,7 +1661,8 @@ def search_threads(user_id: int, q: str, *, archived: bool = False) -> list[dict
     return out
 
 
-def get_thread(user_id: int, thread_id, *, observed_cursor: int | None = None, observed_thread_cursor: int | None = None):
+def get_thread(user_id: int, thread_id, *, observed_cursor: int | None = None, observed_thread_cursor: int | None = None,
+               queued=()):
     from . import chat_store
 
     with db.tx() as conn:
@@ -1641,7 +1685,7 @@ def get_thread(user_id: int, thread_id, *, observed_cursor: int | None = None, o
             cursor = int(high[0]) if high else 0
             if cursor == observed_cursor:
                 return {"unchanged": True, "event_cursor": cursor}
-        return chat_store.thread_view(conn, user_id, pk)
+        return chat_store.thread_view(conn, user_id, pk, queued=queued)
 
 
 def count_threads(user_id: int) -> int:

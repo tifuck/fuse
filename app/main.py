@@ -297,7 +297,21 @@ app.add_middleware(
     https_only=True,
     max_age=7 * 24 * 60 * 60,
 )
-app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
+_VERSIONED = re.compile(rb"(?:^|&)v=[^&]")
+
+
+class VersionedStaticFiles(StaticFiles):
+    """Versioned assets (?v=N, raised on every change by promote-dev.sh) are
+    cached without revalidation; unversioned ones keep the default validators."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        if settings.static_immutable and response.status_code == 200 and _VERSIONED.search(scope.get("query_string", b"")):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
+
+
+app.mount("/static", VersionedStaticFiles(directory=str(ROOT / "static")), name="static")
 app.mount("/desktop", StaticFiles(directory=str(ROOT / "data" / "desktop-releases")), name="desktop")
 app.include_router(api_router)
 app.include_router(web_router)

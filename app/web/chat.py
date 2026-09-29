@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 import logging
 import asyncio
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 
 from .. import (
     artifacts,
@@ -436,15 +437,54 @@ async def chat_thread_get(request: Request, thread_id: str):
 
     observed = _cursor_param("observed_cursor")
     observed_thread = _cursor_param("observed_thread_cursor")
+    # Command ids the client still holds in its local send queue.
+    queued = [item for item in (request.query_params.get("queued") or "").split(",") if item][:128]
     thread = await asyncio.to_thread(
         chats.get_thread, user["id"], thread_id,
-        observed_cursor=observed, observed_thread_cursor=observed_thread,
+        observed_cursor=observed, observed_thread_cursor=observed_thread, queued=queued,
     )
     if not thread:
         raise HTTPException(404, "Chat not found")
     if thread.get("unchanged"):
         return JSONResponse(thread, headers={"Cache-Control": "no-store"})
-    return JSONResponse(_chat_public_thread(thread), headers={"Cache-Control": "no-store"})
+    public = _chat_public_thread(thread)
+    if request.query_params.get("pack") == "1":
+        public["messages"] = chats.pack_segment_text(public.get("messages"))
+        if isinstance(public.get("context_messages"), list):
+            public["context_messages"] = chats.pack_segment_text(public["context_messages"])
+        public["segments_packed"] = True
+    if request.query_params.get("stream") != "1":
+        return JSONResponse(public, headers={"Cache-Control": "no-store"})
+    return _thread_stream(public)
+
+
+# Messages in the first line of a streamed thread snapshot. Enough to fill the
+# viewport and the fully rendered tail; older turns follow in the second line.
+THREAD_TAIL = 16
+
+
+def _json_line(value) -> bytes:
+    return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8") + b"\n"
+
+
+def _thread_stream(public):
+    """NDJSON thread snapshot: a partial line with the last messages, then the
+    complete snapshot. Both lines come from one build and share one revision
+    and cursor, so the client can paint the tail while the rest downloads."""
+    headers = {"Cache-Control": "no-store"}
+    messages = public.get("messages") or []
+    if len(messages) <= THREAD_TAIL:
+        return Response(_json_line(public), media_type="application/x-ndjson", headers=headers)
+    head = {**public, "messages": messages[-THREAD_TAIL:], "partial": True, "message_count": len(messages)}
+    if isinstance(public.get("context_messages"), list):
+        head["context_messages"] = public["context_messages"][-THREAD_TAIL:]
+
+    async def body():
+        yield _json_line(head)
+        # Serializing a multi-megabyte transcript must not stall the loop.
+        yield await asyncio.to_thread(_json_line, public)
+
+    return StreamingResponse(body(), media_type="application/x-ndjson", headers=headers)
 
 
 @router.get("/chat/threads/{thread_id}/project-agents")
@@ -512,14 +552,18 @@ async def chat_thread_jobs(request: Request, thread_id: str):
     user, err = _chat_auth(request)
     if err:
         return err
-    pk = _chat_thread_pk(user, thread_id)
     from .. import command_jobs
 
-    jobs = command_jobs.list_thread_jobs(user["id"], pk)
-    recent = command_jobs.recent_terminal_jobs(user["id"], pk)
-    by_id = {item["id"]: item for item in recent}
-    by_id.update((item["id"], item) for item in chat_store.historical_command_jobs(user["id"], pk))
-    recent = list(by_id.values())
+    def _load():
+        # Polled every few seconds while the agents pane is open: keep the
+        # database reads off the event loop that also drives live streams.
+        pk = _chat_thread_pk(user, thread_id)
+        jobs = command_jobs.list_thread_jobs(user["id"], pk)
+        by_id = {item["id"]: item for item in command_jobs.recent_terminal_jobs(user["id"], pk)}
+        by_id.update((item["id"], item) for item in chat_store.historical_command_jobs(user["id"], pk))
+        return jobs, list(by_id.values())
+
+    jobs, recent = await asyncio.to_thread(_load)
     return JSONResponse(
         {"jobs": jobs, "live_count": len(jobs), "recent": recent},
         headers={"Cache-Control": "no-store"},

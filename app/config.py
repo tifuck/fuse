@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     allow_local_workspace: bool = False
     public_base_url: str = ""
     trusted_hosts: str = ""
+    # Serve /static URLs that carry ?v= as immutable for a year. promote-dev.sh
+    # raises ?v= for every changed file, so production is always fresh; dev
+    # edits files without bumping, so its .env sets this false.
+    static_immutable: bool = True
     max_body_bytes: int = 2_097_152
     chat_body_bytes: int = 8_388_608
     max_tokens: int = 16_384

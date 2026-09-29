@@ -38,6 +38,10 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
         const f=fuseToolFixture;
         f.mount([{id:'output-'+view,tools:[{id:'detail',name:'run_terminal_command',status:'done',state:'completed',command:'printf audit',output:'OLD_OUTPUT',exit_code:0}]}],false);
         f.update('detail',{output:'NEW_OUTPUT'},false);
+        // Collapsed rows build their details on first open; open it so the
+        // check covers what a reader sees, not a hidden stale copy.
+        const lazy=document.querySelector('.chat-log [data-lazy-detail]');
+        if(lazy)lazy.closest('[data-step]').querySelector(':scope > .chat-step-main > .chat-step-head [data-step-toggle]').click();
         return document.querySelector('.chat-log').textContent;
       },view);
       assert.ok(detail.includes('NEW_OUTPUT') && !detail.includes('OLD_OUTPUT'),`${view}: details refresh`);
