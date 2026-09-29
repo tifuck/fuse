@@ -770,6 +770,9 @@ def _rate_label(micros) -> str:
     return f"${value / 1_000_000:g}" if value else "$0"
 
 
+_ORIGIN_LABELS = {"openrouter": "OpenRouter", "default": "Built-in", "auto": "Auto"}
+
+
 def pricing_views() -> list[dict]:
     rows = db.fetchall("SELECT * FROM model_prices ORDER BY provider, model")
     out = []
@@ -807,7 +810,7 @@ def pricing_views() -> list[dict]:
             item["long_label"] = " / ".join(parts)
         else:
             item["long_label"] = "—"
-        item["origin_label"] = "OpenRouter" if row["origin"] == "openrouter" else "Manual"
+        item["origin_label"] = _ORIGIN_LABELS.get(row["origin"], "Manual")
         item["synced_label"] = format_when(row["synced_at"]) if row["synced_at"] else ""
         item["provider_label"] = PROVIDER_LABELS.get(row["provider"], row["provider"])
         out.append(item)

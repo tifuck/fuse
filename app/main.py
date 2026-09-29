@@ -24,6 +24,7 @@ from .sources.grok import refresh_due
 from .sources.kimi import refresh_due as kimi_refresh_due
 from .sources.claude import refresh_due as claude_refresh_due
 from .sources.openrouter import refresh_due as openrouter_refresh_due
+from .pricing import auto_price_due
 from .sources.usage_walk import WALK_PAUSE, walk_next
 from .security import MaxBodyMiddleware, SecurityHeadersMiddleware
 
@@ -93,6 +94,7 @@ async def _refresh_loop(app: FastAPI):
     )
     local_jobs = (
         ("chat titles", chat_titles.sweep),
+        ("model pricing", auto_price_due),
         ("bug triage", issues_pipeline.tick),
     )
     delay = _REFRESH_INTERVAL

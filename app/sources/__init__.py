@@ -371,6 +371,7 @@ async def pick(
     user_id: int | None = None,
 ) -> tuple[Source, str] | None:
     from . import openrouter as openrouter_mod
+    from . import chatgpt as chatgpt_mod
     from . import devin as devin_mod
     from . import kimi as kimi_mod
     from . import mimo as mimo_mod
@@ -411,7 +412,9 @@ async def pick(
         for s in all_enabled():
             if s.type_id == "grok":
                 return s, model
-    if allow_chatgpt and model in CHATGPT_MODELS:
+    # Live-listed slugs count too: a new Codex model (gpt-6.1-sol) must stay
+    # on the pool, not fall through to the user's OpenRouter key below.
+    if allow_chatgpt and chatgpt_mod.is_chatgpt_model(model):
         for s in all_enabled():
             if s.type_id == "chatgpt":
                 return s, model

@@ -265,21 +265,19 @@ def pool_openrouter_id(model: str) -> str | None:
 
 def pool_aliases_from_catalog(catalog: dict | None) -> dict[str, list[str]]:
     """Fuse pool ids that exist as standard (non-:free) OpenRouter SKUs."""
-    from .chatgpt import CHATGPT_MODELS
-    from .grok import GROK_MODELS
-    from .zai import ZAI_MODELS
+    from . import chatgpt, grok, zai
 
     by_id = (catalog or {}).get("by_id") or {}
     out: dict[str, list[str]] = {"zai": [], "grok": [], "chatgpt": []}
-    for mid in ZAI_MODELS:
-        if f"z-ai/{mid}" in by_id:
-            out["zai"].append(mid)
-    for mid in GROK_MODELS:
-        if f"x-ai/{mid}" in by_id:
-            out["grok"].append(mid)
-    for mid in CHATGPT_MODELS:
-        if f"openai/{mid}" in by_id:
-            out["chatgpt"].append(mid)
+    for type_id, author, seeded, cache in (
+        ("zai", "z-ai", zai.ZAI_MODELS, zai._models_cache),
+        ("grok", "x-ai", grok.GROK_MODELS, grok._models_cache),
+        ("chatgpt", "openai", chatgpt.CHATGPT_MODELS, chatgpt._models_cache),
+    ):
+        # Seeds plus whatever the pool's live catalog has added since.
+        for mid in dict.fromkeys(list(seeded) + list(cache[1] if cache else [])):
+            if f"{author}/{mid}" in by_id:
+                out[type_id].append(mid)
     return out
 
 

@@ -74,6 +74,9 @@ class Settings(BaseSettings):
     openai_auth_originator: str = "opencode"
     openai_auth_user_agent: str = "opencode/1.18.25"
     openai_chatgpt_base: str = "https://chatgpt.com/backend-api/codex"
+    # Codex hides a model from `/models` until client_version reaches the
+    # model's minimal_client_version; a high value lists every new slug.
+    openai_codex_client_version: str = "99.0.0"
     # SOCKS/HTTP proxy for ChatGPT OAuth only (device code, token, refresh).
     # Empty = direct. Use socks5h:// so DNS is resolved by the proxy.
     openai_auth_proxy: str = ""

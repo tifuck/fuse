@@ -470,7 +470,32 @@ def _usage_url() -> str:
 
 
 def _models_url() -> str:
-    return settings.openai_chatgpt_base.rsplit("/", 1)[0] + "/models"
+    # Codex's own catalog. The ChatGPT web `/backend-api/models` answers 403
+    # to a Codex OAuth token, which left the pool on its seed list.
+    return _backend_base() + "/models"
+
+
+def parse_catalog_payload(data) -> list[str]:
+    """Listed Codex slugs. `visibility: hide` rows (auto-review, reserve) are
+    internal and not callable as chat models."""
+    rows = (data.get("models") or data.get("data")) if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        return []
+    names = []
+    for row in rows:
+        if not isinstance(row, dict) or str(row.get("visibility") or "list") == "hide":
+            continue
+        slug = str(row.get("slug") or row.get("id") or "")
+        if slug and slug not in names:
+            names.append(slug)
+    return names
+
+
+def is_chatgpt_model(model: str) -> bool:
+    """Seeded or live-listed Codex slug."""
+    if model in CHATGPT_MODELS:
+        return True
+    return bool(_models_cache and model in _models_cache[1])
 
 
 def _remember_models(names: list[str]) -> list[str]:
@@ -498,12 +523,15 @@ async def fetch_catalog(token: str, account_id: str | None = None) -> list[str]:
     if token:
         try:
             async with _client() as client:
-                r = await client.get(_models_url(), headers=_chat_headers(token, account_id))
+                r = await client.get(
+                    _models_url(),
+                    params={"client_version": settings.openai_codex_client_version},
+                    headers=_chat_headers(token, account_id),
+                )
             if r.status_code == 200:
-                data = r.json()
-                rows = data.get("data") or data.get("models") if isinstance(data, dict) else None
-                if isinstance(rows, list):
-                    names = [str(m.get("id") or m.get("slug") or "") for m in rows if isinstance(m, dict)]
+                names = parse_catalog_payload(r.json())
+            else:
+                logger.warning("ChatGPT model catalog returned HTTP %s", r.status_code)
         except (httpx.HTTPError, json.JSONDecodeError, ValueError, AttributeError):
             names = []
     return _remember_models(names)

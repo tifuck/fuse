@@ -1,9 +1,14 @@
+import logging
+import time
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 
 import httpx
 import json
 
 from . import db
+
+logger = logging.getLogger(__name__)
 
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
@@ -205,7 +210,8 @@ def ensure_default_prices() -> list[str]:
                 "SELECT * FROM model_prices WHERE provider=? AND model=?",
                 (provider, model),
             )
-            if existing and existing["origin"] != "default":
+            # An auto-priced row was only a stand-in until a built-in default existed.
+            if existing and existing["origin"] not in ("default", AUTO_ORIGIN):
                 continue
             tiers = [_tier(threshold, long_rates)] if long_rates else None
             if existing and _default_row_matches(
@@ -265,15 +271,16 @@ def _long_context_tiers(pricing: dict) -> list[dict]:
 
 async def sync_openrouter_prices() -> dict:
     imported: set[str] = set()
-    from .sources.chatgpt import CHATGPT_MODELS
+    from .sources import chatgpt, zai
 
-    from .sources.zai import ZAI_MODELS
+    def listed(seeded, cache) -> set[str]:
+        return set(seeded) | set(cache[1] if cache else [])
 
     author_providers = (
         ("x-ai", "grok", None),
         ("openai", "openai", None),
-        ("openai", CHATGPT_PROVIDER, set(CHATGPT_MODELS)),
-        ("z-ai", "zai", set(ZAI_MODELS)),
+        ("openai", CHATGPT_PROVIDER, listed(chatgpt.CHATGPT_MODELS, chatgpt._models_cache)),
+        ("z-ai", "zai", listed(zai.ZAI_MODELS, zai._models_cache)),
     )
     catalogs = []
     async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
@@ -334,3 +341,220 @@ async def sync_openrouter_prices() -> dict:
             db.save_model_price(provider, model, conn=conn, **values)
     models = sorted(imported - manual_ids)
     return {"count": len(models), "models": models}
+
+
+# --- Auto pricing -----------------------------------------------------------
+#
+# Usage is priced by an exact (provider, model) row. A new pool model
+# (gpt-6.1-sol, claude-sonnet-5-5) or a Devin wire SKU (gpt-5-6-sol-low) has no
+# row, so its usage records as unpriced. auto_price() writes an exact row for
+# each such model, copied from the closest priced reference, and
+# save_model_price then reprices that model's history. Manual, built-in and
+# OpenRouter-synced rows are never overwritten; auto rows follow their
+# reference and yield to a built-in default or a sync.
+
+AUTO_ORIGIN = "auto"
+AUTO_PRICE_INTERVAL = 1800.0
+_AUTO_PROVIDERS = (
+    CHATGPT_PROVIDER, GROK_PROVIDER, ZAI_PROVIDER, DEVIN_PROVIDER,
+    KIMI_PROVIDER, MIMO_PROVIDER, CLAUDE_PROVIDER,
+)
+# Effort, speed and region tails appended to one priced model id.
+_SKU_TAILS = frozenset(
+    {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "thinking", "priority", "fast", "usa"}
+)
+_PRICE_COLUMNS = (
+    "input_micros_per_million", "cached_input_micros_per_million", "cache_write_micros_per_million",
+    "output_micros_per_million", "reasoning_micros_per_million", "cached_input_known",
+    "cache_write_known", "reasoning_known", "long_context_threshold", "long_input_micros_per_million",
+    "long_cached_input_micros_per_million", "long_output_micros_per_million", "long_cached_input_known",
+    "tiers_json",
+)
+_auto_last_run = 0.0
+
+
+def price_key(model: str) -> str:
+    """One spelling per model: no provider/author prefix, no :free, dots as
+    dashes (Devin's gpt-5-6-sol is ChatGPT's gpt-5.6-sol)."""
+    mid = (model or "").strip().lower().rsplit("/", 1)[-1]
+    if mid.endswith(":free"):
+        mid = mid[: -len(":free")]
+    return mid.replace(".", "-")
+
+
+def price_keys(model: str) -> list[str]:
+    """The model's key, then the same key with SKU tails stripped one by one."""
+    parts = price_key(model).split("-")
+    keys = ["-".join(parts)]
+    while len(parts) > 1 and parts[-1] in _SKU_TAILS:
+        parts.pop()
+        keys.append("-".join(parts))
+    return keys
+
+
+def _row_values(row) -> dict:
+    """save_model_price kwargs that reproduce a stored price row."""
+    try:
+        tiers = json.loads(row["tiers_json"] or "[]")
+    except (TypeError, ValueError):
+        tiers = []
+    return {
+        "input_rate": int(row["input_micros_per_million"] or 0),
+        "cached_rate": int(row["cached_input_micros_per_million"] or 0) if row["cached_input_known"] else None,
+        "output_rate": int(row["output_micros_per_million"] or 0),
+        "reasoning_rate": int(row["reasoning_micros_per_million"] or 0) if row["reasoning_known"] else None,
+        "cache_write_rate": int(row["cache_write_micros_per_million"] or 0) if row["cache_write_known"] else None,
+        "tiers": tiers if isinstance(tiers, list) else [],
+        "long_context_threshold": row["long_context_threshold"],
+        "long_input_rate": row["long_input_micros_per_million"],
+        "long_cached_rate": row["long_cached_input_micros_per_million"] if row["long_cached_input_known"] else None,
+        "long_output_rate": row["long_output_micros_per_million"],
+        "openrouter_id": row["openrouter_id"],
+    }
+
+
+def _catalog_values(rec: dict) -> dict | None:
+    pricing = rec.get("pricing") if isinstance(rec.get("pricing"), dict) else {}
+    input_rate = _token_rate(pricing.get("prompt"))
+    output_rate = _token_rate(pricing.get("completion"))
+    if input_rate is None or output_rate is None or (input_rate == 0 and output_rate == 0):
+        return None
+    return {
+        "input_rate": input_rate,
+        "cached_rate": _token_rate(pricing.get("input_cache_read")),
+        "output_rate": output_rate,
+        "reasoning_rate": _token_rate(pricing.get("internal_reasoning")),
+        "cache_write_rate": _token_rate(pricing.get("input_cache_write")),
+        "tiers": _long_context_tiers(pricing),
+        "openrouter_id": str(rec.get("id") or ""),
+    }
+
+
+def _reference_index(rows, catalog: dict | None) -> dict[str, list[tuple[int, str, dict]]]:
+    """price key -> [(rank, provider, values)]. Lower rank wins: a pool row
+    (built-in or manual) beats an OpenRouter reference row, which beats a
+    live OpenRouter catalog record. Auto rows are never a reference."""
+    index: dict[str, list[tuple[int, str, dict]]] = {}
+    for row in rows:
+        if row["origin"] == AUTO_ORIGIN:
+            continue
+        values = _row_values(row)
+        if values["input_rate"] == 0 and values["output_rate"] == 0:
+            continue
+        rank = 1 if row["provider"] == "openrouter" else 0
+        index.setdefault(price_key(row["model"]), []).append((rank, row["provider"], values))
+    for mid, rec in ((catalog or {}).get("by_id") or {}).items():
+        if not isinstance(rec, dict) or rec.get("free") or ":" in mid.split("/", 1)[-1]:
+            continue
+        values = _catalog_values(rec)
+        if values:
+            index.setdefault(price_key(mid), []).append((2, "openrouter", values))
+    for refs in index.values():
+        refs.sort(key=lambda ref: ref[0])
+    return index
+
+
+def _pick_reference(index: dict, provider: str, model: str) -> dict | None:
+    for key in price_keys(model):
+        refs = index.get(key)
+        if not refs:
+            continue
+        # Same provider first (Devin's own gpt-5.6-sol row over ChatGPT's).
+        same = [ref for ref in refs if ref[1] == provider]
+        return (same or refs)[0][2]
+    return None
+
+
+def _same_price(row, values: dict) -> bool:
+    probe = {column: row[column] for column in _PRICE_COLUMNS}
+    return all(probe[column] == expected for column, expected in _expected_columns(values).items())
+
+
+def _expected_columns(values: dict) -> dict:
+    tiers = [
+        {
+            "min_prompt_tokens": int(t.get("min_prompt_tokens") or 0),
+            "input_rate": t.get("input_rate"),
+            "cached_rate": t.get("cached_rate"),
+            "cache_write_rate": t.get("cache_write_rate"),
+            "output_rate": t.get("output_rate"),
+        }
+        for t in values.get("tiers") or []
+        if isinstance(t, dict) and int(t.get("min_prompt_tokens") or 0) > 0
+    ]
+    return {
+        "input_micros_per_million": values["input_rate"],
+        "cached_input_micros_per_million": values["cached_rate"] or 0,
+        "cache_write_micros_per_million": values["cache_write_rate"] or 0,
+        "output_micros_per_million": values["output_rate"],
+        "reasoning_micros_per_million": values["reasoning_rate"] or 0,
+        "cached_input_known": 1 if values["cached_rate"] is not None else 0,
+        "cache_write_known": 1 if values["cache_write_rate"] is not None else 0,
+        "reasoning_known": 1 if values["reasoning_rate"] is not None else 0,
+        "long_context_threshold": values.get("long_context_threshold"),
+        "long_input_micros_per_million": values.get("long_input_rate"),
+        "long_cached_input_micros_per_million": values.get("long_cached_rate"),
+        "long_output_micros_per_million": values.get("long_output_rate"),
+        "long_cached_input_known": 1 if values.get("long_cached_rate") is not None else 0,
+        "tiers_json": json.dumps(tiers),
+    }
+
+
+def _listed_pool_models() -> set[tuple[str, str]]:
+    """(provider, recorded model) for every id the pool catalogs list now."""
+    from .sources import chatgpt, claude, grok, kimi, mimo, zai
+
+    out: set[tuple[str, str]] = set()
+    for provider, mod in (
+        (CHATGPT_PROVIDER, chatgpt), (GROK_PROVIDER, grok), (ZAI_PROVIDER, zai),
+        (KIMI_PROVIDER, kimi), (MIMO_PROVIDER, mimo),
+    ):
+        cache = mod._models_cache
+        out.update((provider, mid) for mid in (cache[1] if cache else []))
+    cache = claude._models_cache
+    # The Claude pool records the upstream slug, not the claude/ Fuse id.
+    out.update((CLAUDE_PROVIDER, claude.upstream_id(mid)) for mid in (cache[1] if cache else []))
+    return out
+
+
+def auto_price(catalog: dict | None = None, *, since_days: int = 30) -> list[str]:
+    """Price listed or recently used pool models that have no exact row."""
+    since = (datetime.now(timezone.utc) - timedelta(days=since_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    marks = ",".join("?" * len(_AUTO_PROVIDERS))
+    used = db.fetchall(
+        f"""SELECT DISTINCT source_type, model FROM usage_events
+            WHERE created_at >= ? AND source_type IN ({marks}) AND pricing_known=0
+              AND reported_cost_micros IS NULL AND model != ''""",
+        (since, *_AUTO_PROVIDERS),
+    )
+    targets = {(row["source_type"], row["model"]) for row in used} | _listed_pool_models()
+    rows = db.fetchall("SELECT * FROM model_prices")
+    existing = {(row["provider"], row["model"]): row for row in rows}
+    index = _reference_index(rows, catalog)
+    priced = []
+    for provider, model in sorted(targets):
+        row = existing.get((provider, model))
+        if row is not None and row["origin"] != AUTO_ORIGIN:
+            continue
+        values = _pick_reference(index, provider, model)
+        if values is None or (row is not None and _same_price(row, values)):
+            continue
+        db.save_model_price(provider, model, origin=AUTO_ORIGIN, **values)
+        priced.append(f"{provider}/{model}")
+    if priced:
+        logger.info("Auto-priced %d model(s): %s", len(priced), ", ".join(priced))
+    return priced
+
+
+async def auto_price_due() -> None:
+    """Background job, throttled to AUTO_PRICE_INTERVAL."""
+    global _auto_last_run
+    if time.time() - _auto_last_run < AUTO_PRICE_INTERVAL:
+        return
+    from .sources import openrouter as openrouter_mod
+
+    catalog = openrouter_mod.cached_catalog()
+    if catalog is None:
+        catalog = await openrouter_mod.fetch_catalog()
+    auto_price(catalog)
+    _auto_last_run = time.time()
