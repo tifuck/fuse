@@ -144,7 +144,7 @@
   const STORE_SIZE = "fuse.chat.textsize.v1";
   const STORE_THEME = "fuse.chat.theme.v1";
   const STORE_COMPOSER = "fuse.chat.composer.v1";
-  const COMPOSER_DEFAULTS = { spell: true, palettes: true, history: true };
+  const COMPOSER_DEFAULTS = { spell: true, palettes: true, history: true, dial: true };
   const STORE_CUSTOM = "fuse.chat.custom.v1";
   const STORE_BACKDROP = "fuse.chat.backdrop.v1";
   const STORE_STRENGTH = "fuse.chat.backdrop.strength.v1";
@@ -355,6 +355,7 @@
         spell: raw.spell !== false,
         palettes: raw.palettes !== false,
         history: raw.history !== false,
+        dial: raw.dial !== false,
       };
     } catch (_) {
       return { ...COMPOSER_DEFAULTS };
@@ -367,6 +368,7 @@
       spell: next.spell !== false,
       palettes: next.palettes !== false,
       history: next.history !== false,
+      dial: next.dial !== false,
     };
     try { localStorage.setItem(STORE_COMPOSER, JSON.stringify(value)); } catch (_) {}
     document.querySelectorAll("[data-composer-pref]").forEach((el) => {

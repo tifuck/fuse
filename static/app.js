@@ -86,6 +86,15 @@ window.FuseBack = (function fuseBack() {
     entry.pushed = true;
     history.pushState({ ...carry(), fuseBack: entry.id }, "");
   }
+  let changeQueued = false;
+  function changed() {
+    if (changeQueued) return;
+    changeQueued = true;
+    queueMicrotask(() => {
+      changeQueued = false;
+      document.dispatchEvent(new Event("fuse:back-change"));
+    });
+  }
   function busy() {
     return inflight > 0 || flushQueued;
   }
@@ -126,6 +135,7 @@ window.FuseBack = (function fuseBack() {
     const entry = { id, close, dead: false, pushed: false };
     stack.push(entry);
     if (!busy()) pushEntry(entry);
+    changed();
   }
   function drop(id) {
     for (let i = stack.length - 1; i >= 0; i -= 1) {
@@ -133,6 +143,7 @@ window.FuseBack = (function fuseBack() {
       if (entry.id !== id || entry.dead) continue;
       entry.dead = true;
       trimDead();
+      changed();
       return;
     }
   }
@@ -156,6 +167,7 @@ window.FuseBack = (function fuseBack() {
       if (!top.dead) {
         try { top.close(); } catch (error) { console.error(error); }
       }
+      changed();
       if (!busy()) settle();
       return;
     }
@@ -246,7 +258,10 @@ window.FuseBack = (function fuseBack() {
     document.addEventListener("touchcancel", end, { passive: true });
   }
 
-  return { open, drop, has, whenSettled, isMobile: () => mobile.matches };
+  function layers() {
+    return stack.filter((entry) => !entry.dead).map((entry) => entry.id);
+  }
+  return { open, drop, has, layers, whenSettled, isMobile: () => mobile.matches };
 })();
 
 (function orModelPicker() {

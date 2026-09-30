@@ -13955,6 +13955,37 @@
       else queueMemorySave();
     });
   });
+  // The phone quick dial (static/quick-dial.js) runs chat actions through
+  // this surface so it never duplicates their rules.
+  window.FuseChatActions = {
+    state() {
+      return {
+        running: runIsActive(activeRun) || sending,
+        hasTurns: messages.length > 0,
+        canRedo: redoStack.length > 0,
+        loading,
+      };
+    },
+    run(action) {
+      if (action === "retry") {
+        if (runIsActive(activeRun) || sending) stopActiveRun().catch((error) => showFailure("Could not stop", error));
+        else retryLastTurn();
+      } else if (action === "undo") undoConversation();
+      else if (action === "redo") redoConversation();
+      else if (action === "rewind") {
+        if (!messages.length) setHint("Nothing to rewind.");
+        else openRewind();
+      } else if (action === "agents") setAgentsOpen(true);
+      else if (action === "new") {
+        const project = sessionProject();
+        const start = project ? startProjectThread(project.host_id, project.project_id) : resetChat();
+        Promise.resolve(start).catch((error) => showFailure("Could not start a new chat", error));
+      }
+    },
+    hint(text) {
+      setHint(text);
+    },
+  };
   newBtns.forEach((btn) =>
     btn.addEventListener("click", () => {
       if (historyTab === "projects") {

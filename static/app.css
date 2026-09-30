@@ -10451,3 +10451,153 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-history-tab { fo
 }
 .fuse-back-cue.is-on { opacity: calc(0.35 + var(--p) * 0.65); }
 .fuse-back-cue.is-armed { background: var(--brass); color: var(--ink); border-color: transparent; }
+
+/* Phone quick dial (static/quick-dial.js): a movable hub on the edge that
+   fans chat actions out on dashed spokes. Shown only at phone width. */
+.fuse-dial {
+  position: fixed;
+  z-index: 45;
+  width: 3rem;
+  height: 3rem;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+.fuse-dial[hidden], .fuse-dial-scrim[hidden] { display: none !important; }
+.fuse-dial-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 44;
+  border: 0;
+  padding: 0;
+  background: rgba(8, 10, 9, 0.58);
+  animation: fuse-dial-fade 180ms ease both;
+}
+.fuse-dial-hub {
+  position: relative;
+  z-index: 2;
+  width: 3rem;
+  height: 3rem;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 50%;
+  color: var(--mist);
+  background: color-mix(in srgb, var(--panel) 94%, var(--mist) 6%);
+  border: 1px solid color-mix(in srgb, var(--mist) 24%, transparent);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  opacity: 0.72;
+  touch-action: none;
+  transition: opacity 180ms ease, background-color 180ms ease, color 180ms ease, transform 180ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.fuse-dial-hub:focus-visible { outline: 2px solid var(--steel); outline-offset: 3px; }
+.fuse-dial-hub svg { position: relative; transition: transform 240ms cubic-bezier(0.32, 0.72, 0, 1); }
+.fuse-dial-ticks {
+  position: absolute;
+  inset: 5px;
+  border-radius: 50%;
+  background: repeating-conic-gradient(from -2deg, color-mix(in srgb, var(--mist) 38%, transparent) 0 4deg, transparent 4deg 30deg);
+  -webkit-mask: radial-gradient(circle, transparent 62%, #000 63%);
+  mask: radial-gradient(circle, transparent 62%, #000 63%);
+}
+.fuse-dial.is-dragging .fuse-dial-hub { opacity: 1; transform: scale(1.08); }
+.fuse-dial.is-open .fuse-dial-hub { opacity: 1; color: var(--ink); background: var(--mist); }
+.fuse-dial.is-open .fuse-dial-hub svg { transform: rotate(45deg); }
+.fuse-dial-spokes {
+  position: absolute;
+  left: 1.5rem;
+  top: 1.5rem;
+  width: 1px;
+  height: 1px;
+  overflow: visible;
+  pointer-events: none;
+}
+.fuse-dial-spokes line {
+  stroke: var(--brass);
+  stroke-width: 1.2;
+  stroke-dasharray: 3 3;
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+.fuse-dial.is-open .fuse-dial-spokes line { opacity: 0.55; }
+.fuse-dial-fan { position: absolute; left: 0; top: 0; width: 0; height: 0; }
+.fuse-dial-sat {
+  --x: 0px;
+  --y: 0px;
+  position: absolute;
+  left: 3px;
+  top: 3px;
+  width: 2.625rem;
+  height: 2.625rem;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 50%;
+  color: var(--mist);
+  background: var(--panel);
+  border: 1px solid color-mix(in srgb, var(--mist) 22%, transparent);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(0, 0) scale(0.3);
+  transition: transform 260ms cubic-bezier(0.32, 0.72, 0, 1), opacity 160ms ease, background-color 120ms ease, color 120ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.fuse-dial.is-open .fuse-dial-sat {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(var(--x), var(--y)) scale(1);
+  transition-delay: calc(var(--i) * 18ms), calc(var(--i) * 18ms), 0ms, 0ms;
+}
+.fuse-dial-sat:focus-visible { outline: 2px solid var(--steel); outline-offset: 2px; }
+.fuse-dial-sat.is-off { color: color-mix(in srgb, var(--mist) 40%, transparent); }
+.fuse-dial-sat.is-hot { color: var(--ink); background: var(--brass); border-color: transparent; }
+.fuse-dial-label {
+  --lx: 0px;
+  --ly: 0px;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  padding: 0.1rem 0.4rem;
+  border-radius: 0.3rem;
+  font-family: "Red Hat Mono", ui-monospace, monospace;
+  font-size: 0.7rem;
+  line-height: 1.4;
+  white-space: nowrap;
+  color: var(--mist);
+  background: color-mix(in srgb, var(--ink) 96%, transparent);
+  pointer-events: none;
+  transform: translate(calc(var(--lx) + var(--ax, 0%)), calc(var(--ly) + var(--ay, -50%)));
+}
+.fuse-dial-label[data-ax="start"] { --ax: 0%; }
+.fuse-dial-label[data-ax="end"] { --ax: -100%; }
+.fuse-dial-label[data-ax="mid"] { --ax: -50%; }
+.fuse-dial-label[data-ay="above"] { --ay: -100%; }
+.fuse-dial-label[data-ay="below"] { --ay: 0%; }
+.fuse-dial-sat.is-off .fuse-dial-label { color: color-mix(in srgb, var(--mist) 50%, transparent); }
+.fuse-dial-badge {
+  position: absolute;
+  top: -0.2rem;
+  right: -0.2rem;
+  min-width: 1rem;
+  height: 1rem;
+  padding: 0 0.2rem;
+  display: grid;
+  place-items: center;
+  border-radius: 0.5rem;
+  font-family: "Red Hat Mono", ui-monospace, monospace;
+  font-size: 0.6rem;
+  color: var(--ink);
+  background: var(--steel);
+}
+.fuse-dial-badge[hidden] { display: none; }
+@keyframes fuse-dial-fade { from { opacity: 0; } }
+@media (min-width: 801px) {
+  .fuse-dial, .fuse-dial-scrim { display: none !important; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fuse-dial-sat, .fuse-dial-hub, .fuse-dial-hub svg, .fuse-dial-spokes line { transition: none !important; }
+  .fuse-dial-scrim { animation: none; }
+}
