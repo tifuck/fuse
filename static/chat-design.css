@@ -204,8 +204,7 @@ html[data-chat-backdrop="none"] .chat-scene,
 .chat-scene[data-kind="coral"] [data-chat-scene-fx] { --fx-gain: 1; }
 .chat-scene[data-kind="riso"] [data-chat-scene-fx] { --fx-gain: 0.9; }
 .chat-scene[data-kind="warp"] [data-chat-scene-fx] { --fx-gain: 1.6; }
-.chat-scene[data-kind="pulsar"] [data-chat-scene-fx] { --fx-gain: 1.4; }
-.chat-scene[data-kind="ink"] [data-chat-scene-fx] { --fx-gain: 1.5; }
+.chat-scene[data-kind="signal"] [data-chat-scene-fx] { --fx-gain: 1.5; }
 .chat-scene[data-kind="mandala"] [data-chat-scene-fx] { --fx-gain: 1.2; }
 .chat-scene[data-kind="aurora"] [data-chat-scene-fx] { --fx-gain: 1.4; }
 .chat-scene[data-kind="garden"] [data-chat-scene-fx] { --fx-gain: 1.25; }
@@ -214,7 +213,7 @@ html[data-chat-backdrop="none"] .chat-scene,
 .chat-scene[data-kind="ivy"] [data-chat-scene-fx] { --fx-gain: 1.1; }
 .chat-scene[data-kind="meadow"] [data-chat-scene-fx] { --fx-gain: 1.2; }
 .chat-scene[data-kind="pond"] [data-chat-scene-fx] { --fx-gain: 1.2; }
-.chat-scene[data-kind="fern"] [data-chat-scene-fx] { --fx-gain: 1.4; }
+.chat-scene[data-kind="orbit"] [data-chat-scene-fx] { --fx-gain: 1.3; }
 .chat .chat-bar { background: var(--ink); }
 .chat.is-untitled .chat-bar-title {
   display: none;

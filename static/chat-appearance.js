@@ -24,7 +24,7 @@
     life: { label: "Life", hint: "Cellular automaton" },
     rain: { label: "Rain", hint: "Falling glyphs" },
     ripple: { label: "Ripple", hint: "Braille waves" },
-    pulsar: { label: "Pulsar", hint: "Ridgelines" },
+    signal: { label: "Signal", hint: "Data lanes · CRT glow" },
     circuit: { label: "Circuit", hint: "Signal traces" },
     garden: { label: "Garden", hint: "8-bit sakura · multicolor" },
     botanica: { label: "Botanica", hint: "Pen & ink blooms" },
@@ -32,10 +32,9 @@
     ivy: { label: "Nouveau", hint: "Art Nouveau vines" },
     meadow: { label: "Meadow", hint: "Pixel grass · fireflies" },
     pond: { label: "Pond", hint: "Pixel lilies · koi" },
-    fern: { label: "Fern", hint: "Unfurling glyph fronds" },
+    orbit: { label: "Orbit", hint: "Pixel planets · comets" },
     warp: { label: "Warp", hint: "Glyph starfield" },
     coral: { label: "Coral", hint: "Reaction–diffusion" },
-    ink: { label: "Ink", hint: "Marbled flow · multicolor" },
     aurora: { label: "Aurora", hint: "Light curtains · multicolor" },
     mandala: { label: "Mandala", hint: "Glyph rosette · multicolor" },
     spiral: { label: "Spiral", hint: "Cyclic automaton · multicolor" },
@@ -46,7 +45,8 @@
   const LEGACY_BACKDROPS = {
     hush: "glyphs", tide: "ripple", veil: "glyphs", ember: "life",
     phosphor: "rain", dither: "riso", scope: "ripple",
-    topo: "pulsar", loom: "mandala", wind: "ink", maze: "garden", ants: "spiral",
+    topo: "ripple", loom: "mandala", wind: "aurora", maze: "garden", ants: "spiral",
+    pulsar: "signal", ink: "aurora", fern: "meadow",
   };
   // Reading fonts. Bricolage Grotesque and Red Hat Mono ship with every page
   // (base.html); the rest load from Google Fonts only when chosen, and the

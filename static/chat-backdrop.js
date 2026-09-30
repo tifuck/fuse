@@ -201,7 +201,7 @@
 
   // —— Botanical kit ——
   // Shared by the garden family (Garden, Botanica, Sumi-e, Nouveau, Meadow,
-  // Fern). Plants keep their natural colours on every theme, pink blossom,
+  // Pond). Plants keep their natural colours on every theme, pink blossom,
   // green leaf, brown bark, pitched to the theme's dark or light ground and
   // pulled a little toward its accent so they belong to it. Wood, ink and
   // highlights come from the theme itself.
@@ -1118,122 +1118,6 @@
           st.px = x - (x - cx) * 0.06;
           st.py = y - (y - cy) * 0.06;
         }
-      },
-    },
-
-    // Ridgelines, after the pulsar plot on the Unknown Pleasures sleeve:
-    // stacked traces displaced by drifting peaks, each one hiding the lines
-    // behind it. The terrain rolls slowly toward the viewer.
-    pulsar: {
-      fps: 20,
-      setup(s) {
-        s.gap = Math.max(4, 13 * s.k);
-        s.step = Math.max(2, 5 * s.k);
-      },
-      resize(s) {
-        s.lines = Math.ceil(s.h / s.gap) + 6;
-        s.xs = Math.ceil(s.w / s.step) + 2;
-        s.horizon = new Float32Array(s.xs);
-      },
-      draw(s, t) {
-        const { ctx, pal, gap, step, lines, xs, horizon } = s;
-        const amp = gap * 9;
-        const kx = 0.006 / s.k;
-        const roll = t * 0.35;
-        ctx.clearRect(0, 0, s.w, s.h);
-        ctx.lineJoin = "round";
-        ctx.lineWidth = Math.max(1, 1.3 * s.k);
-        // Floating horizon: front to back, a line only shows where it rises
-        // above everything nearer, so the hidden parts are never drawn.
-        horizon.fill(Infinity);
-        for (let i = lines - 1; i >= 0; i -= 1) {
-          const base = (i + 1) * gap;
-          const row = i - roll;
-          const u = i / lines;
-          ctx.beginPath();
-          let pen = false;
-          let px = 0;
-          let py = 0;
-          let pv = false;
-          for (let j = 0; j < xs; j += 1) {
-            const x = j * step;
-            // Peaks cluster in bands that wander across the width.
-            const band = Math.pow(noise(x * kx * 0.35 + 40, row * 0.05), 2.4);
-            const n = Math.pow(field(x * kx, row * 0.19, t * 0.02), 3);
-            const y = base - amp * n * (0.35 + 2.2 * band);
-            const vis = y < horizon[j];
-            if (vis && !pen) {
-              if (j && !pv) ctx.moveTo(px, Math.min(py, horizon[j - 1]));
-              else ctx.moveTo(x, y);
-              pen = true;
-            }
-            if (vis || pen) ctx.lineTo(x, vis ? y : horizon[j]);
-            if (!vis) pen = false;
-            if (vis) horizon[j] = y;
-            px = x;
-            py = y;
-            pv = vis;
-          }
-          ctx.strokeStyle = css(mix(pal.steel, pal.brass, u), 0.35 + 0.65 * u);
-          ctx.stroke();
-        }
-      },
-    },
-
-    // Ink: thousands of particles follow a slowly turning flow field and
-    // leave hairline strokes that fade like wet ink, so the field paints
-    // itself as combed, marbled currents. Each stroke takes the spectrum ink
-    // of the region it was born in.
-    ink: {
-      fps: 30,
-      setup(s) {
-        s.inks = 5;
-      },
-      resize(s) {
-        s.ctx.clearRect(0, 0, s.w, s.h);
-        const n = Math.round(Math.max(120, Math.min(3200, (s.w * s.h) / 700)));
-        s.p = Array.from({ length: n }, () => this.spawn(s, {}, 0));
-        s.colors = s.pal.spectrum.map((c) => css(c, 0.42));
-      },
-      spawn(s, q, t) {
-        q.x = Math.random() * s.w;
-        q.y = Math.random() * s.h;
-        q.life = rand(3, 9);
-        q.ink = Math.floor(field(q.x * 0.0016 / s.k, q.y * 0.0016 / s.k, t * 0.01) * 1.7 * s.inks) % s.inks;
-        return q;
-      },
-      warm(s, t) {
-        for (let i = 0; i < 90; i += 1) this.tick(s, t - (90 - i) / 30, 1 / 30);
-      },
-      tick(s, t, dt) {
-        const { ctx, p } = s;
-        ctx.globalCompositeOperation = "destination-out";
-        ctx.fillStyle = `rgba(0,0,0,${Math.min(0.2, dt * 0.9)})`;
-        ctx.fillRect(0, 0, s.w, s.h);
-        ctx.globalCompositeOperation = "source-over";
-        const k = 0.0019 / s.k;
-        const speed = 46 * s.k;
-        const paths = Array.from({ length: s.inks }, () => new Path2D());
-        for (const q of p) {
-          const a = field(q.x * k, q.y * k, t * 0.015) * TAU * 2.2;
-          const nx = q.x + Math.cos(a) * speed * dt;
-          const ny = q.y + Math.sin(a) * speed * dt;
-          paths[q.ink].moveTo(q.x, q.y);
-          paths[q.ink].lineTo(nx, ny);
-          q.x = nx;
-          q.y = ny;
-          q.life -= dt;
-          if (q.life <= 0 || nx < -4 || ny < -4 || nx > s.w + 4 || ny > s.h + 4) this.spawn(s, q, t);
-        }
-        ctx.lineWidth = Math.max(0.6, 0.9 * s.k);
-        ctx.lineCap = "round";
-        paths.forEach((path, i) => {
-          ctx.strokeStyle = s.colors[i];
-          ctx.stroke(path);
-        });
-      },
-      draw(s, t, dt) {
-        this.tick(s, t, Math.min(dt, 0.1));
       },
     },
 
@@ -3129,157 +3013,331 @@
       },
     },
 
-    // Fern: fronds typed in monospace. Each one rises as a tight fiddlehead
-    // and unrolls: its stem curls hard near the tip and relaxes as it grows,
-    // while pairs of leaflets open along the unrolled part. Fronds sway, age,
-    // wither and are replaced one at a time over a bed of moss and drifting
-    // spores.
-    fern: {
-      fps: 12,
-      previewK: 0.45,
-      chars: "|/\\-~_()<>@o69e,'`.:;*+·",
+    // Orbit: Pond's pixel-art world, moved to a moon. A ringed planet in the
+    // accent's hue hangs over a cratered horizon, a crescent moon and a dithered
+    // nebula sit behind twinkling stars, and a rover trundles along the
+    // surface. Shooting stars streak through now and then, a satellite crosses
+    // slowly, and a small saucer hovers and darts like the pond's dragonfly.
+    orbit: {
+      fps: 20,
       setup(s) {
-        s.cw = 8 * s.k;
-        s.ch = 14 * s.k;
+        s.time = Math.random() * 100;
       },
       resize(s) {
-        const fl = flora(s.pal);
-        s.cols = Math.ceil(s.w / s.cw);
-        s.rows = Math.ceil(s.h / s.ch);
-        s.A = atlas(s, this.chars, [
-          css(mix(fl.leaf[0], s.pal.ink, 0.2), 0.7),
-          css(fl.leaf[0], 0.9),
-          css(fl.leaf[1], 1),
-          css(fl.leaf[2], 1),
-          css(mix(fl.leaf[2], s.pal.tint, 0.5), 1),
-        ], s.cw, s.ch, 11 * s.k);
-        s.grid = new Int16Array(s.cols * s.rows);
-        s.idx = (g) => s.A.index.get(g);
-        const slots = Math.max(3, Math.min(6, Math.round(s.w / 260)));
-        s.fronds = Array.from({ length: slots }, (_, i) => this.frond(s, i, slots));
-        s.spores = [];
-        if (s.time !== undefined) this.warm(s, s.time, true);
-      },
-      // Start the bed at every stage of life; a still frame shows it grown.
-      warm(s, t, full) {
-        s.time = t;
-        for (const f of s.fronds) f.born = t - (full ? f.grow + Math.random() * f.life * 0.6 : Math.random() * (f.grow + f.life));
-      },
-      frond(s, i, slots) {
-        const left = i % 2 === 0;
-        const u = (Math.floor(i / 2) + 0.5) / Math.ceil(slots / 2);
-        const x = (left ? 0.02 + u * 0.28 : 0.98 - u * 0.28) * s.w + rand(-20, 20) * s.k;
-        const lean = (left ? -1 : 1) * rand(0.05, 0.5) * (Math.random() < 0.3 ? -1 : 1);
-        return {
-          x, y: s.h + s.ch * 0.5, ang: -Math.PI / 2 + lean, curl: Math.sign(lean) || 1,
-          L: s.h * rand(0.34, 0.62) * (s.h < 200 ? 1.9 : 1), born: s.time || 0, grow: rand(16, 26), life: rand(50, 80), seed: Math.random() * 100,
-        };
-      },
-      // Mark a cell, keeping the brighter mark where two meet.
-      mark(s, x, y, g, tone) {
-        const c = Math.floor(x / s.cw);
-        const r = Math.floor(y / s.ch);
-        if (c < 0 || r < 0 || c >= s.cols || r >= s.rows) return;
-        const i = r * s.cols + c;
-        const prev = s.grid[i];
-        if (prev && (prev & 7) - 1 > tone) return;
-        s.grid[i] = ((s.idx(g) + 1) << 3) | (tone + 1);
-      },
-      slant(a) {
-        const d = ((a % Math.PI) + Math.PI) % Math.PI;
-        return d < 0.39 || d > 2.75 ? "-" : d < 1.18 ? "\\" : d < 1.96 ? "|" : "/";
-      },
-      draw(s, t) {
-        s.time = t;
-        const { ctx, A, grid, cw, ch } = s;
-        grid.fill(0);
-        const ds = Math.min(cw, ch) * 0.5;
-        for (let n = 0; n < s.fronds.length; n += 1) {
-          let f = s.fronds[n];
-          let age = t - f.born;
-          if (age > f.grow + f.life + 7) {
-            f = s.fronds[n] = this.frond(s, n, s.fronds.length);
-            f.born = t;
-            age = 0;
-          }
-          const u = 1 - Math.pow(1 - clamp01(age / f.grow), 2);
-          const wither = clamp01((age - f.grow - f.life) / 7);
-          const lift = wither > 0 ? -1 - Math.floor(wither * 3) : 0;
-          // The visible stem lengthens as it grows; the part not yet
-          // unrolled is wound into a coil that tightens toward the tip.
-          const Lv = f.L * (0.2 + 0.8 * u);
-          const Lu = Lv * (0.35 + 0.65 * Math.pow(u, 0.8));
-          const rc = Math.max(ch * 0.4, (Lv - Lu) / 2.7);
-          let x = f.x;
-          let y = f.y;
-          let a = f.ang;
-          const sway = gust(f.x / s.w + f.seed, t) * 0.06;
-          const pinnaGap = ch * 1.05;
-          let nextPinna = ch * 1.5;
-          for (let d = 0; d < Lv; d += ds) {
-            const coiled = d > Lu;
-            // A fountain arch that bends harder toward the tip; a withering
-            // frond sags.
-            const k = coiled ? f.curl * (1 + ((d - Lu) / Math.max(1, Lv - Lu)) * 4) / rc : (f.curl * (0.3 + 1.6 * (d / f.L)) * (1 + wither)) / f.L;
-            a += k * ds + (sway * ds) / f.L;
-            x += Math.cos(a) * ds;
-            y += Math.sin(a) * ds;
-            const tipward = d / Math.max(1, Lv);
-            const base = coiled ? 4 : tipward > 0.8 ? 4 : 3;
-            const tone = Math.max(0, base + lift);
-            if (coiled) {
-              const last = d + ds >= Lv;
-              this.mark(s, x, y, last ? "@" : Math.cos(a) * f.curl > 0 ? "6" : "9", tone);
-              continue;
-            }
-            this.mark(s, x, y, this.slant(a), tone);
-            if (d < nextPinna || wither >= 1) continue;
-            nextPinna = d + pinnaGap;
-            // A pair of leaflets, longest mid-frond and small near the coil.
-            const prof = Math.sin(Math.PI * Math.pow(d / Math.max(1, Lu), 0.85));
-            const pl = f.L * 0.17 * prof * Math.min(1, (Lu - d) / (ch * 2));
-            if (pl < cw * 0.6) continue;
-            for (const side of [-1, 1]) {
-              let px = x;
-              let py = y;
-              let pa = a + side * 1.3;
-              const steps = Math.max(1, Math.round(pl / ds));
-              // One character per leaflet, so each reads as a single stroke.
-              const stroke = this.slant(pa + side * 0.2) === "-" ? "~" : this.slant(pa + side * 0.2);
-              for (let q = 1; q <= steps; q += 1) {
-                pa -= side * 0.06;
-                px += Math.cos(pa) * ds;
-                py += Math.sin(pa) * ds;
-                const end = q === steps;
-                const g = end ? (py < y - ch * 0.3 ? "'" : py > y + ch * 0.3 ? "," : Math.cos(pa) > 0 ? ">" : "<") : stroke;
-                this.mark(s, px, py, g, Math.max(0, (end ? 3 : 2) + lift));
-              }
+        cells(s, Math.max(2, Math.round(4 * s.k)));
+        const { cols, rows, pal } = s;
+        const dark = pal.dark;
+        const R = seeded(newSeed());
+        const [hue, sat0] = toHsl(pal.brass);
+        const sat = Math.max(0.4, Math.min(0.75, sat0));
+        // Colours pitched to the ground, pulled a little toward the accent.
+        const tone = (h, sv, l) => mix(fromHsl(h, sv, dark ? l : l * 0.78), pal.brass, 0.1);
+        s.star = mix(pal.mist, pal.tint, 0.3);
+        s.body = [0.24, 0.37, 0.5, 0.66].map((l) => tone(hue, sat, l));
+        s.band = [0.2, 0.31, 0.44, 0.58].map((l) => tone(hue + 24, sat * 0.8, l));
+        s.ringC = [tone(hue + 10, sat * 0.5, 0.46), tone(hue + 10, sat * 0.4, 0.68)];
+        s.moonC = [tone(214, 0.12, 0.34), tone(214, 0.1, 0.56), tone(214, 0.1, 0.78)];
+        s.ground = [mix(pal.mist, pal.ink, 0.86), mix(pal.mist, pal.ink, 0.74), mix(pal.mist, pal.ink, 0.58)];
+        s.gh = Math.max(4, Math.round(rows * 0.13));
+        s.gy = rows - s.gh;
+        // The surface profile, so the rover and the props sit on it.
+        s.gtop = Array.from({ length: cols }, (_, x) => Math.round(s.gy - 1 - 2.4 * noise(x * 0.03, 1.3) - 1.4 * noise(x * 0.12, 4.1)));
+        const unit = Math.min(cols, rows);
+        s.pr = Math.max(4, Math.min(38, Math.round(unit * 0.17)));
+        s.px = Math.round(cols * (R() < 0.5 ? 0.78 : 0.2));
+        s.py = Math.round(Math.min(rows * 0.34, s.gy - s.pr * 1.8));
+        s.tilt = R.range(-0.4, -0.22);
+        // The static layer: nebula, faint stars, crescent moon, surface.
+        s.base = new Uint8ClampedArray(s.img.data.length);
+        const neb = [pal.spectrum[1], pal.spectrum[3]];
+        const off = R() * 100;
+        for (let y = 0; y < s.gy; y += 1) {
+          for (let x = 0; x < cols; x += 1) {
+            for (let n = 0; n < 2; n += 1) {
+              const v = noise(x * 0.028 + off + n * 40, y * 0.05 + n * 17) * noise(x * 0.011 + n * 9, y * 0.02 + off) * 1.9;
+              if (v - 0.42 > 0.22 + dither(x, y) * 0.3) put(s.base, y * cols + x, neb[n], (dark ? 0.26 : 0.2) * Math.min(1, (v - 0.4) * 2));
             }
           }
-          // Now and then a spore lifts off a grown frond.
-          if (u > 0.9 && !wither && Math.random() < 0.02) s.spores.push({ x, y, born: t, seed: Math.random() * 100 });
         }
-        // Moss along the floor, thickest under the fronds.
-        const r = s.rows - 1;
-        for (let c = 0; c < s.cols; c += 1) {
-          const near = s.fronds.some((f) => Math.abs(f.x / cw - c) < 9);
-          if (!near && hash(c, 3) > 0.25) continue;
-          this.mark(s, c * cw + 1, r * ch + 1, ".,;:'`"[Math.floor(hash(c, r, 5) * 6)], hash(c, 11) < 0.3 ? 2 : 1);
-          if (near && hash(c, 17) < 0.4) this.mark(s, c * cw + 1, (r - 1) * ch + 1, ".,'"[Math.floor(hash(c, 19) * 3)], 1);
+        const mc = Math.round(cols * (s.px / cols > 0.5 ? 0.16 : 0.84));
+        const my = Math.round(Math.max(6, Math.min(rows * 0.2, s.gy * 0.3)));
+        const mr = Math.max(3, Math.round(s.pr * 0.36));
+        for (let j = -mr; j <= mr; j += 1) {
+          for (let i = -mr; i <= mr; i += 1) {
+            if (i * i + j * j > mr * mr) continue;
+            // Cut a crescent: shade the side away from the light.
+            const cut = (i - mr * 0.45) ** 2 + (j + mr * 0.2) ** 2 < (mr * 0.9) ** 2;
+            const l = cut ? 0 : 1 - (i + mr) / (2.4 * mr);
+            if (cut && dither(i, j) < 0) continue;
+            const c = s.moonC[cut ? 0 : l > 0.62 ? 2 : 1];
+            put(s.base, (my + j) * cols + mc + i, c, cut ? 0.25 : 0.9);
+          }
         }
-        s.spores = s.spores.filter((sp) => {
-          const age = t - sp.born;
-          const px = sp.x + age * 6 * s.k + Math.sin(age * 0.8 + sp.seed) * 14 * s.k;
-          const py = sp.y - age * 9 * s.k;
-          if (age > 16 || py < 0) return false;
-          this.mark(s, px, py, age < 8 ? "*" : "·", age < 4 ? 2 : 1);
+        for (let x = 0; x < cols; x += 1) {
+          for (let y = s.gtop[x]; y < rows; y += 1) {
+            const d = y - s.gtop[x];
+            put(s.base, y * cols + x, s.ground[d === 0 ? 2 : d < 3 && dither(x, y) > 0 ? 1 : 0], d === 0 ? 0.7 : 0.5 + Math.min(0.2, d * 0.02));
+          }
+        }
+        // Craters pressed into the ground, each with a lit rim on its far side.
+        for (let i = 0, n = Math.max(3, Math.round(cols / 26)); i < n; i += 1) {
+          const cx = Math.floor(R() * cols);
+          const cy = Math.min(rows - 2, s.gtop[cx] + 2 + Math.floor(R() * Math.max(1, s.gh - 3)));
+          const rx = Math.round(R.range(2, 6) * Math.max(0.6, unit / 160));
+          const ry = Math.max(1, Math.round(rx * 0.32));
+          for (let j = -ry; j <= ry; j += 1) {
+            for (let k = -rx; k <= rx; k += 1) {
+              const e = (k / rx) ** 2 + (j / ry) ** 2;
+              if (e > 1) continue;
+              const x = cx + k;
+              const y = cy + j;
+              if (x < 0 || y < 0 || x >= cols || y >= rows) continue;
+              const rim = e > 0.6 && j < 0;
+              put(s.base, y * cols + x, rim ? s.ground[2] : mix(s.ground[0], pal.ink, 0.5), rim ? 0.65 : 0.6);
+            }
+          }
+        }
+        // A flag and a radio mast stand on the surface; the mast's lamp blinks.
+        s.props = [];
+        for (const [u, kind] of [[R.range(0.05, 0.3), "flag"], [R.range(0.68, 0.94), "mast"]]) {
+          const x = Math.floor(u * cols);
+          const top = s.gtop[x];
+          const h = Math.max(5, Math.round(unit * 0.05));
+          for (let k = 0; k < h; k += 1) put(s.base, (top - k) * cols + x, s.ground[2], 0.85);
+          if (kind === "flag") {
+            for (let j = 0; j < 3; j += 1) for (let i = 1; i <= 4; i += 1) put(s.base, (top - h + j) * cols + x + i, pal.brass, 0.85);
+          } else {
+            for (let i = -2; i <= 2; i += 1) put(s.base, (top - h + 1) * cols + x + i, s.ground[2], 0.8);
+            s.lamp = { x, y: top - h - 1 };
+          }
+        }
+        // Twinkling stars in three depths; the near ones drift slowly left.
+        const n = Math.round(Math.max(28, Math.min(700, (cols * s.gy) / 130)));
+        s.stars = Array.from({ length: n }, () => {
+          const z = R();
+          return { x: R() * cols, y: R() * s.gy, z: z < 0.6 ? 0 : z < 0.9 ? 1 : 2, ph: R() * TAU, rate: R.range(0.6, 2.4), big: R() < 0.12 };
+        });
+        s.shots = [];
+        s.sat = null;
+        s.rover = { seed: R() * 100 };
+        s.ufo = { x: cols * 0.4, y: s.gy * 0.4, tx: cols * 0.4, ty: s.gy * 0.4, next: 0 };
+      },
+      draw(s, t, dt) {
+        s.time += Math.min(dt, 0.2);
+        const time = s.time;
+        const { cols, rows, pal, gy } = s;
+        const px = s.img.data;
+        px.set(s.base);
+        // Stars.
+        for (const st of s.stars) {
+          const x = (((st.x - time * [0.15, 0.35, 0.7][st.z] * 0.4) % cols) + cols) % cols;
+          const tw = 0.3 + 0.7 * Math.pow(Math.sin(time * st.rate + st.ph) * 0.5 + 0.5, 2);
+          const a = (st.z === 0 ? 0.4 : st.z === 1 ? 0.65 : 0.9) * tw;
+          plot(s, px, x, st.y, s.star, a);
+          if (st.big && tw > 0.55) for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) plot(s, px, x + dx, st.y + dy, s.star, a * 0.45);
+        }
+        // The planet: a lit sphere, dithered, with cloud bands that drift.
+        const { pr, body, band } = s;
+        const lx = -0.62;
+        const ly = -0.5;
+        const lz = 0.6;
+        for (let j = -pr; j <= pr; j += 1) {
+          for (let i = -pr; i <= pr; i += 1) {
+            const d2 = (i * i + j * j) / (pr * pr);
+            if (d2 > 1) continue;
+            const nz = Math.sqrt(1 - d2);
+            const lit = (i / pr) * lx + (j / pr) * ly + nz * lz;
+            const banded = Math.sin((j / pr) * 7 + noise(i * 0.12 + time * 0.05, j * 0.2) * 3) > 0.25;
+            const v = lit * 1.15 + 0.1 + dither(s.px + i, s.py + j) * 0.3;
+            const k = v < 0.15 ? 0 : v < 0.5 ? 1 : v < 0.85 ? 2 : 3;
+            plot(s, px, s.px + i, s.py + j, (banded ? band : body)[k], 0.95);
+          }
+        }
+        // The ring: an ellipse around the planet, passing behind the top half
+        // and in front of the bottom half.
+        const rr = pr * 1.75;
+        const steps = Math.round(rr * 7);
+        for (let front = 0; front < 2; front += 1) {
+          for (let n = 0; n < steps; n += 1) {
+            const a = (n / steps) * TAU;
+            const sn = Math.sin(a);
+            if ((sn > 0) !== (front === 1)) continue;
+            const ex = Math.cos(a) * rr;
+            const ey = sn * rr * 0.26;
+            const x = ex * Math.cos(s.tilt) - ey * Math.sin(s.tilt);
+            const y = ex * Math.sin(s.tilt) + ey * Math.cos(s.tilt);
+            if (!front && x * x + y * y < pr * pr * 0.96) continue;
+            const c = s.ringC[Math.cos(a * 2) > 0.2 ? 1 : 0];
+            plot(s, px, s.px + x, s.py + y, c, front ? 0.85 : 0.6);
+            if (pr > 10) plot(s, px, s.px + x * 0.88, s.py + y * 0.88, s.ringC[0], front ? 0.5 : 0.35);
+          }
+        }
+        // A satellite makes one slow crossing, blinking as it goes.
+        if (!s.sat && Math.random() < dt * 0.03) {
+          const right = Math.random() < 0.5;
+          s.sat = { x: right ? -6 : cols + 6, y: rand(0.08, 0.5) * gy, v: (right ? 1 : -1) * cols / rand(55, 90) };
+        }
+        if (s.sat) {
+          const sa = s.sat;
+          sa.x += sa.v * dt;
+          if (sa.x < -8 || sa.x > cols + 8) s.sat = null;
+          else {
+            sprite(s, px, ["b   b", "bccab", "b   b"], Math.round(sa.x) - 2, Math.round(sa.y), { a: pal.tint, b: s.moonC[1], c: s.moonC[2] }, sa.v < 0);
+            if (Math.sin(time * 4) > 0.8) plot(s, px, sa.x, sa.y - 1, pal.tint, 0.95);
+          }
+        }
+        // A saucer hovers, then darts to a new spot.
+        const u = s.ufo;
+        if (time > u.next) {
+          u.next = time + rand(3, 8);
+          u.tx = cols * rand(0.06, 0.94);
+          u.ty = gy * rand(0.1, 0.6);
+        }
+        u.x += (u.tx - u.x) * Math.min(1, dt * 1.6);
+        u.y += (u.ty - u.y) * Math.min(1, dt * 1.6);
+        const blink = Math.floor(time * 3) % 3;
+        sprite(s, px, ["  bbb  ", " aaaaaaa", "c d e f"], Math.round(u.x) - 3, Math.round(u.y + Math.sin(time * 2) * 0.8) - 1, {
+          a: s.moonC[2], b: s.moonC[1], c: blink === 0 ? pal.tint : s.moonC[0], d: blink === 1 ? pal.tint : s.moonC[0], e: blink === 2 ? pal.tint : s.moonC[0], f: blink === 0 ? pal.tint : s.moonC[0],
+        });
+        // Shooting stars.
+        if (Math.random() < dt * 0.14) {
+          const right = Math.random() < 0.5;
+          s.shots.push({ x: rand(0.1, 0.9) * cols, y: rand(0, 0.3) * gy, vx: (right ? 1 : -1) * rand(50, 90), vy: rand(14, 30), age: 0 });
+        }
+        s.shots = s.shots.filter((sh) => {
+          sh.age += dt;
+          sh.x += sh.vx * dt;
+          sh.y += sh.vy * dt;
+          if (sh.age > 1.2 || sh.y > gy) return false;
+          const fade = 1 - sh.age / 1.2;
+          for (let k = 0; k < 14; k += 1) plot(s, px, sh.x - (sh.vx / 60) * k * 1.1, sh.y - (sh.vy / 60) * k * 1.1, k < 2 ? pal.tint : s.star, fade * (1 - k / 14) * 0.95);
           return true;
         });
+        // The rover rolls slowly back and forth along the surface.
+        const rv = s.rover;
+        const ph = time * 0.024 + rv.seed;
+        const rx = Math.round(cols * (0.5 + 0.44 * Math.sin(ph)));
+        const face = Math.cos(ph) < 0;
+        const ry = s.gtop[Math.max(0, Math.min(cols - 1, rx))];
+        sprite(s, px, ["  aa  ", " bbbbc", "bbbbbb", "d d d "], rx - 3, ry - 3, { a: pal.tint, b: s.moonC[2], c: pal.brass, d: s.ground[1] }, face);
+        if (s.lamp && Math.sin(time * 2.4) > 0.6) {
+          plot(s, px, s.lamp.x, s.lamp.y, pal.fault, 0.95);
+          for (const [dx, dy] of [[1, 0], [-1, 0], [0, -1]]) plot(s, px, s.lamp.x + dx, s.lamp.y + dy, pal.fault, 0.35);
+        }
+        blit(s, false);
+      },
+    },
+
+    // Signal: a quiet bench of data lanes. Hex dumps scroll up the margins at
+    // their own speeds, packets run up them as short bright trails, and a
+    // refresh bar sweeps the screen, lighting whatever it crosses. The glyphs
+    // bloom softly on dark themes, and now and then one band of the picture
+    // slips sideways for a moment, like a tube catching its sync.
+    signal: {
+      fps: 20,
+      previewK: 0.6,
+      chars: "0123456789ABCDEF:./_-",
+      setup(s) {
+        s.cw = 9 * s.k;
+        s.ch = 15 * s.k;
+        s.clock = Math.random() * 100;
+      },
+      resize(s) {
+        s.cols = Math.ceil(s.w / s.cw);
+        s.rows = Math.ceil(s.h / s.ch);
+        s.A = atlas(s, this.chars, tones(s.pal), s.cw, s.ch, 12 * s.k);
+        // Glyphs are drawn to their own layer, then composited with a bloom.
+        const mk = (w, h) => {
+          const c = document.createElement("canvas");
+          c.width = Math.max(1, Math.round(w));
+          c.height = Math.max(1, Math.round(h));
+          return c;
+        };
+        s.layer = mk(s.w * s.dpr, s.h * s.dpr);
+        s.lctx = s.layer.getContext("2d");
+        s.lctx.setTransform(s.dpr, 0, 0, s.dpr, 0, 0);
+        s.glow = mk(s.w / 4, s.h / 4);
+        s.gctx = s.glow.getContext("2d");
+        // Lanes crowd the margins and thin out through the middle.
+        const R = seeded(newSeed());
+        s.lanes = [];
+        for (let c = 1; c < s.cols - 4;) {
+          const u = Math.abs(c / s.cols - 0.5) * 2;
+          const width = Math.round(R.range(8, 13));
+          if (R() < 0.12 + 0.88 * u * u) {
+            s.lanes.push({ c, width, v: R.range(0.8, 4.2), gain: 0.45 + 0.55 * u, id: Math.floor(R() * 1e6), pv: R.range(3, 9), po: R() * 200, gap: R() * 0.2 });
+            c += width + Math.round(R.range(2, 5));
+          } else c += 2;
+        }
+        s.glitch = { at: s.clock + rand(14, 30), until: 0, y: 0, h: 0, dx: 0 };
+      },
+      draw(s, t, dt) {
+        s.clock += Math.min(dt, 0.2);
+        const now = s.clock;
+        const { ctx, lctx, cols, rows, cw, ch, A, pal } = s;
+        lctx.clearRect(0, 0, s.w, s.h);
+        // The refresh bar, which crosses a little slower than it looks.
+        const span = rows + 24;
+        const bar = ((now * 2.6) % span) - 12;
+        for (const lane of s.lanes) {
+          const shift = Math.floor(now * lane.v);
+          const head = rows + 10 - ((now * lane.pv + lane.po) % (rows + 40));
+          for (let r = 0; r < rows; r += 1) {
+            const row = r + shift;
+            if (hash(lane.id, row, 1) < 0.14 + lane.gap) continue;
+            const len = 3 + Math.floor(hash(lane.id, row, 2) * (lane.width - 2));
+            const behind = r - head;
+            const packet = behind > -1 && behind < 7 ? 1 - behind / 7 : 0;
+            const sweep = Math.exp(-((r - bar) * (r - bar)) / 5);
+            for (let i = 0; i < len; i += 1) {
+              const c = lane.c + i;
+              if (c >= cols) break;
+              let b = 0.16 + 0.2 * hash(lane.id, row, 3 + i);
+              if (i < 4) b *= 0.7;
+              b = (b + packet * 0.75 + sweep * 0.55) * lane.gain * 1.25;
+              if (b < 0.1) continue;
+              const tone = Math.min(4, Math.floor(b * 5));
+              // A few cells keep changing; the rest hold until they scroll off.
+              const z = hash(c, row, 9) < 0.06 ? Math.floor(now * 2 + hash(c, row, 5) * 9) : 0;
+              const g = Math.floor(hash(lane.id + i * 13, row, 7 + z) * (i < 4 ? 16 : A.n - 3)) % A.n;
+              stamp(lctx, A, g, packet > 0.9 && i === 0 ? 4 : tone, c * cw, r * ch);
+            }
+          }
+        }
+        // The bar itself: a faint band of light on the tube.
+        const by = bar * ch;
+        if (by > -ch * 4 && by < s.h + ch * 4) {
+          const grad = lctx.createLinearGradient(0, by - ch * 2, 0, by + ch * 2);
+          grad.addColorStop(0, css(pal.steel, 0));
+          grad.addColorStop(0.5, css(pal.steel, pal.dark ? 0.1 : 0.07));
+          grad.addColorStop(1, css(pal.steel, 0));
+          lctx.fillStyle = grad;
+          lctx.fillRect(0, by - ch * 2, s.w, ch * 4);
+        }
         ctx.clearRect(0, 0, s.w, s.h);
-        for (let i = 0; i < grid.length; i += 1) {
-          const v = grid[i];
-          if (!v) continue;
-          stamp(ctx, A, (v >> 3) - 1, (v & 7) - 1, (i % s.cols) * cw, Math.floor(i / s.cols) * ch);
+        ctx.drawImage(s.layer, 0, 0, s.w, s.h);
+        if (pal.dark) {
+          s.gctx.clearRect(0, 0, s.glow.width, s.glow.height);
+          s.gctx.drawImage(s.layer, 0, 0, s.glow.width, s.glow.height);
+          ctx.globalCompositeOperation = "lighter";
+          ctx.globalAlpha = 0.9;
+          ctx.drawImage(s.glow, 0, 0, s.w, s.h);
+          ctx.globalAlpha = 1;
+          ctx.globalCompositeOperation = "source-over";
+        }
+        // A band of the picture slips sideways for a few frames.
+        const gl = s.glitch;
+        if (now > gl.at && now > gl.until) {
+          gl.until = now + rand(0.12, 0.3);
+          gl.at = gl.until + rand(16, 40);
+          gl.h = Math.round(rand(0.03, 0.09) * s.h);
+          gl.y = Math.round(rand(0.05, 0.9) * (s.h - gl.h));
+          gl.dx = Math.round(rand(6, 20) * s.k) * (Math.random() < 0.5 ? -1 : 1);
+        }
+        if (now < gl.until) {
+          const d = s.dpr;
+          ctx.clearRect(0, gl.y, s.w, gl.h);
+          ctx.drawImage(s.layer, 0, gl.y * d, s.layer.width, gl.h * d, gl.dx, gl.y, s.w, gl.h);
         }
       },
     },
