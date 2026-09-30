@@ -2486,6 +2486,12 @@
     return name === "run_terminal_command" || name === "get_command_output" || name === "kill_command" || name === "monitor";
   }
 
+  // Output whose columns mean something (shell, matches, listings): it keeps
+  // its lines and scrolls sideways instead of wrapping mid-token.
+  function isCodeOutputTool(name) {
+    return isShellExecTool(name) || ["grep", "glob", "list_dir", "read_file"].includes(name);
+  }
+
   function backgroundCommandLabel(trace) {
     if (!trace || !isShellExecTool(trace.name) || !trace.background || !trace.child_id) return "";
     const kind = trace.backgroundResult ? "background result" : "background";
@@ -7856,6 +7862,8 @@
       return `<span class="chat-console-call"><span class="chat-tool-action">${escapeHtml(label)}</span></span>`;
     }
     let inner = "";
+    // A wrapped path or command breaks after a slash, never inside a name.
+    const path = ["read_file", "write_file", "search_replace", "list_dir", "run_terminal_command", "get_command_output"].includes(name);
     if (["read_file", "write_file", "search_replace", "list_dir"].includes(name)) {
       inner = consoleArgText(compactPath(trace.path || ".", trace, 88), 88);
     } else if (name === "run_terminal_command" || name === "get_command_output") {
@@ -7880,7 +7888,7 @@
     }
     const host = trace.host && trace.host !== sessionProject()?.host_alias ? trace.host : "";
     const call = inner
-      ? `<span class="chat-console-call"><span class="chat-tool-action">${escapeHtml(verb)}</span><span class="chat-console-paren">(</span><span class="chat-console-val">${escapeHtml(inner)}</span><span class="chat-console-paren">)</span></span>`
+      ? `<span class="chat-console-call"><span class="chat-tool-action">${escapeHtml(verb)}</span><span class="chat-console-paren">(</span><span class="chat-console-val">${path ? escapeHtml(inner).replace(/\//g, "/<wbr>") : escapeHtml(inner)}</span><span class="chat-console-paren">)</span></span>`
       : `<span class="chat-console-call"><span class="chat-tool-action">${escapeHtml(verb)}</span></span>`;
     return call + (host ? `<span class="chat-tool-host" title="Host ${escapeHtml(host)}">${escapeHtml(host)}</span>` : "");
   }
@@ -8054,7 +8062,7 @@
     if (looksLikeDiff(body)) return `<div class="chat-console-out is-diff">${consoleDiffHtml(body)}</div>`;
     const lines = String(body).replace(/\s+$/, "").split("\n");
     const inner = lines.map((line) => `<div class="chat-console-stdout">${renderAnsi(line) || " "}</div>`).join("");
-    return `<pre class="chat-console-out is-stdout">${inner}</pre>`;
+    return `<pre class="chat-console-out is-stdout${isCodeOutputTool(trace.name) ? " is-code" : ""}">${inner}</pre>`;
   }
 
   function consoleDurationLabel(trace) {
@@ -8577,7 +8585,7 @@
         `<button type="button" class="chat-tool-copy" data-copy-tool aria-label="Copy ${outputLabel.toLowerCase()}">Copy</button></div>` +
         `<div class="chat-tool-out is-file">${fileBodyHtml(trace, output)}</div></section>`);
     } else if (output || (trace.command && !failed)) {
-      sections.push(detailSectionHtml(outputLabel, output || (running ? "Waiting for output" : "No output"), output ? "is-result" : "is-result is-empty", authoritativeOutput ? 24000 : 4000, trace.command || ""));
+      sections.push(detailSectionHtml(outputLabel, output || (running ? "Waiting for output" : "No output"), `${output ? "is-result" : "is-result is-empty"}${isCodeOutputTool(trace.name) ? " is-code" : ""}`, authoritativeOutput ? 24000 : 4000, trace.command || ""));
     }
     if (authoritativeOutput && shownOutput) {
       const retained = Array.from(trace.output).length;

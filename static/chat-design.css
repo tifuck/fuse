@@ -2631,6 +2631,13 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-con
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] pre.chat-console-out.is-code {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  white-space: pre;
+  overflow-wrap: normal;
+}
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-more {
   margin-top: 0.12rem;
   color: var(--mute);
@@ -3067,6 +3074,11 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-md:
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-md > * {
   grid-column: 2;
 }
+/* The dot is centred on the reply's first line box; a top margin on the first
+   block would push that line below the dot (grid margins don't collapse). */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-md > :first-child {
+  margin-top: 0;
+}
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-md p {
   overflow-wrap: anywhere;
   word-break: break-word;
@@ -3159,8 +3171,7 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-con
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-nbody {
   min-width: 0;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  white-space: pre;
   color: var(--mist);
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-nline.is-del {
@@ -3380,7 +3391,8 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] {
   --console-leading: 1.4;
   --console-type: calc(0.78rem * var(--chat-text-scale, 1));
   --console-row: calc(var(--console-type) * var(--console-leading));
-  --console-stack: 0.22rem;
+  /* Room between rows: tool calls and replies each read as their own entry. */
+  --console-stack: 0.6rem;
   --console-col: 0.7rem;
   --console-dot: 0.38rem;
 }
@@ -3388,7 +3400,7 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-tim
   gap: var(--console-stack);
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-assistant {
-  gap: 0.28rem;
+  gap: var(--console-stack);
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-call,
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-think,
@@ -3596,6 +3608,9 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-perm-card-grant 
   word-break: normal;
 }
 :root .chat:is([data-view="cli"], [data-view="compact"]) .chat-tool-details .chat-tool-out::before { content: none; }
+/* Shell, match and listing output keeps its columns: scroll, don't wrap. */
+:root .chat:is([data-view="cli"], [data-view="compact"]) .chat-tool-details .chat-tool-section.is-code .chat-tool-out,
+:root .chat:is([data-view="cli"], [data-view="compact"]) .chat-tool-details .chat-tool-out.is-diff { white-space: pre; overflow-wrap: normal; overscroll-behavior-x: contain; }
 :root .chat:is([data-view="cli"], [data-view="compact"]) .chat-tool-details .chat-tool-cmd { color: var(--mist); }
 :root .chat:is([data-view="cli"], [data-view="compact"]) .chat-tool-details :is(.is-error, .is-empty) .chat-tool-out { padding: 0; background: none; }
 :root .chat:is([data-view="cli"], [data-view="compact"]) .chat-tool-details .is-error .chat-tool-out { color: var(--fault); }
@@ -3615,12 +3630,23 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-perm-card-grant 
    they would vanish into the surface, so they flip to a dark mark there. */
 html[data-chat-scheme="light"] .provider-logo { filter: invert(1) brightness(0.9); }
 
-/* File bodies and diffs: a numbered gutter in every view. */
-.chat .chat-console-lines { font: calc(0.75rem * var(--chat-text-scale, 1))/1.55 var(--mono); }
+/* File bodies and diffs: a numbered gutter in every view. Code never wraps:
+   a wrapped line loses its indentation and reads as a different line. The
+   block scrolls sideways instead, and its one grid track is as wide as the
+   longest line so every add/del tint spans the whole scrolled width. */
+.chat .chat-console-lines {
+  display: grid;
+  grid-template-columns: minmax(max-content, 1fr);
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  font: calc(0.75rem * var(--chat-text-scale, 1))/1.55 var(--mono);
+}
+.chat .chat-console-lines .chat-console-stdout { white-space: pre; }
 .chat .chat-console-nline { display: grid; grid-template-columns: max-content minmax(0, 1fr); column-gap: 0.75rem; }
 .chat .chat-console-nline:has(.chat-console-mark) { grid-template-columns: max-content max-content minmax(0, 1fr); column-gap: 0.4rem; }
 .chat .chat-console-n { color: color-mix(in srgb, var(--mute) 70%, transparent); font-variant-numeric: tabular-nums; text-align: right; user-select: none; white-space: pre; }
-.chat .chat-console-nbody { min-width: 0; color: var(--mist); white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat .chat-console-nbody { min-width: 0; color: var(--mist); white-space: pre; }
 .chat .chat-console-nline.is-add { background: color-mix(in srgb, var(--diff-add) 16%, transparent); }
 .chat .chat-console-nline.is-del { background: color-mix(in srgb, var(--diff-del) 16%, transparent); }
 .chat .chat-console-nline.is-add .chat-console-mark { color: var(--diff-add); }
@@ -4091,3 +4117,8 @@ html[data-chat-terminal] .chat:is([data-view="cli"], [data-view="compact"]) .cha
 }
 html[data-chat-terminal] .chat:is([data-view="cli"], [data-view="compact"]) :is(.chat-tool-subject, .chat-group-title) { color: var(--mist); }
 html[data-chat-terminal] .chat:is([data-view="cli"], [data-view="compact"]) .chat-step-head .chat-group-title { flex: 0 0 auto; }
+
+/* Path break points (<wbr> after each slash) are for an expanded header that
+   wraps. Chromium breaks at <wbr> even under nowrap, so one-line rows drop
+   them. */
+.chat .chat-step:not(.is-console-expanded) .chat-console-val wbr { display: none; }

@@ -205,6 +205,155 @@ def _main_thread(now):
     return messages, list(zip(subs, child_ids)), tools
 
 
+EDIT_PATH = "/srv/fuse-qa/app/services/notifications/dispatcher.py"
+
+_BEFORE = """class Dispatcher:
+    def __init__(self, queue, transport, *, retries=3):
+        self.queue = queue
+        self.transport = transport
+        self.retries = retries
+
+    async def deliver(self, event):
+        for attempt in range(self.retries):
+            try:
+                return await self.transport.send(event.recipient, event.payload, timeout=10)
+            except TransportError:
+                continue
+        raise DeliveryFailed(event.id)"""
+
+_AFTER = """class Dispatcher:
+    def __init__(self, queue, transport, *, retries=3, backoff=0.5):
+        self.queue = queue
+        self.transport = transport
+        self.retries = retries
+        self.backoff = backoff
+
+    async def deliver(self, event):
+        for attempt in range(self.retries):
+            try:
+                return await self.transport.send(event.recipient, event.payload, timeout=self.timeout_for(event, attempt))
+            except TransportError as exc:
+                logger.warning("delivery attempt %d/%d for %s failed: %s", attempt + 1, self.retries, event.id, exc)
+                await asyncio.sleep(self.backoff * (2 ** attempt))
+        raise DeliveryFailed(event.id)"""
+
+_NEW_FILE = """\"\"\"Exponential backoff helpers shared by every outbound transport.\"\"\"
+from __future__ import annotations
+
+import random
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class Backoff:
+    base: float = 0.5
+    cap: float = 30.0
+    jitter: float = 0.1
+
+    def delay(self, attempt: int) -> float:
+        raw = min(self.cap, self.base * (2 ** attempt))
+        return raw + random.uniform(0, raw * self.jitter)  # jitter keeps a thundering herd of retries from lining up again
+
+
+DEFAULT = Backoff()
+"""
+
+_PYTEST_FAIL = """============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-8.3.2, pluggy-1.5.0
+rootdir: /srv/fuse-qa
+collected 14 items
+
+tests/test_dispatcher.py ......F.......                                   [100%]
+
+=================================== FAILURES ===================================
+__________________ test_deliver_backs_off_between_attempts ___________________
+
+    async def test_deliver_backs_off_between_attempts(monkeypatch):
+        sleeps = []
+        monkeypatch.setattr(asyncio, "sleep", lambda s: sleeps.append(s) or _done())
+>       await Dispatcher(queue, FlakyTransport(fail=2), retries=3, backoff=0.5).deliver(event)
+E       AttributeError: 'Dispatcher' object has no attribute 'timeout_for'
+
+tests/test_dispatcher.py:88: AttributeError
+=========================== short test summary info ============================
+FAILED tests/test_dispatcher.py::test_deliver_backs_off_between_attempts - AttributeError: 'Dispatcher' object has no attribute 'timeout_for'
+========================= 1 failed, 13 passed in 0.42s =========================
+"""
+
+
+def _unified(path, before, after, n=2, strip_header=False):
+    import difflib
+
+    lines = list(difflib.unified_diff(before.split("\n"), after.split("\n"), fromfile="a/" + path,
+                                      tofile="b/" + path, lineterm="", n=n))
+    return "\n".join(lines[2:] if strip_header else lines)
+
+
+def _edits_thread(now):
+    """Every tool that shows text: edits (diffs), writes, reads, shell output,
+    grep and listings, with long and deeply indented lines for wrap checks."""
+    old_sig = "    def __init__(self, queue, transport, *, retries=3):\n        self.queue = queue\n        self.transport = transport\n        self.retries = retries"
+    new_sig = "    def __init__(self, queue, transport, *, retries=3, backoff=0.5):\n        self.queue = queue\n        self.transport = transport\n        self.retries = retries\n        self.backoff = backoff"
+    read_out = "\n".join(f"{i}: {line}" for i, line in enumerate(_BEFORE.split("\n"), 1))
+    git_diff = ("diff --git a/app/services/notifications/dispatcher.py b/app/services/notifications/dispatcher.py\n"
+                "index 3f1c2aa..9be41d0 100644\n" + _unified("app/services/notifications/dispatcher.py", _BEFORE, _AFTER, n=3))
+    grep_out = "\n".join([
+        "app/services/notifications/dispatcher.py:12:                return await self.transport.send(event.recipient, event.payload, timeout=10)",
+        "app/services/notifications/webhooks.py:48:        response = await self.transport.send(hook.url, body, timeout=settings.webhook_timeout_seconds)",
+        "app/services/email/smtp_relay.py:131:            await self.transport.send(message.to, message.render(), timeout=self.connect_timeout + self.write_timeout)",
+        "tests/test_dispatcher.py:40:    transport.send.assert_awaited_once_with(event.recipient, event.payload, timeout=10)",
+    ])
+    tools = [
+        _tool("te_0", "read_file", path=EDIT_PATH, cwd="/srv/fuse-qa", host="qa-box", platform="posix",
+              project_root="/srv/fuse-qa", offset=1, limit=200, output=read_out, preview=read_out[:120]),
+        _tool("te_1", "grep", pattern=r"transport\.send\(", path="/srv/fuse-qa", cwd="/srv/fuse-qa", host="qa-box",
+              platform="posix", project_root="/srv/fuse-qa", max_matches=50, output=grep_out, preview="4 matches"),
+        _tool("te_2", "search_replace", path=EDIT_PATH, cwd="/srv/fuse-qa", host="qa-box", platform="posix",
+              project_root="/srv/fuse-qa", preview=_unified(EDIT_PATH, old_sig, new_sig),
+              output=f"updated {EDIT_PATH} (1 replacement)"),
+        _tool("te_3", "search_replace", path=EDIT_PATH, cwd="/srv/fuse-qa", host="qa-box", platform="posix",
+              project_root="/srv/fuse-qa", preview=_unified(EDIT_PATH, _BEFORE, _AFTER, strip_header=True)[:800],
+              output=f"updated {EDIT_PATH} (2 replacements from 2 edits)"),
+        _tool("te_4", "write_file", path="/srv/fuse-qa/app/services/notifications/backoff.py", cwd="/srv/fuse-qa",
+              host="qa-box", platform="posix", project_root="/srv/fuse-qa",
+              output=f"created /srv/fuse-qa/app/services/notifications/backoff.py ({len(_NEW_FILE)} bytes)"),
+        _command("te_5", "qae000000001", "cd /srv/fuse-qa && python -m pytest -q tests/test_dispatcher.py -k 'deliver and not slow' --maxfail=1 -p no:cacheprovider",
+                 _PYTEST_FAIL, exit_code=1, status="error", error="Command exited with code 1"),
+        _command("te_6", "qae000000002", "git diff -- app/services/notifications/dispatcher.py", git_diff + "\n"),
+        _tool("te_7", "list_dir", path="/srv/fuse-qa/app/services/notifications", cwd="/srv/fuse-qa", host="qa-box",
+              platform="posix", project_root="/srv/fuse-qa",
+              preview="__init__.py\nbackoff.py\ndispatcher.py\nwebhooks.py\ntemplates/\nvery_long_module_name_for_the_push_notification_adapter.py"),
+        _command("te_8", "qae000000003", "ls -la", "total 8\ndrwxr-xr-x 2 qa qa 4096 Sep 30 10:02 .\n"),
+    ]
+    say = lambda text: {"type": "content", "text": text}  # noqa: E731
+    segments = [
+        {"type": "reasoning", "text": "Read the dispatcher, then add backoff."},
+        {"type": "tool", "id": "te_0"}, {"type": "tool", "id": "te_1"},
+        say("Adding a backoff parameter first.\n\n"),
+        {"type": "tool", "id": "te_2"},
+        say("Now the retry loop.\n\n"),
+        {"type": "tool", "id": "te_3"},
+        say("And a shared helper.\n\n"),
+        {"type": "tool", "id": "te_4"},
+        say("Running the tests.\n\n"),
+        {"type": "tool", "id": "te_5"},
+        say("`timeout_for` is missing. Checking the diff so far.\n\n"),
+        {"type": "tool", "id": "te_6"}, {"type": "tool", "id": "te_7"}, {"type": "tool", "id": "te_8"},
+        say("The dispatcher now backs off exponentially; one test still needs `timeout_for`."),
+    ]
+    assistant = {
+        "id": _mid(), "role": "assistant", "content": "".join(s["text"] for s in segments if s["type"] == "content"),
+        "reasoning": "".join(s["text"] for s in segments if s["type"] == "reasoning"),
+        "error": "", "model": "qa/fixture-model", "elapsedMs": 96000, "stopped": False,
+        "usage": {"prompt_tokens": 22000, "completion_tokens": 1400, "total_tokens": 23400},
+        "tools": tools, "segments": segments,
+    }
+    return [
+        {"id": _mid(), "role": "user", "content": "Add exponential backoff to the notification dispatcher.", "reasoning": "", "error": ""},
+        assistant,
+    ], tools
+
+
 def _child_message(desc, status):
     tools = [
         _tool("ts_0_0", "read_file", path="/srv/fuse-qa/static/chat.css", cwd="/srv/fuse-qa", host="qa-box",
@@ -400,6 +549,15 @@ def _seed(uid: int):
         _insert_root(conn, uid, tid, root_id, messages[1], ts, dumps)
         _insert_children(conn, uid, tid, root_id, subs, now, dumps, lambda i, desc, status: _child_message(desc, status))
         _insert_commands(conn, uid, tid, root_id, tools, ts)
+
+    edits, edit_tools = _edits_thread(now)
+    edits_view = chats.create_thread(uid, title=FIXTURE_PREFIX + "File edits and output", model="qa/fixture-model", messages=edits)
+    etid = chats.resolve_thread_pk(uid, edits_view["id"])
+    eroot = _mid()
+    with db.tx() as conn:
+        _insert_root(conn, uid, etid, eroot, edits[1], ts, dumps)
+        _insert_commands(conn, uid, etid, eroot, edit_tools, ts)
+    print(f"edits thread: https://127.0.0.1:8089/chat?t={edits_view['id']}")
 
     heavy, spawns = _heavy_thread()
     heavy_view = chats.create_thread(uid, title=FIXTURE_PREFIX + "Heavy transcript", model="qa/fixture-model", messages=heavy)

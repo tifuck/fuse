@@ -364,6 +364,8 @@
 
 /* Numbered lines and diffs. */
 .chat[data-view="mainframe"] .chat-console-lines { font: inherit; }
+.chat[data-view="mainframe"] pre.chat-console-out.is-code,
+.chat[data-view="mainframe"] pre.chat-console-out.is-code .chat-console-stdout { white-space: pre; overflow-wrap: normal; }
 .chat[data-view="mainframe"] .chat-console-nline {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
@@ -372,7 +374,7 @@
 .chat[data-view="mainframe"] .chat-console-nline:has(.chat-console-mark) { grid-template-columns: max-content 1ch minmax(0, 1fr); column-gap: 1ch; }
 .chat[data-view="mainframe"] .chat-console-nline.is-bare { grid-template-columns: 1ch minmax(0, 1fr); }
 .chat[data-view="mainframe"] .chat-console-n { color: var(--mute); opacity: 0.7; text-align: right; font-variant-numeric: tabular-nums; user-select: none; white-space: pre; }
-.chat[data-view="mainframe"] .chat-console-nbody { min-width: 0; color: var(--mist); white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat[data-view="mainframe"] .chat-console-nbody { min-width: 0; color: var(--mist); white-space: pre; }
 .chat[data-view="mainframe"] .chat-console-nline:is(.is-add, .is-del) { margin-inline: -1.5ch; padding-inline: 1.5ch; }
 .chat[data-view="mainframe"] .chat-console-nline.is-add { background: color-mix(in srgb, var(--diff-add) 12%, transparent); }
 .chat[data-view="mainframe"] .chat-console-nline.is-del { background: color-mix(in srgb, var(--diff-del) 12%, transparent); }
