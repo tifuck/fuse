@@ -330,8 +330,6 @@
   const MOTION = { fast: 120, base: 200, slow: 280, snap: "cubic-bezier(0.2, 0, 0, 1)", glide: "cubic-bezier(0.32, 0.72, 0, 1)" };
   const pickerSheetQuery = window.matchMedia("(max-width: 800px)");
   const overlayMobile = pickerSheetQuery;
-  let overlayStack = [];
-  let overlayPopLock = false;
   let overlayGhostUntil = 0;
   let overlayGhostRect = null;
   function overlayIsMobile() {
@@ -425,26 +423,14 @@
     menu.style.left = Math.round(left - origin.left) + "px";
     menu.style.bottom = Math.round(origin.bottom - top) + "px";
   }
+  // Mobile layers ride the site-wide back stack (FuseBack in app.js): back
+  // closes the top one, and closing one from its own UI removes its entry.
   function overlayPush(kind) {
     if (!overlayIsMobile()) return;
-    if (overlayStack[overlayStack.length - 1] === kind) return;
-    overlayStack.push(kind);
-    overlayPopLock = true;
-    // Carry the chat marker so closing the overlay restores the chat entry
-    // instead of a bare one that back-navigation would treat as the list.
-    const inChat = Boolean(history.state && history.state.fuseChat);
-    history.pushState(inChat ? { fuseOverlay: kind, fuseChat: true } : { fuseOverlay: kind }, "");
-    queueMicrotask(() => { overlayPopLock = false; });
+    FuseBack.open("chat:" + kind, () => overlayCloseKind(kind, true));
   }
   function overlayDrop(kind) {
-    const idx = overlayStack.lastIndexOf(kind);
-    if (idx < 0) return;
-    overlayStack.splice(idx, 1);
-    if (overlayIsMobile() && history.state && history.state.fuseOverlay === kind) {
-      const prev = overlayStack[overlayStack.length - 1];
-      const inChat = Boolean(history.state.fuseChat);
-      history.replaceState(prev ? (inChat ? { fuseOverlay: prev, fuseChat: true } : { fuseOverlay: prev }) : (inChat ? { fuseChat: true } : {}), "");
-    }
+    FuseBack.drop("chat:" + kind);
   }
   function overlayCloseKind(kind, fromPop) {
     if (kind === "view") {
@@ -459,6 +445,27 @@
     else if (kind === "history") setHistoryOpen(false);
     else if (kind === "rewind") closeRewind();
     else if (kind === "agent") closeAgentView();
+    else if (kind === "search") setSearchOpen(false);
+    else if (kind === "project-picker") setProjectPickerOpen(false);
+    else if (kind === "pop") closePop();
+    else if (kind === "context") closeContextPop();
+    else if (kind === "agent-context") closeAgentContextPop();
+    else if (kind === "lightbox") closeLightbox();
+  }
+  // Popovers shown and hidden from many call sites follow their [hidden]
+  // attribute instead of wiring every one of them.
+  function backLayerFollowsHidden(el, kind) {
+    if (!el) return;
+    const sync = () => {
+      if (el.hidden) overlayDrop(kind);
+      else overlayPush(kind);
+    };
+    new MutationObserver(sync).observe(el, { attributes: true, attributeFilter: ["hidden"] });
+  }
+  // Layers that live inside the chat drawer. Opening a chat from the drawer
+  // must retire their history entries before the chat's own URL is written.
+  function dropDrawerLayers() {
+    for (const kind of ["pop", "search", "project-picker", "history"]) overlayDrop(kind);
   }
   document.addEventListener("click", (event) => {
     if (event.detail === 0) return; // Keyboard/programmatic activation is not a touch ghost.
@@ -3019,20 +3026,25 @@
     const url = new URL(window.location.href);
     if (id) url.searchParams.set("t", String(id));
     else url.searchParams.delete("t");
-    if (stay) {
-      // Still on the mobile list (the open chat was deleted or archived):
-      // update the address only, keep whatever entry we are on.
-      window.history.replaceState(window.history.state, "", url);
-      return;
-    }
-    const mark = historyMobile.matches ? { fuseChat: true } : {};
-    if (mark.fuseChat && !(history.state && history.state.fuseChat)) {
-      // Mobile: entering a chat leaves the previous entry (the chat list) below,
-      // so a back swipe returns to the list instead of leaving the app.
-      window.history.pushState(mark, "", url);
-    } else {
-      window.history.replaceState(mark, "", url);
-    }
+    // Closing a layer (e.g. the drawer a chat was picked from) steps history
+    // back asynchronously; write the address once that entry is current.
+    if (!stay) dropDrawerLayers();
+    FuseBack.whenSettled(() => {
+      if (stay) {
+        // Still on the mobile list (the open chat was deleted or archived):
+        // update the address only, keep whatever entry we are on.
+        window.history.replaceState(window.history.state, "", url);
+        return;
+      }
+      const mark = historyMobile.matches ? { fuseChat: true } : {};
+      if (mark.fuseChat && !(history.state && history.state.fuseChat)) {
+        // Mobile: entering a chat leaves the previous entry (the chat list) below,
+        // so a back swipe returns to the list instead of leaving the app.
+        window.history.pushState(mark, "", url);
+      } else {
+        window.history.replaceState(mark, "", url);
+      }
+    });
   }
 
   function syncStatus() {
@@ -3956,7 +3968,10 @@
   }
 
   function closePop() {
-    if (pop) pop.remove();
+    if (pop) {
+      pop.remove();
+      overlayDrop("pop");
+    }
     pop = null;
     historyList && historyList.querySelectorAll(".is-menu").forEach((el) => el.classList.remove("is-menu"));
   }
@@ -3985,6 +4000,7 @@
       pop.appendChild(btn);
     });
     document.body.appendChild(pop);
+    overlayPush("pop");
     const rect = anchor.getBoundingClientRect();
     const width = pop.offsetWidth;
     const height = pop.offsetHeight;
@@ -4530,9 +4546,12 @@
     const top = root.querySelector(".chat-history-top");
     const row = root.querySelector("[data-history-row]");
     if (!top || !row || !historySearch || !searchToggle) return;
+    const was = searchOpen;
     searchOpen = open;
     top.classList.toggle("is-searching", open);
     searchToggle.setAttribute("aria-expanded", String(open));
+    if (open && !was) overlayPush("search");
+    else if (!open && was) overlayDrop("search");
     if (open) {
       setProjectPickerOpen(false);
       row.hidden = false;
@@ -4604,6 +4623,7 @@
   function setProjectPickerOpen(open) {
     if (!projectPicker) return;
     if (!open) {
+      if (!projectPicker.hidden) overlayDrop("project-picker");
       projectPicker.hidden = true;
       if (historyList) historyList.hidden = false;
       pickerMode = "list";
@@ -4628,6 +4648,7 @@
     const footer = root.querySelector(".chat-history-footer");
     if (footer) footer.hidden = true;
     if (historyKicker) historyKicker.hidden = true;
+    if (projectPicker.hidden) overlayPush("project-picker");
     projectPicker.hidden = false;
     syncHistoryFooter();
     syncComposer();
@@ -6330,6 +6351,7 @@
     document.body.appendChild(overlay);
     document.addEventListener("keydown", onKey);
     lightbox = { el: overlay, onKey, prevFocus: document.activeElement };
+    overlayPush("lightbox");
     requestAnimationFrame(() => {
       overlay.classList.add("is-open");
       close.focus();
@@ -6340,6 +6362,7 @@
     if (!lightbox) return;
     const entry = lightbox;
     lightbox = null;
+    overlayDrop("lightbox");
     document.removeEventListener("keydown", entry.onKey);
     entry.el.remove();
     if (entry.prevFocus && typeof entry.prevFocus.focus === "function") {
@@ -12052,6 +12075,7 @@
     });
     window.addEventListener("resize", () => placeComposerPop(contextPop, contextBtn, 30 * 16));
   }
+  backLayerFollowsHidden(contextPop, "context");
   if (contextPop) {
     contextPop.addEventListener("click", (event) => {
       if (event.target.closest("[data-context-pop-compact]")) runCompact("");
@@ -12836,6 +12860,7 @@
       if (open) syncAgentMeter(agentRun);
     });
   }
+  backLayerFollowsHidden(agentContextPop, "agent-context");
   document.addEventListener("click", (event) => {
     if (agentContextPop && !agentContextPop.hidden && agentMeterEl && !agentMeterEl.contains(event.target)) closeAgentContextPop();
   });
@@ -14069,19 +14094,8 @@
   // Back swipe: inside a chat it reveals the chat list (like the Chats toggle);
   // from the list itself the browser leaves the page, as usual.
   window.addEventListener("popstate", (event) => {
-    if (overlayPopLock) {
-      overlayPopLock = false;
-      return;
-    }
-    if (overlayStack.length) {
-      const top = overlayStack[overlayStack.length - 1];
-      // Landed back ON this overlay's own history entry (something above it
-      // was popped, e.g. the account page): keep it open.
-      if (event.state && event.state.fuseOverlay === top) return;
-      const kind = overlayStack.pop();
-      overlayCloseKind(kind, true);
-      return;
-    }
+    // FuseBack (app.js, registered first) already closed a layer for this one.
+    if (event.fuseBackHandled) return;
     if (!overlayIsMobile()) return;
     if (event.state && event.state.fuseChat) {
       if (root.classList.contains("is-history")) setHistoryOpen(false);

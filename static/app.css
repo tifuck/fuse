@@ -10425,3 +10425,29 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-history-tab[aria
    so the sidebar opts in explicitly. */
 html[data-chat-console="true"] .chat[data-view="console"] .chat-history { font-family: var(--mono); }
 html[data-chat-console="true"] .chat[data-view="console"] .chat-history-tab { font: 0.75rem/1.3 var(--mono); text-transform: lowercase; letter-spacing: 0.02em; }
+
+/* iOS Home Screen back swipe (FuseBack in app.js): a chevron that follows
+   the finger in from the left edge and fills once release would go back. */
+.fuse-back-cue {
+  --p: 0;
+  position: fixed;
+  left: 0;
+  top: 50%;
+  z-index: 2147483000;
+  width: 2.25rem;
+  height: 2.25rem;
+  margin-top: -1.125rem;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--mist);
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  border: 1px solid var(--line);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(calc(-100% + var(--p) * 150%)) scale(calc(0.7 + var(--p) * 0.3));
+  transition: opacity 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+.fuse-back-cue.is-on { opacity: calc(0.35 + var(--p) * 0.65); }
+.fuse-back-cue.is-armed { background: var(--brass); color: var(--ink); border-color: transparent; }
