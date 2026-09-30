@@ -127,7 +127,7 @@ test('a saved view that was renamed opens its successor', () => {
 });
 
 test('retired backdrops migrate to their replacement', () => {
-  for (const [old, next] of [['tide', 'ripple'], ['pulsar', 'signal'], ['topo', 'ripple'], ['ink', 'aurora'], ['wind', 'aurora'], ['fern', 'meadow']]) {
+  for (const [old, next] of [['tide', 'ripple'], ['pulsar', 'signal'], ['topo', 'ripple'], ['ink', 'aurora'], ['wind', 'aurora'], ['fern', 'meadow'], ['sumi', 'koi']]) {
     const ui = boot({ 'fuse.chat.backdrop.v1': old });
     assert.equal(ui.html.dataset.chatBackdrop, next, old);
     assert.equal(ui.storage.get('fuse.chat.backdrop.v1'), next, old);
@@ -144,11 +144,11 @@ test('backdrop wallpaper is a scene layer, not an opaque plate', () => {
   assert.doesNotMatch(css, /chat-scene-bubbles/);
   assert.match(js, /canvas data-chat-scene-fx/);
   assert.match(js, /signal: \{ label: "Signal"/);
-  assert.match(js, /orbit: \{ label: "Orbit"/);
-  for (const gone of ['pulsar', 'fern', 'ink']) assert.doesNotMatch(js, new RegExp(`\\n    ${gone}: \\{ label`));
+  for (const kind of ['orbit', 'galaxy', 'eclipse', 'belt', 'contact', 'koi']) assert.match(js, new RegExp(`\\n    ${kind}: \\{ label`));
+  for (const gone of ['pulsar', 'fern', 'ink', 'sumi']) assert.doesNotMatch(js, new RegExp(`\\n    ${gone}: \\{ label`));
   const engine = readFileSync(resolve(__dirname, '../static/chat-backdrop.js'), 'utf8');
-  for (const kind of ['glyphs', 'life', 'signal', 'orbit', 'pond']) assert.match(engine, new RegExp(`\\n    ${kind}: \\{`));
-  for (const gone of ['pulsar', 'fern', 'ink']) assert.doesNotMatch(engine, new RegExp(`\\n    ${gone}: \\{`));
+  for (const kind of ['glyphs', 'life', 'signal', 'orbit', 'pond', 'koi', 'galaxy', 'eclipse', 'belt', 'contact']) assert.match(engine, new RegExp(`\\n    ${kind}: \\{`));
+  for (const gone of ['pulsar', 'fern', 'ink', 'sumi']) assert.doesNotMatch(engine, new RegExp(`\\n    ${gone}: \\{`));
 });
 
 test('tool rows collapse to one line; thinking unwraps in place', () => {

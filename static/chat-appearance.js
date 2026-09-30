@@ -28,11 +28,15 @@
     circuit: { label: "Circuit", hint: "Signal traces" },
     garden: { label: "Garden", hint: "8-bit sakura · multicolor" },
     botanica: { label: "Botanica", hint: "Pen & ink blooms" },
-    sumi: { label: "Sumi-e", hint: "Ink-wash plum" },
     ivy: { label: "Nouveau", hint: "Art Nouveau vines" },
     meadow: { label: "Meadow", hint: "Pixel grass · fireflies" },
     pond: { label: "Pond", hint: "Pixel lilies · koi" },
+    koi: { label: "Koi", hint: "Pond from above · koi" },
     orbit: { label: "Orbit", hint: "Pixel planets · comets" },
+    galaxy: { label: "Galaxy", hint: "Pixel spiral · star clusters" },
+    eclipse: { label: "Eclipse", hint: "Planet limb · sunrise" },
+    belt: { label: "Belt", hint: "Asteroids · gas giant" },
+    contact: { label: "Contact", hint: "Alien world · mothership" },
     warp: { label: "Warp", hint: "Glyph starfield" },
     coral: { label: "Coral", hint: "Reaction–diffusion" },
     aurora: { label: "Aurora", hint: "Light curtains · multicolor" },
@@ -46,7 +50,7 @@
     hush: "glyphs", tide: "ripple", veil: "glyphs", ember: "life",
     phosphor: "rain", dither: "riso", scope: "ripple",
     topo: "ripple", loom: "mandala", wind: "aurora", maze: "garden", ants: "spiral",
-    pulsar: "signal", ink: "aurora", fern: "meadow",
+    pulsar: "signal", ink: "aurora", fern: "meadow", sumi: "koi",
   };
   // Reading fonts. Bricolage Grotesque and Red Hat Mono ship with every page
   // (base.html); the rest load from Google Fonts only when chosen, and the
