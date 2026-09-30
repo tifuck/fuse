@@ -107,6 +107,11 @@ async def main(args):
             if view not in VIEWS:
                 raise SystemExit(f"unknown view {view!r}; one of {', '.join(VIEWS)}")
             await page.evaluate(f"localStorage.setItem('fuse.chat.view.v2', '{view}')")
+            if args.theme:
+                name, _, colors = args.theme.partition(":")
+                await page.evaluate("([n, c]) => { localStorage.setItem('fuse.chat.theme.v1', n); if (c) {"
+                                    " const [ink, brass] = c.split(','); localStorage.setItem('fuse.chat.custom.v1',"
+                                    " JSON.stringify({ink, brass})); } }", [name, colors])
             if args.pane_width:
                 await page.evaluate(f"localStorage.setItem('fuse.chat.agentsWidth', '{args.pane_width}')")
             await page.goto(f"{BASE}/chat?t={thread}")
@@ -133,5 +138,6 @@ if __name__ == "__main__":
     ap.add_argument("--agent", action="store_true", help="open the first subagent")
     ap.add_argument("--pane-width", type=int, help="agents pane width in px (256-896)")
     ap.add_argument("--live", action="store_true", help="show live docks (browser-only JSON rewrite)")
+    ap.add_argument("--theme", help="theme id, or custom:<ink>,<brass> e.g. custom:#121212,#f2cf4a")
     ap.add_argument("--out", default="/tmp/fuse-qa-shots")
     asyncio.run(main(ap.parse_args()))

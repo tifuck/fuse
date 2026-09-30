@@ -425,7 +425,7 @@
 .chat[data-view="mainframe"] .chat-tool-md.chat-md { display: block; font-size: var(--mf-small); }
 .chat[data-view="mainframe"] .chat-tool-md.chat-md::before { content: none; }
 
-/* —— Thinking: one quiet row; the reasoning hangs under a single rule. —— */
+/* —— Thinking: one quiet row; open reasoning is plain text under it, no rule or indent. —— */
 .chat[data-view="mainframe"] .chat-step.is-console-think .chat-step-copy { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat[data-view="mainframe"] .chat-step.is-console-think .chat-step-kind { display: none; }
 .chat[data-view="mainframe"] .chat-step.is-console-think .chat-think-summary {
@@ -457,8 +457,7 @@
 .chat[data-view="mainframe"] .chat-step.is-console-think[data-think-mode="collapsed"] :is(.chat-console-bundle, .chat-think-window) { display: none; }
 .chat[data-view="mainframe"] .chat-step.is-console-think .chat-think-window {
   margin: 0 0 0.25rem;
-  padding: 0.1rem 0 0.1rem 1.5ch;
-  border-left: 1px solid var(--mf-rule);
+  padding: 0.1rem 0;
   cursor: pointer;
 }
 .chat[data-view="mainframe"] .chat-step.is-console-think .chat-think-preview {

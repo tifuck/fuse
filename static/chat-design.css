@@ -4069,3 +4069,25 @@ html:is([data-chat-view="cli"], [data-chat-view="console"], [data-chat-view="mai
 @media (prefers-reduced-motion: reduce) {
   .chat-view-menu * { transition: none !important; }
 }
+
+/* Terminal + Compact tool rows: the icon names the tool, the text says what
+   it did. No verb column and no status-colored glyphs, so no theme accent
+   ever sits beside a green/amber icon. Status lives in the right-hand text;
+   only a failure tints the icon. */
+html[data-chat-terminal] .chat:is([data-view="cli"], [data-view="compact"]) { --tool-glyph: color-mix(in srgb, var(--mist) 68%, var(--ink)); }
+html[data-chat-terminal] .chat:is([data-view="cli"], [data-view="compact"]) .chat-step:not(.is-error) .chat-step-node { color: var(--tool-glyph); }
+html[data-chat-terminal] .chat:is([data-view="cli"], [data-view="compact"]) .chat-step.is-error > .chat-step-node,
+html[data-chat-terminal] .chat:is([data-view="cli"], [data-view="compact"]) .chat-tool-children > .chat-step.is-error > .chat-step-node { color: var(--call-fail); }
+html[data-chat-terminal] .chat:is([data-view="cli"], [data-view="compact"]) .chat-step.is-error > .chat-step-main > .chat-step-head .chat-step-state { color: var(--call-fail); }
+/* The verb stays in the accessible name; it is just not drawn. */
+html[data-chat-terminal] .chat:is([data-view="cli"], [data-view="compact"]) .chat-step :is(.chat-tool-action, .chat-step-kind),
+html[data-chat-terminal] .chat:is([data-view="cli"], [data-view="compact"]) .chat-step.is-think[data-think-mode="collapsed"] .chat-step-kind {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; flex: none;
+}
+/* Open thinking hides its one-line summary; a quiet header keeps the row. */
+html[data-chat-terminal] .chat:is([data-view="cli"], [data-view="compact"]) .chat-step.is-think:not([data-think-mode="collapsed"]) .chat-step-kind {
+  position: static; width: auto; height: auto; margin: 0; overflow: visible; clip: auto;
+  color: var(--mute); font: calc(0.78rem * var(--chat-text-scale,1))/var(--tool-row) var(--mono);
+}
+html[data-chat-terminal] .chat:is([data-view="cli"], [data-view="compact"]) :is(.chat-tool-subject, .chat-group-title) { color: var(--mist); }
+html[data-chat-terminal] .chat:is([data-view="cli"], [data-view="compact"]) .chat-step-head .chat-group-title { flex: 0 0 auto; }

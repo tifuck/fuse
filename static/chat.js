@@ -6400,7 +6400,11 @@
     read: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 4.1C7.2 3.2 6 2.7 4.4 2.7H2.4v9.3h2.4c1.5 0 2.6.5 3.2 1.3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 4.1c.8-.9 2-1.4 3.6-1.4h2v9.3h-2.4c-1.5 0-2.6.5-3.2 1.3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 4.1v8.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
     link: '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M6.4 3.2H3.6A1.2 1.2 0 0 0 2.4 4.4v8a1.2 1.2 0 0 0 1.2 1.2h8a1.2 1.2 0 0 0 1.2-1.2V9.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M9.2 2.6H13.4V6.8M7.6 8.4L13.4 2.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     file: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3.4 4.4h9.2M3.4 8h9.2M3.4 11.6h6.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
-    tool: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="2.5" y="3.2" width="11" height="9.6" rx="1.8" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5.5 6.3l2 1.7-2 1.7M8.6 10h2.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    tool: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 2.6l5.4 5.4L8 13.4 2.6 8z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="8" cy="8" r="1.1" fill="currentColor"/></svg>',
+    model: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 2.4l5 2.8v5.6l-5 2.8-5-2.8V5.2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M3.2 5.3L8 8l4.8-2.7M8 8v5.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>',
+    todo: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2.6 4.4l1.1 1.1 1.9-2.1M2.6 10.4l1.1 1.1 1.9-2.1M7.8 4.6h5.6M7.8 10.6h5.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    scratch: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="3.2" y="2.8" width="9.6" height="10.8" rx="1.3" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5.6 2v1.6M8 2v1.6M10.4 2v1.6M5.6 7h4.8M5.6 9.8h3.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
+    steer: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3 12.6V8.2c0-1.7 1.3-3 3-3h7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M10.4 2.6L13 5.2l-2.6 2.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     error: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 2.8l5.1 8.9H2.9z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 6.4v2.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="8" cy="11" r="0.55" fill="currentColor"/></svg>',
     stop: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="4.8" y="4.8" width="6.4" height="6.4" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>',
     artifact: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="2.8" y="3.6" width="10.4" height="8.8" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5 9.1l1.6-1.9 1.5 1.6 2.1-2.6 2.1 2.9" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>',
@@ -6435,7 +6439,7 @@
   }
 
   function thinkLabel() {
-    if (chatView === "compact") return "Think";
+    if (isLedgerView()) return "Reasoning";
     if (isConsoleView()) return "thinking";
     return "think";
   }
@@ -6533,7 +6537,7 @@
     const error = uniformFail(items) || (first && first.error) || "";
     return (
       `<li class="chat-step is-error is-fail-cluster" data-step="${index}">` +
-      `<span class="chat-step-node" aria-hidden="true">${STEP_ICONS.error}</span>` +
+      `<span class="chat-step-node" aria-hidden="true">${isLedgerView() && new Set(items.map(i => i.trace && i.trace.name)).size === 1 ? toolIcon(first && first.name, false, false) : STEP_ICONS.error}</span>` +
       `<div class="chat-step-main">${toolHeadHtml({ line: escapeHtml(label), title: label, running: false, failed: true, interrupted: false, expandable: Boolean(error), open, kind: failKindWord(items) })}` +
       (error ? `<div class="chat-step-reveal${open ? " is-open" : ""}"><div class="chat-step-reveal-inner"><div class="chat-tool-details">${failNoteHtml(error)}</div></div></div>` : "") +
       `</div></li>`
@@ -7409,15 +7413,20 @@
     monitor: "watch",
     search_tools: "tools",
     load_skill: "skill",
-    todo_write: "edit",
+    propose_skill: "skill",
+    todo_write: "todo",
+    scratch: "scratch",
     spawn_subagent: "agent",
     get_subagent_output: "await",
     kill_subagent: "stop",
     list_subagents: "agent",
-    search_models: "search",
-    read_url: "read",
-    web_search: "search",
-    search: "search",
+    search_models: "model",
+    read_url: "link",
+    web_search: "web",
+    search: "web",
+    create_artifact: "artifact",
+    update_artifact: "artifact",
+    "fuse-steer": "steer",
   };
 
   const TOOL_KIND = {
@@ -7605,11 +7614,8 @@
     const subjectHtml = slash >= 0 ? `<span class="chat-path-parent">${escapeHtml(subject.slice(0, slash + 1))}</span><span class="chat-path-leaf">${escapeHtml(subject.slice(slash + 1))}</span>` : escapeHtml(subject);
     if (isConsoleView()) return consoleCallHtml(trace);
     const verb = isCliView() ? cliVerb(trace.name, trace) : toolAction(trace);
-    const prompt = (trace.name === "run_terminal_command" || (trace.name === "monitor" && !trace.url)) && isCliView()
-      ? '<span class="chat-command-prompt">$ </span>'
-      : "";
     return `<span class="chat-tool-action">${escapeHtml(verb)}</span>` +
-      `<span class="chat-tool-subject${file ? " is-path" : ""}">${prompt}${subjectHtml}</span>` +
+      `<span class="chat-tool-subject${file ? " is-path" : ""}">${subjectHtml}</span>` +
       (host ? `<span class="chat-tool-host" title="Host ${escapeHtml(host)}">${escapeHtml(host)}</span>` : "");
   }
 
@@ -7697,6 +7703,10 @@
   // behavior) under its own stylesheet; only Console sets data-chat-console.
   function isConsoleView() {
     return chatView === "console" || chatView === "mainframe";
+  }
+
+  function isLedgerView() {
+    return chatView === "cli" || chatView === "compact";
   }
 
   function isHarnessView() {
@@ -8635,7 +8645,8 @@
       detailProbe = true;
       try { inner = toolDetailHtml(trace, failed, running); } finally { detailProbe = false; }
     }
-    const icon = failed ? STEP_ICONS.error : interrupted ? STEP_ICONS.stop : artifact ? STEP_ICONS.artifact : toolIcon(trace.name, false, false);
+    const icon = isLedgerView() ? toolIcon(trace.name, false, false)
+      : failed ? STEP_ICONS.error : interrupted ? STEP_ICONS.stop : artifact ? STEP_ICONS.artifact : toolIcon(trace.name, false, false);
     if (isConsoleView()) {
       const result = consoleResultLine(trace, presentation);
       const preview = consoleCollapsedPreview(trace, failed, running);
@@ -8781,7 +8792,7 @@
     }) : [...new Set(items.map(i => toolSubject(i.trace)).filter(Boolean))];
     const preview = subjects.slice(0, 2).map(s => paths ? compactPath(s, {}, 42) : shortToolText(s, 60)).join(", ") + (subjects.length > 2 ? ` +${subjects.length - 2}` : "");
     const hosts = [...new Set(items.map(i => i.trace.host).filter(Boolean))];
-    const icon = isHarnessView() ? toolIcon(group.name, false, false) : failed === items.length ? STEP_ICONS.error : toolIcon(group.name, false, interrupted === items.length);
+    const icon = isHarnessView() || isLedgerView() ? toolIcon(group.name, false, false) : failed === items.length ? STEP_ICONS.error : toolIcon(group.name, false, interrupted === items.length);
     const state = running ? " is-running" : failed ? " is-error" : interrupted ? " is-interrupted" : counts.warning ? " is-warning" : " is-done";
     const kind = TOOL_KIND[group.name] ? ` is-${TOOL_KIND[group.name]}` : "";
     const groupKey = `group-${groupIndex}`;
