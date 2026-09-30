@@ -5,6 +5,7 @@ Needs Playwright, which only the production venv has:
 
     /root/fuse/venv/bin/python scripts/dev_qa_shot.py --view console --out /tmp/shots
     /root/fuse/venv/bin/python scripts/dev_qa_shot.py --view cli,compact --size 390x844 --agents --live
+    /root/fuse/venv/bin/python scripts/dev_qa_shot.py --view console --backdrop garden:40 --wait 8
 
 Run from /root/fuse-dev. Logs in with data/dev-qa-login.json (created by
 scripts.dev_qa_account) and opens the "QA · Tools, subagents and commands"
@@ -114,15 +115,20 @@ async def main(args):
                                     " JSON.stringify({ink, brass})); } }", [name, colors])
             if args.pane_width:
                 await page.evaluate(f"localStorage.setItem('fuse.chat.agentsWidth', '{args.pane_width}')")
+            if args.backdrop:
+                kind, _, strength = args.backdrop.partition(":")
+                await page.evaluate("([k, s]) => { localStorage.setItem('fuse.chat.backdrop.v1', k);"
+                                    " if (s) localStorage.setItem('fuse.chat.backdrop.strength.v1', s); }", [kind, strength])
             await page.goto(f"{BASE}/chat?t={thread}")
-            await page.wait_for_timeout(2500)
+            await page.wait_for_timeout(2500 + int(args.wait * 1000))
             if args.agents or args.agent:
                 await page.click("[data-agents-tab]")
                 await page.wait_for_timeout(1000)
                 if args.agent:
                     await page.click("[data-agents-list] button")
                     await page.wait_for_timeout(1500)
-            path = out / f"{view}-{args.size}{'-live' if args.live else ''}.png"
+            tag = f"-{args.backdrop.partition(':')[0]}" if args.backdrop else ""
+            path = out / f"{view}-{args.size}{tag}{'-live' if args.live else ''}.png"
             await page.screenshot(path=str(path), full_page=False)
             print(path, json.dumps(await page.evaluate(BOXES)))
         await browser.close()
@@ -139,5 +145,7 @@ if __name__ == "__main__":
     ap.add_argument("--pane-width", type=int, help="agents pane width in px (256-896)")
     ap.add_argument("--live", action="store_true", help="show live docks (browser-only JSON rewrite)")
     ap.add_argument("--theme", help="theme id, or custom:<ink>,<brass> e.g. custom:#121212,#f2cf4a")
+    ap.add_argument("--backdrop", help="backdrop id, optionally with strength 12-55, e.g. garden:40")
+    ap.add_argument("--wait", type=float, default=0, help="extra seconds before the screenshot (let a backdrop grow)")
     ap.add_argument("--out", default="/tmp/fuse-qa-shots")
     asyncio.run(main(ap.parse_args()))
