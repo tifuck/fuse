@@ -2193,9 +2193,24 @@ def command_trace(row, name="run_terminal_command"):
     }
 
 
+def settle_kill_receipt(trace):
+    """A kill_command result is a receipt for the stop request, not a view of
+    the target. The target's lifecycle is shown on its own command row; a
+    copied 'cancelling' state here is never revisited and spun forever."""
+    state = trace.pop("state", None)
+    state = trace.pop("execution_status", None) or state
+    if state:
+        trace["status"] = "done"
+        trace["error"] = ""
+    return trace
+
+
 def settle_command_traces(conn, user_id, thread_id, messages):
     wanted = [t for m in messages for t in m.get("tools") or []
               if t.get("name") in COMMAND_TOOLS and (t.get("job_id") or t.get("child_id"))]
+    for tool in wanted:
+        if tool.get("name") == "kill_command":
+            settle_kill_receipt(tool)
     rows = command_rows(conn, user_id, thread_id, [t.get("job_id") or t["child_id"] for t in wanted])
     for tool in wanted:
         # Only the invocation's result can finish a wait. Returned observations

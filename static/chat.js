@@ -2445,6 +2445,8 @@
   const EXECUTION_FIELDS = ["command_id", "job_id", "state", "execution_status", "output", "output_chars", "output_chars_exact",
     "output_retained_chars", "truncated", "output_mode", "output_start", "termination_confirmed", "output_bytes"];
   function executionState(trace) {
+    // A kill receipt never owns an execution; its target's row shows the stop.
+    if (trace?.name === "kill_command") return "";
     return trace?.state || trace?.execution_status || "";
   }
   function executionPending(trace) {

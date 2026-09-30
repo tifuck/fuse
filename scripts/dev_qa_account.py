@@ -163,6 +163,12 @@ def _main_thread(now):
         _command("ts_1_2", "qa0000000003", "tail -f /var/log/fuse-qa/app.log | grep --line-buffered -E 'WARN|ERROR'",
                  "WARN dock height mismatch\n", background=True, exit_code=None, state="cancelled", status="interrupted",
                  error="cancellation requested"),
+        # Legacy stop receipt: it copied its target's in-flight state and was
+        # saved mid-cancel. It must render as a finished stop, not spin.
+        _tool("ts_1_3", "kill_command", child_id="qa0000000003", command_id="qa0000000003", job_id="qa0000000003",
+              command="tail -f /var/log/fuse-qa/app.log | grep --line-buffered -E 'WARN|ERROR'", host="qa-box",
+              background=True, state="cancelling", execution_status="cancelling", status="interrupted",
+              termination_confirmed=False, output="status: cancelling\nCancellation requested; remote termination is not yet confirmed."),
         _tool("ts_2_0", "search_replace", path=LONG_PATH, cwd="/srv/fuse-qa", host="qa-box", platform="posix",
               project_root="/srv/fuse-qa", status="error", kind="tool_error", error="old_string not found in file",
               output="old_string not found in file"),
@@ -170,15 +176,16 @@ def _main_thread(now):
     for i, ((desc, _status), cid) in enumerate(zip(subs, child_ids)):
         tools.append(_tool(f"ts_3_{i}", "spawn_subagent", description=desc, preview=desc, child_id=cid,
                            model="qa/fixture-model", background=True, summary="", output=f"spawned {cid}"))
+    tools.append(_tool("ts_3_k", "kill_subagent", child_id=child_ids[2], output="cancelled"))
     tools.append(_tool("ts_4_0", "get_subagent_output", child_id=child_ids[0], background=True,
                        execution_status="completed", preview="completed", output="Schema looks consistent."))
     segments = [
         {"type": "reasoning", "text": "Plan the audit: read the CSS, then fan out reviewers per pane."},
         *[{"type": "tool", "id": t["id"]} for t in tools[:3]],
         {"type": "content", "text": "Running the checks now.\n\n"},
-        *[{"type": "tool", "id": t["id"]} for t in tools[3:7]],
+        *[{"type": "tool", "id": t["id"]} for t in tools[3:8]],
         {"type": "reasoning", "text": "\n\nThe layout test fails on dock height. Spawning reviewers for each pane."},
-        *[{"type": "tool", "id": t["id"]} for t in tools[7:]],
+        *[{"type": "tool", "id": t["id"]} for t in tools[8:]],
         {"type": "content", "text": MARKDOWN},
     ]
     assistant = {

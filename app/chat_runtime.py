@@ -1915,6 +1915,9 @@ async def _run_tools(
                     if row:
                         stored_trace = store.command_trace(row, job.name)
                         trace = {**stored_trace, **trace} if row["status"] in ("running", "cancelling") else {**trace, **stored_trace}
+            if job.name == "kill_command":
+                from . import chat_store as store
+                store.settle_kill_receipt(trace)
             if trace.get("status") == "running" and job.name in ("get_command_output", "get_subagent_output"):
                 trace.update(status="done", execution_status="running", background=True)
             output = trace.get("output") if isinstance(trace.get("output"), str) else (text or "")
