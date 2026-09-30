@@ -31,6 +31,7 @@
     sumi: { label: "Sumi-e", hint: "Ink-wash plum" },
     ivy: { label: "Nouveau", hint: "Art Nouveau vines" },
     meadow: { label: "Meadow", hint: "Pixel grass · fireflies" },
+    pond: { label: "Pond", hint: "Pixel lilies · koi" },
     fern: { label: "Fern", hint: "Unfurling glyph fronds" },
     warp: { label: "Warp", hint: "Glyph starfield" },
     coral: { label: "Coral", hint: "Reaction–diffusion" },
