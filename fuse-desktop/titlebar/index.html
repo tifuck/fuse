@@ -2,14 +2,15 @@
 <html>
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self'">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700&display=swap">
 <link rel="stylesheet" href="titlebar.css">
 </head>
 <body>
   <div class="bar">
     <div class="brand">
-      <img src="../build/icon.png" alt="">
-      <span class="title" id="title">Fuse</span>
+      <svg class="mark" viewBox="136 112 296 288" aria-hidden="true"><g class="mark-f"><rect x="168" y="136" width="66" height="240" rx="16"/><rect x="168" y="136" width="196" height="66" rx="16"/><rect x="168" y="252" width="152" height="58" rx="16"/></g><circle class="mark-dot" cx="398" cy="164" r="22"/></svg>
+      <span class="word">Fuse</span>
     </div>
     <div class="controls">
       <button id="minimize" title="Minimize" aria-label="Minimize">

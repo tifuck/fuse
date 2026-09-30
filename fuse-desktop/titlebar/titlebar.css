@@ -7,6 +7,8 @@
   --press: color-mix(in srgb, var(--mist) 17%, transparent);
   --fill: color-mix(in srgb, var(--mist) 7%, transparent);
   --fault: #C9403A;
+  --logo: #B5E05A;
+  --logo-dot: #6EE7B7;
 }
 
 * { box-sizing: border-box; }
@@ -34,21 +36,22 @@ html, body {
 .brand {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   min-width: 0;
-  padding-left: 11px;
+  padding-left: 12px;
 }
 
-.brand img { width: 16px; height: 16px; flex: none; }
+.mark { display: block; width: 17px; height: 17px; flex: none; }
+.mark-f { fill: var(--logo); }
+.mark-dot { fill: var(--logo-dot); }
 
-.title {
-  overflow: hidden;
+.word {
+  font: 700 15px/1 "Bricolage Grotesque", system-ui, sans-serif;
+  letter-spacing: -0.05em;
   white-space: nowrap;
-  text-overflow: ellipsis;
-  letter-spacing: 0.01em;
 }
 
-body.is-blurred .title,
+body.is-blurred .brand,
 body.is-blurred .controls svg { opacity: 0.55; }
 
 .controls {

@@ -9958,6 +9958,16 @@ dialog[data-sched-modal] input[type="checkbox"] {
 .chat-history-bar :is(.chat-new, .chat-history-iconbtn):hover { color: var(--mist); background: color-mix(in srgb, var(--mist) 7%, transparent); }
 .chat-history-bar :is(.chat-new, .chat-history-iconbtn)[aria-expanded="true"] { color: var(--mist); background: color-mix(in srgb, var(--mist) 11%, transparent); }
 .chat-history-bar .chat-new:disabled { opacity: 0.4; cursor: default; }
+/* Fuse Desktop draws the brand in its own title bar, so on wide windows the
+   brand row goes and its collapse button joins the Chats/Projects row. The
+   phone-width layout keeps the head. */
+.chat-history-bar .chat-history-dock-toggle { display: none; }
+.chat-history-bar .chat-history-dock-toggle[aria-expanded="true"]:not(:hover) { color: var(--chat-secondary); background: none; }
+@media (min-width: 801px) {
+  html[data-desktop-app="true"] .chat .chat-history-head { display: none; }
+  html[data-desktop-app="true"] .chat .chat-history-top { padding-top: 0.125rem; }
+  html[data-desktop-app="true"] .chat .chat-history-bar .chat-history-dock-toggle { display: grid; }
+}
 .chat-history-bar :is(.chat-new, .chat-history-iconbtn):focus-visible,
 .chat-history-tab:focus-visible { outline: 2px solid var(--brass); outline-offset: -2px; }
 .chat-history-search {

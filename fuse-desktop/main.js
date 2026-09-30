@@ -53,6 +53,8 @@ async function syncFrameTheme() {
         mist: read("--mist"),
         mute: read("--mute"),
         line: read("--line"),
+        brass: read("--brass"),
+        steel: read("--steel"),
         scheme: css.colorScheme === "light" ? "light" : "dark",
       };
     })()`);
@@ -69,7 +71,11 @@ async function syncFrameTheme() {
 }
 
 function layout() {
-  const { width, height } = win.getContentBounds();
+  if (!win) return;
+  // The content view's own bounds are the window's client area once the OS
+  // has applied a maximize/resize; getContentBounds() can still report the
+  // old size inside the "maximize" event on Linux.
+  const { width, height } = win.contentView.getBounds();
   const top = bar && !win.isFullScreen() ? TITLEBAR_HEIGHT : 0;
   if (bar) bar.setBounds({ x: 0, y: 0, width, height: top });
   site.setBounds({ x: 0, y: top, width, height: Math.max(0, height - top) });
@@ -80,7 +86,6 @@ function sendFrameState() {
   bar.webContents.send("titlebar-state", {
     maximized: win.isMaximized(),
     focused: win.isFocused(),
-    title: site.webContents.getTitle() || "Fuse",
     theme: frameTheme,
   });
 }
@@ -149,13 +154,18 @@ function createWindow() {
     bar.webContents.on("did-finish-load", sendFrameState);
     bar.webContents.on("before-input-event", handleShortcuts);
     for (const name of ["maximize", "unmaximize", "focus", "blur"]) win.on(name, sendFrameState);
-    site.webContents.on("page-title-updated", sendFrameState);
     site.webContents.on("did-change-theme-color", syncFrameTheme);
     site.webContents.on("dom-ready", syncFrameTheme);
   }
 
-  for (const name of ["resize", "maximize", "unmaximize", "enter-full-screen", "leave-full-screen"]) {
-    win.on(name, layout);
+  // bounds-changed fires after the new size is laid out; the window events
+  // are a backstop, re-run once more on the next tick for late WM updates.
+  win.contentView.on("bounds-changed", layout);
+  for (const name of ["resize", "maximize", "unmaximize", "restore", "enter-full-screen", "leave-full-screen"]) {
+    win.on(name, () => {
+      layout();
+      setTimeout(layout, 50);
+    });
   }
   layout();
 
@@ -208,6 +218,8 @@ if (!gotLock) {
   });
 
   app.whenReady().then(() => {
+    // Lets the site drop its own sidebar brand in favour of this title bar.
+    if (CUSTOM_FRAME) app.userAgentFallback = `${app.userAgentFallback} FuseDesktop/${app.getVersion()}`;
     loadFrameTheme();
     createWindow();
 
