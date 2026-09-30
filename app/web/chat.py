@@ -158,6 +158,7 @@ def _chat_public_run(run):
         "created_at": run["created_at"],
         "updated_at": run.get("updated_at"),
         "cancel_requested": run["cancel_requested"],
+        "resume_count": int(run.get("resume_count") or 0),
         "activity": ((run.get("request") or {}).get("agent") or {}).get("activity"),
     }
 
@@ -278,6 +279,7 @@ async def chat_run_get(request: Request, run_id: str):
             "parent_description": parent_description,
             "messages": seed,
             "compaction": {"meter": meter} if meter else None,
+            **chat_store.run_work_fields(run["id"], agent, run.get("message")),
         },
         headers={"Cache-Control": "no-store"},
     )

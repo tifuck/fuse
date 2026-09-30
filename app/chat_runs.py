@@ -1064,6 +1064,10 @@ async def _run(request, user, run):
     persist_failed = False
     started = time.monotonic()
     elapsed_before = max(0, int(output.message.get("elapsedMs") or 0))
+    # Readers (Work list, run snapshots) add this leg's unflushed tail; the
+    # leg ends with the task, so idle time after it is never counted.
+    leg = chat_store.begin_leg(ident, elapsed_before)
+    task.add_done_callback(lambda _task: chat_store.end_leg(ident, leg))
     agent = run.get("request", {}).get("agent") if isinstance(run.get("request"), dict) else {}
     agent = agent if isinstance(agent, dict) else {}
     if run.get("request", {}).get("generate_title") and _is_chat_page_request(request):
@@ -1463,6 +1467,7 @@ async def _run(request, user, run):
             from . import permissions as permissions_mod
 
             permissions_mod.cancel_run_asks(ident)
+            chat_store.end_leg(ident, leg)
             if not await _finish_durably(ident, output.stored(), status):
                 # The terminal row never committed. Leave it ACTIVE and parked
                 # in _unsettled: the reaper retries this finish rather than

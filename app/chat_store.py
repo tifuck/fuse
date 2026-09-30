@@ -1398,6 +1398,8 @@ def continue_child_with_followups(run_id: str, followups: list) -> bool:
                                "request": req})
         if prior:
             agent["carried_report"] = prior
+        # The continuation starts a fresh message; bank this leg's work time.
+        agent["work_ms_before"] = row_work_ms(row)
         sealed = seal_provider_messages(messages)
         note = (
             f"{FOLLOWUP_FRAME_HEAD} — not written by the end user. "
@@ -2288,7 +2290,7 @@ def settle_spawn_traces(conn, user_id, messages):
         batch = ids[offset:offset + 400]
         placeholders = ",".join("?" for _ in batch)
         rows.update((row["id"], row) for row in conn.execute(
-            f"SELECT id, status, message FROM chat_runs WHERE user_id=? AND id IN ({placeholders})",
+            f"SELECT id, status, request, message FROM chat_runs WHERE user_id=? AND id IN ({placeholders})",
             (user_id, *batch),
         ))
     for tool in wanted:
@@ -2307,6 +2309,10 @@ def settle_spawn_traces(conn, user_id, messages):
         tool["execution_status"] = row["status"]
         if "state" in tool:
             tool["state"] = row["status"]
+        if row["status"] in TERMINAL:
+            # A background spawn's own call latency is milliseconds; the row
+            # shows the child's total active time across all of its legs.
+            tool["agent_work_ms"] = row_work_ms(row)
         if row["status"] == "completed":
             tool["status"] = "done"
             tool.pop("error", None)
@@ -3164,6 +3170,79 @@ def _iso_age(ts) -> float:
         return 10 ** 9
 
 
+# Work time is execution time only. message.elapsedMs is the current display
+# turn's active time (a user/boot resume keeps the message, so it keeps
+# accumulating); agent.work_ms_before carries earlier turns of the same run
+# that a task_id continuation or follow-up replaced with a fresh message.
+# Idle gaps between legs (stopped, interrupted, waiting for a resume) are
+# never counted. Live legs register here so readers can add the unflushed
+# tail; the server is a single process, so this is authoritative.
+_live_legs: dict[str, tuple[float, int]] = {}
+
+
+def begin_leg(run_id: str, elapsed_before: int) -> float:
+    """Mark a run's execution leg as live; returns the token for end_leg."""
+    token = time.monotonic()
+    _live_legs[str(run_id)] = (token, max(0, int(elapsed_before or 0)))
+    return token
+
+
+def end_leg(run_id: str, token: float) -> None:
+    leg = _live_legs.get(str(run_id))
+    if leg is not None and leg[0] == token:
+        _live_legs.pop(str(run_id), None)
+
+
+def _elapsed_int(value) -> int:
+    return value if type(value) is int and value >= 0 else 0
+
+
+def message_work_ms(run_id, message) -> int:
+    """Active ms of the run's current message, including a live leg's tail."""
+    stored = _elapsed_int((message or {}).get("elapsedMs") if isinstance(message, dict) else None)
+    leg = _live_legs.get(str(run_id))
+    if leg is None:
+        return stored
+    return max(stored, leg[1] + int((time.monotonic() - leg[0]) * 1000))
+
+
+def run_work_ms(run_id, agent, message) -> int:
+    """Cumulative active ms across every leg of a run (never wall clock)."""
+    before = _elapsed_int((agent or {}).get("work_ms_before") if isinstance(agent, dict) else None)
+    return before + message_work_ms(run_id, message)
+
+
+def row_work_ms(row) -> int:
+    """run_work_ms for a raw chat_runs row (JSON request/message columns)."""
+    if row is None:
+        return 0
+    parsed = []
+    for key in ("request", "message"):
+        try:
+            value = json.loads(row[key] or "{}")
+        except (json.JSONDecodeError, TypeError, ValueError):
+            value = {}
+        parsed.append(value if isinstance(value, dict) else {})
+    req, message = parsed
+    return run_work_ms(row["id"], req.get("agent"), message)
+
+
+def run_work_fields(run_id, agent, message) -> dict:
+    """work_ms plus whether it is advancing right now (a leg is executing).
+
+    work_ms is None for a row with no timing at all (never checkpointed):
+    unknown, not zero.
+    """
+    live = str(run_id) in _live_legs
+    known = live or (isinstance(message, dict) and message.get("elapsedMs") is not None) or (
+        isinstance(agent, dict) and agent.get("work_ms_before") is not None)
+    return {
+        "work_ms": run_work_ms(run_id, agent, message) if known else None,
+        "work_ms_before": _elapsed_int((agent or {}).get("work_ms_before") if isinstance(agent, dict) else None),
+        "work_live": live,
+    }
+
+
 def list_thread_agents(user_id, thread_id, limit=100):
     """Child runs (subagents) of a thread, newest first, with spawned-child counts."""
     rows = db.fetchall(
@@ -3249,6 +3328,7 @@ def list_thread_agents(user_id, thread_id, limit=100):
             "quiet_s": round(quiet_s, 1),
             "wake_state": _agent_wake_state(agent, row["status"], stopped_at),
             "context": _agent_context_chip(req, agent, row),
+            **run_work_fields(row["id"], agent, message),
         }
         out.append(entry)
     return out
@@ -3779,6 +3859,7 @@ def finish_run(run_id, message, status):
                 "root_run_id": root,
                 "summary": (message.get("error") or message.get("content") or "")[:2000],
                 "child_id": run_id,
+                "work_ms": run_work_ms(run_id, agent, message),
             }
             event(conn, row["user_id"], "agent." + status, row["thread_id"], payload)
             return
@@ -4616,6 +4697,9 @@ def _start_child_run(
                     "delivery_generation": uuid4().hex,
                     "auto": bool(auto),
                     "scheduled": bool(scheduled),
+                    # The fresh message restarts elapsedMs; earlier legs'
+                    # active time carries over (idle time between them never).
+                    "work_ms_before": row_work_ms(source_row),
                     **({"scratch": resume_scratch} if resume_scratch else {}),
                 },
             }

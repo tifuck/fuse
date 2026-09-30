@@ -2616,6 +2616,8 @@
         if (!["running", "queued"].includes(next.status) && next.summary === "Background task started") next.summary = "";
         if (!["running", "queued"].includes(next.status) && next.preview === "still running") next.preview = "";
         if (row.description) next.description = row.description;
+        // The child's total active time; its spawn call returned long before.
+        if (!["running", "queued"].includes(next.status) && Number.isFinite(Number(row.work_ms))) next.agent_work_ms = Number(row.work_ms);
         if (row.wake_state) next.wake_state = row.wake_state;
         else delete next.wake_state;
         const terminalFailure = ["failed", "error", "cancelled", "interrupted", "lost", "timed_out"].includes(row.status);
@@ -2669,7 +2671,7 @@
     if (trace.url) rec.url = String(trace.url).slice(0, 2000);
     if (trace.error) rec.error = String(trace.error).slice(0, 400);
     if (trace.latency_ms != null && Number.isFinite(Number(trace.latency_ms))) rec.latency_ms = Number(trace.latency_ms);
-    for (const key of ["duration_ms", "elapsed_ms", "timeout_ms", "call_duration_ms", "execution_duration_ms", "offset", "limit", "max_matches"]) {
+    for (const key of ["duration_ms", "elapsed_ms", "timeout_ms", "call_duration_ms", "execution_duration_ms", "agent_work_ms", "offset", "limit", "max_matches"]) {
       if (trace[key] != null && Number.isFinite(Number(trace[key]))) rec[key] = Number(trace[key]);
     }
     if (trace.title) rec.title = String(trace.title).slice(0, 80);
@@ -2755,7 +2757,7 @@
     if (Array.isArray(event.todos)) rec.todos = normalizeTodos(event.todos);
     if (event.version != null) rec.version = event.version;
     if (event.latency_ms != null) rec.latency_ms = event.latency_ms;
-    for (const key of ["duration_ms", "elapsed_ms", "timeout_ms", "call_duration_ms", "execution_duration_ms", "offset", "limit", "max_matches"]) {
+    for (const key of ["duration_ms", "elapsed_ms", "timeout_ms", "call_duration_ms", "execution_duration_ms", "agent_work_ms", "offset", "limit", "max_matches"]) {
       if (event[key] != null) rec[key] = event[key];
     }
     if (event.exit_code != null) rec.exit_code = event.exit_code;
@@ -7086,18 +7088,37 @@
     return currentActivity(msg, groups, live).label;
   }
 
+  function runForMessage(msg) {
+    if (!msg) return null;
+    if (activeRun && msg.id === activeRun.message_id) return activeRun;
+    if (agentRun && msg.id === agentRun.message_id) return agentRun;
+    return null;
+  }
+
+  // Work time, not wall time. The server's elapsedMs sums only the legs a run
+  // actually executed (a stop, restart or resume never adds the pause), so
+  // the clock anchors to it and ticks locally only while that run executes:
+  // frozen while queued, re-anchored on every new leg and every checkpoint.
   function liveElapsedSeconds(msg, live) {
-    if (!live) {
+    const stored = Number(msg.elapsedMs);
+    const known = msg.elapsedMs != null && Number.isFinite(stored) && stored >= 0;
+    const run = runForMessage(msg);
+    if (!live || (run && run.status === "queued")) {
       delete msg._liveOrigin;
-      return msg.elapsedMs != null ? msg.elapsedMs / 1000 : null;
+      if (!live) return known ? stored / 1000 : null;
+      return known ? stored / 1000 : 0;
     }
-    if (!msg._liveOrigin || msg._elapsedObserved !== msg.elapsedMs) {
+    const leg = run ? `${run.id}:${run.resume_count || 0}` : "";
+    if (!msg._liveOrigin || msg._elapsedObserved !== msg.elapsedMs || msg._liveLeg !== leg) {
       msg._elapsedObserved = msg.elapsedMs;
-      const elapsed = Number(msg.elapsedMs);
-      if (Number.isFinite(elapsed) && elapsed >= 0) msg._liveOrigin = Date.now() - elapsed;
+      msg._liveLeg = leg;
+      if (known) msg._liveOrigin = Date.now() - stored;
       else {
-        const started = Date.parse((activeRun && activeRun.created_at) || "");
-        msg._liveOrigin = Number.isFinite(started) ? started : Date.now();
+        // First leg before its first checkpoint. Only a root turn's
+        // created_at marks when this message began; a child row keeps its
+        // original spawn time across resumes.
+        const started = run && run === activeRun ? Date.parse(run.created_at || "") : NaN;
+        msg._liveOrigin = Number.isFinite(started) ? Math.min(Date.now(), started) : Date.now();
       }
     }
     return Math.max(0, (Date.now() - msg._liveOrigin) / 1000);
@@ -8069,12 +8090,24 @@
     return `<pre class="chat-console-out is-stdout${isCodeOutputTool(trace.name) ? " is-code" : ""}">${inner}</pre>`;
   }
 
+  // Spawn/join rows show the subagent's own active time (summed over every
+  // leg it ran, idle gaps excluded). A background spawn's call returned in
+  // milliseconds, and a join's call time is only how long the parent waited.
+  function agentTraceWorkMs(trace) {
+    if (!trace || !["spawn_subagent", "get_subagent_output"].includes(trace.name)) return undefined;
+    const work = Number(trace.agent_work_ms);
+    if (Number.isFinite(work) && work >= 0) return work;
+    if (trace.name === "spawn_subagent" && !toolBackground(trace)) return undefined;
+    return null;
+  }
+
   function consoleDurationLabel(trace) {
-    const ms = Number(trace && (trace.execution_duration_ms ?? trace.duration_ms ?? trace.elapsed_ms));
+    const work = agentTraceWorkMs(trace);
+    const ms = work !== undefined ? Number(work ?? NaN) : Number(trace && (trace.execution_duration_ms ?? trace.duration_ms ?? trace.elapsed_ms));
     if (!Number.isFinite(ms) || ms < 0) return "";
     const s = Math.max(1, Math.round(ms / 1000));
     if (s < 60) return `${s}s`;
-    return `${Math.floor(s / 60)}m ${s % 60}s`;
+    return formatActivityClock(s);
   }
 
   function consoleResultLine(trace, presentation) {
@@ -8533,7 +8566,7 @@
     if (n < 1000) return `${Math.round(n)}ms`;
     const secs = n / 1000;
     if (secs < 60) return `${secs < 10 ? secs.toFixed(1) : Math.round(secs)}s`;
-    return `${Math.floor(secs / 60)}m ${Math.round(secs % 60)}s`;
+    return formatTurnDuration(n);
   }
 
   // Expanded tool body (terminal + compact). One block per kind of content:
@@ -8605,7 +8638,9 @@
         : trace.child_id && ["spawn_subagent", "get_subagent_output"].includes(trace.name) ? "No inline output. Open agent for its transcript." : "No output", "is-empty"));
     }
     const exit = shellExitCode(trace);
-    const duration = Number.isFinite(trace.execution_duration_ms) ? trace.execution_duration_ms : Number.isFinite(trace.duration_ms) ? trace.duration_ms : trace.latency_ms;
+    const work = agentTraceWorkMs(trace);
+    const duration = work !== undefined ? work
+      : Number.isFinite(trace.execution_duration_ms) ? trace.execution_duration_ms : Number.isFinite(trace.duration_ms) ? trace.duration_ms : trace.latency_ms;
     const state = executionState(trace);
     const queries = searchQueries(trace);
     const meta = [
@@ -8626,7 +8661,7 @@
       exit !== null ? `exit ${exit}` : "",
       state === "timed_out" && Number.isFinite(trace.timeout_ms) ? `timeout ${humanMs(trace.timeout_ms)}` : "",
       trace.name === "monitor" && Number.isFinite(trace.event_count) ? `${trace.event_count} events` : "",
-      trace.name === "todo_write" ? "" : humanMs(duration),
+      trace.name === "todo_write" || duration == null ? "" : work != null ? `Agent worked ${formatTurnDuration(work)}` : humanMs(duration),
       // The id matters when a run did not end cleanly (to find or stop it).
       executionIdentity(trace) && ((state && !["completed", "running"].includes(state)) || trace.termination_confirmed === false) ? `ID ${executionIdentity(trace)}` : "",
     ].filter(Boolean);
@@ -12623,12 +12658,21 @@
     return Number.isFinite(t) ? Math.max(0, (Date.now() - t) / 1000) : 0;
   }
 
+  // Total active time across every leg the subagent ran (spawn, task_id
+  // continuations, follow-ups, resumes). created_at/updated_at are wall
+  // clock and would count every idle gap between legs, so they are not used.
   function agentDurationSeconds(row) {
-    const start = Date.parse(row.created_at || "");
-    if (!Number.isFinite(start)) return null;
-    let end = Date.parse(row.updated_at || "");
-    if (!Number.isFinite(end) || agentLive(row.status)) end = Date.now();
-    return Math.max(0, (end - start) / 1000);
+    const base = Number(row && row.work_ms);
+    if (!row || row.work_ms == null || !Number.isFinite(base) || base < 0) return null;
+    if (!row._workAt) row._workAt = Date.now();
+    const tail = row.work_live && row.status === "running" ? Date.now() - row._workAt : 0;
+    return (base + Math.max(0, tail)) / 1000;
+  }
+
+  // The subagent dock clock: earlier legs plus the live message's clock.
+  function agentRunWorkSeconds(run, msg) {
+    const before = Math.max(0, Number(run && run.work_ms_before) || 0);
+    return before / 1000 + (liveElapsedSeconds(msg, true) || 0);
   }
 
   function agentRowsSorted() {
@@ -12953,7 +12997,7 @@
       if (isConsoleView()) {
         const line = formatConsoleLiveStatus(msg, groups, {
           meter: agentRun.compaction && agentRun.compaction.meter,
-          seconds: agentElapsedSeconds(agentRun.created_at),
+          seconds: agentRunWorkSeconds(agentRun, msg),
         });
         setLiveLabelText(agentLiveLabel, line.verb, line.meta);
         if (agentLiveSpin) setConsoleSpin(agentLiveSpin);
@@ -12997,6 +13041,8 @@
       segments: Array.isArray(raw.segments) ? raw.segments : undefined,
       notice: raw.notice || "",
       stopped: Boolean(raw.stopped),
+      // Without it the live clock fell back to another run's start time.
+      elapsedMs: raw.elapsedMs ?? null,
     });
     const seed = Array.isArray(agentRun.messages) ? agentRun.messages : [];
     const compacted = seed.some((item) => item && (item.compaction || item.kind === "compaction"));
@@ -13195,7 +13241,8 @@
       if (epoch !== agentLifecycleEpoch) { agentsRefreshAgain = true; return; }
       agentsFailCount = 0;
       agentsRows = Array.isArray(data.agents) ? data.agents : [];
-      agentsRows.forEach(row => agentLifecycle.set(String(row.id), row));
+      const receivedAt = Date.now();
+      agentsRows.forEach(row => { row._workAt = receivedAt; agentLifecycle.set(String(row.id), row); });
       reconcileAgentTraces(agentsRows, true);
       syncAgentsUi();
     } catch {

@@ -708,13 +708,21 @@ async def spawn(
             await durable_call(chat_store.mark_child_background, child["id"])
             await durable_call(chat_store.queue_child_result, parent_run_id, _envelope(done, description=description), child_id=child["id"])
     text = _envelope(done, fallback_id=child["id"], description=description)
+    work = {"agent_work_ms": _work_ms(done)} if done and done.get("status") in chat_store.TERMINAL else {}
     return text, _spawn_rec(
         status=status,
+        **work,
         summary=summary[:2000],
         preview=(summary or description)[:800],
         error="" if status in ("done", "running") else (done.get("status") if done else "failed"),
         background=background or status == "running",
     )
+
+
+def _work_ms(run: dict) -> int:
+    """The child's cumulative active time (idle gaps between legs excluded)."""
+    req = run.get("request") if isinstance(run.get("request"), dict) else {}
+    return chat_store.run_work_ms(run["id"], req.get("agent"), run.get("message"))
 
 
 def _descends_from(user_id: int, row: dict | None, ancestor_id: str) -> bool:
@@ -784,6 +792,7 @@ async def get_output(*, user_id: int, arguments: str, thread_id=None, parent_run
                 "name": "get_subagent_output",
                 "status": status,
                 "child_id": child_id,
+                "agent_work_ms": _work_ms(row),
                 "summary": summary[:2000],
                 "preview": summary[:800],
             }
