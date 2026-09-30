@@ -34,7 +34,7 @@
     {% for family in available %}
     <section class="panel catalog-family">
       <div class="section-heading">
-        <h2><img class="provider-logo" src="/static/logos/{{ family.type }}.svg" alt="" aria-hidden="true">{{ family.title }}</h2>
+        <h2><img class="provider-logo" src="{{ provider_logo_url(family.type) }}" alt="" aria-hidden="true">{{ family.title }}</h2>
         <span class="usage-sub">{{ family.models|length }}</span>
       </div>
       <ul class="catalog-ids">
@@ -64,7 +64,7 @@
     {% for family in locked %}
     <section class="panel catalog-family is-locked">
       <div class="section-heading">
-        <h2><img class="provider-logo" src="/static/logos/{{ family.type }}.svg" alt="" aria-hidden="true">{{ family.title }}</h2>
+        <h2><img class="provider-logo" src="{{ provider_logo_url(family.type) }}" alt="" aria-hidden="true">{{ family.title }}</h2>
         <span class="usage-sub">{{ family.models|length }}</span>
       </div>
       <p class="catalog-why">{{ family.why }} <a href="{{ family.href }}">{{ family.link_label }}</a></p>

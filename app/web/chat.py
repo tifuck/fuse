@@ -30,6 +30,7 @@ from .deps import (
     _chat_auth,
     _chat_validation_error,
     _json_object,
+    provider_logo_url,
     render,
     require_user,
 )
@@ -48,6 +49,7 @@ async def chat_page(request: Request):
         {
             "type": group["type"],
             "title": group["title"],
+            "logo": provider_logo_url(group["type"]),
             "models": [
                 {
                     "id": m["id"],

@@ -168,8 +168,12 @@
     if (type === "ollama") return ["none", "low", "medium", "high", "max"];
     return ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
   }
+  // Logo URLs come from the server (provider_logo_url) so the picker shows
+  // the same versioned file as /sources and /models.
+  const logoByType = new Map(families.map((family) => [family.type, family.logo]));
   function providerLogo(type) {
-    return `<img class="provider-logo" src="/static/logos/${escapeHtml(type)}.svg" alt="" aria-hidden="true" draggable="false">`;
+    const src = logoByType.get(type) || "/static/icon.svg";
+    return `<img class="provider-logo" src="${escapeHtml(src)}" alt="" aria-hidden="true" draggable="false">`;
   }
   const allModels = families.flatMap((family) =>
     (family.models || []).map((model) => ({

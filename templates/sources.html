@@ -291,7 +291,7 @@
     <section class="stack-y">
       <div class="pool-head">
         <div class="section-heading">
-          <h2><img class="provider-logo" src="/static/logos/grok.svg" alt="" aria-hidden="true">x.ai</h2>
+          <h2><img class="provider-logo" src="{{ provider_logo_url('grok') }}" alt="" aria-hidden="true">x.ai</h2>
           <span class="usage-sub">{{ pool_status(grok_ok, grok_ui, 'needs SuperGrok') }}</span>
         </div>
         <div class="pool-controls">
@@ -310,7 +310,7 @@
     <section class="stack-y">
       <div class="pool-head">
         <div class="section-heading">
-          <h2><img class="provider-logo" src="/static/logos/chatgpt.svg" alt="" aria-hidden="true">OpenAI paid</h2>
+          <h2><img class="provider-logo" src="{{ provider_logo_url('chatgpt') }}" alt="" aria-hidden="true">OpenAI paid</h2>
           <span class="usage-sub">{{ pool_status(chatgpt_ok, chatgpt_ui, 'needs Plus or Pro') }}</span>
         </div>
         <div class="pool-controls">
@@ -331,7 +331,7 @@
     {% if chatgpt_free_accounts %}
     <section class="stack-y">
       <div class="section-heading">
-        <h2><img class="provider-logo" src="/static/logos/chatgpt.svg" alt="" aria-hidden="true">OpenAI Free / Go</h2>
+        <h2><img class="provider-logo" src="{{ provider_logo_url('chatgpt') }}" alt="" aria-hidden="true">OpenAI Free / Go</h2>
         <span class="usage-sub">{{ chatgpt_free_pool.count_label }}</span>
       </div>
       {{ source_table(chatgpt_free_accounts, 'OpenAI', '/sources/chatgpt', 'Remove this ChatGPT account from the shared pool?', 'No Free or Go accounts in this list.', chatgpt_ui, 'chatgpt', False) }}
@@ -341,7 +341,7 @@
     <section class="stack-y">
       <div class="pool-head">
         <div class="section-heading">
-          <h2><img class="provider-logo" src="/static/logos/zai.svg" alt="" aria-hidden="true">Z.AI</h2>
+          <h2><img class="provider-logo" src="{{ provider_logo_url('zai') }}" alt="" aria-hidden="true">Z.AI</h2>
           <span class="usage-sub">{{ pool_status(zai_ok, zai_ui, 'needs a live plan') }}</span>
         </div>
         <div class="pool-controls">
@@ -363,7 +363,7 @@
     <section class="stack-y">
       <div class="pool-head">
         <div class="section-heading">
-          <h2><img class="provider-logo" src="/static/logos/devin.svg" alt="" aria-hidden="true">Devin</h2>
+          <h2><img class="provider-logo" src="{{ provider_logo_url('devin') }}" alt="" aria-hidden="true">Devin</h2>
           <span class="usage-sub">{{ pool_status(devin_ok, devin_ui, 'needs a Devin sign-in') }}</span>
         </div>
         <div class="pool-controls">
@@ -383,7 +383,7 @@
     <section class="stack-y">
       <div class="pool-head">
         <div class="section-heading">
-          <h2><img class="provider-logo" src="/static/logos/kimi.svg" alt="" aria-hidden="true">Kimi</h2>
+          <h2><img class="provider-logo" src="{{ provider_logo_url('kimi') }}" alt="" aria-hidden="true">Kimi</h2>
           <span class="usage-sub">{{ pool_status(kimi_ok, kimi_ui, 'needs a membership') }}</span>
         </div>
         <div class="pool-controls">
@@ -405,7 +405,7 @@
     <section class="stack-y">
       <div class="pool-head">
         <div class="section-heading">
-          <h2><img class="provider-logo" src="/static/logos/mimo.svg" alt="" aria-hidden="true">Xiaomi</h2>
+          <h2><img class="provider-logo" src="{{ provider_logo_url('mimo') }}" alt="" aria-hidden="true">Xiaomi</h2>
           <span class="usage-sub">{{ pool_status(mimo_ok, mimo_ui, 'needs a Token Plan') }}</span>
         </div>
         <div class="pool-controls">
@@ -427,7 +427,7 @@
     <section class="stack-y">
       <div class="pool-head">
         <div class="section-heading">
-          <h2><img class="provider-logo" src="/static/logos/claude.svg" alt="" aria-hidden="true">Claude</h2>
+          <h2><img class="provider-logo" src="{{ provider_logo_url('claude') }}" alt="" aria-hidden="true">Claude</h2>
           <span class="usage-sub">{{ pool_status(claude_ok, claude_ui, 'needs a Claude sign-in') }}</span>
         </div>
         <div class="pool-controls">

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -17,6 +18,29 @@ from ..crypto import decrypt, encrypt
 from ..security import client_ip, ensure_csrf, limiter
 
 templates = Jinja2Templates(directory=str(ROOT / "templates"))
+_LOGO_DIR = ROOT / "static" / "logos"
+
+
+def provider_logo_url(type_id: str) -> str:
+    """The one URL every page uses for a provider's logo. The content hash in
+    ?v= makes a replaced SVG a new URL, so no browser keeps showing the old
+    mark from its cache; an unknown type falls back to a generic icon."""
+    name = type_id if re.fullmatch(r"[a-z0-9_-]+", type_id or "") else ""
+    path = _LOGO_DIR / f"{name}.svg"
+    try:
+        stat = path.stat()
+    except OSError:
+        return "/static/icon.svg"
+    key = (name, stat.st_mtime_ns, stat.st_size)
+    version = _logo_versions.get(key)
+    if version is None:
+        version = hashlib.sha256(path.read_bytes()).hexdigest()[:10]
+        _logo_versions[key] = version
+    return f"/static/logos/{name}.svg?v={version}"
+
+
+_logo_versions: dict[tuple, str] = {}
+templates.env.globals["provider_logo_url"] = provider_logo_url
 logger = logging.getLogger("app.web")
 _pending: dict[int, dict] = {}
 _chatgpt_pending: dict[int, dict] = {}
