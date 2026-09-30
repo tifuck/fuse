@@ -1,0 +1,98 @@
+:root {
+  --ink: #141615;
+  --mist: #E8EBE8;
+  --mute: #8F978F;
+  --line: rgba(232, 235, 232, 0.14);
+  --hover: color-mix(in srgb, var(--mist) 10%, transparent);
+  --press: color-mix(in srgb, var(--mist) 17%, transparent);
+  --fill: color-mix(in srgb, var(--mist) 7%, transparent);
+  --fault: #C9403A;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--ink);
+  color: var(--mist);
+  font: 500 12.5px/1 "Bricolage Grotesque", system-ui, sans-serif;
+  user-select: none;
+  cursor: default;
+}
+
+.bar {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  height: 100%;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+  -webkit-app-region: drag;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding-left: 11px;
+}
+
+.brand img { width: 16px; height: 16px; flex: none; }
+
+.title {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  letter-spacing: 0.01em;
+}
+
+body.is-blurred .title,
+body.is-blurred .controls svg { opacity: 0.55; }
+
+.controls {
+  display: flex;
+  flex: none;
+  -webkit-app-region: no-drag;
+}
+
+button {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--mist);
+  transition: background-color 120ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+button:hover { background: var(--hover); }
+button:active { background: var(--press); }
+button.close:hover { background: var(--fault); color: #fff; }
+button.close:active { background: #A8332E; }
+button:focus-visible { outline: 1px solid var(--mute); outline-offset: -3px; }
+
+svg {
+  width: 10px;
+  height: 10px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1;
+  shape-rendering: geometricPrecision;
+}
+
+.restore { display: none; }
+body.is-maximized .max { display: none; }
+body.is-maximized .restore { display: block; }
+
+/* Ubuntu/GNOME puts round buttons on the right; keep the same order but
+   give them the rounded GNOME shape so they sit naturally on that desktop. */
+html[data-platform="linux"] .controls { gap: 6px; padding-right: 8px; align-items: center; }
+html[data-platform="linux"] button { width: 24px; height: 24px; border-radius: 50%; background: var(--fill); }
+html[data-platform="linux"] button:hover { background: var(--hover); }
+html[data-platform="linux"] button:active { background: var(--press); }
+html[data-platform="linux"] button.close:hover { background: var(--fault); }
+html[data-platform="linux"] svg { width: 8px; height: 8px; stroke-width: 1.2; }

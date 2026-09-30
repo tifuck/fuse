@@ -12,6 +12,7 @@ files:
   - main.js
   - package.json
   - build/icon.png
+  - titlebar/**
 
 publish:
   provider: generic

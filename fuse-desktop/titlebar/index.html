@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self'">
+<link rel="stylesheet" href="titlebar.css">
+</head>
+<body>
+  <div class="bar">
+    <div class="brand">
+      <img src="../build/icon.png" alt="">
+      <span class="title" id="title">Fuse</span>
+    </div>
+    <div class="controls">
+      <button id="minimize" title="Minimize" aria-label="Minimize">
+        <svg viewBox="0 0 10 10"><path d="M1 5.5h8"/></svg>
+      </button>
+      <button id="maximize" title="Maximize" aria-label="Maximize">
+        <svg class="max" viewBox="0 0 10 10"><rect x="1.5" y="1.5" width="7" height="7"/></svg>
+        <svg class="restore" viewBox="0 0 10 10"><rect x="1.5" y="3" width="5.5" height="5.5"/><path d="M3 3V1.5h5.5V7H7"/></svg>
+      </button>
+      <button id="close" class="close" title="Close" aria-label="Close">
+        <svg viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7"/></svg>
+      </button>
+    </div>
+  </div>
+  <script src="titlebar.js"></script>
+</body>
+</html>

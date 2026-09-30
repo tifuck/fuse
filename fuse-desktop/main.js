@@ -1,9 +1,16 @@
-const { app, BrowserWindow, shell } = require("electron");
+const { app, BaseWindow, WebContentsView, ipcMain, shell } = require("electron");
 const { autoUpdater } = require("electron-updater");
-const { statSync } = require("fs");
+const { readFileSync, statSync, writeFileSync } = require("fs");
 const path = require("path");
 
 const APP_URL = process.env.FUSE_URL || "https://fuse.example.com";
+const APP_ORIGIN = new URL(APP_URL).origin;
+const BACKGROUND = "#141615";
+
+// Windows and Linux draw Fuse's own dark title bar instead of the OS frame
+// (the light-gray GNOME header on Ubuntu). macOS keeps its native frame.
+const CUSTOM_FRAME = process.platform !== "darwin";
+const TITLEBAR_HEIGHT = CUSTOM_FRAME ? 34 : 0;
 
 if (process.env.APPIMAGE) {
   app.commandLine.appendSwitch("no-sandbox");
@@ -15,6 +22,179 @@ if (process.env.APPIMAGE) {
 }
 
 let win = null;
+let bar = null;
+let site = null;
+
+// The bar takes the site's active theme (Paper, Sand, Midnight, ...). The site
+// publishes its background in <meta name="theme-color"> on every theme change;
+// the other tokens are read from the page. The last theme is remembered so
+// the next launch opens in the right colours instead of flashing dark.
+const THEME_FILE = () => path.join(app.getPath("userData"), "frame-theme.json");
+const HEX = /^#[0-9a-f]{3,8}$/i;
+let frameTheme = null;
+
+function loadFrameTheme() {
+  try {
+    const saved = JSON.parse(readFileSync(THEME_FILE(), "utf8"));
+    if (HEX.test(saved.ink)) frameTheme = saved;
+  } catch {}
+}
+
+async function syncFrameTheme() {
+  if (!site || site.webContents.isDestroyed()) return;
+  let theme;
+  try {
+    theme = await site.webContents.executeJavaScript(`(() => {
+      const css = getComputedStyle(document.documentElement);
+      const read = (name) => css.getPropertyValue(name).trim();
+      const meta = document.querySelector('meta[name="theme-color"]');
+      return {
+        ink: (meta && meta.content.trim()) || read("--ink"),
+        mist: read("--mist"),
+        mute: read("--mute"),
+        line: read("--line"),
+        scheme: css.colorScheme === "light" ? "light" : "dark",
+      };
+    })()`);
+  } catch {
+    return;
+  }
+  if (!theme || !HEX.test(theme.ink) || !win) return;
+  frameTheme = theme;
+  win.setBackgroundColor(theme.ink);
+  site.setBackgroundColor(theme.ink);
+  if (bar) bar.setBackgroundColor(theme.ink);
+  sendFrameState();
+  try { writeFileSync(THEME_FILE(), JSON.stringify(theme)); } catch {}
+}
+
+function layout() {
+  const { width, height } = win.getContentBounds();
+  const top = bar && !win.isFullScreen() ? TITLEBAR_HEIGHT : 0;
+  if (bar) bar.setBounds({ x: 0, y: 0, width, height: top });
+  site.setBounds({ x: 0, y: top, width, height: Math.max(0, height - top) });
+}
+
+function sendFrameState() {
+  if (!bar || bar.webContents.isDestroyed()) return;
+  bar.webContents.send("titlebar-state", {
+    maximized: win.isMaximized(),
+    focused: win.isFocused(),
+    title: site.webContents.getTitle() || "Fuse",
+    theme: frameTheme,
+  });
+}
+
+function handleShortcuts(event, input) {
+  if (input.type !== "keyDown") return;
+  const mod = input.control || input.meta;
+  const key = input.key.toLowerCase();
+  const wc = site.webContents;
+  if (input.key === "F5" || (mod && key === "r")) {
+    input.shift ? wc.reloadIgnoringCache() : wc.reload();
+  } else if (input.key === "F12" || (mod && input.shift && key === "i")) {
+    wc.toggleDevTools();
+  } else if (mod && (key === "=" || key === "+")) {
+    wc.setZoomLevel(wc.getZoomLevel() + 0.5);
+  } else if (mod && key === "-") {
+    wc.setZoomLevel(wc.getZoomLevel() - 0.5);
+  } else if (mod && key === "0") {
+    wc.setZoomLevel(0);
+  } else if (input.alt && input.key === "ArrowLeft" && wc.navigationHistory.canGoBack()) {
+    wc.navigationHistory.goBack();
+  } else if (input.alt && input.key === "ArrowRight" && wc.navigationHistory.canGoForward()) {
+    wc.navigationHistory.goForward();
+  } else {
+    return;
+  }
+  event.preventDefault();
+}
+
+function createWindow() {
+  const background = (frameTheme && frameTheme.ink) || BACKGROUND;
+  win = new BaseWindow({
+    width: 1280,
+    height: 820,
+    minWidth: 420,
+    minHeight: 480,
+    backgroundColor: background,
+    autoHideMenuBar: true,
+    frame: !CUSTOM_FRAME,
+    title: "Fuse",
+    icon: path.join(__dirname, "build", "icon.png"),
+  });
+
+  site = new WebContentsView({
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  site.setBackgroundColor(background);
+  win.contentView.addChildView(site);
+
+  if (CUSTOM_FRAME) {
+    bar = new WebContentsView({
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        preload: path.join(__dirname, "titlebar", "preload.js"),
+      },
+    });
+    bar.setBackgroundColor(background);
+    win.contentView.addChildView(bar);
+    bar.webContents.loadFile(path.join(__dirname, "titlebar", "index.html"));
+    bar.webContents.on("did-finish-load", sendFrameState);
+    bar.webContents.on("before-input-event", handleShortcuts);
+    for (const name of ["maximize", "unmaximize", "focus", "blur"]) win.on(name, sendFrameState);
+    site.webContents.on("page-title-updated", sendFrameState);
+    site.webContents.on("did-change-theme-color", syncFrameTheme);
+    site.webContents.on("dom-ready", syncFrameTheme);
+  }
+
+  for (const name of ["resize", "maximize", "unmaximize", "enter-full-screen", "leave-full-screen"]) {
+    win.on(name, layout);
+  }
+  layout();
+
+  const wc = site.webContents;
+  wc.on("before-input-event", handleShortcuts);
+  win.on("focus", () => wc.focus());
+
+  wc.setWindowOpenHandler(({ url }) => {
+    if (new URL(url).origin === APP_ORIGIN) {
+      wc.loadURL(url);
+    } else {
+      shell.openExternal(url);
+    }
+    return { action: "deny" };
+  });
+
+  wc.on("will-navigate", (event, url) => {
+    if (url !== wc.getURL() && new URL(url).origin !== APP_ORIGIN) {
+      event.preventDefault();
+      shell.openExternal(url);
+    }
+  });
+
+  win.on("closed", () => {
+    wc.close();
+    if (bar) bar.webContents.close();
+    win = bar = site = null;
+  });
+
+  wc.loadURL(APP_URL);
+  wc.focus();
+}
+
+ipcMain.on("titlebar", (event, action) => {
+  if (!win || !bar || event.sender !== bar.webContents) return;
+  if (action === "minimize") win.minimize();
+  else if (action === "maximize") win.isMaximized() ? win.unmaximize() : win.maximize();
+  else if (action === "close") win.close();
+});
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -28,39 +208,8 @@ if (!gotLock) {
   });
 
   app.whenReady().then(() => {
-    win = new BrowserWindow({
-      width: 1280,
-      height: 820,
-      minWidth: 420,
-      minHeight: 480,
-      backgroundColor: "#141615",
-      autoHideMenuBar: true,
-      title: "Fuse",
-      icon: require("path").join(__dirname, "build", "icon.png"),
-      webPreferences: {
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
-      },
-    });
-
-    win.webContents.setWindowOpenHandler(({ url }) => {
-      if (new URL(url).origin === APP_URL) {
-        win.loadURL(url);
-      } else {
-        shell.openExternal(url);
-      }
-      return { action: "deny" };
-    });
-
-    win.webContents.on("will-navigate", (event, url) => {
-      if (url !== win.webContents.getURL() && new URL(url).origin !== APP_URL) {
-        event.preventDefault();
-        shell.openExternal(url);
-      }
-    });
-
-    win.loadURL(APP_URL);
+    loadFrameTheme();
+    createWindow();
 
     if (app.isPackaged) {
       autoUpdater.autoDownload = true;
@@ -69,7 +218,7 @@ if (!gotLock) {
     }
 
     app.on("activate", () => {
-      if (BrowserWindow.getAllWindows().length === 0) app.whenReady().then(() => {});
+      if (!win) createWindow();
     });
   });
 
