@@ -110,14 +110,14 @@ test('invalid or unavailable storage uses safe defaults', () => {
 });
 
 test('backdrop kind persists independently of theme', () => {
-  const ui = boot({ 'fuse.chat.backdrop.v1': 'scope', 'fuse.chat.backdrop.strength.v1': '40' });
-  assert.equal(ui.html.dataset.chatBackdrop, 'scope');
+  const ui = boot({ 'fuse.chat.backdrop.v1': 'signal', 'fuse.chat.backdrop.strength.v1': '40' });
+  assert.equal(ui.html.dataset.chatBackdrop, 'signal');
   ui.ready();
-  ui.appearance.setBackdrop('dither');
-  assert.equal(ui.html.dataset.chatBackdrop, 'dither');
-  assert.equal(ui.storage.get('fuse.chat.backdrop.v1'), 'dither');
+  ui.appearance.setBackdrop('orbit');
+  assert.equal(ui.html.dataset.chatBackdrop, 'orbit');
+  assert.equal(ui.storage.get('fuse.chat.backdrop.v1'), 'orbit');
   ui.change('void');
-  assert.equal(ui.html.dataset.chatBackdrop, 'dither');
+  assert.equal(ui.html.dataset.chatBackdrop, 'orbit');
 });
 
 test('a saved view that was renamed opens its successor', () => {
@@ -126,24 +126,29 @@ test('a saved view that was renamed opens its successor', () => {
   assert.equal(ui.appearance.view, 'mainframe');
 });
 
-test('retired gradient backdrops migrate to their replacement', () => {
-  const ui = boot({ 'fuse.chat.backdrop.v1': 'tide' });
-  assert.equal(ui.html.dataset.chatBackdrop, 'scope');
-  assert.equal(ui.storage.get('fuse.chat.backdrop.v1'), 'scope');
+test('retired backdrops migrate to their replacement', () => {
+  for (const [old, next] of [['tide', 'ripple'], ['pulsar', 'signal'], ['topo', 'ripple'], ['ink', 'aurora'], ['wind', 'aurora'], ['fern', 'meadow']]) {
+    const ui = boot({ 'fuse.chat.backdrop.v1': old });
+    assert.equal(ui.html.dataset.chatBackdrop, next, old);
+    assert.equal(ui.storage.get('fuse.chat.backdrop.v1'), next, old);
+  }
 });
 
 test('backdrop wallpaper is a scene layer, not an opaque plate', () => {
   const css = readFileSync(resolve(__dirname, '../static/chat-design.css'), 'utf8');
   const js = readFileSync(resolve(__dirname, '../static/chat-appearance.js'), 'utf8');
-  assert.match(css, /\.chat-scene\[data-kind="phosphor"\] \[data-chat-scene-wash\]/);
+  assert.match(css, /\.chat-scene\[data-kind\] \[data-chat-scene-wash\]/);
   assert.match(css, /html\[data-chat-backdrop\]:not\(\[data-chat-backdrop="none"\]\) body\.is-chat :is\(\.stage, \.stage-inner, main, \.chat, \.chat-stage, \.chat-thread\),[^{]*\{\s*background:\s*transparent/);
   assert.match(css, /html\[data-chat-backdrop\]:not\(\[data-chat-backdrop="none"\]\) body\.is-chat \.chat \.chat-dock \{\s*background:\s*transparent/);
   assert.doesNotMatch(css, /chat-stage, \.chat-thread\) \{\s*background:\s*color-mix\(in srgb, var\(--ink\) 82%/);
   assert.doesNotMatch(css, /chat-scene-bubbles/);
   assert.match(js, /canvas data-chat-scene-fx/);
-  assert.match(js, /scope: \{ label: "Scope"/);
+  assert.match(js, /signal: \{ label: "Signal"/);
+  assert.match(js, /orbit: \{ label: "Orbit"/);
+  for (const gone of ['pulsar', 'fern', 'ink']) assert.doesNotMatch(js, new RegExp(`\\n    ${gone}: \\{ label`));
   const engine = readFileSync(resolve(__dirname, '../static/chat-backdrop.js'), 'utf8');
-  for (const kind of ['dither', 'glyphs', 'scope', 'life']) assert.match(engine, new RegExp(`\\n    ${kind}: \\{`));
+  for (const kind of ['glyphs', 'life', 'signal', 'orbit', 'pond']) assert.match(engine, new RegExp(`\\n    ${kind}: \\{`));
+  for (const gone of ['pulsar', 'fern', 'ink']) assert.doesNotMatch(engine, new RegExp(`\\n    ${gone}: \\{`));
 });
 
 test('tool rows collapse to one line; thinking unwraps in place', () => {
