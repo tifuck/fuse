@@ -10594,7 +10594,7 @@
   function ccThoughtRowHtml(item) {
     return (
       `<li class="chat-step is-console-thought" data-thought="${item.segmentIndex}">` +
-      `<span class="chat-step-node" aria-hidden="true">∴</span>` +
+      `<span class="chat-step-node" aria-hidden="true"></span>` +
       `<div class="chat-step-main"><div class="chat-console-thought chat-think-markdown">${renderMarkdown(item.text, false)}</div></div>` +
       `</li>`
     );

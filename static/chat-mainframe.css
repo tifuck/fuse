@@ -625,7 +625,7 @@
 .chat[data-view="mainframe"] .chat-step.is-console-group > .chat-step-main > .chat-console-bundle { display: none; grid-column: 2 / -1; min-width: 0; }
 .chat[data-view="mainframe"] .chat-step.is-console-group.is-console-expanded > .chat-step-main > .chat-console-bundle { display: block; margin-bottom: 0.2rem; }
 .chat[data-view="mainframe"] .chat-step.is-console-group.is-console-expanded > .chat-step-main > .chat-console-hang { display: none; }
-.chat[data-view="mainframe"] .chat-step.is-console-thought { --mf-glyph: "∴"; --mf-state: var(--reason); }
+.chat[data-view="mainframe"] .chat-step.is-console-thought { --mf-glyph: ""; }
 .chat[data-view="mainframe"] .chat-console-thought {
   grid-column: 2 / -1;
   grid-row: 1;
