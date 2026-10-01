@@ -23,6 +23,7 @@ from .sources import POOL_TYPES
 
 from .chat_prompts import (
     INIT_PROMPT,
+    RECAP_SYSTEM,
     TITLE_MAX_TOKENS,
     TITLE_SYSTEM,
     WEB_CONTEXT_DELIM,
@@ -2270,9 +2271,32 @@ async def _retrieval_first(request: Request, user_id: int, messages: list[dict],
     yield ("packed", packed)
 
 
-async def generate_thread_title(request: Request, user, model: str, text: str, *, system: str = TITLE_SYSTEM) -> str:
-    """Short non-tool completion for a thread title. Returns "" on failure."""
-    prompt = re.sub(r"\s+", " ", (text or "").strip())[:chats.TITLE_PROMPT_MAX]
+async def generate_thread_title(
+    request: Request, user, model: str, text: str, *, system: str = TITLE_SYSTEM, limit: int = chats.TITLE_PROMPT_MAX,
+) -> str:
+    return await _generate_metadata(request, user, model, text, system, limit, chats.parse_generated_title)
+
+
+async def generate_recap(request: Request, user, model: str, text: str) -> str:
+    return await _generate_metadata(request, user, model, text, RECAP_SYSTEM, 6000, chats.parse_generated_recap)
+
+
+async def _generate_metadata(request, user, model, text, system, limit, parser):
+    primary = (settings.chat_metadata_model or "").strip()
+    candidates = list(dict.fromkeys([m for m in (primary, model) if m]))
+    for candidate in candidates:
+        try:
+            async with asyncio.timeout(max(1, min(30, settings.chat_metadata_timeout))):
+                result = await _metadata_once(request, user, candidate, text, system, limit, parser)
+            if result:
+                return result
+        except TimeoutError:
+            logger.warning("Metadata generation timed out model=%s", candidate)
+    return ""
+
+
+async def _metadata_once(request, user, model, text, system, limit, parser):
+    prompt = chats.clip_metadata_text(text or "", max(1, min(int(limit), chats.TITLE_REGEN_PROMPT_MAX)))
     if not prompt or not isinstance(model, str) or not model.strip():
         return ""
     body = {
@@ -2283,6 +2307,7 @@ async def generate_thread_title(request: Request, user, model: str, text: str, *
         ],
         "stream": False,
         "max_tokens": TITLE_MAX_TOKENS,
+        "reasoning_effort": "none",
     }
     try:
         _user, src, upstream, requested, result = await api.invoke_chat(request, user, body)
@@ -2328,7 +2353,8 @@ async def generate_thread_title(request: Request, user, model: str, text: str, *
             requested[:100], src.type_id,
         )
         return ""
-    title = chats.parse_generated_title(summary.get("content") or "")
+    raw = summary.get("content") or ""
+    title = parser(raw)
     if not title:
         logger.info(
             "Chat title response had no usable content model=%s reasoning=%s finish=%s",

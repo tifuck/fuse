@@ -94,6 +94,7 @@ def _text(value, field: str, limit: int, *, strip: bool = False) -> str:
 
 TITLE_WORDS = 5
 TITLE_PROMPT_MAX = 800
+TITLE_REGEN_PROMPT_MAX = 6_000
 # Failed title generation: a few tries on user turns, then a slower
 # background sweep with backoff. Both stop once a title lands.
 TITLE_TURN_ATTEMPTS = 3
@@ -283,31 +284,73 @@ def first_user_text(messages: list[dict], *, limit: int = TITLE_PROMPT_MAX) -> s
             continue
         text = re.sub(r"\s+", " ", _message_plain_text(msg.get("content")).strip())
         if text:
-            return text[:limit]
+            return clip_metadata_text(text, limit)
+        names = [str(a.get("name") or "Attachment") for a in msg.get("attachments") or [] if isinstance(a, dict)]
+        if names:
+            return clip_metadata_text("Attachments: " + ", ".join(names), limit)
     return ""
+
+
+def clip_metadata_text(text: str, limit: int) -> str:
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u200b-\u200f\u202a-\u202e\u2066-\u2069]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) <= limit:
+        return text
+    marker = " […] "
+    if limit <= len(marker):
+        return text[:max(0, limit)]
+    head = max(0, int((limit - len(marker)) * 0.65))
+    tail = max(0, limit - len(marker) - head)
+    return text[:head] + marker + (text[-tail:] if tail else "")
 
 
 def parse_generated_title(raw: str) -> str:
     text = _TITLE_THINK_BLOCK.sub(" ", raw or "")
-    text = _TITLE_THINK.sub(" ", text)
+    if _TITLE_THINK.search(text):
+        return ""
     text = text.replace("\r", "\n")
-    for line in text.splitlines():
-        line = re.sub(r"\s+", " ", line).strip()
-        line = _TITLE_PREFIX.sub("", line)
-        line = re.sub(r"[*_`]+", "", line)
-        line = _TITLE_WRAP.sub("", line).strip()
-        if line:
-            text = line
-            break
-    else:
+    text = text.strip()
+    if text.startswith("{"):
+        try:
+            parsed = json.loads(text)
+            text = parsed.get("title", "") if isinstance(parsed, dict) else ""
+        except (ValueError, TypeError):
+            return ""
+    if not isinstance(text, str):
         return ""
-    words = text.split()
-    if not words:
+    lines = [candidate.strip() for candidate in text.splitlines() if candidate.strip()]
+    if len(lines) != 1:
         return ""
-    title = _clean_title(" ".join(words[:TITLE_WORDS]))
+    line = _TITLE_PREFIX.sub("", lines[0])
+    line = re.sub(r"^(?:\*\*|__|`)|(?:\*\*|__|`)$", "", line)
+    line = line.replace("`", "")
+    line = _TITLE_WRAP.sub("", line).strip()
+    lowered = line.lower()
+    if not line or lowered in _PLACEHOLDER_TITLES or lowered.startswith((
+        "i cannot", "i can't", "i am unable", "i'm unable", "sorry", "as an ai",
+    )):
+        return ""
+    words = line.split()
+    if not words or len(words) > TITLE_WORDS or len(line) > TITLE_MAX:
+        return ""
+    title = _clean_title(" ".join(words))
     if not title or title.lower() in _PLACEHOLDER_TITLES:
         return ""
     return title
+
+
+def parse_generated_recap(raw: str) -> str:
+    text = _TITLE_THINK_BLOCK.sub(" ", raw or "")
+    if _TITLE_THINK.search(text):
+        return ""
+    text = re.sub(r"\s+", " ", text).strip()
+    lowered = text.lower()
+    if not text or len(text) > 400 or len(text.split()) > 40 or re.search(r"[`*<>]|^[-•#]", text) or lowered.startswith((
+        "i cannot", "i can't", "i am unable", "i'm unable", "sorry", "as an ai",
+        "recap:", "summary:",
+    )):
+        return ""
+    return text
 
 
 def is_placeholder_title(title: str | None, *, project_name: str = "") -> bool:
@@ -318,9 +361,13 @@ def is_placeholder_title(title: str | None, *, project_name: str = "") -> bool:
     return bool(needle) and text.lower() == needle.lower()
 
 
-def title_needs_generation(title: str | None, *, project_name: str = "", first_user_text: str = "") -> bool:
+def title_needs_generation(
+    title: str | None, *, project_name: str = "", first_user_text: str = "", title_state: str = "",
+) -> bool:
     """True while no real title exists. Also catches legacy rows whose title
     is just the raw first user message and was never replaced."""
+    if title_state in ("generated", "user", "fallback"):
+        return False
     if is_placeholder_title(title, project_name=project_name):
         return True
     text = (title or "").strip()
@@ -350,7 +397,7 @@ def title_transcript(messages: list[dict], *, limit: int = TITLE_TRANSCRIPT_MAX)
     lines: list[str] = []
     for msg in messages:
         role = msg.get("role")
-        if role not in _ROLES:
+        if role not in _ROLES or msg.get("auto"):
             continue
         text = re.sub(r"\s+", " ", _message_plain_text(msg.get("content"))).strip()
         if not text:
@@ -359,16 +406,25 @@ def title_transcript(messages: list[dict], *, limit: int = TITLE_TRANSCRIPT_MAX)
     if not lines:
         return ""
     budget = max(0, limit)
-    head = [lines[0][:TITLE_TRANSCRIPT_HEAD]]
-    budget -= len(head[0])
-    tail: list[str] = []
-    for line in reversed(lines[1:]):
-        if len(line) > budget:
+    selected = {0: clip_metadata_text(lines[0], min(TITLE_TRANSCRIPT_HEAD, budget))}
+    budget -= len(selected[0]) + 1
+    # A huge final assistant answer must not squeeze out the latest user pivot.
+    latest_user = next((i for i in range(len(lines)-1, 0, -1) if lines[i].startswith("User: ")), None)
+    if latest_user is not None and budget > 20:
+        selected[latest_user] = clip_metadata_text(lines[latest_user], min(1000, budget))
+        budget -= len(selected[latest_user]) + 1
+    for index in range(len(lines)-1, 0, -1):
+        if index in selected:
+            continue
+        line = lines[index]
+        piece = clip_metadata_text(line, max(0, budget)) if budget > 20 else ""
+        if not piece:
             break
-        tail.append(line)
-        budget -= len(line)
-    tail.reverse()
-    return "\n".join(head + tail)
+        selected[index] = piece
+        budget -= len(piece) + 1
+        if len(piece) < len(line):
+            break
+    return "\n".join(selected[index] for index in sorted(selected))
 
 
 def parse_reasoning_effort(value, *, strict: bool = False):
@@ -1468,7 +1524,7 @@ def clip_context(value, *, strict: bool = False, field: str = "context") -> str:
 
 
 def get_user_context(user_id: int) -> dict:
-    row = db.fetchone("SELECT chat_instructions, chat_profile, chat_context_revision FROM users WHERE id=?", (user_id,))
+    row = db.fetchone("SELECT chat_instructions,chat_profile,chat_context_revision,chat_recaps FROM users WHERE id=?", (user_id,))
     return _context_view(row)
 
 
@@ -1480,16 +1536,17 @@ def _context_view(row):
         "available": AVAILABLE,
         "default_instructions": DEFAULT_INSTRUCTIONS,
         "revision": row["chat_context_revision"] if row else 0,
+        "recaps": bool(row["chat_recaps"]) if row and "chat_recaps" in row.keys() else True,
     }
 
 
-def set_user_context(user_id: int, *, instructions=None, profile=None, strict: bool = False,
+def set_user_context(user_id: int, *, instructions=None, profile=None, recaps=None, strict: bool = False,
                      expected_revision=None, command_id=None) -> dict:
     from . import chat_store as store
 
     with store.transaction() as conn:
         fingerprint, previous = store.command(conn, user_id, command_id,
-            ["context", instructions, profile, expected_revision])
+            ["context", instructions, profile, recaps, expected_revision])
         if previous is not None:
             return previous
         row = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
@@ -1504,8 +1561,19 @@ def set_user_context(user_id: int, *, instructions=None, profile=None, strict: b
                 stored_instructions = ""
         if profile is not None:
             stored_profile = clip_context(profile, strict=strict, field="profile")
-        conn.execute("UPDATE users SET chat_instructions=?,chat_profile=?,chat_context_revision=chat_context_revision+1 WHERE id=?",
-                     (stored_instructions, stored_profile, user_id))
+        stored_recaps = 1 if (row["chat_recaps"] if "chat_recaps" in row.keys() else 1) else 0
+        if recaps is not None:
+            if not isinstance(recaps, bool):
+                raise ChatValidationError("recaps must be true or false")
+            stored_recaps = 1 if recaps else 0
+        conn.execute(
+            """UPDATE users SET chat_instructions=?,chat_profile=?,chat_recaps=?,
+               chat_context_revision=chat_context_revision+1 WHERE id=?""",
+            (stored_instructions, stored_profile, stored_recaps, user_id),
+        )
+        if not stored_recaps:
+            from . import chat_recaps
+            chat_recaps.disable(conn, user_id)
         result = _context_view(conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone())
         store.event(conn, user_id, "context.updated", payload=result)
         store.remember(conn, user_id, command_id, fingerprint, result)
@@ -1868,6 +1936,9 @@ def _update_thread(conn, row, *, title, model, archived, messages, context, tool
     if messages is not None:
         msgs = parse_messages(messages, strict=True)
         payload = json.dumps(msgs, ensure_ascii=False, separators=(",", ":"))
+        from . import chat_recaps
+        if dump_messages(msgs) != dump_messages(parse_messages(row["messages"])):
+            chat_recaps.activity(conn, row["user_id"], row["id"])
     else:
         payload = row["messages"]
     if not new_title:
@@ -1906,6 +1977,10 @@ def _update_thread(conn, row, *, title, model, archived, messages, context, tool
         if compaction_json is None
         else (new_title, new_state, new_model, new_archived, payload, new_context, tool_json, ts, compaction_json, row["id"], row["user_id"]),
     )
+    if title is not None:
+        conn.execute("UPDATE chat_threads SET title_job_token='',title_job_until='' WHERE id=?", (row["id"],))
+    elif model is not None and new_model != row["model"] and not new_state:
+        conn.execute("UPDATE chat_threads SET title_attempts=0,title_attempted_at='' WHERE id=?", (row["id"],))
 
 
 def delete_thread(user_id: int, thread_id, *, expected_revision=None, command_id=None) -> bool:

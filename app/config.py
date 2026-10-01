@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     # Explicit /title regenerations (in-memory sliding windows).
     chat_title_per_thread_per_hour: int = 10
     chat_title_per_user_per_hour: int = 60
+    # Optional helper model; normal account access/billing still applies.
+    chat_metadata_model: str = ""
+    chat_metadata_timeout: int = 30  # Per attempt; capped at 30s for bounded leases.
 
     # Dashboard context meter + compaction. Ratios are of the model window.
     # Strategy is a name in app.context.STRATEGIES so a later summarizer can

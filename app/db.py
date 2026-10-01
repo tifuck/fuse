@@ -548,6 +548,10 @@ def _ensure_chat_columns(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "chat_threads", "title_state", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "chat_threads", "title_attempts", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "chat_threads", "title_attempted_at", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "chat_threads", "title_job_token", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "chat_threads", "title_job_until", "TEXT NOT NULL DEFAULT ''")
+    from . import chat_recaps
+    chat_recaps.init_schema(conn)
     _ensure_host_tables(conn)
     _ensure_skill_tables(conn)
     _ensure_schedule_tables(conn)

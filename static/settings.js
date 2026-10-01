@@ -73,6 +73,7 @@
         const data = await api("/chat/context", "PUT", {
           instructions: ctx.elements.instructions.value,
           profile: ctx.elements.profile.value,
+          recaps: ctx.elements.recaps.checked,
           expected_revision: revision,
           command_id: `settings-${Date.now()}-${Math.random().toString(36).slice(2)}`,
         });

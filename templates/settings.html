@@ -53,7 +53,7 @@
 <form class="panel set" id="chat" aria-labelledby="set-chat-title" data-context-form>
   <header class="set-head">
     <h2 id="set-chat-title">Chat defaults</h2>
-    <p>Sent with every chat and project. The Context button in chat edits the same text and also holds notes for a single chat. Neither can add tools or change routing.</p>
+    <p>Instructions and profile are sent with every chat and project. The Context button in chat edits the same text and also holds notes for a single chat. Recaps are display-only summaries.</p>
   </header>
   <div class="set-row">
     <div class="set-label"><strong>Instructions</strong><span>How Fuse answers. Clear it to use the default style. For example: Be brief. Show diffs, not prose.</span></div>
@@ -61,6 +61,12 @@
       <label><span class="visually-hidden">Instructions</span>
         <textarea name="instructions" maxlength="4000" rows="7" placeholder="How Fuse should answer you">{{ context.instructions }}</textarea>
       </label>
+    </div>
+  </div>
+  <div class="set-row">
+    <div class="set-label"><strong>Automatic recaps</strong><span>After the thread finishes or stops, waits for all subagents and background commands to finish and 60 seconds of idle time. Uses an extra model request. Existing recaps stay saved.</span></div>
+    <div class="set-control">
+      <label class="check"><input type="checkbox" name="recaps"{% if context.recaps %} checked{% endif %}> Generate a recap when work settles</label>
     </div>
   </div>
   <div class="set-row">
@@ -130,4 +136,4 @@
 </section>
 </div>
 {% endblock %}
-{% block scripts %}<script src="/static/settings.js?v=2"></script>{% endblock %}
+{% block scripts %}<script src="/static/settings.js?v=3"></script>{% endblock %}

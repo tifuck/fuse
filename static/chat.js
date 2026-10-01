@@ -237,6 +237,8 @@
   let modelId = pickInitialModel();
   let sessionId = newSession();
   let messages = [];
+  let threadRecaps = [];
+  let recapsEnabled = config.context?.recaps !== false;
   let contextMessages = [];
   let contextLive = false;
   let undoStack = [];
@@ -2116,12 +2118,38 @@
         body: JSON.stringify({ command_id: newSession() }),
       });
       if (data && data.started) setHint("Regenerating title\u2026", false, 6000);
+      else if (data?.busy) setHint("Title generation is already running.");
     } catch (error) {
       if (error && error.status === 429) setHint(error.message || "Title regeneration limit reached. Try again later.", true);
       else showFailure("Could not regenerate the title", error);
     } finally {
       titleRegenRequest = false;
     }
+  }
+
+  async function runRecap() {
+    if (!currentId || !messages.length || !requireLive()) return;
+    try {
+      await api("/chat/threads/" + currentId + "/recap", { method: "POST", body: "{}" });
+      setHint("Recap queued; waits for 60 seconds of idle time with no background work.", false, 6000);
+    } catch (error) { showFailure("Could not request a recap", error); }
+  }
+
+  const recapsToggle = viewMenu?.querySelector("[data-recaps-toggle]");
+  if (recapsToggle) {
+    recapsToggle.checked = recapsEnabled;
+    recapsToggle.addEventListener("change", async () => {
+      recapsToggle.disabled = true;
+      try {
+        const data = await api("/chat/context", { method: "PUT", body: JSON.stringify({
+          recaps: recapsToggle.checked, expected_revision: contextRevision, command_id: newSession(),
+        }) });
+        acceptContext(data);
+      } catch (error) {
+        recapsToggle.checked = recapsEnabled;
+        showFailure("Could not save recap preference", error);
+      } finally { recapsToggle.disabled = false; }
+    });
   }
 
   const EFFORT_LABELS = {
@@ -3230,6 +3258,8 @@
     memoryDirty = false;
     pendingContext = null;
     contextRevision = Number(data.revision || 0);
+    recapsEnabled = data.recaps !== false;
+    if (recapsToggle) recapsToggle.checked = recapsEnabled;
     instructions = data.instructions || "";
     profile = data.profile || "";
     syncMemoryUi();
@@ -3274,6 +3304,7 @@
     const oldLength = messages.length;
     contextMessages = Array.isArray(data.context_messages) ? data.context_messages.map((msg) => ({ ...msg, noActions: true })) : [];
     contextLive = Boolean(data.context_live);
+    threadRecaps = Array.isArray(data.recaps) ? data.recaps : [];
     messages = data.messages.map((msg) => {
       const prior = old.get(msg.id);
       if (!prior) return { ...msg };
@@ -3332,6 +3363,7 @@
       setActive(messages.length > 0);
       syncComposer();
     } else paint();
+    paintRecaps();
     // This snapshot already reconciles children transactionally. Cached list
     // rows/events can predate a resume and must not overwrite it now or later.
     agentLifecycle.clear();
@@ -3402,6 +3434,10 @@
         }
       }
       renderHistory();
+    } else if (event.type === "recap.updated") {
+      if (event.thread_id === currentId) await reconcileThread();
+    } else if (event.type === "recap.failed") {
+      if (event.thread_id === currentId) setHint("Could not generate a recap. Try /recap again.", true);
     } else if (event.type === "title.failed") {
       if (event.thread_id === currentId) setHint("Title generation failed. Try /title again.", true);
     } else if (event.type.startsWith("run.") && event.thread_id && event.thread_id !== currentId &&
@@ -5031,6 +5067,7 @@
     }
     contextMessages = Array.isArray(data.context_messages) ? data.context_messages.map((msg) => ({ ...msg, noActions: true })) : [];
     contextLive = Boolean(data.context_live);
+    threadRecaps = Array.isArray(data.recaps) ? data.recaps : [];
     messages = (data.messages || []).map((msg) => ({
       id: msg.id,
       role: msg.role,
@@ -5530,6 +5567,7 @@
     { name: "redo", hint: "Redo an undone turn", needs: "redo" },
     { name: "rewind", hint: "Jump back to an earlier message", needs: "messages" },
     { name: "title", hint: "Regenerate the chat title from this conversation", needs: "messages" },
+    { name: "recap", hint: "Summarize settled work after 60 seconds idle", needs: "messages" },
     { name: "permissions", hint: "Manage agent permissions and bypass" },
     { name: "init", hint: "Create or update AGENTS.md", needs: "project", args: true },
     { name: "compact", hint: "Compress conversation context", needs: "messages", args: true },
@@ -5938,7 +5976,7 @@
       return;
     }
     if (name === "help") {
-      setHint("/undo, /retry, /redo, /rewind, /title, /permissions, /compact, /init. Skills: type / then a name. Manage on Skills.");
+      setHint("/undo, /retry, /redo, /rewind, /title, /recap, /permissions, /compact, /init. Skills: type / then a name. Manage on Skills.");
       return;
     }
     if (name === "permissions") {
@@ -5949,6 +5987,7 @@
       runTitleRegen();
       return;
     }
+    if (name === "recap") { runRecap(); return; }
     if (name === "compact") {
       runCompact(rest);
       return;
@@ -11292,6 +11331,7 @@
     const article = renderAssistant(messages[index], false);
     article.dataset.messageId = messages[index].id;
     shell.replaceWith(article);
+    paintRecaps(article);
     if (viewport.following && stickToBottom) {
       // Loading older history is not new model output. Compensate its height
       // immediately instead of animating through pages of newly mounted text.
@@ -11342,6 +11382,25 @@
     article.addEventListener("animationend", settle);
   }
 
+  function paintRecaps(target = null) {
+    const byAnchor = new Map(threadRecaps.map(row => [String(row.anchor_id), String(row.text || "")]));
+    for (const article of target ? [target] : log.children) {
+      const text = byAnchor.get(article.dataset.messageId);
+      let node = article.querySelector(":scope > .chat-recap");
+      if (!text || article.hasAttribute("data-deferred-message")) { node?.remove(); continue; }
+      if (!node) {
+        node = document.createElement("p");
+        node.className = "chat-recap";
+        node.setAttribute("aria-label", "Work recap");
+        article.appendChild(node);
+      }
+      if (node.dataset.text !== text) {
+        node.replaceChildren(Object.assign(document.createElement("span"), { textContent: "Recap: " }), document.createTextNode(text));
+        node.dataset.text = text;
+      }
+    }
+  }
+
   function paint() {
     if (toolGestureOwner && log.contains(toolGestureOwner)) { pendingFullPaint = true; return; }
     foldAutoCommandResults();
@@ -11376,6 +11435,7 @@
     });
     for (const article of [...log.children]) if (!keep.has(article)) { disposeThinking(article); historyObserver?.unobserve(article); article.remove(); }
     log._threadId = currentId;
+    paintRecaps();
     syncEmptyReplyRetry();
     setActive(messages.length > 0);
     rememberLatestArtifact();
@@ -11428,6 +11488,7 @@
     }
     const viewport = captureThreadViewport();
     updateAssistant(last, msg, messageRunLive(msg));
+    paintRecaps(last);
     syncEmptyReplyRetry();
     rememberLatestArtifact();
     setActive(true);
@@ -11911,8 +11972,9 @@
   });
 
   function parseSlashCommand(text) {
-    const match = String(text || "").trim().match(/^\/(undo|retry|redo|rewind|title|permissions|init|compact|help)(?:\s+([\s\S]*))?$/i);
+    const match = String(text || "").trim().match(/^\/([a-z][a-z-]*)(?:\s+([\s\S]*))?$/i);
     if (!match) return null;
+    if (!SLASH_COMMANDS.some(command => command.name === match[1].toLowerCase())) return null;
     return { name: match[1].toLowerCase(), arg: (match[2] || "").trim() };
   }
 
@@ -12687,6 +12749,7 @@
     generation += 1;
     window.clearTimeout(saveTimer);
     messages = [];
+    threadRecaps = [];
     resetHistoryStacks();
     currentId = null;
     serverRevision = 0;

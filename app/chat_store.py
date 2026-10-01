@@ -85,7 +85,7 @@ def _json_needle(text: str) -> str:
 
 
 @contextmanager
-def transaction():
+def transaction(*, immediate=True):
     users = set()
     threads: dict[tuple[int, int], int] = {}
     cursors: dict[int, int] = {}
@@ -94,7 +94,7 @@ def transaction():
     _writes.cursors = cursors
     try:
         with db.tx() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
             yield conn
     finally:
         _writes.users = None
@@ -278,6 +278,13 @@ def event(conn, user_id, type, thread_id=None, payload=None, guard_run=None):
         row = conn.execute("SELECT status FROM chat_runs WHERE id=?", (guard_run,)).fetchone()
         if row is None or row["status"] not in ACTIVE:
             return None
+    if thread_id is not None:
+        from . import chat_recaps
+        if type in ("run.started", "run.resumed", "agent.started", "agent.resumed"):
+            chat_recaps.activity(conn, user_id, thread_id)
+        elif type in ("run.completed", "run.failed", "run.cancelled", "run.interrupted",
+                      "agent.completed", "agent.failed", "agent.cancelled", "agent.interrupted"):
+            chat_recaps.terminal_activity(conn, user_id, thread_id)
     # Acquire the per-user publication lock BEFORE allocating an event ID.
     # This makes IDs a commit-ordered prefix for that user's replay stream.
     # Merely taking MAX(cursor, id) after INSERT would still skip late commits.
@@ -2136,7 +2143,9 @@ def thread_view(conn, user_id, thread_id, *, queued=()):
     result["thread_cursor"] = thread_event_watermark(user_id, thread_id)
     if result["thread_cursor"] is None:
         result["thread_cursor"] = result["event_cursor"]
-    return result
+    from . import chat_recaps
+
+    return chat_recaps.attach(conn, user_id, thread_id, result)
 
 
 COMMAND_TOOLS = ("run_terminal_command", "get_command_output", "kill_command", "monitor")
@@ -2489,6 +2498,8 @@ def start_turn(user_id, thread_id, text, expected_revision, command_id, model=No
         user_message, assistant = chats.parse_messages([
             incoming, {"role": "assistant", "content": "", "segments": [], "model": turn_model}], strict=True)
         messages.extend([user_message, assistant])
+        if not auto:
+            conn.execute("UPDATE chat_threads SET recap_start_id=? WHERE id=?", (user_message["id"], thread_id))
         account = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
         from . import context as ctxmod
         from . import hosts as hosts_mod
@@ -2539,6 +2550,7 @@ def start_turn(user_id, thread_id, text, expected_revision, command_id, model=No
             row["title"],
             project_name=project_name,
             first_user_text=chats.title_from_messages(messages),
+            title_state=row["title_state"] if "title_state" in row.keys() else "",
         )
         # The raw first message is never persisted as the title; it stays a
         # placeholder until a generated title lands (or the user renames).
@@ -2546,7 +2558,7 @@ def start_turn(user_id, thread_id, text, expected_revision, command_id, model=No
         # Auto titles are a dashboard Chat page feature, not /v1 or other callers.
         # A few failed attempts fall back to the background sweep with backoff.
         title_attempts = int(row["title_attempts"] if "title_attempts" in row.keys() else 0)
-        if auto_title and needs_title and text.strip() and title_attempts < chats.TITLE_TURN_ATTEMPTS:
+        if auto_title and needs_title and chats.first_user_text(messages) and title_attempts < chats.TITLE_TURN_ATTEMPTS:
             request["generate_title"] = True
             request["title_placeholder"] = title
         run_id, ts = str(uuid4()), db.now()
@@ -2681,7 +2693,7 @@ def start_turn(user_id, thread_id, text, expected_revision, command_id, model=No
             raise
 
 
-def apply_generated_title(user_id, thread_id, title, placeholder=""):
+def apply_generated_title(user_id, thread_id, title, placeholder="", *, token=None, fallback=False):
     """Replace an auto title. No-op if the user already renamed the thread."""
     from . import chats
 
@@ -2697,14 +2709,16 @@ def apply_generated_title(user_id, thread_id, title, placeholder=""):
             return None
         thread_id = pk
         row = conn.execute(
-            """SELECT t.id, t.title, t.title_state, t.kind, t.project_id, p.name AS project_name
+            """SELECT t.id, t.title, t.title_state, t.title_job_token, t.kind, t.project_id, p.name AS project_name
                FROM chat_threads t LEFT JOIN user_projects p ON p.id=t.project_id
                WHERE t.id=? AND t.user_id=?""",
             (thread_id, user_id),
         ).fetchone()
         if row is None:
             return None
-        if (row["title_state"] if "title_state" in row.keys() else "") == "user":
+        if token is not None and row["title_job_token"] != token:
+            return None
+        if row["title_state"] in ("user", "generated", "fallback"):
             return None
         project_name = ""
         if (row["kind"] if "kind" in row.keys() else "") == "project":
@@ -2715,17 +2729,18 @@ def apply_generated_title(user_id, thread_id, title, placeholder=""):
         current = row["title"] or ""
         if current not in allowed and not chats.is_placeholder_title(current, project_name=project_name):
             return None
-        if row["title"] == new_title:
-            return None
-        conn.execute(
-            "UPDATE chat_threads SET title=?, title_state='generated', title_attempts=0, title_attempted_at='', updated_at=?, revision=revision+1 WHERE id=? AND user_id=?",
-            (new_title, db.now(), thread_id, user_id),
+        cur = conn.execute(
+            "UPDATE chat_threads SET title=?, title_state=?, title_attempts=0, title_attempted_at='', title_job_token='',title_job_until='',updated_at=?, revision=revision+1 WHERE id=? AND user_id=? AND title_state=''"
+            + (" AND title_job_token=?" if token is not None else ""),
+            (new_title, "fallback" if fallback else "generated", db.now(), thread_id, user_id) + ((token,) if token is not None else ()),
         )
+        if not cur.rowcount:
+            return None
         thread_event(conn, user_id, thread_id)
         return thread_view(conn, user_id, thread_id)
 
 
-def apply_regenerated_title(user_id, thread_id, title):
+def apply_regenerated_title(user_id, thread_id, title, *, token=None):
     """Force-replace the title from an explicit /title request.
 
     Unlike apply_generated_title this may overwrite a user rename, since the
@@ -2742,17 +2757,20 @@ def apply_regenerated_title(user_id, thread_id, title):
         if pk is None:
             return None
         row = conn.execute(
-            "SELECT id, title FROM chat_threads WHERE id=? AND user_id=?",
+            "SELECT id, title, title_state, title_job_token FROM chat_threads WHERE id=? AND user_id=?",
             (pk, user_id),
         ).fetchone()
         if row is None:
             return None
-        if (row["title"] or "") == new_title:
+        if token is not None and row["title_job_token"] != token:
             return None
-        conn.execute(
-            "UPDATE chat_threads SET title=?, title_state='generated', title_attempts=0, title_attempted_at='', updated_at=?, revision=revision+1 WHERE id=? AND user_id=?",
-            (new_title, db.now(), pk, user_id),
+        cur = conn.execute(
+            "UPDATE chat_threads SET title=?, title_state='generated', title_attempts=0, title_attempted_at='',title_job_token='',title_job_until='',updated_at=?, revision=revision+1 WHERE id=? AND user_id=?"
+            + (" AND title_job_token=?" if token is not None else ""),
+            (new_title, db.now(), pk, user_id) + ((token,) if token is not None else ()),
         )
+        if not cur.rowcount:
+            return None
         thread_event(conn, user_id, pk)
         return thread_view(conn, user_id, pk)
 
@@ -2775,10 +2793,11 @@ def pending_title_threads(limit=3, *, attempted_before=""):
     rows = db.fetchall(
         """SELECT t.*, p.name AS project_name FROM chat_threads t
            LEFT JOIN user_projects p ON p.id=t.project_id
-           WHERE t.title_state='' AND t.title_attempts < ?
+           WHERE t.title_state=''
              AND (t.title_attempted_at='' OR t.title_attempted_at < ?)
-           ORDER BY t.updated_at DESC LIMIT ?""",
-        (chats.TITLE_SWEEP_ATTEMPTS, attempted_before, int(limit)),
+             AND (t.title_job_until='' OR t.title_job_until < ?)
+           ORDER BY t.title_attempted_at, t.updated_at LIMIT ?""",
+        (attempted_before, db.now(), max(int(limit) * 8, int(limit))),
     )
     out = []
     for row in rows:
@@ -2791,10 +2810,12 @@ def pending_title_threads(limit=3, *, attempted_before=""):
         prompt = chats.first_user_text(messages)
         if not prompt.strip():
             # Nothing to title from yet (e.g. attachment-only first message).
+            db.execute("UPDATE chat_threads SET title_attempted_at=? WHERE id=?", (db.now(), row["id"]))
             continue
         if chats.title_needs_generation(
             row["title"], project_name=project_name,
             first_user_text=chats.title_from_messages(messages),
+            title_state=row["title_state"] if "title_state" in row.keys() else "",
         ):
             out.append({
                 "id": int(row["id"]),
@@ -2802,7 +2823,12 @@ def pending_title_threads(limit=3, *, attempted_before=""):
                 "model": row["model"] or "",
                 "title": row["title"] or "",
                 "prompt": prompt,
+                "attempts": int(row["title_attempts"]),
             })
+            if len(out) >= int(limit):
+                break
+        else:
+            db.execute("UPDATE chat_threads SET title_attempted_at=? WHERE id=?", (db.now(), row["id"]))
     return out
 
 

@@ -224,6 +224,9 @@ def _insert_job_row(
                 clean_description(description),
             ),
         )
+        if thread_id:
+            from . import chat_recaps
+            chat_recaps.activity(conn, int(user_id), int(thread_id))
 
 
 def _start_rec(
@@ -665,6 +668,9 @@ def _persist_finish(rec: dict, *, status: str, exit_code: int | None, error: str
                     rec["id"],
                 ),
             )
+            if rec.get("thread_id"):
+                from . import chat_recaps
+                chat_recaps.terminal_activity(conn, int(rec["user_id"]), int(rec["thread_id"]))
     except Exception:
         logger.exception("Failed to persist command job %s", rec["id"])
 

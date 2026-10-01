@@ -8,7 +8,8 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+from fastapi import HTTPException
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -279,14 +280,19 @@ class TitleParseTest(unittest.TestCase):
     def test_strips_quotes_prefix_and_extra_words(self):
         self.assertEqual(chats.parse_generated_title('"CSV to JSON converter"'), "CSV to JSON converter")
         self.assertEqual(chats.parse_generated_title("Title: Plant watering schedule"), "Plant watering schedule")
-        self.assertEqual(
-            chats.parse_generated_title("The quick brown fox jumps over the lazy dog"),
-            "The quick brown fox jumps",
-        )
+        self.assertEqual(chats.parse_generated_title("The quick brown fox jumps over the lazy dog"), "")
         self.assertEqual(chats.parse_generated_title("<think>nope</think>\nDebug the login form"), "Debug the login form")
         self.assertEqual(chats.parse_generated_title("  **Hello world**  "), "Hello world")
         self.assertEqual(chats.parse_generated_title(""), "")
         self.assertEqual(chats.parse_generated_title("New chat"), "")
+        self.assertEqual(chats.parse_generated_title("<think>hidden reasoning"), "")
+        self.assertEqual(chats.parse_generated_title("I cannot help with that request."), "")
+        self.assertEqual(chats.parse_generated_title("One\nTwo"), "")
+        self.assertEqual(chats.parse_generated_recap("Fixed the login token check."), "Fixed the login token check.")
+        self.assertEqual(chats.parse_generated_recap("Sorry, I cannot summarize this."), "")
+        self.assertEqual(chats.parse_generated_title("`token_validator` race"), "token_validator race")
+        self.assertEqual(chats.parse_generated_title('{"title":"Login token validation"}'), "Login token validation")
+        self.assertEqual(chats.parse_generated_recap("# Fixed token validation."), "")
         self.assertEqual(chats.first_user_text([{"role": "assistant", "content": "Hi"}]), "")
         self.assertEqual(
             chats.first_user_text([{"role": "user", "content": [{"type": "text", "text": "  Hello   there  "}]}]),
@@ -312,10 +318,11 @@ class UrlSafetyTest(unittest.TestCase):
         self.assertEqual(decode_ddg_url(href), "https://example.com/page")
 
     def test_fetch_any_public_https(self):
-        self.assertEqual(allowed_fetch_url("https://example.com/docs"), "https://example.com/docs")
-        self.assertEqual(allowed_fetch_url("https://evil.example/docs"), "https://evil.example/docs")
-        self.assertEqual(allowed_fetch_url("http://example.com/docs"), "")
-        self.assertEqual(allowed_fetch_url("https://127.0.0.1/docs"), "")
+        with patch("app.search.policy.domain_lists", return_value=([], [])):
+            self.assertEqual(allowed_fetch_url("https://example.com/docs"), "https://example.com/docs")
+            self.assertEqual(allowed_fetch_url("https://evil.example/docs"), "https://evil.example/docs")
+            self.assertEqual(allowed_fetch_url("http://example.com/docs"), "")
+            self.assertEqual(allowed_fetch_url("https://127.0.0.1/docs"), "")
 
     def test_domain_lists(self):
         self.assertEqual(domain_pattern("  Example.COM. "), "example.com")
@@ -351,7 +358,13 @@ class WrapTest(unittest.TestCase):
 class ContextStoreTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        db.connect()
+        from tests.mariadb_fixture import isolated_database
+        from scripts.migrate_chat_metadata import migrate
+        fixture = isolated_database()
+        fixture.__enter__()
+        cls.addClassCleanup(fixture.__exit__, None, None, None)
+        with db.tx() as conn:
+            migrate(conn)
         from app import accounts
 
         accounts.create_user("chat-runtime@example.test", "password12", admin=False, require_invite=False)
@@ -495,6 +508,44 @@ class TitleGenerateTest(unittest.IsolatedAsyncioTestCase):
 
         with patch("app.chat_runtime.api.invoke_chat", side_effect=missing):
             self.assertEqual(await generate_thread_title(None, user, "offline", "hello"), "")
+
+    async def test_regeneration_budget_and_no_tools_or_reasoning(self):
+        from app import chat_runtime, chat_prompts
+        captured = []
+        async def invoke(request, user, body):
+            captured.append(body)
+            raise HTTPException(404, "mocked unavailable model")
+        source = chats.title_transcript([
+            {"role": "user", "content": "Initial goal " + "x" * 1700},
+            {"role": "user", "content": "LATEST_PIVOT cookie authentication"},
+            {"role": "assistant", "content": "Long response " + "y" * 7000 + " FINAL_RESULT"},
+        ])
+        with patch("app.chat_runtime.api.invoke_chat", side_effect=invoke):
+            await generate_thread_title(None, {"id": 1}, "offline", source,
+                                        system=chat_prompts.TITLE_REGEN_SYSTEM, limit=6000)
+        body = captured[0]
+        self.assertIn("FINAL_RESULT", body["messages"][1]["content"])
+        self.assertIn("LATEST_PIVOT", body["messages"][1]["content"])
+        self.assertLessEqual(len(body["messages"][1]["content"]), 6000)
+        self.assertEqual(body["reasoning_effort"], "none")
+        self.assertNotIn("tools", body)
+
+    async def test_metadata_helper_falls_back_on_invalid_output(self):
+        from app import chat_runtime
+        from app.config import settings
+        with patch.object(settings, "chat_metadata_model", "helper"), \
+             patch("app.chat_runtime._metadata_once", new_callable=AsyncMock, side_effect=["", "Login token validation"]) as gen:
+            result = await generate_thread_title(None, {"id": 1}, "conversation", "Fix login")
+        self.assertEqual(result, "Login token validation")
+        self.assertEqual([call.args[2] for call in gen.call_args_list], ["helper", "conversation"])
+
+    async def test_recap_uses_dedicated_prompt_and_parser(self):
+        from app import chat_runtime, chat_prompts
+        with patch("app.chat_runtime._metadata_once", new_callable=AsyncMock, return_value="Fixed token validation.") as gen:
+            result = await chat_runtime.generate_recap(None, {"id": 1}, "offline", "User goal; final result")
+        self.assertEqual(result, "Fixed token validation.")
+        self.assertEqual(gen.call_args.args[4], chat_prompts.RECAP_SYSTEM)
+        self.assertIs(gen.call_args.args[6], chats.parse_generated_recap)
 
 
 class SummarizerModelTest(unittest.IsolatedAsyncioTestCase):

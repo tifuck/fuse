@@ -12,6 +12,7 @@ from .. import (
     chat_events,
     chat_runtime,
     chat_runs,
+    chat_recaps,
     chat_store,
     chat_titles,
     chat_tools,
@@ -706,7 +707,7 @@ async def chat_thread_title_regen(request: Request, thread_id: str):
     pk = chats.resolve_thread_pk(user["id"], thread_id)
     if pk is None:
         raise HTTPException(404, "Chat not found")
-    row = db.fetchone("SELECT messages FROM chat_threads WHERE id=? AND user_id=?", (pk, user["id"]))
+    row = db.fetchone("SELECT messages,title_job_until FROM chat_threads WHERE id=? AND user_id=?", (pk, user["id"]))
     if row is None:
         raise HTTPException(404, "Chat not found")
     try:
@@ -715,12 +716,29 @@ async def chat_thread_title_regen(request: Request, thread_id: str):
         messages = []
     if not chats.first_user_text(messages).strip():
         raise HTTPException(400, "Nothing to title yet")
+    if row["title_job_until"] and row["title_job_until"] > db.now():
+        return JSONResponse({"started": False, "busy": True}, headers={"Cache-Control": "no-store"})
     if not limiter.allow(f"chat-title-thread:{user['id']}:{pk}", settings.chat_title_per_thread_per_hour, 3600):
         raise HTTPException(429, "Title regeneration limit reached for this chat")
     if not limiter.allow(f"chat-title-user:{user['id']}", settings.chat_title_per_user_per_hour, 3600):
         raise HTTPException(429, "Title regeneration limit reached for your account")
     chat_titles.spawn_regen(user["id"], pk)
     return JSONResponse({"started": True}, headers={"Cache-Control": "no-store"})
+
+
+@router.post("/chat/threads/{thread_id}/recap")
+async def chat_thread_recap(request: Request, thread_id: str):
+    user, err = _chat_auth(request)
+    if err:
+        return err
+    pk = _chat_thread_pk(user, thread_id)
+    if not limiter.allow(f"chat-recap:{user['id']}", 20, 3600):
+        raise HTTPException(429, "Recap request limit reached")
+    try:
+        await asyncio.to_thread(chat_recaps.request_manual, user["id"], pk)
+    except chats.ChatValidationError as exc:
+        raise _chat_validation_error(exc) from None
+    return JSONResponse({"started": True, "idle_seconds": chat_recaps.IDLE_SECONDS}, headers={"Cache-Control": "no-store"})
 
 
 @router.delete("/chat/threads/{thread_id}")
@@ -873,7 +891,7 @@ async def chat_context_put(request: Request):
     if err:
         return err
     raw = await _json_object(request)
-    if set(raw) - {"instructions", "profile", "expected_revision", "command_id"}:
+    if set(raw) - {"instructions", "profile", "recaps", "expected_revision", "command_id"}:
         raise HTTPException(422, "Unsupported context fields")
     kwargs = {"expected_revision": _chat_revision(raw), "command_id": raw.get("command_id")}
     if "instructions" in raw:
@@ -884,6 +902,10 @@ async def chat_context_put(request: Request):
         if not isinstance(raw["profile"], str):
             raise HTTPException(400, "Invalid profile")
         kwargs["profile"] = raw["profile"]
+    if "recaps" in raw:
+        if not isinstance(raw["recaps"], bool):
+            raise HTTPException(400, "Invalid recaps")
+        kwargs["recaps"] = raw["recaps"]
     try:
         data = chats.set_user_context(user["id"], **kwargs, strict=True) if kwargs else chats.get_user_context(user["id"])
     except chats.ChatValidationError as exc:

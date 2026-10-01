@@ -624,28 +624,9 @@ async def _apply_thread_title(request, user, run):
     if not prompt:
         return
     thread_id = run.get("thread_id")
-    try:
-        title = await chat_runtime.generate_thread_title(
-            request, user, run.get("request", {}).get("model") or "", prompt
-        )
-    except Exception:
-        logger.exception("Chat title generation failed for %s", run.get("id"))
-        title = ""
-    if not title:
-        try:
-            chat_store.mark_title_attempted(thread_id)
-        except Exception:
-            logger.exception("Chat title attempt bookkeeping failed for %s", thread_id)
-        return
-    try:
-        chat_store.apply_generated_title(
-            user["id"],
-            thread_id,
-            title,
-            run.get("request", {}).get("title_placeholder") or "",
-        )
-    except Exception:
-        logger.exception("Chat title save failed for %s", run.get("id"))
+    from . import chat_titles
+    await chat_titles._generate(user["id"], thread_id, run.get("request", {}).get("model") or "", prompt,
+                                run.get("request", {}).get("title_placeholder") or "")
 
 
 def _iso_age(ts) -> float:

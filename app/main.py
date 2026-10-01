@@ -14,7 +14,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.responses import JSONResponse
 
 from .config import ROOT, settings
-from . import accounts, db, chat_store, chat_runs, chat_events, chat_titles, host_events, issues_pipeline, sources as sources_module
+from . import accounts, db, chat_store, chat_runs, chat_events, chat_recaps, chat_titles, host_events, issues_pipeline, sources as sources_module
 from .api import router as api_router
 from .web import router as web_router
 from .agent_http import router as agent_http_router
@@ -211,6 +211,7 @@ async def lifespan(app: FastAPI):
         app.state.usage_walk_task = walk_task
         maint_task = asyncio.create_task(_maintenance_loop(app), name="fuse-maintenance")
         app.state.maintenance_task = maint_task
+        recap_task = asyncio.create_task(chat_recaps.loop(), name="fuse-recaps")
         from .search.client import start_client
         from .search.engine import warn_if_unkeyed
 
@@ -221,6 +222,10 @@ async def lifespan(app: FastAPI):
         await chat_events.stop()
         await host_events.stop()
         await chat_titles.drain()
+        if "recap_task" in locals():
+            recap_task.cancel()
+            await asyncio.gather(recap_task, return_exceptions=True)
+        await chat_recaps.drain()
         await chat_runs.stop()
         # After the runs drain: flush any publications still queued so their
         # waiters resolve and terminal events are not lost mid-shutdown.

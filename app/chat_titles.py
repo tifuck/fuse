@@ -2,15 +2,17 @@
 
 Turn-time attempts cover the common case; this sweep picks up whatever is
 still pending (failed attempts, offline models, legacy rows with raw user
-text as the title) and keeps retrying with backoff until a title lands.
+text as the title). After five failed attempts it supplies a deterministic label.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
-from . import chat_store, db
+from . import chat_store, chats, db
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +24,30 @@ _regen_inflight: set[int] = set()
 _regen_tasks: set[asyncio.Task] = set()
 
 
+def claim(user_id: int, thread_id: int, *, explicit=False) -> str:
+    token = uuid4().hex
+    until = (datetime.now(timezone.utc) + timedelta(seconds=120)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    with db.tx() as conn:
+        cur = conn.execute("""UPDATE chat_threads SET title_job_token=?,title_job_until=? WHERE id=? AND user_id=?
+                             AND (title_job_until='' OR title_job_until<?)""" + ("" if explicit else " AND title_state=''"),
+                           (token, until, thread_id, user_id, db.now()))
+        return token if cur.rowcount else ""
+
+
+def release(thread_id: int, token: str, *, failed=False):
+    db.execute("""UPDATE chat_threads SET title_job_token='',title_job_until='',
+                  title_attempts=title_attempts+?,title_attempted_at=? WHERE id=? AND title_job_token=?""",
+               (1 if failed else 0, db.now() if failed else "", thread_id, token))
+
+
+def fallback_title(prompt: str) -> str:
+    text = re.sub(r"^(?:please\s+)?(?:fix|add|investigate|implement|debug|check|help me with)\s+", "", prompt.strip(), flags=re.I)
+    text = re.sub(r"[`*<>]+", "", text)
+    words = text.split()[:5]
+    text = " ".join(words)[:80].rstrip(".,;:!?")
+    return text if text and not chats.is_placeholder_title(text) else "Conversation notes"
+
+
 def _backoff_cutoff() -> str:
     moment = datetime.now(timezone.utc) - SWEEP_BACKOFF
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -30,24 +56,32 @@ def _backoff_cutoff() -> str:
 async def _generate(user_id: int, thread_id: int, model: str, prompt: str, placeholder: str) -> None:
     from . import accounts, chat_runtime, chat_runs
 
+    token = await asyncio.to_thread(claim, user_id, thread_id)
+    if not token:
+        _inflight.discard(thread_id)
+        return
+    failed = False
     try:
-        owner = accounts.get_user(user_id)
+        row = await asyncio.to_thread(db.fetchone, "SELECT title_attempts FROM chat_threads WHERE id=?", (thread_id,))
+        if row and row["title_attempts"] >= chats.TITLE_SWEEP_ATTEMPTS:
+            await asyncio.to_thread(chat_store.apply_generated_title, user_id, thread_id, fallback_title(prompt), placeholder,
+                                    token=token, fallback=True)
+            return
+        owner = await asyncio.to_thread(accounts.get_user, user_id)
         if owner is None:
             return
         title = await chat_runtime.generate_thread_title(
             chat_runs.internal_request(user_id), dict(owner), model, prompt
         )
         if not title:
-            chat_store.mark_title_attempted(thread_id)
+            failed = True
             return
-        chat_store.apply_generated_title(user_id, thread_id, title, placeholder)
+        await asyncio.to_thread(chat_store.apply_generated_title, user_id, thread_id, title, placeholder, token=token)
     except Exception:
         logger.exception("Title sweep failed for thread %s", thread_id)
-        try:
-            chat_store.mark_title_attempted(thread_id)
-        except Exception:
-            logger.exception("Title sweep bookkeeping failed for thread %s", thread_id)
+        failed = True
     finally:
+        await asyncio.to_thread(release, thread_id, token, failed=failed)
         _inflight.discard(thread_id)
 
 
@@ -56,7 +90,7 @@ async def sweep() -> None:
     cutoff = _backoff_cutoff()
     candidates = [
         item
-        for item in chat_store.pending_title_threads(SWEEP_BATCH, attempted_before=cutoff)
+        for item in await asyncio.to_thread(chat_store.pending_title_threads, SWEEP_BATCH, attempted_before=cutoff)
         if item["id"] not in _inflight
     ]
     for item in candidates:
@@ -92,8 +126,12 @@ async def regenerate(user_id: int, thread_id: int) -> bool:
     if thread_id in _regen_inflight:
         return False
     _regen_inflight.add(thread_id)
+    token = await asyncio.to_thread(claim, user_id, thread_id, explicit=True)
+    if not token:
+        _regen_inflight.discard(thread_id)
+        return False
     try:
-        row = db.fetchone(
+        row = await asyncio.to_thread(db.fetchone,
             "SELECT model, messages FROM chat_threads WHERE id=? AND user_id=?",
             (thread_id, user_id),
         )
@@ -105,9 +143,9 @@ async def regenerate(user_id: int, thread_id: int) -> bool:
             logger.exception("Title transcript build failed for thread %s", thread_id)
             transcript = ""
         if not transcript.strip():
-            chat_store.title_regen_failed(user_id, thread_id)
+            await asyncio.to_thread(chat_store.title_regen_failed, user_id, thread_id)
             return True
-        owner = accounts.get_user(user_id)
+        owner = await asyncio.to_thread(accounts.get_user, user_id)
         if owner is None:
             return False
         title = await chat_runtime.generate_thread_title(
@@ -116,20 +154,22 @@ async def regenerate(user_id: int, thread_id: int) -> bool:
             row["model"] or "",
             transcript,
             system=chat_prompts.TITLE_REGEN_SYSTEM,
+            limit=chats.TITLE_REGEN_PROMPT_MAX,
         )
         if not title:
-            chat_store.title_regen_failed(user_id, thread_id)
+            await asyncio.to_thread(chat_store.title_regen_failed, user_id, thread_id)
             return True
-        chat_store.apply_regenerated_title(user_id, thread_id, title)
+        await asyncio.to_thread(chat_store.apply_regenerated_title, user_id, thread_id, title, token=token)
         return True
     except Exception:
         logger.exception("Title regeneration failed for thread %s", thread_id)
         try:
-            chat_store.title_regen_failed(user_id, thread_id)
+            await asyncio.to_thread(chat_store.title_regen_failed, user_id, thread_id)
         except Exception:
             logger.exception("Title regen failure event failed for thread %s", thread_id)
         return True
     finally:
+        await asyncio.to_thread(release, thread_id, token)
         _regen_inflight.discard(thread_id)
 
 
