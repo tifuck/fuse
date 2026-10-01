@@ -210,6 +210,13 @@ class LineBatcher:
         self._emit()
 
 
+def _description_line(rec: dict) -> list[str]:
+    from .command_jobs import clean_description
+
+    description = clean_description(rec.get("description"))
+    return [f"description: {description}"] if description else []
+
+
 def event_envelope(rec: dict, lines: list[str], seq: int) -> str:
     host = rec.get("host") or ""
     source = rec.get("source") or ("ws" if rec.get("url") else "command")
@@ -221,6 +228,7 @@ def event_envelope(rec: dict, lines: list[str], seq: int) -> str:
     rows = [
         f'<monitor_event id="{rec["id"]}" seq="{seq}" count="{int(rec.get("event_count") or 0)}">',
         f"host: {host} source: {source} target: {target}",
+        *_description_line(rec),
         f"events: {int(rec.get('event_count') or 0)}",
         f"elapsed_ms: {elapsed}",
         "",
@@ -237,6 +245,7 @@ def result_envelope(rec: dict) -> str:
     lines = [
         f'<monitor_result id="{rec["id"]}" state="{status}">',
         f"host: {rec.get('host') or ''} source: {source} target: {target}",
+        *_description_line(rec),
         f"events: {int(rec.get('event_count') or 0)}",
     ]
     if rec.get("max_events"):

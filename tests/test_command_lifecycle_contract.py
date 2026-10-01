@@ -48,6 +48,34 @@ class LifecycleContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(history["exit_code"], 2)
         self.assertFalse(history["background"])
 
+    async def test_description_is_stored_shown_and_reported(self):
+        async def runner(sink):
+            sink("ok")
+            return SimpleNamespace(exit_status=0)
+        rec = jobs.launch(user_id=1, host_id=2, host="host", thread_id=3, run_id=None, command="mock", cwd="/repo",
+                          background=True, timeout_ms=1000, runner=runner, description="  Run the\n test suite\x07 ")
+        self.assertEqual(jobs.render(rec)[1]["description"], "Run the test suite")
+        await rec["task"]
+        row = dict(self.conn.execute("SELECT * FROM command_jobs WHERE id=?", (rec["id"],)).fetchone())
+        self.assertEqual(row["description"], "Run the test suite")
+        self.assertEqual(jobs.render(row)[1]["description"], "Run the test suite")
+        self.assertIn("\ndescription: Run the test suite\n", jobs.notification(row))
+        self.assertEqual(chat_store.command_trace(row)["description"], "Run the test suite")
+        bare = jobs.launch(user_id=1, host_id=2, host="host", thread_id=3, run_id=None, command="mock", cwd="/repo",
+                           background=True, timeout_ms=1000, runner=runner)
+        await bare["task"]
+        self.assertNotIn("description", jobs.render(bare)[1])
+        self.assertNotIn("description:", jobs.notification(bare))
+
+    async def test_shell_passes_the_model_description_to_the_job(self):
+        async def runner(sink):
+            return SimpleNamespace(exit_status=0)
+        events = []
+        with patch.object(ws, "_is_agent", return_value=True), patch.object(ws, "_make_agent_runner", return_value=runner):
+            await ws._shell(1, 2, "host", {"command": "mock", "description": "Show working tree status"}, "/repo",
+                            on_started=events.append)
+        self.assertEqual(events[0]["description"], "Show working tree status")
+
     async def test_shell_announces_execution_identity_before_foreground_finishes(self):
         gate = asyncio.Event()
         async def runner(sink):

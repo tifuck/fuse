@@ -155,6 +155,8 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
                                 segment = replay.message["segments"][text_patch["index"]]
                                 old = segment["text"].encode("utf-16-le")
                                 segment["text"] = old[:text_patch["from"] * 2].decode("utf-16-le") + text_patch["text"]
+                                if "ms" in text_patch:
+                                    segment["ms"] = text_patch["ms"]
                             replay.message["segments"].extend(change.get("append", []))
                         replay.message["usage"] = patch["usage"]
                     else:
@@ -494,8 +496,11 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         output.apply({"choices": [{"delta": {"reasoning": "think two"}}]})
         output.apply({"choices": [{"delta": {"content": "Second answer."}}]})
 
+        stored = output.stored()["segments"]
+        # Each thought carries its measured duration.
+        self.assertTrue(all(type(part["ms"]) is int and part["ms"] >= 0 for part in stored if part["type"] == "reasoning"))
         self.assertEqual(
-            output.stored()["segments"],
+            [{k: v for k, v in part.items() if k != "ms"} for part in stored],
             [
                 {"type": "reasoning", "text": "think one"},
                 {"type": "content", "text": "First answer."},

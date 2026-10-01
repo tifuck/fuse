@@ -283,6 +283,15 @@ class MonitorJobs(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(saved["event_count"], 1)
 
 
+class MonitorDescription(unittest.TestCase):
+    def test_envelopes_carry_the_description(self):
+        rec = {"id": "m1", "status": "completed", "host": "box", "command": "tail -f x", "source": "command",
+               "event_count": 2, "out": "ERROR one", "description": "errors in deploy.log"}
+        self.assertIn("\ndescription: errors in deploy.log\n", monitor.result_envelope(rec))
+        self.assertIn("\ndescription: errors in deploy.log\n", monitor.event_envelope(rec, ["ERROR one"], 1))
+        self.assertNotIn("description:", monitor.result_envelope({**rec, "description": ""}))
+
+
 class MonitorWorkspace(unittest.IsolatedAsyncioTestCase):
     async def test_rejects_both_command_and_url(self):
         with self.assertRaises(workspace.WorkspaceError):

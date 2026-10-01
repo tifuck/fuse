@@ -80,6 +80,11 @@ def _take(value):
     return ""
 
 
+def _now() -> float:
+    """Monotonic clock for thought timing (patchable without touching time)."""
+    return time.monotonic()
+
+
 class Output:
     def __init__(self, run):
         msg = copy.deepcopy(run["message"]) if isinstance(run.get("message"), dict) else {}
@@ -117,6 +122,17 @@ class Output:
         self._round_reasoning = len(msg.get("reasoning") or "")
         self._round_tool_chars = 0
         self._stream_out = 0
+        # Thought timing, as Claude Code measures it: from the transcript's
+        # previous event (a tool result, the round starting) to the thought's
+        # last delta. Heartbeats and meters are not events.
+        self._last_event_at = _now()
+        self._think_since = None
+
+    def _time_thought(self, segment):
+        now = _now()
+        if self._think_since is None:
+            self._think_since = now - (segment.get("ms") or 0) / 1000
+        segment["ms"] = min(chats.THOUGHT_MS_MAX, max(0, int((now - self._think_since) * 1000)))
 
     def _append_text(self, kind, text, source):
         if not text:
@@ -140,6 +156,10 @@ class Output:
             segments.append({"type": kind, "text": text})
             if kind == "content":
                 self._scrub_stable = 0
+            if kind == "reasoning":
+                self._think_since = self._last_event_at
+        if kind == "reasoning":
+            self._time_thought(segments[-1])
         self._last_source = source
         self.message[kind] = (self.message.get(kind) or "") + added
 
@@ -286,6 +306,8 @@ class Output:
         event = obj.get("fuse")
         if isinstance(event, dict):
             kind = event.get("event")
+            if kind not in ("heartbeat", "context"):
+                self._last_event_at = _now()
             if kind == "notice" and event.get("message"):
                 line = str(event["message"]).strip()
                 from . import context as ctxmod
@@ -421,6 +443,7 @@ class Output:
                 raise ValueError("Generation usage limit reached.")
             msg["usage"] = obj["usage"]
         self._refresh_stream_out(obj)
+        self._last_event_at = _now()
 
     def stored(self, light=False):
         # Run status/created_at are durable separately; message schema excludes these.
@@ -483,16 +506,21 @@ def _segments_patch(old, new):
                 return replace_from(index)
             continue
         prior, current = before.get("text", ""), after.get("text", "")
-        if prior == current:
+        # A thought's duration grows with its text and rides on the same patch.
+        timed = after.get("type") == "reasoning" and "ms" in after and before.get("ms") != after.get("ms")
+        if prior == current and not timed:
             continue
         offset = 0
         while offset < min(len(prior), len(current)) and prior[offset] == current[offset]:
             offset += 1
-        texts.append({
+        entry = {
             "index": index,
             "from": len(prior[:offset].encode("utf-16-le")) // 2,
             "text": current[offset:],
-        })
+        }
+        if timed:
+            entry["ms"] = after["ms"]
+        texts.append(entry)
     if len(new) < len(old):
         return replace_from(len(new))
     patch = {}

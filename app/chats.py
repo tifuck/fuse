@@ -993,6 +993,15 @@ def _parse_permissions(raw, *, strict: bool = False, field: str = "permissions")
     return out
 
 
+# A thought's duration (ms on a reasoning segment) is capped as Claude Code
+# caps one thinking block: 10 minutes.
+THOUGHT_MS_MAX = 600_000
+
+
+def _thought_ms(value):
+    return value if type(value) is int and 0 <= value <= THOUGHT_MS_MAX else None
+
+
 def _parse_segments(raw, tools, *, strict: bool = False, field: str = "segments", permissions=None) -> list[dict]:
     if not isinstance(raw, list):
         if strict:
@@ -1014,6 +1023,8 @@ def _parse_segments(raw, tools, *, strict: bool = False, field: str = "segments"
         kind = item["type"]
         if kind == "marker":
             allowed = {"type", "kind", "text", "summary"}
+        elif kind == "reasoning":
+            allowed = {"type", "text", "ms"}
         else:
             allowed = {"type", "id"} if kind in ("tool", "permission") else {"type", "text"}
         if strict and set(item) - allowed:
@@ -1063,7 +1074,14 @@ def _parse_segments(raw, tools, *, strict: bool = False, field: str = "segments"
             totals[kind] = ASSISTANT_CONTENT_MAX
             text = text[:max(0, keep)]
         if text:
-            out.append({"type": kind, "text": text})
+            row = {"type": kind, "text": text}
+            if kind == "reasoning" and "ms" in item:
+                ms = _thought_ms(item.get("ms"))
+                if ms is None and strict:
+                    raise ChatValidationError(f"{field}[{index}].ms is invalid")
+                if ms is not None:
+                    row["ms"] = ms
+            out.append(row)
     return out
 
 
@@ -1102,7 +1120,11 @@ def align_segments(segments, content, reasoning) -> list[dict]:
         else:
             r_left = rest
         if take:
-            out.append({"type": kind, "text": take})
+            row = {"type": kind, "text": take}
+            ms = _thought_ms(part.get("ms")) if kind == "reasoning" else None
+            if ms is not None:
+                row["ms"] = ms
+            out.append(row)
     if c_left:
         out.append({"type": "content", "text": c_left})
     if r_left:

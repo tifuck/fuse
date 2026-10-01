@@ -97,6 +97,7 @@ def ensure_schema() -> None:
             ("event_count", "INTEGER NOT NULL DEFAULT 0"),
             ("max_events", "INTEGER NOT NULL DEFAULT 1"),
             ("delivered_event_seq", "INTEGER NOT NULL DEFAULT 0"),
+            ("description", "TEXT NOT NULL DEFAULT ''"),
         ):
             if name not in columns:
                 conn.execute(f"ALTER TABLE command_jobs ADD COLUMN {name} {declaration}")
@@ -177,17 +178,28 @@ def _admit(kind: str, host_id: int, source: str) -> None:
             raise ValueError("too many running commands on this host")
 
 
+def clean_description(value) -> str:
+    """The model's short label for a command: shown to the user, never run."""
+    text = " ".join(str(value or "").split())
+    return "".join(ch for ch in text if ch.isprintable())[:200]
+
+
+def _label_fields(rec: dict) -> dict:
+    description = clean_description(rec.get("description"))
+    return {"description": description} if description else {}
+
+
 def _insert_job_row(
     *, job_id: str, user_id: int, host_id: int, host: str, thread_id, run_id,
     command: str, cwd: str, background: bool, timeout_ms: int, now: str,
-    kind: str, source: str, url: str, pattern: str, max_events: int,
+    kind: str, source: str, url: str, pattern: str, max_events: int, description: str = "",
 ) -> None:
     with db.tx() as conn:
         conn.execute(
             "INSERT INTO command_jobs (id,user_id,host_id,host,thread_id,run_id,command,cwd,"
             "background,timeout_ms,status,created_at,started_at,kind,source,url,pattern,event_count,"
-            "max_events,delivered_event_seq)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "max_events,delivered_event_seq,description)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 job_id,
                 int(user_id),
@@ -209,6 +221,7 @@ def _insert_job_row(
                 0,
                 int(max_events),
                 0,
+                clean_description(description),
             ),
         )
 
@@ -216,7 +229,7 @@ def _insert_job_row(
 def _start_rec(
     *, runner, job_id: str, user_id: int, host_id: int, host: str, thread_id, run_id,
     command: str, cwd: str, background: bool, timeout_ms: int, kind: str,
-    source: str, url: str, pattern: str, max_events: int,
+    source: str, url: str, pattern: str, max_events: int, description: str = "",
 ) -> dict:
     rec = {
         "id": job_id,
@@ -226,6 +239,7 @@ def _start_rec(
         "thread_id": thread_id,
         "run_id": str(run_id or "") or None,
         "command": str(command),
+        "description": clean_description(description),
         "cwd": str(cwd or ""),
         "background": bool(background),
         "timeout_ms": int(timeout_ms),
@@ -299,6 +313,7 @@ def launch(
     url: str = "",
     pattern: str = "",
     max_events: int = 1,
+    description: str = "",
 ) -> dict:
     """Create the job row and start the executor task. Returns the live rec."""
     ensure_schema()
@@ -312,6 +327,7 @@ def launch(
         job_id=job_id, user_id=user_id, host_id=host_id, host=host, thread_id=thread_id,
         run_id=run_id, command=command, cwd=cwd, background=background, timeout_ms=timeout_ms,
         now=now, kind=kind, source=source, url=url, pattern=pattern, max_events=max_events,
+        description=description,
     )
     if kind == "monitor":
         _set_monitor_notify(job_id)
@@ -319,7 +335,7 @@ def launch(
         runner=runner, job_id=job_id, user_id=user_id, host_id=host_id, host=host,
         thread_id=thread_id, run_id=run_id, command=command, cwd=cwd, background=background,
         timeout_ms=timeout_ms, kind=kind, source=source, url=url, pattern=pattern,
-        max_events=max_events,
+        max_events=max_events, description=description,
     )
 
 
@@ -347,6 +363,7 @@ async def launch_async(**kwargs) -> dict:
         command=kwargs["command"], cwd=kwargs.get("cwd", ""), background=background,
         timeout_ms=kwargs["timeout_ms"], now=now, kind=kind, source=source,
         url=kwargs.get("url", ""), pattern=kwargs.get("pattern", ""), max_events=max_events,
+        description=kwargs.get("description", ""),
     )
     if kind == "monitor":
         await asyncio.to_thread(_set_monitor_notify, job_id)
@@ -355,7 +372,7 @@ async def launch_async(**kwargs) -> dict:
         host=kwargs["host"], thread_id=kwargs.get("thread_id"), run_id=kwargs.get("run_id"),
         command=kwargs["command"], cwd=kwargs.get("cwd", ""), background=background,
         timeout_ms=kwargs["timeout_ms"], kind=kind, source=source, url=kwargs.get("url", ""),
-        pattern=kwargs.get("pattern", ""), max_events=max_events,
+        pattern=kwargs.get("pattern", ""), max_events=max_events, description=kwargs.get("description", ""),
     )
 
 
@@ -828,6 +845,8 @@ def notification(rec: dict) -> str:
     status = str(rec.get("status") or "")
     lines = [f'<command_result id="{rec["id"]}" state="{status}">']
     lines.append(f'host: {rec.get("host") or ""} command: {str(rec.get("command") or "")[:200]}')
+    if _label_fields(rec):
+        lines.append(f"description: {_label_fields(rec)['description']}")
     if status == "completed":
         code = rec.get("exit_code")
         lines.append(f"exit_code: {code if code is not None else 'unknown'}")
@@ -1090,6 +1109,7 @@ def render(rec: dict, *, tool: str = "run_terminal_command", host_label: bool = 
         if trace_status == "error" and status == "timed_out":
             trace["error"] = trace["error"] or f"timed out after {timeout_ms}ms"
         trace.update(_identity_fields(rec))
+        trace.update(_label_fields(rec))
         return text, trace
     elapsed = int((time.monotonic() - float(rec["started"])) * 1000) if rec.get("started") else 0
     tail = out.strip()[-RUNNING_TAIL_CHARS:]
@@ -1139,6 +1159,7 @@ def render(rec: dict, *, tool: str = "run_terminal_command", host_label: bool = 
         trace["preview"] = f"{n} events" + (f" · {tail[:200]}" if tail else "")
         trace.update(_monitor_trace_fields(rec))
     trace.update(_identity_fields(rec))
+    trace.update(_label_fields(rec))
     return text, trace
 
 
@@ -1263,6 +1284,7 @@ def list_thread_jobs(user_id: int, thread_id: int) -> list[dict]:
             "status": "running",
             "agent_run_id": str(row["run_id"]) if row["run_id"] and str(row["run_id"]) in child_runs else None,
             **_identity_fields(rec if rec is not None else dict(row)),
+            **_label_fields(rec if rec is not None else dict(row)),
         }
         live_rec = rec if rec is not None else dict(row)
         if str(live_rec.get("kind") or row.get("kind") or "") == "monitor":

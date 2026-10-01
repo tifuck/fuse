@@ -412,11 +412,11 @@ def _summary_thread(now):
     say = lambda text: {"type": "content", "text": text}  # noqa: E731
     tool = lambda ident: {"type": "tool", "id": ident}  # noqa: E731
     segments = [
-        {"type": "reasoning", "text": "Read the dispatcher and the backoff helper, then find where timeout_for is used."},
+        {"type": "reasoning", "text": "Read the dispatcher and the backoff helper, then find where timeout_for is used.", "ms": 4200},
         tool("tl_0"), tool("tl_1"), tool("tl_2"),
-        {"type": "reasoning", "text": "Both files look right. Check the test layout and the npm scripts before running anything."},
+        {"type": "reasoning", "text": "Both files look right. Check the test layout and the npm scripts before running anything.", "ms": 6800},
         tool("tl_3"), tool("tl_4"), tool("tl_5"),
-        {"type": "reasoning", "text": "All 56 tests pass. Commit, push and open the PR."},
+        {"type": "reasoning", "text": "All 56 tests pass. Commit, push and open the PR.", "ms": 2100},
         tool("tl_6"), tool("tl_7"), tool("tl_8"),
         say("Committed and opened PR #42. Capping the delay before deploying.\n\n"),
         tool("tl_9"),
@@ -432,7 +432,8 @@ def _summary_thread(now):
         "tools": tools, "segments": segments,
     }
     wake = ('<command_result id="qal000000009" state="completed">\n'
-            "host: qa-box command: python -m pytest -q tests/integration\nexit_code: 0\nduration_ms: 83000\n"
+            "host: qa-box command: python -m pytest -q tests/integration\ndescription: Run the integration suite\n"
+            "exit_code: 0\nduration_ms: 83000\n"
             "output_chars: 18\noutput_chars_exact: true\n\n14 passed in 82.4s\n</command_result>")
     return [
         {"id": _mid(), "role": "user", "content": "Cap the backoff delay, ship it, and deploy.", "reasoning": "", "error": ""},
@@ -600,15 +601,17 @@ def _insert_commands(conn, uid, tid, root_id, tools, ts):
         conn.execute(
             """INSERT INTO command_jobs(id,user_id,host_id,host,thread_id,run_id,command,cwd,background,timeout_ms,
                status,exit_code,error,out,out_bytes,duration_ms,created_at,started_at,finished_at,out_chars,
-               termination_confirmed) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               termination_confirmed,description) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (tool["job_id"], uid, 0, "qa-box", tid, root_id, tool["command"], tool["cwd"], int(tool["background"]),
              tool["timeout_ms"], tool["state"], tool["exit_code"], tool["error"], tool["output"], len(tool["output"]),
-             900, ts, ts, ts, len(tool["output"]), 1),
+             900, ts, ts, ts, len(tool["output"]), 1, tool.get("description", "")),
         )
 
 
 def _seed(uid: int):
-    from app import chats, db
+    from app import chats, command_jobs, db
+
+    command_jobs.ensure_schema()  # fixture rows use every current column
 
     with db.tx() as conn:
         old = [r["id"] for r in conn.execute("SELECT id FROM chat_threads WHERE user_id=?", (uid,)).fetchall()]

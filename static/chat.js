@@ -665,6 +665,12 @@
 
   // Packed snapshots (?pack=1) carry each text/reasoning segment's length in
   // place of a second copy of its text; slice it back out of the message.
+  function untimed(segment) {
+    if (!segment || typeof segment !== "object" || !("ms" in segment)) return segment;
+    const { ms, ...rest } = segment;
+    return rest;
+  }
+
   function unpackSegments(list) {
     if (!Array.isArray(list)) return;
     for (const msg of list) {
@@ -6080,6 +6086,7 @@
         exit_code: /^-?\d+$/.test(code) ? Number(code) : null,
         duration_ms: Number.isFinite(duration) ? duration : null,
         error: pick("error"),
+        description: pick("description"),
         output: output.trim(),
         monitor: tag !== "command_result",
       });
@@ -6133,6 +6140,7 @@
       source: result.source || "",
       event_count: result.event_count,
       child_id: result.id,
+      description: result.description || "",
       background: true,
       backgroundResult: true,
       exit_code: result.exit_code,
@@ -10102,12 +10110,23 @@
       if (!segs[i] || segs[i].type !== "reasoning") continue;
       let j = i;
       while (j + 1 < segs.length && segs[j + 1] && segs[j + 1].type === "reasoning") j += 1;
-      groups.push({ key: "think-" + j, index: j });
+      groups.push({ key: "think-" + j, index: j, start: i });
       i = j;
     }
     const elapsed = (liveElapsedSeconds(msg, live) || 0) * 1000;
     const last = groups[groups.length - 1];
     const liveKey = live && last && !segs.some((seg, index) => index > last.index) && runPhase(msg) !== "calling" ? last.key : "";
+    // The server times each thought as it streams (ms on the segment); the
+    // estimates below only cover messages saved before it did.
+    groups.forEach((group) => {
+      if (group.key === liveKey) return;
+      let sum = 0;
+      for (let k = group.start; k <= group.index; k += 1) {
+        if (typeof segs[k].ms !== "number") return;
+        sum += segs[k].ms;
+      }
+      msg._thoughtMs[group.key] = Math.max(1000, sum);
+    });
     const clock = msg._thoughtClock;
     if (clock.liveKey && clock.liveKey !== liveKey) {
       if (msg._thoughtMs[clock.liveKey] == null) {
@@ -12373,11 +12392,13 @@
               throw new Error("Segment checkpoint mismatch; reconnecting.");
             }
             segment.text = segment.text.slice(0, patch.from) + patch.text;
+            if (segment.type === "reasoning" && Number.isInteger(patch.ms)) segment.ms = patch.ms;
           }
           if (Array.isArray(change.append)) {
             if (Number.isInteger(change.base)) {
               if (change.base === msg.segments.length) msg.segments.push(...change.append);
-              else if (change.base < 0 || JSON.stringify(msg.segments.slice(change.base, change.base + change.append.length)) !== JSON.stringify(change.append)) {
+              // A resend may carry a thought's newer duration; only content must match.
+              else if (change.base < 0 || JSON.stringify(msg.segments.slice(change.base, change.base + change.append.length).map(untimed)) !== JSON.stringify(change.append.map(untimed))) {
                 throw new Error("Segment append base mismatch; refetching snapshot.");
               }
             } else msg.segments.push(...change.append); // pre-upgrade replay
@@ -13839,9 +13860,12 @@
     const cancelling = state === "cancelling";
     const live = ["running", "queued", "cancelling"].includes(state);
     const label = cancelling ? "cancelling" : live ? "" : state.replace(/_/g, " ");
+    const monitor = job.kind === "monitor" || job.name === "monitor";
+    // As in Claude Code's task list: a monitor by what it watches for, a shell by its command.
+    const title = monitor && job.description ? job.description : displayCommand(job) || job.id;
     const meta = [
       job.host || "",
-      job.kind === "monitor" || job.name === "monitor" ? "watch" : "",
+      monitor ? "monitor" : "",
       label,
       Number.isFinite(Number(job.event_count)) ? `${Number(job.event_count)} events` : "",
     ].filter(Boolean).join(" · ");
@@ -13849,7 +13873,7 @@
       `<div class="chat-jobs-row is-${escapeHtml(state)}${live ? " is-running" : ""}">` +
       '<span class="chat-agents-dot" aria-hidden="true"></span>' +
       `<button type="button" class="chat-jobs-output-link" data-show-job="${escapeHtml(job.command_id || job.id)}" title="Show command and output">` +
-      `<span class="chat-jobs-cmd">${escapeHtml(toolText(displayCommand(job) || job.id))}</span>` +
+      `<span class="chat-jobs-cmd">${escapeHtml(toolText(title))}</span>` +
       `<span class="chat-jobs-meta" title="${escapeHtml(job.command_id || job.id)}">${escapeHtml(meta)}</span></button>` +
       `<span class="chat-agents-time" data-job-time="${escapeHtml(job.id)}">${formatActivityClock(secs)}</span>` +
       `<button type="button" class="chat-jobs-kill" data-kill-job="${escapeHtml(job.command_id || job.id)}" title="Stop this background command">${cancelling ? "Cancelling" : "Stop"}</button>` +
@@ -13867,7 +13891,7 @@
   let agentJobsRendered = "";
   function renderJobsList() {
     const nowMs = Date.now();
-    const sigOf = (rows) => JSON.stringify(rows.map((job) => [job.id, job.command, job.host, job.state, job.event_count, job.kind]));
+    const sigOf = (rows) => JSON.stringify(rows.map((job) => [job.id, job.command, job.description, job.host, job.state, job.event_count, job.kind]));
     if (jobsListEl) {
       const rows = jobsFor("");
       const sig = sigOf(rows);

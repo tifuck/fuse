@@ -2186,6 +2186,9 @@ def command_trace(row, name="run_terminal_command"):
             extra["max_events"] = int(row["max_events"])
         preview = f"{extra['event_count']} events" + (f" · {preview}" if preview else "")
         name = name or "monitor"
+    description = command_jobs.clean_description(row.get("description"))
+    if description:
+        extra["description"] = description
     return {
         "name": name, "child_id": row["id"], "job_id": row["id"], "command_id": row["id"], "status": status,
         "state": state, "termination_confirmed": None if row.get("termination_confirmed") is None else bool(row["termination_confirmed"]),

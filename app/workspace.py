@@ -1607,6 +1607,7 @@ async def _shell(user_id, host_id, alias, args, root, *, windows: bool = False, 
             background=background,
             timeout_ms=timeout_ms,
             runner=runner,
+            description=args.get("description") or "",
         )
     except ValueError as exc:
         raise WorkspaceError(str(exc)) from exc
@@ -1814,6 +1815,7 @@ async def _monitor(user_id, host_id, alias, args, root, *, windows: bool = False
             url=url,
             pattern=pattern,
             max_events=max_events,
+            description=args.get("description") or "",
         )
     except ValueError as exc:
         raise WorkspaceError(str(exc)) from exc
