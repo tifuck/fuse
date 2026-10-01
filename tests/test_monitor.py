@@ -57,6 +57,10 @@ class MonitorHelpers(unittest.TestCase):
         schema = agent_catalog.schema("monitor")
         self.assertIn("max_events", schema["function"]["description"])
         self.assertIn("max_events", schema["function"]["parameters"]["properties"])
+        self.assertEqual(schema["function"]["parameters"]["required"], ["description"])
+        shell = agent_catalog.schema("run_terminal_command")["function"]["parameters"]
+        self.assertIn("description", shell["properties"])
+        self.assertNotIn("description", shell["required"])
         extra = list(agent_catalog.WORKSPACE_NAMES) + ["create_artifact", "update_artifact", "propose_skill"]
         self.assertEqual(len(extra), agent_catalog.MAX_EXTRA)
         names = [s["function"]["name"] for s in openai_tools([], coding=True, extra=["monitor"], project_session=True)]
@@ -292,6 +296,11 @@ class MonitorWorkspace(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(workspace.WorkspaceError):
             await workspace._monitor(1, 2, "box", {}, "/repo")
 
+    async def test_requires_description(self):
+        with self.assertRaises(workspace.WorkspaceError) as ctx:
+            await workspace._monitor(1, 2, "box", {"command": "tail -f x"}, "/repo")
+        self.assertIn("description is required", ctx.exception.detail)
+
     async def test_rejects_private_ws(self):
         with self.assertRaises(workspace.WorkspaceError):
             await workspace._monitor(1, 2, "box", {"url": "ws://127.0.0.1/events"}, "/repo")
@@ -312,7 +321,7 @@ class MonitorWorkspace(unittest.IsolatedAsyncioTestCase):
              patch("app.agent_hub.call", fake_call), \
              patch.object(command_jobs, "_deliver_monitor_event"), \
              patch.object(command_jobs, "_deliver"):
-            text, rec = await workspace._monitor(1, 2, "box", {"command": "tail -f x", "pattern": "READY", "max_events": 8}, "/repo")
+            text, rec = await workspace._monitor(1, 2, "box", {"command": "tail -f x", "description": "readiness in x", "pattern": "READY", "max_events": 8}, "/repo")
             task = command_jobs._live[rec["child_id"]]["task"]
             with contextlib.suppress(asyncio.CancelledError):
                 await task

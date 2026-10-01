@@ -1131,6 +1131,7 @@ async def _consume_round(result, user, src, upstream: str, requested: str, *, co
     )
     buf = b""
     terminal = False
+    calling = False
     held_out: list[dict] = []
     try:
         async for kind, payload in _paced_chunks(
@@ -1178,6 +1179,11 @@ async def _consume_round(result, user, src, upstream: str, requested: str, *, co
                     _take_thinking(thinking, delta.get("claude_thinking") or message.get("claude_thinking"))
                     if choice.get("finish_reason"):
                         finish = choice.get("finish_reason")
+                    if calls and not calling:
+                        # The model has moved on to writing a tool call: any
+                        # thought before it is finished, not still streaming.
+                        calling = True
+                        yield ("out", {"fuse": {"event": "activity", "phase": "calling"}})
                 safe = _client_obj(obj, hide_tool_calls=False)
                 if safe:
                     candidate = (content or "").strip()
@@ -3198,6 +3204,8 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 ) as provider:
                     async for kind, payload_obj in provider:
                         if kind == "out":
+                            if (payload_obj.get("fuse") or {}).get("event") == "activity":
+                                payload_obj = {"fuse": {**payload_obj["fuse"], "run_id": run_id}}
                             if payload_obj.get("usage"):
                                 reported = usage_from_obj(payload_obj, reasoning_separate=(src_type == "grok"))
                                 if reported:

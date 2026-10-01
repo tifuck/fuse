@@ -563,6 +563,23 @@ SCHEMAS = {
                 "type": "object",
                 "properties": {
                     "command": {"type": "string", "minLength": 1, "maxLength": 8000},
+                    "description": {
+                        "type": "string",
+                        "maxLength": 200,
+                        "description": (
+                            "Clear, concise description of what this command does in active voice. Never use words "
+                            "like \"complex\" or \"risk\" in the description - just describe what it does. "
+                            "Say what the command does in plain words: do not echo the command's text, its flags, or "
+                            "file paths - the user reads this description, often without seeing the command. "
+                            "For simple commands (git, npm, standard CLI tools), keep it brief (5-10 words): "
+                            "ls → \"List files in current directory\"; git status → \"Show working tree status\"; "
+                            "npm install → \"Install package dependencies\". For commands that are harder to parse at "
+                            "a glance (piped commands, obscure flags, etc.), add enough context to clarify what it "
+                            "does: find . -name \"*.tmp\" -exec rm {} \\; → \"Find and delete all .tmp files "
+                            "recursively\"; git reset --hard origin/main → \"Discard all local changes and match remote "
+                            "main\"; curl -s url | jq '.data[]' → \"Fetch JSON from URL and extract data array elements\"."
+                        ),
+                    },
                     "cwd": {
                         "type": "string",
                         "description": "Optional working directory override for this command only. Omit to use the host's listed working directory (bound project path, else default directory, else home). Set to /tmp/fuse (Windows: %TEMP%\\fuse) for throwaway one-offs with no named path. Set to ~ for that host's home. Prefer this over a cd prefix when running elsewhere.",
@@ -604,11 +621,19 @@ SCHEMAS = {
                 "inspect it with get_command_output timeout_ms=0. Default timeout 5 min, max 30 min — re-arm "
                 "only from <monitor_result state=\"timed_out\">. Stop with kill_command. "
                 "Not for a one-shot build: use run_terminal_command with background:true. Do not sleep or poll. "
-                "Works on SSH and connector hosts. Linux pipes should be line-buffered; Windows is PowerShell."
+                "Works on SSH and connector hosts. Linux pipes should be line-buffered; Windows is PowerShell. "
+                "Write a specific description — the user sees it instead of the command "
+                "(\"errors in deploy.log\" not \"watching logs\")."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "description": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200,
+                        "description": "Short human-readable description of what you are monitoring (shown to the user).",
+                    },
                     "command": {
                         "type": "string",
                         "minLength": 1,
@@ -645,6 +670,7 @@ SCHEMAS = {
                     },
                     "host": _HOST,
                 },
+                "required": ["description"],
                 "additionalProperties": False,
             },
         },

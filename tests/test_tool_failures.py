@@ -227,6 +227,30 @@ class ConsumeReasoningTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["reasoning"], "think more")
         self.assertEqual(summary["finish"], "tool_calls")
 
+    async def test_stream_marks_thought_finished_when_tool_call_starts(self):
+        async def stream(with_call):
+            yield b'data: {"choices":[{"delta":{"reasoning_content":"think"}}]}\n\n'
+            if with_call:
+                yield b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"web_search","arguments":"{\\"q"}}]}}]}\n\n'
+                yield b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\":1}"}}]}}]}\n\n'
+            yield b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+            yield b"data: [DONE]\n\n"
+
+        calling = {"fuse": {"event": "activity", "phase": "calling"}}
+        for with_call in (True, False):
+            result = FakeResult(stream=stream(with_call))
+            with patch("app.chat_runtime.api._tap", lambda s, *a, **k: s), patch(
+                "app.chat_runtime.api._safe_record_usage", lambda *a, **k: None
+            ):
+                outs = [payload async for kind, payload in _consume_round(result, {"id": 1}, FakeSrc(), "up", "req") if kind == "out"]
+            if not with_call:
+                self.assertNotIn(calling, outs)
+                continue
+            self.assertEqual(outs.count(calling), 1)
+            at = outs.index(calling)
+            self.assertIn("reasoning_content", outs[at - 1]["choices"][0]["delta"])
+            self.assertIn("tool_calls", outs[at + 1]["choices"][0]["delta"])
+
 
 async def _drain_tools(calls, **kwargs):
     import contextlib

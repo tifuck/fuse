@@ -1776,6 +1776,8 @@ async def _monitor(user_id, host_id, alias, args, root, *, windows: bool = False
         raise WorkspaceError("command or url is required")
     if raw_url and not url:
         raise WorkspaceError("url must be a public ws:// or wss:// address")
+    if not str(args.get("description") or "").strip():
+        raise WorkspaceError("description is required: say in a few words what you are monitoring (the user sees it instead of the command)")
     if command:
         if len(command) > 8000:
             raise WorkspaceError("invalid command")

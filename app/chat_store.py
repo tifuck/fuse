@@ -3348,7 +3348,7 @@ def agent_current_activity(message, activity=None, status="running"):
         return "queued"
     activity = activity if isinstance(activity, dict) else {}
     tools = message.get("tools") or []
-    if activity.get("phase") != "model":
+    if activity.get("phase") not in ("model", "calling"):
         for trace in reversed(tools):
             if not isinstance(trace, dict) or trace.get("status") not in ("running", "progress", "queued"):
                 continue
@@ -3498,7 +3498,7 @@ def checkpoint(run_id, message, events=None, durable=True, future=None):
     request_changed = False
     for item in events or []:
         activity = item.get("fuse") or {}
-        if activity.get("event") == "activity" and activity.get("phase") in ("model", "tools"):
+        if activity.get("event") == "activity" and activity.get("phase") in ("model", "calling", "tools"):
             request.setdefault("agent", {})["activity"] = dict(activity)
             request_changed = True
         elif activity.get("event") == "tool" and activity.get("status") == "running":
@@ -3507,7 +3507,7 @@ def checkpoint(run_id, message, events=None, durable=True, future=None):
         elif activity.get("event") == "heartbeat":
             agent = request.setdefault("agent", {})
             act = agent.get("activity") if isinstance(agent.get("activity"), dict) else {}
-            if act.get("phase") in ("tools", "model"):
+            if act.get("phase") in ("tools", "model", "calling"):
                 agent["activity"] = {**act, "heartbeat": True}
             else:
                 agent["activity"] = {"phase": "waiting", "heartbeat": True}

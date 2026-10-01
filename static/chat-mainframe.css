@@ -131,11 +131,6 @@
   0% { content: "⠋"; } 10% { content: "⠙"; } 20% { content: "⠹"; } 30% { content: "⠸"; } 40% { content: "⠼"; }
   50% { content: "⠴"; } 60% { content: "⠦"; } 70% { content: "⠧"; } 80% { content: "⠇"; } 90% { content: "⠏"; }
 }
-.chat[data-view="mainframe"] .chat-step.is-console-think { --mf-glyph: "∴"; --mf-state: var(--reason); }
-.chat[data-view="mainframe"] .chat-step.is-console-think.is-live-think { --mf-state: var(--brass); }
-.chat[data-view="mainframe"] .chat-step.is-console-think.is-live-think::before { animation: mf-spin 0.8s steps(1) infinite; }
-.chat[data-view="mainframe"] .chat-step.is-console-shell-group { --mf-glyph: "▸"; --mf-state: var(--mute); }
-.chat[data-view="mainframe"] .chat-step.is-console-shell-group.is-console-expanded { --mf-glyph: "▾"; }
 
 /* Selection bar: the first line of a row highlights like a TUI cursor. */
 .chat[data-view="mainframe"] .chat-step::after {
@@ -427,70 +422,10 @@
 .chat[data-view="mainframe"] .chat-tool-md.chat-md { display: block; font-size: var(--mf-small); }
 .chat[data-view="mainframe"] .chat-tool-md.chat-md::before { content: none; }
 
-/* —— Thinking: one quiet row; open reasoning is plain text under it, no rule or indent. —— */
-.chat[data-view="mainframe"] .chat-step.is-console-think .chat-step-copy { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chat[data-view="mainframe"] .chat-step.is-console-think .chat-step-kind { display: none; }
-.chat[data-view="mainframe"] .chat-step.is-console-think .chat-think-summary {
-  display: inline;
-  color: var(--mf-dim);
-  font: inherit;
-  font-style: normal;
-  cursor: pointer;
-}
-.chat[data-view="mainframe"] .chat-step.is-console-think.is-live-think .chat-think-summary { color: var(--mist); }
-.chat[data-view="mainframe"] .chat-step.is-console-think > .chat-step-main > .chat-step-head > .chat-think-size {
-  grid-column: 3 / 5;
-  grid-row: 1;
-  justify-self: end;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--mute);
-  font: var(--mf-small)/var(--mf-row) var(--mf-font);
-  cursor: pointer;
-}
-.chat[data-view="mainframe"] .chat-step.is-console-think .chat-think-size[hidden] { display: none; }
-.chat[data-view="mainframe"] .chat-step.is-console-think .chat-think-size:hover { color: var(--brass); }
-.chat[data-view="mainframe"] .chat-step:is(.is-console-think, .is-console-shell-group) > .chat-step-main > .chat-console-bundle {
-  grid-column: 2 / -1;
-  grid-row: 2;
-  min-width: 0;
-}
-.chat[data-view="mainframe"] .chat-step.is-console-think[data-think-mode="collapsed"] :is(.chat-console-bundle, .chat-think-window) { display: none; }
-.chat[data-view="mainframe"] .chat-step.is-console-think .chat-think-window {
-  margin: 0 0 0.25rem;
-  padding: 0.1rem 0;
-  cursor: pointer;
-}
-.chat[data-view="mainframe"] .chat-step.is-console-think .chat-think-preview {
-  display: block;
-  max-height: none;
-  margin: 0;
-  padding: 0;
-  overflow: visible;
-  color: var(--mf-dim);
-  font: var(--mf-small)/1.6 var(--mf-font);
-  font-style: normal;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-.chat[data-view="mainframe"] .chat-step.is-console-think[data-think-mode="tail"] .chat-think-preview {
-  max-height: calc(3 * 1.6 * var(--mf-small));
-  overflow: hidden;
-}
-.chat[data-view="mainframe"] .chat-step.is-console-think[data-think-mode="tail"] .chat-think-preview.is-clipped {
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 1.6em);
-  mask-image: linear-gradient(to bottom, transparent 0, #000 1.6em);
-}
+/* —— Thinking printed in an opened summary line: plain text, no rule or indent. —— */
 .chat[data-view="mainframe"] .chat-think-markdown :is(p, ul, ol) { margin: 0; }
 .chat[data-view="mainframe"] .chat-think-markdown :is(p + p, ul + p, ol + p) { margin-top: 0.5em; }
 .chat[data-view="mainframe"] .chat-think-markdown code { color: var(--mist); font-size: 1em; }
-.chat[data-view="mainframe"] .chat-step.is-console-think .chat-console-bundle-tools { margin: 0 0 0.4rem; padding: 0; list-style: none; }
-
-/* Shell group: a titled cluster; children sit on the same grid, indented. */
-.chat[data-view="mainframe"] .chat-step.is-console-shell-group .chat-step-label { color: var(--mist); }
-.chat[data-view="mainframe"] .chat-step.is-console-shell-group > .chat-step-main > .chat-console-bundle { display: none; }
-.chat[data-view="mainframe"] .chat-step.is-console-shell-group.is-console-expanded > .chat-step-main > .chat-console-bundle { display: block; margin-bottom: 0.2rem; }
 
 /* —— The answer: on the same grid, a bullet in the gutter. —— */
 .chat[data-view="mainframe"] .chat-md {
@@ -660,3 +595,49 @@
   .chat[data-view="mainframe"] .chat-step:is(.is-running, .is-live-think)::before { content: "⠿"; animation: none; }
   .chat[data-view="mainframe"] .chat-md.is-writing::after { animation: none; }
 }
+
+/* —— Summary lines (Console's Claude Code grouping): one titled row; the
+   newest command or thought sits under a live one, and an opened line lists
+   its calls on the same grid. —— */
+.chat[data-view="mainframe"] .chat-step.is-console-group { --mf-glyph: "▸"; --mf-state: var(--mute); }
+.chat[data-view="mainframe"] .chat-step.is-console-group.is-console-expanded { --mf-glyph: "▾"; }
+.chat[data-view="mainframe"] .chat-step.is-console-group.is-running { --mf-state: var(--call-live); }
+.chat[data-view="mainframe"] .chat-step.is-console-group.is-errored { --mf-state: var(--call-fail); }
+.chat[data-view="mainframe"] .chat-step.is-console-group .chat-step-label { color: var(--mf-dim); white-space: normal; overflow-wrap: anywhere; }
+.chat[data-view="mainframe"] .chat-step.is-console-group.is-running .chat-step-label { color: var(--mist); }
+.chat[data-view="mainframe"] .chat-step.is-console-group .chat-step-label b { color: var(--mist); font-weight: 600; }
+.chat[data-view="mainframe"] .chat-step.is-console-group > .chat-step-main > .chat-console-hang {
+  display: block;
+  grid-column: 2 / -1;
+  min-width: 0;
+  color: var(--mf-dim);
+  font: var(--mf-small)/1.6 var(--mf-font);
+}
+.chat[data-view="mainframe"] .chat-step.is-console-group .chat-console-hint-line { display: block; white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat[data-view="mainframe"] .chat-step.is-console-group .chat-console-thinkhint {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 10;
+  overflow: hidden;
+  font-style: italic;
+  overflow-wrap: anywhere;
+}
+.chat[data-view="mainframe"] .chat-step.is-console-group > .chat-step-main > .chat-console-bundle { display: none; grid-column: 2 / -1; min-width: 0; }
+.chat[data-view="mainframe"] .chat-step.is-console-group.is-console-expanded > .chat-step-main > .chat-console-bundle { display: block; margin-bottom: 0.2rem; }
+.chat[data-view="mainframe"] .chat-step.is-console-group.is-console-expanded > .chat-step-main > .chat-console-hang { display: none; }
+.chat[data-view="mainframe"] .chat-step.is-console-thought { --mf-glyph: "∴"; --mf-state: var(--reason); }
+.chat[data-view="mainframe"] .chat-console-thought {
+  grid-column: 2 / -1;
+  grid-row: 1;
+  min-width: 0;
+  margin: 0 0 0.25rem;
+  color: var(--mf-dim);
+  font: var(--mf-small)/1.6 var(--mf-font);
+  overflow-wrap: anywhere;
+}
+.chat[data-view="mainframe"] .chat-step.is-console-notice { --mf-glyph: "●"; --mf-state: var(--mf-dim); }
+.chat[data-view="mainframe"] .chat-step.is-console-notice.is-red { --mf-state: var(--call-fail); }
+.chat[data-view="mainframe"] .chat-step.is-console-notice.is-gold { --mf-state: var(--call-idle); }
+.chat[data-view="mainframe"] .chat-step.is-console-notice .chat-console-notice-text { grid-column: 2 / -1; grid-row: 1; color: var(--mist); }
+.chat[data-view="mainframe"] .chat-step.is-console-notice .chat-console-dim { color: var(--mf-dim); }
+.chat[data-view="mainframe"] .chat-turn.is-user.is-auto-steps:not(:first-child) { margin-top: 0; padding-top: 0.3rem; border-top: 0; }

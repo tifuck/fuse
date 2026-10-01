@@ -6169,11 +6169,47 @@
         }
         return null;
       };
-      results.forEach((result) => {
+      results.forEach((result, i) => {
         const trace = findTrace(result.id);
-        if (trace) applyCommandResult(trace, result);
+        if (!trace) return;
+        applyCommandResult(trace, result);
+        if (trace.description && msg.autoSteps?.[i]) msg.autoSteps[i].description = trace.description;
       });
     });
+  }
+
+  // Console prints an ended background command or monitor as Claude Code's
+  // notice: 'Background command "<description>" completed · 12s'.
+  function consoleWakeNoticeHtml(trace) {
+    const monitor = trace.name === "monitor";
+    const label = ccFlat(trace.description) || (monitor ? ccFlat(trace.url) : "") || ccFlat(displayCommand(trace)) || "command";
+    const state = executionState(trace);
+    const exit = shellExitCode(trace);
+    const stopped = trace.status === "interrupted" || ["cancelled", "interrupted", "lost"].includes(state);
+    let text;
+    let tone = "dim";
+    if (monitor) {
+      const events = Number(trace.event_count) || 0;
+      if (stopped || state === "timed_out") { text = `Monitor "${label}" stopped`; tone = "gold"; }
+      else if (trace.status === "done") text = events ? `Monitor "${label}" stream ended` : `Monitor "${label}" ended without producing output`;
+      else { text = `Monitor "${label}" script failed${exit !== null ? ` (exit ${exit})` : ""}`; tone = "red"; }
+    } else if (stopped) {
+      text = `Background command "${label}" was stopped`;
+      tone = "gold";
+    } else if (trace.status === "done") {
+      text = `Background command "${label}" completed${exit !== null && exit !== 0 ? ` (exit code ${exit})` : ""}`;
+    } else {
+      text = `Background command "${label}" failed${exit !== null ? ` with exit code ${exit}` : ""}`;
+      tone = "red";
+    }
+    const took = Number(trace.latency_ms ?? trace.duration_ms);
+    const detail = Number.isFinite(took) && took > 0 ? ` · ${ccDuration(Math.max(1000, took))}` : "";
+    return (
+      `<li class="chat-step is-console-notice is-${tone}">` +
+      `<span class="chat-step-node" aria-hidden="true"></span>` +
+      `<div class="chat-step-main"><span class="chat-console-notice-text">${escapeHtml(text)}` +
+      (detail ? `<span class="chat-console-dim">${escapeHtml(detail)}</span>` : "") + `</span></div></li>`
+    );
   }
 
   function renderAutoSteps(msg) {
@@ -6181,7 +6217,9 @@
     article.className = "chat-turn is-user is-auto-steps";
     article.setAttribute("aria-label", "Background command results");
     const steps = msg.autoSteps
-      .map((trace, i) => toolStepHtml(trace, "wake-" + (msg.id || "") + "-" + i, false, false, null))
+      .map((trace, i) => isConsoleView() && trace.backgroundResult && trace.status !== "running"
+        ? consoleWakeNoticeHtml(trace)
+        : toolStepHtml(trace, "wake-" + (msg.id || "") + "-" + i, false, false, null))
       .join("");
     article.innerHTML = '<div class="chat-auto-steps"><ol class="chat-timeline">' + steps + "</ol></div>";
     article.addEventListener("click", (event) => {
@@ -6848,7 +6886,7 @@
     const stopping = Boolean(live && owner && runIsStopping(owner));
     let current = live && !stopping ? lastCurrentTrace(grouped) : null;
     const activity = msg?.id === activeRun?.message_id ? activeRun?.activity : msg?._activity;
-    if (activity?.phase === "model") current = null;
+    if (activity?.phase === "model" || activity?.phase === "calling") current = null;
     else if (live && !stopping && activity?.phase === "tools" && activity.tool_id) {
       current = traces.find(trace => trace.id === activity.tool_id && toolIsCurrent(trace)) || current;
     }
@@ -7305,6 +7343,7 @@
       if (!msg || msg.role !== "assistant" || !article || !article.classList.contains("is-assistant")) return;
       syncActivityElapsed(article, msg, true);
       syncActivitySpin(article, msg, true);
+      if (isConsoleView()) syncConsoleClocks(article);
       syncLiveDock();
     }, 250);
   }
@@ -7736,9 +7775,15 @@
   function commandFor(trace) {
     const own = displayCommand(trace);
     if (own) return own;
-    const id = trace && (trace.command_id || trace.child_id || trace.job_id);
-    const origin = id ? relatedTrace((t) => (t.name === "run_terminal_command" || t.name === "monitor") && (t.command_id === id || t.child_id === id) && t.command) : null;
+    const origin = commandOrigin(trace);
     return origin ? displayCommand(origin) : "";
+  }
+
+  // The run_terminal_command or monitor call that started the job a join,
+  // kill or wake result points at.
+  function commandOrigin(trace) {
+    const id = trace && (trace.command_id || trace.child_id || trace.job_id);
+    return id ? relatedTrace((t) => t !== trace && (t.name === "run_terminal_command" || t.name === "monitor") && (t.command_id === id || t.child_id === id) && t.command) : null;
   }
 
   function agentSubject(trace) {
@@ -7900,14 +7945,15 @@
     return toolText(String(value || "").trim(), cap);
   }
 
-  function consoleCallHtml(trace, presentation) {
+  // full: the whole command, as Claude Code prints it in an opened line.
+  function consoleCallHtml(trace, presentation, full = false) {
     const name = trace && trace.name;
     const running = Boolean(presentation && presentation.running);
     const verb = consoleVerb(name, trace);
     if (["kill_command", "kill_subagent", "todo_write", "list_subagents", "scratch"].includes(name)) {
       return `<span class="chat-console-call"><span class="chat-tool-action">${escapeHtml(verb)}</span></span>`;
     }
-    if (name === "run_terminal_command" && running && !toolBackground(trace)) {
+    if (name === "run_terminal_command" && running && !toolBackground(trace) && !full) {
       const label = String((trace && trace.progressLabel) || "").trim() || "Running";
       return `<span class="chat-console-call"><span class="chat-tool-action">${escapeHtml(label)}</span></span>`;
     }
@@ -7916,10 +7962,12 @@
     const path = ["read_file", "write_file", "search_replace", "list_dir", "run_terminal_command", "get_command_output"].includes(name);
     if (["read_file", "write_file", "search_replace", "list_dir"].includes(name)) {
       inner = consoleArgText(compactPath(trace.path || ".", trace, 88), 88);
-    } else if (name === "run_terminal_command" || name === "get_command_output") {
-      inner = consoleArgText(displayCommand(trace) || "command", 140);
+    } else if (name === "run_terminal_command") {
+      inner = full ? displayCommand(trace) || "command" : consoleArgText(displayCommand(trace) || "command", 140);
+    } else if (name === "get_command_output") {
+      inner = consoleArgText(commandOrigin(trace)?.description || displayCommand(trace) || "command", 140);
     } else if (name === "monitor") {
-      inner = consoleArgText(trace.url || displayCommand(trace) || "watch", 100);
+      inner = consoleArgText(trace.description || trace.url || displayCommand(trace) || "watch", 100);
     } else if (name === "grep" || name === "glob") {
       inner = consoleArgText(trace.pattern || trace.query || "pattern", 90);
     } else if (name === "read_url") {
@@ -8256,7 +8304,7 @@
     if (name === "write_file") return "Write";
     if (name === "search_replace") return "Update";
     if (name === "run_terminal_command") return "Bash";
-    if (name === "monitor") return "Watch";
+    if (name === "monitor") return "Monitor";
     if (name === "get_command_output") return "Wait";
     if (name === "kill_command") return "Stop Task";
     if (name === "kill_subagent") return "Stop";
@@ -8284,11 +8332,14 @@
       const detail = toolText(cmd) || "command";
       const exit = shellExitCode(trace);
       if (exit !== null && (failed || exit !== 0)) return `${detail} (exit ${exit})`;
+      // A running call reads as its description ("Running the test suite").
+      const description = ccFlat(trace && trace.description);
+      if (running && description) return ccRunningForm(description) ?? description;
       if (running) return detail ? `exec ${detail}` : "exec";
       return detail;
     }
     if (name === "monitor") {
-      const target = toolText((trace && (trace.url || cmd)) || "") || "watch";
+      const target = toolText((trace && (trace.description || trace.url || cmd)) || "") || "watch";
       const n = Number(trace && trace.event_count);
       if (failed) return `watch failed · ${target}`;
       if (running) return Number.isFinite(n) && n > 0 ? `watch ${target} · ${n}` : `watch ${target}`;
@@ -8715,7 +8766,9 @@
     return `${toolAction(trace)}${subject ? ` · ${subject}` : ""}`;
   }
 
-  function toolStepHtml(trace, index, live, open, openMap) {
+  // opts.verbose (Console): a row printed inside an opened summary line —
+  // full command and output, no disclosure of its own.
+  function toolStepHtml(trace, index, live, open, openMap, opts = {}) {
     const presentation = toolPresentation(trace, live);
     const { running, interrupted, failed } = presentation;
     const artifact = trace.name === "create_artifact" || trace.name === "update_artifact";
@@ -8743,8 +8796,9 @@
     const icon = isLedgerView() ? toolIcon(trace.name, false, false)
       : failed ? STEP_ICONS.error : interrupted ? STEP_ICONS.stop : artifact ? STEP_ICONS.artifact : toolIcon(trace.name, false, false);
     if (isConsoleView()) {
-      const result = consoleResultLine(trace, presentation);
-      const preview = consoleCollapsedPreview(trace, failed, running);
+      const verbose = Boolean(opts.verbose);
+      const result = verbose && running && isShellExecTool(trace.name) && !toolBackground(trace) ? "Running…" : consoleResultLine(trace, presentation);
+      const preview = verbose ? "" : consoleCollapsedPreview(trace, failed, running);
       // A shell call with no captured output would "expand" into the command
       // or result line already on screen. Those rows get no disclosure.
       if (isShellExecTool(trace.name) && !failed) {
@@ -8752,17 +8806,17 @@
         const shown = [String(trace.command || "").trim(), String(result || "").trim(), `$ ${String(displayCommand(trace) || "").trim()}`, "Running…"];
         if (!body || shown.includes(body)) inner = "";
       }
-      const expandable = openKind !== "agent" && trace.name !== "todo_write" && Boolean(inner) && inner !== preview;
+      const expandable = !verbose && openKind !== "agent" && trace.name !== "todo_write" && Boolean(inner) && inner !== preview;
       const head = toolHeadHtml({
-        ...presentation, line: consoleCallHtml(trace, presentation), title: trace.command || trace.path || trace.url || label, expandable, open: revealed, openKind, openId,
+        ...presentation, line: consoleCallHtml(trace, presentation, verbose), title: trace.command || trace.path || trace.url || label, expandable, open: revealed, openKind, openId,
         contextHost: "",
       });
-      const hangOpen = revealed && expandable;
+      const hangOpen = verbose ? Boolean(inner) : revealed && expandable;
       const status = (trace.name === "todo_write" && normalizeTodos(trace.todos).length) || (preview && isShellExecTool(trace.name) && !running && !failed)
         ? "" : result || (running ? "Running…" : "done");
       const showHang = true;
       return (
-        `<li class="chat-step is-console-call is-${kind} is-${presentation.state}${hangOpen ? " is-console-expanded" : ""}" data-execution="${escapeHtml(executionIdentity(trace))}" data-tool="${escapeHtml(trace.name)}" data-state="${presentation.state}" data-step="${escapeHtml(index)}">` +
+        `<li class="chat-step is-console-call is-${kind} is-${presentation.state}${hangOpen || verbose ? " is-console-expanded" : ""}${verbose ? " is-console-verbose" : ""}" style="--console-hang: ${consoleVerb(trace.name, trace).length + 1}ch" data-execution="${escapeHtml(executionIdentity(trace))}" data-tool="${escapeHtml(trace.name)}" data-state="${presentation.state}" data-step="${escapeHtml(index)}">` +
         `<span class="chat-step-node" aria-hidden="true">${icon}</span>` +
         `<div class="chat-step-main">${head}` +
         (showHang
@@ -8971,7 +9025,7 @@
     if (!row) return;
     const activity = row.closest("[data-activity]");
     if (activity && !activity.classList.contains("is-open")) activity.querySelector("button[data-activity-summary]")?.click();
-    const group = row.parentElement?.closest(".is-stack");
+    const group = row.parentElement?.closest(".is-stack, .is-console-group");
     if (group) {
       const toggle = group.querySelector(":scope > .chat-step-main > .chat-step-head > [data-step-toggle]");
       if (toggle?.getAttribute("aria-expanded") !== "true") toggle?.click();
@@ -9144,6 +9198,18 @@
         saveDisclosures(msg);
         return;
       }
+      // An opened summary line has no header in Console (as in Claude Code):
+      // a click on its printed calls folds it back.
+      const openGroup = chatView === "console" && event.target.closest(".chat-step.is-console-group.is-console-expanded");
+      if (openGroup && !event.target.closest("a, button, input, textarea, [data-copy-tool]") && !String(window.getSelection() || "").trim()) {
+        event.preventDefault();
+        openGroup.classList.remove("is-console-expanded");
+        openGroup.querySelectorAll(":scope > .chat-step-main > .chat-step-head [data-step-toggle]").forEach((el) => el.setAttribute("aria-expanded", "false"));
+        if (!msg.stepOpen) msg.stepOpen = {};
+        msg.stepOpen[openGroup.dataset.step] = false;
+        saveDisclosures(msg);
+        return;
+      }
       const btn = event.target.closest("[data-step-toggle]");
       if (!btn || event.target.closest(".chat-step-open")) return;
       if (isConsoleView() && event.target.closest("a")) return;
@@ -9153,22 +9219,22 @@
       const hang = li.querySelector(":scope > .chat-step-main .chat-console-hang");
       const isThink = li.classList.contains("is-think");
       const isConsoleCall = li.classList.contains("is-console-call");
-      const isShellGroup = li.classList.contains("is-console-shell-group");
-      if (!reveal && !isThink && !isConsoleCall && !isShellGroup) return;
+      const isConsoleGroup = li.classList.contains("is-console-group");
+      if (!reveal && !isThink && !isConsoleCall && !isConsoleGroup) return;
       if (isThink && li.dataset.thinkMode !== "collapsed" && String(window.getSelection() || "").trim()) return;
       event.preventDefault();
       const open = isThink
         ? (isConsoleView() ? li.dataset.thinkMode !== "expanded" : li.dataset.thinkMode === "collapsed")
         : isConsoleCall
           ? !hang?.classList.contains("is-expanded")
-          : isShellGroup
+          : isConsoleGroup
             ? !li.classList.contains("is-console-expanded")
             : !reveal.classList.contains("is-open");
       if (open && !isThink) pauseThreadFollow();
       if (isConsoleCall && hang) {
         hang.classList.toggle("is-expanded", open);
         li.classList.toggle("is-console-expanded", open);
-      } else if (isShellGroup) {
+      } else if (isConsoleGroup) {
         li.classList.toggle("is-console-expanded", open);
       } else if (reveal) {
         reveal.classList.toggle("is-revealing", open);
@@ -10021,106 +10087,10 @@
     return legacy;
   }
 
-  function consoleThoughtCounts(tools) {
-    const names = (tools || []).map((item) => item.trace && item.trace.name);
-    const reads = names.filter((name) => name === "read_file").length;
-    const writes = names.filter((name) => name === "write_file").length;
-    const edits = names.filter((name) => name === "search_replace").length;
-    const shells = names.filter((name) => name === "run_terminal_command" || name === "get_command_output").length;
-    const fetches = names.filter((name) => name === "read_url").length;
-    const searches = names.filter((name) => name === "grep" || name === "glob" || isSearchTool(name)).length;
-    const bits = [];
-    if (reads) bits.push(`read ${reads} ${reads === 1 ? "file" : "files"}`);
-    if (writes) bits.push(`wrote ${writes} ${writes === 1 ? "file" : "files"}`);
-    if (edits) bits.push(`edited ${edits} ${edits === 1 ? "file" : "files"}`);
-    if (shells) bits.push(`ran ${shells} shell ${shells === 1 ? "command" : "commands"}`);
-    if (searches) bits.push(`searched for ${searches} ${searches === 1 ? "pattern" : "patterns"}`);
-    if (fetches) bits.push(`read ${fetches} ${fetches === 1 ? "page" : "pages"}`);
-    return bits;
-  }
-
-  // [while streaming, once settled]. One pair is picked per thought, so
-  // "Pondering…" settles into "Pondered for 6s".
-  const CONSOLE_THOUGHT_VERBS = [
-    ["Thinking", "Thought"], ["Pondering", "Pondered"], ["Cogitating", "Cogitated"],
-    ["Ruminating", "Ruminated"], ["Musing", "Mused"], ["Considering", "Considered"],
-    ["Contemplating", "Contemplated"], ["Deliberating", "Deliberated"], ["Reflecting", "Reflected"],
-    ["Mulling", "Mulled"], ["Reasoning", "Reasoned"], ["Weighing", "Weighed"],
-    ["Puzzling", "Puzzled"], ["Brooding", "Brooded"], ["Meditating", "Meditated"],
-    ["Ideating", "Ideated"], ["Noodling", "Noodled"], ["Chewing", "Chewed on it"],
-    ["Percolating", "Percolated"], ["Marinating", "Marinated"], ["Simmering", "Simmered"],
-    ["Stewing", "Stewed"], ["Brewing", "Brewed"], ["Distilling", "Distilled"],
-    ["Deducing", "Deduced"], ["Inferring", "Inferred"], ["Theorizing", "Theorized"],
-    ["Hypothesizing", "Hypothesized"], ["Analyzing", "Analyzed"], ["Untangling", "Untangled"],
-    ["Unraveling", "Unraveled"], ["Decoding", "Decoded"], ["Deciphering", "Deciphered"],
-    ["Mapping", "Mapped"], ["Charting", "Charted"], ["Scheming", "Schemed"],
-    ["Plotting", "Plotted"], ["Strategizing", "Strategized"], ["Calculating", "Calculated"],
-    ["Computing", "Computed"], ["Crunching", "Crunched"], ["Synthesizing", "Synthesized"],
-    ["Connecting dots", "Connected dots"], ["Piecing together", "Pieced it together"],
-    ["Sifting", "Sifted"], ["Sorting", "Sorted"], ["Parsing", "Parsed"],
-    ["Examining", "Examined"], ["Scrutinizing", "Scrutinized"], ["Investigating", "Investigated"],
-    ["Probing", "Probed"], ["Exploring", "Explored"], ["Wondering", "Wondered"],
-    ["Daydreaming", "Daydreamed"], ["Imagining", "Imagined"], ["Envisioning", "Envisioned"],
-    ["Conjuring", "Conjured"], ["Divining", "Divined"], ["Intuiting", "Intuited"],
-    ["Grokking", "Grokked"], ["Discerning", "Discerned"], ["Evaluating", "Evaluated"],
-    ["Assessing", "Assessed"], ["Appraising", "Appraised"], ["Surveying", "Surveyed"],
-    ["Tinkering", "Tinkered"], ["Whittling", "Whittled"], ["Forging", "Forged"],
-    ["Crafting", "Crafted"], ["Architecting", "Architected"], ["Incubating", "Incubated"],
-    ["Fermenting", "Fermented"], ["Churning", "Churned"], ["Wrangling", "Wrangled"], ["Finagling", "Finagled"],
-    ["Cerebrating", "Cerebrated"], ["Ratiocinating", "Ratiocinated"], ["Excogitating", "Excogitated"],
-    ["Lucubrating", "Lucubrated"], ["Philosophizing", "Philosophized"], ["Speculating", "Speculated"],
-    ["Conceptualizing", "Conceptualized"], ["Formulating", "Formulated"], ["Composing", "Composed"],
-    ["Orchestrating", "Orchestrated"], ["Harmonizing", "Harmonized"], ["Calibrating", "Calibrated"],
-    ["Tuning", "Tuned"], ["Honing", "Honed"], ["Refining", "Refined"],
-    ["Polishing", "Polished"], ["Sharpening", "Sharpened"], ["Focusing", "Focused"],
-    ["Gathering thoughts", "Gathered thoughts"], ["Reckoning", "Reckoned"], ["Figuring", "Figured"],
-    ["Sussing", "Sussed it out"],
-  ];
-
-  function consoleThoughtPair(seed) {
-    const s = String(seed || "thought");
-    let h = 2166136261;
-    for (let i = 0; i < s.length; i += 1) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
-    return CONSOLE_THOUGHT_VERBS[(h >>> 0) % CONSOLE_THOUGHT_VERBS.length];
-  }
-
-  // Seeded by message + step so each thought gets its own word, and the
-  // same word survives reloads.
-  function consoleThoughtSeed(msg, key) {
-    return `${(msg && msg.id) || ""}:${key}`;
-  }
-
-  function consoleThoughtLive(seed) {
-    return `${consoleThoughtPair(seed)[0]}…`;
-  }
-
-  function consoleThoughtClock(seconds) {
-    const total = Math.max(1, Math.round(Number(seconds) || 0));
-    if (total < 60) return `${total}s`;
-    const m = Math.floor(total / 60);
-    const s = total % 60;
-    return s ? `${m}m ${s}s` : `${m}m`;
-  }
-
-  function consoleThoughtSummary(seed, seconds) {
-    return `${consoleThoughtPair(seed)[1]} for ${consoleThoughtClock(seconds)}`;
-  }
-
-  // The console think row is a DOM island (reconcile never patches it), so its
-  // label is owned here: "Pondering…" while it streams, then "Pondered for 6s".
-  function syncConsoleThinkSummary(li, msg, live, liveThink) {
-    const summary = li.querySelector(".chat-think-summary");
-    if (!summary) return;
-    const key = li.dataset.step;
-    const seed = consoleThoughtSeed(msg, key);
-    const text = liveThink ? consoleThoughtLive(seed) : consoleThoughtSummary(seed, (consoleFreezeThoughtTimes(msg, live)[key] || 1000) / 1000);
-    if (summary.textContent === text) return;
-    const settled = summary.textContent === consoleThoughtLive(seed);
-    summary.textContent = text;
-    if (settled && summary.isConnected && !reduceMotion.matches) {
-      summary.animate([{ opacity: 0, transform: "translateY(0.2em)" }, { opacity: 1, transform: "none" }],
-        { duration: MOTION.base, easing: MOTION.snap });
-    }
+  // The run's live phase: "model" (a round started), "calling" (the model is
+  // writing a tool call, so the thought before it has finished) or "tools".
+  function runPhase(msg) {
+    return (msg?.id === activeRun?.message_id ? activeRun?.activity : msg?._activity)?.phase || "";
   }
 
   function consoleFreezeThoughtTimes(msg, live) {
@@ -10137,7 +10107,7 @@
     }
     const elapsed = (liveElapsedSeconds(msg, live) || 0) * 1000;
     const last = groups[groups.length - 1];
-    const liveKey = live && last && !segs.some((seg, index) => index > last.index) ? last.key : "";
+    const liveKey = live && last && !segs.some((seg, index) => index > last.index) && runPhase(msg) !== "calling" ? last.key : "";
     const clock = msg._thoughtClock;
     if (clock.liveKey && clock.liveKey !== liveKey) {
       if (msg._thoughtMs[clock.liveKey] == null) {
@@ -10177,115 +10147,634 @@
     return msg._thoughtMs;
   }
 
-  function consoleShellGroupHtml(items, live, openMap) {
-    const first = items[0];
-    const key = "shell-group-" + toolKey(first.trace, first.index);
-    const open = stepOpenAt(openMap, key);
-    const inner = items.map((item) => toolStepHtml(item.trace, toolKey(item.trace, item.index), live, stepOpenAt(openMap, toolKey(item.trace, item.index)), openMap)).join("");
+  // —— Claude Code summary lines (Console + Mainframe) ——
+  // Port of Claude Code's fullscreen transcript (2.1.286). A run of reads,
+  // searches, listings and shell commands, with the thinking between them,
+  // folds into one line: "Thought for 4s, read 3 files, ran 2 shell commands".
+  // Narration or any other tool ends the line. While the line is live it says
+  // what is running (the call's description as an -ing phrase, else the
+  // command) with the newest command, path or pattern under it. A click
+  // prints every call in full; a failure stays inside the line, as there.
+
+  // Verb forms, from Claude Code's inflector: only a description that opens
+  // with a known verb turns into "-ing"; "and"/"then" chains follow it.
+  const CC_PAST = {
+    begin: "began", bind: "bound", bring: "brought", build: "built", buy: "bought", catch: "caught", choose: "chose",
+    come: "came", cut: "cut", debug: "debugged", dig: "dug", do: "did", draw: "drew", feed: "fed", feel: "felt",
+    fight: "fought", find: "found", fly: "flew", forget: "forgot", freeze: "froze", get: "got", give: "gave", go: "went",
+    have: "had", hide: "hid", hit: "hit", hold: "held", input: "input", keep: "kept", know: "knew", lead: "led",
+    leave: "left", let: "let", lose: "lost", make: "made", mean: "meant", meet: "met", override: "overrode",
+    overwrite: "overwrote", pay: "paid", put: "put", quit: "quit", read: "read", rebuild: "rebuilt", redo: "redid",
+    rerun: "reran", reset: "reset", rewrite: "rewrote", run: "ran", see: "saw", seek: "sought", send: "sent", set: "set",
+    show: "showed", shut: "shut", sit: "sat", sleep: "slept", spend: "spent", spin: "spun", split: "split",
+    spread: "spread", stand: "stood", sweep: "swept", sync: "synced", take: "took", teach: "taught", tear: "tore",
+    tell: "told", think: "thought", throw: "threw", understand: "understood", undo: "undid", unset: "unset", win: "won",
+    unwrap: "unwrapped", unzip: "unzipped", write: "wrote",
+  };
+  const CC_ING = {
+    begin: "beginning", commit: "committing", control: "controlling", debug: "debugging", emit: "emitting",
+    equip: "equipping", forget: "forgetting", format: "formatting", input: "inputting", occur: "occurring",
+    omit: "omitting", output: "outputting", permit: "permitting", prefer: "preferring", quit: "quitting",
+    refer: "referring", rerun: "rerunning", reset: "resetting", screenshot: "screenshotting", snapshot: "snapshotting",
+    submit: "submitting", sync: "syncing", transfer: "transferring", unset: "unsetting", unwrap: "unwrapping",
+    unzip: "unzipping",
+  };
+  const CC_PAST_FORMS = new Set([
+    ...Object.entries(CC_PAST).filter(([verb, past]) => verb !== past).map(([, past]) => past),
+    "been", "broken", "chosen", "done", "drawn", "driven", "eaten", "fallen", "forgotten", "given", "gone", "grown",
+    "hidden", "known", "ridden", "risen", "seen", "shown", "spoken", "taken", "thrown", "torn", "worn", "written",
+  ]);
+  // Irregular verbs that double as nouns: they inflect as the first word only.
+  const CC_NOUNLIKE = new Set(["output", "input", "lead", "feed", "spread", "set", "cut", "split", "hit", "let", "put",
+    "quit", "shut", "read", "go", "make", "dig", "tear", "win", "fly", "spin", "control", "permit", "have", "hold", "keep",
+    "mean", "feel", "do", "see", "know", "think", "understand"]);
+  const CC_VERBS = new Set([
+    ...Object.keys(CC_PAST).filter((verb) => !CC_NOUNLIKE.has(verb)),
+    ...Object.keys(CC_ING).filter((verb) => !CC_NOUNLIKE.has(verb)),
+    "add", "analyze", "append", "apply", "archive", "assert", "attempt", "autofix", "await", "benchmark", "bisect", "call",
+    "capture", "check", "clone", "collect", "compare", "compile", "compute", "confirm", "connect", "convert", "copy",
+    "count", "create", "curl", "decode", "delete", "deploy", "detect", "discard", "dismiss", "display", "download", "dump",
+    "edit", "emit", "enable", "encode", "ensure", "enumerate", "evaluate", "execute", "expand", "expect", "export",
+    "extract", "fetch", "fill", "filter", "fix", "flush", "focus", "follow", "generate", "grep", "identify", "ignore",
+    "import", "include", "inject", "insert", "inspect", "install", "invoke", "kill", "launch", "lint", "list", "load",
+    "locate", "loop", "measure", "merge", "monitor", "move", "navigate", "normalize", "parse", "patch", "pick", "ping",
+    "pipe", "poll", "post", "prepare", "preview", "print", "probe", "profile", "prune", "publish", "pull", "push",
+    "queue", "rebase", "recheck", "record", "recover", "redirect", "reduce", "refresh", "regenerate", "reinstall",
+    "relaunch", "reload", "remove", "rename", "render", "reopen", "repeat", "replay", "reply", "report", "request",
+    "resolve", "restart", "restore", "retry", "revert", "save", "scan", "screenshot", "scroll", "search", "select",
+    "serialize", "serve", "settle", "skip", "snapshot", "sort", "spawn", "squash", "stage", "start", "stash", "stop",
+    "strip", "summarize", "switch", "sync", "tail", "tally", "test", "toggle", "touch", "trace", "track", "trigger",
+    "trim", "truncate", "try", "typecheck", "unblock", "uninstall", "unlink", "unmount", "unpack", "update", "upgrade",
+    "upload", "validate", "verify", "visit", "wait", "walk", "warn", "wipe",
+  ]);
+  const CC_PREFIXED = /^(re|un|de|pre|co|sub|over|out|mis|auto|post)-(.+)$/i;
+  const CC_CVC = /[^aeiou][aeiou][bcdfghjklmnpqrstvz]$/i;
+  const CC_CHAIN_STOP = /^(?:\s+\w+){0,2}\s+(?:is|are|was|were|has|have|do|does|did|will|would|should|can|could|passes|passed|fails|failed|exists|works|worked|succeeds|succeeded|stays|remains|looks|runs|ran|not|if|when|unless|whether)(?:n['’]t)?\b/;
+  // Built at runtime: a lookbehind literal is a parse error on older Safari.
+  const CC_CHAIN = (() => {
+    const tail = "([a-z]{2,16})(?=$|[\\s,;!?]|\\.(?:\\s|$))";
+    try {
+      return { re: new RegExp(`(?:(?<![\\w-])((?:(?:[Aa]nd|[Tt]hen)\\s+)+)|(,\\s+(?:(?:and|then)\\s+)*))${tail}`, "g"), lookbehind: true };
+    } catch (_) {
+      return { re: new RegExp(`(?:(^|[^\\w-])((?:(?:[Aa]nd|[Tt]hen)\\s+)+)|(,\\s+(?:(?:and|then)\\s+)*))${tail}`, "g"), lookbehind: false };
+    }
+  })();
+
+  function ccVowels(word) {
+    return (word.match(/[aeiou]/gi) || []).length;
+  }
+
+  function ccIng(word) {
+    const lower = word.toLowerCase();
+    if (Object.hasOwn(CC_ING, lower)) return CC_ING[lower];
+    if (/ie$/i.test(word)) return word.slice(0, -2) + "ying";
+    if (/[^eoy]e$/i.test(word)) return word.slice(0, -1) + "ing";
+    if (CC_CVC.test(word) && ccVowels(word) === 1) return word + word.slice(-1) + "ing";
+    if (/c$/i.test(word)) return word + "king";
+    return word + "ing";
+  }
+
+  function ccPast(word) {
+    const lower = word.toLowerCase();
+    if (Object.hasOwn(CC_PAST, lower)) return CC_PAST[lower];
+    if (/e$/i.test(word)) return word + "d";
+    if (/[^aeiou]y$/i.test(word)) return word.slice(0, -1) + "ied";
+    if (CC_CVC.test(word) && ccVowels(word) === 1) return word + word.slice(-1) + "ed";
+    if (/c$/i.test(word)) return word + "ked";
+    if (Object.hasOwn(CC_ING, lower)) return CC_ING[lower].slice(0, -3) + "ed";
+    return word + "ed";
+  }
+
+  function ccCase(source, word) {
+    return /^[A-Z]/.test(source) ? word.charAt(0).toUpperCase() + word.slice(1) : word;
+  }
+
+  function ccVerbLike(word) {
+    if (word.length < 2 || word.length > 16 || !/^[A-Za-z]+$/.test(word) || word === word.toUpperCase()) return false;
+    const lower = word.toLowerCase();
+    if (CC_PAST_FORMS.has(lower)) return false;
+    if (Object.hasOwn(CC_PAST, lower)) return true;
+    if (/ing$/i.test(word) && word.length > 4) return false;
+    if (/ed$/i.test(word) && !/eed$/i.test(word) && word.length > 3) return false;
+    if (/s$/i.test(word) && !/(ss|us)$/i.test(word) && word.length > 3) return false;
+    return /[aeiou]/i.test(word) || /y/i.test(word);
+  }
+
+  function ccChain(rest, form) {
+    return rest.replace(CC_CHAIN.re, (...args) => {
+      const match = args[0];
+      const [pre, lead, comma, verb] = CC_CHAIN.lookbehind ? ["", args[1], args[2], args[3]] : [args[1] || "", args[2], args[3], args[4]];
+      const offset = args[CC_CHAIN.lookbehind ? 4 : 5];
+      return CC_VERBS.has(verb) && !CC_CHAIN_STOP.test(rest.slice(offset + match.length)) ? pre + (lead ?? comma ?? "") + form(verb) : match;
+    });
+  }
+
+  function ccInflect(text) {
+    const trimmed = text.trimStart();
+    const lead = text.slice(0, text.length - trimmed.length);
+    const parts = /^(\S+)([\s\S]*)$/.exec(trimmed);
+    if (!parts) return undefined;
+    const word = parts[1];
+    const rest = parts[2] || "";
+    const prefixed = CC_PREFIXED.exec(word);
+    if (prefixed && ccVerbLike(prefixed[2])) {
+      const [, prefix, stem] = prefixed;
+      const whole = (prefix + stem).toLowerCase();
+      if (CC_PAST_FORMS.has(whole) || CC_PAST_FORMS.has(stem.toLowerCase())) return undefined;
+      const form = (table, fn) => prefix + "-" + ccCase(stem, Object.hasOwn(table, whole) ? table[whole].slice(prefix.length) : fn(stem));
+      return { running: lead + form(CC_ING, ccIng) + ccChain(rest, ccIng), done: lead + form(CC_PAST, ccPast) + ccChain(rest, ccPast) };
+    }
+    if (!ccVerbLike(word)) return undefined;
+    return { running: lead + ccCase(word, ccIng(word)) + ccChain(rest, ccIng), done: lead + ccCase(word, ccPast(word)) + ccChain(rest, ccPast) };
+  }
+
+  // "Count slowly to fifteen" -> "Counting slowly to fifteen"; undefined when
+  // the description does not open with a known verb ("Git config check").
+  function ccRunningForm(text) {
+    const first = /^\s*(\S+)/.exec(text)?.[1];
+    if (first === undefined) return undefined;
+    const base = (CC_PREFIXED.exec(first)?.[2] ?? first).toLowerCase();
+    return CC_VERBS.has(base) || Object.hasOwn(CC_PAST, base) || Object.hasOwn(CC_ING, base) ? ccInflect(text)?.running : undefined;
+  }
+
+  // Claude Code's duration format: "4s", "1m 5s", "2h 0m 7s".
+  function ccDuration(ms) {
+    if (ms < 60000) return ms <= 0 ? "0s" : `${Math.floor(ms / 1000)}s`;
+    let d = Math.floor(ms / 86400000);
+    let h = Math.floor((ms % 86400000) / 3600000);
+    let m = Math.floor((ms % 3600000) / 60000);
+    let s = Math.round((ms % 60000) / 1000);
+    if (s === 60) { s = 0; m += 1; }
+    if (m === 60) { m = 0; h += 1; }
+    if (h === 24) { h = 0; d += 1; }
+    if (d > 0) return `${d}d ${h}h ${m}m`;
+    if (h > 0) return `${h}h ${m}m ${s}s`;
+    return `${m}m ${s}s`;
+  }
+
+  function ccFlat(text) {
+    return String(text || "").replace(/\s+/g, " ").trim();
+  }
+
+  function ccClip(text, max) {
+    const chars = Array.from(String(text || ""));
+    return chars.length <= max ? chars.join("") : chars.slice(0, max - 1).join("") + "…";
+  }
+
+  // Shell commands made only of these read like the tool they replace.
+  const CC_SEARCH_CMDS = new Set(["find", "grep", "rg", "ag", "ack", "locate", "which", "whereis"]);
+  const CC_READ_CMDS = new Set(["cat", "head", "tail", "less", "more", "wc", "stat", "file", "strings", "jq", "awk", "cut", "sort", "uniq", "tr"]);
+  const CC_LIST_CMDS = new Set(["ls", "tree", "du"]);
+  const CC_NEUTRAL_CMDS = new Set(["echo", "printf", "true", "false", ":"]);
+  const CC_FIRST_CMD = /^\s*(?:(?:#[^\n]*|\\)\n\s*)*([^\s|&;<>()]+)/;
+
+  // Top-level statements of a shell command (split on ; && || | & and
+  // newlines outside quotes, subshells and substitutions; comments dropped).
+  function ccShellSegments(command) {
+    const src = String(command || "");
+    const out = [];
+    let cur = "";
+    let quote = "";
+    let depth = 0;
+    for (let i = 0; i < src.length; i += 1) {
+      const ch = src[i];
+      if (quote) {
+        cur += ch;
+        if (ch === "\\" && quote !== "'" && i + 1 < src.length) cur += src[++i];
+        else if (ch === quote) quote = "";
+        continue;
+      }
+      if (ch === "\\" && i + 1 < src.length) { cur += ch + src[++i]; continue; }
+      if (ch === "'" || ch === '"' || ch === "`") { quote = ch; cur += ch; continue; }
+      if (ch === "(") depth += 1;
+      else if (ch === ")") depth = Math.max(0, depth - 1);
+      if (depth === 0) {
+        if (ch === "#" && (!cur.length || /\s/.test(src[i - 1]))) {
+          while (i + 1 < src.length && src[i + 1] !== "\n") i += 1;
+          continue;
+        }
+        if (ch === "\n" || ch === ";") { out.push(cur); cur = ""; continue; }
+        if (ch === "|") { out.push(cur); cur = ""; if (src[i + 1] === "|" || src[i + 1] === "&") i += 1; continue; }
+        if (ch === "&" && src[i - 1] !== ">" && src[i - 1] !== "<" && src[i + 1] !== ">") {
+          out.push(cur); cur = "";
+          if (src[i + 1] === "&") i += 1;
+          continue;
+        }
+      }
+      cur += ch;
+    }
+    out.push(cur);
+    return out.map((part) => part.trim()).filter(Boolean);
+  }
+
+  function ccShellKind(command) {
+    const none = { isSearch: false, isRead: false, isList: false };
+    const known = (word) => CC_SEARCH_CMDS.has(word) || CC_READ_CMDS.has(word) || CC_LIST_CMDS.has(word) || CC_NEUTRAL_CMDS.has(word);
+    const first = CC_FIRST_CMD.exec(String(command || ""))?.[1];
+    if (!first || !known(first)) return none;
+    const kind = { isSearch: false, isRead: false, isList: false };
+    let any = false;
+    for (const segment of ccShellSegments(command)) {
+      const word = segment.split(/\s+/)[0];
+      if (!word || CC_NEUTRAL_CMDS.has(word)) continue;
+      if (!known(word)) return none;
+      any = true;
+      if (CC_SEARCH_CMDS.has(word)) kind.isSearch = true;
+      if (CC_READ_CMDS.has(word)) kind.isRead = true;
+      if (CC_LIST_CMDS.has(word)) kind.isList = true;
+    }
+    return any ? kind : none;
+  }
+
+  // Git work a shell command reported: "committed 1a2b3c4, pushed to dev".
+  function ccGitRe(sub, tail = "") {
+    return new RegExp(`\\bgit(?:\\s+-[cC]\\s+\\S+|\\s+--[^\\s=]+=\\S+)*\\s+${sub}\\b${tail}`);
+  }
+  const CC_GIT_COMMIT = ccGitRe("commit");
+  const CC_GIT_PUSH = ccGitRe("push");
+  const CC_GIT_PICK = ccGitRe("cherry-pick");
+  const CC_GIT_MERGE = ccGitRe("merge", "(?!-)");
+  const CC_GIT_REBASE = ccGitRe("rebase");
+  const CC_QUOTED = /"(?:[^"\\]|\\.)*"|'[^']*'/g;
+  const CC_PR_URL = /https?:\/\/[^/\s"]+\/([^\s"]+?)\/(?:pull|pull-requests|-\/merge_requests)\/(\d+)/;
+  const CC_GH_PR = [["create", "created"], ["edit", "edited"], ["merge", "merged"], ["comment", "commented"],
+    ["close", "closed"], ["reopen", "reopened"], ["ready", "ready"]].map(([sub, action]) => [new RegExp(`\\bgh\\s+pr\\s+${sub}\\b`), action]);
+  const CC_GLAB_MR = [["create", "created"], ["update", "edited"], ["merge", "merged"], ["note", "commented"],
+    ["close", "closed"], ["reopen", "reopened"]].map(([sub, action]) => [new RegExp(`\\bglab\\s+mr\\s+${sub}\\b`), action]);
+  const CC_PR_VERBS = { created: "created", edited: "edited", merged: "merged", commented: "commented on", closed: "closed",
+    reopened: "reopened", ready: "marked ready", draft: "marked draft", "auto-merge-enabled": "enabled auto-merge on",
+    "auto-merge-disabled": "disabled auto-merge on" };
+
+  function ccPrAction(command) {
+    const bare = command.replace(CC_QUOTED, " ");
+    const gh = CC_GH_PR.find(([re]) => re.test(command))?.[1];
+    if (gh === "merged") {
+      if (/--disable-auto\b/.test(bare)) return "auto-merge-disabled";
+      if (/--auto\b/.test(bare)) return "auto-merge-enabled";
+    } else if (gh === "ready" && /--undo\b/.test(bare)) return "draft";
+    if (gh) return gh;
+    const mr = CC_GLAB_MR.find(([re]) => re.test(command))?.[1];
+    if (mr === "edited") {
+      if (/--ready\b/.test(bare)) return "ready";
+      if (/--draft\b/.test(bare)) return "draft";
+    }
+    return mr;
+  }
+
+  function ccRefAfter(command, verb) {
+    const rest = command.split(ccGitRe(verb))[1];
+    if (!rest) return undefined;
+    for (const token of rest.trim().split(/\s+/)) {
+      if (/^(?:[\d*]*[<>]|[&|;])/.test(token)) break;
+      if (!token.startsWith("-")) return token;
+    }
+    return undefined;
+  }
+
+  function ccGitOps(command, output) {
+    const ops = {};
+    const picked = CC_GIT_PICK.test(command);
+    if (CC_GIT_COMMIT.test(command) || picked) {
+      const clean = output.replace(/\x1b\[[0-9;]*K/g, "").replace(/\x1b\[[0-9]*G/g, "\n").replace(/\r/g, "\n");
+      const hit = clean.match(/^\[(?:([\w./-]+)|detached HEAD)(?: \(root-commit\))? ([0-9a-f]{4,})\]/m);
+      if (hit && hit[2] !== undefined) ops.commit = { sha: hit[2], kind: picked ? "cherry-picked" : /--amend\b/.test(command) ? "amended" : "committed" };
+    }
+    if (CC_GIT_PUSH.test(command)) {
+      const args = (command.split(CC_GIT_PUSH)[1] ?? "").split(/[&|;\n]/)[0] ?? "";
+      const ref = /(?:^|\s)(?:-n|--dry-run)(?=\s|$)/.test(args) ? null
+        : output.match(/^\s*[+\-*!= ]?\s*(?:\[new branch\]|[0-9a-f]+\.\.+[0-9a-f]+)\s+\S+\s*->\s*(\S+)/m)?.[1];
+      if (ref) ops.push = ref;
+    }
+    if (CC_GIT_MERGE.test(command) && /(Fast-forward|Merge made by)/.test(output)) {
+      const ref = ccRefAfter(command, "merge");
+      if (ref) ops.branch = { ref, action: "merged" };
+    }
+    if (CC_GIT_REBASE.test(command) && /Successfully rebased/.test(output)) {
+      const ref = ccRefAfter(command, "rebase");
+      if (ref) ops.branch = { ref, action: "rebased" };
+    }
+    const action = ccPrAction(command);
+    if (action) {
+      const urls = output.match(new RegExp(CC_PR_URL.source, "g"));
+      const last = urls ? urls[urls.length - 1].match(CC_PR_URL) : null;
+      if (last) ops.pr = { number: Number(last[2]), url: last[0], action };
+      else if (CC_GH_PR.some(([re]) => re.test(command))) {
+        const named = output.match(/[Pp]ull request (?:(\S+)#)?#?(\d{1,9})\b/);
+        if (named?.[2]) ops.pr = { number: Number(named[2]), action };
+      }
+    }
+    return Object.keys(ops).length ? ops : null;
+  }
+
+  // Which calls fold into a summary line, and how they count. "silent" folds
+  // without a count (tool lookups); null stands on its own row.
+  function ccToolClass(trace) {
+    const name = trace && trace.name;
+    if (name === "read_file") return { kind: "read" };
+    if (name === "grep" || name === "glob") return { kind: "search" };
+    if (name === "list_dir") return { kind: "list" };
+    if (name === "search_tools") return { kind: "silent" };
+    if (name === "run_terminal_command") {
+      if (trace.platform === "windows") return { kind: "bash" };
+      const kind = ccShellKind(displayCommand(trace));
+      if (kind.isList) return { kind: "list", shell: true };
+      if (kind.isSearch) return { kind: "search", shell: true };
+      if (kind.isRead) return { kind: "read", shell: true };
+      return { kind: "bash" };
+    }
+    return null;
+  }
+
+  // The hint under a live line: "$ command" (comment-only commands show the
+  // comment), a path, or a quoted pattern.
+  function ccShellHint(trace) {
+    const command = displayCommand(trace);
+    const nl = command.indexOf("\n");
+    const first = (nl === -1 ? command : command.slice(0, nl)).trim();
+    if (first.startsWith("#") && !first.startsWith("#!") &&
+        !(nl !== -1 && command.slice(nl + 1).split("\n").some((line) => line.trim() && !line.trim().startsWith("#")))) {
+      const note = first.replace(/^#+\s*/, "");
+      if (note && !/[\x00-\x1f\x7f-\x9f]/.test(note)) return ccClip(note, 300);
+    }
+    const lines = command.split("\n").map(ccFlat).filter(Boolean);
+    return lines.length ? ccClip("$ " + lines.join("\n"), 300) : "";
+  }
+
+  function ccPathHint(trace) {
+    const path = String((trace && trace.path) || "").trim();
+    return path ? ccClip(ccFlat(shortToolPath(path, trace)), 300) : "";
+  }
+
+  // What a call is doing when it has no description.
+  function ccActivityText(trace) {
+    const name = trace.name;
+    if (name === "run_terminal_command") {
+      const command = displayCommand(trace);
+      return command ? ccFlat(`Running ${ccClip(command, 50)}`) : "Running command";
+    }
+    if (name === "read_file") return trace.path ? `Reading ${ccPathHint(trace)}` : "Reading file";
+    if (name === "grep") return trace.pattern ? ccFlat(`Searching for ${ccClip(trace.pattern, 50)}`) : "Searching";
+    if (name === "glob") return trace.pattern ? ccFlat(`Finding ${ccClip(trace.pattern, 50)}`) : "Finding files";
+    if (name === "list_dir") return trace.path ? `Listing ${ccPathHint(trace)}` : "Listing directory";
+    return "";
+  }
+
+  function ccRunning(trace) {
+    return toolPresentation(trace, true).running && !toolBackground(trace);
+  }
+
+  // Start of a running call, stamped when this page first sees it running.
+  function ccSince(trace) {
+    if (!trace._since) trace._since = Date.now() - Math.max(0, Number(trace.elapsed_ms) || 0);
+    return trace._since;
+  }
+
+  // The live line's headline: the newest call's description (as an -ing
+  // phrase when it opens with a known verb), else what that call is doing.
+  // It holds while that round's tools run; a new model round drops it.
+  function ccHeadline(items, msg) {
+    const last = items[items.length - 1];
+    if (!last || last.type !== "tool") return "";
+    const activity = msg?.id === activeRun?.message_id ? activeRun?.activity : msg?._activity;
+    const busy = items.some((item) => item.type === "tool" && ccRunning(item.entry.trace));
+    if (activity?.phase ? activity.phase !== "tools" : !busy) return "";
+    const trace = last.entry.trace;
+    const description = ccFlat(trace.description);
+    const text = description ? ccRunningForm(description) ?? description : ccActivityText(trace);
+    return text ? text.charAt(0).toUpperCase() + text.slice(1) : "";
+  }
+
+  function ccElapsedText(since) {
+    const ms = Date.now() - since;
+    return ms >= 2000 ? ` · ${ccDuration(ms)}` : "";
+  }
+
+  function ccShellSuffix(since, lines) {
+    const seconds = Math.floor((Date.now() - since) / 1000);
+    if (seconds < 2) return "";
+    const took = ccDuration(seconds * 1000);
+    return lines > 0 ? ` (${took} · ${lines} ${lines === 1 ? "line" : "lines"})` : ` (${took})`;
+  }
+
+  function ccThinkClock(base, since) {
+    return ccDuration(Math.max(1000, base + (since ? Date.now() - since : 0)));
+  }
+
+  // Live clocks in summary lines tick with the run's own clock.
+  function syncConsoleClocks(root) {
+    root.querySelectorAll("[data-cc-clock]").forEach((el) => {
+      const since = Number(el.dataset.since) || 0;
+      const kind = el.dataset.ccClock;
+      const text = kind === "think" ? ccThinkClock(Number(el.dataset.base) || 0, since)
+        : kind === "suffix" ? ccShellSuffix(since, Number(el.dataset.lines) || 0)
+        : ccElapsedText(since);
+      if (el.textContent !== text) el.textContent = text;
+    });
+  }
+
+  function ccThoughtRowHtml(item) {
     return (
-      `<li class="chat-step is-console-shell-group${open ? " is-console-expanded" : ""}" data-step="${escapeHtml(key)}">` +
+      `<li class="chat-step is-console-thought" data-thought="${item.segmentIndex}">` +
+      `<span class="chat-step-node" aria-hidden="true">∴</span>` +
+      `<div class="chat-step-main"><div class="chat-console-thought chat-think-markdown">${renderMarkdown(item.text, false)}</div></div>` +
+      `</li>`
+    );
+  }
+
+  function ccGroupHtml(group, msg, live, active, openMap, thinking) {
+    const key = "cgroup-" + group.items[0].key;
+    const open = stepOpenAt(openMap, key);
+    let search = 0;
+    let readOps = 0;
+    let list = 0;
+    let bash = 0;
+    let gitOpBash = 0;
+    let thoughtMs = 0;
+    let thought = false;
+    let latestThought;
+    let hint;
+    let errored = false;
+    let interrupted = false;
+    let runningSince = 0;
+    let shell = null;
+    const readPaths = new Set();
+    const searchArgs = [];
+    const commits = [];
+    const pushes = [];
+    const branches = [];
+    const prs = [];
+    group.items.forEach((item) => {
+      if (item.type === "think") {
+        thought = true;
+        thoughtMs += item.ms;
+        latestThought = item.text;
+        return;
+      }
+      latestThought = undefined;
+      const trace = item.entry.trace;
+      const presentation = toolPresentation(trace, live);
+      if (presentation.failed) errored = true;
+      if (presentation.interrupted) interrupted = true;
+      if (presentation.running && !toolBackground(trace)) {
+        const since = ccSince(trace);
+        runningSince = Math.max(runningSince, since);
+        if (trace.name === "run_terminal_command" && (!shell || since < shell.since)) {
+          const out = typeof trace.output === "string" ? trace.output.replace(/\s+$/, "") : "";
+          shell = { since, lines: out ? out.split("\n").length : 0 };
+        }
+      }
+      const cls = item.cls;
+      if (cls.kind === "silent") return;
+      if (cls.kind === "bash") {
+        bash += 1;
+        hint = ccShellHint(trace) || hint;
+        const ops = !presentation.running && typeof trace.output === "string" ? ccGitOps(displayCommand(trace), trace.output) : null;
+        if (ops) {
+          gitOpBash += 1;
+          if (ops.commit) commits.push(ops.commit);
+          if (ops.push) pushes.push(ops.push);
+          if (ops.branch) branches.push(ops.branch);
+          if (ops.pr) prs.push(ops.pr);
+        }
+      } else if (cls.kind === "list") {
+        list += 1;
+        hint = (cls.shell ? ccShellHint(trace) : ccPathHint(trace)) || hint;
+      } else if (cls.kind === "search") {
+        search += 1;
+        const pattern = cls.shell ? "" : ccClip(ccFlat(trace.pattern || trace.query), 300);
+        if (pattern) {
+          searchArgs.push(pattern);
+          hint = `"${pattern}"`;
+        }
+      } else if (!cls.shell && trace.path) {
+        readPaths.add(String(trace.path));
+        hint = ccPathHint(trace) || hint;
+      } else {
+        readOps += 1;
+        if (cls.shell) hint = ccShellHint(trace) || hint;
+      }
+    });
+    const reads = readPaths.size || readOps;
+    const shells = Math.max(0, bash - gitOpBash);
+    if (!thought && !search && !reads && !list && !shells && !gitOpBash && !interrupted) return "";
+
+    const parts = [];
+    if (thought) {
+      const since = active && thinking ? thinking.since : 0;
+      const clock = since
+        ? `<b data-cc-clock="think" data-base="${Math.round(thoughtMs)}" data-since="${since}">${ccThinkClock(thoughtMs, since)}</b>`
+        : `<b>${ccThinkClock(thoughtMs, 0)}</b>`;
+      parts.push(`${active ? "Thinking" : "Thought"} for ${clock}`);
+    }
+    const add = (verb, rest) => {
+      const word = parts.length ? verb : verb.charAt(0).toUpperCase() + verb.slice(1);
+      parts.push(rest ? `${escapeHtml(word)} ${rest}` : escapeHtml(word));
+    };
+    const bold = (text) => `<b>${escapeHtml(text)}</b>`;
+    for (const [kind, verb] of [["committed", "committed"], ["amended", "amended commit"], ["cherry-picked", "cherry-picked"]]) {
+      const shas = commits.filter((commit) => commit.kind === kind).map((commit) => commit.sha);
+      if (shas.length) add(verb, bold(shas.join(", ")));
+    }
+    if (pushes.length) add("pushed to", bold([...new Set(pushes)].join(", ")));
+    branches.forEach((branch) => add(branch.action === "merged" ? "merged" : "rebased onto", bold(branch.ref)));
+    prs.forEach((pr) => add(CC_PR_VERBS[pr.action] || pr.action, bold(pr.url && pr.url.includes("/-/merge_requests/") ? `MR !${pr.number}` : `PR #${pr.number}`)));
+    if (search) add(active ? "searching for" : "searched for", `<b>${search}</b> ${search === 1 ? "pattern" : "patterns"}`);
+    if (reads) add(active ? "reading" : "read", `<b>${reads}</b> ${reads === 1 ? "file" : "files"}`);
+    if (list) add(active ? "listing" : "listed", `<b>${list}</b> ${list === 1 ? "directory" : "directories"}`);
+    if (shells) add(active ? "running" : "ran", `<b>${shells}</b> shell ${shells === 1 ? "command" : "commands"}`);
+
+    const headline = active ? ccHeadline(group.items, msg) : "";
+    const elapsed = active && runningSince
+      ? `<span class="chat-console-dim" data-cc-clock="elapsed" data-since="${runningSince}">${ccElapsedText(runningSince)}</span>` : "";
+    const label = (headline ? escapeHtml(headline) : parts.join(", ")) + elapsed + (active && !headline ? "…" : "");
+
+    let hintHtml = "";
+    if (active && latestThought !== undefined) {
+      hintHtml = `<span class="chat-console-thinkhint">${escapeHtml(ccClip(ccFlat(latestThought), 3000))}</span>`;
+    } else if (active) {
+      const text = hint ?? (searchArgs.length ? `"${searchArgs[searchArgs.length - 1]}"` : "");
+      if (text) {
+        const lines = ccClip(text, 700).split("\n");
+        const suffix = shell
+          ? `<span data-cc-clock="suffix" data-since="${shell.since}" data-lines="${shell.lines}">${ccShellSuffix(shell.since, shell.lines)}</span>` : "";
+        hintHtml = lines.map((line, i) => `<span class="chat-console-hint-line">${escapeHtml(line)}${i === lines.length - 1 ? suffix : ""}</span>`).join("");
+      }
+    }
+    const hang = (body, cls = "") => `<div class="chat-console-hang${cls}"><span class="chat-console-branch" aria-hidden="true">└</span><div class="chat-console-hang-body">${body}</div></div>`;
+    const rows = group.items.map((item) => item.type === "think"
+      ? ccThoughtRowHtml(item)
+      : toolStepHtml(item.entry.trace, item.key, live, true, openMap, { verbose: true })).join("");
+    const state = active ? `is-running${errored ? " is-errored" : ""}` : "is-done";
+    return (
+      `<li class="chat-step is-console-group ${state}${open ? " is-console-expanded" : ""}" data-step="${escapeHtml(key)}">` +
+      `<span class="chat-step-node" aria-hidden="true"></span>` +
       `<div class="chat-step-main">` +
-      `<div class="chat-step-head">` +
-      `<button type="button" class="chat-step-toggle" data-step-toggle aria-expanded="${open ? "true" : "false"}">` +
-      `<span class="chat-step-label">Ran ${items.length} shell commands</span>` +
-      `</button></div>` +
-      `<div class="chat-console-bundle"><ol class="chat-timeline">${inner}</ol></div>` +
+      `<div class="chat-step-head"><button type="button" class="chat-step-toggle" data-step-toggle aria-expanded="${open ? "true" : "false"}">` +
+      `<span class="chat-step-label">${label}</span></button></div>` +
+      (interrupted ? hang('<span class="chat-console-result-text">Interrupted</span>', " is-group-note") : "") +
+      (hintHtml ? hang(hintHtml, " is-group-hint") : "") +
+      `<div class="chat-console-bundle"><ol class="chat-timeline">${rows}</ol></div>` +
       `</div></li>`
     );
   }
 
-  function consoleToolList(items, msg, live, openMap) {
-    const parts = [];
-    let i = 0;
-    while (i < items.length) {
-      const name = items[i].trace && items[i].trace.name;
-      if (name === "run_terminal_command") {
-        let j = i + 1;
-        while (j < items.length && items[j].trace && items[j].trace.name === "run_terminal_command") j += 1;
-        const group = items.slice(i, j);
-        if (group.length >= 2) parts.push(consoleShellGroupHtml(group, live, openMap));
-        else {
-          const item = group[0];
-          parts.push(toolStepHtml(item.trace, toolKey(item.trace, item.index), live, stepOpenAt(openMap, toolKey(item.trace, item.index)), openMap));
-        }
-        i = j;
-        continue;
-      }
-      const item = items[i];
-      parts.push(toolStepHtml(item.trace, toolKey(item.trace, item.index), live, stepOpenAt(openMap, toolKey(item.trace, item.index)), openMap));
-      i += 1;
-    }
-    return parts;
-  }
-
-  function consoleThinkStepHtml(text, key, open, extras) {
-    const summary = extras && extras.summary ? extras.summary : "Thought";
-    const toolsHtml = extras && extras.toolsHtml ? extras.toolsHtml : "";
-    const reasonIds = extras && extras.reasonIds ? extras.reasonIds : "";
-    return (
-      `<li class="chat-step is-think is-console-think${open ? " is-console-expanded" : ""}" data-think-mode="${open ? "expanded" : "collapsed"}" data-step="${escapeHtml(key)}"${reasonIds ? ` data-reason-ids="${escapeHtml(reasonIds)}"` : ""}>` +
-      `<div class="chat-step-main">` +
-      `<div class="chat-step-head">` +
-      `<button type="button" class="chat-step-toggle" data-step-toggle aria-expanded="${open ? "true" : "false"}">` +
-      `<span class="chat-step-copy"><span class="chat-step-kind">${thinkLabel()}</span>` +
-      `<span class="chat-step-label chat-think-summary">${escapeHtml(summary)}</span></span>` +
-      `</button>` +
-      `<span class="chat-step-state is-empty" aria-hidden="true"></span>` +
-      `<button type="button" class="chat-think-size" data-think-size hidden>More</button>` +
-      `</div>` +
-      `<div class="chat-console-bundle">` +
-      (toolsHtml ? `<ol class="chat-console-bundle-tools chat-timeline">${toolsHtml}</ol>` : "") +
-      `<div class="chat-think-window" data-step-toggle>` +
-      `<div class="chat-think-preview" data-reason-preview="${escapeHtml(key.slice(6))}" role="region" aria-label="Thinking" tabindex="${open ? "0" : "-1"}"><div class="chat-think-markdown"></div></div>` +
-      `</div>` +
-      `</div></div></li>`
-    );
-  }
-
-  function consoleActivityEntriesHtml(entries, msg, live) {
-    const parts = [];
+  // Console rows for one activity block: summary lines and standalone calls.
+  // A thought still streaming is not shown yet (Claude Code shows it once it
+  // lands); while it streams, the live line's "Thinking for" clock runs.
+  function consoleActivityEntriesHtml(entries, msg, live, blockLive = false) {
     const stepOpen = msg.stepOpen || {};
     const times = consoleFreezeThoughtTimes(msg, live);
-    const segs = Array.isArray(msg.segments) ? msg.segments : [];
+    const segs = assistantSegments(msg);
     let lastReasonIndex = -1;
     segs.forEach((seg, index) => { if (seg && seg.type === "reasoning") lastReasonIndex = index; });
-    const liveLastThink = Boolean(live && lastReasonIndex >= 0 && !segs.some((seg, index) => index > lastReasonIndex));
+    const streamingLast = Boolean(live && lastReasonIndex >= 0 && !segs.some((seg, index) => index > lastReasonIndex) && runPhase(msg) !== "calling");
+    const rows = [];
+    let group = null;
+    let thinking = null;
+    const flush = () => {
+      if (group) rows.push(group);
+      group = null;
+    };
     let i = 0;
     while (i < entries.length) {
       const entry = entries[i];
       if (entry.type === "reasoning") {
-        const reasons = [entry];
+        const run = [entry];
         let j = i + 1;
-        while (j < entries.length && entries[j].type === "reasoning") {
-          reasons.push(entries[j]);
-          j += 1;
-        }
-        const last = reasons[reasons.length - 1];
-        const joined = reasons.map((item) => String(item.text || "").trim()).filter(Boolean).join("\n\n");
-        const isLiveThis = liveLastThink && last.segmentIndex === lastReasonIndex;
-        {
-          const key = `think-${last.segmentIndex}`;
-          const open = Object.prototype.hasOwnProperty.call(stepOpen, key) ? thinkOpenAt(stepOpen, key) : isLiveThis;
-          parts.push(consoleThinkStepHtml(joined, key, open, {
-            summary: isLiveThis ? consoleThoughtLive(consoleThoughtSeed(msg, key)) : consoleThoughtSummary(consoleThoughtSeed(msg, key), (times[key] || 1000) / 1000),
-            reasonIds: reasons.map((item) => item.segmentIndex).join(","),
-          }));
-        }
+        while (j < entries.length && entries[j].type === "reasoning") run.push(entries[j++]);
         i = j;
+        const last = run[run.length - 1];
+        if (streamingLast && last.segmentIndex === lastReasonIndex) {
+          const clock = msg._thoughtClock || { liveStart: 0 };
+          thinking = { since: Date.now() - Math.max(0, (liveElapsedSeconds(msg, live) || 0) * 1000 - (clock.liveStart || 0)) };
+          continue;
+        }
+        const text = run.map((item) => String(item.text || "").trim()).filter(Boolean).join("\n\n");
+        if (!text) continue;
+        const key = `think-${last.segmentIndex}`;
+        (group ||= { items: [] }).items.push({ type: "think", key, text, ms: times[key] || 1000, segmentIndex: last.segmentIndex });
         continue;
       }
-      const tools = [];
-      while (i < entries.length && entries[i].type === "tool") {
-        tools.push(entries[i]);
-        i += 1;
+      i += 1;
+      if (entry.type !== "tool") continue;
+      const key = toolKey(entry.trace, entry.index);
+      const cls = ccToolClass(entry.trace);
+      if (cls) {
+        (group ||= { items: [] }).items.push({ type: "tool", entry, cls, key });
+        continue;
       }
-      parts.push(...consoleToolList(tools, msg, live, stepOpen));
+      flush();
+      rows.push({ entry, key });
     }
-    return parts.join("");
+    flush();
+    const lastRow = rows[rows.length - 1];
+    return rows.map((row) => row.items
+      ? ccGroupHtml(row, msg, live, Boolean(blockLive && row === lastRow), stepOpen, row === lastRow ? thinking : null)
+      : toolStepHtml(row.entry.trace, row.key, live, stepOpenAt(stepOpen, row.key), stepOpen)).join("");
   }
 
-  function activityEntriesHtml(entries, msg, live, blockKey) {
-    if (isConsoleView()) return consoleActivityEntriesHtml(entries, msg, live);
+  function activityEntriesHtml(entries, msg, live, blockKey, blockLive = false) {
+    if (isConsoleView()) return consoleActivityEntriesHtml(entries, msg, live, blockLive);
     const parts = [];
     const stepOpen = msg.stepOpen || {};
     let pendingTools = [];
@@ -10343,7 +10832,7 @@
     msg.activityOpenMap ||= {};
     if (!(key in msg.activityOpenMap)) msg.activityOpenMap[key] = defaultOpen;
     const open = msg.activityOpenMap?.[key] ?? defaultOpen;
-    const steps = activityEntriesHtml(entries, msg, turnLive || Boolean(msg.tools_live), key);
+    const steps = activityEntriesHtml(entries, msg, turnLive || Boolean(msg.tools_live), key, live);
     const classes = ["chat-activity"];
     if (open || isHarnessView()) classes.push("is-open");
     // A model wait/background handoff must not hide already-rendered tools.
@@ -10474,14 +10963,19 @@
       : `${part?.type || ""}:${part.id || ""}`).join("|");
     const permSig = (msg.permissions || []).map((p) => `${p.id}:${p.status}`).join("|");
     const traceById = new Map(traces.map((trace) => [trace && trace.id, trace]));
+    // Console prints a thought only once it lands, and its live summary line
+    // reads the run's phase; streamed thinking text alone repaints nothing.
+    const consoleLive = isConsoleView() && live;
+    const phase = consoleLive ? runPhase(msg) : "";
+    const streamingReason = consoleLive && phase !== "calling" && segments.length && segments[segments.length - 1]?.type === "reasoning" ? segments.length - 1 : -1;
     const blockSig = (block, blockIndex) => {
       if (block.kind === "activity") {
         return block.entries.map((entry) => {
-          if (entry.type !== "tool") return `r:${entry.segmentIndex}:${entry.text || ""}`;
+          if (entry.type !== "tool") return `r:${entry.segmentIndex}:${entry.segmentIndex === streamingReason ? "" : entry.text || ""}`;
           const trace = entry.trace;
           const running = Boolean(trace && toolPresentation(trace, live).running);
           return `t:${trace && trace.id}:${tracesSig([trace])}:${running}`;
-        }).join("~");
+        }).join("~") + (consoleLive && blockIndex === blocks.length - 1 ? `~ph:${phase}` : "");
       }
       if (block.kind === "marker") return `m:${block.text}:${block.summary || ""}`;
       if (block.kind === "permission") return `p:${block.entries[0] && block.entries[0].perm && block.entries[0].perm.id}`;
@@ -10591,7 +11085,6 @@
       const settling = li.classList.contains("is-live-think") && !liveThink;
       li.classList.toggle("is-live-think", liveThink);
       syncThinkingMode(li, msg, settling && Boolean(wasMode) && !reduceMotion.matches);
-      if (isConsoleView()) syncConsoleThinkSummary(li, msg, live, liveThink);
       if (unchanged) return;
       if (peek._source !== source || peek._live !== liveThink) {
         peek._source = source; peek._live = liveThink;

@@ -10,6 +10,7 @@ password stays stable after scripts.clone_db_to_dev recreates fuse_dev (that
 script runs this one afterwards). Fixture threads are synthetic and owned
 only by the QA account; every run deletes and recreates them. "Heavy
 transcript" is a ~5 MB, 200-message thread with subagents for load-time checks.
+"Summary lines" exercises Console's Claude Code summary lines.
 """
 from __future__ import annotations
 
@@ -94,9 +95,11 @@ def _tool(ident, name, **fields):
     return base
 
 
-def _command(ident, job_id, command, output, *, exit_code=0, background=False, state="completed", status="done", error=""):
+def _command(ident, job_id, command, output, *, exit_code=0, background=False, state="completed", status="done", error="",
+             description=""):
+    extra = {"description": description} if description else {}
     return _tool(
-        ident, "run_terminal_command", command=command, cwd="/srv/fuse-qa", host="qa-box", platform="posix",
+        ident, "run_terminal_command", **extra, command=command, cwd="/srv/fuse-qa", host="qa-box", platform="posix",
         project_root="/srv/fuse-qa", background=background, child_id=job_id, command_id=job_id, job_id=job_id,
         execution_status=state, state=state, status=status, exit_code=exit_code, error=error,
         output=output, preview=output[:120], output_bytes=len(output), output_chars_exact=True,
@@ -157,12 +160,13 @@ def _main_thread(now):
               cwd="/srv/fuse-qa", host="qa-box", platform="posix", project_root="/srv/fuse-qa", max_matches=50,
               output="static/chat.css:120:.chat-live-dock {\nstatic/chat.css:410:.chat-agent-live-dock {\n",
               preview="2 matches"),
-        _command("ts_1_0", "qa0000000001", "npm run lint -- --max-warnings=0", "> lint\n> eslint static\n\n✔ no problems\n"),
+        _command("ts_1_0", "qa0000000001", "npm run lint -- --max-warnings=0", "> lint\n> eslint static\n\n✔ no problems\n",
+                 description="Lint the static assets"),
         _command("ts_1_1", "qa0000000002", "pytest -q tests/test_layout.py", "F..\nFAILED tests/test_layout.py::test_dock_height - assert 44 == 48\n1 failed, 2 passed\n",
-                 exit_code=1, status="error", error="Command exited with code 1"),
+                 exit_code=1, status="error", error="Command exited with code 1", description="Run the layout tests"),
         _command("ts_1_2", "qa0000000003", "tail -f /var/log/fuse-qa/app.log | grep --line-buffered -E 'WARN|ERROR'",
                  "WARN dock height mismatch\n", background=True, exit_code=None, state="cancelled", status="interrupted",
-                 error="cancellation requested"),
+                 error="cancellation requested", description="Follow the app log for warnings"),
         # Legacy stop receipt: it copied its target's in-flight state and was
         # saved mid-cancel. It must render as a finished stop, not spin.
         _tool("ts_1_3", "kill_command", child_id="qa0000000003", command_id="qa0000000003", job_id="qa0000000003",
@@ -351,6 +355,91 @@ def _edits_thread(now):
     return [
         {"id": _mid(), "role": "user", "content": "Add exponential backoff to the notification dispatcher.", "reasoning": "", "error": ""},
         assistant,
+    ], tools
+
+
+SUMMARY_TEST_OUT = "\n".join(
+    [f"tests/test_{name}.py ........ [{pct:3d}%]" for name, pct in
+     [("dispatcher", 14), ("backoff", 28), ("webhooks", 42), ("smtp_relay", 57), ("templates", 71), ("queue", 85), ("api", 100)]]
+    + ["", "56 passed in 4.21s"])
+SUMMARY_HEREDOC = (
+    "cat > /tmp/fuse/deploy.sh <<'EOF'\n"
+    "#!/usr/bin/env bash\n"
+    "set -euo pipefail\n"
+    "rsync -az --delete build/ deploy@qa-box:/srv/fuse-qa/current/\n"
+    "ssh deploy@qa-box 'systemctl restart fuse-qa'\n"
+    "EOF\n"
+    "bash /tmp/fuse/deploy.sh"
+)
+
+
+def _summary_thread(now):
+    """Claude Code summary lines in Console: thinking folded between reads,
+    searches and shell runs; git work in the line; narration and edits ending
+    a line; a described monitor; a multi-line command for the live hint."""
+    root = dict(cwd="/srv/fuse-qa", host="qa-box", platform="posix", project_root="/srv/fuse-qa")
+    tools = [
+        _tool("tl_0", "read_file", path="/srv/fuse-qa/app/services/notifications/dispatcher.py", offset=1, limit=200,
+              output="1: class Dispatcher:\n2:     pass\n", preview="class Dispatcher:", **root),
+        _tool("tl_1", "read_file", path="/srv/fuse-qa/app/services/notifications/backoff.py", offset=1, limit=200,
+              output="1: def delay(attempt):\n2:     return 0.5 * 2 ** attempt\n", preview="def delay(attempt):", **root),
+        _tool("tl_2", "grep", pattern="timeout_for", path="/srv/fuse-qa/app", max_matches=50,
+              output="app/services/notifications/backoff.py:9:def timeout_for(attempt):\n", preview="1 match", **root),
+        _tool("tl_3", "list_dir", path="/srv/fuse-qa/tests", preview="test_api.py\ntest_backoff.py\ntest_dispatcher.py", **root),
+        _command("tl_4", "qal000000001", "cat package.json | jq .scripts", '{\n  "test": "pytest -q"\n}\n',
+                 description="Show the npm scripts"),
+        _command("tl_5", "qal000000002", "python -m pytest -q tests/", SUMMARY_TEST_OUT, description="Run the test suite"),
+        _command("tl_6", "qal000000003", 'git add -A && git commit -m "Add exponential backoff to the dispatcher"',
+                 "[dev 1a2b3c4] Add exponential backoff to the dispatcher\n 2 files changed, 31 insertions(+), 4 deletions(-)\n",
+                 description="Commit the backoff change"),
+        _command("tl_7", "qal000000004", "git push origin dev",
+                 "To github.com:qa/fuse-qa.git\n   9f8e7d6..1a2b3c4  dev -> dev\n", description="Push dev to origin"),
+        _command("tl_8", "qal000000005", "gh pr create --fill", "https://github.com/qa/fuse-qa/pull/42\n",
+                 description="Open a pull request"),
+        _tool("tl_9", "search_replace", path="/srv/fuse-qa/app/services/notifications/backoff.py",
+              preview=_unified("app/services/notifications/backoff.py", "def delay(attempt):\n    return 0.5 * 2 ** attempt",
+                               "def delay(attempt, cap=30.0):\n    return min(cap, 0.5 * 2 ** attempt)", strip_header=True),
+              output="updated backoff.py (1 replacement)", **root),
+        _tool("tl_10", "monitor", description="errors in deploy.log", command="tail -f /var/log/fuse-qa/deploy.log",
+              pattern="ERROR|Traceback", source="command", event_count=0, background=True, child_id="qal000000006",
+              command_id="qal000000006", execution_status="completed", state="completed", preview="0 events", **root),
+        _command("tl_11", "qal000000007", SUMMARY_HEREDOC, "sending incremental file list\ncurrent/app.js\n\nsent 18.4K bytes\n",
+                 description="Write the deploy script and run it"),
+        _command("tl_12", "qal000000008", "systemctl is-active fuse-qa", "active\n"),
+        _command("tl_13", "qal000000009", "python -m pytest -q tests/integration", "14 passed in 82.4s\n", background=True,
+                 description="Run the integration suite"),
+    ]
+    say = lambda text: {"type": "content", "text": text}  # noqa: E731
+    tool = lambda ident: {"type": "tool", "id": ident}  # noqa: E731
+    segments = [
+        {"type": "reasoning", "text": "Read the dispatcher and the backoff helper, then find where timeout_for is used."},
+        tool("tl_0"), tool("tl_1"), tool("tl_2"),
+        {"type": "reasoning", "text": "Both files look right. Check the test layout and the npm scripts before running anything."},
+        tool("tl_3"), tool("tl_4"), tool("tl_5"),
+        {"type": "reasoning", "text": "All 56 tests pass. Commit, push and open the PR."},
+        tool("tl_6"), tool("tl_7"), tool("tl_8"),
+        say("Committed and opened PR #42. Capping the delay before deploying.\n\n"),
+        tool("tl_9"),
+        say("Watching the deploy log while the deploy runs.\n\n"),
+        tool("tl_10"), tool("tl_11"), tool("tl_12"), tool("tl_13"),
+        say("Deployed; the service is active and the log shows no errors. The integration suite runs in the background."),
+    ]
+    assistant = {
+        "id": _mid(), "role": "assistant", "content": "".join(s["text"] for s in segments if s["type"] == "content"),
+        "reasoning": "".join(s["text"] for s in segments if s["type"] == "reasoning"),
+        "error": "", "model": "qa/fixture-model", "elapsedMs": 142000, "stopped": False,
+        "usage": {"prompt_tokens": 31000, "completion_tokens": 1900, "total_tokens": 32900},
+        "tools": tools, "segments": segments,
+    }
+    wake = ('<command_result id="qal000000009" state="completed">\n'
+            "host: qa-box command: python -m pytest -q tests/integration\nexit_code: 0\nduration_ms: 83000\n"
+            "output_chars: 18\noutput_chars_exact: true\n\n14 passed in 82.4s\n</command_result>")
+    return [
+        {"id": _mid(), "role": "user", "content": "Cap the backoff delay, ship it, and deploy.", "reasoning": "", "error": ""},
+        assistant,
+        {"id": _mid(), "role": "user", "content": wake, "reasoning": "", "error": "", "auto": True},
+        {"id": _mid(), "role": "assistant", "content": "The integration suite passed.", "reasoning": "", "error": "",
+         "model": "qa/fixture-model", "elapsedMs": 1800},
     ], tools
 
 
@@ -558,6 +647,15 @@ def _seed(uid: int):
         _insert_root(conn, uid, etid, eroot, edits[1], ts, dumps)
         _insert_commands(conn, uid, etid, eroot, edit_tools, ts)
     print(f"edits thread: https://127.0.0.1:8089/chat?t={edits_view['id']}")
+
+    summary, summary_tools = _summary_thread(now)
+    summary_view = chats.create_thread(uid, title=FIXTURE_PREFIX + "Summary lines", model="qa/fixture-model", messages=summary)
+    stid = chats.resolve_thread_pk(uid, summary_view["id"])
+    sroot = _mid()
+    with db.tx() as conn:
+        _insert_root(conn, uid, stid, sroot, summary[1], ts, dumps)
+        _insert_commands(conn, uid, stid, sroot, summary_tools, ts)
+    print(f"summary lines thread: https://127.0.0.1:8089/chat?t={summary_view['id']}")
 
     heavy, spawns = _heavy_thread()
     heavy_view = chats.create_thread(uid, title=FIXTURE_PREFIX + "Heavy transcript", model="qa/fixture-model", messages=heavy)
