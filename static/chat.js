@@ -3774,7 +3774,6 @@
     else applySpinEl(latestSpin, activitySpinSet(), "latest", true, activeAssistant()?._spinOrigin);
   }
 
-  let latestBaseline = 0;
   function syncLatest() {
     if (!latestPill) return;
     // A reader who nudged up a line is still at the end; the pill waits until
@@ -3790,16 +3789,11 @@
     const hide = !messages.length || gap <= 1 || (stickToBottom && nearBottom()) || gap < (latestPill.hidden ? away : back);
     if (hide) {
       latestPill.hidden = true;
-      latestPill.classList.remove("has-new");
-      latestBaseline = 0;
       syncLatestSpin(false);
       return;
     }
     syncLatestSpin(edge != null);
-    if (latestPill.hidden || !latestBaseline) latestBaseline = thread.scrollHeight;
     latestPill.hidden = false;
-    // New output arrived below while reading further up.
-    if (thread.scrollHeight > latestBaseline + 24) latestPill.classList.add("has-new");
   }
 
   function threadFollowTarget() {
