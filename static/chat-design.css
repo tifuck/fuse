@@ -4135,3 +4135,13 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-tur
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-turn.is-auto-steps .chat-auto-steps { margin: 0; }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-turn.is-auto-steps .chat-auto-steps .chat-timeline { padding: 0; }
+/* An opened row sits on the user-message shade until it folds again, as in
+   Claude Code's fullscreen transcript: a band across the row, one row of
+   space under it, and the content left exactly where it was. Calls printed
+   inside an opened summary line share their line's band. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-group.is-console-expanded,
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-call.is-console-expanded:not(.is-console-verbose) {
+  background: var(--console-user);
+  padding-top: 0.2rem;
+  padding-bottom: var(--console-row);
+}
