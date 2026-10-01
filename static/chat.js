@@ -11415,7 +11415,16 @@
         article.appendChild(node);
       }
       if (node.dataset.text !== text) {
-        node.replaceChildren(Object.assign(document.createElement("span"), { textContent: "Recap: " }), document.createTextNode(text));
+        const icon = document.createElement("span");
+        icon.className = "chat-recap-icon";
+        icon.setAttribute("aria-hidden", "true");
+        icon.innerHTML = '<svg viewBox="0 0 16 16" width="16" height="16" focusable="false" aria-hidden="true"><rect x="3" y="2" width="10" height="12" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.25"/><path d="M5.5 5.5h5M5.5 8h5M5.5 10.5h3" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg>';
+        const copy = document.createElement("span");
+        copy.className = "chat-recap-copy";
+        const label = Object.assign(document.createElement("span"), { className: "chat-recap-label", textContent: "Recap: " });
+        const summary = Object.assign(document.createElement("em"), { className: "chat-recap-text", textContent: text });
+        copy.append(label, summary);
+        node.replaceChildren(icon, copy);
         node.dataset.text = text;
       }
     }

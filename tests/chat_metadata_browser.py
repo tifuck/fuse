@@ -88,6 +88,7 @@ async def main(screenshots=False):
         await page.route("**/chat/context", preference)
         await page.route("**/chat/threads/*/recap", manual)
         await page.route("**/chat/threads/*/turns", delayed_send)
+        await page.evaluate("localStorage.setItem('fuse.chat.theme.v1', 'fuse')")
         for width, height in ((1440, 900), (390, 844)):
             await page.set_viewport_size({"width": width, "height": height})
             for view in ("cli", "console", "compact", "mainframe"):
@@ -98,6 +99,26 @@ async def main(screenshots=False):
                 assert await recap.count() == 1
                 assert await recap.inner_text() == "Recap: " + TEXT
                 assert await recap.locator("img").count() == 0
+                assert await recap.locator(".chat-recap-icon svg").count() == 1
+                assert await recap.locator(".chat-recap-icon").get_attribute("aria-hidden") == "true"
+                assert await recap.locator(".chat-recap-icon").evaluate("e => e.getBoundingClientRect().width > 0 && e.getBoundingClientRect().height > 0")
+                for theme in ("fuse", "paper"):
+                    await page.evaluate("theme => window.FuseChatAppearance.setTheme(theme)", theme)
+                    style = await recap.locator(".chat-recap-text").evaluate("""e => {
+                        const style = getComputedStyle(e);
+                        const canvas = document.createElement('canvas');
+                        canvas.width = canvas.height = 1;
+                        const ctx = canvas.getContext('2d');
+                        ctx.fillStyle = style.color;
+                        ctx.fillRect(0, 0, 1, 1);
+                        return { italic: style.fontStyle, weight: style.fontWeight,
+                                 rgb: [...ctx.getImageData(0, 0, 1, 1).data].slice(0, 3) };
+                    }""")
+                    assert style["italic"] == "italic", (view, theme, style)
+                    assert style["weight"] == "400", (view, theme, style)
+                    assert max(style["rgb"]) < 165 and min(style["rgb"]) > 60, (view, theme, style)
+                    assert max(style["rgb"]) - min(style["rgb"]) < 20, (view, theme, style)
+                await page.evaluate("window.FuseChatAppearance.setTheme('fuse')")
                 assert await page.locator("[data-chat-log] > .chat-recap").count() == 0
                 assert await recap.evaluate("e => e.parentElement.matches('article.is-assistant')")
                 assert await recap.evaluate("e => e.scrollWidth <= e.clientWidth + 1")

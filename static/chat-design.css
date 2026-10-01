@@ -2,14 +2,32 @@
    remain owned by app.css and the chat runtime. */
 .chat:is([data-view="cli"], [data-view="compact"]) .chat-recap,
 html[data-chat-console="true"] .chat[data-view="console"] .chat-recap {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5em;
   max-width: 72rem;
   margin: 0.35rem 0 0.8rem;
-  color: color-mix(in srgb, var(--mist) 58%, var(--mute));
+  color: color-mix(in srgb, var(--mute) 85%, var(--ink));
   font-size: 0.92em;
+  font-weight: 400;
   line-height: 1.45;
 }
-.chat:is([data-view="cli"], [data-view="compact"]) .chat-recap span,
-html[data-chat-console="true"] .chat[data-view="console"] .chat-recap span { font-weight: 650; }
+.chat:is([data-view="cli"], [data-view="compact"]) .chat-recap-icon,
+html[data-chat-console="true"] .chat[data-view="console"] .chat-recap-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 1em;
+  height: 1em;
+  margin-top: 0.2em;
+}
+.chat:is([data-view="cli"], [data-view="compact"]) .chat-recap-icon svg,
+html[data-chat-console="true"] .chat[data-view="console"] .chat-recap-icon svg { width: 100%; height: 100%; }
+.chat:is([data-view="cli"], [data-view="compact"]) .chat-recap-copy,
+html[data-chat-console="true"] .chat[data-view="console"] .chat-recap-copy { min-width: 0; }
+.chat:is([data-view="cli"], [data-view="compact"]) .chat-recap-label,
+html[data-chat-console="true"] .chat[data-view="console"] .chat-recap-label { font-weight: 650; }
+.chat:is([data-view="cli"], [data-view="compact"]) .chat-recap-text,
+html[data-chat-console="true"] .chat[data-view="console"] .chat-recap-text { font-style: italic; }
 
 html[data-chat-theme] {
   --sans: "Bricolage Grotesque", sans-serif;

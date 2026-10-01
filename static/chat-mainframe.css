@@ -642,10 +642,24 @@
 .chat[data-view="mainframe"] .chat-step.is-console-notice .chat-console-dim { color: var(--mf-dim); }
 .chat[data-view="mainframe"] .chat-turn.is-user.is-auto-steps:not(:first-child) { margin-top: 0; padding-top: 0.3rem; border-top: 0; }
 .chat[data-view="mainframe"] .chat-recap {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5em;
   max-width: 72rem;
   margin: 0.35rem 0 0.8rem;
-  color: color-mix(in srgb, var(--mist) 58%, var(--mute));
+  color: color-mix(in srgb, var(--mute) 85%, var(--ink));
   font-size: 0.92em;
+  font-weight: 400;
   line-height: 1.45;
 }
-.chat[data-view="mainframe"] .chat-recap span { font-weight: 650; }
+.chat[data-view="mainframe"] .chat-recap-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 1em;
+  height: 1em;
+  margin-top: 0.2em;
+}
+.chat[data-view="mainframe"] .chat-recap-icon svg { width: 100%; height: 100%; }
+.chat[data-view="mainframe"] .chat-recap-copy { min-width: 0; }
+.chat[data-view="mainframe"] .chat-recap-label { font-weight: 650; }
+.chat[data-view="mainframe"] .chat-recap-text { font-style: italic; }

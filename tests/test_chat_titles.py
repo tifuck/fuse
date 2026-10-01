@@ -52,6 +52,8 @@ class TitleSweepTest(unittest.IsolatedAsyncioTestCase):
         thread = chats.create_thread(1, model="offline")
         self._turn(thread, "t1")
         pk = self._pk(thread["id"])
+        last_activity = "2026-09-20T12:34:56Z"
+        db.execute("UPDATE chat_threads SET updated_at=? WHERE id=?", (last_activity, pk))
         with patch("app.chat_runtime.generate_thread_title", new_callable=AsyncMock, return_value="Scrape project tour") as gen:
             await chat_titles.sweep()
             await asyncio.gather(*list(chat_titles._tasks))
@@ -59,17 +61,23 @@ class TitleSweepTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["title"], "Scrape project tour")
         self.assertEqual(row["title_state"], "generated")
         self.assertEqual(row["title_job_token"], "")
+        self.assertEqual(db.fetchone("SELECT updated_at FROM chat_threads WHERE id=?", (pk,))[0], last_activity)
+        title_event = store.events_after(1, 0)[-1]
+        self.assertEqual(title_event["payload"]["updated_at"], last_activity)
         gen.assert_awaited_once()
 
     async def test_fallback_after_exhaustion_never_calls_provider(self):
         thread = chats.create_thread(1, model="offline")
         self._turn(thread, "t1", "Fix login token validation")
         pk = self._pk(thread["id"])
+        last_activity = "2026-09-20T12:34:56Z"
+        db.execute("UPDATE chat_threads SET updated_at=? WHERE id=?", (last_activity, pk))
         db.execute("UPDATE chat_threads SET title_attempts=5 WHERE id=?", (pk,))
         with patch("app.chat_runtime.generate_thread_title", new_callable=AsyncMock) as gen:
             await chat_titles.sweep()
             await asyncio.gather(*list(chat_titles._tasks))
         self.assertEqual(db.fetchone("SELECT title_state FROM chat_threads WHERE id=?", (pk,))[0], "fallback")
+        self.assertEqual(db.fetchone("SELECT updated_at FROM chat_threads WHERE id=?", (pk,))[0], last_activity)
         gen.assert_not_awaited()
 
     def test_manual_rename_invalidates_generation_even_same_text(self):
@@ -95,7 +103,23 @@ class TitleSweepTest(unittest.IsolatedAsyncioTestCase):
             {"role": "assistant", "content": "Reply " + "y" * 7000},
             {"role": "user", "content": "LATEST_TOPIC recap guards"},
         ])
+        last_activity = "2026-09-20T12:34:56Z"
+        db.execute("UPDATE chat_threads SET updated_at=? WHERE id=?", (last_activity, self._pk(thread["id"])))
         with patch("app.chat_runtime.generate_thread_title", new_callable=AsyncMock, return_value="Recap completion guards") as gen:
             await chat_titles.regenerate(1, self._pk(thread["id"]))
         self.assertIn("LATEST_TOPIC", gen.call_args.args[3])
         self.assertEqual(gen.call_args.kwargs["limit"], 6000)
+        self.assertEqual(chats.get_thread(1, thread["id"])["updated_at"], last_activity)
+
+    def test_title_only_update_preserves_sidebar_order_but_real_message_bumps_it(self):
+        older = chats.create_thread(1, model="offline")
+        newer = chats.create_thread(1, model="offline")
+        pk = self._pk(older["id"])
+        db.execute("UPDATE chat_threads SET updated_at='2026-09-20T12:00:00Z' WHERE id=?", (pk,))
+        db.execute("UPDATE chat_threads SET updated_at='2026-09-25T12:00:00Z' WHERE id=?", (self._pk(newer["id"]),))
+        result = store.apply_generated_title(1, pk, "Login token validation")
+        self.assertEqual(result["revision"], older["revision"] + 1)
+        rows = db.fetchall("SELECT id FROM chat_threads WHERE user_id=1 ORDER BY updated_at DESC")
+        self.assertEqual([row["id"] for row in rows], [self._pk(newer["id"]), pk])
+        turn = store.start_turn(1, pk, "Review cookies", result["revision"], "real-message")
+        self.assertGreater(turn["thread"]["updated_at"], result["updated_at"])

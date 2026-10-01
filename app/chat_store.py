@@ -2694,7 +2694,7 @@ def start_turn(user_id, thread_id, text, expected_revision, command_id, model=No
 
 
 def apply_generated_title(user_id, thread_id, title, placeholder="", *, token=None, fallback=False):
-    """Replace an auto title. No-op if the user already renamed the thread."""
+    """Replace an auto title without changing conversation activity or a user rename."""
     from . import chats
 
     new_title = chats.parse_generated_title(title) if title else ""
@@ -2730,9 +2730,9 @@ def apply_generated_title(user_id, thread_id, title, placeholder="", *, token=No
         if current not in allowed and not chats.is_placeholder_title(current, project_name=project_name):
             return None
         cur = conn.execute(
-            "UPDATE chat_threads SET title=?, title_state=?, title_attempts=0, title_attempted_at='', title_job_token='',title_job_until='',updated_at=?, revision=revision+1 WHERE id=? AND user_id=? AND title_state=''"
+            "UPDATE chat_threads SET title=?, title_state=?, title_attempts=0, title_attempted_at='', title_job_token='',title_job_until='', revision=revision+1 WHERE id=? AND user_id=? AND title_state=''"
             + (" AND title_job_token=?" if token is not None else ""),
-            (new_title, "fallback" if fallback else "generated", db.now(), thread_id, user_id) + ((token,) if token is not None else ()),
+            (new_title, "fallback" if fallback else "generated", thread_id, user_id) + ((token,) if token is not None else ()),
         )
         if not cur.rowcount:
             return None
@@ -2745,7 +2745,7 @@ def apply_regenerated_title(user_id, thread_id, title, *, token=None):
 
     Unlike apply_generated_title this may overwrite a user rename, since the
     user explicitly asked for a new title. Messages are never touched, so the
-    conversation's upstream prompt cache stays intact.
+    conversation's upstream prompt cache and last-activity timestamp stay intact.
     """
     from . import chats
 
@@ -2765,9 +2765,9 @@ def apply_regenerated_title(user_id, thread_id, title, *, token=None):
         if token is not None and row["title_job_token"] != token:
             return None
         cur = conn.execute(
-            "UPDATE chat_threads SET title=?, title_state='generated', title_attempts=0, title_attempted_at='',title_job_token='',title_job_until='',updated_at=?, revision=revision+1 WHERE id=? AND user_id=?"
+            "UPDATE chat_threads SET title=?, title_state='generated', title_attempts=0, title_attempted_at='',title_job_token='',title_job_until='', revision=revision+1 WHERE id=? AND user_id=?"
             + (" AND title_job_token=?" if token is not None else ""),
-            (new_title, db.now(), pk, user_id) + ((token,) if token is not None else ()),
+            (new_title, pk, user_id) + ((token,) if token is not None else ()),
         )
         if not cur.rowcount:
             return None
