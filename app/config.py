@@ -60,7 +60,9 @@ class Settings(BaseSettings):
     context_summarizer_model: str = ""
 
     grok_client_id: str = "b1a00492-073a-47ea-816f-4c329264a828"
-    grok_client_version: str = "1.0.5"
+    # Bootstrap/fallback version; disable auto-refresh to pin this value.
+    grok_client_version: str = "1.0.46"
+    grok_client_version_auto_refresh: bool = True
     grok_proxy: str = "https://cli-chat-proxy.grok.com/v1"
     grok_token_url: str = "https://auth.x.ai/oauth2/token"
     grok_device_url: str = "https://auth.x.ai/oauth2/device/code"

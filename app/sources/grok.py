@@ -16,6 +16,7 @@ from ..proxy import UsageStream, openai_chat
 from .base import ChatResult
 from .pool_pick import Failover, note_failure, pick_account, release, reserve
 from . import pool_policy
+from .grok_version import current_version
 from .pool_session import bind, drop_cache_routing_fields, lookup
 from .token_store import expires_at, persist_rotated
 
@@ -255,7 +256,7 @@ def _auth_headers(token: str, model: str = "grok-4.6", conv_id: str | None = Non
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
         "X-XAI-Token-Auth": "xai-grok-cli",
-        "x-grok-client-version": settings.grok_client_version,
+        "x-grok-client-version": current_version(),
         "x-grok-model-override": model or "grok-4.6",
     }
     if conv_id:
@@ -267,7 +268,7 @@ def _cli_get_headers(token: str) -> dict:
     return {
         "Authorization": f"Bearer {token}",
         "X-XAI-Token-Auth": "xai-grok-cli",
-        "x-grok-client-version": settings.grok_client_version,
+        "x-grok-client-version": current_version(),
         "Accept": "application/json",
     }
 
