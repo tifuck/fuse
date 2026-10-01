@@ -94,6 +94,8 @@
   const liveDock = root.querySelector("[data-live-dock]");
   const liveDockLabel = root.querySelector("[data-live-dock-label]");
   const liveDockSpin = root.querySelector("[data-live-dock-spin]");
+  const latestPill = root.querySelector("[data-chat-latest]");
+  const latestSpin = root.querySelector("[data-chat-latest-spin]");
   let liveDockHideTimer = 0;
   let liveDockShowFrame = 0;
   let liveDockFollowFrame = 0;
@@ -3750,27 +3752,54 @@
     else syncLatest();
   }
 
+  // The scroll gap at which the running reply's status line slips out of
+  // view: its spinner's middle reaches the composer laid over the transcript,
+  // or the transcript's bottom edge where the composer sits below it. Null
+  // while no status line is showing.
+  function liveStatusEdge(gap) {
+    if (!liveDock || liveDock.hidden || liveDock.getAttribute("aria-hidden") === "true") return null;
+    const mark = (liveDockSpin?.getClientRects().length ? liveDockSpin : liveDock).getBoundingClientRect();
+    const view = thread.getBoundingClientRect();
+    const dockTop = form ? form.getBoundingClientRect().top : view.bottom;
+    return gap - (mark.top + mark.height / 2 - Math.min(view.bottom, dockTop));
+  }
+
+  function syncLatestSpin(live) {
+    latestPill.classList.toggle("is-live", live);
+    if (!latestSpin) return;
+    if (!live) {
+      if (latestSpin.firstChild) latestSpin.replaceChildren();
+      delete latestSpin.dataset.spinSet;
+    } else if (isConsoleView()) setConsoleSpin(latestSpin);
+    else applySpinEl(latestSpin, activitySpinSet(), "latest", true, activeAssistant()?._spinOrigin);
+  }
+
   let latestBaseline = 0;
   function syncLatest() {
-    const latest = root.querySelector("[data-chat-latest]");
-    if (!latest) return;
+    if (!latestPill) return;
     // A reader who nudged up a line is still at the end; the pill waits until
     // they are genuinely away (or output piles up below), and once shown it
     // holds until they are back near the bottom, so it never flickers at the
-    // threshold.
+    // threshold. While a reply runs, its status line ends the transcript and
+    // the pill takes over its spinner the moment that line scrolls out of
+    // view, handing it back once the line is visible again.
     const gap = thread.scrollHeight - thread.scrollTop - thread.clientHeight;
-    const away = Math.max(160, thread.clientHeight * 0.35);
-    const hide = !messages.length || gap <= 1 || (stickToBottom && nearBottom()) || gap < (latest.hidden ? away : 48);
+    const edge = liveStatusEdge(gap);
+    const away = edge == null ? Math.max(160, thread.clientHeight * 0.35) : edge;
+    const back = edge == null ? 48 : edge - 8;
+    const hide = !messages.length || gap <= 1 || (stickToBottom && nearBottom()) || gap < (latestPill.hidden ? away : back);
     if (hide) {
-      latest.hidden = true;
-      latest.classList.remove("has-new");
+      latestPill.hidden = true;
+      latestPill.classList.remove("has-new");
       latestBaseline = 0;
+      syncLatestSpin(false);
       return;
     }
-    if (latest.hidden || !latestBaseline) latestBaseline = thread.scrollHeight;
-    latest.hidden = false;
+    syncLatestSpin(edge != null);
+    if (latestPill.hidden || !latestBaseline) latestBaseline = thread.scrollHeight;
+    latestPill.hidden = false;
     // New output arrived below while reading further up.
-    if (thread.scrollHeight > latestBaseline + 24) latest.classList.add("has-new");
+    if (thread.scrollHeight > latestBaseline + 24) latestPill.classList.add("has-new");
   }
 
   function threadFollowTarget() {
@@ -7047,10 +7076,6 @@
     liveDockFollowFrame = requestAnimationFrame(step);
   }
 
-  function setLiveDockSpace() {
-    syncDockSpace();
-  }
-
   function hideLiveDock() {
     if (!liveDock) return;
     liveDock.hidden = true;
@@ -7059,6 +7084,7 @@
       liveDockSpin.replaceChildren();
       delete liveDockSpin.dataset.spinSet;
     }
+    syncLatest();
   }
 
   // Console docks (main and subagent) share one glyph that blooms from a dot
@@ -7068,7 +7094,7 @@
   let consoleSpinTimer = 0;
   let consoleSpinFrame = 0;
   function consoleSpinMarks() {
-    return [[liveDock, liveDockSpin], [agentLiveDock, agentLiveSpin]]
+    return [[liveDock, liveDockSpin], [agentLiveDock, agentLiveSpin], [latestPill, latestSpin]]
       .filter(([dock, spin]) => dock && spin && !dock.hidden && !spin.hidden)
       .map(([, spin]) => spin.querySelector(":scope > .chat-console-spin"))
       .filter(Boolean);
@@ -7123,27 +7149,23 @@
       } else setLiveLabelText(liveDockLabel, status.label);
       if (liveDockSpin && isConsoleView()) setConsoleSpin(liveDockSpin);
       else if (liveDockSpin) applySpinEl(liveDockSpin, activitySpinSet(msg), "dock", true, msg._spinOrigin);
-      const wasOn = root.classList.contains("is-live-dock");
-      if (!wasOn && !liveDockShowFrame) {
+      if (!root.classList.contains("is-live-dock") && !liveDockShowFrame) {
         liveDockShowFrame = requestAnimationFrame(() => {
           liveDockShowFrame = 0;
-           if (!runIsActive(activeRun)) return;
-          setLiveDockSpace();
+          if (!runIsActive(activeRun)) return;
           root.classList.add("is-live-dock");
-          syncDockSpace();
           followLiveDockSlide();
         });
-      } else if (wasOn) {
-        setLiveDockSpace();
       }
+      syncLatest();
       return;
     }
     if (!root.classList.contains("is-live-dock") && liveDock.hidden) return;
     if (liveDockHideTimer) return;
     root.classList.remove("is-live-dock");
-    syncDockSpace();
     followLiveDockSlide();
     liveDock.setAttribute("aria-hidden", "true");
+    syncLatest();
     const wait = liveDockMotionMs();
     if (!wait) {
       hideLiveDock();

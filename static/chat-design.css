@@ -379,11 +379,11 @@ html[data-chat-backdrop="none"] .chat-scene,
 .chat-live-dock {
   display: none;
   position: relative;
+  flex: 0 0 auto;
   align-items: center;
   gap: 0.5rem;
-  min-height: 1.7rem;
-  margin: 0 0 0.45rem 0;
-  padding: 0 0.25rem 0 0.7rem;
+  margin-top: 0.5rem;
+  padding-inline: 0;
   background: transparent;
   color: color-mix(in srgb, var(--mute) 58%, var(--mist) 42%);
   font: italic 0.95rem/1.4 var(--sans);
@@ -1483,10 +1483,10 @@ html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-msg-actions button:
 html[data-chat-console="true"] .chat[data-view="console"] .chat-msg-actions button:hover { color: var(--mist); }
 html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-project-chip,
 html[data-chat-console="true"] .chat[data-view="console"] .chat-project-chip { border-color: var(--line); color: var(--steel); }
-html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-latest::before,
-html[data-chat-console="true"] .chat[data-view="console"] .chat-latest::before { content: "↓"; color: var(--brass); margin-right: 0.5rem; }
+html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-latest > :is(.chat-latest-arrow, .chat-activity-spin),
+html[data-chat-console="true"] .chat[data-view="console"] .chat-latest > :is(.chat-latest-arrow, .chat-activity-spin) { margin-right: 0.5rem; }
 /* Dock stays in the flex layout so transcript clips at a hard edge above it.
-   The thinking row and dock plate stay transparent — only the composer is opaque. */
+   The dock plate stays transparent — only the composer is opaque. */
 html[data-chat-terminal="true"] .chat[data-view="cli"]:not(.is-empty) .chat-dock,
 html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty) .chat-dock {
   position: relative;
@@ -1497,40 +1497,8 @@ html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty) .chat-d
 }
 html[data-chat-terminal="true"] .chat[data-view="cli"]:not(.is-empty) .chat-thread,
 html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty) .chat-thread { min-height: 0; }
-html[data-chat-terminal="true"] .chat[data-view="cli"]:not(.is-empty) .chat-log,
-html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty) .chat-log {
-  padding-bottom: 1rem;
-}
-html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-live-dock:not([hidden]),
-html[data-chat-console="true"] .chat[data-view="console"] .chat-live-dock:not([hidden]) {
-  display: flex;
-  position: relative;
-  left: auto;
-  right: auto;
-  bottom: auto;
-  z-index: auto;
-  width: auto;
-  max-width: none;
-  margin: 0 0 0.35rem;
-  padding: 0 0.25rem 0 0.15rem;
-  background: transparent;
-  pointer-events: none;
-}
-/* Queued turns drop the status row back into the flow beneath the queue box. */
-html[data-chat-terminal="true"] .chat.is-queued[data-view="cli"] .chat-live-dock:not([hidden]),
-html[data-chat-console="true"] .chat.is-queued[data-view="console"] .chat-live-dock:not([hidden]) {
-  position: static;
-  left: auto;
-  bottom: auto;
-  z-index: auto;
-  width: auto;
-  max-width: none;
-  margin: 0 0.45rem 0.45rem;
-  padding: 0 0.25rem 0 0.875rem;
-  pointer-events: auto;
-}
-html[data-chat-terminal="true"] .chat.is-queued[data-view="cli"]:not(.is-empty) .chat-log,
-html[data-chat-console="true"] .chat.is-queued[data-view="console"]:not(.is-empty) .chat-log {
+html[data-chat-terminal="true"] .chat[data-view="cli"]:not(.is-empty) :is(.chat-log, .chat-live-dock),
+html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty) :is(.chat-log, .chat-live-dock) {
   padding-bottom: 1rem;
 }
 @keyframes cli-output-reveal {
@@ -2806,17 +2774,13 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-ter
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-terminal-line:last-child::before { content: "└"; }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-terminal-line:not(:last-child)::after { display: none; }
+/* The status line ends the transcript on the log's own column and gutter. */
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-live-dock:not([hidden]) {
-  display: flex;
   align-items: center;
   gap: 0.45rem;
-  left: auto;
-  right: auto;
-  width: auto;
-  max-width: none;
-  min-height: 1.55rem;
-  margin: 0 0 0.4rem;
-  padding: 0 0.15rem;
+  width: min(100%, var(--chat-col));
+  margin-top: 0.45rem;
+  padding-inline: var(--console-gutter);
   overflow: visible;
   font: 0.88rem/1.4 var(--mono);
   font-style: italic;
@@ -2955,12 +2919,6 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-report-btn {
   width: 1.4rem;
   height: 1.55rem;
-}
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-live-dock:not([hidden]) {
-  left: auto;
-  margin: 0 0 0.35rem;
-  padding: 0 0.15rem;
-  font: 0.88rem/1.4 var(--mono);
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-agents {
   background: var(--ink);
