@@ -238,6 +238,7 @@
   let sessionId = newSession();
   let messages = [];
   let threadRecaps = [];
+  const dismissedRecapAnchors = new Map();
   let recapsEnabled = config.context?.recaps !== false;
   let contextMessages = [];
   let contextLive = false;
@@ -3304,7 +3305,7 @@
     const oldLength = messages.length;
     contextMessages = Array.isArray(data.context_messages) ? data.context_messages.map((msg) => ({ ...msg, noActions: true })) : [];
     contextLive = Boolean(data.context_live);
-    threadRecaps = Array.isArray(data.recaps) ? data.recaps : [];
+    threadRecaps = visibleRecaps(data);
     messages = data.messages.map((msg) => {
       const prior = old.get(msg.id);
       if (!prior) return { ...msg };
@@ -3435,7 +3436,10 @@
       }
       renderHistory();
     } else if (event.type === "recap.updated") {
-      if (event.thread_id === currentId) await reconcileThread();
+      if (event.thread_id === currentId) {
+        if (!sending && !queuedTurns.length) dismissedRecapAnchors.get(currentId)?.delete(String(payload.anchor_id));
+        await reconcileThread();
+      }
     } else if (event.type === "recap.failed") {
       if (event.thread_id === currentId) setHint("Could not generate a recap. Try /recap again.", true);
     } else if (event.type === "title.failed") {
@@ -4959,6 +4963,7 @@
       return;
     }
     const nav = navigation;
+    dismissRecaps(false);
     try {
       await flushPending();
       if (nav !== navigation) return;
@@ -5067,7 +5072,7 @@
     }
     contextMessages = Array.isArray(data.context_messages) ? data.context_messages.map((msg) => ({ ...msg, noActions: true })) : [];
     contextLive = Boolean(data.context_live);
-    threadRecaps = Array.isArray(data.recaps) ? data.recaps : [];
+    threadRecaps = visibleRecaps(data);
     messages = (data.messages || []).map((msg) => ({
       id: msg.id,
       role: msg.role,
@@ -11382,6 +11387,21 @@
     article.addEventListener("animationend", settle);
   }
 
+  function visibleRecaps(data) {
+    const dismissed = dismissedRecapAnchors.get(data.id);
+    return (Array.isArray(data.recaps) ? data.recaps : []).filter(row => !dismissed?.has(String(row.anchor_id)));
+  }
+
+  function dismissRecaps(remember = true) {
+    if (remember && currentId && threadRecaps.length) {
+      const dismissed = dismissedRecapAnchors.get(currentId) || new Set();
+      threadRecaps.forEach(row => dismissed.add(String(row.anchor_id)));
+      dismissedRecapAnchors.set(currentId, dismissed);
+    }
+    threadRecaps = [];
+    log.querySelectorAll(".chat-recap").forEach(node => node.remove());
+  }
+
   function paintRecaps(target = null) {
     const byAnchor = new Map(threadRecaps.map(row => [String(row.anchor_id), String(row.text || "")]));
     for (const article of target ? [target] : log.children) {
@@ -12149,6 +12169,7 @@
     const attachments = pendingAttachments.slice();
     if ((!text && !attachments.length) || !modelId) return;
     if (window.FuseComposerSpell && FuseComposerSpell.isOpen()) return;
+    dismissRecaps();
     enqueueTurn(text, attachments);
     input.value = "";
     drafts.delete(currentId);
@@ -12324,6 +12345,7 @@
     if (sending || loading || (runIsActive(activeRun) && !pendingTurn)) return;
     if (!requireLive()) return;
     if (!(text || "").trim() && !attachments.length) return;
+    dismissRecaps();
     navigation += 1;
     const gen = generation;
     const origin = currentId;
@@ -12799,6 +12821,7 @@
 
   async function resetChat() {
     if (sending) return;
+    dismissRecaps(false);
     const nav = ++navigation;
     try {
       await flushPending();

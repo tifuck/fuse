@@ -189,6 +189,25 @@ class RecapTest(unittest.IsolatedAsyncioTestCase):
         self.age()
         self.assertIsNotNone(recaps.claim(self.job()["id"]))
 
+    def test_new_user_message_removes_recap_from_fresh_snapshots(self):
+        self.complete()
+        self.age()
+        job = recaps.claim(self.job()["id"])
+        recaps.finish(job, "Fixed token validation.")
+        before = chats.get_thread(1, self.pk)
+        self.assertEqual(len(before["recaps"]), 1)
+        next_turn = store.start_turn(1, self.pk, "Please review cookies", before["revision"], "follow-up")
+        self.assertEqual(next_turn["thread"]["recaps"], [])
+        self.assertEqual(chats.get_thread(1, self.pk)["recaps"], [])
+        self.assertEqual(db.fetchone("SELECT state FROM chat_recaps WHERE id=?", (job["id"],))[0], "stale")
+        store.finish_run(next_turn["run"]["id"], {"content": "Reviewed cookie settings."}, "completed")
+        self.age()
+        next_job = recaps.claim(self.job()["id"])
+        recaps.finish(next_job, "Reviewed cookie settings.")
+        self.assertEqual(chats.get_thread(1, self.pk)["recaps"], [
+            {"anchor_id": next_turn["run"]["message_id"], "text": "Reviewed cookie settings."},
+        ])
+
     async def test_parallel_workers_can_claim_only_once(self):
         self.complete()
         self.age()

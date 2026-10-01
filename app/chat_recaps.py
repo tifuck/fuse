@@ -68,8 +68,7 @@ def activity(conn, user_id: int, thread_id: int):
     if row is None:
         return
     conn.execute("""UPDATE chat_recaps SET state='stale',lease_token='' WHERE thread_id=?
-                    AND (state IN ('pending','generating') OR (state='ready' AND episode_id=?))""",
-                 (thread_id, row["recap_start_id"]))
+                    AND state IN ('pending','generating','ready')""", (thread_id,))
     if not row["recap_start_id"]:
         return  # Legacy histories are never automatically backfilled.
     owner = conn.execute("SELECT chat_recaps FROM users WHERE id=?", (user_id,)).fetchone()

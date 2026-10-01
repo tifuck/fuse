@@ -42,6 +42,7 @@ async def main(screenshots=False):
         preference_writes = []
         manual_writes = []
         unexpected_writes = []
+        send_started, release_send = asyncio.Event(), asyncio.Event()
 
         async def readonly(route):
             if route.request.method not in ("GET", "HEAD", "OPTIONS"):
@@ -77,10 +78,16 @@ async def main(screenshots=False):
             manual_writes.append(route.request.method)
             await route.fulfill(json={"started": True, "idle_seconds": 60})
 
+        async def delayed_send(route):
+            send_started.set()
+            await release_send.wait()
+            await route.fulfill(status=400, json={"detail": "Read-only browser test: message not persisted"})
+
         await page.route("**/*", readonly)
         await page.route(re.compile(r".*/chat/threads/[A-Za-z0-9]+(?:\?.*)?$"), snapshot)
         await page.route("**/chat/context", preference)
         await page.route("**/chat/threads/*/recap", manual)
+        await page.route("**/chat/threads/*/turns", delayed_send)
         for width, height in ((1440, 900), (390, 844)):
             await page.set_viewport_size({"width": width, "height": height})
             for view in ("cli", "console", "compact", "mainframe"):
@@ -100,6 +107,29 @@ async def main(screenshots=False):
                 await page.evaluate("document.querySelector('[data-chat-input]').focus()")
                 assert await recap.count() == 1
                 print(f"recap render: {view} {width}x{height} passed")
+                # New-chat clicks hide it synchronously, before async saves.
+                hidden = await page.evaluate("""() => {
+                    document.querySelector('[data-chat-new]').click();
+                    return document.querySelectorAll('.chat-recap').length === 0;
+                }""")
+                assert hidden
+                await page.goto(f"{BASE}/chat?t={tid}")
+                await page.wait_for_selector(".chat-recap")
+                await page.wait_for_selector(".chat-sync[data-sync-state='live']", state="attached")
+                send_started.clear()
+                release_send.clear()
+                await page.fill("[data-chat-input]", "Please continue")
+                hidden = await page.evaluate("""() => {
+                    document.querySelector('[data-chat-form]').requestSubmit();
+                    return document.querySelectorAll('.chat-recap').length === 0;
+                }""")
+                assert hidden  # No animation frame or HTTP response required.
+                await asyncio.wait_for(send_started.wait(), 10)
+                assert await page.locator(".chat-recap").count() == 0
+                release_send.set()
+                await page.wait_for_selector(".chat-pending-send", state="detached")
+                assert await page.locator(".chat-recap").count() == 0
+                print(f"instant dismissal: {view} {width}x{height} passed")
         await page.evaluate("document.querySelector('[data-recaps-toggle]').click()")
         await page.wait_for_function("() => !document.querySelector('[data-recaps-toggle]').disabled")
         assert preference_writes and isinstance(preference_writes[-1]["recaps"], bool)
