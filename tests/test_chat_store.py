@@ -408,6 +408,25 @@ class ChatStoreTest(unittest.TestCase):
         self.assertFalse(listed[live["id"]]["running"])
         self.assertFalse(chats.get_thread(1, live["id"])["running"])
 
+    def test_active_subagent_keeps_thread_running_after_root_finishes(self):
+        thread = chats.create_thread(1, title="agent chat")
+        started = self.turn(thread)
+        root = started["run"]
+        child = store.start_child_run(
+            user_id=1, thread_id=thread["id"], parent_run_id=root["id"],
+            prompt="look around", description="explore",
+        )
+        store.finish_run(root["id"], {"content": "done"}, "completed")
+        self.assertTrue(chats.list_threads(1)[0]["running"])
+        self.assertTrue(chats.get_thread(1, thread["id"])["running"])
+        self.assertTrue(chats.search_threads(1, "agent chat")[0]["running"])
+        last = [e for e in store.events_after(1, 0) if e["type"] == "thread.updated"][-1]
+        self.assertTrue(last["payload"]["running"])
+        store.finish_run(child["id"], {"content": "report"}, "completed")
+        self.assertFalse(chats.list_threads(1)[0]["running"])
+        last = [e for e in store.events_after(1, 0) if e["type"] == "thread.updated"][-1]
+        self.assertFalse(last["payload"]["running"])
+
     def test_events_are_transactional_scoped_ordered_and_pruned(self):
         with self.assertRaises(RuntimeError):
             with store.transaction() as conn:

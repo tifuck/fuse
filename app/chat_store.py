@@ -1448,6 +1448,7 @@ def continue_child_with_followups(run_id: str, followups: list) -> bool:
                 "reason": "followup",
             },
         )
+        thread_event(conn, row["user_id"], row["thread_id"])
     return True
 
 
@@ -2090,7 +2091,12 @@ def thread_view(conn, user_id, thread_id, *, queued=()):
         (thread_id, user_id),
     ).fetchone())
     result["run"] = run
-    result["running"] = bool(run)
+    # "running" means any active run, subagents included (same as the list);
+    # "run" stays the root turn the composer streams.
+    result["running"] = bool(run) or conn.execute(
+        "SELECT 1 FROM chat_runs WHERE thread_id=? AND user_id=? AND status IN ('queued','running')",
+        (thread_id, user_id),
+    ).fetchone() is not None
     if run:
         live = dict(run["message"]) if isinstance(run.get("message"), dict) else {}
         live.setdefault("id", run["message_id"])
@@ -3862,6 +3868,7 @@ def finish_run(run_id, message, status):
                 "work_ms": run_work_ms(run_id, agent, message),
             }
             event(conn, row["user_id"], "agent." + status, row["thread_id"], payload)
+            thread_event(conn, row["user_id"], row["thread_id"])
             return
         projected = display_messages(request, message, row["message_id"])
         aggregate_message = message
@@ -4742,6 +4749,7 @@ def _start_child_run(
                     "child_id": child_id,
                 },
             )
+            thread_event(conn, user_id, thread_id)
             return run_view(conn.execute("SELECT * FROM chat_runs WHERE id=?", (child_id,)).fetchone())
         child_id = str(uuid4())
         message_id = str(uuid4())
@@ -4819,6 +4827,7 @@ def _start_child_run(
                     "child_id": child_id,
                 },
         )
+        thread_event(conn, user_id, thread_id)
         return run_view(conn.execute("SELECT * FROM chat_runs WHERE id=?", (child_id,)).fetchone())
 
 
@@ -5046,6 +5055,7 @@ def _force_terminal(run_id, status, message):
                     "child_id": run_id,
                 },
             )
+            thread_event(conn, row["user_id"], row["thread_id"])
             return
         thread = conn.execute(
             "SELECT * FROM chat_threads WHERE id=? AND user_id=?",
@@ -5241,6 +5251,8 @@ def _requeue_for_resume(row, messages, allowed=None, *, by_user=False):
             row["thread_id"],
             {"run_id": row["id"], "message_id": row["message_id"], "message": message},
         )
+        if row["parent_run_id"]:
+            thread_event(conn, row["user_id"], row["thread_id"])
 
 
 MAX_RESUME_ATTEMPTS = 3

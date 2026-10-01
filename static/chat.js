@@ -549,6 +549,7 @@
   let artifactSourceLoaded = "";
   let agentsOpen = false;
   let agentsRows = [];
+  let agentsLoadedFor = "";
   let agentViewId = "";
   let agentLastEventAt = 0;
   let _agentTickRenderAt = 0;
@@ -3116,7 +3117,7 @@
     if (streaming) startLiveClock();
     else stopLiveClock();
     const current = threadById(currentId);
-    if (current) current.running = streaming;
+    if (current) current.running = currentThreadBusy();
     const state = `${activeRun?.id || ""}:${activeRun?.message_id || ""}:${activeRun?.status || ""}:${runIsStopping(activeRun)}`;
     if (prior !== streaming || state !== renderedRunState) {
       renderedRunState = state;
@@ -3399,7 +3400,11 @@
                (event.type === "run.started" || ["run.completed", "run.cancelled", "run.failed", "run.interrupted"].includes(event.type))) {
       const item = threadById(event.thread_id);
       if (item) {
-        const next = event.type === "run.started";
+        const started = event.type === "run.started";
+        // A finished root turn can leave subagents working. Its thread.updated
+        // follows in the same commit and carries the authoritative flag, so
+        // only clear here when no thread row (and so no such event) exists.
+        const next = started || (payload.revision != null ? item.running : false);
         if (item.running !== next) {
           item.running = next;
           renderHistory();
@@ -3667,7 +3672,7 @@
     const idx = bucket.findIndex((item) => item.id === thread.id);
     const prior = idx >= 0 ? bucket[idx] : other.find((item) => item.id === thread.id);
     let running;
-    if (thread.id === currentId) running = streaming;
+    if (thread.id === currentId) running = currentThreadBusy();
     else if (thread.run && thread.run.cancel_requested) running = false;
     else if (Object.prototype.hasOwnProperty.call(thread, "running")) running = Boolean(thread.running);
     else if (thread.run && ["queued", "running"].includes(thread.run.status)) running = true;
@@ -4158,6 +4163,26 @@
 
   function threadIsRunning(item) {
     return Boolean(item && item.running);
+  }
+
+  // The open thread is busy while its own turn streams or any of its
+  // subagents is live: a background child can outlive the turn that spawned it.
+  // Until this thread's agent list has loaded, keep the server's flag rather
+  // than clearing it on an empty list.
+  function currentThreadBusy() {
+    if (streaming || agentsRows.some((row) => agentLive(row.status))) return true;
+    if (agentsLoadedFor === currentId) return false;
+    const current = threadById(currentId);
+    return Boolean(current && current.running);
+  }
+
+  function syncCurrentThreadBusy() {
+    const current = threadById(currentId);
+    const busy = currentThreadBusy();
+    if (current && current.running !== busy) {
+      current.running = busy;
+      renderHistory();
+    }
   }
 
   function anyRunningOfKind(kind) {
@@ -13241,6 +13266,7 @@
       if (epoch !== agentLifecycleEpoch) { agentsRefreshAgain = true; return; }
       agentsFailCount = 0;
       agentsRows = Array.isArray(data.agents) ? data.agents : [];
+      agentsLoadedFor = tid;
       const receivedAt = Date.now();
       agentsRows.forEach(row => { row._workAt = receivedAt; agentLifecycle.set(String(row.id), row); });
       reconcileAgentTraces(agentsRows, true);
@@ -13483,6 +13509,7 @@
   }, 5000);
 
   function syncAgentsUi() {
+    syncCurrentThreadBusy();
     const { live } = agentRowsSorted();
     const liveCount = live.length;
     const commandCount = jobsRows.length;
@@ -13580,6 +13607,7 @@
     agentLifecycleEpoch += 1;
     agentsRefreshAgain = false;
     agentsRows = [];
+    agentsLoadedFor = "";
     jobsRows = [];
     completedJobs.clear();
     renderJobsList();

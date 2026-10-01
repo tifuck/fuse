@@ -109,9 +109,12 @@ _PLACEHOLDER_TITLES = frozenset({"", "new chat", "title", "untitled", "chat"})
 PUBLIC_ID_LEN = 22
 PUBLIC_ID_RE = re.compile(r"^[A-Za-z0-9]{16,32}$")
 _PUBLIC_ID_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+# Any active run keeps a thread "running", subagents included: a background
+# child can outlive the root turn that spawned it and the sidebar must keep
+# its spinner until the last one settles.
 _THREAD_RUNNING_SQL = (
     "EXISTS (SELECT 1 FROM chat_runs r "
-    "WHERE r.thread_id=t.id AND r.status IN ('queued','running') AND r.parent_run_id IS NULL)"
+    "WHERE r.thread_id=t.id AND r.status IN ('queued','running'))"
 )
 _THREAD_LIST_COLS = (
     "t.id, t.public_id, t.title, t.model, t.archived, t.created_at, t.updated_at, t.revision, "
@@ -2043,7 +2046,7 @@ _PROJECT_SIDEBAR_SQL = """
              SELECT 1 FROM chat_threads ct
              JOIN chat_runs r ON r.thread_id=ct.id
              WHERE ct.user_id=p.user_id AND ct.host_id=p.host_id AND ct.project_id=p.id
-               AND ct.archived=0 AND r.status IN ('queued','running') AND r.parent_run_id IS NULL
+               AND ct.archived=0 AND r.status IN ('queued','running')
            ) AS running
     FROM user_projects p
     JOIN user_hosts h ON h.id=p.host_id AND h.user_id=p.user_id
