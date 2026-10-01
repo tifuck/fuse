@@ -8114,25 +8114,130 @@
     return "";
   }
 
-  function consoleCollapsedPreview(trace, failed, running) {
-    if (failed || running) return "";
-    const name = trace && trace.name;
-    if (name === "write_file") {
-      const body = typeof trace.content === "string" ? trace.content : "";
-      return body ? fileBodyHtml(trace, body, 10) : "";
-    }
-    if ((name === "run_terminal_command" || name === "get_command_output") && typeof trace.output === "string") {
-      const lines = cleanToolOutput(trace, trace.output).replace(/\s+$/, "").split("\n").filter((line, i, all) => line.trim() || i < all.length - 1);
-      if (lines.length < 2) return "";
-      const rows = lines.slice(0, 3).map((line) => `<div class="chat-console-stdout">${renderAnsi(line) || " "}</div>`).join("");
-      return `<div class="chat-console-lines is-stdout">${rows}</div>` + (lines.length > 3 ? `<div class="chat-console-more">… +${lines.length - 3} lines</div>` : "");
-    }
-    if (name === "search_replace") {
-      const diff = [trace.preview, trace.output].find((value) => looksLikeDiff(value));
-      if (diff) return consoleDiffHtml(diff, { limit: 12, numbers: false });
-      return "";
-    }
+  // Claude Code's change line for an edit: "Added 2 lines, removed 1 line".
+  function consoleChangeText(added, removed) {
+    const lines = (n) => `${n} ${n === 1 ? "line" : "lines"}`;
+    if (added > 0 && removed > 0) return `Added ${lines(added)}, removed ${lines(removed)}`;
+    if (added > 0) return `Added ${lines(added)}`;
+    if (removed > 0) return `Removed ${lines(removed)}`;
     return "";
+  }
+
+  function consoleDiffCounts(diff) {
+    const lines = String(diff || "").split("\n");
+    return {
+      added: lines.filter((line) => line.startsWith("+") && !line.startsWith("+++")).length,
+      removed: lines.filter((line) => line.startsWith("-") && !line.startsWith("---")).length,
+    };
+  }
+
+  function consoleStdoutHtml(lines) {
+    return `<div class="chat-console-lines is-stdout">${lines.map((line) => `<div class="chat-console-stdout">${renderAnsi(line) || " "}</div>`).join("")}</div>`;
+  }
+
+  function consoleSameText(html, text) {
+    const plain = String(html || "").replace(/<[^>]*>/g, " ").replace(/&[a-z#0-9]+;/gi, " ").replace(/\s+/g, " ").trim();
+    return !plain || plain === String(text || "").replace(/\s+/g, " ").trim();
+  }
+
+  // What a console row shows, tool by tool, as Claude Code prints it: the
+  // result line, the body under it, and an expanded body only when that shows
+  // more. A row with no expanded body has no disclosure:
+  //   Update  "Added 2 lines, removed 1 line" + the whole diff
+  //   Read    "Read 120 lines" (content is never printed)
+  //   Write   "Wrote 40 lines to x.py" + the first 10 lines; more on expand
+  //   Shell   the first 3 output lines (4 if that is all); more on expand
+  //   Grep    "Found 12 lines" / Glob "Found 3 files"; the list on expand
+  //   Search  "Did 2 searches in 3s"
+  function consoleFold(trace, presentation, verbose) {
+    const { running, failed } = presentation;
+    const name = trace && trace.name;
+    const shell = name === "run_terminal_command" || name === "get_command_output";
+    if (verbose && running && shell && !toolBackground(trace)) {
+      const out = consoleDetailHtml(trace, failed, running);
+      return { status: "Running…", preview: "", full: consoleSameText(out, "Running…") ? "" : out };
+    }
+    const status = consoleResultLine(trace, presentation);
+    const detail = () => {
+      const html = consoleDetailHtml(trace, failed, running);
+      return consoleSameText(html, status) ? "" : html;
+    };
+    if (running || (failed && !shell)) {
+      if (shell) {
+        const html = detail();
+        const shown = [String(trace.command || "").trim(), `$ ${String(displayCommand(trace) || "").trim()}`, "Running…"];
+        return { status, preview: "", full: html && !shown.some((text) => consoleSameText(html, text)) ? html : "" };
+      }
+      return { status, preview: "", full: detail() };
+    }
+    if (name === "read_file" || name === "kill_command" || name === "kill_subagent") return { status, preview: "", full: "" };
+    if (name === "todo_write") {
+      const list = consoleDetailHtml(trace, failed, running);
+      return { status: list ? "" : status, preview: list, full: "" };
+    }
+    if (name === "search_replace" || name === "write_file") {
+      const diff = [trace.preview, trace.output].find((value) => looksLikeDiff(value));
+      if (diff) {
+        const counted = consoleDiffCounts(diff);
+        const added = Number(trace.added ?? trace.lines_added);
+        const removed = Number(trace.removed ?? trace.lines_removed);
+        const text = consoleChangeText(Number.isFinite(added) ? added : counted.added, Number.isFinite(removed) ? removed : counted.removed);
+        return { status: text || (name === "write_file" ? status : "Updated"), preview: consoleDiffHtml(diff, { numbers: name !== "search_replace" }), full: "" };
+      }
+      if (name === "search_replace") return { status, preview: "", full: "" };
+      const body = typeof trace.content === "string" ? trace.content.replace(/\s+$/, "") : "";
+      if (!body) return { status, preview: "", full: "" };
+      const total = body.split("\n").length;
+      return {
+        status,
+        preview: fileBodyHtml(trace, body, 10),
+        full: total > 10 ? `<div class="chat-console-out is-file">${fileBodyHtml(trace, body)}</div>` : "",
+      };
+    }
+    if (shell) {
+      const raw = typeof trace.output === "string" ? cleanToolOutput(trace, trace.output)
+        : [trace.preview, trace.summary].find((value) => { const text = String(value || "").trim(); return text && text !== "still running" && text !== "background task started"; }) || "";
+      const lines = String(raw).replace(/\s+$/, "").split("\n");
+      const empty = !String(raw).trim();
+      const exit = shellExitCode(trace);
+      // A non-zero exit prints its code above the output, as Claude Code does.
+      const nonzero = exit !== null && exit !== 0;
+      const head = nonzero ? `Exit code ${exit}` : failed ? status : toolBackground(trace) ? status : "";
+      if (empty) return { status: head || "(No output)", preview: "", full: "", keep: nonzero };
+      const show = lines.length === 4 ? 4 : 3;
+      const cut = lines.slice(0, show).map((line) => line.length > 400 ? line.slice(0, 399) + "…" : line);
+      const hidden = lines.length - cut.length;
+      const clipped = hidden > 0 || cut.some((line, i) => line !== lines[i]);
+      return {
+        status: head,
+        keep: nonzero,
+        preview: consoleStdoutHtml(cut) + (hidden > 0 ? `<div class="chat-console-more">… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : ""),
+        full: clipped ? consoleDetailHtml(trace, false, running) : "",
+      };
+    }
+    if (name === "grep" || name === "glob" || name === "list_dir") {
+      const body = String(trace.output || trace.preview || "").trim();
+      const none = !body || /^no (matches|files?|entries)( found)?\.?$/i.test(body);
+      const n = none ? 0 : name === "list_dir" ? consoleLineCount(trace) : consoleMatchCount(trace);
+      const unit = name === "list_dir" ? (n === 1 ? "entry" : "entries")
+        : name === "grep" && /:\d+:/.test(body) ? (n === 1 ? "line" : "lines") : (n === 1 ? "file" : "files");
+      return { status: `${name === "list_dir" ? "Listed" : "Found"} ${n} ${unit}`, preview: "", full: n ? detail() : "" };
+    }
+    if (isSearchTool(name)) {
+      const n = searchCountFor(trace);
+      const ms = Number(trace.latency_ms ?? trace.duration_ms ?? trace.call_duration_ms);
+      const took = Number.isFinite(ms) && ms > 0 ? ` in ${ms >= 1000 ? `${Math.round(ms / 1000)}s` : `${Math.round(ms)}ms`}` : "";
+      return { status: `Did ${n} search${n === 1 ? "" : "es"}${took}`, preview: "", full: "" };
+    }
+    return { status, preview: "", full: detail() };
+  }
+
+  // Counts in a result line are bold, as in Claude Code ("Read **12** lines").
+  function consoleStatusHtml(text) {
+    return escapeHtml(text)
+      .replace(/^(Read|Wrote|Added|Removed|Found|Listed) (\d[\d,]*)/, "$1 <b>$2</b>")
+      .replace(/(, removed )(\d[\d,]*)/, "$1<b>$2</b>")
+      .replace(/^(Wrote <b>[^<]*<\/b> lines? to )(.+)$/, "$1<b>$2</b>");
   }
 
   function consoleDetailHtml(trace, failed, running) {
@@ -8227,14 +8332,8 @@
     if (name === "search_replace") {
       const added = Number(trace.added ?? trace.lines_added);
       const removed = Number(trace.removed ?? trace.lines_removed);
-      if (Number.isFinite(added) || Number.isFinite(removed)) {
-        return `Added ${Number.isFinite(added) ? added : 0} line${added === 1 ? "" : "s"}, removed ${Number.isFinite(removed) ? removed : 0} line${removed === 1 ? "" : "s"}`;
-      }
-      const diffLines = String([trace.preview, trace.output].find((value) => looksLikeDiff(value)) || "").split("\n");
-      const adds = diffLines.filter((line) => line.startsWith("+") && !line.startsWith("+++")).length;
-      const dels = diffLines.filter((line) => line.startsWith("-") && !line.startsWith("---")).length;
-      if (adds || dels) return [adds ? `${adds} addition${adds === 1 ? "" : "s"}` : "", dels ? `${dels} removal${dels === 1 ? "" : "s"}` : ""].filter(Boolean).join(", ");
-      return "Edited";
+      const counted = consoleDiffCounts([trace.preview, trace.output].find((value) => looksLikeDiff(value)) || "");
+      return consoleChangeText(Number.isFinite(added) ? added : counted.added, Number.isFinite(removed) ? removed : counted.removed) || "Updated";
     }
     if (name === "todo_write") {
       const todos = normalizeTodos(trace.todos);
@@ -8805,23 +8904,17 @@
       : failed ? STEP_ICONS.error : interrupted ? STEP_ICONS.stop : artifact ? STEP_ICONS.artifact : toolIcon(trace.name, false, false);
     if (isConsoleView()) {
       const verbose = Boolean(opts.verbose);
-      const result = verbose && running && isShellExecTool(trace.name) && !toolBackground(trace) ? "Running…" : consoleResultLine(trace, presentation);
-      const preview = verbose ? "" : consoleCollapsedPreview(trace, failed, running);
-      // A shell call with no captured output would "expand" into the command
-      // or result line already on screen. Those rows get no disclosure.
-      if (isShellExecTool(trace.name) && !failed) {
-        const body = String(consoleOutputText(trace, failed, running) || "").trim();
-        const shown = [String(trace.command || "").trim(), String(result || "").trim(), `$ ${String(displayCommand(trace) || "").trim()}`, "Running…"];
-        if (!body || shown.includes(body)) inner = "";
-      }
-      const expandable = !verbose && openKind !== "agent" && trace.name !== "todo_write" && Boolean(inner) && inner !== preview;
+      const fold = consoleFold(trace, presentation, verbose);
+      // An opened summary line prints a call the way an expanded row reads.
+      const preview = verbose ? "" : fold.preview;
+      inner = verbose ? fold.full || fold.preview : fold.full;
+      const expandable = !verbose && openKind !== "agent" && Boolean(fold.full);
       const head = toolHeadHtml({
         ...presentation, line: consoleCallHtml(trace, presentation, verbose), title: trace.command || trace.path || trace.url || label, expandable, open: revealed, openKind, openId,
         contextHost: "",
       });
       const hangOpen = verbose ? Boolean(inner) : revealed && expandable;
-      const status = (trace.name === "todo_write" && normalizeTodos(trace.todos).length) || (preview && isShellExecTool(trace.name) && !running && !failed)
-        ? "" : result || (running ? "Running…" : "done");
+      const status = fold.status;
       const showHang = true;
       return (
         `<li class="chat-step is-console-call is-${kind} is-${presentation.state}${hangOpen || verbose ? " is-console-expanded" : ""}${verbose ? " is-console-verbose" : ""}" style="--console-hang: ${consoleVerb(trace.name, trace).length + 1}ch" data-execution="${escapeHtml(executionIdentity(trace))}" data-tool="${escapeHtml(trace.name)}" data-state="${presentation.state}" data-step="${escapeHtml(index)}">` +
@@ -8830,10 +8923,10 @@
         (showHang
           ? `<div class="chat-step-reveal is-open">` +
             `<div class="chat-step-reveal-inner">` +
-            `<div class="chat-console-hang${running ? " is-running" : ""}${failed ? " is-error" : ""}${hangOpen ? " is-expanded" : ""}">` +
+            `<div class="chat-console-hang${running ? " is-running" : ""}${failed ? " is-error" : ""}${fold.keep ? " is-kept" : ""}${hangOpen ? " is-expanded" : ""}">` +
             `<span class="chat-console-branch" aria-hidden="true">└</span>` +
             `<div class="chat-console-hang-body">` +
-            (status ? `<span class="chat-console-result-text">${escapeHtml(status)}</span>` : "") +
+            (status ? `<span class="chat-console-result-text">${consoleStatusHtml(status)}</span>` : "") +
             (preview ? `<div class="chat-console-preview">${preview}</div>` : "") +
             (inner ? inner : "") +
             `</div></div></div></div>`

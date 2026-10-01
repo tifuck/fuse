@@ -3153,7 +3153,7 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-con
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-hang.is-expanded .chat-console-preview {
   display: none;
 }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-hang.is-expanded:has(.chat-console-out.is-stdout) .chat-console-result-text {
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step:is([data-tool="run_terminal_command"], [data-tool="get_command_output"]) .chat-console-hang.is-expanded:not(.is-error):not(.is-kept):has(.chat-console-out.is-stdout) .chat-console-result-text {
   display: none;
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-nline {
@@ -3384,7 +3384,7 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-con
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-hang:not(.is-expanded) .chat-console-preview + .chat-console-out {
   display: none;
 }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-hang.is-expanded:has(.chat-console-out.is-stdout) .chat-console-result-text {
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step:is([data-tool="run_terminal_command"], [data-tool="get_command_output"]) .chat-console-hang.is-expanded:not(.is-error):not(.is-kept):has(.chat-console-out.is-stdout) .chat-console-result-text {
   display: none;
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-out {
