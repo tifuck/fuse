@@ -1483,8 +1483,6 @@ html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-msg-actions button:
 html[data-chat-console="true"] .chat[data-view="console"] .chat-msg-actions button:hover { color: var(--mist); }
 html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-project-chip,
 html[data-chat-console="true"] .chat[data-view="console"] .chat-project-chip { border-color: var(--line); color: var(--steel); }
-html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-latest > :is(.chat-latest-arrow, .chat-activity-spin),
-html[data-chat-console="true"] .chat[data-view="console"] .chat-latest > :is(.chat-latest-arrow, .chat-activity-spin) { margin-right: 0.5rem; }
 /* Dock stays in the flex layout so transcript clips at a hard edge above it.
    The dock plate stays transparent — only the composer is opaque. */
 html[data-chat-terminal="true"] .chat[data-view="cli"]:not(.is-empty) .chat-dock,
@@ -2830,6 +2828,11 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-con
   text-align: center;
   color: inherit;
   text-shadow: 0 0 0.55em color-mix(in srgb, currentColor 40%, transparent);
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-latest .chat-console-spin {
+  width: auto;
+  font-size: 0.85rem;
+  line-height: 1;
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-dock, .chat-agent-live-dock) .chat-status-shimmer {
   --status-ink: color-mix(in srgb, var(--mist) 62%, var(--ink));

@@ -6062,6 +6062,9 @@ body.is-chat.is-keyboard .chat-dock {
 }
 .chat-latest.is-live .chat-activity-spin { display: grid; }
 .chat-latest.is-live .chat-latest-arrow { display: none; }
+/* Console and Mainframe's glyph is one mono cell, not a loader square: a
+   box that fits it keeps the pill's padding even on both sides. */
+.chat-latest .chat-activity-spin[data-spin-set="console-glyph"] { flex-basis: 0.5rem; width: 0.5rem; }
 /* Automated (wake) injections: collapsed chip instead of a user bubble. */
 .chat-turn.is-auto { align-items: flex-start; }
 .chat-auto-chip {
