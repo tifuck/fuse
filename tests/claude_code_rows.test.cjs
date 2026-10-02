@@ -94,3 +94,13 @@ test('a shell approval card shows the description above the command', () => {
   assert.notEqual(ctx.permCardSignature(rec), ctx.permCardSignature({ ...rec, description: '' }));
   assert.ok(!ctx.permQueueCardHtml({ ...rec, description: '' }).includes('chat-perm-card-desc'));
 });
+
+test('an interrupted call says why, never naming Claude', () => {
+  const ctx = vm.createContext({});
+  for (const name of ['executionState', 'ccInterruptedText']) load(name, ctx);
+  assert.equal(ctx.ccInterruptedText({ name: 'run_terminal_command', status: 'interrupted', execution_status: 'interrupted', error: 'agent is offline', host: 'gpu-box' }), 'Interrupted · gpu-box went offline');
+  assert.equal(ctx.ccInterruptedText({ name: 'run_terminal_command', status: 'interrupted', execution_status: 'cancelled', error: 'cancellation requested; remote termination is not confirmed', termination_confirmed: false }), 'Interrupted · stopped; the process may still be running');
+  assert.equal(ctx.ccInterruptedText({ name: 'search_replace', status: 'interrupted', error: 'Tool interrupted.' }), 'Interrupted · the run ended before it finished');
+  assert.equal(ctx.ccInterruptedText({ name: 'run_terminal_command', status: 'running' }), 'Interrupted · the run ended before it finished');
+  assert.ok(!/claude/i.test(source.slice(source.indexOf('  function ccInterruptedText('), source.indexOf('\n  }', source.indexOf('  function ccInterruptedText(')))));
+});

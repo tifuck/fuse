@@ -11022,7 +11022,7 @@
   function consoleOnlyFold(trace, presentation, verbose) {
     const { running, failed, interrupted } = presentation;
     const name = trace && trace.name;
-    if (interrupted && !running) return { status: "Interrupted · What should Claude do instead?", preview: "", full: "" };
+    if (interrupted && !running) return { status: ccInterruptedText(trace), preview: "", full: "" };
     if (name === "spawn_subagent") {
       const background = toolBackground(trace);
       if (running) {
@@ -11070,6 +11070,24 @@
       return ccErrorFold(String(trace.error || trace.summary || "failed").split("\n"));
     }
     return null;
+  }
+
+  // Why a call stopped short. Fuse marks a call interrupted when Stop
+  // cancelled it, when its host went offline mid-call, or when the run ended
+  // under it; a deadline is a failure ("timed_out"), never this.
+  function ccInterruptedText(trace) {
+    const error = String((trace && trace.error) || "").toLowerCase();
+    const state = trace ? executionState(trace) : "";
+    if (/\b(agent|connector|host) is offline\b|went offline|disconnected/.test(error)) {
+      return `Interrupted · ${trace.host ? `${trace.host} went offline` : "the host went offline"}`;
+    }
+    if (state === "cancelled" || /cancel/.test(error) || (trace && trace.status === "cancelled")) {
+      return trace && trace.termination_confirmed === false && trace.name === "run_terminal_command"
+        ? "Interrupted · stopped; the process may still be running"
+        : "Interrupted · stopped";
+    }
+    if (state === "lost") return "Interrupted · the result was lost";
+    return "Interrupted · the run ended before it finished";
   }
 
   // Background results Claude Code merges: consecutive commands that ended
@@ -11338,6 +11356,7 @@
     let hint;
     let errored = false;
     let interrupted = false;
+    let interruptedTrace = null;
     let runningSince = 0;
     let shell = null;
     const readPaths = new Set();
@@ -11357,7 +11376,10 @@
       const trace = item.entry.trace;
       const presentation = toolPresentation(trace, live);
       if (presentation.failed) errored = true;
-      if (presentation.interrupted) interrupted = true;
+      if (presentation.interrupted) {
+        interrupted = true;
+        interruptedTrace ||= trace;
+      }
       if (presentation.running && !toolBackground(trace)) {
         const since = ccSince(trace);
         runningSince = Math.max(runningSince, since);
@@ -11454,7 +11476,7 @@
       `<div class="chat-step-main">` +
       `<div class="chat-step-head"><button type="button" class="chat-step-toggle" data-step-toggle aria-expanded="${open ? "true" : "false"}">` +
       `<span class="chat-step-label">${label}</span></button></div>` +
-      (interrupted ? hang(`<span class="chat-console-result-text">${isConsoleOnly() ? "Interrupted · What should Claude do instead?" : "Interrupted"}</span>`, " is-group-note") : "") +
+      (interrupted ? hang(`<span class="chat-console-result-text">${escapeHtml(isConsoleOnly() ? ccInterruptedText(interruptedTrace) : "Interrupted")}</span>`, " is-group-note") : "") +
       (hintHtml ? hang(hintHtml, " is-group-hint") : "") +
       `<div class="chat-console-bundle"><ol class="chat-timeline">${rows}</ol></div>` +
       `</div></li>`
