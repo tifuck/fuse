@@ -55,7 +55,7 @@ class DurableCallTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(chat_store, "start_child_run", side_effect=admit), \
                 patch.object(chat_runs, "start", new=AsyncMock(return_value=None)) as start:
             task = asyncio.create_task(agents.spawn(user={"id": 1}, request=None,
-                parent_run_id="parent", arguments='{"prompt":"inspect"}', thread_id=1))
+                parent_run_id="parent", arguments='{"prompt":"inspect","description":"Inspect"}', thread_id=1))
             try:
                 while not entered.is_set():
                     await asyncio.sleep(0)

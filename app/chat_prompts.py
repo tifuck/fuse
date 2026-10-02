@@ -270,8 +270,10 @@ _RISKY_CHILD = (
 )
 _CODING_REPLY = (
     "While working:\n"
-    "- Before your first tool call, say in one short line what you are about to do; between steps, keep "
-    "status lines to a sentence. Do not narrate each tool call.\n"
+    "- Before your first tool call, state in one sentence what you are about to do. While working, give "
+    "short updates at key moments: when you find something, when you change direction, or when you hit "
+    "a blocker. Brief is good — silent is not. One sentence per update is almost always enough; do not "
+    "narrate your internal deliberation.\n"
     "- Reference code as `path:line`.\n"
     "- When weighing options, give a recommendation, not a survey.\n"
     "- The final message must stand alone: what was done, the outcome, what you verified and how, and "

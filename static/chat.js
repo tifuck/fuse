@@ -2654,6 +2654,16 @@
         if (!["running", "queued"].includes(next.status) && next.summary === "Background task started") next.summary = "";
         if (!["running", "queued"].includes(next.status) && next.preview === "still running") next.preview = "";
         if (row.description) next.description = row.description;
+        if (row.subagent_type && !next.subagent_type) next.subagent_type = row.subagent_type;
+        // Claude Code's agent rows: the child's latest calls while it runs,
+        // then "Done (N tool uses · Xk tokens · 1m 5s)".
+        if (Array.isArray(row.recent)) {
+          const same = JSON.stringify(row.recent) === JSON.stringify(trace.agent_recent || null);
+          next.agent_recent = same ? trace.agent_recent : row.recent;
+        }
+        const uses = Object.values(row.tool_counts || {}).reduce((sum, n) => sum + (Number(n) || 0), 0);
+        if (row.tool_counts) next.agent_tool_uses = uses;
+        if (Number(row.context?.used) > 0) next.agent_tokens = Number(row.context.used);
         // The child's total active time; its spawn call returned long before.
         if (!["running", "queued"].includes(next.status) && Number.isFinite(Number(row.work_ms))) next.agent_work_ms = Number(row.work_ms);
         if (row.wake_state) next.wake_state = row.wake_state;
@@ -2729,6 +2739,15 @@
     if (trace.background) rec.background = true;
     if (trace.summary) rec.summary = String(trace.summary).slice(0, 2000);
     if (trace.description) rec.description = String(trace.description).slice(0, 200);
+    if (trace.subagent_type) rec.subagent_type = String(trace.subagent_type).slice(0, 32);
+    for (const key of ["bytes", "http_status", "agent_tool_uses", "agent_tokens", "lines_added", "lines_removed"]) {
+      const n = Number(trace[key]);
+      if (trace[key] != null && Number.isInteger(n) && n >= 0) rec[key] = n;
+    }
+    if (Array.isArray(trace.edited_files) && trace.edited_files.length) {
+      rec.edited_files = trace.edited_files.filter((f) => typeof f === "string" && f).slice(0, 20).map((f) => f.slice(0, 400));
+    }
+    if (trace.edit_diff) rec.edit_diff = String(trace.edit_diff).slice(0, 12000);
     const todos = normalizeTodos(trace.todos);
     if (todos.length) rec.todos = todos;
     if (trace.exit_code != null && Number.isFinite(Number(trace.exit_code))) rec.exit_code = Number(trace.exit_code);
@@ -2820,6 +2839,7 @@
         };
         if (Array.isArray(msg.segments)) row.segments = msg.segments.map((part) => ({ ...part }));
         if (msg.role === "assistant" && msg.elapsedMs != null) row.elapsedMs = msg.elapsedMs;
+        if (msg.role === "assistant" && msg.endedAt) row.endedAt = msg.endedAt;
         if (msg.role === "assistant" && msg.model) row.model = msg.model;
         if (msg.role === "assistant" && msg.stopped) row.stopped = true;
         if (msg.role === "user" && msg.auto) row.auto = true;
@@ -5086,6 +5106,7 @@
       segments: Array.isArray(msg.segments) ? msg.segments : undefined,
       notice: msg.notice || "",
       elapsedMs: msg.elapsedMs ?? null,
+      endedAt: typeof msg.endedAt === "string" ? msg.endedAt : "",
       stopped: Boolean(msg.stopped),
       attachments: Array.isArray(msg.attachments) ? msg.attachments : [],
       auto: Boolean(msg.auto),
@@ -6266,13 +6287,18 @@
     if (monitor) {
       const events = Number(trace.event_count) || 0;
       if (stopped || state === "timed_out") { text = `Monitor "${label}" stopped`; tone = "gold"; }
-      else if (trace.status === "done") text = events ? `Monitor "${label}" stream ended` : `Monitor "${label}" ended without producing output`;
+      else if (trace.status === "done") {
+        text = events ? `Monitor "${label}" stream ended` : `Monitor "${label}" ended without producing output`;
+        if (isConsoleOnly()) tone = "green";
+      }
       else { text = `Monitor "${label}" script failed${exit !== null ? ` (exit ${exit})` : ""}`; tone = "red"; }
     } else if (stopped) {
       text = `Background command "${label}" was stopped`;
       tone = "gold";
     } else if (trace.status === "done") {
-      text = `Background command "${label}" completed${exit !== null && exit !== 0 ? ` (exit code ${exit})` : ""}`;
+      // Console prints the exit code even when it is 0, with a green dot.
+      text = `Background command "${label}" completed${exit !== null && (exit !== 0 || isConsoleOnly()) ? ` (exit code ${exit})` : ""}`;
+      if (isConsoleOnly()) tone = "green";
     } else {
       text = `Background command "${label}" failed${exit !== null ? ` with exit code ${exit}` : ""}`;
       tone = "red";
@@ -6291,7 +6317,7 @@
     const article = document.createElement("article");
     article.className = "chat-turn is-user is-auto-steps";
     article.setAttribute("aria-label", "Background command results");
-    const steps = msg.autoSteps
+    const steps = isConsoleOnly() ? consoleAutoStepsHtml(msg) : msg.autoSteps
       .map((trace, i) => isConsoleView() && trace.backgroundResult && trace.status !== "running"
         ? consoleWakeNoticeHtml(trace)
         : toolStepHtml(trace, "wake-" + (msg.id || "") + "-" + i, false, false, null))
@@ -8021,7 +8047,7 @@
     if (["kill_command", "kill_subagent", "todo_write", "list_subagents", "scratch"].includes(name)) {
       return `<span class="chat-console-call"><span class="chat-tool-action">${escapeHtml(verb)}</span></span>`;
     }
-    if (name === "run_terminal_command" && running && !toolBackground(trace) && !full) {
+    if (name === "run_terminal_command" && running && !toolBackground(trace) && !full && !isConsoleOnly()) {
       const label = String((trace && trace.progressLabel) || "").trim() || "Running";
       return `<span class="chat-console-call"><span class="chat-tool-action">${escapeHtml(label)}</span></span>`;
     }
@@ -8030,12 +8056,19 @@
     const path = ["read_file", "write_file", "search_replace", "list_dir", "run_terminal_command", "get_command_output"].includes(name);
     if (["read_file", "write_file", "search_replace", "list_dir"].includes(name)) {
       inner = consoleArgText(compactPath(trace.path || ".", trace, 88), 88);
+    } else if (name === "run_terminal_command" && isConsoleOnly() && ccSedEdit(displayCommand(trace))) {
+      inner = consoleArgText(compactPath(ccSedEdit(displayCommand(trace)).file, trace, 88), 88);
     } else if (name === "run_terminal_command") {
       inner = full ? displayCommand(trace) || "command" : consoleArgText(displayCommand(trace) || "command", 140);
     } else if (name === "get_command_output") {
       inner = consoleArgText(commandOrigin(trace)?.description || displayCommand(trace) || "command", 140);
     } else if (name === "monitor") {
       inner = consoleArgText(trace.description || trace.url || displayCommand(trace) || "watch", 100);
+    } else if ((name === "grep" || name === "glob") && isConsoleOnly()) {
+      // Claude Code: Search(pattern: "x", path: "src")
+      const pattern = consoleArgText(trace.pattern || trace.query || "", 80);
+      const where = String(trace.path || "").trim();
+      inner = `pattern: "${pattern}"` + (where ? `, path: "${consoleArgText(compactPath(where, trace, 60), 60)}"` : "");
     } else if (name === "grep" || name === "glob") {
       inner = consoleArgText(trace.pattern || trace.query || "pattern", 90);
     } else if (name === "read_url") {
@@ -8210,6 +8243,10 @@
   //   Grep    "Found 12 lines" / Glob "Found 3 files"; the list on expand
   //   Search  "Did 2 searches in 3s"
   function consoleFold(trace, presentation, verbose) {
+    if (isConsoleOnly()) {
+      const own = consoleOnlyFold(trace, presentation, verbose);
+      if (own) return own;
+    }
     const { running, failed } = presentation;
     const name = trace && trace.name;
     const shell = name === "run_terminal_command" || name === "get_command_output";
@@ -8281,7 +8318,11 @@
       const n = none ? 0 : name === "list_dir" ? consoleLineCount(trace) : consoleMatchCount(trace);
       const unit = name === "list_dir" ? (n === 1 ? "entry" : "entries")
         : name === "grep" && /:\d+:/.test(body) ? (n === 1 ? "line" : "lines") : (n === 1 ? "file" : "files");
-      return { status: `${name === "list_dir" ? "Listed" : "Found"} ${n} ${unit}`, preview: "", full: n ? detail() : "" };
+      // Content matches name their files too: "Found 12 lines across 3 files".
+      const files = isConsoleOnly() && name === "grep" && n && /:\d+:/.test(body)
+        ? new Set(body.split("\n").map((line) => (line.match(/^(.*?):\d+:/) || [])[1]).filter(Boolean)).size : 0;
+      const across = files ? ` across ${files} ${files === 1 ? "file" : "files"}` : "";
+      return { status: `${name === "list_dir" ? "Listed" : "Found"} ${n} ${unit}${across}`, preview: "", full: n ? detail() : "" };
     }
     if (isSearchTool(name)) {
       const n = searchCountFor(trace);
@@ -8296,6 +8337,8 @@
   function consoleStatusHtml(text) {
     return escapeHtml(text)
       .replace(/^(Read|Wrote|Added|Removed|Found|Listed) (\d[\d,]*)/, "$1 <b>$2</b>")
+      .replace(/^(Received) (\S+)/, "$1 <b>$2</b>")
+      .replace(/( across )(\d[\d,]*)/, "$1<b>$2</b>")
       .replace(/(, removed )(\d[\d,]*)/, "$1<b>$2</b>")
       .replace(/^(Wrote <b>[^<]*<\/b> lines? to )(.+)$/, "$1<b>$2</b>");
   }
@@ -8362,11 +8405,21 @@
     if (running && name === "run_terminal_command" && toolBackground(trace)) return "Running in the background";
     if (running && name === "run_terminal_command") return `$ ${displayCommand(trace) || "command"}`;
     if (running && name === "spawn_subagent") return "Backgrounded agent";
+    if (isConsoleOnly() && name === "monitor" && !failed) {
+      // The call returns at once; events print as their own rows.
+      const id = trace.command_id || trace.job_id || executionIdentity(trace) || "";
+      const timeout = Number(trace.timeout_ms);
+      return `Monitor started${id ? ` · task ${id}` : ""}${Number.isFinite(timeout) && timeout > 0 ? ` · timeout ${Math.round(timeout / 1000)}s` : ""}`;
+    }
+    if (running && isConsoleOnly() && name === "read_url") return "Fetching…";
     if (running) return presentation.statusLabel === "Cancelling" ? "Cancelling…" : "Running…";
     if (failed) return String(trace.error || trace.summary || "failed").replace(/\s+/g, " ").trim();
     if (interrupted) return "Interrupted";
     if (trace.wake_state === "dropped") return "Report not delivered";
     const preview = String(trace.preview || trace.summary || "").replace(/\s+/g, " ").trim();
+    if (name === "read_url" && isConsoleOnly() && Number(trace.bytes) > 0) {
+      return `Received ${ccBytes(trace.bytes)} (${Number(trace.http_status) || 200} OK)`;
+    }
     if (name === "read_url") {
       const host = pageHost(trace.url);
       if (preview && preview !== "still running" && preview.length < 72) return preview;
@@ -8464,6 +8517,11 @@
 
   function consoleVerb(name, trace) {
     if (name === "fuse-steer") return "notice";
+    if (isConsoleOnly()) {
+      if (name === "grep" || name === "glob") return "Search";
+      if (name === "spawn_subagent") return ccAgentType(trace);
+      if (name === "run_terminal_command" && ccSedEdit(displayCommand(trace))) return "Update";
+    }
     if (isSearchTool(name)) return "Web Search";
     if (name === "read_url") return "Fetch";
     if (name === "read_file") return "Read";
@@ -9662,6 +9720,8 @@
       path,
       why,
       command: rec.tool === "run_terminal_command" ? String(rec.command || "").trim() : "",
+      // The model's label for the command, above it as in Claude Code's dialog.
+      description: shell ? String(rec.description || "").replace(/\s+/g, " ").trim() : "",
       host: rec.host || "",
     };
   }
@@ -9680,7 +9740,7 @@
   }
 
   function permCardSignature(rec) {
-    return [rec.tool, rec.host, rec.path, rec.cwd, rec.command, rec.requester, rec.secret ? "1" : "0", rec.grant_kind || "", rec.grant_value || "", (rec.reasons || []).join("|")].join("\0");
+    return [rec.tool, rec.host, rec.path, rec.cwd, rec.command, rec.description || "", rec.requester, rec.secret ? "1" : "0", rec.grant_kind || "", rec.grant_value || "", (rec.reasons || []).join("|")].join("\0");
   }
 
   function parseCssRgb(raw, fallback) {
@@ -9747,9 +9807,10 @@
     const grant = copy.path
       ? `<p class="chat-perm-card-grant"><span class="chat-perm-card-kind">${escapeHtml(copy.noun)}</span><span class="mono chat-perm-card-path" title="${escapeHtml(copy.path)}">${escapeHtml(copy.path)}</span></p>`
       : "";
+    const desc = copy.description ? `<p class="chat-perm-card-desc">${escapeHtml(copy.description)}</p>` : "";
     const body = copy.command
-      ? `${grant}<pre class="chat-perm-card-cmd mono">${escapeHtml(copy.command)}</pre>`
-      : (grant || `<p class="chat-perm-card-detail mono">${escapeHtml(copy.path || "this location")}</p>`);
+      ? `${grant}${desc}<pre class="chat-perm-card-cmd mono">${escapeHtml(copy.command)}</pre>`
+      : `${desc}${grant || `<p class="chat-perm-card-detail mono">${escapeHtml(copy.path || "this location")}</p>`}`;
     const expires = rec.expires_at || rec.expiresAt || "";
     const left = permLeftS(expires);
     const frac = left == null ? 1 : Math.max(0, Math.min(1, left / PERM_TOTAL_S));
@@ -10654,6 +10715,8 @@
     if (name === "list_dir") return { kind: "list" };
     if (name === "search_tools") return { kind: "silent" };
     if (name === "run_terminal_command") {
+      // A call that changed files prints on its own row with its diff (Console).
+      if (isConsoleOnly() && Array.isArray(trace.edited_files) && trace.edited_files.length) return null;
       if (trace.platform === "windows") return { kind: "bash" };
       const kind = ccShellKind(displayCommand(trace));
       if (kind.isList) return { kind: "list", shell: true };
@@ -10662,6 +10725,506 @@
       return { kind: "bash" };
     }
     return null;
+  }
+
+  // —— Console only (Mainframe keeps its own rendering) ——
+  // How Claude Code prints each call and its states: Bash waiting on output,
+  // subagents running and finished, fetches, monitors and failures.
+  function isConsoleOnly() {
+    return chatView === "console";
+  }
+
+  // Claude Code's counts: tokens compact and lower-case ("32.1k"), bytes as
+  // a fetch reports them ("12.3KB"), deadlines without trailing zero units.
+  const CC_COMPACT = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
+  function ccTokens(n) {
+    const value = Math.max(0, Math.round(Number(n) || 0));
+    return value >= 1000 ? CC_COMPACT.format(value).toLowerCase() : String(value);
+  }
+
+  function ccBytes(n) {
+    const bytes = Math.max(0, Math.round(Number(n) || 0));
+    const fixed = (value) => value.toFixed(1).replace(/\.0$/, "");
+    if (bytes < 1024) return `${bytes} bytes`;
+    if (bytes < 1024 * 1024) return `${fixed(bytes / 1024)}KB`;
+    if (bytes < 1024 ** 3) return `${fixed(bytes / 1024 / 1024)}MB`;
+    return `${fixed(bytes / 1024 ** 3)}GB`;
+  }
+
+  function ccDeadline(ms) {
+    const value = Math.max(0, Number(ms) || 0);
+    if (value < 60000) return `${Math.floor(value / 1000)}s`;
+    const h = Math.floor(value / 3600000);
+    const m = Math.floor((value % 3600000) / 60000);
+    const sec = Math.round((value % 60000) / 1000);
+    if (h > 0) return m || sec ? `${h}h ${m}m${sec ? ` ${sec}s` : ""}` : `${h}h`;
+    return sec ? `${m}m ${sec}s` : `${m}m`;
+  }
+
+  // Exit codes Claude Code does not call a failure: exit 1 from grep, find,
+  // diff or test means "nothing found" / "differs" / "false".
+  const CC_EXIT_NOTES = {
+    grep: "No matches found", rg: "No matches found", egrep: "No matches found", fgrep: "No matches found",
+    find: "Some directories were inaccessible", diff: "Files differ", test: "Condition is false", "[": "Condition is false",
+  };
+  function ccExitMeaning(command, code) {
+    if (code === null || code === 0) return { isError: false, message: "" };
+    const segments = ccShellSegments(command);
+    const words = String(segments[segments.length - 1] || command || "").trim().split(/\s+/);
+    let note = CC_EXIT_NOTES[words[0]];
+    if (words[0] === "git") {
+      let sub = "";
+      for (let i = 1; i < words.length; i += 1) {
+        if (words[i].startsWith("-")) { if (words[i] === "-C" || words[i] === "-c") i += 1; continue; }
+        sub = words[i];
+        break;
+      }
+      if (sub === "diff") note = "Files differ";
+      if (sub === "grep") note = "No matches found";
+    }
+    if (note === undefined) return { isError: true, message: "" };
+    return { isError: code >= 2, message: code === 1 ? note : "" };
+  }
+
+  // Words of a plain command (quotes resolved). Null when it uses anything
+  // the shell would expand or chain.
+  function ccShellWords(text) {
+    const words = [];
+    let cur = "";
+    let quote = "";
+    let started = false;
+    for (let i = 0; i < text.length; i += 1) {
+      const ch = text[i];
+      if (quote) {
+        if (ch === quote) quote = "";
+        else if (quote === '"' && (ch === "$" || ch === "`")) return null;
+        else if (quote === '"' && ch === "\\" && i + 1 < text.length) cur += text[++i];
+        else cur += ch;
+        continue;
+      }
+      if (ch === "'" || ch === '"') { quote = ch; started = true; continue; }
+      if (ch === "\\" && i + 1 < text.length) { cur += text[++i]; started = true; continue; }
+      if (/\s/.test(ch)) {
+        if (started) words.push(cur);
+        cur = "";
+        started = false;
+        continue;
+      }
+      if (/[$`|;&<>(){}*?[\]#~]/.test(ch)) return null;
+      cur += ch;
+      started = true;
+    }
+    if (quote) return null;
+    if (started) words.push(cur);
+    return words;
+  }
+
+  // `sed -i 's/a/b/' file` on one file: Claude Code prints it as Update(file).
+  function ccSedEdit(command) {
+    const words = ccShellWords(String(command || "").trim());
+    if (!words || words[0] !== "sed") return null;
+    let inPlace = false;
+    let expr = null;
+    let file = null;
+    for (let i = 1; i < words.length; i += 1) {
+      const word = words[i];
+      if (word === "-i" || word === "--in-place") {
+        inPlace = true;
+        const next = words[i + 1];
+        if (next !== undefined && !next.startsWith("-") && (next === "" || next.startsWith("."))) i += 1;
+        continue;
+      }
+      if (word.startsWith("-i")) { inPlace = true; continue; }
+      if (word === "-E" || word === "-r" || word === "--regexp-extended") continue;
+      if (word === "-e" || word === "--expression") {
+        if (expr !== null || i + 1 >= words.length) return null;
+        expr = words[++i];
+        continue;
+      }
+      if (word.startsWith("--expression=")) {
+        if (expr !== null) return null;
+        expr = word.slice(13);
+        continue;
+      }
+      if (word.startsWith("-")) return null;
+      if (expr === null) expr = word;
+      else if (file === null) file = word;
+      else return null;
+    }
+    if (!inPlace || !expr || !file || !expr.startsWith("s/")) return null;
+    let part = 0;
+    let flags = "";
+    for (let i = 2; i < expr.length; i += 1) {
+      if (expr[i] === "\\") { i += 1; continue; }
+      if (expr[i] === "/") { part += 1; if (part > 2) return null; continue; }
+      if (part === 2) flags += expr[i];
+    }
+    if (part !== 2 || !/^[gpimIM1-9]*$/.test(flags)) return null;
+    return { file };
+  }
+
+  // A failure prints red: "Error: …", the first 10 lines, the rest on expand.
+  function ccErrorFold(lines) {
+    const all = lines.map((line) => String(line ?? ""));
+    if (!all.length) all.push("failed");
+    if (!/^(Error|Cancelled): /.test(all[0])) all[0] = `Error: ${all[0]}`;
+    const show = all.slice(0, 10);
+    const hidden = all.length - show.length;
+    const html = (rows) => `<div class="chat-console-lines is-error">${rows.map((line) => `<div class="chat-console-stdout">${renderAnsi(line) || " "}</div>`).join("")}</div>`;
+    return {
+      status: "",
+      preview: html(show) + (hidden > 0 ? `<div class="chat-console-more">… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : ""),
+      full: hidden > 0 ? html(all) : "",
+      keep: true,
+    };
+  }
+
+  function ccShellClock(since, timeout) {
+    const took = ccDuration(Math.max(0, Date.now() - since));
+    return timeout > 0 ? `(${took} · timeout ${ccDeadline(timeout)})` : `(${took})`;
+  }
+
+  // A running command: "Running… (12s · timeout 30m)", or its last 5 output
+  // lines with "+N lines (12s · timeout 30m)" under them.
+  function ccShellProgressHtml(trace) {
+    const raw = typeof trace.output === "string" ? cleanToolOutput(trace, trace.output) : "";
+    const lines = String(raw).replace(/\r\n?/g, "\n").split("\n").filter((line) => line.trim());
+    const since = ccSince(trace);
+    const timeout = Math.max(0, Number(trace.timeout_ms) || 0);
+    const clock = `<span data-cc-clock="shell" data-since="${since}" data-timeout="${timeout}">${ccShellClock(since, timeout)}</span>`;
+    if (!lines.length) return `<div class="chat-console-progress"><span class="chat-console-dim">Running… ${clock}</span></div>`;
+    const tail = lines.slice(-5).map((line) => line.length > 400 ? line.slice(0, 399) + "…" : line);
+    const more = lines.length - tail.length;
+    return `<div class="chat-console-progress is-tail">${consoleStdoutHtml(tail)}` +
+      `<div class="chat-console-dim">${more > 0 ? `+${more} ${more === 1 ? "line" : "lines"} ` : ""}${clock}</div></div>`;
+  }
+
+  // A child's calls as Claude Code names them ("Bash: Run the tests").
+  const CC_CALL_NAMES = {
+    read_file: "Read", grep: "Search", glob: "Search", list_dir: "List", run_terminal_command: "Bash",
+    search_replace: "Update", write_file: "Write", read_url: "Fetch", web_search: "Web Search",
+    spawn_subagent: "Agent", monitor: "Monitor", get_command_output: "Wait", kill_command: "Stop Task",
+  };
+  function ccCallName(item) {
+    return CC_CALL_NAMES[item && item.name] || String((item && item.name) || "tool");
+  }
+
+  function ccCallSummary(item) {
+    if (!item) return "";
+    const clip = (value) => ccClip(ccFlat(value), 50);
+    switch (item.name) {
+      case "run_terminal_command": return clip(item.description || item.command);
+      case "read_file": case "write_file": case "search_replace": case "list_dir": return item.path ? compactPath(item.path, item, 50) : "";
+      case "grep": case "glob": return clip(item.pattern);
+      case "read_url": return clip(item.url);
+      case "web_search": return clip(item.query);
+      case "spawn_subagent": case "monitor": return clip(item.description);
+      default: return clip(item.description || item.command || item.path || item.pattern || item.url || item.query || "");
+    }
+  }
+
+  function ccCallKind(item) {
+    const name = item && item.name;
+    if (name === "read_file") return "read";
+    if (name === "grep" || name === "glob") return "search";
+    if (name === "run_terminal_command") {
+      const kind = ccShellKind(item.command || "");
+      if (kind.isSearch) return "search";
+      if (kind.isRead) return "read";
+    }
+    return "";
+  }
+
+  function ccCountsText(search, read, active) {
+    const parts = [];
+    const add = (verb, rest) => parts.push(`${parts.length ? verb : verb.charAt(0).toUpperCase() + verb.slice(1)} ${rest}`);
+    if (search) add(active ? "searching for" : "searched for", `${search} ${search === 1 ? "pattern" : "patterns"}`);
+    if (read) add(active ? "reading" : "read", `${read} ${read === 1 ? "file" : "files"}`);
+    return parts.join(", ") + (active ? "…" : "");
+  }
+
+  // What a running child is doing, as Claude Code's agent rows say it: two or
+  // more reads/searches in a row as a count, else its latest finished call.
+  function ccAgentLastCall(recent) {
+    const items = Array.isArray(recent) ? recent : [];
+    let search = 0;
+    let read = 0;
+    for (let i = items.length - 1; i >= 0; i -= 1) {
+      const kind = ccCallKind(items[i]);
+      if (kind === "search") search += 1;
+      else if (kind === "read") read += 1;
+      else break;
+    }
+    if (search + read >= 2) return ccCountsText(search, read, true);
+    const done = [...items].reverse().find((item) => item && item.status && item.status !== "running");
+    if (!done) return "";
+    const summary = ccCallSummary(done);
+    return summary ? `${ccCallName(done)}: ${summary}` : ccCallName(done);
+  }
+
+  function ccCallLine(item) {
+    const name = ccCallName(item);
+    const arg = item.name === "run_terminal_command" ? ccClip(ccFlat(item.command), 80) : ccCallSummary(item);
+    return arg ? `${name}(${arg})` : name;
+  }
+
+  // A running foreground subagent: its last 3 steps (reads and searches in a
+  // row fold into one count), then "… +N tool uses".
+  function ccAgentProgressHtml(trace) {
+    const items = Array.isArray(trace.agent_recent) ? trace.agent_recent : [];
+    if (!items.length) return "";
+    const entries = [];
+    items.forEach((item) => {
+      const kind = ccCallKind(item);
+      const last = entries[entries.length - 1];
+      if (kind && last && last.counts) {
+        last.counts[kind] += 1;
+        last.calls += 1;
+        return;
+      }
+      if (kind) entries.push({ counts: { search: kind === "search" ? 1 : 0, read: kind === "read" ? 1 : 0 }, calls: 1 });
+      else entries.push({ item, calls: 1 });
+    });
+    const shown = entries.slice(-3);
+    const shownCalls = shown.reduce((sum, entry) => sum + entry.calls, 0);
+    const total = Math.max(Number(trace.agent_tool_uses) || 0, items.length);
+    const hidden = Math.max(0, total - shownCalls);
+    const rows = shown.map((entry, index) => {
+      const text = entry.counts
+        ? ccCountsText(entry.counts.search, entry.counts.read, index === shown.length - 1)
+        : ccCallLine(entry.item);
+      return `<div class="chat-console-agent-step">${escapeHtml(text)}</div>`;
+    }).join("");
+    return `<div class="chat-console-progress is-agent">${rows}` +
+      (hidden > 0 ? `<div class="chat-console-more">… +${hidden} ${hidden === 1 ? "tool use" : "tool uses"}</div>` : "") + `</div>`;
+  }
+
+  function ccAgentType(trace) {
+    const type = String((trace && trace.subagent_type) || "").trim();
+    if (!type || type === "general-purpose") return "Agent";
+    return type.charAt(0).toUpperCase() + type.slice(1);
+  }
+
+  // "Done (14 tool uses · 32.1k tokens · 1m 5s)"
+  function ccAgentDoneText(trace) {
+    const uses = Number(trace.agent_tool_uses);
+    const tokens = Number(trace.agent_tokens);
+    const work = Number(trace.agent_work_ms);
+    const parts = [];
+    if (Number.isFinite(uses) && uses >= 0 && trace.agent_tool_uses != null) parts.push(uses === 1 ? "1 tool use" : `${uses} tool uses`);
+    if (Number.isFinite(tokens) && tokens > 0) parts.push(`${ccTokens(tokens)} tokens`);
+    if (Number.isFinite(work) && work >= 0 && trace.agent_work_ms != null) parts.push(ccDuration(Math.max(1000, work)));
+    return parts.length ? `Done (${parts.join(" · ")})` : "Done";
+  }
+
+  // Claude Code's row for one call, by tool and state. Null falls through to
+  // consoleFold's shared rendering.
+  function consoleOnlyFold(trace, presentation, verbose) {
+    const { running, failed, interrupted } = presentation;
+    const name = trace && trace.name;
+    if (interrupted && !running) return { status: "Interrupted · What should Claude do instead?", preview: "", full: "" };
+    if (name === "spawn_subagent") {
+      const background = toolBackground(trace);
+      if (running) {
+        if (background) return { status: "Backgrounded agent", preview: "", full: "" };
+        const progress = ccAgentProgressHtml(trace);
+        return progress ? { status: "", preview: progress, full: "" } : { status: "Initializing…", preview: "", full: "" };
+      }
+      if (failed) {
+        const fold = ccErrorFold(String(trace.error || trace.summary || "Subagent failed").split("\n"));
+        const progress = ccAgentProgressHtml(trace);
+        return { ...fold, preview: progress + fold.preview };
+      }
+      return { status: ccAgentDoneText(trace), preview: "", full: "" };
+    }
+    if (name === "run_terminal_command") {
+      if (toolBackground(trace)) {
+        const out = running ? "" : consoleDetailHtml(trace, false, false);
+        return { status: "Running in the background", preview: "", full: consoleSameText(out, "") ? "" : out, keep: true };
+      }
+      if (running) return { status: "", preview: ccShellProgressHtml(trace), full: "" };
+      const raw = typeof trace.output === "string" ? cleanToolOutput(trace, trace.output)
+        : [trace.preview, trace.summary].find((value) => { const text = String(value || "").trim(); return text && text !== "still running" && text !== "background task started"; }) || "";
+      const lines = String(raw).replace(/\s+$/, "").split("\n");
+      const empty = !String(raw).trim();
+      const exit = shellExitCode(trace);
+      const meaning = ccExitMeaning(displayCommand(trace), exit);
+      if (failed || meaning.isError) {
+        const head = exit !== null && exit !== 0 ? `Exit code ${exit}` : ccFlat(trace.error || trace.summary || "failed");
+        return ccErrorFold([head, ...(empty ? [] : lines)]);
+      }
+      const diff = trace.edit_diff ? consoleDiffHtml(String(trace.edit_diff).replace(/\s+$/, "")) : "";
+      const change = consoleChangeText(Number(trace.lines_added) || 0, Number(trace.lines_removed) || 0);
+      if (empty) return { status: diff ? change || "Updated" : meaning.message || "(No output)", preview: diff, full: "" };
+      const show = lines.length === 4 ? 4 : 3;
+      const cut = lines.slice(0, show).map((line) => line.length > 400 ? line.slice(0, 399) + "…" : line);
+      const hidden = lines.length - cut.length;
+      const clipped = hidden > 0 || cut.some((line, i) => line !== lines[i]);
+      return {
+        status: "",
+        preview: consoleStdoutHtml(cut) + (hidden > 0 ? `<div class="chat-console-more">… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : "") + diff,
+        full: clipped ? consoleDetailHtml(trace, false, false) + diff : "",
+      };
+    }
+    if (failed && name !== "run_terminal_command" && name !== "get_command_output") {
+      return ccErrorFold(String(trace.error || trace.summary || "failed").split("\n"));
+    }
+    return null;
+  }
+
+  // Background results Claude Code merges: consecutive commands that ended
+  // cleanly print as "3 background commands completed".
+  function ccCleanBackgroundEnd(trace) {
+    if (!trace || trace.name !== "run_terminal_command" || !trace.backgroundResult || trace.status !== "done") return false;
+    const state = executionState(trace);
+    if (["cancelled", "interrupted", "lost", "timed_out"].includes(state)) return false;
+    const exit = shellExitCode(trace);
+    return exit === null || exit === 0;
+  }
+
+  // "● Monitor event: <first line> · <description>"
+  function consoleMonitorEventHtml(trace) {
+    const first = String(trace.preview || trace.summary || "").split("\n").map((line) => line.trim()).find(Boolean) || "event";
+    const label = ccFlat(trace.description) || ccFlat(trace.url) || ccFlat(displayCommand(trace)) || "monitor";
+    return (
+      `<li class="chat-step is-console-notice is-plain">` +
+      `<span class="chat-step-node" aria-hidden="true"></span>` +
+      `<div class="chat-step-main"><span class="chat-console-notice-text">Monitor event: ${escapeHtml(ccClip(ccFlat(first), 160))}` +
+      `<span class="chat-console-dim"> · ${escapeHtml(label)}</span></span></div></li>`
+    );
+  }
+
+  function consoleAutoStepsHtml(msg) {
+    const traces = msg.autoSteps || [];
+    const out = [];
+    for (let i = 0; i < traces.length; i += 1) {
+      const trace = traces[i];
+      if (trace.name === "monitor" && trace.backgroundResult && trace.status === "running") {
+        out.push(consoleMonitorEventHtml(trace));
+        continue;
+      }
+      if (trace.backgroundResult && trace.status !== "running") {
+        let j = i;
+        while (ccCleanBackgroundEnd(traces[i]) && j + 1 < traces.length && ccCleanBackgroundEnd(traces[j + 1])) j += 1;
+        if (j > i) {
+          out.push(
+            `<li class="chat-step is-console-notice is-green">` +
+            `<span class="chat-step-node" aria-hidden="true"></span>` +
+            `<div class="chat-step-main"><span class="chat-console-notice-text">${j - i + 1} background commands completed</span></div></li>`
+          );
+          i = j;
+          continue;
+        }
+        out.push(consoleWakeNoticeHtml(trace));
+        continue;
+      }
+      out.push(toolStepHtml(trace, "wake-" + (msg.id || "") + "-" + i, false, false, null));
+    }
+    return out.join("");
+  }
+
+  // Subagents started together: one block, as Claude Code prints parallel
+  // Agent calls ("Running 3 Explore agents…", then "3 agents finished").
+  function ccAgentsGroupHtml(agents, live) {
+    const rows = agents.map(({ entry }) => {
+      const trace = entry.trace;
+      const presentation = toolPresentation(trace, live);
+      return { trace, presentation, background: toolBackground(trace), type: ccAgentType(trace) };
+    });
+    const unresolved = rows.some((row) => row.presentation.running);
+    const errored = rows.some((row) => row.presentation.failed);
+    const allBackground = rows.every((row) => row.background);
+    const sameType = rows.every((row) => row.type === rows[0].type);
+    const typeLabel = sameType && rows[0].type !== "Agent" ? `${rows[0].type} agents` : "agents";
+    const n = rows.length;
+    const head = !unresolved
+      ? (allBackground ? `<b>${n}</b> background agents launched` : `<b>${n}</b> ${escapeHtml(typeLabel)} finished`)
+      : `Running <b>${n}</b> ${escapeHtml(typeLabel)}…`;
+    const items = rows.map((row, index) => {
+      const { trace, presentation, background } = row;
+      const last = index === rows.length - 1;
+      const description = ccFlat(agentSubject(trace) || trace.description || "");
+      const label = sameType
+        ? `<b>${escapeHtml(description || row.type)}</b>`
+        : `<b>${escapeHtml(row.type)}</b>${description ? ` (${escapeHtml(description)})` : ""}`;
+      const resolvedBackground = background && !presentation.running;
+      const uses = Number(trace.agent_tool_uses);
+      const tokens = Number(trace.agent_tokens);
+      const stats = resolvedBackground ? "" :
+        ` · ${Number.isFinite(uses) ? uses : 0} ${uses === 1 ? "tool use" : "tool uses"}${Number.isFinite(tokens) && tokens > 0 ? ` · ${ccTokens(tokens)} tokens` : ""}`;
+      const status = presentation.running
+        ? (background ? "Running in the background" : ccAgentLastCall(trace.agent_recent) || "Initializing…")
+        : presentation.failed ? "Failed" : presentation.interrupted ? "Interrupted" : "Done";
+      const sub = resolvedBackground ? "" :
+        `<div class="chat-console-agent-sub"><span class="chat-console-branch" aria-hidden="true">${last ? " " : "│"}</span><span class="chat-console-dim"><span aria-hidden="true">└ </span>${escapeHtml(status)}</span></div>`;
+      return (
+        `<li class="chat-console-agent${presentation.running ? " is-running" : ""}${presentation.failed ? " is-error" : ""}" data-open-agent="${escapeHtml(trace.child_id || "")}">` +
+        `<div class="chat-console-agent-line"><span class="chat-console-branch" aria-hidden="true">${last ? "└─" : "├─"}</span>` +
+        `<span class="chat-console-agent-name${presentation.running ? " is-dim" : ""}">${label}${escapeHtml(stats)}</span></div>${sub}</li>`
+      );
+    }).join("");
+    const state = unresolved ? `is-running${errored ? " is-errored" : ""}` : errored ? "is-error" : "is-done";
+    return (
+      `<li class="chat-step is-console-group is-console-agents ${state}" data-step="agents-${escapeHtml(executionIdentity(rows[0].trace))}">` +
+      `<span class="chat-step-node" aria-hidden="true"></span>` +
+      `<div class="chat-step-main"><div class="chat-step-head"><span class="chat-step-label">${head}</span></div>` +
+      `<ul class="chat-console-agent-tree">${items}</ul></div></li>`
+    );
+  }
+
+  // The turn's last line: "✻ Cooked for 2m 13s · done 3:42 PM", or what it
+  // still waits on. The verb is fixed per message, as in Claude Code.
+  const CC_TURN_VERBS = ["Baked", "Brewed", "Churned", "Cogitated", "Cooked", "Crunched", "Sautéed", "Worked"];
+  function ccTurnVerb(msg) {
+    const key = String((msg && msg.id) || "");
+    if (!key) return "Worked";
+    let hash = 0;
+    for (let i = 0; i < key.length; i += 1) hash = (Math.imul(hash, 31) + key.charCodeAt(i)) | 0;
+    return CC_TURN_VERBS[(hash >>> 0) % CC_TURN_VERBS.length];
+  }
+
+  function ccDoneAt(stamp) {
+    const when = new Date(stamp || "");
+    if (!stamp || Number.isNaN(when.getTime())) return "";
+    const time = when.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const startOf = (date) => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+    const days = Math.round((startOf(new Date()) - startOf(when)) / 86400000);
+    if (days === 0) return time;
+    if (days > 0 && days < 7) return `${when.toLocaleDateString([], { weekday: "long" })} ${time}`;
+    return `${when.toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" })}, ${time}`;
+  }
+
+  function ccStillRunningText() {
+    try { return ccStillRunningCount(); } catch { return ""; }
+  }
+
+  function ccStillRunningCount() {
+    const running = (jobsRows || []).filter((job) => ["running", "queued", "cancelling"].includes(String(job.state || job.status || "")));
+    const monitors = running.filter((job) => job.kind === "monitor").length;
+    const shells = running.length - monitors;
+    const agents = (agentsRows || []).filter((row) => agentLive(row.status)).length;
+    const parts = [];
+    if (shells) parts.push(shells === 1 ? "1 shell" : `${shells} shells`);
+    if (monitors) parts.push(monitors === 1 ? "1 monitor" : `${monitors} monitors`);
+    if (agents) parts.push(agents === 1 ? "1 local agent" : `${agents} local agents`);
+    if (parts.length > 1) {
+      const total = shells + monitors + agents;
+      return `${total} background tasks`;
+    }
+    return parts[0] || "";
+  }
+
+  function ccTurnLineHtml(msg, latest) {
+    if (msg.elapsedMs == null) return "";
+    const pendingAgents = latest ? (agentsRows || []).filter((row) => agentLive(row.status)).length : 0;
+    const head = `<span class="chat-console-turn-mark" aria-hidden="true">✻</span> `;
+    if (pendingAgents) {
+      return `${head}<span>Waiting for <b>${pendingAgents}</b> background ${pendingAgents === 1 ? "agent" : "agents"} to finish</span>`;
+    }
+    const done = ccDoneAt(msg.endedAt);
+    const still = latest ? ccStillRunningText() : "";
+    return `${head}<span>${escapeHtml(ccTurnVerb(msg))} for ${escapeHtml(ccDuration(Math.max(0, Number(msg.elapsedMs) || 0)))}` +
+      `${done ? ` · done ${escapeHtml(done)}` : ""}${still ? ` · ${escapeHtml(still)} still running` : ""}</span>`;
   }
 
   // The hint under a live line: "$ command" (comment-only commands show the
@@ -10745,6 +11308,7 @@
       const since = Number(el.dataset.since) || 0;
       const kind = el.dataset.ccClock;
       const text = kind === "think" ? ccThinkClock(Number(el.dataset.base) || 0, since)
+        : kind === "shell" ? ccShellClock(since, Number(el.dataset.timeout) || 0)
         : kind === "suffix" ? ccShellSuffix(since, Number(el.dataset.lines) || 0)
         : ccElapsedText(since);
       if (el.textContent !== text) el.textContent = text;
@@ -10890,7 +11454,7 @@
       `<div class="chat-step-main">` +
       `<div class="chat-step-head"><button type="button" class="chat-step-toggle" data-step-toggle aria-expanded="${open ? "true" : "false"}">` +
       `<span class="chat-step-label">${label}</span></button></div>` +
-      (interrupted ? hang('<span class="chat-console-result-text">Interrupted</span>', " is-group-note") : "") +
+      (interrupted ? hang(`<span class="chat-console-result-text">${isConsoleOnly() ? "Interrupted · What should Claude do instead?" : "Interrupted"}</span>`, " is-group-note") : "") +
       (hintHtml ? hang(hintHtml, " is-group-hint") : "") +
       `<div class="chat-console-bundle"><ol class="chat-timeline">${rows}</ol></div>` +
       `</div></li>`
@@ -10908,6 +11472,7 @@
     segs.forEach((seg, index) => { if (seg && seg.type === "reasoning") lastReasonIndex = index; });
     const streamingLast = Boolean(live && lastReasonIndex >= 0 && !segs.some((seg, index) => index > lastReasonIndex) && runPhase(msg) !== "calling");
     const rows = [];
+    const plain = isConsoleOnly();
     let group = null;
     let thinking = null;
     const flush = () => {
@@ -10923,7 +11488,15 @@
         while (j < entries.length && entries[j].type === "reasoning") run.push(entries[j++]);
         i = j;
         const last = run[run.length - 1];
-        if (streamingLast && last.segmentIndex === lastReasonIndex) {
+        const streamingThought = streamingLast && last.segmentIndex === lastReasonIndex;
+        // Console: a thought after calls ends the line, where Claude Code
+        // ends one at narration (the API marks such thinking as narration).
+        if (plain && group && group.items.some((item) => item.type === "tool") &&
+            (streamingThought || run.some((item) => String(item.text || "").trim()))) {
+          group.endedByThought = true;
+          flush();
+        }
+        if (streamingThought) {
           const clock = msg._thoughtClock || { liveStart: 0 };
           thinking = { since: Date.now() - Math.max(0, (liveElapsedSeconds(msg, live) || 0) * 1000 - (clock.liveStart || 0)) };
           continue;
@@ -10943,13 +11516,28 @@
         continue;
       }
       flush();
+      // Console: subagents started together print as one block.
+      if (plain && entry.trace.name === "spawn_subagent") {
+        const agents = [{ entry, key }];
+        while (i < entries.length && entries[i].type === "tool" && entries[i].trace.name === "spawn_subagent") {
+          const next = entries[i++];
+          agents.push({ entry: next, key: toolKey(next.trace, next.index) });
+        }
+        if (agents.length > 1) {
+          rows.push({ agents });
+          continue;
+        }
+      }
       rows.push({ entry, key });
     }
     flush();
     const lastRow = rows[rows.length - 1];
-    return rows.map((row) => row.items
-      ? ccGroupHtml(row, msg, live, Boolean(blockLive && row === lastRow), stepOpen, row === lastRow ? thinking : null)
-      : toolStepHtml(row.entry.trace, row.key, live, stepOpenAt(stepOpen, row.key), stepOpen)).join("");
+    return rows.map((row) => {
+      if (row.agents) return ccAgentsGroupHtml(row.agents, live);
+      if (!row.items) return toolStepHtml(row.entry.trace, row.key, live, stepOpenAt(stepOpen, row.key), stepOpen);
+      const current = row === lastRow && !row.endedByThought;
+      return ccGroupHtml(row, msg, live, Boolean(blockLive && current), stepOpen, current ? thinking : null);
+    }).join("");
   }
 
   function activityEntriesHtml(entries, msg, live, blockKey, blockLive = false) {
@@ -11319,7 +11907,11 @@
       err.textContent = "";
     }
     const usageBits = formatTurnMeta(msg);
-    if (!live && hasOutput) {
+    const turnLine = isConsoleOnly() && !live && hasOutput ? ccTurnLineHtml(msg, msg === messages[messages.length - 1]) : "";
+    if (turnLine) {
+      foot.hidden = false;
+      meta.innerHTML = `<span class="chat-console-turn">${turnLine}</span>`;
+    } else if (!live && hasOutput) {
       foot.hidden = false;
       meta.innerHTML = usageBits
         .map((bit) => `<span title="${escapeHtml(bit.title)}">${escapeHtml(bit.text)}</span>`)
@@ -12616,6 +13208,7 @@
       }
       ensureSteerSegments(msg);
       msg.elapsedMs = event.elapsedMs;
+      if (typeof event.endedAt === "string" && event.endedAt) msg.endedAt = event.endedAt;
       msg.usage = event.usage;
       msg.error = event.error || "";
       if (Number.isFinite(Number(event.streamOut)) && Number(event.streamOut) >= 0) {
@@ -12692,6 +13285,7 @@
             reasons: Array.isArray(event.reasons) ? event.reasons.map((r) => String(r).slice(0, 120)).slice(0, 4) : [],
           };
           if (event.expires_at) rec.expires_at = String(event.expires_at).slice(0, 40);
+          if (event.description) rec.description = String(event.description).slice(0, 200);
         if (["allow_session", "allow_host"].includes(event.grant_scope)) rec.grant_scope = event.grant_scope;
         if (event.grant_kind === "dir" || event.grant_kind === "file") rec.grant_kind = event.grant_kind;
         if (event.grant_value) rec.grant_value = String(event.grant_value).slice(0, 400);
@@ -13489,7 +14083,8 @@
     const err = String(row.error || "").trim();
     const wake = row.wake_state === "dropped" ? "report not delivered" : row.wake_state === "held" ? "report waits for your next message" : row.wake_state === "retrying" ? "report pending" : "";
     const alert = err || wake;
-    const activity = alert ? "" : agentActivitySummary(row);
+    const lastCall = !alert && agentLive(row.status) ? ccAgentLastCall(row.recent) : "";
+    const activity = alert ? "" : lastCall || agentActivitySummary(row);
     const status = agentStatusText(row);
     const doing = activity && !activity.startsWith(status) ? activity : "";
     return (

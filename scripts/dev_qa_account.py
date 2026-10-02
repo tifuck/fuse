@@ -446,6 +446,151 @@ def _summary_thread(now):
     ], tools
 
 
+_ROWS_DIFF = """diff --git a/app/config.py b/app/config.py
+index 3d2f2c6..dde7137 100644
+--- a/app/config.py
++++ b/app/config.py
+@@ -12,3 +12,3 @@ class Settings:
+-    retries: int = 3
++    retries: int = 5
+     backoff: float = 0.5
+     timeout_s: int = 10
+diff --git a/package-lock.json b/package-lock.json
+index 1111111..2222222 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -40,2 +40,3 @@
+     "left-pad": "1.3.0",
++    "nanoid": "5.0.7",
+     "zod": "3.23.8"
+"""
+
+
+def _rows_child_message(i, desc, status):
+    """A subagent with real recent calls, for Claude Code's agent rows."""
+    root = dict(cwd="/srv/fuse-qa", host="qa-box", platform="posix", project_root="/srv/fuse-qa")
+    tools = [
+        _tool(f"tr_c{i}_0", "grep", pattern="def deliver", path="/srv/fuse-qa/app", output="app/x.py:3:def deliver\n", **root),
+        _tool(f"tr_c{i}_1", "read_file", path="/srv/fuse-qa/app/services/notifications/dispatcher.py", output="1: x\n", **root),
+        _command(f"tr_c{i}_2", f"qar00000000c{i}", "python -m pytest -q tests/test_dispatcher.py", "14 passed in 0.4s\n",
+                 description="Run the dispatcher tests"),
+        _tool(f"tr_c{i}_3", "read_file", path="/srv/fuse-qa/app/services/notifications/backoff.py", output="1: x\n", **root),
+        _tool(f"tr_c{i}_4", "grep", pattern="timeout_for", path="/srv/fuse-qa/app", output="app/b.py:9:timeout_for\n", **root),
+    ][: 5 if i % 2 == 0 else 3]
+    content = f"Finished: {desc}." if status == "completed" else ""
+    return {
+        "id": _mid(), "role": "assistant", "content": content, "reasoning": "", "model": "qa/fixture-model",
+        "error": "", "elapsedMs": 65000 + i * 4000, "tools": tools,
+        "segments": [*[{"type": "tool", "id": t["id"]} for t in tools], *([{"type": "content", "text": content}] if content else [])],
+        "usage": {"prompt_tokens": 30000, "completion_tokens": 900, "total_tokens": 30900},
+    }
+
+
+def _rows_thread(now):
+    """Claude Code's per-call rows in Console: a thought ending a summary
+    line, a shell call that changed files, sed as Update, Search(...) headers,
+    a fetch, a monitor, a background command, an interrupted call, subagents
+    started together, and the turn's closing line. The last turn has running
+    calls for --live screenshots."""
+    root = dict(cwd="/srv/fuse-qa", host="qa-box", platform="posix", project_root="/srv/fuse-qa")
+    agents = [("Audit retry settings", "completed"), ("Check the transport timeouts", "completed"),
+              ("Review the dispatcher tests", "completed"), ("Trace queue backpressure", "completed")]
+    cids = [_mid() for _ in agents]
+    tools = [
+        _tool("tr_0", "grep", pattern="retries", path="/srv/fuse-qa/app",
+              output="app/config.py:12:    retries: int = 3\napp/services/notifications/dispatcher.py:2:    retries=3\n"
+                     "app/services/notifications/dispatcher.py:8:        for attempt in range(self.retries):\n", **root),
+        _tool("tr_1", "read_file", path="/srv/fuse-qa/app/config.py", output="1: class Settings:\n", **root),
+        _command("tr_2", "qar000000001", "grep -rn 'max_retries' app/", "", exit_code=1, description="Look for max_retries"),
+        _tool("tr_3", "read_file", path="/srv/fuse-qa/app/services/notifications/dispatcher.py", output="1: class Dispatcher:\n", **root),
+        _command("tr_4", "qar000000002", "sed -i 's/retries: int = 3/retries: int = 5/' app/config.py", "",
+                 description="Raise the retry count"),
+        _command("tr_5", "qar000000003", "npm install nanoid@5", "added 1 package, audited 214 packages in 2s\n\nfound 0 vulnerabilities\n",
+                 description="Install nanoid"),
+        _tool("tr_6", "read_url", url="https://docs.python.org/3/library/asyncio-task.html", bytes=12595, http_status=200,
+              results=[{"title": "Coroutines and Tasks", "url": "https://docs.python.org/3/library/asyncio-task.html",
+                        "snippet": "This section outlines high-level asyncio APIs to work with coroutines and Tasks.", "query": ""}]),
+        _tool("tr_7", "monitor", description="errors in worker.log", command="tail -f /var/log/fuse-qa/worker.log",
+              pattern="ERROR", source="command", event_count=1, background=True, child_id="qar000000004",
+              command_id="qar000000004", execution_status="running", state="running", timeout_ms=300000, **root),
+        _command("tr_8", "qar000000005", "npm run build -- --watch", "watching for changes…\n", background=True,
+                 description="Start the watch build"),
+        _command("tr_9", "qar000000006", "npm test", "> test\n> jest\n\nFAIL src/retry.test.ts\n  ● retries five times\n\n"
+                 "    expect(received).toBe(expected)\n\n    Expected: 5\n    Received: 3\n\nTests: 1 failed, 41 passed\n",
+                 exit_code=1, status="error", error="Command exited with code 1", description="Run the unit tests"),
+        _tool("tr_10", "search_replace", path="/srv/fuse-qa/app/services/notifications/retry.py", status="interrupted",
+              error="Tool interrupted.", **root),
+        *[_tool(f"tr_11_{i}", "spawn_subagent", description=desc, preview=desc, child_id=cid, subagent_type="explore",
+                model="qa/fixture-model", summary=f"Finished: {desc}.", agent_tool_uses=5 if i % 2 == 0 else 3,
+                agent_tokens=18300 + i * 2100, agent_work_ms=65000 + i * 4000) for i, ((desc, _), cid) in enumerate(zip(agents[:3], cids))],
+        _tool("tr_12", "spawn_subagent", description=agents[3][0], preview=agents[3][0], child_id=cids[3],
+              subagent_type="general-purpose", model="qa/fixture-model", summary="Finished.", agent_tool_uses=5,
+              agent_tokens=24100, agent_work_ms=77000),
+    ]
+    tools[4].update(edited_files=["app/config.py"], lines_added=1, lines_removed=1,
+                    edit_diff="\n".join(_ROWS_DIFF.split("\n")[:9]))
+    tools[5].update(edited_files=["package-lock.json"], lines_added=1, lines_removed=0,
+                    edit_diff="\n".join(_ROWS_DIFF.split("\n")[9:]))
+    say = lambda text: {"type": "content", "text": text}  # noqa: E731
+    tool = lambda ident: {"type": "tool", "id": ident}  # noqa: E731
+    segments = [
+        {"type": "reasoning", "text": "Find where the retry count is set.", "ms": 3100},
+        tool("tr_0"), tool("tr_1"), tool("tr_2"),
+        {"type": "reasoning", "text": "Settings owns it; the dispatcher only reads it. Check the dispatcher before changing it.", "ms": 2600},
+        tool("tr_3"), tool("tr_4"), tool("tr_5"),
+        say("Raised the retry count and added nanoid. Reading the asyncio docs on timeouts.\n\n"),
+        tool("tr_6"), tool("tr_7"), tool("tr_8"), tool("tr_9"), tool("tr_10"),
+        say("Fanning out reviewers.\n\n"),
+        tool("tr_11_0"), tool("tr_11_1"), tool("tr_11_2"),
+        say("One more pass on backpressure.\n\n"),
+        tool("tr_12"),
+        say("Retries are now 5; the unit test that pinned 3 still needs updating."),
+    ]
+    settled = {
+        "id": _mid(), "role": "assistant", "content": "".join(s["text"] for s in segments if s["type"] == "content"),
+        "reasoning": "".join(s["text"] for s in segments if s["type"] == "reasoning"),
+        "error": "", "model": "qa/fixture-model", "elapsedMs": 142000, "endedAt": _iso(now - timedelta(minutes=3)),
+        "stopped": False, "usage": {"prompt_tokens": 31000, "completion_tokens": 1900, "total_tokens": 32900},
+        "tools": tools, "segments": segments,
+    }
+    wake = ('<command_result id="qar000000007" state="completed">\nhost: qa-box command: npm run lint\n'
+            "description: Lint the sources\nexit_code: 0\nduration_ms: 12000\noutput_chars: 3\noutput_chars_exact: true\n\nok\n</command_result>\n"
+            '<command_result id="qar000000008" state="completed">\nhost: qa-box command: npm run typecheck\n'
+            "description: Typecheck the project\nexit_code: 0\nduration_ms: 21000\noutput_chars: 3\noutput_chars_exact: true\n\nok\n</command_result>\n"
+            '<monitor_event id="qar000000004" seq="1">\nhost: qa-box command: tail -f /var/log/fuse-qa/worker.log\n'
+            "description: errors in worker.log\n\nERROR queue depth 5120 exceeds the 4096 limit\n</monitor_event>")
+    live_cids = [_mid() for _ in range(2)]
+    live_tools = [
+        _command("tr_l0", "qar000000009", "python -m pytest -q tests/", "........................................\n"
+                 "........................................\n.............F....\n", status="running", state="running",
+                 exit_code=None, description="Run the test suite"),
+        _tool("tr_l1", "read_url", url="https://peps.python.org/pep-0654/", status="running"),
+        _tool("tr_l2", "spawn_subagent", description="Audit retry settings", preview="Audit retry settings",
+              child_id=cids[0], subagent_type="explore", status="running", model="qa/fixture-model"),
+        _tool("tr_l3", "spawn_subagent", description="Check the transport timeouts", preview="Check the transport timeouts",
+              child_id=cids[1], subagent_type="explore", status="running", model="qa/fixture-model"),
+        _tool("tr_l4", "spawn_subagent", description="Map the queue consumers", preview="Map the queue consumers",
+              child_id=live_cids[0], subagent_type="general-purpose", status="running", model="qa/fixture-model"),
+    ]
+    live = {
+        "id": _mid(), "role": "assistant",
+        "content": "Checking the remaining pieces.\n\nReviewers are running.\n\nAnd one more.\n\n", "reasoning": "",
+        "error": "", "model": "qa/fixture-model", "elapsedMs": 41000, "stopped": False, "tools": live_tools,
+        "segments": [say("Checking the remaining pieces.\n\n"), tool("tr_l0"), tool("tr_l1"),
+                     say("Reviewers are running.\n\n"), tool("tr_l2"), tool("tr_l3"),
+                     say("And one more.\n\n"), tool("tr_l4")],
+    }
+    messages = [
+        {"id": _mid(), "role": "user", "content": "Raise the dispatcher retries to 5 and check what else depends on it.", "reasoning": "", "error": ""},
+        settled,
+        {"id": _mid(), "role": "user", "content": wake, "reasoning": "", "error": "", "auto": True},
+        {"id": _mid(), "role": "user", "content": "Finish the review.", "reasoning": "", "error": ""},
+        live,
+    ]
+    subs = list(zip(agents, cids)) + [(("Map the queue consumers", "completed"), live_cids[0])]
+    return messages, subs, tools + live_tools
+
+
 def _child_message(desc, status):
     tools = [
         _tool("ts_0_0", "read_file", path="/srv/fuse-qa/static/chat.css", cwd="/srv/fuse-qa", host="qa-box",
@@ -661,6 +806,17 @@ def _seed(uid: int):
         _insert_root(conn, uid, stid, sroot, summary[1], ts, dumps)
         _insert_commands(conn, uid, stid, sroot, summary_tools, ts)
     print(f"summary lines thread: https://127.0.0.1:8089/chat?t={summary_view['id']}")
+
+    rows, row_subs, row_tools = _rows_thread(now)
+    rows_view = chats.create_thread(uid, title=FIXTURE_PREFIX + "Claude Code rows", model="qa/fixture-model", messages=rows)
+    rtid = chats.resolve_thread_pk(uid, rows_view["id"])
+    rroot = _mid()
+    with db.tx() as conn:
+        _insert_root(conn, uid, rtid, rroot, rows[-1], ts, dumps)
+        _insert_children(conn, uid, rtid, rroot, row_subs, now, dumps, _rows_child_message)
+        # Running calls are only drawn running by --live; no job row backs them.
+        _insert_commands(conn, uid, rtid, rroot, [t for t in row_tools if t.get("state") != "running"], ts)
+    print(f"claude code rows thread: https://127.0.0.1:8089/chat?t={rows_view['id']}")
 
     heavy, spawns = _heavy_thread()
     heavy_view = chats.create_thread(uid, title=FIXTURE_PREFIX + "Heavy transcript", model="qa/fixture-model", messages=heavy)

@@ -1172,6 +1172,9 @@ async def execute_tool(
         "source_id": source_id(clean or url),
         "cached": cached,
         "error": "",
+        # Pages are only read from a 200 response.
+        "http_status": 200,
+        "bytes": int(getattr(extract, "bytes_in", 0) or 0),
         "results": [{"id": source_id(clean or url), "title": extract.title or (clean or url), "url": clean or url, "snippet": snippet, "status": "read"}],
     }
 

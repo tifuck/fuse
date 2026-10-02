@@ -991,6 +991,7 @@ def parse_messages(raw, *, strict: bool = False) -> list[dict]:
                  "tools",
                 "segments",
                 "elapsedMs",
+                "endedAt",
                 "stopped",
                 "attachments",
                 "auto",
@@ -1050,6 +1051,12 @@ def parse_messages(raw, *, strict: bool = False) -> list[dict]:
                 msg["elapsedMs"] = elapsed
             elif strict:
                 raise ChatValidationError(f"messages[{index}].elapsedMs must be an integer between 0 and 86400000")
+        ended = item.get("endedAt")
+        if ended is not None:
+            if isinstance(ended, str) and _ENDED_AT.fullmatch(ended):
+                msg["endedAt"] = ended
+            elif strict:
+                raise ChatValidationError(f"messages[{index}].endedAt must be an ISO timestamp")
         if "stopped" in item:
             if isinstance(item["stopped"], bool):
                 msg["stopped"] = item["stopped"]
@@ -1169,6 +1176,8 @@ def _parse_permissions(raw, *, strict: bool = False, field: str = "permissions")
                 "requester": _legacy_text(item.get("requester"), 200),
                 "reasons": [str(r)[:120] for r in reasons if isinstance(r, str)][:4],
             }
+            if isinstance(item.get("description"), str) and item["description"].strip():
+                rec["description"] = _legacy_text(item["description"], 200)
             if item.get("expires_at"):
                 rec["expires_at"] = _legacy_text(item.get("expires_at"), 40)
             scope = item.get("grant_scope")
@@ -1388,6 +1397,10 @@ def pack_segment_text(messages) -> list:
 
 
 TOOL_OUTPUT_MAX = 24_000
+_ENDED_AT = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z")
+# A shell call that changed tracked files keeps the files and their diff.
+TOOL_EDIT_DIFF_MAX = 12_000
+TOOL_EDIT_FILES_MAX = 20
 
 
 def _parse_tool_traces(raw, *, strict: bool = False, field: str = "tools") -> list[dict]:
@@ -1444,6 +1457,9 @@ def _parse_tool_traces(raw, *, strict: bool = False, field: str = "tools") -> li
             "source",
             "event_count",
             "max_events",
+            "bytes", "http_status",
+            "subagent_type", "agent_tool_uses", "agent_tokens",
+            "edited_files", "edit_diff", "lines_added", "lines_removed",
         }:
             raise ChatValidationError(f"{field}[{index}] contains unsupported fields")
         name = item.get("name")
@@ -1515,6 +1531,8 @@ def _parse_tool_traces(raw, *, strict: bool = False, field: str = "tools") -> li
             ("state", 32),
             ("output_mode", 16),
             ("permission_id", 64),
+            ("subagent_type", 32),
+            ("edit_diff", TOOL_EDIT_DIFF_MAX),
         ):
             if key in item:
                 if strict:
@@ -1575,6 +1593,19 @@ def _parse_tool_traces(raw, *, strict: bool = False, field: str = "tools") -> li
             except (TypeError, ValueError):
                 if strict:
                     raise ChatValidationError(f"{field}[{index}].event_count must be an integer")
+        for count_key in ("bytes", "http_status", "agent_tool_uses", "agent_tokens", "lines_added", "lines_removed"):
+            value = item.get(count_key)
+            if value is None:
+                continue
+            if type(value) is int and value >= 0:
+                rec[count_key] = value
+            elif strict:
+                raise ChatValidationError(f"{field}[{index}].{count_key} must be a nonnegative integer")
+        files = item.get("edited_files")
+        if isinstance(files, list):
+            rec["edited_files"] = [_legacy_text(f, 400) for f in files[:TOOL_EDIT_FILES_MAX] if isinstance(f, str) and f]
+        elif files is not None and strict:
+            raise ChatValidationError(f"{field}[{index}].edited_files must be an array")
         results = item.get("results")
         if isinstance(results, list):
             if strict and len(results) > 24:

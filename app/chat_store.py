@@ -3337,6 +3337,7 @@ def list_thread_agents(user_id, thread_id, limit=100):
             if not name:
                 continue
             tool_counts[name] = tool_counts.get(name, 0) + 1
+        recent = agent_recent_calls(tools)
         quiet_s = _iso_age(row["updated_at"] or row["created_at"])
         current = agent_current_activity(message, agent.get("activity"), row["status"])
         if row["status"] in ACTIVE:
@@ -3369,6 +3370,7 @@ def list_thread_agents(user_id, thread_id, limit=100):
             "error": str(message.get("error") or "")[:400],
             "children": counts.get(row["id"], 0),
             "tool_counts": tool_counts,
+            "recent": recent,
             "current": current,
             "quiet_s": round(quiet_s, 1),
             "wake_state": _agent_wake_state(agent, row["status"], stopped_at),
@@ -3376,6 +3378,26 @@ def list_thread_agents(user_id, thread_id, limit=100):
             **run_work_fields(row["id"], agent, message),
         }
         out.append(entry)
+    return out
+
+
+# A child's latest calls, as Claude Code prints them under a running agent
+# ("Read(src/auth.ts)", "Bash: Run the tests") and in the agents list.
+AGENT_RECENT_CALLS = 12
+_RECENT_CALL_FIELDS = ("description", "command", "path", "pattern", "url", "query")
+
+
+def agent_recent_calls(tools, limit: int = AGENT_RECENT_CALLS) -> list[dict]:
+    out = []
+    for trace in tools[-limit:]:
+        if not isinstance(trace, dict) or not trace.get("name"):
+            continue
+        item = {"name": str(trace["name"])[:64], "status": str(trace.get("status") or "")[:16]}
+        for key in _RECENT_CALL_FIELDS:
+            value = trace.get(key)
+            if isinstance(value, str) and value.strip():
+                item[key] = " ".join(value.split())[:160]
+        out.append(item)
     return out
 
 
@@ -3428,7 +3450,7 @@ def _message(message, message_id):
     payload = dict(payload)
     allowed = {
         "id", "role", "content", "reasoning", "error", "notice", "usage",
-        "tools", "segments", "elapsedMs", "stopped", "attachments", "auto", "permissions",
+        "tools", "segments", "elapsedMs", "endedAt", "stopped", "attachments", "auto", "permissions",
         "model",
     }
     for key in list(payload):

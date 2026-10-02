@@ -439,6 +439,11 @@ async def spawn(
     prompt = str(args.get("prompt") or "").strip()
     scratch_name = str(args.get("scratch") or "").strip() if isinstance(args.get("scratch"), str) else ""
     description = str(args.get("description") or "").strip()[:200]
+    followup = any(isinstance(args.get(key), str) and args.get(key).strip() for key in ("task_id", "resume_from"))
+    if not description and not followup:
+        # Claude Code's Agent tool requires it: the label is the row's title.
+        msg = "description is required: a short (3-5 word) description of the task"
+        return msg, {"name": "spawn_subagent", "status": "error", "error": msg, "kind": "invalid_args"}
     raw_model = args.get("model")
     requested_model = str(raw_model).strip() if isinstance(raw_model, str) else ""
     parent = await asyncio.to_thread(chat_store.get_run, user["id"], parent_run_id)
@@ -494,15 +499,10 @@ async def spawn(
     resume_from = args.get("task_id") if isinstance(args.get("task_id"), str) else None
     if not resume_from and isinstance(args.get("resume_from"), str):
         resume_from = args.get("resume_from")
-    if resume_from:
-        if not description:
-            existing_label = await asyncio.to_thread(chat_store.get_run, user["id"], resume_from)
-            existing_agent = ((existing_label.get("request") or {}).get("agent") or {}) if existing_label else {}
-            description = str(existing_agent.get("description") or "subagent").strip()[:200] or "subagent"
-    elif not description:
-        # The tool schema only requires `prompt`; derive the label from it
-        # instead of rejecting a perfectly usable spawn.
-        description = " ".join(prompt.split()[:8])[:80] or "subagent"
+    if resume_from and not description:
+        existing_label = await asyncio.to_thread(chat_store.get_run, user["id"], resume_from)
+        existing_agent = ((existing_label.get("request") or {}).get("agent") or {}) if existing_label else {}
+        description = str(existing_agent.get("description") or "subagent").strip()[:200] or "subagent"
     if resume_from:
         existing = await asyncio.to_thread(chat_store.get_run, user["id"], resume_from)
         if existing and existing.get("status") in chat_store.ACTIVE:
@@ -649,6 +649,7 @@ async def spawn(
             "child_id": child["id"],
             "description": description,
             "preview": description,
+            "subagent_type": spawn_kind,
             **extra,
         }
         if model:

@@ -108,6 +108,8 @@ class PageExtract:
     total_chars: int = 0
     next_offset: int | None = None
     paged: bool = False
+    # Bytes the server sent for the page ("Received 12.3KB (200 OK)").
+    bytes_in: int = 0
 
 
 @dataclass(frozen=True)

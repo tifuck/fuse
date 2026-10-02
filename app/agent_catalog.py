@@ -632,7 +632,7 @@ SCHEMAS = {
                         "type": "string",
                         "minLength": 1,
                         "maxLength": 200,
-                        "description": "Short human-readable description of what you are monitoring (shown to the user).",
+                        "description": "Short human-readable description of what you are monitoring (shown in notifications).",
                     },
                     "command": {
                         "type": "string",
@@ -739,7 +739,10 @@ SCHEMAS = {
                             "is not cleared on success or failure, so a failed spawn retries with the same name."
                         ),
                     },
-                    "description": {"type": "string", "description": "Short (3-5 words) label for the task."},
+                    "description": {
+                        "type": "string",
+                        "description": "A short (3-5 word) description of the task. Required to start a subagent; optional with task_id.",
+                    },
                     "model": {
                         "type": "string",
                         "description": (

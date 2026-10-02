@@ -645,6 +645,7 @@ async def fetch_url(
             query=query,
             offset=offset,
         )
+        extract.bytes_in = base_extract.bytes_in
         return extract, pack_page(final_url, extract), ""
     if not _allow(user_id, "fetch"):
         msg = "Page-read rate limit reached. Try again shortly."
@@ -715,6 +716,7 @@ async def fetch_url(
                             truncated = True
                             break
                     raw_bytes = bytes(body_bytes)
+                    received = len(raw_bytes)
                     del body_bytes
                     if "application/pdf" in ctype:
                         try:
@@ -739,6 +741,7 @@ async def fetch_url(
                     base_extract = extract_page(body, content_type=ctype, url=current)
                     if truncated:
                         base_extract.truncated = True
+                    base_extract.bytes_in = received
                     if base_extract.kind == "empty" or (not base_extract.text and base_extract.kind != "spa"):
                         msg = "The page had no extractable text."
                         return None, msg, msg
@@ -756,6 +759,7 @@ async def fetch_url(
                         query=query,
                         offset=offset,
                     )
+                    extract.bytes_in = received
                     wrapped = pack_page(current, extract)
                     return extract, wrapped, ""
             msg = "Too many redirects."

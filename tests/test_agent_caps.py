@@ -100,7 +100,7 @@ class AgentCapsTest(unittest.TestCase):
             return None
         with patch.object(chat_runs, "start", side_effect=finish):
             text, trace = asyncio.run(agents.spawn(user={"id": 1}, request=None, parent_run_id=parent["id"],
-                                                  thread_id=thread["id"], arguments='{"prompt":"inspect"}'))
+                                                  thread_id=thread["id"], arguments='{"prompt":"inspect","description":"Inspect"}'))
         self.assertIn("Final report", text)
         store.abort_active(parent["id"], "interrupted")
         candidates = store.wake_candidates(1, parent["thread_id"])
@@ -1133,7 +1133,7 @@ class AgentCapsTest(unittest.TestCase):
                 request=None,
                 parent_run_id=parent["id"],
                 thread_id=thread["id"],
-                arguments=json.dumps({"prompt": "Inspect"}),
+                arguments=json.dumps({"prompt": "Inspect", "description": "Inspect"}),
             ))
         self.assertEqual(trace["status"], "error")
         self.assertIn("worker boom", text)
@@ -1539,13 +1539,13 @@ class AgentCapsTest(unittest.TestCase):
             for cwd in ("/", "/etc", "~"):
                 text, trace = asyncio.run(agents.spawn(
                     user={"id": 1}, request=None, parent_run_id=parent["id"], thread_id=thread["id"],
-                    arguments=json.dumps({"prompt": "p", "cwd": cwd}), gate=gate,
+                    arguments=json.dumps({"prompt": "p", "description": "Check", "cwd": cwd}), gate=gate,
                 ))
                 self.assertEqual(trace["status"], "error", cwd)
                 self.assertEqual(trace["kind"], "permission_denied", cwd)
             text, trace = asyncio.run(agents.spawn(
                 user={"id": 1}, request=None, parent_run_id=parent["id"], thread_id=thread["id"],
-                arguments=json.dumps({"prompt": "p", "cwd": "lib"}), gate=gate,
+                arguments=json.dumps({"prompt": "p", "description": "Check", "cwd": "lib"}), gate=gate,
             ))
         self.assertNotEqual(trace["status"], "error")
         child = store.get_run(1, trace["child_id"])

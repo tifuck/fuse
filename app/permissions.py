@@ -34,6 +34,11 @@ from .async_work import durable_call
 logger = logging.getLogger(__name__)
 
 ASK_TIMEOUT_S = 60
+# A shell ask's description (the model's short label for the command) is
+# shown on the card above the command, as in Claude Code's "Bash command"
+# dialog. Asks live a minute, so it is kept here instead of in the table.
+_ASK_DESCRIPTIONS: dict[str, str] = {}
+_ASK_DESCRIPTIONS_MAX = 512
 MAX_PENDING_PER_THREAD = 8
 _ACTIONS = ("allow", "allow_session", "allow_host", "deny")
 _STATUSES = ("pending", "allowed", "denied", "timeout", "cancelled")
@@ -624,6 +629,7 @@ def _public_payload(row) -> dict:
         "grant_scope": row["decision"] if row["decision"] in ("allow_session", "allow_host") else "",
         "grant_kind": row["grant_kind"] or "",
         "grant_value": row["grant_value"] or "",
+        "description": _ASK_DESCRIPTIONS.get(row["id"], ""),
     }
 
 
@@ -809,6 +815,10 @@ async def _ask_and_wait(gate: Gate, payload: dict, auto_judge=None) -> str:
     # Admitted write: drain the INSERT even when the caller is cancelled.
     if not await durable_call(_insert_ask, gate, ask_id, expires_iso, payload):
         return "deny_busy"
+    if payload.get("description"):
+        while len(_ASK_DESCRIPTIONS) >= _ASK_DESCRIPTIONS_MAX:
+            _ASK_DESCRIPTIONS.pop(next(iter(_ASK_DESCRIPTIONS)))
+        _ASK_DESCRIPTIONS[ask_id] = payload["description"]
     gate._notify({"event": "permission", **payload, "id": ask_id, "status": "pending", "expires_at": expires_iso})
     deadline = time.time() + ASK_TIMEOUT_S
     try:
@@ -1053,6 +1063,12 @@ async def review(*, tool: str, args: dict, user_id: int,
         "grant_kind": grant_kind,
         "grant_value": str(grant_value)[:400],
     }
+    if perm_kind == "shell":
+        from .command_jobs import clean_description
+
+        description = clean_description(args.get("description"))
+        if description:
+            payload["description"] = description
     # Auto: every call that would ask goes to Jev, shell included; that is
     # the whole point of the mode. Secret-named targets and regex-destructive
     # shells never reach Jev and always wait for the user.

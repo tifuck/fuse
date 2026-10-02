@@ -384,6 +384,10 @@ class Output:
                             rec["grant_value"] = str(event.get("grant_value"))[:400]
                         perms = msg.setdefault("permissions", [])
                         old = next((p for p in perms if p.get("id") == ident), None)
+                        # Status updates carry only the id; keep the label.
+                        description = event.get("description") or (old or {}).get("description")
+                        if description:
+                            rec["description"] = str(description)[:200]
                         clean = chats._parse_permissions([rec])
                         if clean:
                             if old is not None:
@@ -1113,6 +1117,9 @@ async def _run(request, user, run):
     async def flush_batch(durable=True, state_only=False):
         nonlocal pending_bytes, previous_segments
         output.message["elapsedMs"] = min(86_400_000, elapsed_before + int((time.monotonic() - started) * 1000))
+        # When the turn last did work; the final flush leaves it at the end
+        # ("✻ Cooked for 2m 13s · done 3:42 PM" in Console).
+        output.message["endedAt"] = db.now()
         if not pending:
             if not state_only:
                 return
@@ -1127,7 +1134,7 @@ async def _run(request, user, run):
             # taken halfway through an upstream <think> tag.
             stored = output.stored(light=True)
             batch_count, batch_bytes = len(pending), pending_bytes
-            patch = {"event": "message.patch", "elapsedMs": stored["elapsedMs"]}
+            patch = {"event": "message.patch", "elapsedMs": stored["elapsedMs"], "endedAt": stored.get("endedAt")}
             for field in ("content", "reasoning"):
                 old, new = previous_text[field], stored.get(field, "")
                 offset = len(old)

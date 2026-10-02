@@ -103,8 +103,17 @@ class ArgumentsTest(unittest.IsolatedAsyncioTestCase):
         parent = {"id": "p", "thread_id": 1, "request": {"model": "offline", "agent": {}}}
         child = {"id": "c", "status": "cancelled", "message": {"content": ""}, "request": {"model": "offline", "agent": {}}}
         with patch.object(store, "get_run", side_effect=[parent, child]), patch.object(store, "start_child_run", return_value=child), patch.object(chat_runs, "start", AsyncMock(return_value=task)), patch.object(store, "drop_pending_child_result"), patch.object(store, "mark_wake_sent"):
-            _, trace = await agents.spawn(user={"id": 1}, request=Request(), parent_run_id="p", arguments='{"prompt":"inspect"}', thread_id=1)
+            _, trace = await agents.spawn(user={"id": 1}, request=Request(), parent_run_id="p", arguments='{"prompt":"inspect","description":"Inspect"}', thread_id=1)
         self.assertEqual(trace["status"], "interrupted")
+
+    async def test_new_spawn_requires_description(self):
+        # Claude Code's Agent tool requires a description; a follow-up keeps the child's label.
+        with patch.object(store, "get_run") as get_run, patch.object(store, "start_child_run") as start_child:
+            text, trace = await agents.spawn(user={"id": 1}, request=Request(), parent_run_id="p", arguments='{"prompt":"inspect"}', thread_id=1)
+        self.assertEqual(trace["status"], "error")
+        self.assertIn("description is required", text)
+        get_run.assert_not_called()
+        start_child.assert_not_called()
 
     async def test_spawn_start_exception_returns_error(self):
         parent = {"id": "p", "thread_id": 1, "request": {"model": "offline", "agent": {}}}
@@ -116,7 +125,7 @@ class ArgumentsTest(unittest.IsolatedAsyncioTestCase):
             patch.object(store, "abort_active") as abort,
             patch.object(store, "refund_spawn"),
         ):
-            text, trace = await agents.spawn(user={"id": 1}, request=Request(), parent_run_id="p", arguments='{"prompt":"inspect"}', thread_id=1)
+            text, trace = await agents.spawn(user={"id": 1}, request=Request(), parent_run_id="p", arguments='{"prompt":"inspect","description":"Inspect"}', thread_id=1)
         abort.assert_called_once_with("c", "failed", "no worker")
         self.assertEqual(trace["status"], "error")
         self.assertIn("no worker", text)
@@ -125,7 +134,7 @@ class ArgumentsTest(unittest.IsolatedAsyncioTestCase):
         parent = {"id": "p", "thread_id": 1, "request": {"model": "offline", "agent": {}}}
         child = {"id": "c", "status": "interrupted", "message": {"content": ""}, "request": {"model": "offline", "agent": {}}}
         with patch.object(store, "get_run", side_effect=[parent, child, child]), patch.object(store, "start_child_run", return_value=child), patch.object(chat_runs, "start", AsyncMock(return_value=None)), patch.object(store, "drop_pending_child_result"), patch.object(store, "mark_wake_sent"):
-            _, trace = await agents.spawn(user={"id": 1}, request=Request(), parent_run_id="p", arguments='{"prompt":"inspect","background":true}', thread_id=1)
+            _, trace = await agents.spawn(user={"id": 1}, request=Request(), parent_run_id="p", arguments='{"prompt":"inspect","description":"Inspect","background":true}', thread_id=1)
         self.assertEqual(trace["status"], "interrupted")
 
     async def test_spawn_passes_resolved_model(self):

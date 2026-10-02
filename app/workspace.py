@@ -1448,10 +1448,13 @@ async def _agent_call(user_id, host_id, op: str, args: dict, seconds: int = 30) 
     return _enrich_agent_data(data, op=op)
 
 
-async def _run_remote(user_id, host_id, command: str, cwd: str, seconds: int):
-    """Short synchronous exec used by internal helpers (browse fallback etc.)."""
+async def _run_remote(user_id, host_id, command: str, cwd: str, seconds: int, *, rate: bool = True):
+    """Short synchronous exec used by internal helpers (browse fallback etc.).
+    rate=False for Fuse's own bookkeeping, which must not spend the model's
+    per-host exec budget."""
     if _is_agent(user_id, host_id):
-        _rate_ok(user_id, host_id)
+        if rate:
+            _rate_ok(user_id, host_id)
         data = await _agent_call(
             user_id,
             host_id,
@@ -1462,7 +1465,8 @@ async def _run_remote(user_id, host_id, command: str, cwd: str, seconds: int):
         return _AgentExec(data)
     from . import ssh_pool
 
-    _rate_ok(user_id, host_id)
+    if rate:
+        _rate_ok(user_id, host_id)
     conn = await ssh_pool.connection(user_id, host_id)
     proc = await conn.create_process("bash -lc " + shlex.quote(_ssh_job_script(cwd, command)))
     try:
@@ -1579,6 +1583,111 @@ def _make_ssh_runner(user_id, host_id, command: str, cwd: str, timeout_ms: int):
     return runner
 
 
+# —— Files a shell command changed ——
+# Claude Code snapshots the git working tree around a foreground Bash call and
+# prints a call that changed files on its own row, with the diff, instead of
+# folding it into "ran N shell commands". The same here: a throwaway index
+# (the repository's own index is never touched) records the working tree
+# before and after; the diff between the two trees is the edit.
+_EDIT_SNAPSHOT_S = 6
+_EDIT_SLOW_S = 3.0
+_EDIT_SKIP_S = 600
+_EDIT_DIFF_CHARS = 12_000
+_EDIT_FILES_MAX = 20
+_EDIT_TREE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+# (user, host, cwd) -> monotonic deadline: not a repository, or too slow to snapshot.
+_edit_skip: dict[tuple[int, int, str], float] = {}
+
+
+def _edit_tree_script(before: str = "") -> str:
+    lines = [
+        "top=$(git rev-parse --show-toplevel 2>/dev/null) || exit 3",
+        "gd=$(git rev-parse --absolute-git-dir 2>/dev/null) || exit 3",
+        'tmp=$(mktemp "${TMPDIR:-/tmp}/fuse-edit.XXXXXX") || exit 4',
+        "trap 'rm -f \"$tmp\"' EXIT",
+        'if [ -f "$gd/index" ]; then cp "$gd/index" "$tmp" || exit 4; else rm -f "$tmp"; fi',
+        'cd "$top" || exit 3',
+        'GIT_INDEX_FILE="$tmp" git add -A . >/dev/null 2>&1 || exit 5',
+        'tree=$(GIT_INDEX_FILE="$tmp" git write-tree 2>/dev/null) || exit 5',
+        'printf "@@tree %s\\n" "$tree"',
+    ]
+    if before:
+        base = shlex.quote(before)
+        lines += [
+            f'[ "$tree" = {base} ] && exit 0',
+            'printf "@@numstat\\n"',
+            f'git diff --no-color --no-ext-diff --no-renames --numstat {base} "$tree" | head -n 200',
+            'printf "@@diff\\n"',
+            f'git diff --no-color --no-ext-diff --no-renames -U3 {base} "$tree" | head -c {_EDIT_DIFF_CHARS + 1}',
+        ]
+    return "\n".join(lines) + "\n"
+
+
+async def _edit_exec(user_id, host_id, cwd: str, script: str) -> tuple[str | None, float]:
+    started = time.monotonic()
+    try:
+        res = await _run_remote(user_id, host_id, script, cwd, _EDIT_SNAPSHOT_S, rate=False)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return None, time.monotonic() - started
+    took = time.monotonic() - started
+    if res.exit_status != 0:
+        return None, took
+    return str(res.stdout or ""), took
+
+
+def _edit_skip_set(key, seconds: float = _EDIT_SKIP_S) -> None:
+    if len(_edit_skip) > 2048:
+        _edit_skip.clear()
+    _edit_skip[key] = time.monotonic() + seconds
+
+
+async def _edit_baseline(user_id, host_id, cwd: str) -> str:
+    """Tree id of the working tree before a command; '' when not tracked."""
+    key = (int(user_id), int(host_id), cwd)
+    if _edit_skip.get(key, 0) > time.monotonic():
+        return ""
+    out, took = await _edit_exec(user_id, host_id, cwd, _edit_tree_script())
+    match = re.search(r"^@@tree (\S+)$", out or "", re.M)
+    tree = match.group(1) if match and _EDIT_TREE.fullmatch(match.group(1)) else ""
+    if not tree or took > _EDIT_SLOW_S:
+        _edit_skip_set(key)
+    return tree
+
+
+async def _edit_changes(user_id, host_id, cwd: str, before: str) -> dict:
+    """Trace fields for the files a command changed: edited_files, lines_added,
+    lines_removed and the unified diff (edit_diff). Empty when nothing changed."""
+    if not _EDIT_TREE.fullmatch(before or ""):
+        return {}
+    out, took = await _edit_exec(user_id, host_id, cwd, _edit_tree_script(before))
+    if took > _EDIT_SLOW_S:
+        _edit_skip_set((int(user_id), int(host_id), cwd))
+    if not out or "@@numstat\n" not in out:
+        return {}
+    numstat, _, diff = out.split("@@numstat\n", 1)[1].partition("@@diff\n")
+    files, added, removed = [], 0, 0
+    for line in numstat.splitlines():
+        parts = line.split("\t", 2)
+        if len(parts) != 3 or not parts[2]:
+            continue
+        added += int(parts[0]) if parts[0].isdigit() else 0
+        removed += int(parts[1]) if parts[1].isdigit() else 0
+        files.append(parts[2][:400])
+    if not files:
+        return {}
+    if len(diff) > _EDIT_DIFF_CHARS:
+        diff = diff[:_EDIT_DIFF_CHARS]
+        diff = diff[: diff.rfind("\n") + 1] if "\n" in diff else diff
+    return {
+        "edited_files": files[:_EDIT_FILES_MAX],
+        "lines_added": added,
+        "lines_removed": removed,
+        "edit_diff": diff.rstrip("\n"),
+    }
+
+
 async def _shell(user_id, host_id, alias, args, root, *, windows: bool = False, run_id: str = "", thread_id: int | None = None, on_started=None):
     from . import command_jobs
 
@@ -1591,6 +1700,9 @@ async def _shell(user_id, host_id, alias, args, root, *, windows: bool = False, 
     cwd = _shell_cwd(args, root, windows=windows)
     timeout_ms = _deadline_ms(args)
     background = _as_bool(args.get("background"))
+    # Only a foreground call is tracked, as in Claude Code: a background
+    # command finishes long after its row was printed.
+    edit_base = "" if background or windows else await _edit_baseline(user_id, host_id, cwd)
     if _is_agent(user_id, host_id):
         runner = _make_agent_runner(user_id, host_id, command, cwd, timeout_ms)
     else:
@@ -1634,7 +1746,10 @@ async def _shell(user_id, host_id, alias, args, root, *, windows: bool = False, 
     # Completed inside the foreground wait: report it as the shell call itself
     # (join() renders both paths as get_command_output, which the dashboard
     # would display as a joined background job).
-    return command_jobs.render(rec)
+    text, trace = command_jobs.render(rec)
+    if edit_base and rec.get("status") == "completed" and rec.get("exit_code") == 0:
+        trace.update(await _edit_changes(user_id, host_id, cwd, edit_base))
+    return text, trace
 
 
 def _make_ws_runner(url: str, timeout_ms: int):
