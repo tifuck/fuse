@@ -9651,7 +9651,11 @@
     const path = permGrantPath(rec);
     const noun = kind === "file" ? "file" : "folder";
     const verb = rec.secret ? "Read secret" : permToolLabel(rec.tool);
-    const why = rec.secret ? "Secret-named file" : "Outside allowed folders";
+    // Any non-trivial command asks even inside the project; only say
+    // "outside" when the gate said so (reconnect-seeded cards carry no reasons).
+    const shell = rec.tool === "run_terminal_command" || rec.tool === "monitor";
+    const outside = (rec.reasons || []).some((r) => String(r).includes("outside"));
+    const why = rec.secret ? "Secret-named file" : (shell && !outside ? "Command needs approval" : "Outside allowed folders");
     return {
       action: verb,
       noun,
@@ -9749,6 +9753,16 @@
     const expires = rec.expires_at || rec.expiresAt || "";
     const left = permLeftS(expires);
     const frac = left == null ? 1 : Math.max(0, Math.min(1, left / PERM_TOTAL_S));
+    // The server clears grant_kind on shell asks no grant could ever cover.
+    const shell = rec.tool === "run_terminal_command" || rec.tool === "monitor";
+    const always = shell && !rec.grant_kind ? "" : `
+            <button type="button" class="chat-perm-act is-split" data-perm-always aria-expanded="false" aria-label="Allow always options">
+              <svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"><path d="M3.2 10.2 8 5.4l4.8 4.8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <div class="chat-pop chat-perm-always-menu" data-perm-always-menu hidden>
+              <button type="button" data-perm-decide="allow_session">Allow this ${escapeHtml(copy.noun)} in this chat</button>
+              <button type="button" data-perm-decide="allow_host">Always allow this ${escapeHtml(copy.noun)}</button>
+            </div>`;
     return `<li class="chat-perm-card is-pending${left != null && left <= 15 ? " is-low" : ""}" data-perm-card="${escapeHtml(rec.id)}" data-perm-sig="${escapeHtml(permCardSignature(rec))}" role="alert" style="--perm-left:${frac}">
       <div class="chat-perm-card-row">
         <span class="chat-perm-card-dot" aria-hidden="true"></span>
@@ -9757,14 +9771,7 @@
         <div class="chat-perm-card-actions">
           <button type="button" class="chat-perm-act" data-perm-decide="deny">Deny</button>
           <span class="chat-perm-always">
-            <button type="button" class="chat-perm-act is-allow" data-perm-decide="allow">Allow</button>
-            <button type="button" class="chat-perm-act is-split" data-perm-always aria-expanded="false" aria-label="Allow always options">
-              <svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"><path d="M3.2 10.2 8 5.4l4.8 4.8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            </button>
-            <div class="chat-pop chat-perm-always-menu" data-perm-always-menu hidden>
-              <button type="button" data-perm-decide="allow_session">Allow this ${escapeHtml(copy.noun)} in this chat</button>
-              <button type="button" data-perm-decide="allow_host">Always allow this ${escapeHtml(copy.noun)}</button>
-            </div>
+            <button type="button" class="chat-perm-act is-allow" data-perm-decide="allow">Allow</button>${always}
           </span>
         </div>
       </div>
@@ -9943,7 +9950,7 @@
   const PERMS_ICON_FILE = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 2h5l3 3v9H4z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M9 2v3h3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>';
   const PERMS_MODES = [
     { id: "ask", label: "Ask", hint: "Calls outside these directories wait for your answer." },
-    { id: "auto", label: "Auto", hint: "Jev allows ordinary out-of-scope calls. Unsure or dangerous still asks." },
+    { id: "auto", label: "Auto", hint: "Jev reviews each call and allows routine ones. Dangerous commands and secrets still ask." },
     { id: "bypass", label: "Bypass", hint: "No prompts. Read-only projects still apply." },
   ];
   const PERMS_TAGS = { temp: "temp", work: "workspace", session: "this chat", host: "always" };

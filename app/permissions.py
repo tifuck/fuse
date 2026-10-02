@@ -7,9 +7,11 @@ an interactive ask: Allow once / Allow always (session = this chat, host =
 this user+host forever) / Deny. Unattended runs (scheduled/auto) never ask:
 gated actions deny with an explanatory error. Bypass is live per-thread state
 read at gate time, so toggling it applies instantly to running subagents.
-Auto-approve (Jev) sits next to bypass: ordinary out-of-scope calls can be
-allowed without a card when the user has an OpenRouter key; secrets,
-destructive shells, and low-confidence answers still ask.
+Auto-approve (Jev) sits next to bypass, also read live: every call that would
+ask, shell commands included, goes to Jev first when the user has an
+OpenRouter key, and only a dangerous or unanswered verdict shows the card.
+Secret-named targets and regex-destructive shells always ask. Turning Auto on
+while a card waits sends that ask to Jev too.
 
 A call the gate allows outside the working root (temp, a grant, an approval)
 returns root_override="" so workspace confinement does not reject it. A
@@ -373,25 +375,14 @@ def auto_enabled(user_id: int, thread_id: int | None) -> bool:
 
 
 def set_auto(user_id: int, thread_id: int, enabled: bool, conn=None) -> None:
+    # Pending asks are not approved here: each waiting gate sees the flag on
+    # its next poll and puts its own call to Jev (_ask_and_wait).
     def _run(c):
         c.execute(
             "UPDATE chat_threads SET auto_permissions=? WHERE id=? AND user_id=?",
             (1 if enabled else 0, int(thread_id), int(user_id)),
         )
         logger.info("set_auto user=%s thread=%s enabled=%s", user_id, thread_id, enabled)
-        if enabled:
-            # Same exclusions as the live Auto path in review(): secrets and
-            # destructive shells always wait for the user.
-            rows = c.execute(
-                "SELECT id, command FROM chat_permission_asks WHERE thread_id=? AND user_id=? AND status='pending' AND secret=0",
-                (int(thread_id), int(user_id)),
-            ).fetchall()
-            ids = [row["id"] for row in rows if not _destructive_command(row["command"] or "")]
-            for ask_id in ids:
-                c.execute(
-                    "UPDATE chat_permission_asks SET status='allowed', decision=?, resolved_at=? WHERE id=? AND status='pending'",
-                    ("allow", db.now(), ask_id),
-                )
     if conn is not None:
         _run(conn)
         return
@@ -780,12 +771,37 @@ def _insert_ask(gate: Gate, ask_id: str, expires_iso: str, payload: dict) -> boo
     return True
 
 
+def _thread_modes(user_id: int, thread_id: int | None) -> tuple[bool, bool]:
+    """(bypass, auto) for a thread in one read."""
+    if not thread_id:
+        return False, False
+    row = db.fetchone(
+        "SELECT bypass_permissions, auto_permissions FROM chat_threads WHERE id=? AND user_id=?",
+        (int(thread_id), int(user_id)),
+    )
+    return bool(row and row["bypass_permissions"]), bool(row and row["auto_permissions"])
+
+
 def _poll_ask(user_id: int, thread_id: int | None, ask_id: str):
-    """The poll loop's two reads in one worker-thread hop."""
-    return bypass_enabled(user_id, thread_id), _get_ask(user_id, ask_id)
+    """The poll loop's reads in one worker-thread hop: (bypass, auto, ask row)."""
+    bypass, auto = _thread_modes(user_id, thread_id)
+    return bypass, auto, _get_ask(user_id, ask_id)
 
 
-async def _ask_and_wait(gate: Gate, payload: dict) -> str:
+def _auto_allow_ask(ask_id: str) -> bool:
+    """Jev allowed a waiting ask. False when the user answered first."""
+    with db.tx() as conn:
+        cur = conn.execute(
+            "UPDATE chat_permission_asks SET status='allowed', decision='allow', resolved_at=? WHERE id=? AND status='pending'",
+            (db.now(), ask_id),
+        )
+        return bool(cur.rowcount)
+
+
+async def _ask_and_wait(gate: Gate, payload: dict, auto_judge=None) -> str:
+    """Raise the card and wait. auto_judge (async () -> bool) runs once if Auto
+    is switched on while the card waits; None when Jev already ruled or the
+    call can never be auto-approved."""
     ask_id = "pa_" + uuid4().hex[:16]
     from datetime import datetime, timedelta, timezone
 
@@ -809,12 +825,19 @@ async def _ask_and_wait(gate: Gate, payload: dict) -> str:
                 return "cancelled"
             # DB reads stay off the event loop: a slow or exhausted pool must
             # never stall every running agent behind one permission ask.
-            bypass, row = await asyncio.to_thread(_poll_ask, gate.user_id, gate.thread_id, ask_id)
+            bypass, auto, row = await asyncio.to_thread(_poll_ask, gate.user_id, gate.thread_id, ask_id)
             if bypass:
                 await durable_call(_finish_ask, ask_id, "allowed")
                 gate._notify({"event": "permission", "kind": "tool_permission", "id": ask_id,
                               "status": "allowed", "decision": "allow"})
                 return "allow"
+            if auto and auto_judge is not None and row is not None and row["status"] == "pending":
+                judge, auto_judge = auto_judge, None
+                if await judge() and await durable_call(_auto_allow_ask, ask_id):
+                    gate._notify({"event": "permission", "kind": "tool_permission", "id": ask_id,
+                                  "status": "allowed", "decision": "allow"})
+                    return "allow"
+                continue  # re-read: the user may have answered while Jev ran
             if row is not None and row["status"] != "pending":
                 status = row["status"]
                 gate._notify({"event": "permission", "kind": "tool_permission", "id": ask_id,
@@ -880,6 +903,34 @@ class ReviewResult(dict):
         return bool(self.get("promotable"))
 
 
+# Names only: nothing a listing returns can leak file contents.
+_AUTO_NAME_TOOLS = frozenset({"list_dir", "glob"})
+_SHELL_APPROVAL = "shell command requires approval"
+
+
+async def _auto_verdict(gate: Gate, tool: str, action: dict, roots: list[str]) -> bool:
+    """Auto mode's answer for one call that would otherwise ask. Fail closed."""
+    from . import chat_runs as chat_runs_mod
+    from . import jev
+
+    if getattr(chat_runs_mod, "_stopping", False):
+        return False
+    if not await asyncio.to_thread(jev.user_can_auto, gate.user_id):
+        return False
+    if tool in _AUTO_NAME_TOOLS:
+        logger.warning("auto-allow listing tool=%s path=%s thread=%s", tool, action.get("path"), gate.thread_id)
+        return True
+    try:
+        allowed = await jev.judge(gate.user_id, gate.thread_id, action, roots=roots)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning("Jev judge raised", exc_info=True)
+        allowed = False
+    logger.warning("Jev verdict tool=%s path=%s allowed=%s", tool, action.get("path") or action.get("cwd"), allowed)
+    return bool(allowed)
+
+
 async def review(*, tool: str, args: dict, user_id: int,
                  host_id: int, host_alias: str, root: str, windows: bool,
                  gate: Gate | None) -> ReviewResult:
@@ -926,7 +977,7 @@ async def review(*, tool: str, args: dict, user_id: int,
         simple = re.fullmatch(r"\s*(?:cat|head|tail|ls|pwd|wc|stat|file|echo)\b[^;&|<>\n*?\[\]{}]*", command)
         restricted_shell = paths is None or not simple or _destructive_command(command)
         if restricted_shell:
-            reasons.append("shell command requires approval")
+            reasons.append(_SHELL_APPROVAL)
         if paths is not None:
             for cand, is_dir in paths:
                 if is_secret_path(cand):
@@ -981,8 +1032,10 @@ async def review(*, tool: str, args: dict, user_id: int,
         return ReviewResult(allowed=True, root_override=relax, resolved=resolved)
 
     label = display if perm_kind == "shell" else (display or cwd or command)
-    if gate.unattended:
-        return ReviewResult(allowed=False, detail=_deny_detail(label, "unattended"), kind="permission_denied")
+    if perm_kind == "shell" and (restricted_shell or secret):
+        # No grant can ever cover this command (see `covered`), so the card
+        # must not offer Allow-always.
+        grant_kind, grant_value = "", ""
 
     payload = {
         "kind": "tool_permission",
@@ -1000,46 +1053,31 @@ async def review(*, tool: str, args: dict, user_id: int,
         "grant_kind": grant_kind,
         "grant_value": str(grant_value)[:400],
     }
-    if (
-        await asyncio.to_thread(auto_enabled, gate.user_id, gate.thread_id)
-        and not secret
-        and not _destructive_command(command)
-        and not (perm_kind == "shell" and restricted_shell)
-    ):
-        from . import jev
-        from . import chat_runs as chat_runs_mod
+    # Auto: every call that would ask goes to Jev, shell included; that is
+    # the whole point of the mode. Secret-named targets and regex-destructive
+    # shells never reach Jev and always wait for the user.
+    auto_judge = None
+    if not secret and not _destructive_command(command):
+        jev_action = {
+            "tool": tool,
+            "host": host_alias,
+            "path": payload["path"],
+            "cwd": payload["cwd"],
+            "command": command,
+            # "requires approval" is the gate's policy, not a harm signal.
+            "reasons": [r for r in reasons if r != _SHELL_APPROVAL][:4],
+        }
 
-        if await asyncio.to_thread(jev.user_can_auto, gate.user_id) and not getattr(chat_runs_mod, "_stopping", False):
-            # Read-only directory probes are why Auto exists: listing /home or
-            # a sibling folder should not stop the agent for a card. Writes
-            # and shell still go through Jev.
-            if (tool in _DIR_TOOLS or tool == "read_file") and not secret:
-                logger.warning("auto-allow read tool=%s path=%s thread=%s", tool, payload.get("path"), gate.thread_id)
+        async def auto_judge():
+            return await _auto_verdict(gate, tool, jev_action, roots)
+
+        if await asyncio.to_thread(auto_enabled, gate.user_id, gate.thread_id):
+            if await auto_judge():
                 return ReviewResult(allowed=True, root_override=relax, resolved=resolved)
-            try:
-                allowed = await jev.judge(
-                    gate.user_id,
-                    gate.thread_id,
-                    {
-                        "tool": tool,
-                        "host": host_alias,
-                        "path": payload["path"],
-                        "cwd": payload["cwd"],
-                        "command": command[:8000],
-                        "secret": False,
-                        "reasons": reasons[:4],
-                    },
-                    roots=roots,
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.warning("Jev judge raised", exc_info=True)
-                allowed = False
-            logger.warning("Jev verdict tool=%s path=%s allowed=%s", tool, payload.get("path") or payload.get("cwd"), allowed)
-            if allowed:
-                return ReviewResult(allowed=True, root_override=relax, resolved=resolved)
-    action = await _ask_and_wait(gate, payload)
+            auto_judge = None  # Jev ruled; the card is the user's call
+    if gate.unattended:
+        return ReviewResult(allowed=False, detail=_deny_detail(label, "unattended"), kind="permission_denied")
+    action = await _ask_and_wait(gate, payload, auto_judge)
     if action in ("allow", "allow_session", "allow_host"):
         return ReviewResult(allowed=True, root_override=relax, resolved=resolved, ask_id="")
     if action == "cancelled":

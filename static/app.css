@@ -9529,6 +9529,7 @@ dialog[data-sched-modal] input[type="checkbox"] {
   color: var(--mute);
 }
 .chat-perm-always .is-allow { border-radius: 8px 0 0 8px; padding-right: 0.6rem; }
+.chat-perm-always .is-allow:only-child { border-radius: 8px; padding-right: 0.7rem; }
 .chat-perm-act.is-split[aria-expanded="true"] { background: var(--raise); color: var(--mist); }
 .chat-perm-act.is-split svg { display: block; margin: 0 auto; }
 .chat-perm-always-menu {

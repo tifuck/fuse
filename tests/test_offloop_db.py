@@ -44,9 +44,9 @@ class AskPollOffLoopTest(unittest.IsolatedAsyncioTestCase):
         ticks = []
         DB_DELAY = 0.15
 
-        def slow_bypass(user_id, thread_id):
+        def slow_modes(user_id, thread_id):
             time.sleep(DB_DELAY)
-            return False
+            return False, False
 
         def slow_get_ask(user_id, ask_id):
             time.sleep(DB_DELAY)
@@ -62,7 +62,7 @@ class AskPollOffLoopTest(unittest.IsolatedAsyncioTestCase):
         # contains only poll-loop activity.
         await asyncio.to_thread(lambda: None)
         with patch.object(permissions, "_insert_ask", lambda *a, **k: True), \
-             patch.object(permissions, "bypass_enabled", slow_bypass), \
+             patch.object(permissions, "_thread_modes", slow_modes), \
              patch.object(permissions, "_get_ask", slow_get_ask), \
              patch.object(permissions, "_finish_ask", lambda *a, **k: None), \
              patch.object(permissions, "ASK_TIMEOUT_S", 0.4):

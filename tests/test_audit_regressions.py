@@ -16,8 +16,8 @@ from app.sources import token_store
     "python3 script.py", "cat .aws/credentials", "cat .*",
 ])
 def test_shell_requires_approval(command):
-    gate = SimpleNamespace(thread_id=1, user_id=1, unattended=True)
-    with patch.object(permissions, "bypass_enabled", return_value=False), patch.object(permissions, "grant_covers", return_value=False):
+    gate = SimpleNamespace(thread_id=1, user_id=1, unattended=True, requester={})
+    with patch.object(permissions, "bypass_enabled", return_value=False), patch.object(permissions, "grant_covers", return_value=False), patch.object(permissions, "auto_enabled", return_value=False):
         result = asyncio.run(permissions.review(
             tool="run_terminal_command", args={"command": command}, user_id=1,
             host_id=1, host_alias="test", root="/srv/app", windows=False, gate=gate,
