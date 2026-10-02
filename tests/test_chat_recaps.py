@@ -292,6 +292,15 @@ class SubstantialTest(unittest.TestCase):
                 {"id": "a", "role": "assistant", "content": "done", "elapsedMs": recaps.MIN_WORK_SECONDS * 1000}]
         self.assertTrue(recaps.substantial(msgs, "u"))
 
+    def test_work_time_counts_the_whole_session(self):
+        third = recaps.MIN_WORK_SECONDS * 1000 // 3 + 1
+        msgs = []
+        for n in range(3):
+            msgs += [{"id": f"u{n}", "role": "user", "content": "go"},
+                     {"id": f"a{n}", "role": "assistant", "content": "ok", "elapsedMs": third}]
+        self.assertFalse(recaps.substantial(msgs[-2:], "u2"))
+        self.assertTrue(recaps.substantial(msgs, "u2"))
+
     def test_episode_source_is_framed_and_labelled(self):
         msgs = [{"id": "u", "role": "user", "content": "Fix tokens"}, {"id": "a", "role": "assistant", "content": "Fixed tokens."}]
         anchor, source = recaps.episode(msgs, "u")

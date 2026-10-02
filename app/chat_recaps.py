@@ -159,7 +159,7 @@ def episode(messages: list[dict], start_id: str = "") -> tuple[str, str]:
 
 
 def substantial(messages: list[dict], start_id: str = "") -> bool:
-    """Long conversations or episodes with real work time earn an automatic recap."""
+    """Long sessions earn an automatic recap: total text or total work time across every turn."""
     start = next((i for i, m in enumerate(messages) if m.get("id") == start_id), None)
     if start is None:
         start = next((i for i in range(len(messages)-1, -1, -1)
@@ -167,7 +167,7 @@ def substantial(messages: list[dict], start_id: str = "") -> bool:
     if start is None:
         return False
     total = sum(len(chats._message_plain_text(m.get("content")).strip()) for m in messages)
-    work_ms = sum(int(m.get("elapsedMs") or 0) for m in messages[start:] if m.get("role") == "assistant")
+    work_ms = sum(int(m.get("elapsedMs") or 0) for m in messages if m.get("role") == "assistant")
     return total >= MIN_CONTEXT_CHARS or work_ms >= MIN_WORK_SECONDS * 1000
 
 
