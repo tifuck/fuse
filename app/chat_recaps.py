@@ -19,6 +19,8 @@ MAX_ATTEMPTS = 3
 CONCURRENCY = 3
 IDLE_SECONDS = 60
 LEASE_SECONDS = 90
+MIN_LAST_REPLY_CHARS = 300
+MIN_EPISODE_CHARS = 800
 _tasks: dict[int, asyncio.Task] = {}
 _wake: asyncio.Event | None = None
 _wake_loop: asyncio.AbstractEventLoop | None = None
@@ -146,6 +148,19 @@ def episode(messages: list[dict], start_id: str = "") -> tuple[str, str]:
     return str(window[-1].get("id") or ""), chats.clip_metadata_text("\n".join(lines), 6000)
 
 
+def substantial(messages: list[dict], start_id: str = "") -> bool:
+    """A recap must be able to be shorter than the work it summarizes."""
+    start = next((i for i, m in enumerate(messages) if m.get("id") == start_id), None)
+    if start is None:
+        start = next((i for i in range(len(messages)-1, -1, -1)
+                      if messages[i].get("role") == "user" and not messages[i].get("auto")), None)
+    if start is None:
+        return False
+    texts = [chats._message_plain_text(m.get("content")).strip() for m in messages[start:]]
+    last = next((t for t, m in zip(reversed(texts), reversed(messages[start:])) if m.get("role") == "assistant"), "")
+    return len(last) >= MIN_LAST_REPLY_CHARS or sum(map(len, texts)) >= MIN_EPISODE_CHARS
+
+
 def attach(conn, user_id: int, thread_id: int, view: dict) -> dict:
     anchors = {m.get("id") for m in view.get("messages", [])}
     rows = conn.execute("""SELECT anchor_id,text FROM chat_recaps WHERE user_id=? AND thread_id=? AND state='ready'
@@ -206,7 +221,7 @@ def claim(job_id: int):
         messages = chat_store.settle_spawn_traces(conn, job["user_id"], messages)
         messages = chat_store.settle_command_traces(conn, job["user_id"], job["thread_id"], messages)
         anchor, source = episode(messages, job["episode_id"])
-        if not anchor or not source or not row["model"]:
+        if not anchor or not source or not row["model"] or (not job["manual"] and not substantial(messages, job["episode_id"])):
             conn.execute("UPDATE chat_recaps SET state='skipped' WHERE id=?", (job_id,))
             return None
         cur = conn.execute("""UPDATE chat_recaps SET state='generating',lease_token=?,next_at=?,attempts=attempts+1,

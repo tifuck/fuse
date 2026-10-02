@@ -27,7 +27,7 @@ class RecapTest(unittest.IsolatedAsyncioTestCase):
         await recaps.drain()
 
     def complete(self, status="completed"):
-        store.finish_run(self.turn["run"]["id"], {"content": "Fixed token validation. Tests passed."}, status)
+        store.finish_run(self.turn["run"]["id"], {"content": "Fixed token validation. Tests passed. " + "Details. " * 100}, status)
 
     def job(self):
         return dict(db.fetchone("SELECT * FROM chat_recaps WHERE thread_id=? ORDER BY epoch DESC LIMIT 1", (self.pk,)))
@@ -200,7 +200,7 @@ class RecapTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(next_turn["thread"]["recaps"], [])
         self.assertEqual(chats.get_thread(1, self.pk)["recaps"], [])
         self.assertEqual(db.fetchone("SELECT state FROM chat_recaps WHERE id=?", (job["id"],))[0], "stale")
-        store.finish_run(next_turn["run"]["id"], {"content": "Reviewed cookie settings."}, "completed")
+        store.finish_run(next_turn["run"]["id"], {"content": "Reviewed cookie settings. " + "Details. " * 100}, "completed")
         self.age()
         next_job = recaps.claim(self.job()["id"])
         recaps.finish(next_job, "Reviewed cookie settings.")
@@ -264,3 +264,15 @@ class RecapTest(unittest.IsolatedAsyncioTestCase):
         lines = [json.loads(line) async for line in response.body_iterator]
         self.assertTrue(lines[0]["partial"])
         self.assertEqual(lines[0]["recaps"], lines[1]["recaps"])
+
+
+class SubstantialTest(unittest.TestCase):
+    def test_short_exchange_is_not_recapped(self):
+        msgs = [{"id": "u", "role": "user", "content": "test"}, {"id": "a", "role": "assistant", "content": "Hello! How can I help?"}]
+        self.assertFalse(recaps.substantial(msgs, "u"))
+
+    def test_long_last_reply_or_long_total_is_recapped(self):
+        long = "x" * recaps.MIN_LAST_REPLY_CHARS
+        self.assertTrue(recaps.substantial([{"id": "u", "role": "user", "content": "hi"}, {"id": "a", "role": "assistant", "content": long}], "u"))
+        msgs = [{"id": "u", "role": "user", "content": "y" * recaps.MIN_EPISODE_CHARS}, {"id": "a", "role": "assistant", "content": "ok"}]
+        self.assertTrue(recaps.substantial(msgs, "u"))
