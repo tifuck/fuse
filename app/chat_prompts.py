@@ -53,7 +53,9 @@ TITLE_SYSTEM = (
 )
 TITLE_REGEN_SYSTEM = TITLE_SYSTEM
 RECAP_SYSTEM = (
-    "Write a one-line status recap of the work episode inside <episode> tags, for a reader returning to the chat. "
+    "Write a one-line status recap of the chat inside <episode> tags, for a reader returning to it. "
+    "The tags may hold earlier conversation as background, then the latest work. Weight the recap to the latest work, "
+    "and use the earlier context only for the goal or thread that gives it meaning; never ignore it when it changes what the latest work means. "
     "One or two plain sentences, under 40 words. Lead with the goal, then the concrete result or finding, "
     "then the main open blocker or next step if one remains. "
     "Write in impersonal past tense about the work itself: never use I, we, you, the user, or the assistant. "

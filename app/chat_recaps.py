@@ -26,6 +26,11 @@ SETTLE_RECHECK_SECONDS = 2
 # an episode whose turns ran at least this long.
 MIN_CONTEXT_CHARS = 4000
 MIN_WORK_SECONDS = 60
+# Recap source budget: the whole chat is summarized, weighted to the latest episode.
+SOURCE_CHARS = 5970
+EARLIER_CHARS = 2000
+MIN_EARLIER_CHARS = 900
+EARLIER_MAX_MESSAGES = 12
 _tasks: dict[int, asyncio.Task] = {}
 _wake: asyncio.Event | None = None
 _wake_loop: asyncio.AbstractEventLoop | None = None
@@ -125,8 +130,31 @@ def _settled(conn, user_id: int, thread_id: int) -> bool:
     return True
 
 
+def _earlier(messages: list[dict], budget: int) -> list[str]:
+    """Condense everything before the latest episode: the original goal first, then the most recent turns."""
+    turns = [(m, chats._message_plain_text(m.get("content"))) for m in messages]
+    turns = [(m, t) for m, t in turns if t.strip()]
+    if not turns:
+        return []
+    if len(turns) > EARLIER_MAX_MESSAGES:
+        omitted = len(turns) - EARLIER_MAX_MESSAGES
+        turns = [turns[0], *turns[-(EARLIER_MAX_MESSAGES - 1):]]
+    else:
+        omitted = 0
+    limit = max(90, min(320, budget // len(turns) - 24))
+    lines = []
+    for index, (msg, text) in enumerate(turns):
+        label = ("Background report" if msg.get("auto") else "Earlier request" if msg.get("role") == "user"
+                 else "Earlier output")
+        lines.append(f"{label}: {chats.clip_metadata_text(text, limit)}")
+        if index == 0 and omitted:
+            lines.append(f"[{omitted} messages between these are omitted]")
+    return lines
+
+
 def episode(messages: list[dict], start_id: str = "") -> tuple[str, str]:
-    """Retain the user's goal, later direction and outcomes, without reasoning/log dumps."""
+    """Cover the whole transcript, weighted to the latest episode: earlier turns are condensed, the
+    latest request, follow-ups and outcomes keep most of the budget. No reasoning/log dumps."""
     start = next((i for i, m in enumerate(messages) if m.get("id") == start_id), None)
     if start is None:
         start = next((i for i in range(len(messages)-1, -1, -1)
@@ -140,7 +168,7 @@ def episode(messages: list[dict], start_id: str = "") -> tuple[str, str]:
     selected = [window[0], *window[max(1, len(window)-7):]]
     for index, msg in enumerate(selected):
         role = msg.get("role")
-        label = ("Background report" if msg.get("auto") else "Request" if index == 0
+        label = ("Background report" if msg.get("auto") else "Request" if index == 0 and start == 0 else "Latest request" if index == 0
                  else "Follow-up request" if role == "user" else "Work output")
         limit = 1200 if msg is window[-1] else 650
         text = chats.clip_metadata_text(chats._message_plain_text(msg.get("content")), limit)
@@ -154,8 +182,16 @@ def episode(messages: list[dict], start_id: str = "") -> tuple[str, str]:
             detail = chats.clip_metadata_text(str(tool.get("error") or tool.get("summary") or tool.get("preview") or ""), 160)
             if detail:
                 lines.append(f"Tool {tool.get('name', 'result')} ({tool.get('status', 'unknown')}): {detail}")
-    body = "\n".join(lines)[:5970]
-    return str(window[-1].get("id") or ""), "<episode>\n" + body + "\n</episode>"
+    latest = "\n".join(lines)
+    # The latest work is never starved: it keeps at least MIN_LATEST_CHARS (its tail if it is huge),
+    # and the earlier context takes what is left, up to EARLIER_CHARS.
+    latest = latest[-(SOURCE_CHARS - MIN_EARLIER_CHARS):]
+    earlier = "\n".join(_earlier(messages[:start], min(EARLIER_CHARS, SOURCE_CHARS - len(latest) - 150)))
+    if earlier:
+        body = "Earlier in the chat (background; condensed):\n" + earlier + "\n\nLatest work (the focus of the recap):\n" + latest
+    else:
+        body = latest
+    return str(window[-1].get("id") or ""), "<episode>\n" + body[-SOURCE_CHARS:] + "\n</episode>"
 
 
 def substantial(messages: list[dict], start_id: str = "") -> bool:

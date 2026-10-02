@@ -309,6 +309,32 @@ class SubstantialTest(unittest.TestCase):
         self.assertIn("Work output: Fixed tokens.", source)
         self.assertNotIn("assistant:", source)
 
+    def test_episode_covers_the_whole_transcript_weighted_to_the_latest(self):
+        msgs = [{"id": "u0", "role": "user", "content": "Migrate billing to Stripe"},
+                {"id": "a0", "role": "assistant", "content": "Webhook handler added; invoices still use the old API."}]
+        for n in range(1, 9):
+            msgs += [{"id": f"u{n}", "role": "user", "content": f"Step {n} request " + "q" * 400},
+                     {"id": f"a{n}", "role": "assistant", "content": f"Step {n} output " + "r" * 400}]
+        msgs += [{"id": "ul", "role": "user", "content": "Now fix the refund bug"},
+                 {"id": "al", "role": "assistant", "content": "Refund rounding fixed in refunds.py."}]
+        anchor, source = recaps.episode(msgs, "ul")
+        self.assertEqual(anchor, "al")
+        self.assertLessEqual(len(source), recaps.SOURCE_CHARS + 40)
+        self.assertIn("Earlier request: Migrate billing to Stripe", source)
+        self.assertIn("Step 8 output", source)
+        self.assertIn("messages between these are omitted", source)
+        self.assertLess(source.index("Earlier request: Migrate"), source.index("Latest request: Now fix the refund bug"))
+        self.assertTrue(source.rstrip().endswith("Work output: Refund rounding fixed in refunds.py.\n</episode>".rstrip()))
+
+    def test_huge_latest_work_still_keeps_room_for_earlier_context(self):
+        msgs = [{"id": "u0", "role": "user", "content": "Original goal"}, {"id": "a0", "role": "assistant", "content": "Done."},
+                {"id": "u1", "role": "user", "content": "Go"},
+                {"id": "a1", "role": "assistant", "content": "z" * 5000,
+                 "tools": [{"name": "bash", "status": "ok", "summary": "s" * 400}] * 4}]
+        _, source = recaps.episode(msgs, "u1")
+        self.assertLessEqual(len(source), recaps.SOURCE_CHARS + 40)
+        self.assertIn("Original goal", source)
+
     def test_recap_parser_strips_markdown_instead_of_rejecting(self):
         self.assertEqual(chats.parse_generated_recap("Recap: Fixed `auth.py` **token** check."), "Fixed auth.py token check.")
         self.assertEqual(chats.parse_generated_recap("# Fixed token validation."), "Fixed token validation.")
