@@ -2272,7 +2272,7 @@ async def _retrieval_first(request: Request, user_id: int, messages: list[dict],
 
 
 async def generate_thread_title(
-    request: Request, user, model: str, text: str, *, system: str = TITLE_SYSTEM, limit: int = chats.TITLE_PROMPT_MAX,
+    request: Request, user, model: str, text: str, *, system: str = TITLE_SYSTEM, limit: int = chats.TITLE_SOURCE_MAX,
 ) -> str:
     return await _generate_metadata(request, user, model, text, system, limit, chats.parse_generated_title)
 

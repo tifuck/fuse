@@ -738,7 +738,7 @@ async def chat_thread_recap(request: Request, thread_id: str):
         await asyncio.to_thread(chat_recaps.request_manual, user["id"], pk)
     except chats.ChatValidationError as exc:
         raise _chat_validation_error(exc) from None
-    return JSONResponse({"started": True, "idle_seconds": chat_recaps.IDLE_SECONDS}, headers={"Cache-Control": "no-store"})
+    return JSONResponse({"started": True}, headers={"Cache-Control": "no-store"})
 
 
 @router.delete("/chat/threads/{thread_id}")

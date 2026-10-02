@@ -341,62 +341,42 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
                                                 frozen_context={"instructions": "frozen", "profile": "old"})
             self.assertEqual(prompt.call_args.kwargs["instructions"], "frozen")
 
-    async def test_first_turn_generates_title_in_parallel(self):
+    async def test_title_is_requested_only_after_the_root_turn_ends(self):
+        from app import chat_titles
         run = self.turn(auto_title=True)
-        started = asyncio.Event()
-        released = asyncio.Event()
+        seen = []
 
         async def gen():
-            started.set()
-            await released.wait()
-            yield frame({"choices": [{"delta": {"content": "answer"}}]})
+            seen.append(run["thread_id"] in chat_titles._due)
+            yield frame({"choices": [{"delta": {"content": "answer " + "with details " * 30}}]})
             yield b"data: [DONE]\n\n"
-
-        async def title(*args, **kwargs):
-            await started.wait()
-            released.set()
-            return "CSV to JSON"
 
         async def mocked(request, user, raw, *, frozen_context):
             return StreamingResponse(gen())
 
+        chat_titles._due.clear()
         with patch.object(runtime, "stream_dashboard_chat", side_effect=mocked), \
-             patch.object(runtime, "generate_thread_title", side_effect=title) as gen_title:
+             patch.object(runtime, "generate_thread_title", new_callable=AsyncMock, return_value="CSV to JSON") as gen_title:
             task = await runs.start(self.request, self.user, run)
             await asyncio.wait_for(task, 2)
-        gen_title.assert_awaited()
+            gen_title.assert_not_awaited()
+            self.assertEqual(seen, [False])
+            self.assertIn(run["thread_id"], chat_titles._due)
+            await chat_titles.sweep()
+            await asyncio.gather(*list(chat_titles._tasks))
+        gen_title.assert_awaited_once()
         thread = chats.get_thread(1, run["thread_id"])
         self.assertEqual(thread["title"], "CSV to JSON")
         self.assertIn("answer", thread["messages"][-1]["content"])
+        await chat_titles.drain()
 
-    async def test_generated_title_does_not_replace_rename(self):
+    async def test_title_failure_keeps_provisional_title(self):
+        from app import chat_titles
         run = self.turn(auto_title=True)
-        renamed = asyncio.Event()
+        provisional = chats.get_thread(1, run["thread_id"])["title"]
 
         async def gen():
-            yield frame({"choices": [{"delta": {"content": "ok"}}]})
-            yield b"data: [DONE]\n\n"
-
-        async def title(*args, **kwargs):
-            await renamed.wait()
-            return "Generated"
-
-        async def mocked(request, user, raw, *, frozen_context):
-            chats.update_thread(1, run["thread_id"], title="Keep me", expected_revision=1)
-            renamed.set()
-            return StreamingResponse(gen())
-
-        with patch.object(runtime, "stream_dashboard_chat", side_effect=mocked), \
-             patch.object(runtime, "generate_thread_title", side_effect=title):
-            task = await runs.start(self.request, self.user, run)
-            await asyncio.wait_for(task, 2)
-        self.assertEqual(chats.get_thread(1, run["thread_id"])["title"], "Keep me")
-
-    async def test_title_failure_keeps_placeholder(self):
-        run = self.turn(auto_title=True)
-
-        async def gen():
-            yield frame({"choices": [{"delta": {"content": "ok"}}]})
+            yield frame({"choices": [{"delta": {"content": "Here is a longer answer about it. " * 10}}]})
             yield b"data: [DONE]\n\n"
 
         async def mocked(request, user, raw, *, frozen_context):
@@ -406,37 +386,12 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
              patch.object(runtime, "generate_thread_title", new_callable=AsyncMock, return_value=""):
             task = await runs.start(self.request, self.user, run)
             await asyncio.wait_for(task, 2)
-        thread = chats.get_thread(1, run["thread_id"])
-        self.assertEqual(thread["title"], "New chat")
+            await chat_titles.sweep()
+            await asyncio.gather(*list(chat_titles._tasks))
+        self.assertEqual(chats.get_thread(1, run["thread_id"])["title"], provisional)
         row = db.fetchone("SELECT title_attempts FROM chat_threads WHERE id=?", (run["thread_id"],))
         self.assertEqual(row["title_attempts"], 1)
-
-    async def test_title_generation_is_chat_page_only(self):
-        run = self.turn(auto_title=True)
-
-        async def gen():
-            yield frame({"choices": [{"delta": {"content": "ok"}}]})
-            yield b"data: [DONE]\n\n"
-
-        async def mocked(request, user, raw, *, frozen_context):
-            return StreamingResponse(gen())
-
-        api_request = Request(
-            {
-                "type": "http",
-                "headers": [(b"x-session-id", b"session")],
-                "session": {"user_id": 1},
-                "method": "POST",
-                "path": "/v1/chat/completions",
-            },
-            receive=self.disconnected,
-        )
-        with patch.object(runtime, "stream_dashboard_chat", side_effect=mocked), \
-             patch.object(runtime, "generate_thread_title", new_callable=AsyncMock, return_value="API Title") as gen_title:
-            task = await runs.start(api_request, self.user, run)
-            await asyncio.wait_for(task, 2)
-        gen_title.assert_not_called()
-        self.assertEqual(chats.get_thread(1, run["thread_id"])["title"], "New chat")
+        await chat_titles.drain()
 
     async def test_output_keeps_checkpointed_tools_and_text(self):
         run = self.turn()

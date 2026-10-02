@@ -7,7 +7,6 @@ with no such transcript is interrupted rather than retried.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import copy
 import json
 import logging
@@ -29,7 +28,6 @@ STATUS_POLL_SECONDS = 2.0
 MAX_RUNTIME_SECONDS = chat_store.DEFAULT_REMAINING_SECONDS
 CLEANUP_SECONDS = 2
 MAX_FRAME_BYTES = 2_500_000
-TITLE_WAIT_SECONDS = 20
 CANCEL_GRACE_SECONDS = 2.0
 FORCE_CANCEL_SECONDS = 15.0
 STALL_IDLE_SECONDS = chat_store.STALL_IDLE_SECONDS
@@ -609,26 +607,6 @@ async def start(request: Request, user, run):
     return task
 
 
-def _is_chat_page_request(request) -> bool:
-    try:
-        path = request.url.path
-    except Exception:
-        path = ""
-    return path == "/chat" or path.startswith("/chat/")
-
-
-async def _apply_thread_title(request, user, run):
-    if not _is_chat_page_request(request):
-        return
-    prompt = chats.first_user_text(run.get("request", {}).get("messages") or [])
-    if not prompt:
-        return
-    thread_id = run.get("thread_id")
-    from . import chat_titles
-    await chat_titles._generate(user["id"], thread_id, run.get("request", {}).get("model") or "", prompt,
-                                run.get("request", {}).get("title_placeholder") or "")
-
-
 def _iso_age(ts) -> float:
     try:
         dt = datetime.fromisoformat(str(ts or "").replace("Z", "+00:00"))
@@ -1068,7 +1046,6 @@ async def _run(request, user, run):
     }
     previous_segments = copy.deepcopy(output.message.get("segments") or [])
     iterator = worker = None
-    title_task = None
     status = "failed"
     persist_failed = False
     started = time.monotonic()
@@ -1079,10 +1056,6 @@ async def _run(request, user, run):
     task.add_done_callback(lambda _task: chat_store.end_leg(ident, leg))
     agent = run.get("request", {}).get("agent") if isinstance(run.get("request"), dict) else {}
     agent = agent if isinstance(agent, dict) else {}
-    if run.get("request", {}).get("generate_title") and _is_chat_page_request(request):
-        title_task = asyncio.create_task(
-            _apply_thread_title(request, user, run), name=f"chat-title-{ident}"
-        )
 
     flush_lock = asyncio.Lock()
     cancel_signal = _register_cancel_signal(ident)
@@ -1507,6 +1480,10 @@ async def _run(request, user, run):
             if current and current["status"] in chat_store.ACTIVE and not continuing:
                 await durable_call(chat_store.abort_active, ident, status if status in chat_store.TERMINAL else "interrupted")
             if status in chat_store.TERMINAL and not continuing:
+                if parent and status != "interrupted":
+                    from . import chat_titles
+
+                    chat_titles.notify(run["thread_id"])
                 child_agent = {}
                 if current and isinstance(current.get("request"), dict):
                     child_agent = current["request"].get("agent") if isinstance(current["request"].get("agent"), dict) else {}
@@ -1586,14 +1563,6 @@ async def _run(request, user, run):
                         await iterator.aclose()
                 except (Exception, asyncio.CancelledError):
                     logger.warning("Chat iterator cleanup did not finish for %s", ident)
-            if title_task is not None:
-                timeout = 0.2 if _stopping else TITLE_WAIT_SECONDS
-                try:
-                    await asyncio.wait_for(title_task, timeout)
-                except (Exception, asyncio.CancelledError):
-                    title_task.cancel()
-                    with contextlib.suppress(Exception, asyncio.CancelledError):
-                        await title_task
             if _iterators.get(ident) is iterator:
                 _iterators.pop(ident, None)
             if _tasks.get(ident) is task:

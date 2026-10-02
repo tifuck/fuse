@@ -1,8 +1,7 @@
-"""Durable settlement, idle-boundary and metadata-only recap regressions."""
+"""Durable settlement, size/work gating and metadata-only recap regressions."""
 import asyncio
 import json
 import unittest
-from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 from app import chat_recaps as recaps, chat_store as store, chats, db
@@ -26,15 +25,16 @@ class RecapTest(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await recaps.drain()
 
-    def complete(self, status="completed"):
-        store.finish_run(self.turn["run"]["id"], {"content": "Fixed token validation. Tests passed. " + "Details. " * 100}, status)
+    def complete(self, status="completed", elapsed=90_000):
+        store.finish_run(self.turn["run"]["id"], {"content": "Fixed token validation. Tests passed. " + "Details. " * 100,
+                                                  "elapsedMs": elapsed}, status)
 
     def job(self):
         return dict(db.fetchone("SELECT * FROM chat_recaps WHERE thread_id=? ORDER BY epoch DESC LIMIT 1", (self.pk,)))
 
-    def age(self, seconds=61):
-        ts = (datetime.now(timezone.utc) - timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        db.execute("UPDATE chat_recaps SET next_at='',quiet_since=? WHERE id=?", (ts, self.job()["id"]))
+    def age(self):
+        """Skip the short settle re-check / retry backoff."""
+        db.execute("UPDATE chat_recaps SET next_at='' WHERE id=?", (self.job()["id"],))
 
     def child(self, status="running", background=False):
         req = json.dumps({"agent": {"background": background}})
@@ -47,23 +47,36 @@ class RecapTest(unittest.IsolatedAsyncioTestCase):
                       VALUES('cmd',1,1,?,?,'pytest','/repo',1,1000,?,?,?,1,?)""",
                    (self.pk, self.turn["run"]["id"], status, db.now(), db.now(), delivered))
 
-    def test_no_request_before_zero_work_and_60_seconds(self):
-        self.assertIsNone(recaps.claim(self.job()["id"]))
-        self.complete()
-        self.assertIsNone(recaps.claim(self.job()["id"]))  # Starts idle clock.
-        self.age(59)
+    def test_no_request_until_turn_children_and_commands_are_idle(self):
         self.assertIsNone(recaps.claim(self.job()["id"]))
         self.child()
-        self.age()
-        self.assertIsNone(recaps.claim(self.job()["id"]))
+        self.complete()
+        self.assertIsNone(recaps.claim(self.job()["id"]))  # Subagent still running.
         db.execute("UPDATE chat_runs SET status='completed' WHERE id='child'")
         self.command()
         self.age()
-        self.assertIsNone(recaps.claim(self.job()["id"]))
+        self.assertIsNone(recaps.claim(self.job()["id"]))  # Background command still running.
         db.execute("UPDATE command_jobs SET status='completed' WHERE id='cmd'")
-        self.assertIsNone(recaps.claim(self.job()["id"]))
         self.age()
+        self.assertIsNotNone(recaps.claim(self.job()["id"]))  # Idle: no extra wait.
+
+    def test_settled_turn_generates_immediately(self):
+        self.complete()
         self.assertIsNotNone(recaps.claim(self.job()["id"]))
+
+    def test_short_quick_episode_is_skipped(self):
+        self.complete(elapsed=5_000)
+        self.assertIsNone(recaps.claim(self.job()["id"]))
+        self.assertEqual(self.job()["state"], "skipped")
+
+    def test_busy_publication_does_not_spend_an_attempt(self):
+        self.complete()
+        job = recaps.claim(self.job()["id"])
+        self.command()
+        recaps.finish(job, "Fixed token validation.")
+        current = self.job()
+        self.assertEqual((current["state"], current["attempts"]), ("pending", 0))
+        self.assertEqual(chats.get_thread(1, self.pk)["recaps"], [])
 
     def test_finished_child_report_must_be_delivered_then_wake_settle(self):
         self.complete()
@@ -108,17 +121,20 @@ class RecapTest(unittest.IsolatedAsyncioTestCase):
         recaps.finish(retry, "Late output must not publish.")
         self.assertEqual(chats.get_thread(1, self.pk)["recaps"], [])
 
-    def test_toggle_disables_generation_but_manual_waits_for_idle(self):
+    def test_toggle_disables_generation_but_manual_still_runs(self):
         self.complete()
-        self.age()
         job = recaps.claim(self.job()["id"])
         chats.set_user_context(1, recaps=False, expected_revision=0, command_id="off")
         recaps.finish(job, "This must be discarded.")
         self.assertEqual(chats.get_thread(1, self.pk)["recaps"], [])
         recaps.request_manual(1, self.pk)
-        self.assertIsNone(recaps.claim(self.job()["id"]))
-        self.age()
         self.assertIsNotNone(recaps.claim(self.job()["id"]))
+
+    def test_manual_refused_while_background_work_runs(self):
+        self.complete()
+        self.command()
+        with self.assertRaises(chats.ChatValidationError):
+            recaps.request_manual(1, self.pk)
 
     async def test_worker_publishes_display_metadata_without_changing_history(self):
         self.complete()
@@ -161,20 +177,16 @@ class RecapTest(unittest.IsolatedAsyncioTestCase):
         chats.delete_thread(1, self.pk, expected_revision=view["revision"], command_id="delete")
         self.assertFalse(db.fetchone("SELECT id FROM chat_recaps WHERE thread_id=?", (self.pk,)))
 
-    def test_command_finish_resets_the_idle_timer(self):
+    def test_command_finish_makes_recap_due_now(self):
         from app import command_jobs
         self.complete()
         self.command()
-        self.age()
+        self.assertIsNone(recaps.claim(self.job()["id"]))
         command_jobs._persist_finish({"id": "cmd", "user_id": 1, "thread_id": self.pk, "out": "passed"},
                                      status="completed", exit_code=0, error="", duration=100)
-        self.assertIsNone(recaps.claim(self.job()["id"]))
-        self.age(59)
-        self.assertIsNone(recaps.claim(self.job()["id"]))
-        self.age()
         self.assertIsNotNone(recaps.claim(self.job()["id"]))
 
-    def test_resume_invalidates_ready_recap_and_restarts_idle(self):
+    def test_resume_invalidates_ready_recap_until_child_settles(self):
         self.complete()
         self.age()
         job = recaps.claim(self.job()["id"])
@@ -185,7 +197,6 @@ class RecapTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chats.get_thread(1, self.pk)["recaps"], [])
         self.assertIsNone(recaps.claim(self.job()["id"]))
         store.finish_run("child", {"content": "Cookie follow-up finished."}, "completed")
-        self.assertIsNone(recaps.claim(self.job()["id"]))
         self.age()
         self.assertIsNotNone(recaps.claim(self.job()["id"]))
 
@@ -200,7 +211,8 @@ class RecapTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(next_turn["thread"]["recaps"], [])
         self.assertEqual(chats.get_thread(1, self.pk)["recaps"], [])
         self.assertEqual(db.fetchone("SELECT state FROM chat_recaps WHERE id=?", (job["id"],))[0], "stale")
-        store.finish_run(next_turn["run"]["id"], {"content": "Reviewed cookie settings. " + "Details. " * 100}, "completed")
+        store.finish_run(next_turn["run"]["id"], {"content": "Reviewed cookie settings. " + "Details. " * 100,
+                                                   "elapsedMs": 90_000}, "completed")
         self.age()
         next_job = recaps.claim(self.job()["id"])
         recaps.finish(next_job, "Reviewed cookie settings.")
@@ -267,12 +279,28 @@ class RecapTest(unittest.IsolatedAsyncioTestCase):
 
 
 class SubstantialTest(unittest.TestCase):
-    def test_short_exchange_is_not_recapped(self):
-        msgs = [{"id": "u", "role": "user", "content": "test"}, {"id": "a", "role": "assistant", "content": "Hello! How can I help?"}]
+    def test_short_quick_exchange_is_not_recapped(self):
+        msgs = [{"id": "u", "role": "user", "content": "test"},
+                {"id": "a", "role": "assistant", "content": "Hello! How can I help?", "elapsedMs": 3_000}]
         self.assertFalse(recaps.substantial(msgs, "u"))
 
-    def test_long_last_reply_or_long_total_is_recapped(self):
-        long = "x" * recaps.MIN_LAST_REPLY_CHARS
-        self.assertTrue(recaps.substantial([{"id": "u", "role": "user", "content": "hi"}, {"id": "a", "role": "assistant", "content": long}], "u"))
-        msgs = [{"id": "u", "role": "user", "content": "y" * recaps.MIN_EPISODE_CHARS}, {"id": "a", "role": "assistant", "content": "ok"}]
+    def test_long_context_or_long_work_is_recapped(self):
+        msgs = [{"id": "old", "role": "user", "content": "y" * recaps.MIN_CONTEXT_CHARS},
+                {"id": "u", "role": "user", "content": "hi"}, {"id": "a", "role": "assistant", "content": "ok"}]
         self.assertTrue(recaps.substantial(msgs, "u"))
+        msgs = [{"id": "u", "role": "user", "content": "run it"},
+                {"id": "a", "role": "assistant", "content": "done", "elapsedMs": recaps.MIN_WORK_SECONDS * 1000}]
+        self.assertTrue(recaps.substantial(msgs, "u"))
+
+    def test_episode_source_is_framed_and_labelled(self):
+        msgs = [{"id": "u", "role": "user", "content": "Fix tokens"}, {"id": "a", "role": "assistant", "content": "Fixed tokens."}]
+        anchor, source = recaps.episode(msgs, "u")
+        self.assertEqual(anchor, "a")
+        self.assertTrue(source.startswith("<episode>\nRequest: Fix tokens"))
+        self.assertIn("Work output: Fixed tokens.", source)
+        self.assertNotIn("assistant:", source)
+
+    def test_recap_parser_strips_markdown_instead_of_rejecting(self):
+        self.assertEqual(chats.parse_generated_recap("Recap: Fixed `auth.py` **token** check."), "Fixed auth.py token check.")
+        self.assertEqual(chats.parse_generated_recap("# Fixed token validation."), "Fixed token validation.")
+        self.assertEqual(chats.parse_generated_recap("Sorry, I cannot summarize this."), "")

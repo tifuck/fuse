@@ -280,19 +280,19 @@ class TitleParseTest(unittest.TestCase):
     def test_strips_quotes_prefix_and_extra_words(self):
         self.assertEqual(chats.parse_generated_title('"CSV to JSON converter"'), "CSV to JSON converter")
         self.assertEqual(chats.parse_generated_title("Title: Plant watering schedule"), "Plant watering schedule")
-        self.assertEqual(chats.parse_generated_title("The quick brown fox jumps over the lazy dog"), "")
-        self.assertEqual(chats.parse_generated_title("<think>nope</think>\nDebug the login form"), "Debug the login form")
+        self.assertEqual(chats.parse_generated_title("The quick brown fox jumps over the lazy dog"), "Quick brown fox jumps over")
+        self.assertEqual(chats.parse_generated_title("<think>nope</think>\nDebug the login form"), "Login form")
         self.assertEqual(chats.parse_generated_title("  **Hello world**  "), "Hello world")
         self.assertEqual(chats.parse_generated_title(""), "")
         self.assertEqual(chats.parse_generated_title("New chat"), "")
         self.assertEqual(chats.parse_generated_title("<think>hidden reasoning"), "")
         self.assertEqual(chats.parse_generated_title("I cannot help with that request."), "")
-        self.assertEqual(chats.parse_generated_title("One\nTwo"), "")
+        self.assertEqual(chats.parse_generated_title("One\nTwo"), "One")
         self.assertEqual(chats.parse_generated_recap("Fixed the login token check."), "Fixed the login token check.")
         self.assertEqual(chats.parse_generated_recap("Sorry, I cannot summarize this."), "")
         self.assertEqual(chats.parse_generated_title("`token_validator` race"), "token_validator race")
         self.assertEqual(chats.parse_generated_title('{"title":"Login token validation"}'), "Login token validation")
-        self.assertEqual(chats.parse_generated_recap("# Fixed token validation."), "")
+        self.assertEqual(chats.parse_generated_recap("# Fixed token validation."), "Fixed token validation.")
         self.assertEqual(chats.first_user_text([{"role": "assistant", "content": "Hi"}]), "")
         self.assertEqual(
             chats.first_user_text([{"role": "user", "content": [{"type": "text", "text": "  Hello   there  "}]}]),
@@ -498,7 +498,7 @@ class TitleGenerateTest(unittest.IsolatedAsyncioTestCase):
         with patch("app.chat_runtime.api.invoke_chat", side_effect=complete), \
              patch("app.chat_runtime.api._safe_record_usage") as usage:
             title = await generate_thread_title(None, user, "offline", "why is login broken?")
-        self.assertEqual(title, "Debug the login form")
+        self.assertEqual(title, "Login form")
         usage.assert_called()
 
         from fastapi import HTTPException
@@ -515,18 +515,18 @@ class TitleGenerateTest(unittest.IsolatedAsyncioTestCase):
         async def invoke(request, user, body):
             captured.append(body)
             raise HTTPException(404, "mocked unavailable model")
-        source = chats.title_transcript([
+        source = chats.title_source([
             {"role": "user", "content": "Initial goal " + "x" * 1700},
             {"role": "user", "content": "LATEST_PIVOT cookie authentication"},
-            {"role": "assistant", "content": "Long response " + "y" * 7000 + " FINAL_RESULT"},
+            {"role": "assistant", "content": "FIRST_RESULT " + "y" * 7000},
         ])
         with patch("app.chat_runtime.api.invoke_chat", side_effect=invoke):
-            await generate_thread_title(None, {"id": 1}, "offline", source,
-                                        system=chat_prompts.TITLE_REGEN_SYSTEM, limit=6000)
+            await generate_thread_title(None, {"id": 1}, "offline", source)
         body = captured[0]
-        self.assertIn("FINAL_RESULT", body["messages"][1]["content"])
+        self.assertEqual(body["messages"][0]["content"], chat_prompts.TITLE_SYSTEM)
+        self.assertIn("FIRST_RESULT", body["messages"][1]["content"])
         self.assertIn("LATEST_PIVOT", body["messages"][1]["content"])
-        self.assertLessEqual(len(body["messages"][1]["content"]), 6000)
+        self.assertLessEqual(len(body["messages"][1]["content"]), chats.TITLE_SOURCE_MAX)
         self.assertEqual(body["reasoning_effort"], "none")
         self.assertNotIn("tools", body)
 

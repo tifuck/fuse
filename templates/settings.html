@@ -64,7 +64,7 @@
     </div>
   </div>
   <div class="set-row">
-    <div class="set-label"><strong>Automatic recaps</strong><span>After the thread finishes or stops, waits for all subagents and background commands to finish and 60 seconds of idle time. Uses an extra model request. Existing recaps stay saved.</span></div>
+    <div class="set-label"><strong>Automatic recaps</strong><span>Once a turn and all its subagents and background commands finish, summarizes it if the chat is long or the work ran a minute or more. Uses an extra model request. Existing recaps stay saved.</span></div>
     <div class="set-control">
       <label class="check"><input type="checkbox" name="recaps"{% if context.recaps %} checked{% endif %}> Generate a recap when work settles</label>
     </div>

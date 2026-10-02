@@ -2132,7 +2132,7 @@
     if (!currentId || !messages.length || !requireLive()) return;
     try {
       await api("/chat/threads/" + currentId + "/recap", { method: "POST", body: "{}" });
-      setHint("Recap queued; waits for 60 seconds of idle time with no background work.", false, 6000);
+      setHint("Recap queued; generates once background work finishes.", false, 6000);
     } catch (error) { showFailure("Could not request a recap", error); }
   }
 
@@ -5572,7 +5572,7 @@
     { name: "redo", hint: "Redo an undone turn", needs: "redo" },
     { name: "rewind", hint: "Jump back to an earlier message", needs: "messages" },
     { name: "title", hint: "Regenerate the chat title from this conversation", needs: "messages" },
-    { name: "recap", hint: "Summarize settled work after 60 seconds idle", needs: "messages" },
+    { name: "recap", hint: "Summarize the latest work once it settles", needs: "messages" },
     { name: "permissions", hint: "Manage agent permissions and bypass" },
     { name: "init", hint: "Create or update AGENTS.md", needs: "project", args: true },
     { name: "compact", hint: "Compress conversation context", needs: "messages", args: true },

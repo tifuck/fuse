@@ -76,7 +76,7 @@ async def main(screenshots=False):
 
         async def manual(route):
             manual_writes.append(route.request.method)
-            await route.fulfill(json={"started": True, "idle_seconds": 60})
+            await route.fulfill(json={"started": True})
 
         async def delayed_send(route):
             send_started.set()

@@ -1,8 +1,11 @@
 """Durable, display-only summaries of settled dashboard work episodes.
 
-Activity invalidates a generation; automated wakes retain the initiating user
-message. Jobs survive restarts, and leases plus a final generation check prevent
-late output from being published. None of this metadata enters model history.
+A recap generates as soon as the episode settles (root turn terminal, no
+active children, commands or undelivered reports) when the conversation is
+long or the episode took real work time. Activity invalidates a generation;
+automated wakes retain the initiating user message. Jobs survive restarts, and
+leases plus a final generation check prevent late output from being published.
+None of this metadata enters model history.
 """
 from __future__ import annotations
 
@@ -17,10 +20,12 @@ from . import chat_store, chats, db
 logger = logging.getLogger(__name__)
 MAX_ATTEMPTS = 3
 CONCURRENCY = 3
-IDLE_SECONDS = 60
 LEASE_SECONDS = 90
-MIN_LAST_REPLY_CHARS = 300
-MIN_EPISODE_CHARS = 800
+SETTLE_RECHECK_SECONDS = 2
+# Automatic recaps only for work worth summarizing: a long conversation, or
+# an episode whose turns ran at least this long.
+MIN_CONTEXT_CHARS = 4000
+MIN_WORK_SECONDS = 60
 _tasks: dict[int, asyncio.Task] = {}
 _wake: asyncio.Event | None = None
 _wake_loop: asyncio.AbstractEventLoop | None = None
@@ -87,8 +92,9 @@ def disable(conn, user_id: int):
 
 def terminal_activity(conn, user_id: int, thread_id: int):
     """Observe settlement anew after a root/child/command stops."""
-    conn.execute("UPDATE chat_recaps SET quiet_since='',next_at=? WHERE user_id=? AND thread_id=? AND state='pending'",
+    conn.execute("UPDATE chat_recaps SET next_at=? WHERE user_id=? AND thread_id=? AND state='pending'",
                  (db.now(), user_id, thread_id))
+    kick()
 
 
 def _settled(conn, user_id: int, thread_id: int) -> bool:
@@ -132,9 +138,12 @@ def episode(messages: list[dict], start_id: str = "") -> tuple[str, str]:
         return "", ""
     lines = []
     selected = [window[0], *window[max(1, len(window)-7):]]
-    for msg in selected:
-        label = "Background report" if msg.get("auto") else str(msg.get("role") or "Result")
-        text = chats.clip_metadata_text(chats._message_plain_text(msg.get("content")), 650)
+    for index, msg in enumerate(selected):
+        role = msg.get("role")
+        label = ("Background report" if msg.get("auto") else "Request" if index == 0
+                 else "Follow-up request" if role == "user" else "Work output")
+        limit = 1200 if msg is window[-1] else 650
+        text = chats.clip_metadata_text(chats._message_plain_text(msg.get("content")), limit)
         if text:
             lines.append(f"{label}: {text}")
         if msg.get("error"):
@@ -145,20 +154,21 @@ def episode(messages: list[dict], start_id: str = "") -> tuple[str, str]:
             detail = chats.clip_metadata_text(str(tool.get("error") or tool.get("summary") or tool.get("preview") or ""), 160)
             if detail:
                 lines.append(f"Tool {tool.get('name', 'result')} ({tool.get('status', 'unknown')}): {detail}")
-    return str(window[-1].get("id") or ""), chats.clip_metadata_text("\n".join(lines), 6000)
+    body = "\n".join(lines)[:5970]
+    return str(window[-1].get("id") or ""), "<episode>\n" + body + "\n</episode>"
 
 
 def substantial(messages: list[dict], start_id: str = "") -> bool:
-    """A recap must be able to be shorter than the work it summarizes."""
+    """Long conversations or episodes with real work time earn an automatic recap."""
     start = next((i for i, m in enumerate(messages) if m.get("id") == start_id), None)
     if start is None:
         start = next((i for i in range(len(messages)-1, -1, -1)
                       if messages[i].get("role") == "user" and not messages[i].get("auto")), None)
     if start is None:
         return False
-    texts = [chats._message_plain_text(m.get("content")).strip() for m in messages[start:]]
-    last = next((t for t, m in zip(reversed(texts), reversed(messages[start:])) if m.get("role") == "assistant"), "")
-    return len(last) >= MIN_LAST_REPLY_CHARS or sum(map(len, texts)) >= MIN_EPISODE_CHARS
+    total = sum(len(chats._message_plain_text(m.get("content")).strip()) for m in messages)
+    work_ms = sum(int(m.get("elapsedMs") or 0) for m in messages[start:] if m.get("role") == "assistant")
+    return total >= MIN_CONTEXT_CHARS or work_ms >= MIN_WORK_SECONDS * 1000
 
 
 def attach(conn, user_id: int, thread_id: int, view: dict) -> dict:
@@ -209,12 +219,7 @@ def claim(job_id: int):
             conn.execute("UPDATE chat_recaps SET state='disabled',lease_token='' WHERE id=?", (job_id,))
             return None
         if not _settled(conn, job["user_id"], job["thread_id"]):
-            conn.execute("UPDATE chat_recaps SET quiet_since='',next_at=? WHERE id=?", (later(5), job_id))
-            return None
-        if not job["quiet_since"]:
-            conn.execute("UPDATE chat_recaps SET quiet_since=?,next_at=? WHERE id=?", (db.now(), later(IDLE_SECONDS), job_id))
-            return None
-        if (datetime.now(timezone.utc) - datetime.fromisoformat(job["quiet_since"].replace("Z", "+00:00"))).total_seconds() < IDLE_SECONDS:
+            conn.execute("UPDATE chat_recaps SET next_at=? WHERE id=?", (later(SETTLE_RECHECK_SECONDS), job_id))
             return None
         messages = chats.parse_messages(row["messages"])
         fingerprint = hashlib.sha256(chats.dump_messages(messages).encode()).hexdigest()
@@ -254,10 +259,12 @@ def finish(job: dict, text: str):
         if busy:
             text = ""
         text = chats.parse_generated_recap(text)
-        state = "ready" if text else "failed" if current["attempts"] >= MAX_ATTEMPTS else "pending"
-        cur = conn.execute("""UPDATE chat_recaps SET state=?,text=?,lease_token='',next_at=?,quiet_since=?,updated_at=?
+        # Work restarting under the request is not a generation failure.
+        attempts = current["attempts"] - (1 if busy else 0)
+        state = "ready" if text else "failed" if attempts >= MAX_ATTEMPTS else "pending"
+        cur = conn.execute("""UPDATE chat_recaps SET state=?,text=?,attempts=?,lease_token='',next_at=?,updated_at=?
                               WHERE id=? AND state='generating' AND lease_token=?""",
-                           (state, text, later(30 * current["attempts"]), "" if busy else current["quiet_since"],
+                           (state, text, attempts, later(SETTLE_RECHECK_SECONDS if busy else 30 * attempts),
                             db.now(), job["id"], job["token"]))
         if not cur.rowcount:
             return

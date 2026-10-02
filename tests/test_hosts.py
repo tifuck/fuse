@@ -159,7 +159,7 @@ class HostsProjectsTest(unittest.TestCase):
             "title-1",
             auto_title=True,
         )
-        self.assertTrue(result["run"]["request"]["generate_title"])
+        self.assertEqual(result["thread"]["title"], "How much disk is free on all…")
         self.assertTrue(result["thread"]["running"])
         self.assertTrue(chats.list_threads(1)[0]["running"])
         self.assertTrue(chats.list_sidebar_projects(1)[0]["running"])
@@ -170,10 +170,8 @@ class HostsProjectsTest(unittest.TestCase):
         flagged = store.start_turn(
             1, named["id"], "Fix the handler", named["revision"], "title-2", auto_title=True
         )
-        self.assertTrue(flagged["run"]["request"]["generate_title"])
-        applied = store.apply_generated_title(
-            1, named["id"], "Handler fix", flagged["run"]["request"]["title_placeholder"]
-        )
+        self.assertEqual(flagged["thread"]["title"], "Fix the handler")
+        applied = store.apply_generated_title(1, named["id"], "Handler fix")
         self.assertIsNotNone(applied)
         self.assertEqual(applied["title"], "Handler fix")
 

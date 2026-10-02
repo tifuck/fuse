@@ -95,7 +95,6 @@ async def _refresh_loop(app: FastAPI):
         ("openrouter catalog", openrouter_refresh_due),
     )
     local_jobs = (
-        ("chat titles", chat_titles.sweep),
         ("model pricing", auto_price_due),
         ("bug triage", issues_pipeline.tick),
     )
@@ -212,6 +211,7 @@ async def lifespan(app: FastAPI):
         maint_task = asyncio.create_task(_maintenance_loop(app), name="fuse-maintenance")
         app.state.maintenance_task = maint_task
         recap_task = asyncio.create_task(chat_recaps.loop(), name="fuse-recaps")
+        title_task = asyncio.create_task(chat_titles.loop(), name="fuse-titles")
         from .search.client import start_client
         from .search.engine import warn_if_unkeyed
 
@@ -221,6 +221,9 @@ async def lifespan(app: FastAPI):
     finally:
         await chat_events.stop()
         await host_events.stop()
+        if "title_task" in locals():
+            title_task.cancel()
+            await asyncio.gather(title_task, return_exceptions=True)
         await chat_titles.drain()
         if "recap_task" in locals():
             recap_task.cancel()

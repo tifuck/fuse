@@ -95,10 +95,30 @@ def _text(value, field: str, limit: int, *, strip: bool = False) -> str:
 TITLE_WORDS = 5
 TITLE_PROMPT_MAX = 800
 TITLE_REGEN_PROMPT_MAX = 6_000
-# Failed title generation: a few tries on user turns, then a slower
+TITLE_SOURCE_MAX = 3_000
+PROVISIONAL_TITLE_WORDS = 6
+PROVISIONAL_TITLE_CHARS = 48
+# Failed title generation: a try after each early turn, then a slower
 # background sweep with backoff. Both stop once a title lands.
 TITLE_TURN_ATTEMPTS = 3
-TITLE_SWEEP_ATTEMPTS = 5
+TITLE_SWEEP_ATTEMPTS = 3
+# A first turn like "hi" / "Hello! How can I help?" names nothing; wait for
+# a later turn unless the chat already has this many user turns.
+TITLE_DEFER_TURNS = 3
+_TITLE_VERBS = frozenset("""fix fixing add adding investigate investigating implement implementing debug debugging
+    check checking refactor refactoring update updating evaluate evaluating""".split())
+_TITLE_GENERIC = frozenset("""investigation implementation analysis review check issue issues question questions
+    problem problems help discussion overview task request""".split())
+_TITLE_STOPWORDS = frozenset("a an the of for in on to with and or into from at by about".split())
+_TITLE_FILLER = frozenset("""please can could would will you me i my we our us it its this that these those is are was
+    be do does did how what why when where which who there here just some any all so if then than also
+    should need want like get got have has hey hi hello thanks ok okay yes no not look up out tell show give
+    let lets let's help explain create make build write find improve remove change review""".split()) | _TITLE_STOPWORDS | _TITLE_VERBS
+_TITLE_IDENT = re.compile(
+    r"#\d+|[\w.-]+/[\w.-]+#\d+|\b[\w-]+\.(?:py|js|ts|tsx|jsx|go|rs|c|h|cpp|java|rb|php|sh|md|json|ya?ml|toml|html|css|sql|cjs|mjs)\b"
+    r"|\b[a-z][a-z0-9]*_[a-z0-9_]+\b|\b[a-z]+[A-Z]\w*\b|\b[A-Z][a-z0-9]+[A-Z]\w*\b|\b\w*(?:Error|Exception)\b"
+)
+_TITLE_SEPARATOR = re.compile(r"\s+[-–—]\s+|:\s+")
 _TITLE_THINK = re.compile(r"</?(?:think|thinking|thought|reasoning)>", re.I)
 _TITLE_THINK_BLOCK = re.compile(
     r"<(?:think|thinking|thought|reasoning)>.*?</(?:think|thinking|thought|reasoning)>",
@@ -304,12 +324,36 @@ def clip_metadata_text(text: str, limit: int) -> str:
     return text[:head] + marker + (text[-tail:] if tail else "")
 
 
+def _is_identifier(word: str) -> bool:
+    return bool(re.search(r"[._/#\d]|[a-z][A-Z]", word)) or (len(word) > 1 and word.isupper())
+
+
+def _shorten_title(words: list[str]) -> list[str]:
+    """Repair a draft into at most TITLE_WORDS words without losing identifiers."""
+    def bare(word):
+        return word.lower().strip(".,;:!?\"'()[]")
+
+    while len(words) > 1 and bare(words[0]) in _TITLE_VERBS | _TITLE_STOPWORDS:
+        words = words[1:]
+    while len(words) > 2 and bare(words[-1]) in _TITLE_GENERIC | _TITLE_STOPWORDS:
+        words = words[:-1]
+    if len(words) > TITLE_WORDS:
+        words = [w for i, w in enumerate(words) if i == 0 or bare(w) not in _TITLE_STOPWORDS]
+    if len(words) > TITLE_WORDS:
+        keep = [i for i, w in enumerate(words) if _is_identifier(w)][:TITLE_WORDS]
+        rest = [i for i in range(len(words)) if i not in keep][:max(0, TITLE_WORDS - len(keep))]
+        words = [words[i] for i in sorted(keep + rest)]
+    while len(words) > 1 and bare(words[-1]) in _TITLE_STOPWORDS:
+        words = words[:-1]
+    return words
+
+
 def parse_generated_title(raw: str) -> str:
     text = _TITLE_THINK_BLOCK.sub(" ", raw or "")
     if _TITLE_THINK.search(text):
         return ""
-    text = text.replace("\r", "\n")
-    text = text.strip()
+    text = text.replace("\r", "\n").strip()
+    text = re.sub(r"^```\w*\s*|\s*```$", "", text).strip()
     if text.startswith("{"):
         try:
             parsed = json.loads(text)
@@ -319,35 +363,146 @@ def parse_generated_title(raw: str) -> str:
     if not isinstance(text, str):
         return ""
     lines = [candidate.strip() for candidate in text.splitlines() if candidate.strip()]
-    if len(lines) != 1:
+    if not lines:
         return ""
     line = _TITLE_PREFIX.sub("", lines[0])
-    line = re.sub(r"^(?:\*\*|__|`)|(?:\*\*|__|`)$", "", line)
-    line = line.replace("`", "")
+    line = re.sub(r"\*\*|__|`", "", line)
     line = _TITLE_WRAP.sub("", line).strip()
     lowered = line.lower()
     if not line or lowered in _PLACEHOLDER_TITLES or lowered.startswith((
         "i cannot", "i can't", "i am unable", "i'm unable", "sorry", "as an ai",
     )):
         return ""
-    words = line.split()
-    if not words or len(words) > TITLE_WORDS or len(line) > TITLE_MAX:
+    head = _TITLE_SEPARATOR.split(line, maxsplit=1)
+    if len(head) > 1 and len(head[0].split()) >= 2:
+        line = head[0]
+    line = _TITLE_WRAP.sub("", re.sub(r"\s+", " ", line.replace(":", " "))).strip()
+    words = _shorten_title(line.split())
+    if not words or (len(words) == 1 and words[0].lower() in _TITLE_GENERIC | _TITLE_VERBS):
         return ""
+    if not _is_identifier(words[0]):
+        words[0] = words[0][:1].upper() + words[0][1:]
     title = _clean_title(" ".join(words))
     if not title or title.lower() in _PLACEHOLDER_TITLES:
         return ""
     return title
 
 
+def _title_plain(text: str) -> str:
+    text = re.sub(r"```.*?(?:```|$)", " ", text or "", flags=re.S)
+    text = re.sub(r"https?://(?:www\.)?([^/\s]+)(?:/([\w.-]+/[\w.-]+)/(?:issues|pull)/(\d+))?\S*",
+                  lambda m: f"{m.group(2)}#{m.group(3)}" if m.group(3) else m.group(1), text)
+    text = re.sub(r"^\s*/\w[\w-]*", " ", text)
+    text = re.sub(r"[`*_#>~\[\]]+(?=\s|$)|(?:^|(?<=\s))[`*_#>~\[\]]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _first_user(messages: list[dict]) -> dict | None:
+    return next((m for m in messages if m.get("role") == "user" and not m.get("auto")), None)
+
+
+def provisional_title(messages: list[dict]) -> str:
+    """Short, readable preview of the first request shown until a real title lands."""
+    first = _first_user(messages)
+    if first is None:
+        return "New chat"
+    text = _title_plain(_message_plain_text(first.get("content")))
+    if not text:
+        names = [str(a.get("name") or "") for a in first.get("attachments") or [] if isinstance(a, dict)]
+        text = next((n for n in names if n.strip()), "")
+        return _clean_title(text)[:PROVISIONAL_TITLE_CHARS] or "New chat"
+    words = text.split()
+    out = []
+    for word in words[:PROVISIONAL_TITLE_WORDS]:
+        if len(" ".join(out + [word])) > PROVISIONAL_TITLE_CHARS:
+            break
+        out.append(word)
+    if not out:
+        out = [words[0][:PROVISIONAL_TITLE_CHARS]]
+    title = " ".join(out).rstrip(".,;:!?")
+    if len(out) < len(words):
+        title += "…"
+    return title if not is_placeholder_title(title) else "New chat"
+
+
+def title_source(messages: list[dict], *, limit: int = TITLE_SOURCE_MAX) -> str:
+    """Bounded summary of what a chat is about, for the title request."""
+    first = _first_user(messages)
+    if first is None:
+        return ""
+    users = [m for m in messages if m.get("role") == "user" and not m.get("auto")]
+    replies = [m for m in messages if m.get("role") == "assistant" and _message_plain_text(m.get("content")).strip()]
+    head = clip_metadata_text(_message_plain_text(first.get("content")), 1200)
+    if not head:
+        names = [str(a.get("name") or "Attachment") for a in first.get("attachments") or [] if isinstance(a, dict)]
+        head = "Attachments: " + ", ".join(names) if names else ""
+    if not head:
+        return ""
+    lines = ["Request: " + head]
+    if users[-1] is not first:
+        later = clip_metadata_text(_message_plain_text(users[-1].get("content")), 600)
+        if later:
+            lines.append("Later request: " + later)
+    if replies:
+        result = re.sub(r"\s+", " ", _message_plain_text(replies[-1].get("content"))).strip()
+        lines.append("Result: " + result[:800])
+    touched = []
+    for msg in messages:
+        for tool in msg.get("tools") or []:
+            if not isinstance(tool, dict):
+                continue
+            name = str(tool.get("path") or "").rstrip("/").rsplit("/", 1)[-1]
+            if not name and tool.get("name") == "grep":
+                name = str(tool.get("pattern") or "")[:40]
+            if name and name not in touched:
+                touched.append(name)
+    if touched:
+        lines.append("Touched: " + clip_metadata_text(", ".join(touched[-6:]), 300))
+    body = "\n".join(lines)[:max(1, limit - 21)]
+    return "<session>\n" + body + "\n</session>"
+
+
+def title_deferred(messages: list[dict]) -> bool:
+    """True while the chat is only small talk that cannot name a topic yet."""
+    users = [m for m in messages if m.get("role") == "user" and not m.get("auto")]
+    if not users or len(users) >= TITLE_DEFER_TURNS:
+        return False
+    if any(m.get("attachments") for m in users):
+        return False
+    asked = sum(len(_title_plain(_message_plain_text(m.get("content"))).split()) for m in users)
+    reply = next((_message_plain_text(m.get("content")).strip() for m in reversed(messages)
+                  if m.get("role") == "assistant"), "")
+    return asked < 4 and len(reply) < 200
+
+
+def fallback_title(messages: list[dict]) -> str:
+    """Deterministic label when the model never produced a usable title."""
+    first = _first_user(messages)
+    text = _title_plain(_message_plain_text(first.get("content")) if first else "")
+    idents = list(dict.fromkeys(_TITLE_IDENT.findall(text)))[:2]
+    words = []
+    for word in re.findall(r"[^\W_][\w'-]*", text):
+        if len(idents) + len(words) >= 4:
+            break
+        if word.lower() in _TITLE_FILLER or any(word in ident for ident in idents) or word.lower() in (w.lower() for w in words):
+            continue
+        words.append(word)
+    parts = idents + words
+    if len(parts) < 2:
+        return "Conversation notes"
+    title = parse_generated_title(" ".join(parts))
+    return title or "Conversation notes"
+
+
 def parse_generated_recap(raw: str) -> str:
     text = _TITLE_THINK_BLOCK.sub(" ", raw or "")
     if _TITLE_THINK.search(text):
         return ""
-    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"`|\*\*|__|<[^>]*>|^\s*(?:[-•#>]+|\d+\.)\s*", "", text)
+    text = re.sub(r"^(?:recap|summary)\s*:\s*", "", re.sub(r"\s+", " ", text).strip(), flags=re.I)
     lowered = text.lower()
-    if not text or len(text) > 400 or len(text.split()) > 40 or re.search(r"[`*<>]|^[-•#]", text) or lowered.startswith((
+    if not text or len(text) > 400 or len(text.split()) > 45 or re.search(r"[<>]", text) or lowered.startswith((
         "i cannot", "i can't", "i am unable", "i'm unable", "sorry", "as an ai",
-        "recap:", "summary:",
     )):
         return ""
     return text
@@ -363,16 +518,17 @@ def is_placeholder_title(title: str | None, *, project_name: str = "") -> bool:
 
 def title_needs_generation(
     title: str | None, *, project_name: str = "", first_user_text: str = "", title_state: str = "",
+    provisional: str = "",
 ) -> bool:
-    """True while no real title exists. Also catches legacy rows whose title
-    is just the raw first user message and was never replaced."""
+    """True while no real title exists: a placeholder, the provisional preview,
+    or a legacy row whose title is just the raw first user message."""
     if title_state in ("generated", "user", "fallback"):
         return False
     if is_placeholder_title(title, project_name=project_name):
         return True
     text = (title or "").strip()
     seed = (first_user_text or "").strip()
-    return bool(seed) and text == _clean_title(seed)
+    return (bool(seed) and text == _clean_title(seed)) or (bool(provisional) and text == provisional)
 
 
 def title_from_messages(messages: list[dict]) -> str:

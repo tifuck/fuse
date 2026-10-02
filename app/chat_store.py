@@ -2546,21 +2546,12 @@ def start_turn(user_id, thread_id, text, expected_revision, command_id, model=No
                 ).fetchone()
                 if prow:
                     project_name = prow["name"] or ""
-        needs_title = chats.title_needs_generation(
-            row["title"],
-            project_name=project_name,
-            first_user_text=chats.title_from_messages(messages),
-            title_state=row["title_state"] if "title_state" in row.keys() else "",
-        )
-        # The raw first message is never persisted as the title; it stays a
-        # placeholder until a generated title lands (or the user renames).
         title = row["title"] if str(row["title"] or "").strip() else "New chat"
-        # Auto titles are a dashboard Chat page feature, not /v1 or other callers.
-        # A few failed attempts fall back to the background sweep with backoff.
-        title_attempts = int(row["title_attempts"] if "title_attempts" in row.keys() else 0)
-        if auto_title and needs_title and chats.first_user_text(messages) and title_attempts < chats.TITLE_TURN_ATTEMPTS:
-            request["generate_title"] = True
-            request["title_placeholder"] = title
+        # Chat page turns show a short preview of the first request until the
+        # turn ends and chat_titles names the chat from what actually happened.
+        if auto_title and (row["title_state"] if "title_state" in row.keys() else "") == "" \
+                and chats.is_placeholder_title(title, project_name=project_name):
+            title = chats.provisional_title(messages)
         run_id, ts = str(uuid4()), db.now()
         request["run_id"] = run_id
         from .vault import VaultLocked, get_dek, pin_run, unpin_run
@@ -2709,7 +2700,7 @@ def apply_generated_title(user_id, thread_id, title, placeholder="", *, token=No
             return None
         thread_id = pk
         row = conn.execute(
-            """SELECT t.id, t.title, t.title_state, t.title_job_token, t.kind, t.project_id, p.name AS project_name
+            """SELECT t.id, t.title, t.title_state, t.title_job_token, t.kind, t.project_id, t.messages, p.name AS project_name
                FROM chat_threads t LEFT JOIN user_projects p ON p.id=t.project_id
                WHERE t.id=? AND t.user_id=?""",
             (thread_id, user_id),
@@ -2727,6 +2718,10 @@ def apply_generated_title(user_id, thread_id, title, placeholder="", *, token=No
             except (KeyError, IndexError, TypeError):
                 project_name = ""
         current = row["title"] or ""
+        try:
+            allowed.add(chats.provisional_title(chats.parse_messages(row["messages"])))
+        except Exception:
+            pass
         if current not in allowed and not chats.is_placeholder_title(current, project_name=project_name):
             return None
         cur = conn.execute(
@@ -2786,18 +2781,27 @@ def title_regen_failed(user_id, thread_id):
         event(conn, user_id, "title.failed", pk, {"reason": "empty"})
 
 
-def pending_title_threads(limit=3, *, attempted_before=""):
-    """Threads still waiting for a generated title (oldest attempt first)."""
+def pending_title_threads(limit=3, *, attempted_before="", due=()):
+    """Settled threads still waiting for a generated title.
+
+    A thread is only named after its root turn ends, so the title reflects
+    what the turn did rather than just the opening request. ``due`` threads
+    (a root turn just finished) skip the retry backoff and come first.
+    """
     from . import chats
 
+    due = [int(i) for i in due][:50]
+    due_sql = (" OR t.id IN (" + ",".join("?" for _ in due) + ")") if due else ""
     rows = db.fetchall(
-        """SELECT t.*, p.name AS project_name FROM chat_threads t
+        f"""SELECT t.*, p.name AS project_name FROM chat_threads t
            LEFT JOIN user_projects p ON p.id=t.project_id
            WHERE t.title_state=''
-             AND (t.title_attempted_at='' OR t.title_attempted_at < ?)
+             AND (t.title_attempted_at='' OR t.title_attempted_at < ?{due_sql})
              AND (t.title_job_until='' OR t.title_job_until < ?)
-           ORDER BY t.title_attempted_at, t.updated_at LIMIT ?""",
-        (attempted_before, db.now(), max(int(limit) * 8, int(limit))),
+             AND NOT EXISTS (SELECT 1 FROM chat_runs r WHERE r.thread_id=t.id AND r.parent_run_id IS NULL
+                             AND r.status IN ('queued','running'))
+           ORDER BY {"(t.id IN (" + ",".join("?" for _ in due) + ")) DESC, " if due else ""}t.title_attempted_at, t.updated_at LIMIT ?""",
+        (attempted_before, *due, db.now(), *due, max(int(limit) * 8, int(limit))),
     )
     out = []
     for row in rows:
@@ -2807,22 +2811,28 @@ def pending_title_threads(limit=3, *, attempted_before=""):
             messages = chats.parse_messages(row["messages"])
         except Exception:
             continue
-        prompt = chats.first_user_text(messages)
-        if not prompt.strip():
-            # Nothing to title from yet (e.g. attachment-only first message).
+        source = chats.title_source(messages)
+        if not source or not any(m.get("role") == "assistant" for m in messages):
+            # Nothing to title from yet (e.g. image-only first message).
             db.execute("UPDATE chat_threads SET title_attempted_at=? WHERE id=?", (db.now(), row["id"]))
             continue
         if chats.title_needs_generation(
             row["title"], project_name=project_name,
             first_user_text=chats.title_from_messages(messages),
             title_state=row["title_state"] if "title_state" in row.keys() else "",
+            provisional=chats.provisional_title(messages),
         ):
+            if chats.title_deferred(messages):
+                # Small talk names nothing; the next finished turn retries.
+                db.execute("UPDATE chat_threads SET title_attempted_at=? WHERE id=?", (db.now(), row["id"]))
+                continue
             out.append({
                 "id": int(row["id"]),
                 "user_id": int(row["user_id"]),
                 "model": row["model"] or "",
                 "title": row["title"] or "",
-                "prompt": prompt,
+                "prompt": source,
+                "fallback": chats.fallback_title(messages),
                 "attempts": int(row["title_attempts"]),
             })
             if len(out) >= int(limit):
@@ -3848,7 +3858,6 @@ def finish_run(run_id, message, status):
             # owns a continuation; never strand it on a terminal run.
             source = json.loads(row["provider_messages"] or "null") or request.get("messages") or []
             request["messages"] = seal_provider_messages(source)
-            request.pop("generate_title", None)
             agent.update(skip_sanitize=True, steer_closed=False,
                          steer_continuations=int(agent.get("steer_continuations") or 0) + 1)
             agent["activity"] = {"phase": "queued"}
@@ -5179,7 +5188,6 @@ def _requeue_for_resume(row, messages, allowed=None, *, by_user=False):
     if row["parent_run_id"]:
         req.setdefault("display_seed", json.loads(row["request"]).get("messages") or [])
     req["run_id"] = row["id"]
-    req.pop("generate_title", None)
     agent = req.get("agent") if isinstance(req.get("agent"), dict) else {}
     agent["skip_sanitize"] = True
     agent["resumed"] = True

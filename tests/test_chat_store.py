@@ -505,25 +505,25 @@ class ChatStoreTest(unittest.TestCase):
         self.assertIn("alpha beta", content[0]["text"])
         self.assertIn("notes.txt", content[0]["text"])
 
-    def test_first_turn_flags_title_generation(self):
+    def test_first_chat_page_turn_shows_provisional_title(self):
         thread = chats.create_thread(1, model="offline")
         self.assertEqual(thread["title"], "New chat")
         skipped = self.turn(thread)
+        self.assertEqual(skipped["thread"]["title"], "New chat")
         self.assertNotIn("generate_title", skipped["run"]["request"])
         store.finish_run(skipped["run"]["id"], {"content": "ok"}, "completed")
         other = chats.create_thread(1, model="offline")
-        result = self.turn(other, command="titled", auto_title=True)
-        self.assertTrue(result["run"]["request"]["generate_title"])
-        self.assertEqual(result["run"]["request"]["title_placeholder"], "New chat")
-        self.assertEqual(result["thread"]["title"], "New chat")
+        result = store.start_turn(1, other["id"], "Explain the scrape retry queue please", other["revision"],
+                                  "titled", auto_title=True)
+        self.assertNotIn("generate_title", result["run"]["request"])
+        self.assertEqual(result["thread"]["title"], "Explain the scrape retry queue please")
         store.finish_run(result["run"]["id"], {"content": "ok"}, "completed")
         latest = chats.get_thread(1, other["id"])
         again = store.start_turn(1, other["id"], "Follow up", latest["revision"], "second", auto_title=True)
-        # The thread still has no real title, so the next turn retries.
-        self.assertTrue(again["run"]["request"]["generate_title"])
+        self.assertEqual(again["thread"]["title"], "Explain the scrape retry queue please")
         named = chats.create_thread(1, model="offline", title="Already named")
         flagged = store.start_turn(1, named["id"], "Hello", named["revision"], "named", auto_title=True)
-        self.assertNotIn("generate_title", flagged["run"]["request"])
+        self.assertEqual(flagged["thread"]["title"], "Already named")
 
     def test_image_only_turn_skips_title_generation(self):
         png = (
@@ -539,7 +539,6 @@ class ChatStoreTest(unittest.TestCase):
             "img-title",
             attachments=[{"name": "dot.png", "mime": "image/png", "kind": "image", "data": png}],
         )
-        self.assertNotIn("generate_title", result["run"]["request"])
         self.assertEqual(result["thread"]["title"], "New chat")
 
     def test_apply_generated_title_skips_renamed_threads(self):
@@ -570,19 +569,6 @@ class ChatStoreTest(unittest.TestCase):
         row = db.fetchone("SELECT title_state FROM chat_threads WHERE id=?", (pk,))
         self.assertEqual(row["title_state"], "user")
         self.assertIsNone(store.apply_generated_title(1, thread["id"], "Overwrite", "Renamed"))
-
-    def test_title_attempts_stop_turn_time_retries(self):
-        thread = chats.create_thread(1, model="offline")
-        pk = self._thread_pk(thread["id"])
-        for i in range(chats.TITLE_TURN_ATTEMPTS):
-            current = chats.get_thread(1, thread["id"])
-            result = store.start_turn(1, thread["id"], "Hello", current["revision"], f"attempt-{i}", auto_title=True)
-            self.assertTrue(result["run"]["request"]["generate_title"])
-            store.finish_run(result["run"]["id"], {"content": "ok"}, "completed")
-            store.mark_title_attempted(pk)
-        current = chats.get_thread(1, thread["id"])
-        exceeded = store.start_turn(1, thread["id"], "Hello again", current["revision"], "over", auto_title=True)
-        self.assertNotIn("generate_title", exceeded["run"]["request"])
 
     def test_public_ids_are_stable_and_legacy_integers_resolve(self):
         thread = chats.create_thread(1, title="Alpha")
