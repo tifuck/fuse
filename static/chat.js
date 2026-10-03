@@ -8044,7 +8044,7 @@
     const clock = isConsoleOnly() && presentation ? ccCallClockHtml(trace, presentation) : "";
     // Console: a running call reads as Claude Code's live line, one row
     // counting up ("Running npm test · 12s"); it prints as Bash(…) once done.
-    const live = isConsoleOnly() && running && !full && !toolBackground(trace) ? ccLiveText(trace) : "";
+    const live = isConsoleOnly() && running && !full && !toolBackground(trace) ? ccLiveText(trace, 1000) : "";
     if (live) return `<span class="chat-console-call is-live">${escapeHtml(live)}</span>${clock}${hostHtml}`;
     const verb = consoleVerb(name, trace);
     if (["kill_command", "kill_subagent", "todo_write", "list_subagents", "scratch"].includes(name)) {
@@ -11316,15 +11316,17 @@
   const CC_LIVE_TOOLS = new Set(["run_terminal_command", "read_file", "grep", "glob", "list_dir"]);
 
   // What a call is doing when it has no description.
-  function ccActivityText(trace) {
+  // cap: Claude Code clips the command to 50 columns; Console's running row
+  // passes more and lets the row's width clip it.
+  function ccActivityText(trace, cap = 50) {
     const name = trace.name;
     if (name === "run_terminal_command") {
       const command = displayCommand(trace);
-      return command ? ccFlat(`Running ${ccClip(command, 50)}`) : "Running command";
+      return command ? ccFlat(`Running ${ccClip(ccFlat(command), cap)}`) : "Running command";
     }
     if (name === "read_file") return trace.path ? `Reading ${ccPathHint(trace)}` : "Reading file";
-    if (name === "grep") return trace.pattern ? ccFlat(`Searching for ${ccClip(trace.pattern, 50)}`) : "Searching";
-    if (name === "glob") return trace.pattern ? ccFlat(`Finding ${ccClip(trace.pattern, 50)}`) : "Finding files";
+    if (name === "grep") return trace.pattern ? ccFlat(`Searching for ${ccClip(trace.pattern, cap)}`) : "Searching";
+    if (name === "glob") return trace.pattern ? ccFlat(`Finding ${ccClip(trace.pattern, cap)}`) : "Finding files";
     if (name === "list_dir") return trace.path ? `Listing ${ccPathHint(trace)}` : "Listing directory";
     return "";
   }
@@ -11354,10 +11356,10 @@
   // What a running read, search, listing or shell call is doing, as Claude
   // Code's live line says it: the description as an -ing phrase ("Running
   // the tests"), else "Running <command>", "Reading <path>", "Searching for …".
-  function ccLiveText(trace) {
+  function ccLiveText(trace, cap) {
     if (!CC_LIVE_TOOLS.has(trace && trace.name)) return "";
     const description = ccFlat(trace.description);
-    const text = description ? ccRunningForm(description) ?? description : ccActivityText(trace);
+    const text = description ? ccRunningForm(description) ?? description : ccActivityText(trace, cap);
     return text ? text.charAt(0).toUpperCase() + text.slice(1) : "";
   }
 
