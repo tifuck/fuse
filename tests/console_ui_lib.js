@@ -127,6 +127,50 @@ window.ConsoleAudit = (() => {
       }
     }
 
+    // Rhythm: every one-line row is one --console-row tall, and the gap
+    // between two blocks never depends on which kinds meet (prose adds its own
+    // margin on both sides, never on one).
+    const probe = document.createElement("span");
+    probe.style.cssText = "display:block;position:absolute;visibility:hidden;height:var(--console-row)";
+    log.append(probe);
+    const rowH = probe.getBoundingClientRect().height;
+    probe.remove();
+    for (const li of rowsOf(log)) {
+      if (!visible(li) || li.classList.contains("is-think")) continue;
+      const head = li.querySelector(":scope > .chat-step-main > .chat-step-head");
+      const label = head && head.querySelector(".chat-step-label");
+      if (!head || !label || !(li.classList.contains("is-console-call") || li.classList.contains("is-console-group"))) continue;
+      if (label.getBoundingClientRect().height > rowH * 1.5) continue;
+      const h = head.getBoundingClientRect().height;
+      if (Math.abs(h - rowH) > 0.5) add("row-height", li, `${h.toFixed(2)}px head, ${rowH.toFixed(2)}px row`);
+    }
+    for (const flow of log.querySelectorAll(".chat-flow")) {
+      const blocks = [...flow.children].filter((el) => visible(el) && el.matches(".chat-md, .chat-activity"));
+      for (const md of blocks.filter((el) => el.matches(".chat-md"))) {
+        const last = md.lastElementChild;
+        if (last && getComputedStyle(last).marginBottom !== "0px") add("prose-trailing-margin", null, `${last.tagName} margin-bottom ${getComputedStyle(last).marginBottom}`);
+      }
+      for (let i = 1; i < blocks.length - 1; i++) {
+        if (!blocks[i].matches(".chat-md")) continue;
+        const above = blocks[i].getBoundingClientRect().top - blocks[i - 1].getBoundingClientRect().bottom;
+        const below = blocks[i + 1].getBoundingClientRect().top - blocks[i].getBoundingClientRect().bottom;
+        if (Math.abs(above - below) > 0.5) add("prose-gap", null, `${above.toFixed(2)}px above, ${below.toFixed(2)}px below`);
+      }
+    }
+    for (const tree of log.querySelectorAll(".chat-console-agent-tree")) {
+      if (!visible(tree)) continue;
+      const lefts = [...tree.querySelectorAll(".chat-console-agent-sub .chat-console-dim")].map((el) => Math.round(el.getBoundingClientRect().left * 10) / 10);
+      if (new Set(lefts).size > 1) add("agent-sub-column", null, lefts.join(", "));
+    }
+    for (const turn of log.querySelectorAll(".chat-console-turn")) {
+      const text = turn.querySelector(":scope > span:not(.chat-console-turn-mark)");
+      const column = log.querySelector(".chat-flow > .chat-md p, .chat-step:not(.is-think) .chat-step-label");
+      if (!visible(turn) || !text || !visible(column)) continue;
+      const want = column.getBoundingClientRect().left;
+      const got = text.getBoundingClientRect().left;
+      if (Math.abs(got - want) > 0.6) add("foot-column", null, `${got.toFixed(1)} against ${want.toFixed(1)}`);
+    }
+
     // A thought streaming after calls has its own ticking "Thinking for" line.
     if (opts.thinkingLine && opts.thinking !== false &&
         !rowsOf(log).some((li) => visible(li) && /^Thinking for /.test(headText(li)))) add("no-live-thought-line", null);

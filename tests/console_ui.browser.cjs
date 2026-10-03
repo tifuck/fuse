@@ -151,6 +151,18 @@ function scenarios() {
     return { rows: [user('Go.'), turn([think('Run.', 2000), T(cmd)], [cmd])], live: true, phase: 'tools',
       truth: { call: { [cmd.id]: 'running' }, exec: { [cmd.command_id]: 'running' } }, wide: true, has: ['Running PYTHONPATH=/srv/qa/vendor'] };
   });
+  // Rhythm and columns (ConsoleAudit: row-height, prose-gap, agent-sub-column,
+  // foot-column): prose between a summary line, an agents tree and a call, then
+  // the turn's closing line.
+  add('prose, an agents tree and the closing line keep one rhythm and one column', () => {
+    const agents = ['Audit retry settings', 'Check the transport timeouts', 'Review the dispatcher tests']
+      .map((description, i) => tool('spawn_subagent', { description, child_id: `rhythm-agent-${i}`, agent_tool_uses: 3 + i }));
+    const read = tool('read_file', { path: '/srv/qa/app/config.py', output: '1: retries = 3\n' });
+    const edit = tool('search_replace', { path: '/srv/qa/app/config.py', preview: '@@ -1 +1 @@\n-retries = 3\n+retries = 5\n', output: 'updated' });
+    const all = [read, ...agents, edit];
+    return { rows: [user('Go.'), turn([think('Look.', 2000), T(read), say('Fanning out.\n\n'), ...agents.map(T), say('All three are back.\n\n'), T(edit), say('Retries are now 5.')], all, ended)],
+      truth: { call: Object.fromEntries(all.map((t) => [t.id, 'done'])) }, has: ['3 agents finished', 'Retries are now 5.', 'for 30s'], diffRows: 2 };
+  });
   return list;
 }
 

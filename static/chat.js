@@ -11255,7 +11255,7 @@
         ? (background ? "Running in the background" : ccAgentLastCall(trace.agent_recent) || "Initializing…")
         : presentation.failed ? "Failed" : presentation.interrupted ? "Interrupted" : "Done";
       const sub = resolvedBackground ? "" :
-        `<div class="chat-console-agent-sub"><span class="chat-console-branch" aria-hidden="true">${last ? " " : "│"}</span><span class="chat-console-dim"><span aria-hidden="true">└ </span>${escapeHtml(status)}</span></div>`;
+        `<div class="chat-console-agent-sub"><span class="chat-console-branch${last ? " is-blank" : ""}" aria-hidden="true">│</span><span class="chat-console-dim"><span aria-hidden="true">└ </span>${escapeHtml(status)}</span></div>`;
       return (
         `<li class="chat-console-agent${presentation.running ? " is-running" : ""}${presentation.failed ? " is-error" : ""}" data-open-agent="${escapeHtml(trace.child_id || "")}">` +
         `<div class="chat-console-agent-line"><span class="chat-console-branch" aria-hidden="true">${last ? "└─" : "├─"}</span>` +

@@ -3252,6 +3252,12 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-md 
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-md :is(p, ul, ol) {
   margin: 0.28em 0;
 }
+/* The reply's last block carries no trailing margin, like its first (see
+   :first-child above): otherwise the gap under prose is 0.28em larger than
+   the gap above it. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-md > :last-child {
+  margin-bottom: 0;
+}
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-md :is(ul, ol) {
   padding-left: 1.35em;
 }
@@ -3276,7 +3282,7 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-con
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-foot {
   min-height: 0;
-  margin-top: 0.15rem;
+  margin-top: 0;
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-cli-run {
   display: none !important;
@@ -3322,6 +3328,25 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-ste
   min-height: var(--console-row);
   height: auto;
   align-items: center;
+}
+/* One row height: a call, a summary line, the agents head and a line of prose
+   are all --console-row tall, and the dot is --console-row tall too, so the
+   gap between two rows never depends on which kinds meet. Summary lines and the
+   agents head used to be 19.2px and 22.5px (--tool-row as a height and the
+   page's 15px line-height), calls 0.14px over (the @host chip's line-height). */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step:not(.is-think) > .chat-step-main > .chat-step-head > :is(.chat-step-toggle, .chat-step-static) {
+  min-height: var(--console-row);
+  height: auto;
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step:not(.is-think) .chat-step-label {
+  min-height: var(--console-row);
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-agents > .chat-step-main > .chat-step-head {
+  min-height: var(--console-row);
+  font: var(--console-type)/var(--console-leading) var(--mono);
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step-label .chat-tool-host {
+  line-height: 1;
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-call .chat-step-label,
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-call {
@@ -4221,6 +4246,12 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat
   overflow: hidden;
   white-space: nowrap;
 }
+/* The last agent has no "│" to draw under its name, but its sub-line still
+   needs the same width: the glyph is kept and hidden (a blank " " in a flex
+   item is not rendered, which pulled "└ Done" left of its siblings'). */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-branch.is-blank {
+  visibility: hidden;
+}
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-agent-name {
   min-width: 0;
   overflow: hidden;
@@ -4240,6 +4271,14 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-con
   font: var(--console-type)/var(--console-leading) var(--mono);
   letter-spacing: 0;
 }
+/* The footer follows the same two columns as every row: the mark under the
+   dots, the text under the labels. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-turn {
+  display: grid;
+  grid-template-columns: var(--console-col) minmax(0, 1fr);
+  column-gap: 0.45rem;
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-turn-mark { justify-self: center; }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-turn b { font-weight: 700; }
 /* A wake turn is not something the user typed: no prompt band. */
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-turn.is-user.is-auto-steps {
