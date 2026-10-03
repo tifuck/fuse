@@ -21,6 +21,11 @@ from app.sources import claude as claude_mod  # noqa: E402
 from app.sources import pick  # noqa: E402
 from app.sources.pool_pick import reset_health  # noqa: E402
 
+import pytest
+
+# Uses the database: a disposable MariaDB schema shared by this module.
+pytestmark = pytest.mark.usefixtures("isolated_db")
+
 
 def _events(*items):
     async def gen():

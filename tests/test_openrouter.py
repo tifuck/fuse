@@ -28,6 +28,11 @@ from app.sources.openrouter import (  # noqa: E402
     resolve_pool_alias,
 )
 
+import pytest
+
+# Uses the database: a disposable MariaDB schema shared by this module.
+pytestmark = pytest.mark.usefixtures("isolated_db")
+
 
 def _catalog() -> dict:
     return {

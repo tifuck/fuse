@@ -15,6 +15,11 @@ os.environ.setdefault("APP_SECRET", "x" * 32)
 from app import accounts, db  # noqa: E402
 from app.sources import grok as grok_mod  # noqa: E402
 
+import pytest
+
+# Uses the database: a disposable MariaDB schema shared by this module.
+pytestmark = pytest.mark.usefixtures("isolated_db")
+
 
 class GrokUserinfoTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):

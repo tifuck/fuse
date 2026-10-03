@@ -159,7 +159,8 @@ class HostsProjectsTest(unittest.TestCase):
             "title-1",
             auto_title=True,
         )
-        self.assertEqual(result["thread"]["title"], "How much disk is free on all…")
+        # Until a real title lands, the chat shows the first words of the request.
+        self.assertEqual(result["thread"]["title"], "How much disk is free on…")
         self.assertTrue(result["thread"]["running"])
         self.assertTrue(chats.list_threads(1)[0]["running"])
         self.assertTrue(chats.list_sidebar_projects(1)[0]["running"])
@@ -422,11 +423,13 @@ class HostsHttpTest(unittest.TestCase):
         )
         self.assertEqual(added.status_code, 401)
         self.assertEqual(added.json()["error"]["type"], "vault_locked")
-        minted = self.client.post("/hosts/pairings", headers={"x-csrf-token": csrf}, json={})
+        # Install lines come from the public origin, not from this machine's .env.
+        with patch.object(hosts.settings, "public_base_url", "https://fuse.test"):
+            minted = self.client.post("/hosts/pairings", headers={"x-csrf-token": csrf}, json={})
         self.assertEqual(minted.status_code, 201)
         body = minted.json()
         self.assertTrue(body["code"].startswith("fuse_"))
-        self.assertIn("/i/", body["install"])
+        self.assertEqual(body["install"], f"curl -fsSL https://fuse.test/i/{body['code']} | bash")
 
     def _login(self) -> str:
         login_page = self.client.get("/login")

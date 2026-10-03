@@ -87,7 +87,12 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
     assert.equal(await used(), 5100);
     await page.evaluate(() => window.fuseToolFixture.context.accept({ scope: 'prompt', used: 1000, limit: 200000, parts: { system: 1000, history: 0, messages: 0, thinking: 0, tool_calls: 0, tools: 0, tool_families: {} } }));
     const rows = await page.evaluate(() => window.fuseToolFixture.context.rows());
-    assert.deepEqual(rows, [['System', 1000, ''], ['History', 0, '']], 'authoritative zero breakdowns must not fall back to visible history');
+    // Every context card keeps one fixed row set (empty rows dim, not vanish),
+    // so the zeros must be the authoritative ones, not visible-history estimates.
+    assert.deepEqual(rows, [
+      ['System', 1000, ''], ['History', 0, ''], ['Messages', 0, 'child'], ['Thinking', 0, 'child'],
+      ['Tool calls', 0, 'child'], ['Tool schemas', 0, ''],
+    ], 'authoritative zero breakdowns must not fall back to visible history');
 
     // The client must not invent a floor from legacy or cumulative billing.
     await page.evaluate(() => window.fuseToolFixture.context.accept({ event: 'context', phase: 'round', scope: 'prompt', basis: 'payload_chars_v1', used: 10000, limit: 200000, reported_request_tokens: 50000, provider_usage: { total_tokens: 900000 } }));

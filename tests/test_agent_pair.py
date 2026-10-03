@@ -34,13 +34,14 @@ class AgentPairTest(unittest.TestCase):
 
     def test_mint_without_vault(self):
         self.assertFalse(vault.unlocked(1))
-        pairing = hosts.mint_pairing(1)
+        # Install lines are built from the public origin; set one so the test
+        # does not depend on this machine's PUBLIC_BASE_URL.
+        with patch.object(hosts.settings, "public_base_url", "https://fuse.test"):
+            pairing = hosts.mint_pairing(1)
         self.assertTrue(pairing["code"].startswith("fuse_"))
-        self.assertIn("/i/", pairing["install"])
-        self.assertIn(pairing["code"], pairing["install"])
-        if pairing["install"]:
-            self.assertIn(pairing["code"] + ".ps1", pairing.get("install_windows") or "")
-            self.assertIn("fuse-agent-windows-amd64.exe", pairing.get("download_windows") or "")
+        self.assertEqual(pairing["install"], f"curl -fsSL https://fuse.test/i/{pairing['code']} | bash")
+        self.assertIn(pairing["code"] + ".ps1", pairing["install_windows"])
+        self.assertIn("fuse-agent-windows-amd64.exe", pairing["download_windows"])
         pending = hosts.list_pending_pairings(1)
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0]["id"], pairing["id"])

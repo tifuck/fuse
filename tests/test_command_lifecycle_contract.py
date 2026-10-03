@@ -14,6 +14,9 @@ class LifecycleContract(unittest.IsolatedAsyncioTestCase):
         self.conn = sqlite3.connect(":memory:", check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.addCleanup(self.conn.close)
+        # Full app schema (job writes touch chat_threads for recap activity);
+        # command_jobs itself is created lazily by ensure_schema, as in the app.
+        db._init(self.conn)
         for p in (patch.object(db, "connect", return_value=self.conn),
                   patch.object(jobs, "_live", {}), patch.object(jobs, "_schema_ready", False),
                   patch.object(jobs, "_deliver")):

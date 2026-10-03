@@ -27,6 +27,11 @@ except ModuleNotFoundError:  # loaded as tests.* instead of discover mode
 from app.search.engine import fetch_url
 from app.search.pack import PAGE_BUDGET, pack_page
 
+import pytest
+
+# Uses the database: a disposable MariaDB schema shared by this module.
+pytestmark = pytest.mark.usefixtures("isolated_db")
+
 
 class FakeStream:
     def __init__(self, status=200, body=b"", headers=None):

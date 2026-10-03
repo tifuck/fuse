@@ -131,13 +131,16 @@ class ContextBudgetTest(unittest.TestCase):
                 self.assertLessEqual(len(got.text), FETCH_CHARS)
 
     def test_large_pages_compress_hard(self):
+        # Measured on everything extracted (all pages read_url can serve), so
+        # the check does not move with the per-call FETCH_CHARS budget, which
+        # test_output_capped_at_fetch_chars covers on its own.
         for f in pf.FIXTURES:
             got = pf.extract_of(f["name"])
             if got.chars_in < 50_000:
                 continue
             with self.subTest(fix=f["name"]):
-                ratio = got.chars_in / max(1, got.chars_out)
-                self.assertGreaterEqual(ratio, 20.0, f"{f['name']} only compressed {ratio:.1f}x")
+                ratio = got.chars_in / max(1, got.total_chars)
+                self.assertGreaterEqual(ratio, 10.0, f"{f['name']} only compressed {ratio:.1f}x")
 
     def test_small_page_not_flagged_truncated(self):
         got = pf.extract_of("example_com")
@@ -145,9 +148,19 @@ class ContextBudgetTest(unittest.TestCase):
         self.assertEqual(got.kind, "html")
 
     def test_huge_pages_flag_truncated(self):
-        for name in ("wikipedia_ada_lovelace", "github_llmrouter", "pypi_requests"):
+        for name in ("wikipedia_ada_lovelace", "github_llmrouter"):
             with self.subTest(fix=name):
                 self.assertTrue(pf.extract_of(name).truncated)
+
+    def test_truncated_flag_matches_budget(self):
+        # A page is flagged truncated exactly when more text follows the first
+        # FETCH_CHARS page (pypi's ~13k of readable text now fits whole).
+        for f in pf.FIXTURES:
+            with self.subTest(fix=f["name"]):
+                got = pf.extract_of(f["name"])
+                self.assertEqual(got.truncated, got.total_chars > FETCH_CHARS)
+                if not got.truncated:
+                    self.assertEqual(got.chars_out, got.total_chars)
 
 
 class RealPageBehaviorTest(unittest.TestCase):

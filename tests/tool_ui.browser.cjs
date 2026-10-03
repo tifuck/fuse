@@ -182,7 +182,9 @@ let assertions = 0;
         assert.equal(await state(row('spawn')).textContent(), 'Background');
         await page.evaluate(() => fuseToolFixture.event({ id: Date.now(), thread_id: null, type: 'agent.failed', payload: { run_id: 'child-1', status: 'failed', message: { error: 'Child failed' } } }));
         assert.equal(await state(row('spawn')).textContent(), 'Failed');
-        assert.equal(await state(row('wait')).textContent(), 'Failed');
+        // A wait keeps its own invocation result; with its owning turn no
+        // longer live it reads as interrupted rather than adopting the child's.
+        assert.equal(await state(row('wait')).textContent(), 'Stopped');
         await page.evaluate(() => fuseToolFixture.agents([{ run_id: 'child-1', status: 'running' }]));
         assert.equal(await state(row('spawn')).textContent(), 'Failed', 'delayed progress cannot revive terminal state');
         await page.evaluate(() => fuseToolFixture.progress(1, { message: { tools: [{ id: 'spawn', name: 'spawn_subagent', child_id: 'child-1', status: 'running' }] } }));
@@ -190,33 +192,45 @@ let assertions = 0;
         assert.equal(await page.evaluate(() => fuseToolFixture.merge({ id: 'x', status: 'done' }, { id: 'x', status: 'progress' }, 'running').status), 'done');
         assert.ok((await page.locator('[data-activity-summary]').allTextContents()).some(text => text.includes('failed')));
 
+        // A long path never widens the page. File reads report what was read,
+        // not the contents, so the output cap is checked on a shell result.
         await mount([trace('read_file', 'done', { path: '/very-long-path/'.repeat(25), preview: 'long output '.repeat(600) })]);
         await toggle(row('tool-a')).click();
-        assert.equal(await row('tool-a').locator('.chat-tool-truncated').count(), 1);
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+        await mount([trace('run_terminal_command', 'done', { command: 'cat /very-long-path/'.repeat(25), preview: 'long output '.repeat(600) })]);
+        await toggle(row('tool-a')).click();
+        assert.equal(await row('tool-a').locator('.chat-tool-truncated').count(), 1, 'long output says it was truncated');
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
         await capture(`long-output.${view}.${width}`, row('tool-a'), { expanded: true, truncated: true });
 
         // Attached command checks need not carry the spawn's background flag.
-        // All pending references settle, but historical completed checks do not.
+        // A wait keeps its own invocation result: the job's later state never
+        // rewrites it, and only its own tool result settles it.
         await mount([
           trace('get_command_output', 'progress', { id: 'poll', child_id: 'attached-job', background: false, preview: '' }),
           trace('get_command_output', 'done', { id: 'historical', child_id: 'attached-job', preview: 'Earlier poll result' }),
-        ]);
+        ], true);
         await page.evaluate(() => fuseToolFixture.jobs([{ id: 'attached-job', state: 'running' }]));
         assert.equal(await state(row('poll')).textContent(), 'Waiting', 'nonterminal jobs must not fail pending checks');
         await page.evaluate(() => fuseToolFixture.jobs([{ id: 'attached-job', state: 'completed', exit_code: -9, out: 'x'.repeat(6000) }]));
+        assert.equal(await state(row('poll')).textContent(), 'Waiting', 'job completion does not rewrite an outstanding wait');
+        assert.equal(await state(row('historical')).textContent(), 'Done');
+        const big = 'x'.repeat(6000);
+        // A preview (not an authoritative output) longer than the 4,000
+        // character display cap is clipped here, and must say so.
+        await page.evaluate(big => fuseToolFixture.update('poll', { status: 'done', state: 'completed', execution_status: 'completed', exit_code: -9, preview: big }, true), big);
         await toggle(page.locator('[data-step="group-tool-poll"]')).click();
-        assert.equal(await state(row('poll')).textContent(), 'Exit -9');
+        assert.equal(await state(row('poll')).textContent(), 'Exit -9', 'the wait settles from its own result');
         assert.equal(await state(row('historical')).textContent(), 'Done');
         await toggle(row('poll')).click();
         assert.equal(await row('poll').locator('.chat-tool-truncated').count(), 1, 'client-side result truncation must be explicit');
         await page.evaluate(() => fuseToolFixture.jobs([{ id: 'attached-job', state: 'running' }]));
-        assert.equal(await state(row('poll')).textContent(), 'Exit -9');
+        assert.equal(await state(row('poll')).textContent(), 'Exit -9', 'a settled wait is historical');
 
-        await mount([trace('get_command_output', 'running', { background: true })]);
+        await mount([trace('get_command_output', 'running', { background: true })], true);
         assert.equal(await state(row('tool-a')).textContent(), 'Waiting', 'waiting takes precedence over the job background flag');
-        await page.evaluate(() => fuseToolFixture.jobs([{ id: 'fixture-job', state: 'timed_out', error: 'Command deadline exceeded' }]));
-        assert.equal(await state(row('tool-a')).textContent(), 'Failed', 'timed-out jobs must settle waiting rows');
+        await page.evaluate(() => fuseToolFixture.update('tool-a', { status: 'error', state: 'timed_out', execution_status: 'timed_out', error: 'Command deadline exceeded' }, true));
+        assert.equal(await state(row('tool-a')).textContent(), 'Failed', 'a timed-out wait result reads as failed');
         await mount([trace('run_terminal_command', 'error', { exit_code: -9, error: 'exit -9' })]);
         assert.equal(await state(row('tool-a')).textContent(), 'Exit -9', 'signal exits are command outcomes, not tool failures');
 
@@ -227,25 +241,33 @@ let assertions = 0;
         assert.equal(await state(row('tool-a')).textContent(), 'Stopped');
         await toggle(row('tool-a')).click();
         assert.equal(await row('tool-a').locator('.is-error .chat-tool-out').textContent(), 'Child stopped by user');
-        assert.equal(await row('tool-a').locator('.chat-tool-truncated').count(), 1);
+        // An unsuccessful child's prose is never promoted to its report.
+        assert.equal((await body(row('tool-a')).innerText()).includes('report report'), false, 'cancelled child prose is not shown as a report');
 
         await mount([trace('run_terminal_command', 'interrupted', { error: 'Host connection lost', exit_code: undefined, host: 'build-host', cwd: '/srv/build', duration_ms: 234, timeout_ms: 5000 })]);
         await toggle(row('tool-a')).click();
         assert.equal(await row('tool-a').locator('.is-error .chat-tool-out').textContent(), 'Host connection lost');
         assert.match(await row('tool-a').locator('.chat-tool-context').textContent(), /Host build-host.*Directory \/srv\/build/);
-        assert.match(await row('tool-a').locator('.is-meta .chat-tool-out').textContent(), /234 ms.*Timeout 5000 ms/);
+        // Run facts share the context line; a timeout is only named when it fired.
+        const facts = await row('tool-a').locator('.chat-tool-context').textContent();
+        assert.match(facts, /234\s?ms/);
+        assert.doesNotMatch(facts, /timeout/i, 'an interrupted run does not claim a timeout');
         // Rerendering streamed details must not drop keyboard focus to the body.
         await toggle(row('tool-a')).focus();
         await page.evaluate(() => fuseToolFixture.update('tool-a', { preview: 'New output while inspecting' }));
         assert.equal(await toggle(row('tool-a')).evaluate(el => el === document.activeElement), true);
         assert.equal(await toggle(row('tool-a')).getAttribute('aria-expanded'), 'true');
 
-        await mount([trace('kill_command', 'done', { child_id: 'job-unique', preview: '' })]);
-        assert.match(await toggle(row('tool-a')).innerText(), /job-unique/, 'stop rows expose target identity');
+        // A stop row names its target by the command that started the job.
+        await mount([
+          trace('run_terminal_command', 'done', { id: 'started', child_id: 'job-unique', background: true, command: 'npm run watch' }),
+          trace('kill_command', 'done', { id: 'stop', child_id: 'job-unique', preview: '' }),
+        ]);
+        assert.match(await row('stop').innerText(), /npm run watch/, 'stop rows expose target identity');
         await mount([trace('create_artifact', 'done', { version: 3, visibility: 'private' })]);
         assert.equal(await row('tool-a').locator('.chat-step-open').getAttribute('aria-label'), 'Open artifact');
         await toggle(row('tool-a')).click();
-        assert.match(await row('tool-a').locator('.is-meta .chat-tool-out').innerText(), /Version 3.*Visibility private/);
+        assert.match(await row('tool-a').locator('.chat-tool-context').innerText(), /v3[\s\S]*private/);
 
         // Exercise every outcome together; two-state groups miss label starvation.
         await mount([
@@ -316,6 +338,8 @@ let assertions = 0;
     await toggle(row('reload-tool')).click();
     await page.reload();
     await page.waitForFunction(() => Boolean(window.fuseToolFixture));
+    // Phones reopen on the chat list after a reload; return to the chat.
+    if (await page.locator('[data-chat].is-history').count()) await page.locator('.chat-history [data-chat-new]').click();
     await page.evaluate(() => fuseToolFixture.mount([{ tools: [{ id: 'reload-tool', name: 'read_file', status: 'error', path: 'README.md', error: 'Unavailable' }] }], false, 'disclosure-test'));
     assert.equal(await body(row('reload-tool')).isVisible(), true, 'reload restores expanded activity and tool');
     await toggle(row('reload-tool')).click();

@@ -21,6 +21,11 @@ from app.sources import pool_pick
 from app.sources import zai as zai_mod
 from app.proxy import usage_from_obj
 
+import pytest
+
+# Uses the database: a disposable MariaDB schema shared by this module.
+pytestmark = pytest.mark.usefixtures("isolated_db")
+
 
 PREFIX = (
     "CACHE-AFFINITY-TEST "

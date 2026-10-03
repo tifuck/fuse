@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
-import sqlite3
 import sys
 import tempfile
 import unittest
@@ -19,6 +18,11 @@ os.environ.setdefault("APP_SECRET", "x" * 32)
 
 from app import agent_catalog, chats, command_jobs, db, monitor, workspace
 from app.chat_tools import openai_tools, suggest_tool
+
+import pytest
+
+# Uses the database: a disposable MariaDB schema shared by this module.
+pytestmark = pytest.mark.usefixtures("isolated_db")
 
 
 class MonitorHelpers(unittest.TestCase):
@@ -89,19 +93,17 @@ class MonitorHelpers(unittest.TestCase):
 
 class MonitorJobs(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.conn = sqlite3.connect(":memory:", check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        self.addCleanup(self.conn.close)
+        # The module's disposable MariaDB schema has the full app schema
+        # (delivery also reads chat_runs/chat_threads); each test starts empty.
         for p in (
-            patch.object(db, "connect", return_value=self.conn),
             patch.object(command_jobs, "_live", {}),
             patch.object(command_jobs, "_schema_ready", False),
         ):
             p.start()
             self.addCleanup(p.stop)
         command_jobs.ensure_schema()
-        # Delivery checks whether a job's owning run is a subagent.
-        self.conn.execute("CREATE TABLE chat_runs (id TEXT PRIMARY KEY, parent_run_id TEXT, status TEXT)")
+        db.execute("DELETE FROM command_jobs")
+        db.execute("DELETE FROM chat_runs")
 
     async def test_stdout_lines_become_events_stderr_does_not(self):
         delivered = []
@@ -236,7 +238,7 @@ class MonitorJobs(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.35)
             items = command_jobs.pending_envelopes(1, 3)
             command_jobs.mark_delivered([items[0]["id"]])
-            row = self.conn.execute("SELECT delivered FROM command_jobs WHERE id=?", (rec["id"],)).fetchone()
+            row = db.fetchone("SELECT delivered FROM command_jobs WHERE id=?", (rec["id"],))
             self.assertEqual(int(row["delivered"]), 0)
             gate.set()
             await rec["task"]

@@ -29,6 +29,11 @@ from app.chat_runtime import (  # noqa: E402
     _paced_chunks,
 )
 
+import pytest
+
+# Uses the database: a disposable MariaDB schema shared by this module.
+pytestmark = pytest.mark.usefixtures("isolated_db")
+
 
 def _stream(chunks, delays=None):
     """Async byte stream; delays[i] sleeps before yielding chunks[i]."""
@@ -143,11 +148,14 @@ class ConsumeRoundBeatTest(unittest.IsolatedAsyncioTestCase):
 
 
 class IdleResumeCapTest(unittest.TestCase):
-    def test_idle_timeout_resumes_once(self):
-        from app.chat_runtime import _should_resume
+    def test_idle_timeout_resumes_twice_then_fails(self):
+        from app.chat_runtime import IDLE_STALL_RETRIES, _should_resume
 
+        # idle_stalls counts the stall being handled: resume the first two.
+        self.assertEqual(IDLE_STALL_RETRIES, 2)
         self.assertTrue(_should_resume(502, "upstream timeout (idle)", resumes_left=4, idle_stalls=1))
-        self.assertFalse(_should_resume(502, "upstream timeout (idle)", resumes_left=4, idle_stalls=2))
+        self.assertTrue(_should_resume(502, "upstream timeout (idle)", resumes_left=4, idle_stalls=2))
+        self.assertFalse(_should_resume(502, "upstream timeout (idle)", resumes_left=4, idle_stalls=3))
         self.assertTrue(_should_resume(503, "overloaded", resumes_left=4, idle_stalls=5))
         self.assertFalse(_should_resume(502, "upstream timeout (idle)", resumes_left=0, idle_stalls=1))
 

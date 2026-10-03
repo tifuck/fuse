@@ -24,6 +24,11 @@ from app.sources import kimi as kimi_mod
 from app.sources import zai as zai_mod  # noqa: E402
 from app.sources.pool_pick import reset_health  # noqa: E402
 
+import pytest
+
+# Uses the database: a disposable MariaDB schema shared by this module.
+pytestmark = pytest.mark.usefixtures("isolated_db")
+
 
 GROK_EXTRA = {
     "access_token": "tok",

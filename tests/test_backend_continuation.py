@@ -162,12 +162,18 @@ class BackendContinuationTest(unittest.TestCase):
         messages = [{"tools": [{"id": f"trace{i}", "name": "run_terminal_command", "status": "running", "child_id": f"job{i}"} for i in range(30)]},
                     {"tools": [{"id": "poll", "name": "get_command_output", "status": "running", "child_id": "job0"}]}]
         store.settle_command_traces(self.conn, 1, self.run["thread_id"], messages)
-        self.assertTrue(all(t["execution_status"] == "completed" for m in messages for t in m["tools"]))
-        for trace in (messages[0]["tools"][0], messages[1]["tools"][0]):
-            self.assertEqual(trace["status"], "done")
-            self.assertEqual(trace["exit_code"], 7)
-            self.assertEqual(len(trace["output"]), 1200)
-            self.assertEqual(trace["job_id"], "job0")
+        # Every launch follows its job, across all 30 references.
+        self.assertTrue(all(t["execution_status"] == "completed" for t in messages[0]["tools"]))
+        trace = messages[0]["tools"][0]
+        self.assertEqual(trace["status"], "done")
+        self.assertEqual(trace["exit_code"], 7)
+        self.assertEqual(len(trace["output"]), 1200)
+        self.assertEqual(trace["job_id"], "job0")
+        # A wait keeps its own invocation result; the job never rewrites it.
+        poll = messages[1]["tools"][0]
+        self.assertEqual(poll["status"], "running")
+        self.assertNotIn("execution_status", poll)
+        self.assertNotIn("output", poll)
         self.assertFalse(store.command_rows(self.conn, 2, self.run["thread_id"], ["job0"]))
         self.assertFalse(store.command_rows(self.conn, 1, -1, ["job0"]))
 

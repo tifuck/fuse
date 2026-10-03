@@ -19,6 +19,11 @@ from app.sources import grok as grok_mod  # noqa: E402
 from app.sources import usage_walk  # noqa: E402
 from app.sources import zai as zai_mod  # noqa: E402
 
+import pytest
+
+# Uses the database: a disposable MariaDB schema shared by this module.
+pytestmark = pytest.mark.usefixtures("isolated_db")
+
 
 class UsageWalkTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):

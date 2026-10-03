@@ -219,12 +219,12 @@ class RestartRecoveryTest(unittest.IsolatedAsyncioTestCase):
         db.execute("UPDATE chat_runs SET status='completed' WHERE id=?", (run["id"],))
         self.assertFalse(store.queue_steer(run["id"], "s3", "late"))
 
-    def test_append_steer_message_is_idempotent(self):
+    def test_steer_turn_is_idempotent(self):
         thread = self.make_thread()
         run = self.start_run(thread)
-        first = store.append_steer_message(1, thread["id"], "go faster", "cmd-1")
+        first = store.steer_turn(1, thread["id"], "go faster", "cmd-1")
         self.assertFalse(first["idempotent"])
-        again = store.append_steer_message(1, thread["id"], "go faster", "cmd-1")
+        again = store.steer_turn(1, thread["id"], "go faster", "cmd-1")
         self.assertTrue(again["idempotent"])
         data = chats.get_thread(1, thread["id"])
         user_msgs = [m for m in data["messages"] if m["role"] == "user"]
@@ -324,7 +324,9 @@ class SteerEndpointTest(unittest.TestCase):
             json={"text": "hello", "command_id": "cmd-no-run"},
         )
         self.assertEqual(response.status_code, 409)
-        self.assertFalse(response.json()["live"])
+        self.assertIn("No active run", response.text)
+        # Nothing was appended to the conversation.
+        self.assertEqual(chats.get_thread(1, self.thread["id"])["messages"], [])
 
     def test_steer_appends_message_and_injects(self):
         run = store.start_turn(1, self.thread["id"], "Hello", self.thread["revision"], None)["run"]

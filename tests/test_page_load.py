@@ -24,6 +24,11 @@ from app.sources import grok as grok_mod
 from app.sources import openrouter as or_mod
 from app.web import router as web_router
 
+import pytest
+
+# Uses the database: a disposable MariaDB schema shared by this module.
+pytestmark = pytest.mark.usefixtures("isolated_db")
+
 
 class SourcesPageDoesNotProbeTest(unittest.TestCase):
     def setUp(self):

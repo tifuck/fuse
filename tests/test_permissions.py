@@ -16,6 +16,11 @@ os.environ.setdefault("APP_SECRET", "x" * 32)
 from app import db, permissions
 from app.chats import _parse_permissions
 
+import pytest
+
+# Uses the database: a disposable MariaDB schema shared by this module.
+pytestmark = pytest.mark.usefixtures("isolated_db")
+
 
 def _gate(thread_id=1, run_id="run-1", requester=None, unattended=False, notify=None, cancel=None):
     return permissions.Gate(
@@ -225,12 +230,24 @@ class ReviewTest(PermSchemaTest):
         self.assertEqual(events[0]["grant_value"], "/srv/app/.env")
 
     def test_shell_cwd_and_paths_ask(self):
+        # A simple read of an out-of-root path asks, and allowing it for the
+        # session grants that directory.
         res, events, payload = asyncio.run(
-            self._ask_flow("allow_session", {"command": "cd /var/www && cat x.log", "cwd": ""}, tool="run_terminal_command")
+            self._ask_flow("allow_session", {"command": "cat /var/www/x.log", "cwd": ""}, tool="run_terminal_command")
         )
         self.assertTrue(res.allowed)
         grants = permissions.grants_for(1, 1)
         self.assertTrue(any(g["value"] == "/var/www" for g in grants), grants)
+
+    def test_compound_shell_is_never_granted_for_the_session(self):
+        # Shell programs can reach paths that are not operands, so a compound
+        # command is approved once and never offered as allow-always.
+        res, events, payload = asyncio.run(
+            self._ask_flow("allow_session", {"command": "cd /srv/other && cat x.log", "cwd": ""}, tool="run_terminal_command")
+        )
+        self.assertTrue(res.allowed)
+        self.assertEqual(events[0].get("grant_kind"), "")
+        self.assertFalse(any(g["value"] == "/srv/other" for g in permissions.grants_for(1, 1)))
 
     def test_subagent_requester_label(self):
         events = []
@@ -354,7 +371,9 @@ class ResolveTest(PermSchemaTest):
         self.assertEqual(row["decision"], "allow")
         permissions.set_bypass(1, 1, False)
 
-    def test_set_auto_leaves_destructive_and_secret_pending(self):
+    def test_set_auto_never_approves_waiting_asks_itself(self):
+        # Turning auto on only flips the flag. Each waiting gate sees it on its
+        # next poll and asks the reviewer for its own call (see test_jev).
         with db.tx() as conn:
             conn.execute("DELETE FROM chat_permission_asks")
             for ask_id, command, secret in (("pa_ok", "ls /etc", 0), ("pa_rm", "rm -rf /var/www", 0), ("pa_sec", "", 1)):
@@ -367,8 +386,9 @@ class ResolveTest(PermSchemaTest):
                 )
         permissions.set_auto(1, 1, True)
         try:
+            self.assertTrue(permissions.auto_enabled(1, 1))
             status = {r["id"]: r["status"] for r in db.fetchall("SELECT id, status FROM chat_permission_asks")}
-            self.assertEqual(status, {"pa_ok": "allowed", "pa_rm": "pending", "pa_sec": "pending"})
+            self.assertEqual(status, {"pa_ok": "pending", "pa_rm": "pending", "pa_sec": "pending"})
         finally:
             permissions.set_auto(1, 1, False)
             with db.tx() as conn:

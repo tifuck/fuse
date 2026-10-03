@@ -1,6 +1,7 @@
 """Workspace host resolution, confinement, denylist (no live SSH)."""
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -15,6 +16,11 @@ os.environ.setdefault("DATABASE_PATH", str(Path(_TMP) / "ws.db"))
 os.environ.setdefault("APP_SECRET", "x" * 32)
 
 from app import workspace
+
+import pytest
+
+# Uses the database: a disposable MariaDB schema shared by this module.
+pytestmark = pytest.mark.usefixtures("isolated_db")
 
 
 class AgentsFileTest(unittest.TestCase):
@@ -321,11 +327,15 @@ class _FakeExec:
         self.exit_status = exit_status
 
 
-def _fake_runner_factory(result=None, exc=None):
-    """Stand-in for _make_ssh_runner: streams output to the sink, returns _ExecResult."""
+def _fake_runner_factory(result=None, exc=None, gate=None):
+    """Stand-in for _make_ssh_runner: streams output to the sink, returns _ExecResult.
+
+    With gate (an asyncio.Event), the command keeps running until it is set."""
 
     def make_runner(_uid, _hid, _command, _cwd, _timeout_ms):
         async def runner(sink):
+            if gate is not None:
+                await gate.wait()
             if exc is not None:
                 raise exc
             combined = (result.stdout or "") + (("\n" + result.stderr) if result.stderr else "")
@@ -381,8 +391,11 @@ class ShellExitCodeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rec["name"], "run_terminal_command")
 
     async def test_background_nonzero_exit_joins_as_done_with_exit_code(self):
+        # The command keeps running until released, so the launch reports a
+        # live job deterministically (an instant fake can finish first).
+        gate = asyncio.Event()
         with patch.object(workspace, "resolve_host_row", return_value=self.row), patch.object(
-            workspace, "_make_ssh_runner", side_effect=_fake_runner_factory(result=_FakeExec(128, stdout="fatal: not a git repository"))
+            workspace, "_make_ssh_runner", side_effect=_fake_runner_factory(result=_FakeExec(128, stdout="fatal: not a git repository"), gate=gate)
         ):
             text, rec = await workspace.execute(
                 "run_terminal_command", json.dumps({"command": "git log", "background": True}), user_id=1
@@ -390,6 +403,7 @@ class ShellExitCodeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(rec["status"], "running")
             self.assertEqual(rec["name"], "run_terminal_command")
             job_id = rec["child_id"]
+            gate.set()
             text, rec = await workspace.execute("get_command_output", json.dumps({"id": job_id}), user_id=1)
         self.assertEqual(rec["status"], "done")
         self.assertEqual(rec["exit_code"], 128)

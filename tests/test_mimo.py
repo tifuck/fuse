@@ -26,6 +26,11 @@ from app.sources import mimo as mimo_mod  # noqa: E402
 from app.sources import pick  # noqa: E402
 from app.sources.pool_pick import mimo_usage_percent, reset_health  # noqa: E402
 
+import pytest
+
+# Uses the database: a disposable MariaDB schema shared by this module.
+pytestmark = pytest.mark.usefixtures("isolated_db")
+
 
 def _seal(private_b64: str, payload: dict) -> str:
     pad = "=" * (-len(private_b64) % 4)

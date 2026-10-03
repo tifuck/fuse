@@ -82,8 +82,20 @@ const out = process.env.FRONTEND_LIFECYCLE_ARTIFACTS || '/tmp/opencode/frontend-
         fuseToolFixture.run({ status: 'completed' });
         fuseToolFixture.progress(0, { message: fuseToolFixture.snapshot()[0] });
       });
-      const completedPeek = await peek.boundingBox();
-      assert.ok(!completedPeek || completedPeek.height <= liveHeight + 2, 'completed reasoning collapses or retains the explicitly chosen reader size');
+      // Measure what the reader sees: the window clips the preview while it
+      // collapses, so wait for the reveal animation and read the window box.
+      await page.waitForFunction(() => {
+        const w = document.querySelector('[data-step="think-2"] .chat-think-window');
+        return !w || w.getAnimations({ subtree: true }).every(a => a.playState !== 'running');
+      });
+      const visible = await page.evaluate(() => {
+        const w = document.querySelector('[data-step="think-2"] .chat-think-window');
+        const p = document.querySelector('[data-step="think-2"] .chat-think-preview');
+        if (!w || !p) return 0;
+        const a = w.getBoundingClientRect(), b = p.getBoundingClientRect();
+        return Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+      });
+      assert.ok(visible <= liveHeight + 2, 'completed reasoning collapses or retains the explicitly chosen reader size');
 
       for (const reduced of ['no-preference', 'reduce']) {
         await page.emulateMedia({ reducedMotion: reduced });

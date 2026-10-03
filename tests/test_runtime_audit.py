@@ -13,6 +13,11 @@ os.environ.setdefault("APP_SECRET", "audit-test-secret-" * 3)
 
 from app import agents, chat_runs, chat_runtime as runtime, chat_store as store, chat_tools, chats, db, tool_failures
 
+import pytest
+
+# Uses the database: a disposable MariaDB schema shared by this module.
+pytestmark = pytest.mark.usefixtures("isolated_db")
+
 
 class Request:
     async def is_disconnected(self):
@@ -82,7 +87,9 @@ class ArgumentsTest(unittest.IsolatedAsyncioTestCase):
             output.apply({"fuse": event})
         stored = store._message(output.stored(), "m")
         trace = stored["tools"][0]
-        self.assertEqual(trace["status"], "error")
+        # A non-zero exit is the command's outcome, not a tool failure.
+        self.assertEqual(trace["status"], "done")
+        self.assertEqual(trace["exit_code"], 2)
         self.assertEqual(trace["output"], text[:chats.TOOL_OUTPUT_MAX])
         self.assertEqual(trace["output_chars"], len(text))
         self.assertTrue(trace["truncated"])
@@ -284,13 +291,19 @@ class StoreTest(unittest.TestCase):
         saved = json.loads(store.get_run(1, self.parent["id"])["provider_messages"])
         self.assertNotEqual(saved[0]["role"], "tool")
 
-    def test_clipped_steer_is_not_acknowledged_as_durable(self):
+    def test_steer_is_acknowledged_only_once_durably_saved(self):
         store.queue_steer(self.parent["id"], "steer-id", "new task")
+        # Progress that does not yet carry the steer leaves it pending.
+        store.save_turn_progress(self.parent["id"], [{"role": "user", "content": "x" * 10000}])
+        self.assertTrue(store.get_run(1, self.parent["id"])["request"]["agent"]["pending_steers"])
+        # Progress is never tail-clipped, so a steer at the start of a long
+        # transcript is saved whole and is then acknowledged.
         messages = [{"role": "user", "content": store.steer_envelope("steer-id", "new task")}]
         messages += [{"role": "user", "content": "x" * 10000} for _ in range(60)]
         store.save_turn_progress(self.parent["id"], messages)
         saved = store.get_run(1, self.parent["id"])
-        self.assertTrue(saved["request"]["agent"]["pending_steers"])
+        self.assertEqual(len(json.loads(saved["provider_messages"])), len(messages))
+        self.assertFalse(saved["request"]["agent"]["pending_steers"])
 
     def test_child_recovery_preserves_reasoning_order_and_event_namespace(self):
         child = self.child()
@@ -305,7 +318,10 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(recovered["message"]["reasoning"], "thought")
         self.assertEqual(recovered["message"]["segments"], message["segments"])
         events = store.events_after(1, cursor)
-        self.assertEqual([e["type"] for e in events], ["agent.resumed", "agent.progress"])
+        # The parent thread is republished too, so its sidebar keeps showing
+        # work while the child runs.
+        self.assertEqual([e["type"] for e in events], ["agent.resumed", "agent.progress", "thread.updated"])
+        self.assertEqual(events[2]["thread_id"], events[0]["thread_id"])
         self.assertEqual(events[0]["payload"]["status"], "queued")
         self.assertEqual(events[0]["payload"]["child_id"], child["id"])
 

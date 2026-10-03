@@ -4,6 +4,42 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const origin = process.env.FUSE_BROWSER_ORIGIN || 'http://127.0.0.1:8099';
 assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
 
+const frames=page=>page.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));
+
+// A grouped run of shell calls opens and folds back. Terminal and Compact keep
+// their header as the control (mouse and keyboard). Console prints the opened
+// calls in place of the summary line, as Claude Code does, and a click on the
+// printed calls folds them back.
+async function checkGroup(page,scope,view){
+  const group=page.locator(`${scope} .is-stack, ${scope} .is-console-group`).first();
+  const toggle=group.locator(':scope > .chat-step-main > .chat-step-head [data-step-toggle]').first();
+  if(await toggle.getAttribute('aria-expanded')==='true'){
+    if(view==='console')await group.locator(':scope > .chat-step-main > .chat-console-bundle .chat-step-node').first().click({force:true});
+    else await toggle.click();
+  }
+  assert.equal(await toggle.getAttribute('aria-expanded'),'false',`${view}: ${scope} group starts folded`);
+  await toggle.click();
+  assert.equal(await toggle.getAttribute('aria-expanded'),'true',`${view}: ${scope} group opens`);
+  if(view==='console'){
+    assert.equal(await group.locator(':scope > .chat-step-main > .chat-console-bundle').isVisible(),true,`${view}: opened calls are printed`);
+    assert.equal(await toggle.isVisible(),false,`${view}: the summary line gives way to its calls`);
+    await group.locator(':scope > .chat-step-main > .chat-console-bundle .chat-step-node').first().click({force:true});
+    assert.equal(await toggle.getAttribute('aria-expanded'),'false',`${view}: a click on the printed calls folds them back`);
+    assert.equal(await toggle.isVisible(),true,`${view}: the summary line returns`);
+    await toggle.focus();await page.keyboard.press('Enter');
+    assert.equal(await toggle.getAttribute('aria-expanded'),'true',`${view}: Enter opens the summary line`);
+    await group.locator(':scope > .chat-step-main > .chat-console-bundle .chat-step-node').first().click({force:true});
+  } else {
+    assert.equal(await toggle.isVisible(),true,`${view}: collapse control remains visible`);
+    await toggle.click();
+    assert.equal(await toggle.getAttribute('aria-expanded'),'false');
+    await toggle.focus();await page.keyboard.press('Enter');
+    assert.equal(await toggle.getAttribute('aria-expanded'),'true');
+    await page.keyboard.press('Space');
+  }
+  assert.equal(await toggle.getAttribute('aria-expanded'),'false',`${view}: ${scope} group folds`);
+}
+
 (async () => {
   const browser = await chromium.launch({headless:true,args:['--no-sandbox'], ...(process.env.CHROMIUM_PATH ? {executablePath:process.env.CHROMIUM_PATH} : {})});
   try {
@@ -19,21 +55,27 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
         const f=fuseToolFixture;f.view(view);
         f.mount([{id:'thinking-'+view,reasoning:'First thought',tools:[],segments:[{type:'reasoning',text:'First thought'}]}],true);
       },view);
-      assert.equal(await page.locator('.chat-log [data-reason-preview]').count(),1,`${view}: live reasoning`);
-      assert.equal(await page.locator('.chat-log [data-reason-preview]').isVisible(),true,`${view}: reasoning text is visible`);
-      await page.evaluate(()=>fuseToolFixture.stream(0,{reasoning:'First thought and next thought',segments:[{type:'reasoning',text:'First thought and next thought'}]}));
-      assert.match(await page.locator('.chat-log [data-reason-preview]').textContent(),/next thought/);
+      if (view==='console') {
+        // Console prints a thought only once it lands (Claude Code style): the
+        // live dock carries it while it streams, then a "Thought for" line.
+        assert.equal(await page.locator('.chat-log :is([data-reason-preview], .chat-console-thought)').count(),0,`${view}: an unfinished thought prints no row`);
+        await page.evaluate(()=>fuseToolFixture.stream(0,{reasoning:'First thought and next thought',segments:[{type:'reasoning',text:'First thought and next thought'}]}));
+        assert.equal(await page.locator('.chat-log .chat-console-thought').count(),0,`${view}: streamed thinking text alone repaints nothing`);
+        await page.evaluate(()=>fuseToolFixture.mount([{id:'thinking-console',reasoning:'First thought and next thought',tools:[],segments:[{type:'reasoning',text:'First thought and next thought'}]}],false));
+        const line=page.locator('.chat-log .is-console-group').first();
+        assert.match(await line.locator('.chat-step-label').textContent(),/^Thought for /,`${view}: landed thought reads as a summary line`);
+        await line.locator('[data-step-toggle]').first().click();
+        const thought=page.locator('.chat-log .chat-console-thought');
+        assert.equal(await thought.isVisible(),true,`${view}: expanding the line shows the thought`);
+        assert.match(await thought.textContent(),/next thought/);
+      } else {
+        assert.equal(await page.locator('.chat-log [data-reason-preview]').count(),1,`${view}: live reasoning`);
+        assert.equal(await page.locator('.chat-log [data-reason-preview]').isVisible(),true,`${view}: reasoning text is visible`);
+        await page.evaluate(()=>fuseToolFixture.stream(0,{reasoning:'First thought and next thought',segments:[{type:'reasoning',text:'First thought and next thought'}]}));
+        assert.match(await page.locator('.chat-log [data-reason-preview]').textContent(),/next thought/);
+      }
       await page.evaluate(({view,width})=>fuseToolFixture.mount([{id:`group-${view}-${width}`,tools:Array.from({length:5},(_,i)=>({id:'shell'+i,name:'run_terminal_command',status:'done',state:'completed',command:'printf audit',output:'sample\n'.repeat(10),exit_code:0}))}],false),{view,width});
-      const group=page.locator('.chat-log .is-stack, .chat-log .is-console-shell-group').first();
-      const toggle=group.locator(':scope > .chat-step-main > .chat-step-head [data-step-toggle]').first();
-      await toggle.click();
-      assert.equal(await toggle.isVisible(),true,`${view}: collapse control remains visible`);
-      await toggle.click();
-      assert.equal(await toggle.getAttribute('aria-expanded'),'false');
-      await toggle.focus();await page.keyboard.press('Enter');
-      assert.equal(await toggle.getAttribute('aria-expanded'),'true');
-      await page.keyboard.press('Space');
-      assert.equal(await toggle.getAttribute('aria-expanded'),'false');
+      await checkGroup(page,'.chat-log',view);
       const detail=await page.evaluate(view=>{
         const f=fuseToolFixture;
         f.mount([{id:'output-'+view,tools:[{id:'detail',name:'run_terminal_command',status:'done',state:'completed',command:'printf audit',output:'OLD_OUTPUT',exit_code:0}]}],false);
@@ -69,7 +111,9 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
     await page.waitForSelector('[data-agent-current]',{state:'attached'});
     const tools=Array.from({length:5},(_,i)=>({id:'t'+i,name:'read_file',status:'running',path:'file'+i}));
     await page.evaluate(tools=>fuseToolFixture.event({id:10,type:'agent.progress',thread_id:'fixture-thread',payload:{run_id:'audit-child',events:tools.map(t=>({fuse:{event:'tool',...t}}))}}),tools);
-    assert.equal(await page.locator('[data-agent-current] [data-tool]').count(),5);
+    // The agent pane repaints once per animation frame; read it after a frame.
+    await frames(page);
+    assert.equal(await page.locator('[data-agent-current] [data-tool]').count(),5,'live child progress renders every tool');
     run.event_cursor=10;run.message.tools=tools;run.message.segments=tools.map(t=>({type:'tool',id:t.id}));
     await page.evaluate(()=>fuseToolFixture.pollAgent());
     assert.equal(await page.locator('[data-agent-log-body] [data-tool]').count(),5,'poll cannot duplicate live tools');
@@ -86,14 +130,13 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       run.event_cursor++;
       run.status='running';run.messages=[];run.message={content:'',reasoning:'Child thinking',tools:[],segments:[{type:'reasoning',text:'Child thinking'}]};
       await page.evaluate(view=>fuseToolFixture.view(view),view);await page.evaluate(()=>fuseToolFixture.pollAgent());
-      assert.equal(await page.locator('[data-agent-current] [data-reason-preview]').count(),1,`${view}: child thinking`);
+      await frames(page);
+      // Console prints a child's thought once it lands, like the main log.
+      assert.equal(await page.locator('[data-agent-current] :is([data-reason-preview], .chat-console-thought)').count(),view==='console'?0:1,`${view}: child thinking`);
       run.event_cursor++;
       run.message={content:'',reasoning:'',tools:Array.from({length:5},(_,i)=>({id:'s'+i,name:'run_terminal_command',status:'done',state:'completed',command:'pwd',output:'fixture\n'.repeat(8),exit_code:0}))};
       await page.evaluate(()=>fuseToolFixture.pollAgent());
-      const toggle=page.locator('[data-agent-current] .is-stack > .chat-step-main > .chat-step-head [data-step-toggle], [data-agent-current] .is-console-shell-group > .chat-step-main > .chat-step-head [data-step-toggle]').first();
-      if(await toggle.getAttribute('aria-expanded')==='true')await toggle.click();
-      await toggle.click();assert.equal(await toggle.isVisible(),true);await toggle.click();
-      assert.equal(await toggle.getAttribute('aria-expanded'),'false',`${view}: child collapse`);
+      await checkGroup(page,'[data-agent-current]',view);
     }
     run.event_cursor++;run.messages=[{id:'audit-child:agent-hist-1',role:'assistant',content:'',tools:[{id:'historical',name:'read_file',status:'interrupted',path:'file'}]}];run.message={content:'',tools:[]};
     await page.evaluate(()=>{fuseToolFixture.view('cli');return fuseToolFixture.pollAgent()});
@@ -103,6 +146,7 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
     run.event_cursor++;run.messages=[];run.message={content:'',tools:[{id:'nested',name:'spawn_subagent',status:'running',background:true,child_id:'grandchild'}]};
     await page.evaluate(()=>fuseToolFixture.pollAgent());
     await page.evaluate(id=>fuseToolFixture.event({id,type:'agent.completed',thread_id:'fixture-thread',payload:{run_id:'grandchild',child_id:'grandchild',status:'completed',message:{content:'Report'}}}),run.event_cursor+1);
+    await frames(page);
     assert.equal(await page.locator('[data-agent-current] [data-tool="spawn_subagent"]').getAttribute('data-state'),'done','nested completion refreshes');
     assert.deepEqual(errors,[]);
     console.log('PASS: three views, desktop/mobile, thinking, disclosures, detail updates, child snapshots, append replay and nested status');

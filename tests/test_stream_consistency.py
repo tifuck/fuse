@@ -10,6 +10,11 @@ from unittest.mock import patch
 from fastapi.responses import StreamingResponse
 from app import db, chats, chat_runs, chat_runtime, chat_store as store
 
+import pytest
+
+# Uses the database: a disposable MariaDB schema shared by this module.
+pytestmark = pytest.mark.usefixtures("isolated_db")
+
 
 class ConsistencyTests(unittest.TestCase):
     def setUp(self):

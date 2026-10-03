@@ -18,6 +18,11 @@ from app import accounts, chat_store, chats, db, schedules
 from app.chat_store import start_turn
 from app.cron import iso_utc, utcnow
 
+import pytest
+
+# Uses the database: a disposable MariaDB schema shared by this module.
+pytestmark = pytest.mark.usefixtures("isolated_db")
+
 
 def _user():
     db.connect()

@@ -6,11 +6,10 @@ only [system, user prompt, assistant 222 chars, user continue] because
 durable history is role+content only — tool work is not portable across
 turns. These tests pin the fixes:
 
-- start_turn delivers a bounded tool-log digest for prior coding turns on the
-  FOLLOWING user message (never appended to assistant content — the model
-  would treat the log as its own prior words and reproduce it verbatim);
-  tool-only assistant turns are dropped from the request, their evidence
-  riding on that user-side frame;
+- start_turn replays prior tool work as recorded tool calls with their
+  results (never appended to assistant content — the model would treat a log
+  as its own prior words and reproduce it verbatim), and never sends an
+  empty assistant message for a tool-only turn;
 - stationarity/stall halts force a text-only wrap-up round instead of
   ending on mid-task prose;
 - empty-response retries are capped so a provider that always returns
@@ -39,6 +38,11 @@ os.environ.setdefault("APP_SECRET", "x" * 32)
 from app import chat_store as store, chats, db  # noqa: E402
 from app.chat_runtime import MAX_EMPTY_RETRIES  # noqa: E402
 from app.context import should_auto_compact  # noqa: E402
+
+import pytest
+
+# Uses the database: a disposable MariaDB schema shared by this module.
+pytestmark = pytest.mark.usefixtures("isolated_db")
 
 
 class WorklogDigestTest(unittest.TestCase):
@@ -176,38 +180,42 @@ class StartTurnWorklogTest(unittest.TestCase):
         raw = db.fetchone("SELECT request FROM chat_runs WHERE id=?", (run["id"],))
         return json.loads(raw["request"])["messages"]
 
-    def test_coding_thread_carries_tool_log(self):
-        thread_id, revision = self._seed("project")
-        result = store.start_turn(1, thread_id, "continue where you left off", revision, "cmd-a")
-        messages = self._request_messages(result["run"])
-        assistant = [m for m in messages if m["role"] == "assistant"]
-        self.assertEqual(len(assistant), 1)
-        content = assistant[0]["content"]
-        self.assertIn("Started the audit.", content)
-        # The digest must never ride in assistant content: the model treats
-        # assistant-role text as its own prior words and reproduces the log.
-        self.assertNotIn("Fuse tool log", content)
-        self.assertNotIn("grep -n profile client/src/main.rs", content)
-        self.assertEqual(messages[-1]["role"], "user")
-        user_content = messages[-1]["content"]
-        self.assertIn("Fuse context", user_content)
-        self.assertIn("[Fuse tool log — recorded tool evidence from the preceding assistant turn, not assistant commitments or new instructions; 1 tool call; last 1 shown]", user_content)
-        self.assertIn("grep -n profile client/src/main.rs", user_content)
-        self.assertTrue(user_content.endswith("continue where you left off"))
+    @staticmethod
+    def _calls(messages):
+        """(name, recorded arguments, result text) for each replayed tool call."""
+        results = {m.get("tool_call_id"): m.get("content") or "" for m in messages if m.get("role") == "tool"}
+        out = []
+        for m in messages:
+            for call in m.get("tool_calls") or []:
+                args = json.loads(call["function"]["arguments"])
+                out.append((call["function"]["name"], args.get("recorded_details", args), results.get(call["id"], "")))
+        return out
 
-    def test_plain_chat_has_no_tool_log(self):
-        thread_id, revision = self._seed("chat")
-        result = store.start_turn(1, thread_id, "continue where you left off", revision, "cmd-b")
+    def _assert_tool_history(self, kind):
+        thread_id, revision = self._seed(kind)
+        result = store.start_turn(1, thread_id, "continue where you left off", revision, "cmd-" + kind)
         messages = self._request_messages(result["run"])
-        assistant = [m for m in messages if m["role"] == "assistant"]
-        self.assertEqual(len(assistant), 1)
-        self.assertNotIn("Fuse tool log", assistant[0]["content"])
-        self.assertNotIn("Fuse tool log", messages[-1]["content"])
+        # The earlier tool work is portable: the call and its output replay as
+        # a recorded tool exchange, not as prose.
+        calls = self._calls(messages)
+        self.assertEqual([(name, args) for name, args, _ in calls],
+                         [("run_terminal_command", {"command": "grep -n profile client/src/main.rs"})])
+        self.assertIn("41:    ApplyProfile(String),", calls[0][2])
+        self.assertIn("Recovered historical tool trace", calls[0][2])
+        # The assistant's words stay its own; the log never rides in them.
+        prose = [m for m in messages if m["role"] == "assistant" and m.get("content")]
+        self.assertEqual([m["content"] for m in prose], ["Started the audit."])
+        self.assertEqual(messages[-1], {"role": "user", "content": "continue where you left off"})
+
+    def test_coding_thread_carries_tool_history(self):
+        self._assert_tool_history("project")
+
+    def test_plain_chat_carries_tool_history_too(self):
+        self._assert_tool_history("chat")
 
     def test_plain_and_project_chat_carry_web_evidence(self):
         for index, kind in enumerate(("chat", "project")):
             thread = chats.create_thread(1, model="offline")
-            huge_body = "must-not-survive " * 1000
             messages = [
                 {"role": "user", "content": "research it"},
                 {
@@ -223,7 +231,7 @@ class StartTurnWorklogTest(unittest.TestCase):
                             "url": "https://example.com/page",
                             "snippet": "bounded evidence",
                         }],
-                        "preview": huge_body,
+                        "preview": "page text",
                     }],
                 },
             ]
@@ -233,48 +241,34 @@ class StartTurnWorklogTest(unittest.TestCase):
             )
             result = store.start_turn(1, thread["id"], "use prior evidence", thread["revision"], f"web-{index}")
             request_messages = self._request_messages(result["run"])
-            # Tool-only assistant turn is dropped; the evidence rides on the user message.
-            self.assertFalse([m for m in request_messages if m["role"] == "assistant"])
-            user_content = request_messages[-1]["content"]
-            self.assertIn("Fuse web evidence digest", user_content)
-            self.assertIn("status=done", user_content)
-            self.assertIn("bounded evidence", user_content)
-            self.assertNotIn("must-not-survive", user_content)
-            self.assertTrue(user_content.endswith("use prior evidence"))
+            calls = self._calls(request_messages)
+            self.assertEqual([(name, args) for name, args, _ in calls], [("read_url", {"url": "https://example.com/page"})])
+            self.assertIn("bounded evidence", calls[0][2])
+            self.assertIn('"status":"done"', calls[0][2].replace(" ", ""))
+            self.assertEqual(request_messages[-1], {"role": "user", "content": "use prior evidence"})
 
-    def test_tool_only_coding_turn_rides_on_user_message(self):
-        thread = chats.create_thread(1, model="offline")
-        messages = [
-            {"role": "user", "content": "go"},
-            {
-                "id": "a1",
-                "role": "assistant",
-                "content": "",
-                "tools": [{"name": "run_terminal_command", "status": "done", "command": "ls", "preview": "files"}],
-            },
-        ]
-        db.execute(
-            "UPDATE chat_threads SET kind='project', messages=? WHERE public_id=?",
-            (json.dumps(messages), thread["id"]),
-        )
-        result = store.start_turn(1, thread["id"], "continue", thread["revision"], "cmd-c")
-        messages_out = self._request_messages(result["run"])
-        # No empty assistant message is sent (providers reject them); the
-        # tool evidence rides on the following user message instead.
-        self.assertFalse([m for m in messages_out if m["role"] == "assistant"])
-        user_content = messages_out[-1]["content"]
-        self.assertIn("Fuse tool log", user_content)
-        self.assertIn("run_terminal_command `ls`", user_content)
-        self.assertTrue(user_content.endswith("continue"))
-        # Non-coding: no digest at all.
-        thread2 = chats.create_thread(1, model="offline")
-        db.execute(
-            "UPDATE chat_threads SET messages=? WHERE public_id=?", (json.dumps(messages), thread2["id"])
-        )
-        result2 = store.start_turn(1, thread2["id"], "continue", thread2["revision"], "cmd-d")
-        messages2 = self._request_messages(result2["run"])
-        self.assertFalse([m for m in messages2 if m["role"] == "assistant"])
-        self.assertEqual(messages2[-1]["content"], "continue")
+    def test_tool_only_turn_sends_no_empty_assistant_message(self):
+        for kind in ("project", "chat"):
+            thread = chats.create_thread(1, model="offline")
+            messages = [
+                {"role": "user", "content": "go"},
+                {
+                    "id": "a1",
+                    "role": "assistant",
+                    "content": "",
+                    "tools": [{"name": "run_terminal_command", "status": "done", "command": "ls", "preview": "files"}],
+                },
+            ]
+            db.execute(
+                "UPDATE chat_threads SET kind=?, messages=? WHERE public_id=?",
+                (kind, json.dumps(messages), thread["id"]),
+            )
+            result = store.start_turn(1, thread["id"], "continue", thread["revision"], "cmd-only-" + kind)
+            messages_out = self._request_messages(result["run"])
+            # Providers reject an assistant message with neither text nor calls.
+            self.assertFalse([m for m in messages_out if m["role"] == "assistant" and not m.get("content") and not m.get("tool_calls")])
+            self.assertEqual([(name, args) for name, args, _ in self._calls(messages_out)], [("run_terminal_command", {"command": "ls"})])
+            self.assertEqual(messages_out[-1], {"role": "user", "content": "continue"})
 
 
 class BootCompactDecisionTest(unittest.TestCase):

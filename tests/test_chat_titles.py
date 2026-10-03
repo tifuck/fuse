@@ -18,6 +18,10 @@ class TitleSweepTest(unittest.IsolatedAsyncioTestCase):
         with db.tx() as conn:
             migrate(conn)
         store.invalidate_committed_cursors()
+        # Turns finished by earlier test modules mark thread ids as due; ids
+        # restart at 1 in this fresh schema, so start from an empty queue.
+        chat_titles._due.clear()
+        chat_titles._inflight.clear()
         db.execute("INSERT INTO users(id,email,password_hash,created_at) VALUES(1,'test@invalid','unused',?)", (db.now(),))
 
     async def asyncTearDown(self):

@@ -31,6 +31,11 @@ from app.search.extract import FETCH_MAX_BYTES
 from app.search.providers.brave import freshness_bucket
 from app.search.providers.base import ProviderResponse, SearchHit, canonical_url
 
+import pytest
+
+# Uses the database: a disposable MariaDB schema shared by this module.
+pytestmark = pytest.mark.usefixtures("isolated_db")
+
 
 class FakeResp:
     def __init__(self, status=200, payload=None, text="", headers=None):
@@ -313,12 +318,16 @@ class RecencyTest(unittest.TestCase):
 
 
 class SchemaTest(unittest.TestCase):
-    def test_no_anyof_or_required(self):
+    def test_schemas_avoid_anyof(self):
+        # web_search takes query or queries; that cannot be "required" without
+        # anyOf, which some providers reject, so neither keyword appears.
         params = SCHEMAS["web_search"]["function"]["parameters"]
         self.assertNotIn("anyOf", params)
         self.assertNotIn("required", params)
-        self.assertNotIn("anyOf", SCHEMAS["read_url"]["function"]["parameters"])
-        self.assertNotIn("required", SCHEMAS["read_url"]["function"]["parameters"])
+        # read_url has one mandatory argument and says so plainly.
+        params = SCHEMAS["read_url"]["function"]["parameters"]
+        self.assertNotIn("anyOf", params)
+        self.assertEqual(params["required"], ["url"])
 
     def test_merge_queries(self):
         self.assertEqual(merge_queries({"query": "alpha", "queries": ["beta"]}), ["alpha", "beta"])

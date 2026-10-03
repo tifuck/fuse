@@ -48,6 +48,9 @@ class ChatSyncTest(unittest.TestCase):
             yield
             await chat_events.stop()
             await chat_runs.stop()
+            # stop() marks the process as shutting down; later tests must not
+            # inherit that (pending permission asks would cancel themselves).
+            chat_runs._stopping = False
 
         app = FastAPI(lifespan=lifespan)
         app.add_middleware(SessionMiddleware, secret_key=SECRET, https_only=True)

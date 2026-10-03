@@ -26,6 +26,11 @@ from app.chat_runtime import (
     stream_dashboard_chat,
 )
 
+import pytest
+
+# Uses the database: a disposable MariaDB schema shared by this module.
+pytestmark = pytest.mark.usefixtures("isolated_db")
+
 
 def _fresh_db():
     """Other test modules own DATABASE_PATH; just reset this suite's tables."""

@@ -24,6 +24,8 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       });
       await page.goto(origin);
       await page.waitForFunction(() => Boolean(window.fuseToolFixture));
+      // Phones open on the chat list; leave it the way a reader would.
+      if (await page.locator('[data-chat].is-history').count()) await page.locator('.chat-history [data-chat-new]').click();
       await page.evaluate(view => {
         fuseToolFixture.view(view);
         fuseToolFixture.mount([{ tools: [{ id: 'open-child', name: 'spawn_subagent', status: 'done', child_id: 'fixture-child', description: 'Completed audit child' }] }]);

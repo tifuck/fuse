@@ -119,9 +119,11 @@ class RecapTest(unittest.IsolatedAsyncioTestCase):
         wake = store.start_turn(1, self.pk, "Background results", view["revision"], "wake", auto=True)
         self.assertIsNone(self.claim(self.job()["id"]))
         store.finish_run(wake["run"]["id"], {"content": "Merged findings; token tests pass."}, "completed")
-        self.assertIsNone(self.claim(self.job()["id"]))
-        self.age()
-        job = self.claim(self.job()["id"])
+        # Settled now, but the session has not yet been quiet for IDLE_SECONDS.
+        self.assertIsNone(recaps.claim(self.job()["id"]))
+        self.quiet(recaps.IDLE_SECONDS)
+        job = recaps.claim(self.job()["id"])
+        self.assertIsNotNone(job)
         self.assertIn("Fix token validation", job["source"])
         self.assertIn("Merged findings", job["source"])
 

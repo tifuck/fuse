@@ -37,6 +37,11 @@ from app.chat_runtime import (
     strip_special_tokens,
 )
 
+import pytest
+
+# Uses the database: a disposable MariaDB schema shared by this module.
+pytestmark = pytest.mark.usefixtures("isolated_db")
+
 
 class TakeCallsTest(unittest.TestCase):
     def test_concat_partial_strings(self):

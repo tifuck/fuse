@@ -20,6 +20,11 @@ from app.proxy import merge_usage, usage_from_obj  # noqa: E402
 from app.sources import openai_compat  # noqa: E402
 from app.sources import pool_session  # noqa: E402
 
+import pytest
+
+# Uses the database: a disposable MariaDB schema shared by this module.
+pytestmark = pytest.mark.usefixtures("isolated_db")
+
 db.settings.database_path = str(Path(_TMP) / "usage.db")
 db._conn = None
 

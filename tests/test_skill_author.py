@@ -18,6 +18,11 @@ from app import accounts, agent_catalog, chats, db, skill_proposals, skills
 from app.chat_tools import execute_tool, openai_tools
 from app.skill_parse import SkillError
 
+import pytest
+
+# Uses the database: a disposable MariaDB schema shared by this module.
+pytestmark = pytest.mark.usefixtures("isolated_db")
+
 
 def _user():
     db.connect()

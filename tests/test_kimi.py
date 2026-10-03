@@ -20,6 +20,11 @@ from app.sources import kimi as kimi_mod  # noqa: E402
 from app.sources import pick  # noqa: E402
 from app.sources.pool_pick import kimi_usage_percent, reset_health  # noqa: E402
 
+import pytest
+
+# Uses the database: a disposable MariaDB schema shared by this module.
+pytestmark = pytest.mark.usefixtures("isolated_db")
+
 
 class KimiParseTest(unittest.TestCase):
     def test_device_verify_url_allows_kimi_hosts(self):

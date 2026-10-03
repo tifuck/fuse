@@ -33,6 +33,11 @@ from app.sources.devin import (  # noqa: E402
 )
 from app.sources.devin import DevinSource  # noqa: E402
 
+import pytest
+
+# Uses the database: a disposable MariaDB schema shared by this module.
+pytestmark = pytest.mark.usefixtures("isolated_db")
+
 db.settings.database_path = str(Path(_TMP) / "devin.db")
 db._conn = None
 
