@@ -4164,7 +4164,7 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-ste
 }
 /* Claude Code's row states (Console only): a running command's output tail
    and clock, a subagent's latest steps, failures in red, notices that ended
-   cleanly with a green dot, subagents started together as one tree, and the
+   cleanly (white dots; see the end of this file), subagents started together as one tree, and the
    turn's closing "✻ Cooked for 2m 13s" line. */
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-progress {
   display: grid;
@@ -4298,4 +4298,15 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-ste
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-notice.is-event .is-event-more { cursor: pointer; }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-notice.is-event:has(> .chat-step-main > .chat-step-reveal.is-open) :is(.is-event-more, .is-event-preview) {
   display: none;
+}
+
+/* Console dots: every finished row is white (the text colour), a failure is
+   red, a running row keeps its pulse. Claude Code paints a finished call
+   green and a stopped task yellow; in Fuse finished means white. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] {
+  --call-done: var(--mist);
+  --call-idle: var(--mist);
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-notice > .chat-step-node::after {
+  background: var(--mist);
 }

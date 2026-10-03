@@ -6193,7 +6193,7 @@
       text = `Background command "${label}" was stopped`;
       tone = "gold";
     } else if (trace.status === "done") {
-      // Console prints the exit code even when it is 0, with a green dot.
+      // Console prints the exit code even when it is 0, on a finished (white) row.
       text = `Background command "${label}" completed${exit !== null && (exit !== 0 || isConsoleOnly()) ? ` (exit code ${exit})` : ""}`;
       if (isConsoleOnly()) tone = "green";
     } else {
@@ -9039,8 +9039,12 @@
       const hangOpen = verbose ? Boolean(inner) : revealed && expandable;
       const status = fold.status;
       const showHang = Boolean(status || preview || inner);
+      // A non-zero exit Console prints as an error ("Error: Exit code 1")
+      // gets the red dot too; exit 1 from grep and friends stays finished.
+      const dotState = presentation.state === "warning" && isConsoleOnly() && trace.name === "run_terminal_command" &&
+        ccExitMeaning(displayCommand(trace), shellExitCode(trace)).isError ? "error" : presentation.state;
       return (
-        `<li class="chat-step is-console-call is-${kind} is-${presentation.state}${hangOpen || verbose ? " is-console-expanded" : ""}${verbose ? " is-console-verbose" : ""}" style="--console-hang: ${consoleVerb(trace.name, trace).length + 1}ch" data-execution="${escapeHtml(executionIdentity(trace))}" data-tool="${escapeHtml(trace.name)}" data-state="${presentation.state}" data-step="${escapeHtml(index)}">` +
+        `<li class="chat-step is-console-call is-${kind} is-${dotState}${hangOpen || verbose ? " is-console-expanded" : ""}${verbose ? " is-console-verbose" : ""}" style="--console-hang: ${consoleVerb(trace.name, trace).length + 1}ch" data-execution="${escapeHtml(executionIdentity(trace))}" data-tool="${escapeHtml(trace.name)}" data-state="${presentation.state}" data-step="${escapeHtml(index)}">` +
         `<span class="chat-step-node" aria-hidden="true">${icon}</span>` +
         `<div class="chat-step-main">${head}` +
         (showHang
