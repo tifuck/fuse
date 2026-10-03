@@ -3464,6 +3464,7 @@
         // follows in the same commit and carries the authoritative flag, so
         // only clear here when no thread row (and so no such event) exists.
         const next = started || (payload.revision != null ? item.running : false);
+        if (started || payload.revision == null) serverRunning.set(item.id, next);
         if (item.running !== next) {
           item.running = next;
           renderHistory();
@@ -3632,6 +3633,7 @@
         historyLoaded = true;
         threads = data.threads.filter((item) => !item.archived);
         archivedThreads = data.threads.filter((item) => item.archived);
+        noteServerRunning(data.threads);
         if (Array.isArray(data.projects)) projects = data.projects;
         acceptContext(data.context);
         resetSearchLists();
@@ -3731,6 +3733,7 @@
     const idx = bucket.findIndex((item) => item.id === thread.id);
     const prior = idx >= 0 ? bucket[idx] : other.find((item) => item.id === thread.id);
     let running;
+    if (Object.prototype.hasOwnProperty.call(thread, "running")) serverRunning.set(thread.id, Boolean(thread.running));
     if (thread.id === currentId) running = currentThreadBusy();
     else if (thread.run && thread.run.cancel_requested) running = false;
     else if (Object.prototype.hasOwnProperty.call(thread, "running")) running = Boolean(thread.running);
@@ -4262,11 +4265,18 @@
   // subagents is live: a background child can outlive the turn that spawned it.
   // Until this thread's agent list has loaded, keep the server's flag rather
   // than clearing it on an empty list.
+  // The fallback must be the server's own last word, never the row's local
+  // flag: setRunning writes that flag from this function, so reading it back
+  // keeps a spinner the turn already ended (a chat created by its first send
+  // never loads its agent list).
+  const serverRunning = new Map();
+  function noteServerRunning(list) {
+    (list || []).forEach((item) => { if (item && item.id) serverRunning.set(item.id, Boolean(item.running)); });
+  }
   function currentThreadBusy() {
     if (streaming || agentsRows.some((row) => agentLive(row.status))) return true;
     if (agentsLoadedFor === currentId) return false;
-    const current = threadById(currentId);
-    return Boolean(current && current.running);
+    return serverRunning.get(currentId) === true;
   }
 
   function syncCurrentThreadBusy() {
@@ -4726,6 +4736,8 @@
     historyLoaded = true;
     threads = data.threads || [];
     archivedThreads = data.archived || [];
+    noteServerRunning(threads);
+    noteServerRunning(archivedThreads);
     if (Array.isArray(data.projects)) projects = data.projects;
     syncTitle();
     renderHistory();
