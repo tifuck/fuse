@@ -8305,10 +8305,15 @@
       const exit = shellExitCode(trace);
       // A non-zero exit prints its code above the output, as Claude Code does.
       const nonzero = exit !== null && exit !== 0;
-      // A Wait that returned before its command ended says so above the output.
+      // A Wait that returned before its command ended says so above the
+      // output. Its saved state is the command's at that moment: "Still
+      // running" only while the command still runs, else what happened then.
       const wait = name === "get_command_output";
+      const origin = wait && executionState(trace) === "running" ? commandOrigin(trace) : null;
+      const stillRunning = !origin || executionPending(origin) || toolPresentation(origin, true).running;
       const head = nonzero ? `Exit code ${exit}` : failed ? status
-        : wait ? (executionState(trace) === "running" ? "Still running" : "") : toolBackground(trace) ? status : "";
+        : wait ? (executionState(trace) !== "running" ? "" : stillRunning ? "Still running" : "Returned while the command was still running")
+        : toolBackground(trace) ? status : "";
       if (empty) return { status: head || "(No output)", preview: "", full: "", keep: nonzero };
       const show = lines.length === 4 ? 4 : 3;
       const cut = lines.slice(0, show).map((line) => line.length > 400 ? line.slice(0, 399) + "…" : line);
@@ -10891,7 +10896,9 @@
   function ccCallClockHtml(trace, presentation) {
     const name = trace && trace.name;
     if (!name || isSearchTool(name) || ["spawn_subagent", "get_subagent_output", "monitor"].includes(name)) return "";
-    if (toolBackground(trace) && !(name === "run_terminal_command" && presentation.running)) return "";
+    // A background launch returns at once; its clock runs only while its
+    // process does. (A Wait on it is flagged background too and keeps its own.)
+    if (name === "run_terminal_command" && toolBackground(trace) && !presentation.running) return "";
     // A Wait's elapsed_ms and duration_ms belong to the command it waits on;
     // its own time is the call's.
     const wait = name === "get_command_output";

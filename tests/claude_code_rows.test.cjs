@@ -78,6 +78,7 @@ test("a call's time sits on its header from 2s, once per call", () => {
   // A Wait's duration_ms is its command's run time, not the wait.
   assert.equal(took({ name: 'get_command_output', call_duration_ms: 31_000, duration_ms: 184_727 }), ' · 31s');
   assert.equal(took({ name: 'get_command_output', duration_ms: 184_727 }), '', 'no call time, no clock');
+  assert.equal(took({ name: 'get_command_output', background: true, call_duration_ms: 30_006 }), ' · 30s', 'a Wait on a background command keeps its clock');
 });
 
 test("a running subagent's row names its latest step", () => {
