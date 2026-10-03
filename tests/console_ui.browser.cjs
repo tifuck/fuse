@@ -181,6 +181,50 @@ function scenarios() {
 
     // 1. Regression scenarios.
     const failures = [];
+    for (const width of [1280, 390, 320]) {
+      await page.setViewportSize({ width, height: 900 });
+      for (const view of ['cli', 'compact', 'console', 'mainframe']) {
+        const result = await page.evaluate(async (view) => {
+          fuseToolFixture.view(view);
+          await new Promise((resolve) => requestAnimationFrame(resolve));
+          const todo = { id: 'scale-todo', name: 'todo_write', status: 'done', todos: [{ content: 'Audit chat text scaling across every reading mode and every tool output', status: 'in_progress' }], results: [], error: '' };
+          fuseToolFixture.mountThread([{ role: 'user', content: 'Go.' }, { id: 'scale-turn', role: 'assistant', content: '', reasoning: 'Checking.', elapsedMs: 65000, tools: [todo], segments: [{ type: 'tool', id: todo.id }, { type: 'reasoning', text: 'Checking.' }] }], { live: true, phase: 'model' });
+          const dock = document.querySelector('[data-live-dock]');
+          const label = dock.querySelector('.chat-status-verb');
+          const probe = document.createElement('div');
+          probe.innerHTML = '<div class="chat-agent-live-dock"><span class="chat-status-verb">Working</span></div>' +
+            '<div class="chat-turn"><div class="chat-recap">Recap</div><div class="chat-bubble">Message</div></div>' +
+            '<div class="chat-compact-mark">Compacted</div><details class="chat-compact-banner"><summary>Summary</summary><div class="chat-compact-handoff">Handoff</div></details>' +
+            '<span class="chat-user-file">File</span><span class="chat-file-ext">TXT</span><div class="chat-foot"><span class="chat-foot-meta">Tokens</span></div>' +
+            '<span class="chat-source-domain">example.test</span><span class="chat-source-title">Source</span><span class="chat-source-state">Read</span><details class="chat-citations"><summary><span class="chat-source-badge">1 source</span></summary></details>';
+          document.querySelector('.chat-log').append(probe);
+          const targets = [label, ...probe.querySelectorAll('.chat-status-verb, .chat-recap, .chat-bubble, .chat-compact-mark, .chat-compact-banner, .chat-compact-handoff, .chat-user-file, .chat-file-ext, .chat-foot-meta, .chat-source-domain, .chat-source-title, .chat-source-state, .chat-source-badge')];
+          const samples = [];
+          const sizes = [];
+          for (const size of [100, 50, 130]) {
+            FuseChatAppearance.setSize(size);
+            sizes.push(parseFloat(getComputedStyle(label).fontSize));
+            samples.push(targets.map((el) => parseFloat(getComputedStyle(el).fontSize)));
+          }
+          const meta = dock.querySelector('.chat-status-meta');
+          const bounds = dock.getBoundingClientRect();
+          const verbBounds = label.getBoundingClientRect();
+          const unscaled = targets.filter((el, i) => Math.abs(samples[1][i] / samples[0][i] - 0.5) > 0.01 || Math.abs(samples[2][i] / samples[0][i] - 1.3) > 0.01).map((el) => el.className);
+          probe.remove();
+          const out = { unscaled, sizes, label: label.textContent, metaHidden: getComputedStyle(meta).display === 'none', fits: verbBounds.right <= bounds.right + 1, ellipsis: getComputedStyle(label).textOverflow === 'ellipsis' };
+          FuseChatAppearance.setSize(100);
+          return out;
+        }, view);
+        if (Math.abs(result.sizes[1] / result.sizes[0] - 0.5) > 0.01 || Math.abs(result.sizes[2] / result.sizes[0] - 1.3) > 0.01) failures.push(`status scaling ${view} @${width}: ${result.sizes}`);
+        if (result.unscaled.length) failures.push(`transcript scaling ${view} @${width}: ${result.unscaled.join(', ')}`);
+        if (view === 'console') {
+          if (!result.label.startsWith('Audit chat text scaling')) failures.push('Console status follows the in-progress todo');
+          if (width <= 600 && (!result.metaHidden || !result.fits || !result.ellipsis)) failures.push('mobile Console status must hide counters and ellipsize the task');
+          if (width === 1280 && result.metaHidden) failures.push('desktop Console keeps status counters');
+        }
+      }
+    }
+    await page.evaluate(() => fuseToolFixture.view('console'));
     for (const sc of scenarios()) {
       if (ONLY !== null) break;
       for (const width of sc.wide ? [1280, 390] : [1280]) {
