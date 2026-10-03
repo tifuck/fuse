@@ -4225,12 +4225,21 @@
   }
 
   function runSpinMarkup(stamp) {
+    if (isConsoleView()) {
+      return `<span class="chat-run-spin" data-run-spin="${escapeHtml(String(stamp))}" data-spin-set="console-glyph" aria-hidden="true">` +
+        `<span class="chat-console-spin">${consoleSpinGlyph()}</span></span>`;
+    }
     const spin = currentRunSpin();
     const age = runSpinOrigin ? ` style="--cas-age:${spinAge(runSpinOrigin)}"` : "";
     return `<span class="chat-run-spin" data-run-spin="${escapeHtml(String(stamp))}" data-spin-set="${spin.key}" aria-hidden="true"><span class="cas-face"${age}>${stampSpinHtml(spin.html, stamp)}</span></span>`;
   }
 
   function fillSpinEl(el, stamp, swap) {
+    // Console and Mainframe: Claude Code's glyph, in step with the status row.
+    if (isConsoleView()) {
+      setConsoleSpin(el);
+      return;
+    }
     applySpinEl(el, currentRunSpin(), stamp, swap, runSpinOrigin);
   }
 
@@ -7038,10 +7047,16 @@
   const CONSOLE_SPIN_STILL = "✻";
   let consoleSpinTimer = 0;
   let consoleSpinFrame = 0;
+  function consoleSpinGlyph() {
+    return reduceMotion.matches ? CONSOLE_SPIN_STILL : CONSOLE_SPIN_FRAMES[consoleSpinFrame];
+  }
+  // Every glyph that steps: the docks, the latest pill, and the sidebar's
+  // run spinners (thread rows, Chats/Projects tabs, heading and title).
   function consoleSpinMarks() {
     return [[liveDock, liveDockSpin], [agentLiveDock, agentLiveSpin], [latestPill, latestSpin]]
       .filter(([dock, spin]) => dock && spin && !dock.hidden && !spin.hidden)
       .map(([, spin]) => spin.querySelector(":scope > .chat-console-spin"))
+      .concat([...root.querySelectorAll("[data-run-spin]:not([hidden]) > .chat-console-spin")])
       .filter(Boolean);
   }
   function stopConsoleSpin() {
@@ -7058,7 +7073,7 @@
       mark = document.createElement("span");
       mark.className = "chat-console-spin";
       mark.setAttribute("aria-hidden", "true");
-      mark.textContent = reduceMotion.matches ? CONSOLE_SPIN_STILL : CONSOLE_SPIN_FRAMES[consoleSpinFrame];
+      mark.textContent = consoleSpinGlyph();
       el.replaceChildren(mark);
     }
     if (consoleSpinTimer || reduceMotion.matches) return;
@@ -15129,6 +15144,7 @@
     try { localStorage.setItem(STORE_VIEW, chatView); } catch (_) {}
     if (previous !== chatView) resizeInput();
     if (previous !== chatView && messages.length) paint();
+    if (previous !== chatView) syncRunSpinners();
     if (previous !== chatView && agentViewId && agentRun) renderAgentView();
   }
 

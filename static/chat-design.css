@@ -4258,3 +4258,21 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-ste
   background: var(--console-user);
   padding-block: 0.2rem;
 }
+
+/* Run spinners (thread rows, Chats/Projects tabs, title) in Console and
+   Mainframe draw Claude Code's glyph, stepped with the status row's, in the
+   same slot the age stamp and the other spinner sets use. */
+html body.is-chat .chat:is([data-view="console"], [data-view="mainframe"]) .chat-run-spin[data-run-spin] {
+  overflow: visible;
+}
+html body.is-chat .chat:is([data-view="console"], [data-view="mainframe"]) .chat-run-spin[data-run-spin] > .chat-console-spin {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  font: 400 0.9rem/1 var(--mono);
+  font-style: normal;
+  text-align: center;
+  color: inherit;
+  text-shadow: 0 0 0.55em color-mix(in srgb, currentColor 40%, transparent);
+}
