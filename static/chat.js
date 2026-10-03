@@ -8064,7 +8064,10 @@
     } else if (name === "run_terminal_command") {
       inner = full ? displayCommand(trace) || "command" : consoleArgText(displayCommand(trace) || "command", 140);
     } else if (name === "get_command_output") {
-      inner = consoleArgText(commandOrigin(trace)?.description || displayCommand(trace) || "command", 140);
+      // Wait names what it waits on: the command's description, else the
+      // command itself (an interrupted Wait carries only the job id).
+      const id = trace.command_id || trace.child_id || trace.job_id;
+      inner = consoleArgText(commandOrigin(trace)?.description || commandFor(trace) || (id ? `job ${id}` : "command"), 140);
     } else if (name === "monitor") {
       inner = consoleArgText(trace.description || trace.url || displayCommand(trace) || "watch", 100);
     } else if ((name === "grep" || name === "glob") && isConsoleOnly()) {
