@@ -90,6 +90,9 @@
   let liveDockShowFrame = 0;
   let liveDockFollowFrame = 0;
   const STORE_VIEW = "fuse.chat.view.v2";
+  // Console and Mainframe: whether thoughts print ("Thought for" lines and
+  // their text). Device-local, like the reading mode.
+  const STORE_THINKING = "fuse.chat.thinking.v1";
   const CHAT_VIEWS = ["cli", "compact", "console", "mainframe"];
   // Views that were renamed; a saved old id opens its successor.
   const RENAMED_VIEWS = { prism: "mainframe" };
@@ -538,6 +541,8 @@
     const view = RENAMED_VIEWS[storedView] || storedView;
     if (CHAT_VIEWS.includes(view)) chatView = view;
   } catch (_) {}
+  let showThinking = true;
+  try { showThinking = localStorage.getItem(STORE_THINKING) !== "hidden"; } catch (_) {}
   let artifactSourceLoaded = "";
   let agentsOpen = false;
   let agentsRows = [];
@@ -7238,10 +7243,99 @@
     return last ? estimateTrace(last) : 0;
   }
 
+  // Claude Code's spinner verbs (2.1.287). It picks one when its spinner
+  // starts; Fuse keeps one per turn so the word holds across repaints.
+  const CC_SPINNER_VERBS = [
+    "Accomplishing", "Actioning", "Actualizing", "Architecting", "Baking", "Beaming", "Beboppin'", "Befuddling",
+    "Billowing", "Blanching", "Bloviating", "Boogieing", "Boondoggling", "Booping", "Bootstrapping", "Brewing", "Bunning",
+    "Burrowing", "Calculating", "Canoodling", "Caramelizing", "Cascading", "Catapulting", "Cerebrating", "Channeling",
+    "Choreographing", "Churning", "Clauding", "Coalescing", "Cogitating", "Combobulating", "Composing", "Computing",
+    "Concocting", "Considering", "Contemplating", "Cooking", "Crafting", "Creating", "Crunching", "Crystallizing",
+    "Cultivating", "Deciphering", "Deliberating", "Determining", "Dilly-dallying", "Discombobulating", "Doing", "Doodling",
+    "Drizzling", "Ebbing", "Effecting", "Elucidating", "Embellishing", "Enchanting", "Envisioning", "Fermenting",
+    "Fiddle-faddling", "Finagling", "Flambéing", "Flibbertigibbeting", "Flowing", "Flummoxing", "Fluttering", "Forging",
+    "Forming", "Frolicking", "Frosting", "Gallivanting", "Galloping", "Garnishing", "Generating", "Gesticulating",
+    "Germinating", "Gitifying", "Grooving", "Gusting", "Harmonizing", "Hashing", "Hatching", "Herding", "Honking",
+    "Hullaballooing", "Hyperspacing", "Ideating", "Imagining", "Improvising", "Incubating", "Inferring", "Infusing",
+    "Ionizing", "Jitterbugging", "Julienning", "Kerfuffling", "Kneading", "Leavening", "Levitating", "Lollygagging",
+    "Manifesting", "Marinating", "Meandering", "Metamorphosing", "Misting", "Moonwalking", "Moseying", "Mulling",
+    "Mustering", "Musing", "Nebulizing", "Nesting", "Newspapering", "Noodling", "Nucleating", "Onioning", "Orbiting",
+    "Orchestrating", "Osmosing", "Perambulating", "Percolating", "Perusing", "Philosophizing", "Photosynthesizing",
+    "Polishing", "Pollinating", "Pondering", "Pontificating", "Pouncing", "Precipitating", "Prestidigitating",
+    "Processing", "Proofing", "Propagating", "Puttering", "Puzzling", "Quantumizing", "Razzle-dazzling", "Razzmatazzing",
+    "Recombobulating", "Reticulating", "Roosting", "Ruminating", "Sautéing", "Scampering", "Schlepping", "Scurrying",
+    "Seasoning", "Shenaniganing", "Shimmying", "Simmering", "Skedaddling", "Sketching", "Slithering", "Smooshing",
+    "Sock-hopping", "Spelunking", "Spinning", "Sprouting", "Stewing", "Sublimating", "Swirling", "Swooping", "Symbioting",
+    "Synthesizing", "Tempering", "Thinking", "Thundering", "Tinkering", "Tomfoolering", "Topsy-turvying", "Transfiguring",
+    "Transmogrifying", "Transmuting", "Twisting", "Undulating", "Unfurling", "Unraveling", "Vibing", "Waddling",
+    "Wandering", "Warping", "Whatchamacalliting", "Whirlpooling", "Whirring", "Whisking", "Wibbling", "Working",
+    "Wrangling", "Zesting", "Zigzagging",
+  ];
+
+  // The spinner's word: the todo in progress, as an -ing phrase ("Running the
+  // tests"), as Claude Code shows a task's active form; else the turn's verb.
+  function ccSpinnerVerb(msg) {
+    const traces = Array.isArray(msg && msg.tools) ? msg.tools : [];
+    for (let i = traces.length - 1; i >= 0; i -= 1) {
+      if (traces[i].name !== "todo_write") continue;
+      const doing = normalizeTodos(traces[i].todos).find((item) => item.status === "in_progress");
+      if (doing) {
+        const text = ccRunningForm(doing.content) ?? doing.content;
+        return text.charAt(0).toUpperCase() + text.slice(1);
+      }
+      break;
+    }
+    const key = String((msg && msg.id) || "");
+    let hash = 0;
+    for (let i = 0; i < key.length; i += 1) hash = (Math.imul(hash, 31) + key.charCodeAt(i)) | 0;
+    return CC_SPINNER_VERBS[(hash >>> 0) % CC_SPINNER_VERBS.length];
+  }
+
+  // Claude Code's thinking status: "thinking", deepening at 10/20/30/45s,
+  // then "thought for 4s" for 2s once the thought ends.
+  function ccThinkingState(msg, thinking) {
+    const now = Date.now();
+    const clock = (msg._spinThink ||= { since: 0, flash: null });
+    if (thinking) {
+      if (!clock.since) clock.since = now;
+      clock.flash = null;
+      const ms = now - clock.since;
+      return ms >= 45000 ? "deep in thought" : ms >= 30000 ? "thinking some more" : ms >= 20000 ? "thinking more"
+        : ms >= 10000 ? "still thinking" : "thinking";
+    }
+    if (clock.since) {
+      clock.flash = { ms: now - clock.since, until: now + 2000 };
+      clock.since = 0;
+    }
+    if (clock.flash && now < clock.flash.until) return `thought for ${Math.max(1, Math.round(clock.flash.ms / 1000))}s`;
+    clock.flash = null;
+    return "";
+  }
+
+  // What the run is doing, in the spinner's parentheses. Claude Code names
+  // only thinking there; Fuse also names the call that is running.
+  const CC_SPINNER_STATES = {
+    run_terminal_command: "running command", get_command_output: "waiting for command", kill_command: "stopping command",
+    read_file: "reading", grep: "searching", glob: "searching", list_dir: "listing", search_replace: "editing",
+    write_file: "writing file", read_url: "fetching", spawn_subagent: "running agent", get_subagent_output: "waiting for agent",
+    kill_subagent: "stopping agent", list_subagents: "listing agents", monitor: "watching", todo_write: "updating todos",
+    create_artifact: "building artifact", update_artifact: "building artifact", search_models: "finding models",
+  };
+  function ccSpinnerState(status) {
+    const extra = String(status.label || "").split(" · ").slice(1);
+    let state = "";
+    if (status.phase === "queued") state = "queued";
+    else if (status.phase === "stopping") state = "stopping";
+    else if (status.current) state = isSearchTool(status.current.name) ? "searching the web" : CC_SPINNER_STATES[status.current.name] || "running tool";
+    else if (status.phase === "waiting" || status.phase === "starting") state = "waiting";
+    else if (status.phase === "working") state = "working";
+    return [state, ...extra].filter(Boolean).join(" · ");
+  }
+
+  // Claude Code's status row: "✻ Cogitating… (1m 3s · ↓ 1.2k tokens · thinking)".
   // Main run by default; the subagent dock passes its own meter and clock.
   function formatConsoleLiveStatus(msg, groups, opts) {
     const status = currentActivity(msg, groups, true);
-    const verb = String(status.label || "working").replace(/\.+$/, "").toLowerCase();
     const meter = opts ? opts.meter : liveMeter;
     const elapsed = opts && opts.seconds != null ? opts.seconds : liveElapsedSeconds(msg, true);
     const seconds = Math.max(0, Math.floor(elapsed || 0));
@@ -7250,16 +7344,19 @@
     let tokenText = "";
     if (flow === "down") {
       const n = consoleDownTokens(msg, round);
-      if (n) tokenText = `↓ ${formatConsoleCount(n)}`;
+      if (n) tokenText = `↓ ${formatConsoleCount(n)} tokens`;
     } else if (flow === "up") {
       const n = consoleUpTokens(msg, round, meter);
-      if (n) tokenText = `↑ ${formatConsoleCount(n)}`;
+      if (n) tokenText = `↑ ${formatConsoleCount(n)} tokens`;
     }
-    // "bash · 2 active" keeps the concurrency note with the counters.
-    const [head, ...extra] = verb.split(" · ");
-    const clock = seconds < 60 ? `${seconds}s` : formatActivityClock(seconds);
-    const meta = [...extra, clock, tokenText].filter(Boolean).join(" · ");
-    return { verb: `${head}…`, meta };
+    const thought = ccThinkingState(msg, status.phase === "thinking");
+    const state = status.phase === "thinking" ? thought : thought || ccSpinnerState(status);
+    // Claude Code shows the clock once there is something else to show, or
+    // after 16s.
+    const clock = tokenText || state || seconds > 16 ? ccDuration(seconds * 1000) : "";
+    const parts = [clock, tokenText, state].filter(Boolean);
+    const verb = ccSpinnerVerb(msg);
+    return { verb: /(…|\.\.\.)$/.test(verb) ? verb : `${verb}…`, meta: parts.length ? `(${parts.join(" · ")})` : "" };
   }
 
   function syncActivityElapsed(article, msg, live) {
@@ -11407,6 +11504,12 @@
     let i = 0;
     while (i < entries.length) {
       const entry = entries[i];
+      // Thinking hidden: thoughts neither print nor end a line; the status
+      // line says when the model is thinking.
+      if (entry.type === "reasoning" && !showThinking) {
+        i += 1;
+        continue;
+      }
       if (entry.type === "reasoning") {
         const run = [entry];
         let j = i + 1;
@@ -15228,6 +15331,17 @@
       event.stopPropagation();
       setViewMenuOpen(viewMenu.hidden);
     });
+    const thinkingToggle = viewMenu.querySelector("[data-thinking-toggle]");
+    if (thinkingToggle) {
+      thinkingToggle.checked = showThinking;
+      thinkingToggle.addEventListener("change", () => {
+        showThinking = thinkingToggle.checked;
+        try { localStorage.setItem(STORE_THINKING, showThinking ? "shown" : "hidden"); } catch (_) {}
+        if (!isConsoleView()) return;
+        if (messages.length) paint();
+        if (agentViewId && agentRun) renderAgentView();
+      });
+    }
     viewMenu.querySelectorAll("[data-view]").forEach((btn) => {
       btn.addEventListener("click", (event) => {
         event.preventDefault();
