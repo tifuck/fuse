@@ -21,6 +21,28 @@ window.fuseToolFixture = {
     thread.scrollTop = 0;
     syncLiveDock();
   },
+  // A whole thread through the real paint path: user and automated wake
+  // messages, wake results applied to their calls, every message hydrated.
+  mountThread(rows, { live = false, phase = '' } = {}) {
+    messages = rows.map((row, index) => ({
+      id: `fixture-message-${index}`, role: 'assistant', content: '', reasoning: '', ...structuredClone(row),
+    }));
+    currentId = null;
+    log._threadId = null;
+    const last = [...messages].reverse().find(msg => msg.role === 'assistant');
+    activeRun = live && last ? { id: 'fixture-run', message_id: last.id, status: 'running', ...(phase ? { activity: { phase } } : {}) } : null;
+    streaming = Boolean(live && last);
+    root.classList.add('history-collapsed');
+    root.classList.remove('is-empty');
+    log.hidden = false;
+    welcomeEl.hidden = true;
+    log.replaceChildren();
+    paint();
+    log.querySelectorAll('[data-deferred-message]').forEach(hydrateHistoricalMessage);
+    syncLiveDock();
+  },
+  thinking: setShowThinking,
+  slash: runSlash,
   view: applyChatView,
   api,
   runInfo: () => structuredClone(activeRun),

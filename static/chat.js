@@ -6083,8 +6083,9 @@
   function applyCommandResult(trace, result) {
     if (["get_command_output", "kill_command"].includes(trace.name)) return;
     // Legacy wake envelopes must not replace an authoritative retained-output
-    // record with a shorter text preview or discard its provenance.
-    if (typeof trace.output === "string" && result.output_mode == null && result.output_chars == null) return;
+    // record with a shorter text preview or discard its provenance; how the
+    // command ended still applies, or its row would say it runs forever.
+    const legacy = typeof trace.output === "string" && result.output_mode == null && result.output_chars == null;
     if (["running", "cancelling"].includes(result.state)) {
       if (trace.status !== "done") trace.status = "running";
     } else if (result.state === "completed") {
@@ -6098,6 +6099,11 @@
       trace.error = result.error || result.state;
     }
     if (result.duration_ms !== null) trace.latency_ms = result.duration_ms;
+    if (result.state) {
+      trace.state = result.state;
+      trace.execution_status = result.state;
+    }
+    if (legacy) return;
     if (result.output_mode != null || result.output_chars != null) {
       EXECUTION_FIELDS.forEach(key => { if (Object.prototype.hasOwnProperty.call(result, key)) trace[key] = result[key]; });
       for (const key of ["host", "cwd", "command", "duration_ms", "execution_duration_ms", "timeout_ms", "elapsed_ms", "background", "event_count", "source", "url"]) {
@@ -6204,7 +6210,7 @@
     const took = Number(trace.latency_ms ?? trace.duration_ms);
     const detail = Number.isFinite(took) && took > 0 ? ` · ${ccDuration(Math.max(1000, took))}` : "";
     return (
-      `<li class="chat-step is-console-notice is-${tone}">` +
+      `<li class="chat-step is-console-notice is-${tone}" data-execution="${escapeHtml(executionIdentity(trace))}">` +
       `<span class="chat-step-node" aria-hidden="true"></span>` +
       `<div class="chat-step-main"><span class="chat-console-notice-text">${escapeHtml(text)}` +
       (detail ? `<span class="chat-console-dim">${escapeHtml(detail)}</span>` : "") + `</span></div></li>`
@@ -11066,8 +11072,13 @@
     }
     if (name === "run_terminal_command") {
       if (toolBackground(trace)) {
-        const out = running ? "" : consoleDetailHtml(trace, false, false);
-        return { status: "Running in the background", preview: "", full: consoleSameText(out, "") ? "" : out, keep: true };
+        if (running) return { status: "Running in the background", preview: "", full: "", keep: true };
+        // Ended: say how, not what the launch said. (Interrupted is above.)
+        const out = consoleDetailHtml(trace, false, false);
+        const exit = shellExitCode(trace);
+        const status = failed ? (executionState(trace) === "timed_out" ? "Timed out in the background" : "Failed in the background")
+          : `Ran in the background${exit !== null && exit !== 0 ? ` · exit code ${exit}` : ""}`;
+        return { status, preview: "", full: consoleSameText(out, "") ? "" : out, keep: true };
       }
       const raw = typeof trace.output === "string" ? cleanToolOutput(trace, trace.output)
         : [trace.preview, trace.summary].find((value) => { const text = String(value || "").trim(); return text && text !== "still running" && text !== "background task started"; }) || "";
@@ -11138,7 +11149,7 @@
     const description = ccFlat(trace.description);
     const label = description || ccFlat(trace.url) || ccFlat(displayCommand(trace)) || "monitor";
     const row = (headHtml, hang) => (
-      `<li class="chat-step is-console-notice is-plain${hang ? " is-event" : ""}"${hang ? ` data-step="${escapeHtml(key)}"` : ""}>` +
+      `<li class="chat-step is-console-notice is-plain${hang ? " is-event" : ""}" data-execution="${escapeHtml(executionIdentity(trace))}"${hang ? ` data-step="${escapeHtml(key)}"` : ""}>` +
       `<span class="chat-step-node" aria-hidden="true"></span>` +
       `<div class="chat-step-main">${headHtml}${hang}</div></li>`
     );
@@ -11615,7 +11626,8 @@
           // Console: the line it ended stays settled, so the thought's
           // clock runs on a line of its own (Claude Code runs it on the
           // live line, which a thought does not end there).
-          if (endsLine) rows.push({ items: [], liveThought: last.segmentIndex });
+          // Also after a call on its own row (running, or the newest one).
+          if (endsLine || (plain && !group && rows.length)) rows.push({ items: [], liveThought: last.segmentIndex });
           continue;
         }
         const text = run.map((item) => String(item.text || "").trim()).filter(Boolean).join("\n\n");
