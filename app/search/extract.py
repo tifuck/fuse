@@ -78,6 +78,7 @@ _LD_RE = re.compile(r"(?is)<script[^>]*type\s*=\s*['\"]application/ld\+json['\"]
 _TAG_RE = re.compile(r"(?is)<[^>]+>")
 _WS_RE = re.compile(r"[ \t\x0b\x0c]+")
 _MULTI_NL = re.compile(r"\n{3,}")
+_BLANK_LINE_RE = re.compile(r"\n[ \t]+(?=\n)")
 _ARTICLE_TYPES = frozenset({"article", "newsarticle", "techarticle", "blogposting"})
 _ARTICLE_HEADER_CLASSES = frozenset(
     {"article-header", "article__header", "entry-header", "post-header", "story-header"}
@@ -459,6 +460,9 @@ class _ContentParser(HTMLParser):
 
 def _collapse(text: str) -> str:
     text = _WS_RE.sub(" ", text)
+    # A line of only spaces is blank: without this, layout padding between
+    # list items survives as runs of " \n \n" that _MULTI_NL cannot see.
+    text = _BLANK_LINE_RE.sub("\n", text)
     text = _MULTI_NL.sub("\n\n", text)
     return text.strip()
 

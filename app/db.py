@@ -788,32 +788,38 @@ def _migrate_users_autoincrement(conn: sqlite3.Connection) -> None:
     conn.commit()
     conn.execute("PRAGMA foreign_keys=OFF")
     try:
-        have_cols = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
-        copy_cols = [
-            c for c in (
-                "id", "email", "password_hash", "is_admin", "created_at",
-                "chat_instructions", "chat_profile", "pool_prefs",
-                "vault_salt", "wrapped_dek", "vault_kdf", "chat_context_revision",
-            )
-            if c in have_cols
-        ]
-        col_list = ", ".join(copy_cols)
+        info = conn.execute("PRAGMA table_info(users)").fetchall()
+        have_cols = [r[1] for r in info]
+        base_defs = {
+            "id": "id INTEGER PRIMARY KEY AUTOINCREMENT",
+            "email": "email TEXT UNIQUE NOT NULL",
+            "password_hash": "password_hash TEXT NOT NULL",
+            "is_admin": "is_admin INTEGER NOT NULL DEFAULT 0",
+            "created_at": "created_at TEXT NOT NULL",
+            "chat_instructions": "chat_instructions TEXT NOT NULL DEFAULT ''",
+            "chat_profile": "chat_profile TEXT NOT NULL DEFAULT ''",
+            "pool_prefs": "pool_prefs TEXT NOT NULL DEFAULT '{}'",
+            "vault_salt": "vault_salt BLOB",
+            "wrapped_dek": "wrapped_dek TEXT",
+            "vault_kdf": "vault_kdf TEXT",
+            "chat_context_revision": "chat_context_revision INTEGER NOT NULL DEFAULT 0",
+        }
+        defs = list(base_defs.values())
+        # Columns other modules added before this one-time rebuild (recap and
+        # cleanup preferences, ...) keep their declared type and default.
+        for _cid, name, ctype, notnull, default, _pk in info:
+            if name in base_defs:
+                continue
+            spec = f"{name} {ctype or ''}".rstrip()
+            if notnull:
+                spec += " NOT NULL"
+            if default is not None:
+                spec += f" DEFAULT {default}"
+            defs.append(spec)
+        col_list = ", ".join(have_cols)
         conn.executescript(
             "BEGIN IMMEDIATE;\n"
-            "CREATE TABLE users_v2 (\n"
-            "    id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
-            "    email TEXT UNIQUE NOT NULL,\n"
-            "    password_hash TEXT NOT NULL,\n"
-            "    is_admin INTEGER NOT NULL DEFAULT 0,\n"
-            "    created_at TEXT NOT NULL,\n"
-            "    chat_instructions TEXT NOT NULL DEFAULT '',\n"
-            "    chat_profile TEXT NOT NULL DEFAULT '',\n"
-            "    pool_prefs TEXT NOT NULL DEFAULT '{}',\n"
-            "    vault_salt BLOB,\n"
-            "    wrapped_dek TEXT,\n"
-            "    vault_kdf TEXT,\n"
-            "    chat_context_revision INTEGER NOT NULL DEFAULT 0\n"
-            ");\n"
+            "CREATE TABLE users_v2 (\n    " + ",\n    ".join(defs) + "\n);\n"
             f"INSERT INTO users_v2 ({col_list})\n"
             f"     SELECT {col_list} FROM users;\n"
             "DROP TABLE users;\n"

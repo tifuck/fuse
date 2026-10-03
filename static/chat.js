@@ -11458,7 +11458,7 @@
           const item = group.items[0];
           const key = toolKey(item.trace, item.index);
           parts.push(toolStepHtml(item.trace, key, live, stepOpenAt(stepOpen, key), stepOpen));
-        } else if (isSearchTool(group.name) || group.name === "read_url" || isStackableWorkspace(group.name) || group.key === "shell" || group.key === "job" || group.key === "spawn" || group.key === "wait" || group.key === "agents") {
+        } else if (isSearchTool(group.name) || group.name === "read_url" || isStackableWorkspace(group.name) || group.key === "shell" || group.key === "job" || group.key === "spawn" || group.key === "wait" || group.key === "agents" || group.key === "models") {
           const first = group.items[0];
           parts.push(groupStepHtml(group, toolKey(first.trace, first.index), live, stepOpen));
         } else {

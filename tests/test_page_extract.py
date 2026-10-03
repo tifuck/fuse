@@ -155,6 +155,17 @@ class ExtractTest(unittest.TestCase):
 
 
 class ParserRegressionTest(unittest.TestCase):
+    def test_space_only_lines_collapse_like_blank_lines(self):
+        # Layout padding between list items ("<li>\n   \n   1 file</li>")
+        # must not survive as runs of whitespace-only lines.
+        page = "<html><body><main><ul>" + "".join(
+            f"<li>\n      \n      \n      v{i}\n      \n      \n      1 file\n      </li>" for i in range(40)
+        ) + "</ul></main></body></html>"
+        got = extract_page(page, content_type="text/html")
+        self.assertNotRegex(got.text, r"\n[ \t]+\n")
+        self.assertNotIn("\n\n\n", got.text)
+        self.assertIn("v39", got.text)
+
     """Regressions found by the real-page fixtures in tests/fixtures/sites."""
 
     def test_void_link_in_body_does_not_swallow_document(self):
