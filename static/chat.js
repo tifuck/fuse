@@ -237,6 +237,7 @@
   let contextLive = false;
   let undoStack = [];
   let redoStack = [];
+  let composerVersion = 0;
   let slashIndex = 0;
   let slashKind = "slash";
   let paletteTrigger = null;
@@ -5352,26 +5353,82 @@
     return next;
   }
 
-  function undoConversation() {
-    if (runIsActive(activeRun) || sending) return;
-    if (!requireLive()) return;
-    if (!messages.length) {
+  async function undoConversation(times = 1) {
+    if (runIsActive(activeRun) || sending) {
+      setHint("Wait for the current reply to finish.", true);
+      return;
+    }
+    if (loading || partialTranscript || !requireLive()) return;
+    if (!messages.length && !undoStack.length) {
       setHint("Nothing to undo.");
       return;
     }
-    const current = snapshotMessages();
-    let previous;
-    if (undoStack.length) previous = undoStack.pop();
-    else {
-      previous = dropLastTurn(current);
-      if (previous.length === current.length) {
-        setHint("Nothing to undo.");
-        return;
-      }
+    const origin = currentId;
+    const gen = generation;
+    if (parseSlashCommand(input.value)?.name === "undo") {
+      input.value = "";
+      drafts.set(origin, "");
+      resizeInput();
+      syncEmptyComposer();
     }
-    redoStack.push(current);
-    saveHistoryStacks();
-    applyTranscript(previous, previous.length ? "Undid last turn." : "Conversation cleared.");
+    const draft = input.value;
+    const draftVersion = composerVersion;
+    let restored;
+    sending = true;
+    syncComposer();
+    try {
+      await flushPending();
+      for (let i = 0; i < times; i += 1) {
+        if (gen !== generation || origin !== currentId || runIsActive(activeRun)) break;
+        const current = snapshotMessages();
+        const stacked = undoStack.length > 0;
+        const previous = stacked ? undoStack.at(-1) : dropLastTurn(current);
+        if (!stacked && previous.length === current.length) break;
+        const retained = new Set(previous.map(msg => msg.id));
+        const removed = current.findLast(msg => msg.role === "user" && !msg.auto && !retained.has(msg.id));
+        const payload = { messages: previous, expected_revision: serverRevision, command_id: newSession() };
+        const task = saveChain.then(() => api("/chat/threads/" + origin, {
+          method: "PATCH",
+          body: JSON.stringify(payload),
+        }));
+        saveChain = task.catch(() => {});
+        const updated = await task;
+        if (gen !== generation || origin !== currentId) break;
+        if (stacked) undoStack.pop();
+        redoStack.push(current);
+        saveHistoryStacks();
+        acceptThread(updated);
+        recountLocalContext();
+        if (removed) restored = removed.content || "";
+        setHint(previous.length ? "Undid last turn." : "Conversation cleared.");
+      }
+    } catch (error) {
+      if (gen === generation && origin === currentId) {
+        await reconcileThread().catch(() => {});
+        if (isTransportError(error)) markDisconnected();
+        showFailure("Undo was not confirmed", error);
+      }
+    } finally {
+      sending = false;
+      if (gen === generation && origin === currentId && restored !== undefined &&
+          composerVersion === draftVersion && input.value === draft && !draft) {
+        input.value = restored;
+        drafts.set(origin, restored);
+        closeSlash();
+        if (window.FuseComposerSpell) {
+          FuseComposerSpell.close();
+          FuseComposerSpell.refresh();
+        }
+        resizeInput();
+        syncEmptyComposer();
+        syncContextMeter();
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+      }
+      syncComposer();
+      syncStatus();
+      if (gen === generation && !streaming) drainQueue();
+    }
   }
 
   function redoConversation() {
@@ -5885,14 +5942,13 @@
     closeSlash();
     const query = slashQuery();
     const rest = arg != null ? arg : (query && query.arg) || "";
+    if (name === "undo") {
+      const times = Math.max(1, Math.min(20, parseInt(rest, 10) || 1));
+      return undoConversation(times);
+    }
     input.value = "";
     resizeInput();
     syncComposer();
-    if (name === "undo") {
-      const times = Math.max(1, Math.min(20, parseInt(rest, 10) || 1));
-      for (let i = 0; i < times; i += 1) undoConversation();
-      return;
-    }
     if (name === "retry") {
       retryLastTurn();
       return;
@@ -13055,8 +13111,8 @@
     await reconcileThread().catch(() => {});
   }
 
-  // Commands that only change this page run at once, even while a reply runs.
-  const LOCAL_SLASH = new Set(["thinking", "help", "permissions"]);
+  // These commands are dispatched locally, never queued as model input.
+  const LOCAL_SLASH = new Set(["thinking", "help", "permissions", "undo"]);
 
   async function send() {
     const text = input.value.trim();
@@ -13651,6 +13707,7 @@
   }
 
   input.addEventListener("input", () => {
+    composerVersion += 1;
     drafts.set(currentId, input.value);
     resizeInput();
     syncComposer();
@@ -13697,8 +13754,7 @@
     const extraOpen = extraPaletteOpen();
     const slashItems = slashOpen && slashKind === "slash" ? filteredSlash() : paletteItems;
 
-    // A typed local command (/thinking, /help, /permissions) runs at once,
-    // ahead of the slash menu and of queueing behind a running reply.
+    // Dispatch local commands ahead of the slash menu and send queue.
     if (event.key === "Enter" && !event.shiftKey && !event.altKey && !spellOpen) {
       const local = parseSlashCommand(input.value);
       if (local && LOCAL_SLASH.has(local.name)) {
