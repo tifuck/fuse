@@ -1,10 +1,11 @@
 """Durable, display-only summaries of settled dashboard work episodes.
 
-A recap generates as soon as the episode settles (root turn terminal, no
-active children, commands or undelivered reports) when the conversation is
-long or the episode took real work time. Activity invalidates a generation;
-automated wakes retain the initiating user message. Jobs survive restarts, and
-leases plus a final generation check prevent late output from being published.
+A recap generates once the episode settles (root turn terminal, no active
+children, commands or undelivered reports) and stays quiet for IDLE_SECONDS,
+when the conversation is long or the work took real time. Activity invalidates
+a generation; automated wakes retain the initiating user message. Jobs survive
+restarts, and leases plus a final generation check prevent late output from
+being published.
 None of this metadata enters model history.
 """
 from __future__ import annotations
@@ -22,6 +23,9 @@ MAX_ATTEMPTS = 3
 CONCURRENCY = 3
 LEASE_SECONDS = 90
 SETTLE_RECHECK_SECONDS = 2
+# After the session goes idle, wait this long with no new activity before
+# spending a model call, so a quick follow-up doesn't discard the generation.
+IDLE_SECONDS = 30
 # Automatic recaps only for work worth summarizing: a long conversation, or
 # an episode whose turns ran at least this long.
 MIN_CONTEXT_CHARS = 4000
@@ -97,7 +101,7 @@ def disable(conn, user_id: int):
 
 def terminal_activity(conn, user_id: int, thread_id: int):
     """Observe settlement anew after a root/child/command stops."""
-    conn.execute("UPDATE chat_recaps SET next_at=? WHERE user_id=? AND thread_id=? AND state='pending'",
+    conn.execute("UPDATE chat_recaps SET quiet_since='',next_at=? WHERE user_id=? AND thread_id=? AND state='pending'",
                  (db.now(), user_id, thread_id))
     kick()
 
@@ -255,8 +259,16 @@ def claim(job_id: int):
             conn.execute("UPDATE chat_recaps SET state='disabled',lease_token='' WHERE id=?", (job_id,))
             return None
         if not _settled(conn, job["user_id"], job["thread_id"]):
-            conn.execute("UPDATE chat_recaps SET next_at=? WHERE id=?", (later(SETTLE_RECHECK_SECONDS), job_id))
+            conn.execute("UPDATE chat_recaps SET quiet_since='',next_at=? WHERE id=?", (later(SETTLE_RECHECK_SECONDS), job_id))
             return None
+        if not job["manual"]:  # An explicit /recap is already refused while busy; it needn't wait.
+            if not job["quiet_since"]:
+                conn.execute("UPDATE chat_recaps SET quiet_since=?,next_at=? WHERE id=?", (db.now(), later(IDLE_SECONDS), job_id))
+                return None
+            quiet = (datetime.now(timezone.utc) - datetime.fromisoformat(job["quiet_since"].replace("Z", "+00:00"))).total_seconds()
+            if quiet < IDLE_SECONDS:
+                conn.execute("UPDATE chat_recaps SET next_at=? WHERE id=?", (later(max(1, int(IDLE_SECONDS - quiet))), job_id))
+                return None
         messages = chats.parse_messages(row["messages"])
         fingerprint = hashlib.sha256(chats.dump_messages(messages).encode()).hexdigest()
         messages = chat_store.settle_spawn_traces(conn, job["user_id"], messages)
@@ -298,10 +310,10 @@ def finish(job: dict, text: str):
         # Work restarting under the request is not a generation failure.
         attempts = current["attempts"] - (1 if busy else 0)
         state = "ready" if text else "failed" if attempts >= MAX_ATTEMPTS else "pending"
-        cur = conn.execute("""UPDATE chat_recaps SET state=?,text=?,attempts=?,lease_token='',next_at=?,updated_at=?
+        cur = conn.execute("""UPDATE chat_recaps SET state=?,text=?,attempts=?,lease_token='',next_at=?,quiet_since=?,updated_at=?
                               WHERE id=? AND state='generating' AND lease_token=?""",
                            (state, text, attempts, later(SETTLE_RECHECK_SECONDS if busy else 30 * attempts),
-                            db.now(), job["id"], job["token"]))
+                            "" if busy else current["quiet_since"], db.now(), job["id"], job["token"]))
         if not cur.rowcount:
             return
         if text:
