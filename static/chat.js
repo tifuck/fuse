@@ -11112,35 +11112,46 @@
   }
 
   // "● Monitor event: <first line> · <description>"
-  // Claude Code's event row: "Monitor event: <first line> · <description>",
-  // one line. It prints the event's whole output only in its verbose view;
-  // here "… +N lines" opens it.
+  // A monitor event leads with what is being watched: "Monitor event:
+  // <description>", the event's output under it (3 lines, 4 if that is all,
+  // "… +N lines" opens the rest). Claude Code 2.1.287 puts the output first
+  // and the description dim at the end of one line; that buried the
+  // description, so Fuse keeps that form only for a monitor without one.
   function consoleMonitorEventHtml(trace, key) {
     const body = String(trace.summary || trace.preview || "").replace(/\r\n?/g, "\n").replace(/^\s*\n|\s+$/g, "");
-    const lines = body.split("\n");
-    const firstAt = lines.findIndex((line) => line.trim());
-    const first = firstAt >= 0 ? lines[firstAt].trim() : "event";
-    const rest = firstAt >= 0 ? lines.length - firstAt - 1 : 0;
-    const label = ccFlat(trace.description) || ccFlat(trace.url) || ccFlat(displayCommand(trace)) || "monitor";
-    const line = `Monitor event: ${escapeHtml(ccFlat(first))}<span class="chat-console-dim"> · ${escapeHtml(label)}</span>`;
-    if (!rest) {
-      return (
-        `<li class="chat-step is-console-notice is-plain">` +
-        `<span class="chat-step-node" aria-hidden="true"></span>` +
-        `<div class="chat-step-main"><span class="chat-console-notice-text">${line}</span></div></li>`
+    const lines = body ? body.split("\n") : [];
+    const description = ccFlat(trace.description);
+    const label = description || ccFlat(trace.url) || ccFlat(displayCommand(trace)) || "monitor";
+    const row = (headHtml, hang) => (
+      `<li class="chat-step is-console-notice is-plain${hang ? " is-event" : ""}"${hang ? ` data-step="${escapeHtml(key)}"` : ""}>` +
+      `<span class="chat-step-node" aria-hidden="true"></span>` +
+      `<div class="chat-step-main">${headHtml}${hang}</div></li>`
+    );
+    const stdout = (rows) => `<pre class="chat-console-out is-stdout">${rows.map((line) => `<div class="chat-console-stdout">${renderAnsi(line) || " "}</div>`).join("")}</pre>`;
+    const branch = `<span class="chat-console-branch" aria-hidden="true">└</span>`;
+    if (!description) {
+      const firstAt = lines.findIndex((line) => line.trim());
+      const first = firstAt >= 0 ? lines[firstAt].trim() : "event";
+      const rest = firstAt >= 0 ? lines.length - firstAt - 1 : 0;
+      const text = `Monitor event: ${escapeHtml(ccFlat(first))}<span class="chat-console-dim"> · ${escapeHtml(label)}</span>`;
+      if (!rest) return row(`<span class="chat-console-notice-text">${text}</span>`, "");
+      return row(
+        `<div class="chat-step-head"><button type="button" class="chat-step-toggle chat-console-notice-text" data-step-toggle aria-expanded="false">${text}</button></div>`,
+        `<div class="chat-console-hang is-event-more" data-step-toggle>${branch}<div class="chat-console-hang-body"><span class="chat-console-dim">… +${rest} ${rest === 1 ? "line" : "lines"}</span></div></div>` +
+        `<div class="chat-step-reveal"><div class="chat-step-reveal-inner"><div class="chat-console-hang is-expanded">${branch}<div class="chat-console-hang-body">${stdout(lines)}</div></div></div></div>`
       );
     }
-    const output = lines.map((row) => `<div class="chat-console-stdout">${renderAnsi(row) || " "}</div>`).join("");
-    return (
-      `<li class="chat-step is-console-notice is-plain is-event" data-step="${escapeHtml(key)}">` +
-      `<span class="chat-step-node" aria-hidden="true"></span>` +
-      `<div class="chat-step-main">` +
-      `<div class="chat-step-head"><button type="button" class="chat-step-toggle chat-console-notice-text" data-step-toggle aria-expanded="false">${line}</button></div>` +
-      `<div class="chat-console-hang is-event-more" data-step-toggle><span class="chat-console-branch" aria-hidden="true">└</span>` +
-      `<div class="chat-console-hang-body"><span class="chat-console-dim">… +${rest} ${rest === 1 ? "line" : "lines"}</span></div></div>` +
-      `<div class="chat-step-reveal"><div class="chat-step-reveal-inner"><div class="chat-console-hang is-expanded">` +
-      `<span class="chat-console-branch" aria-hidden="true">└</span><div class="chat-console-hang-body"><pre class="chat-console-out is-stdout">${output}</pre></div>` +
-      `</div></div></div></div></li>`
+    const text = `Monitor event: ${escapeHtml(description)}`;
+    if (!lines.length) return row(`<span class="chat-console-notice-text">${text}</span>`, "");
+    const show = lines.length === 4 ? 4 : 3;
+    const hidden = Math.max(0, lines.length - show);
+    const preview = `<div class="chat-console-hang is-expanded">${branch}<div class="chat-console-hang-body">${stdout(lines.slice(0, show))}` +
+      (hidden ? `<div class="chat-console-dim is-event-more" data-step-toggle>… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : "") + `</div></div>`;
+    if (!hidden) return row(`<span class="chat-console-notice-text">${text}</span>`, preview);
+    return row(
+      `<div class="chat-step-head"><button type="button" class="chat-step-toggle chat-console-notice-text" data-step-toggle aria-expanded="false">${text}</button></div>`,
+      `<div class="is-event-preview">${preview}</div>` +
+      `<div class="chat-step-reveal"><div class="chat-step-reveal-inner"><div class="chat-console-hang is-expanded">${branch}<div class="chat-console-hang-body">${stdout(lines)}</div></div></div></div>`
     );
   }
 

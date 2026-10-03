@@ -4277,8 +4277,8 @@ html body.is-chat .chat:is([data-view="console"], [data-view="mainframe"]) .chat
   text-shadow: 0 0 0.55em color-mix(in srgb, currentColor 40%, transparent);
 }
 
-/* A monitor event with more than one line: the row reads as Claude Code's
-   one-line event; "… +N lines" (or the row) opens the event's output. */
+/* A monitor event: "Monitor event: <description>" with the event's output
+   under it; "… +N lines" (or the row) opens all of it. */
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-notice.is-event .chat-step-head {
   display: block;
   min-height: 0;
@@ -4296,6 +4296,6 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-ste
   cursor: pointer;
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-notice.is-event .is-event-more { cursor: pointer; }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-notice.is-event:has(> .chat-step-main > .chat-step-reveal.is-open) .is-event-more {
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-notice.is-event:has(> .chat-step-main > .chat-step-reveal.is-open) :is(.is-event-more, .is-event-preview) {
   display: none;
 }
