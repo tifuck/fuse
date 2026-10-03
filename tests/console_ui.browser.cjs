@@ -184,11 +184,11 @@ function scenarios() {
     for (const width of [1280, 390, 320]) {
       await page.setViewportSize({ width, height: 900 });
       for (const view of ['cli', 'compact', 'console', 'mainframe']) {
-        const result = await page.evaluate(async (view) => {
+        const result = await page.evaluate(async ({ view, call }) => {
           fuseToolFixture.view(view);
           await new Promise((resolve) => requestAnimationFrame(resolve));
           const todo = { id: 'scale-todo', name: 'todo_write', status: 'done', todos: [{ content: 'Audit chat text scaling across every reading mode and every tool output', status: 'in_progress' }], results: [], error: '' };
-          fuseToolFixture.mountThread([{ role: 'user', content: 'Go.' }, { id: 'scale-turn', role: 'assistant', content: '', reasoning: 'Checking.', elapsedMs: 65000, tools: [todo], segments: [{ type: 'tool', id: todo.id }, { type: 'reasoning', text: 'Checking.' }] }], { live: true, phase: 'model' });
+          fuseToolFixture.mountThread([{ role: 'user', content: 'Go.' }, { id: 'scale-turn', role: 'assistant', content: '', reasoning: 'Checking.', elapsedMs: 65000, tools: [todo, call], segments: [{ type: 'tool', id: todo.id }, { type: 'tool', id: call.id }] }], { live: true, phase: 'tools' });
           const dock = document.querySelector('[data-live-dock]');
           const label = dock.querySelector('.chat-status-verb');
           const probe = document.createElement('div');
@@ -201,22 +201,45 @@ function scenarios() {
           const targets = [label, ...probe.querySelectorAll('.chat-status-verb, .chat-recap, .chat-bubble, .chat-compact-mark, .chat-compact-banner, .chat-compact-handoff, .chat-user-file, .chat-file-ext, .chat-foot-meta, .chat-source-domain, .chat-source-title, .chat-source-state, .chat-source-badge')];
           const samples = [];
           const sizes = [];
+          const aligned = [];
           for (const size of [100, 50, 130]) {
             FuseChatAppearance.setSize(size);
             sizes.push(parseFloat(getComputedStyle(label).fontSize));
             samples.push(targets.map((el) => parseFloat(getComputedStyle(el).fontSize)));
+            // The status line is a row like the call above it: its glyph sits on
+            // the dot column and its text starts where the call's text starts, in
+            // the same type, at every text size.
+            const row = document.querySelector('.chat-step.is-console-call');
+            const dot = row && row.querySelector(':scope > .chat-step-node');
+            const head = row && row.querySelector('.chat-step-label');
+            const glyph = dock.querySelector('.chat-activity-spin');
+            if (row && dot && head && glyph) {
+              const box = (el) => el.getBoundingClientRect();
+              aligned.push({
+                size,
+                glyph: Math.abs(box(glyph).left + box(glyph).width / 2 - (box(dot).left + box(dot).width / 2)),
+                text: Math.abs(box(label).left - box(head).left),
+                type: Math.abs(parseFloat(getComputedStyle(label).fontSize) - parseFloat(getComputedStyle(head).fontSize)),
+              });
+            } else aligned.push({ size, missing: true });
           }
           const meta = dock.querySelector('.chat-status-meta');
           const bounds = dock.getBoundingClientRect();
           const verbBounds = label.getBoundingClientRect();
           const unscaled = targets.filter((el, i) => Math.abs(samples[1][i] / samples[0][i] - 0.5) > 0.01 || Math.abs(samples[2][i] / samples[0][i] - 1.3) > 0.01).map((el) => el.className);
           probe.remove();
-          const out = { unscaled, sizes, label: label.textContent, metaHidden: getComputedStyle(meta).display === 'none', fits: verbBounds.right <= bounds.right + 1, ellipsis: getComputedStyle(label).textOverflow === 'ellipsis' };
+          const out = { unscaled, sizes, aligned, label: label.textContent, metaHidden: getComputedStyle(meta).display === 'none', fits: verbBounds.right <= bounds.right + 1, ellipsis: getComputedStyle(label).textOverflow === 'ellipsis' };
           FuseChatAppearance.setSize(100);
           return out;
-        }, view);
+        }, { view, call: sh('npm test', { running: true, ms: 4000, description: 'Run the tests' }) });
         if (Math.abs(result.sizes[1] / result.sizes[0] - 0.5) > 0.01 || Math.abs(result.sizes[2] / result.sizes[0] - 1.3) > 0.01) failures.push(`status scaling ${view} @${width}: ${result.sizes}`);
         if (result.unscaled.length) failures.push(`transcript scaling ${view} @${width}: ${result.unscaled.join(', ')}`);
+        if (view === 'console' || view === 'mainframe') {
+          for (const row of result.aligned) {
+            if (row.missing) failures.push(`status line alignment ${view} @${width}: no call row to compare with`);
+            else if ((view === 'console' && row.glyph > 1) || row.text > 1.5 || row.type > 0.1) failures.push(`status line off the rows ${view} @${width} ${row.size}%: glyph ${row.glyph.toFixed(1)}px, text ${row.text.toFixed(1)}px, type ${row.type.toFixed(2)}px`);
+          }
+        }
         if (view === 'console') {
           if (!result.label.startsWith('Audit chat text scaling')) failures.push('Console status follows the in-progress todo');
           if (width <= 600 && (!result.metaHidden || !result.fits || !result.ellipsis)) failures.push('mobile Console status must hide counters and ellipsize the task');

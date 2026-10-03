@@ -513,13 +513,16 @@
 .chat[data-view="mainframe"] :is(.chat-live-dock, .chat-agent-live-dock) {
   gap: 1ch;
   color: var(--mist);
-  font: var(--mf-small)/1.6 var(--mf-font);
+  /* The row size, so the glyph's 2ch and the 1ch gap land the text on the same
+     indent as every call row at any text scale. */
+  font: var(--mf-size)/1.6 var(--mf-font);
   font-style: normal;
 }
 .chat[data-view="mainframe"] :is(.chat-live-dock, .chat-agent-live-dock) .chat-activity-spin {
   display: grid;
   place-items: center;
   width: 2ch;
+  flex: 0 0 2ch;
   color: var(--brass);
 }
 .chat[data-view="mainframe"] :is(.chat-live-dock, .chat-agent-live-dock) .chat-activity-spin[hidden] { display: none; }

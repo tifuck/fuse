@@ -2785,10 +2785,13 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-liv
   align-items: center;
   gap: 0.45rem;
   width: min(100%, var(--chat-col));
+  min-height: var(--console-row);
   margin-top: 0.45rem;
   padding-inline: var(--console-gutter);
   overflow: visible;
-  font: calc(0.88rem * var(--chat-text-scale, 1))/1.4 var(--mono);
+  /* The status line is a row like any other: the call rows' type, leading and
+     dot column, all of which follow the reader's text size. */
+  font: var(--console-type)/var(--console-leading) var(--mono);
   font-style: italic;
   color: var(--mute);
   letter-spacing: 0;
@@ -2813,16 +2816,17 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-age
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-agent-live-dock {
   gap: 0.45rem;
-  font: calc(0.88rem * var(--chat-text-scale, 1))/1.4 var(--mono);
+  padding-inline: var(--console-gutter);
+  font: var(--console-type)/var(--console-leading) var(--mono);
   font-style: normal;
   letter-spacing: 0;
   color: color-mix(in srgb, var(--mist) 70%, var(--ink));
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-dock, .chat-agent-live-dock) .chat-activity-spin {
   display: grid;
-  width: 1.1rem;
-  height: 1.1rem;
-  flex: 0 0 1.1rem;
+  width: var(--console-col);
+  height: var(--console-row);
+  flex: 0 0 var(--console-col);
   place-items: center;
   overflow: visible;
   color: color-mix(in srgb, var(--phase-tint) 30%, var(--brass));
@@ -2841,6 +2845,10 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-lat
   width: auto;
   font-size: 0.85rem;
   line-height: 1;
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-dock, .chat-agent-live-dock) .chat-console-spin {
+  width: var(--console-col);
+  font: var(--console-type)/var(--console-row) var(--mono);
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-dock, .chat-agent-live-dock) .chat-status-shimmer {
   --status-ink: color-mix(in srgb, var(--mist) 62%, var(--ink));
