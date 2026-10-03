@@ -11843,6 +11843,13 @@
     dispose: node => { if (node.nodeType === 1) disposeThinking(node); },
   };
 
+  function visibleAssistantError(msg) {
+    if (!msg.error) return "";
+    const index = messages.findIndex(item => item === msg || (msg.id && item.id === msg.id));
+    if (index >= 0 && messages.slice(index + 1).some(item => item.role === "user")) return "";
+    return String(msg.error).replace(/\s+/g, " ").trim();
+  }
+
   function updateAssistant(article, msg, live) {
     // Off-screen historical responses are hydrated from the latest message
     // object when they enter the viewport, rather than on every sync event.
@@ -11860,7 +11867,8 @@
     const meta = article.querySelector("[data-meta]");
     const traces = Array.isArray(msg.tools) ? msg.tools : [];
     const hasMarker = Array.isArray(msg.segments) && msg.segments.some((part) => part && part.type === "marker");
-    const hasOutput = Boolean((msg.content || "").trim() || (msg.reasoning || "").trim() || msg.error || traces.length || msg.permissions?.length || hasMarker);
+    const errText = visibleAssistantError(msg);
+    const hasOutput = Boolean((msg.content || "").trim() || (msg.reasoning || "").trim() || errText || traces.length || msg.permissions?.length || hasMarker);
     article.hidden = !hasOutput;
     const sourceMap = new Map();
     traces.forEach((trace) => {
@@ -12098,7 +12106,6 @@
     const toolFailKeys = traces
       .filter((t) => toolFailed(t))
       .map((t) => normErr(t.error || "failed"));
-    const errText = String(msg.error || "").replace(/\s+/g, " ").trim();
     const errDup = Boolean(errText && toolFailKeys.includes(normErr(errText)));
     if (errText && !errDup) {
       err.hidden = false;
@@ -12151,7 +12158,7 @@
     // address the complete server-owned transcript. Expensive markdown, tool
     // trees and syntax highlighting for old answers are created on demand.
     if (historyObserver && msg.role === "assistant" && !live && index < messages.length - 8 &&
-        (msg.content || msg.reasoning || msg.tools?.length || msg.permissions?.length || msg.error)) {
+        (msg.content || msg.reasoning || msg.tools?.length || msg.permissions?.length || visibleAssistantError(msg))) {
       const shell = document.createElement("article");
       shell.className = "chat-turn is-assistant chat-deferred-message";
       shell.dataset.messageId = msg.id;
