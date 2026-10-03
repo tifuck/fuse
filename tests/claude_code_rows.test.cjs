@@ -20,7 +20,7 @@ function constant(name, context) {
 function world() {
   const ctx = vm.createContext({ compactPath: (path) => path });
   for (const name of ['CC_SEARCH_CMDS', 'CC_READ_CMDS', 'CC_LIST_CMDS', 'CC_NEUTRAL_CMDS', 'CC_FIRST_CMD', 'CC_EXIT_NOTES', 'CC_COMPACT', 'CC_CALL_NAMES']) constant(name, ctx);
-  for (const name of ['ccShellSegments', 'ccShellKind', 'ccExitMeaning', 'ccShellWords', 'ccSedEdit', 'ccTokens', 'ccBytes', 'ccDeadline',
+  for (const name of ['ccShellSegments', 'ccShellKind', 'ccExitMeaning', 'ccShellWords', 'ccSedEdit', 'ccTokens', 'ccBytes',
     'ccFlat', 'ccClip', 'ccCallName', 'ccCallSummary', 'ccCallKind', 'ccCountsText', 'ccAgentLastCall', 'ccCallLine']) load(name, ctx);
   return ctx;
 }
@@ -57,10 +57,24 @@ test('counts read the way Claude Code prints them', () => {
   assert.equal(c.ccBytes(512), '512 bytes');
   assert.equal(c.ccBytes(12_595), '12.3KB');
   assert.equal(c.ccBytes(1024 * 1024 * 1.5), '1.5MB');
-  assert.equal(c.ccDeadline(1_800_000), '30m');
-  assert.equal(c.ccDeadline(90_000), '1m 30s');
-  assert.equal(c.ccDeadline(3_600_000), '1h');
-  assert.equal(c.ccDeadline(45_000), '45s');
+});
+
+test("a call's time sits on its header from 2s, once per call", () => {
+  const c = world();
+  Object.assign(c, {
+    escapeHtml: (text) => String(text),
+    isSearchTool: (name) => name === 'web_search',
+    toolBackground: (trace) => Boolean(trace.background),
+  });
+  for (const name of ['ccDuration', 'ccElapsedText', 'ccSince', 'ccCallClockHtml']) load(name, c);
+  const took = (trace, running = false) => c.ccCallClockHtml(trace, { running }).replace(/<[^>]+>/g, '');
+  assert.equal(took({ name: 'run_terminal_command', execution_duration_ms: 23_400, call_duration_ms: 30_000 }), ' · 23s');
+  assert.equal(took({ name: 'read_file', call_duration_ms: 95_000 }), ' · 1m 35s');
+  assert.equal(took({ name: 'grep', call_duration_ms: 1_500 }), '', 'under 2s');
+  assert.equal(took({ name: 'run_terminal_command', background: true, execution_duration_ms: 60_000 }), '', 'background launch');
+  assert.equal(took({ name: 'web_search', call_duration_ms: 4_000 }), '', 'web search says it in its result');
+  assert.equal(took({ name: 'run_terminal_command', elapsed_ms: 12_000 }, true), ' · 12s', 'running ticks from its start');
+  assert.equal(took({ name: 'run_terminal_command', elapsed_ms: 500 }, true), '', 'running under 2s');
 });
 
 test("a running subagent's row names its latest step", () => {

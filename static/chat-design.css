@@ -3327,6 +3327,31 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-ste
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-call {
   font: var(--console-type)/var(--console-leading) var(--mono);
 }
+/* A running call's header is Claude Code's live line: plain ink, no Tool(…). */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-call.is-live {
+  color: var(--mist);
+  font-weight: 400;
+}
+/* A call's time (" · 12s") follows its header; a clipped command gives way
+   so the time stays in view. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-took {
+  flex: none;
+  white-space: pre;
+  color: color-mix(in srgb, var(--mist) 58%, var(--ink));
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-call:not(.is-console-expanded) .chat-step-label:has(> .chat-console-took) {
+  display: flex;
+  align-items: baseline;
+  gap: 0;
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-took + .chat-tool-host { margin-inline-start: 0.75ch; }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-call:not(.is-console-expanded) .chat-step-label:has(> .chat-console-took) > .chat-console-call {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-hang {
   display: grid;
   grid-template-columns: 0.9rem minmax(0, 1fr);
@@ -3999,7 +4024,8 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-ste
   border: 0;
   background: none;
   color: inherit;
-  font: inherit;
+  /* The label's own type: an inherited larger strut sat it below the dot. */
+  font: var(--console-type)/var(--console-leading) var(--mono);
   text-align: left;
   cursor: pointer;
 }

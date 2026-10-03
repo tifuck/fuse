@@ -7919,6 +7919,13 @@
   function consoleCallHtml(trace, presentation, full = false) {
     const name = trace && trace.name;
     const running = Boolean(presentation && presentation.running);
+    const host = trace.host && trace.host !== sessionProject()?.host_alias ? trace.host : "";
+    const hostHtml = host ? `<span class="chat-tool-host" title="Host ${escapeHtml(host)}">${escapeHtml(host)}</span>` : "";
+    const clock = isConsoleOnly() && presentation ? ccCallClockHtml(trace, presentation) : "";
+    // Console: a running call reads as Claude Code's live line, one row
+    // counting up ("Running npm test · 12s"); it prints as Bash(…) once done.
+    const live = isConsoleOnly() && running && !full && !toolBackground(trace) ? ccLiveText(trace) : "";
+    if (live) return `<span class="chat-console-call is-live">${escapeHtml(live)}</span>${clock}${hostHtml}`;
     const verb = consoleVerb(name, trace);
     if (["kill_command", "kill_subagent", "todo_write", "list_subagents", "scratch"].includes(name)) {
       return `<span class="chat-console-call"><span class="chat-tool-action">${escapeHtml(verb)}</span></span>`;
@@ -7961,11 +7968,10 @@
     } else {
       inner = consoleArgText(toolSubject(trace), 90);
     }
-    const host = trace.host && trace.host !== sessionProject()?.host_alias ? trace.host : "";
     const call = inner
       ? `<span class="chat-console-call"><span class="chat-tool-action">${escapeHtml(verb)}</span><span class="chat-console-paren">(</span><span class="chat-console-val">${path ? escapeHtml(inner).replace(/\//g, "/<wbr>") : escapeHtml(inner)}</span><span class="chat-console-paren">)</span></span>`
       : `<span class="chat-console-call"><span class="chat-tool-action">${escapeHtml(verb)}</span></span>`;
-    return call + (host ? `<span class="chat-tool-host" title="Host ${escapeHtml(host)}">${escapeHtml(host)}</span>` : "");
+    return call + clock + hostHtml;
   }
 
   function consoleOutputText(trace, failed, running) {
@@ -8037,7 +8043,8 @@
   // search_replace diffs are old_string vs new_string, so their hunk line
   // numbers are snippet-relative; callers pass numbers: false for those.
   function consoleDiffHtml(text, { limit, numbers = true } = {}) {
-    const lines = String(text || "").split("\n");
+    // A trailing newline is the end of the last line, not an empty row.
+    const lines = String(text || "").replace(/\n+$/, "").split("\n");
     let oldN = 0;
     let newN = 0;
     const rows = [];
@@ -8909,7 +8916,7 @@
       });
       const hangOpen = verbose ? Boolean(inner) : revealed && expandable;
       const status = fold.status;
-      const showHang = true;
+      const showHang = Boolean(status || preview || inner);
       return (
         `<li class="chat-step is-console-call is-${kind} is-${presentation.state}${hangOpen || verbose ? " is-console-expanded" : ""}${verbose ? " is-console-verbose" : ""}" style="--console-hang: ${consoleVerb(trace.name, trace).length + 1}ch" data-execution="${escapeHtml(executionIdentity(trace))}" data-tool="${escapeHtml(trace.name)}" data-state="${presentation.state}" data-step="${escapeHtml(index)}">` +
         `<span class="chat-step-node" aria-hidden="true">${icon}</span>` +
@@ -10627,16 +10634,6 @@
     return `${fixed(bytes / 1024 ** 3)}GB`;
   }
 
-  function ccDeadline(ms) {
-    const value = Math.max(0, Number(ms) || 0);
-    if (value < 60000) return `${Math.floor(value / 1000)}s`;
-    const h = Math.floor(value / 3600000);
-    const m = Math.floor((value % 3600000) / 60000);
-    const sec = Math.round((value % 60000) / 1000);
-    if (h > 0) return m || sec ? `${h}h ${m}m${sec ? ` ${sec}s` : ""}` : `${h}h`;
-    return sec ? `${m}m ${sec}s` : `${m}m`;
-  }
-
   // Exit codes Claude Code does not call a failure: exit 1 from grep, find,
   // diff or test means "nothing found" / "differs" / "false".
   const CC_EXIT_NOTES = {
@@ -10755,24 +10752,22 @@
     };
   }
 
-  function ccShellClock(since, timeout) {
-    const took = ccDuration(Math.max(0, Date.now() - since));
-    return timeout > 0 ? `(${took} · timeout ${ccDeadline(timeout)})` : `(${took})`;
-  }
-
-  // A running command: "Running… (12s · timeout 30m)", or its last 5 output
-  // lines with "+N lines (12s · timeout 30m)" under them.
-  function ccShellProgressHtml(trace) {
-    const raw = typeof trace.output === "string" ? cleanToolOutput(trace, trace.output) : "";
-    const lines = String(raw).replace(/\r\n?/g, "\n").split("\n").filter((line) => line.trim());
-    const since = ccSince(trace);
-    const timeout = Math.max(0, Number(trace.timeout_ms) || 0);
-    const clock = `<span data-cc-clock="shell" data-since="${since}" data-timeout="${timeout}">${ccShellClock(since, timeout)}</span>`;
-    if (!lines.length) return `<div class="chat-console-progress"><span class="chat-console-dim">Running… ${clock}</span></div>`;
-    const tail = lines.slice(-5).map((line) => line.length > 400 ? line.slice(0, 399) + "…" : line);
-    const more = lines.length - tail.length;
-    return `<div class="chat-console-progress is-tail">${consoleStdoutHtml(tail)}` +
-      `<div class="chat-console-dim">${more > 0 ? `+${more} ${more === 1 ? "line" : "lines"} ` : ""}${clock}</div></div>`;
+  // A call's time on its own header row: " · 12s" ticking from 2s while it
+  // runs, then what it took (2s or more). Claude Code prints neither; Fuse
+  // keeps one clock per call here, so the line under it carries none. Calls
+  // whose result already says how long (web search, subagents) and
+  // background launches, which return at once, have no clock.
+  function ccCallClockHtml(trace, presentation) {
+    const name = trace && trace.name;
+    if (!name || isSearchTool(name) || toolBackground(trace) || ["spawn_subagent", "get_subagent_output", "monitor"].includes(name)) return "";
+    if (presentation.running) {
+      const since = ccSince(trace);
+      return `<span class="chat-console-took" data-cc-clock="elapsed" data-since="${since}">${ccElapsedText(since)}</span>`;
+    }
+    const ms = Number(name === "run_terminal_command"
+      ? trace.execution_duration_ms ?? trace.call_duration_ms ?? trace.duration_ms
+      : trace.call_duration_ms ?? trace.duration_ms);
+    return Number.isFinite(ms) && ms >= 2000 ? `<span class="chat-console-took"> · ${escapeHtml(ccDuration(ms))}</span>` : "";
   }
 
   // A child's calls as Claude Code names them ("Bash: Run the tests").
@@ -10899,6 +10894,17 @@
     const { running, failed, interrupted } = presentation;
     const name = trace && trace.name;
     if (interrupted && !running) return { status: ccInterruptedText(trace), preview: "", full: "" };
+    if (running && !toolBackground(trace) && ccLiveText(trace)) {
+      // The header says what it is doing. The command goes under it only
+      // when a description took its place, with no clock of its own.
+      const hint = name === "run_terminal_command" && ccFlat(trace.description) ? ccShellHint(trace) : "";
+      if (!hint) return { status: "", preview: "", full: "" };
+      const out = typeof trace.output === "string" ? cleanToolOutput(trace, trace.output).replace(/\s+$/, "") : "";
+      const n = out ? out.split("\n").length : 0;
+      const lines = hint.split("\n");
+      const html = lines.map((line, i) => `<div class="chat-console-dim">${escapeHtml(line)}${i === lines.length - 1 && n ? ` (${n} ${n === 1 ? "line" : "lines"})` : ""}</div>`).join("");
+      return { status: "", preview: `<div class="chat-console-progress">${html}</div>`, full: "" };
+    }
     if (name === "spawn_subagent") {
       const background = toolBackground(trace);
       if (running) {
@@ -10918,7 +10924,6 @@
         const out = running ? "" : consoleDetailHtml(trace, false, false);
         return { status: "Running in the background", preview: "", full: consoleSameText(out, "") ? "" : out, keep: true };
       }
-      if (running) return { status: "", preview: ccShellProgressHtml(trace), full: "" };
       const raw = typeof trace.output === "string" ? cleanToolOutput(trace, trace.output)
         : [trace.preview, trace.summary].find((value) => { const text = String(value || "").trim(); return text && text !== "still running" && text !== "background task started"; }) || "";
       const lines = String(raw).replace(/\s+$/, "").split("\n");
@@ -11141,6 +11146,8 @@
     return path ? ccClip(ccFlat(shortToolPath(path, trace)), 300) : "";
   }
 
+  const CC_LIVE_TOOLS = new Set(["run_terminal_command", "read_file", "grep", "glob", "list_dir"]);
+
   // What a call is doing when it has no description.
   function ccActivityText(trace) {
     const name = trace.name;
@@ -11174,7 +11181,14 @@
     const activity = msg?.id === activeRun?.message_id ? activeRun?.activity : msg?._activity;
     const busy = items.some((item) => item.type === "tool" && ccRunning(item.entry.trace));
     if (activity?.phase ? activity.phase !== "tools" : !busy) return "";
-    const trace = last.entry.trace;
+    return ccLiveText(last.entry.trace);
+  }
+
+  // What a running read, search, listing or shell call is doing, as Claude
+  // Code's live line says it: the description as an -ing phrase ("Running
+  // the tests"), else "Running <command>", "Reading <path>", "Searching for …".
+  function ccLiveText(trace) {
+    if (!CC_LIVE_TOOLS.has(trace && trace.name)) return "";
     const description = ccFlat(trace.description);
     const text = description ? ccRunningForm(description) ?? description : ccActivityText(trace);
     return text ? text.charAt(0).toUpperCase() + text.slice(1) : "";
@@ -11202,7 +11216,6 @@
       const since = Number(el.dataset.since) || 0;
       const kind = el.dataset.ccClock;
       const text = kind === "think" ? ccThinkClock(Number(el.dataset.base) || 0, since)
-        : kind === "shell" ? ccShellClock(since, Number(el.dataset.timeout) || 0)
         : kind === "suffix" ? ccShellSuffix(since, Number(el.dataset.lines) || 0)
         : ccElapsedText(since);
       if (el.textContent !== text) el.textContent = text;
@@ -11219,8 +11232,9 @@
   }
 
   function ccGroupHtml(group, msg, live, active, openMap, thinking) {
-    const key = "cgroup-" + group.items[0].key;
-    const open = stepOpenAt(openMap, key);
+    // A live thought's line keeps the key it will have once the thought lands.
+    const key = "cgroup-" + (group.items[0]?.key || `think-${group.liveThought}`);
+    const open = group.items.length > 0 && stepOpenAt(openMap, key);
     let search = 0;
     let readOps = 0;
     let list = 0;
@@ -11295,6 +11309,7 @@
         if (cls.shell) hint = ccShellHint(trace) || hint;
       }
     });
+    if (active && thinking && !group.items.length) thought = true;
     const reads = readPaths.size || readOps;
     const shells = Math.max(0, bash - gitOpBash);
     if (!thought && !search && !reads && !list && !shells && !gitOpBash && !interrupted) return "";
@@ -11350,8 +11365,9 @@
       `<li class="chat-step is-console-group ${state}${open ? " is-console-expanded" : ""}" data-step="${escapeHtml(key)}">` +
       `<span class="chat-step-node" aria-hidden="true"></span>` +
       `<div class="chat-step-main">` +
-      `<div class="chat-step-head"><button type="button" class="chat-step-toggle" data-step-toggle aria-expanded="${open ? "true" : "false"}">` +
-      `<span class="chat-step-label">${label}</span></button></div>` +
+      `<div class="chat-step-head">` + (group.items.length
+        ? `<button type="button" class="chat-step-toggle" data-step-toggle aria-expanded="${open ? "true" : "false"}"><span class="chat-step-label">${label}</span></button>`
+        : `<div class="chat-step-toggle"><span class="chat-step-label">${label}</span></div>`) + `</div>` +
       (interrupted ? hang(`<span class="chat-console-result-text">${escapeHtml(isConsoleOnly() ? ccInterruptedText(interruptedTrace) : "Interrupted")}</span>`, " is-group-note") : "") +
       (hintHtml ? hang(hintHtml, " is-group-hint") : "") +
       `<div class="chat-console-bundle"><ol class="chat-timeline">${rows}</ol></div>` +
@@ -11377,6 +11393,17 @@
       if (group) rows.push(group);
       group = null;
     };
+    // Console: a running call, and while the block is live its newest call,
+    // print on their own row; a call folds into the line once it has ended
+    // and something newer (a thought, a call, text) has arrived.
+    let newest = -1;
+    if (plain && blockLive) {
+      for (let k = entries.length - 1; k >= 0 && newest < 0; k -= 1) {
+        if (!(entries[k].type === "tool" && ccToolClass(entries[k].trace)?.kind === "silent")) newest = k;
+      }
+    }
+    const holds = (entry, at, cls) => plain && cls.kind !== "silent" &&
+      (at === newest || (toolPresentation(entry.trace, live).running && !toolBackground(entry.trace)));
     let i = 0;
     while (i < entries.length) {
       const entry = entries[i];
@@ -11389,14 +11416,19 @@
         const streamingThought = streamingLast && last.segmentIndex === lastReasonIndex;
         // Console: a thought after calls ends the line, where Claude Code
         // ends one at narration (the API marks such thinking as narration).
-        if (plain && group && group.items.some((item) => item.type === "tool") &&
-            (streamingThought || run.some((item) => String(item.text || "").trim()))) {
+        const endsLine = plain && group && group.items.some((item) => item.type === "tool") &&
+          (streamingThought || run.some((item) => String(item.text || "").trim()));
+        if (endsLine) {
           group.endedByThought = true;
           flush();
         }
         if (streamingThought) {
           const clock = msg._thoughtClock || { liveStart: 0 };
           thinking = { since: Date.now() - Math.max(0, (liveElapsedSeconds(msg, live) || 0) * 1000 - (clock.liveStart || 0)) };
+          // Console: the line it ended stays settled, so the thought's
+          // clock runs on a line of its own (Claude Code runs it on the
+          // live line, which a thought does not end there).
+          if (endsLine) rows.push({ items: [], liveThought: last.segmentIndex });
           continue;
         }
         const text = run.map((item) => String(item.text || "").trim()).filter(Boolean).join("\n\n");
@@ -11409,7 +11441,7 @@
       if (entry.type !== "tool") continue;
       const key = toolKey(entry.trace, entry.index);
       const cls = ccToolClass(entry.trace);
-      if (cls) {
+      if (cls && !holds(entry, i - 1, cls)) {
         (group ||= { items: [] }).items.push({ type: "tool", entry, cls, key });
         continue;
       }
@@ -11434,7 +11466,9 @@
       if (row.agents) return ccAgentsGroupHtml(row.agents, live);
       if (!row.items) return toolStepHtml(row.entry.trace, row.key, live, stepOpenAt(stepOpen, row.key), stepOpen);
       const current = row === lastRow && !row.endedByThought;
-      return ccGroupHtml(row, msg, live, Boolean(blockLive && current), stepOpen, current ? thinking : null);
+      // Console keeps calls off a live line, so only a thought makes it live.
+      const active = Boolean(blockLive && current && (!plain || row.liveThought !== undefined));
+      return ccGroupHtml(row, msg, live, active, stepOpen, current ? thinking : null);
     }).join("");
   }
 
