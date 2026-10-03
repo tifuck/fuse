@@ -5487,6 +5487,7 @@
     { name: "permissions", hint: "Manage agent permissions and bypass" },
     { name: "init", hint: "Create or update AGENTS.md", needs: "project", args: true },
     { name: "compact", hint: "Compress conversation context", needs: "messages", args: true },
+    { name: "thinking", hint: "Show or hide thinking in every view" },
     { name: "help", hint: "List slash commands" },
   ];
 
@@ -5892,7 +5893,7 @@
       return;
     }
     if (name === "help") {
-      setHint("/undo, /retry, /redo, /rewind, /title, /recap, /permissions, /compact, /init. Skills: type / then a name. Manage on Skills.");
+      setHint("/undo, /retry, /redo, /rewind, /title, /recap, /permissions, /compact, /thinking, /init. Skills: type / then a name. Manage on Skills.");
       return;
     }
     if (name === "permissions") {
@@ -5904,6 +5905,12 @@
       return;
     }
     if (name === "recap") { runRecap(); return; }
+    if (name === "thinking") {
+      const want = rest.trim().toLowerCase();
+      setShowThinking(/^(on|show|shown|yes|true)$/.test(want) ? true : /^(off|hide|hidden|no|false)$/.test(want) ? false : !showThinking);
+      setHint(showThinking ? "Thinking is shown." : "Thinking is hidden. The status line still says when the model is thinking.");
+      return;
+    }
     if (name === "compact") {
       runCompact(rest);
       return;
@@ -8294,7 +8301,10 @@
       const exit = shellExitCode(trace);
       // A non-zero exit prints its code above the output, as Claude Code does.
       const nonzero = exit !== null && exit !== 0;
-      const head = nonzero ? `Exit code ${exit}` : failed ? status : toolBackground(trace) ? status : "";
+      // A Wait that returned before its command ended says so above the output.
+      const wait = name === "get_command_output";
+      const head = nonzero ? `Exit code ${exit}` : failed ? status
+        : wait ? (executionState(trace) === "running" ? "Still running" : "") : toolBackground(trace) ? status : "";
       if (empty) return { status: head || "(No output)", preview: "", full: "", keep: nonzero };
       const show = lines.length === 4 ? 4 : 3;
       const cut = lines.slice(0, show).map((line) => line.length > 400 ? line.slice(0, 399) + "…" : line);
@@ -10867,18 +10877,23 @@
   // A call's time on its own header row: " · 12s" ticking from 2s while it
   // runs, then what it took (2s or more). Claude Code prints neither; Fuse
   // keeps one clock per call here, so the line under it carries none. Calls
-  // whose result already says how long (web search, subagents) and
-  // background launches, which return at once, have no clock.
+  // whose result already says how long (web search, subagents) have no
+  // clock. A background command ticks while its process runs; once it ends
+  // its notice says how long it took.
   function ccCallClockHtml(trace, presentation) {
     const name = trace && trace.name;
-    if (!name || isSearchTool(name) || toolBackground(trace) || ["spawn_subagent", "get_subagent_output", "monitor"].includes(name)) return "";
+    if (!name || isSearchTool(name) || ["spawn_subagent", "get_subagent_output", "monitor"].includes(name)) return "";
+    if (toolBackground(trace) && !(name === "run_terminal_command" && presentation.running)) return "";
+    // A Wait's elapsed_ms and duration_ms belong to the command it waits on;
+    // its own time is the call's.
+    const wait = name === "get_command_output";
     if (presentation.running) {
-      const since = ccSince(trace);
+      const since = wait ? (trace._since ||= Date.now()) : ccSince(trace);
       return `<span class="chat-console-took" data-cc-clock="elapsed" data-since="${since}">${ccElapsedText(since)}</span>`;
     }
     const ms = Number(name === "run_terminal_command"
       ? trace.execution_duration_ms ?? trace.call_duration_ms ?? trace.duration_ms
-      : trace.call_duration_ms ?? trace.duration_ms);
+      : wait ? trace.call_duration_ms : trace.call_duration_ms ?? trace.duration_ms);
     return Number.isFinite(ms) && ms >= 2000 ? `<span class="chat-console-took"> · ${escapeHtml(ccDuration(ms))}</span>` : "";
   }
 
@@ -11006,6 +11021,9 @@
     const { running, failed, interrupted } = presentation;
     const name = trace && trace.name;
     if (interrupted && !running) return { status: ccInterruptedText(trace), preview: "", full: "" };
+    // Wait (Fuse's get_command_output) blocks on a background command; Claude
+    // Code has no such call, so it reads as what it does.
+    if (name === "get_command_output" && running) return { status: "Waiting for output…", preview: "", full: "" };
     if (running && !toolBackground(trace) && ccLiveText(trace)) {
       // The header says what it is doing. The command goes under it only
       // when a description took its place, with no clock of its own.
@@ -11094,14 +11112,35 @@
   }
 
   // "● Monitor event: <first line> · <description>"
-  function consoleMonitorEventHtml(trace) {
-    const first = String(trace.preview || trace.summary || "").split("\n").map((line) => line.trim()).find(Boolean) || "event";
+  // Claude Code's event row: "Monitor event: <first line> · <description>",
+  // one line. It prints the event's whole output only in its verbose view;
+  // here "… +N lines" opens it.
+  function consoleMonitorEventHtml(trace, key) {
+    const body = String(trace.summary || trace.preview || "").replace(/\r\n?/g, "\n").replace(/^\s*\n|\s+$/g, "");
+    const lines = body.split("\n");
+    const firstAt = lines.findIndex((line) => line.trim());
+    const first = firstAt >= 0 ? lines[firstAt].trim() : "event";
+    const rest = firstAt >= 0 ? lines.length - firstAt - 1 : 0;
     const label = ccFlat(trace.description) || ccFlat(trace.url) || ccFlat(displayCommand(trace)) || "monitor";
+    const line = `Monitor event: ${escapeHtml(ccFlat(first))}<span class="chat-console-dim"> · ${escapeHtml(label)}</span>`;
+    if (!rest) {
+      return (
+        `<li class="chat-step is-console-notice is-plain">` +
+        `<span class="chat-step-node" aria-hidden="true"></span>` +
+        `<div class="chat-step-main"><span class="chat-console-notice-text">${line}</span></div></li>`
+      );
+    }
+    const output = lines.map((row) => `<div class="chat-console-stdout">${renderAnsi(row) || " "}</div>`).join("");
     return (
-      `<li class="chat-step is-console-notice is-plain">` +
+      `<li class="chat-step is-console-notice is-plain is-event" data-step="${escapeHtml(key)}">` +
       `<span class="chat-step-node" aria-hidden="true"></span>` +
-      `<div class="chat-step-main"><span class="chat-console-notice-text">Monitor event: ${escapeHtml(ccClip(ccFlat(first), 160))}` +
-      `<span class="chat-console-dim"> · ${escapeHtml(label)}</span></span></div></li>`
+      `<div class="chat-step-main">` +
+      `<div class="chat-step-head"><button type="button" class="chat-step-toggle chat-console-notice-text" data-step-toggle aria-expanded="false">${line}</button></div>` +
+      `<div class="chat-console-hang is-event-more" data-step-toggle><span class="chat-console-branch" aria-hidden="true">└</span>` +
+      `<div class="chat-console-hang-body"><span class="chat-console-dim">… +${rest} ${rest === 1 ? "line" : "lines"}</span></div></div>` +
+      `<div class="chat-step-reveal"><div class="chat-step-reveal-inner"><div class="chat-console-hang is-expanded">` +
+      `<span class="chat-console-branch" aria-hidden="true">└</span><div class="chat-console-hang-body"><pre class="chat-console-out is-stdout">${output}</pre></div>` +
+      `</div></div></div></div></li>`
     );
   }
 
@@ -11111,7 +11150,7 @@
     for (let i = 0; i < traces.length; i += 1) {
       const trace = traces[i];
       if (trace.name === "monitor" && trace.backgroundResult && trace.status === "running") {
-        out.push(consoleMonitorEventHtml(trace));
+        out.push(consoleMonitorEventHtml(trace, "wake-" + (msg.id || "") + "-" + i));
         continue;
       }
       if (trace.backgroundResult && trace.status !== "running") {
@@ -11505,9 +11544,11 @@
       if (group) rows.push(group);
       group = null;
     };
-    // Console: a running call, and while the block is live its newest call,
-    // print on their own row; a call folds into the line once it has ended
-    // and something newer (a thought, a call, text) has arrived.
+    // Console: a running call (a background command too, for as long as its
+    // process runs), and while the block is live its newest call, print on
+    // their own row; a call folds into the line once it has ended and
+    // something newer (a thought, a call, text) has arrived. Claude Code
+    // folds both; Fuse never hides a command that is still running.
     let newest = -1;
     if (plain && blockLive) {
       for (let k = entries.length - 1; k >= 0 && newest < 0; k -= 1) {
@@ -11515,7 +11556,7 @@
       }
     }
     const holds = (entry, at, cls) => plain && cls.kind !== "silent" &&
-      (at === newest || (toolPresentation(entry.trace, live).running && !toolBackground(entry.trace)));
+      (at === newest || toolPresentation(entry.trace, live).running);
     let i = 0;
     while (i < entries.length) {
       const entry = entries[i];
@@ -11751,6 +11792,8 @@
         if (!found || found.kind === "tool_permission") return [];
         return [{ type: "permission", segmentIndex, perm: found }];
       }
+      // Thinking hidden (Show thinking, /thinking): no view prints thoughts.
+      if (part.type === "reasoning" && !showThinking) return [];
       return typeof part.text === "string" && part.text ? [{ type: part.type, text: part.text, segmentIndex }] : [];
     });
     const blocks = [];
@@ -12951,8 +12994,17 @@
     await reconcileThread().catch(() => {});
   }
 
+  // Commands that only change this page run at once, even while a reply runs.
+  const LOCAL_SLASH = new Set(["thinking", "help", "permissions"]);
+
   async function send() {
     const text = input.value.trim();
+    const local = parseSlashCommand(text);
+    if (local && LOCAL_SLASH.has(local.name)) {
+      closeSlash();
+      runSlash(local.name, local.arg);
+      return;
+    }
     if (runIsActive(activeRun)) {
       if (text || pendingAttachments.length) {
         // Composer has content: the button is Send and queues the turn,
@@ -13583,6 +13635,18 @@
     const slashOpen = slashMenu && !slashMenu.hidden;
     const extraOpen = extraPaletteOpen();
     const slashItems = slashOpen && slashKind === "slash" ? filteredSlash() : paletteItems;
+
+    // A typed local command (/thinking, /help, /permissions) runs at once,
+    // ahead of the slash menu and of queueing behind a running reply.
+    if (event.key === "Enter" && !event.shiftKey && !event.altKey && !spellOpen) {
+      const local = parseSlashCommand(input.value);
+      if (local && LOCAL_SLASH.has(local.name)) {
+        event.preventDefault();
+        closeSlash();
+        runSlash(local.name, local.arg);
+        return;
+      }
+    }
 
     if (streaming && event.key === "Enter" && !event.shiftKey) {
       // Enter never stops a running turn: it queues the message. Send now on
@@ -15128,6 +15192,16 @@
     syncSkillsUi();
   }
 
+  // Show or hide thoughts in every view at once (Appearance switch, /thinking).
+  function setShowThinking(on) {
+    showThinking = Boolean(on);
+    try { localStorage.setItem(STORE_THINKING, showThinking ? "shown" : "hidden"); } catch (_) {}
+    const toggle = viewMenu && viewMenu.querySelector("[data-thinking-toggle]");
+    if (toggle) toggle.checked = showThinking;
+    if (messages.length) paint();
+    if (agentViewId && agentRun) renderAgentView();
+  }
+
   function applyChatView(next) {
     const previous = chatView;
     chatView = CHAT_VIEWS.includes(next) ? next : "cli";
@@ -15350,13 +15424,7 @@
     const thinkingToggle = viewMenu.querySelector("[data-thinking-toggle]");
     if (thinkingToggle) {
       thinkingToggle.checked = showThinking;
-      thinkingToggle.addEventListener("change", () => {
-        showThinking = thinkingToggle.checked;
-        try { localStorage.setItem(STORE_THINKING, showThinking ? "shown" : "hidden"); } catch (_) {}
-        if (!isConsoleView()) return;
-        if (messages.length) paint();
-        if (agentViewId && agentRun) renderAgentView();
-      });
+      thinkingToggle.addEventListener("change", () => setShowThinking(thinkingToggle.checked));
     }
     viewMenu.querySelectorAll("[data-view]").forEach((btn) => {
       btn.addEventListener("click", (event) => {

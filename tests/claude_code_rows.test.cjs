@@ -75,6 +75,9 @@ test("a call's time sits on its header from 2s, once per call", () => {
   assert.equal(took({ name: 'web_search', call_duration_ms: 4_000 }), '', 'web search says it in its result');
   assert.equal(took({ name: 'run_terminal_command', elapsed_ms: 12_000 }, true), ' · 12s', 'running ticks from its start');
   assert.equal(took({ name: 'run_terminal_command', elapsed_ms: 500 }, true), '', 'running under 2s');
+  // A Wait's duration_ms is its command's run time, not the wait.
+  assert.equal(took({ name: 'get_command_output', call_duration_ms: 31_000, duration_ms: 184_727 }), ' · 31s');
+  assert.equal(took({ name: 'get_command_output', duration_ms: 184_727 }), '', 'no call time, no clock');
 });
 
 test("a running subagent's row names its latest step", () => {
