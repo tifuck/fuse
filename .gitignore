@@ -17,3 +17,4 @@ screenshots/
 agent/tests/test_expand_home
 agent/tests/test_files
 agent/tests/test_reconnect
+.claude/
