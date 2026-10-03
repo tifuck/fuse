@@ -402,7 +402,7 @@
   // viewport. The origin is measured rather than assumed, because a chat
   // backdrop gives .chat-box a backdrop-filter, which makes it the containing
   // block for even position:fixed children.
-  function placeComposerPop(menu, anchor, maxHeight) {
+  function placeComposerPop(menu, anchor, maxHeight, pinRight) {
     if (!menu || menu.hidden || !anchor || menu.classList.contains("is-sheet")) return;
     const gutter = 8;
     menu.style.top = "auto";
@@ -420,7 +420,8 @@
     const width = menu.offsetWidth;
     const vw = document.documentElement.clientWidth;
     let left = b.left;
-    if (left + width > vw - gutter) left = b.right - width;
+    if (pinRight && !overlayIsMobile()) left = (box ? box.getBoundingClientRect().right : b.right) - width;
+    else if (left + width > vw - gutter) left = b.right - width;
     left = Math.max(gutter, Math.min(left, vw - gutter - width));
     menu.style.left = Math.round(left - origin.left) + "px";
     menu.style.bottom = Math.round(origin.bottom - top) + "px";
@@ -10090,7 +10091,7 @@
   }
 
   function placePermsMenu() {
-    placeComposerPop(permsMenuEl, permChip, 30 * 16);
+    placeComposerPop(permsMenuEl, permChip, 30 * 16, true);
   }
 
   function setPermsOpen(open) {
@@ -12245,10 +12246,18 @@
     return [...messages].reverse().find((msg) => msg.role === "assistant");
   }
 
+  let pickerPinId = "";
   function filteredModels() {
     const q = pickerFilter.trim().toLowerCase();
-    if (!q) return allModels;
-    return allModels.filter(
+    const pinned = modelsById.get(pickerPinId);
+    let list = allModels;
+    if (pinned) {
+      const same = allModels.filter((m) => m.type === pinned.type && m.id !== pinned.id);
+      const rest = allModels.filter((m) => m.type !== pinned.type);
+      list = [pinned, ...same, ...rest];
+    }
+    if (!q) return list;
+    return list.filter(
       (model) =>
         model.name.toLowerCase().includes(q) ||
         model.id.toLowerCase().includes(q) ||
@@ -12366,6 +12375,7 @@
     pickerOpen = true;
     overlayPush("picker");
     pickerFilter = "";
+    pickerPinId = modelId;
     const items = filteredModels();
     pickerIndex = Math.max(
       0,
@@ -12389,7 +12399,7 @@
   // left once the input wraps. Open toward whichever side has room and clamp
   // to the viewport, instead of a fixed per-view side.
   function placePicker() {
-    placeComposerPop(pickerMenuEl, pickerHost.querySelector(".chat-picker-btn"), 26 * 16);
+    placeComposerPop(pickerMenuEl, pickerHost.querySelector(".chat-picker-btn"), 26 * 16, true);
   }
   window.addEventListener("resize", () => { if (pickerOpen) placePicker(); });
 
@@ -12398,7 +12408,7 @@
     if (!modelsById.has(id)) return;
     if (id !== modelId && !requireLive()) return;
     modelId = id;
-    pickerIndex = Math.max(0, allModels.findIndex((model) => model.id === id));
+    pickerIndex = Math.max(0, filteredModels().findIndex((model) => model.id === id));
     persist();
     if (dismiss || !pickerOpen) {
       closePicker();
