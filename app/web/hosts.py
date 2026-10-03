@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+import base64
+import re
 
-from .. import hosts
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+
+from .. import chats, hosts
 from ..security import limiter
 from .deps import (
     _chat_auth,
@@ -28,7 +31,87 @@ async def hosts_page(request: Request):
 
 @router.get("/projects", response_class=HTMLResponse)
 async def projects_page(request: Request):
-    return await hosts_page(request)
+    user, redir = require_user(request)
+    if redir:
+        return redir
+    return render(request, "projects.html", user, projects_bundle=_projects_bundle(user["id"]))
+
+
+def _projects_bundle(user_id: int) -> dict:
+    bundle = hosts.list_bundle(user_id)
+    return {
+        "projects": chats.list_sidebar_projects(user_id),
+        "hosts": [
+            {"id": h["id"], "alias": h["alias"], "label": h.get("label") or "", "default_cwd": h.get("default_cwd") or "",
+             "auth_type": h.get("auth_type") or "", "online": h.get("online")}
+            for h in bundle["hosts"]
+        ],
+        "vault": bundle["vault"],
+    }
+
+
+@router.get("/projects/api")
+async def projects_api(request: Request):
+    user, err = _chat_auth(request)
+    if err:
+        return err
+    return JSONResponse(_projects_bundle(user["id"]), headers={"Cache-Control": "no-store"})
+
+
+@router.get("/projects/{project_id}/logo")
+async def project_logo(request: Request, project_id: int):
+    user, err = _chat_auth(request)
+    if err:
+        return err
+    found = hosts.project_logo(user["id"], project_id)
+    if not found:
+        raise HTTPException(404, "no logo")
+    mime, data = found
+    # The URL carries ?v=<logo_rev>, so a cached copy is never stale.
+    return Response(data, media_type=mime, headers={
+        "Cache-Control": "private, max-age=31536000, immutable",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'",
+    })
+
+
+_DATA_URL = re.compile(r"^data:(image/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=\s]+)$")
+
+
+@router.put("/hosts/{host_id}/projects/{project_id}/logo")
+async def hosts_project_logo_put(request: Request, host_id: int, project_id: int):
+    user, err = _chat_auth(request)
+    if err:
+        return err
+    raw = await _json_object(request)
+    match = _DATA_URL.match(raw.get("data") or "") if isinstance(raw.get("data"), str) else None
+    if not match or set(raw) - {"data"}:
+        raise HTTPException(422, "data must be a PNG, JPEG or WebP data URL")
+    try:
+        blob = base64.b64decode(match.group(2), validate=False)
+    except ValueError:
+        raise HTTPException(422, "logo is not valid base64") from None
+    if hosts.get_project(user["id"], host_id, project_id) is None:
+        raise HTTPException(404, "project not found")
+    try:
+        item = hosts.set_project_logo(user["id"], project_id, match.group(1), blob)
+    except hosts.HostError as exc:
+        return _host_fail(exc)
+    return JSONResponse(item)
+
+
+@router.delete("/hosts/{host_id}/projects/{project_id}/logo")
+async def hosts_project_logo_delete(request: Request, host_id: int, project_id: int):
+    user, err = _chat_auth(request)
+    if err:
+        return err
+    if hosts.get_project(user["id"], host_id, project_id) is None:
+        raise HTTPException(404, "project not found")
+    try:
+        item = hosts.clear_project_logo(user["id"], project_id)
+    except hosts.HostError as exc:
+        return _host_fail(exc)
+    return JSONResponse(item)
 
 
 @router.get("/hosts/scheduled", response_class=HTMLResponse)
@@ -128,7 +211,12 @@ async def hosts_project_delete(request: Request, host_id: int, project_id: int):
     user, err = _chat_auth(request)
     if err:
         return err
-    if not hosts.delete_project(user["id"], host_id, project_id):
+    sessions = request.query_params.get("sessions") or "delete"
+    try:
+        found = hosts.delete_project(user["id"], host_id, project_id, sessions=sessions)
+    except hosts.HostError as exc:
+        return _host_fail(exc)
+    if not found:
         raise HTTPException(404, "project not found")
     return JSONResponse({"ok": True})
 

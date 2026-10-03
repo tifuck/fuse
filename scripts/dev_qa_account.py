@@ -10,7 +10,8 @@ password stays stable after scripts.clone_db_to_dev recreates fuse_dev (that
 script runs this one afterwards). Fixture threads are synthetic and owned
 only by the QA account; every run deletes and recreates them. "Heavy
 transcript" is a ~5 MB, 200-message thread with subagents for load-time checks.
-"Summary lines" exercises Console's Claude Code summary lines.
+"Summary lines" exercises Console's Claude Code summary lines. A fake
+connector machine "qa-box" carries projects for the Projects page and chooser.
 """
 from __future__ import annotations
 
@@ -828,7 +829,38 @@ def _seed(uid: int):
                          lambda i, desc, status: _heavy_child_message(i, desc), _heavy_child_transcript)
         _insert_commands(conn, uid, htid, hroot, [t for m in heavy for t in m.get("tools") or []], ts)
     print(f"heavy thread: https://127.0.0.1:8089/chat?t={heavy_view['id']}")
+    _seed_projects(uid)
     return view["id"]
+
+
+QA_MACHINE = "qa-box"
+
+
+def _seed_projects(uid: int):
+    """A connector machine that never connects, with projects in each state
+    the Projects page, chooser and sidebar draw: picked color, custom color,
+    read-only, archived, plus one project session."""
+    from app import chats, db, hosts
+
+    db.execute("DELETE FROM user_hosts WHERE user_id=? AND alias=?", (uid, QA_MACHINE))
+    ts = db.now()
+    db.execute(
+        """INSERT INTO user_hosts(user_id, alias, label, hostname, username, auth_type, secret, default_cwd, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (uid, QA_MACHINE, "QA fixture machine", "qa-box.invalid", "qa", "agent", "", "/srv", ts, ts),
+    )
+    hid = int(db.fetchone("SELECT id FROM user_hosts WHERE user_id=? AND alias=?", (uid, QA_MACHINE))["id"])
+    api = hosts.add_project(uid, hid, {"name": "fuse-api", "remote_path": "/srv/fuse-api", "color": "#0090FF"})
+    hosts.add_project(uid, hid, {"name": "marketing-site", "remote_path": "/srv/marketing-site", "color": "#D6409F"})
+    hosts.add_project(uid, hid, {"name": "infra", "remote_path": "/srv/infra", "color": "#2BB673", "permission_mode": "read_only"})
+    old = hosts.add_project(uid, hid, {"name": "legacy-dashboard", "remote_path": "/srv/legacy-dashboard", "color": "#A18072"})
+    hosts.patch_project(uid, hid, old["id"], {"archived": True})
+    chats.create_thread(uid, title=FIXTURE_PREFIX + "Project session", model="qa/fixture-model", kind="project",
+                        host_id=hid, project_id=api["id"], messages=[
+        {"id": _mid(), "role": "user", "content": "Where is the retry policy defined?", "reasoning": "", "error": ""},
+        {"id": _mid(), "role": "assistant", "content": "In `app/retry.py`, `delay()` doubles from 0.5s.", "reasoning": "", "error": "", "model": "qa/fixture-model"},
+    ])
+    print(f"projects: machine {QA_MACHINE} with 4 projects (1 archived)")
 
 
 def main(argv):

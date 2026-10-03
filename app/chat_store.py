@@ -2080,7 +2080,8 @@ def thread_view(conn, user_id, thread_id, *, queued=()):
     from . import chats
 
     row = conn.execute(
-        """SELECT t.*, h.alias AS host_alias, p.name AS project_name, s.name AS schedule_name
+        """SELECT t.*, h.alias AS host_alias, p.name AS project_name, p.color AS project_color,
+                  p.logo_rev AS project_logo_rev, p.archived AS project_archived, s.name AS schedule_name
            FROM chat_threads t
            LEFT JOIN user_hosts h ON h.id=t.host_id
            LEFT JOIN user_projects p ON p.id=t.project_id

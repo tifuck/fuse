@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     # Optional helper model; normal account access/billing still applies.
     chat_metadata_model: str = ""
     chat_metadata_timeout: int = 30  # Per attempt; capped at 30s for bounded leases.
+    # Instance-wide cleanup ceilings on top of each user's own settings (0 = off).
+    # Archive chats/projects inactive this many days; delete what has been archived this long.
+    retention_force_archive_days: int = 0
+    retention_force_delete_days: int = 0
 
     # Dashboard context meter + compaction. Ratios are of the model window.
     # Strategy is a name in app.context.STRATEGIES so a later summarizer can

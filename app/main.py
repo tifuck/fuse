@@ -14,7 +14,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.responses import JSONResponse
 
 from .config import ROOT, settings
-from . import accounts, db, chat_store, chat_runs, chat_events, chat_recaps, chat_titles, host_events, issues_pipeline, sources as sources_module
+from . import accounts, db, chat_store, chat_runs, chat_events, chat_recaps, chat_titles, host_events, issues_pipeline, retention, sources as sources_module
 from .api import router as api_router
 from .web import router as web_router
 from .agent_http import router as agent_http_router
@@ -53,6 +53,12 @@ async def _maintenance_loop(app: FastAPI):
             raise
         except Exception:
             logger.exception("Chat run reaper failed")
+        try:
+            await retention.tick()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Chat retention sweep failed")
 
 
 async def _run_refresh_job(name: str, job) -> str | None:

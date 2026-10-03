@@ -553,6 +553,8 @@ def _ensure_chat_columns(conn: sqlite3.Connection) -> None:
     from . import chat_recaps
     chat_recaps.init_schema(conn)
     _ensure_host_tables(conn)
+    from . import retention
+    retention.init_schema(conn)
     _ensure_skill_tables(conn)
     _ensure_schedule_tables(conn)
     _ensure_column(conn, "chat_threads", "schedule_id", "INTEGER")

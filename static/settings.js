@@ -100,6 +100,37 @@
     });
   });
 
+  const cleanup = root.querySelector("[data-cleanup-form]");
+  if (cleanup) {
+    const f = cleanup.elements;
+    const sync = () => {
+      cleanup.querySelectorAll("[data-cleanup-group]").forEach((el) => {
+        const on = f[el.getAttribute("data-cleanup-group") + "_on"].checked;
+        el.classList.toggle("is-off", !on);
+        el.querySelectorAll("input, select").forEach((input) => { input.disabled = !on; });
+      });
+    };
+    cleanup.querySelectorAll("[data-cleanup-toggle]").forEach((el) => el.addEventListener("change", sync));
+    sync();
+    cleanup.addEventListener("submit", (event) => {
+      event.preventDefault();
+      run(cleanup, cleanup.querySelector("[data-cleanup-status]"), async () => {
+        const value = Math.max(1, Math.round(Number(f.archive_value.value) || 0));
+        const hours = f.archive_on.checked ? value * (f.archive_unit.value === "days" ? 24 : 1) : 0;
+        const days = f.delete_on.checked ? Math.max(1, Math.round(Number(f.delete_days.value) || 0)) : 0;
+        if (hours > 8760) throw new Error("Auto-archive can wait at most a year.");
+        if (days > 3650) throw new Error("Auto-delete can wait at most ten years.");
+        await api("/settings/cleanup", "POST", {
+          archive_hours: hours,
+          archive_chats: f.archive_chats.checked,
+          archive_projects: f.archive_projects.checked,
+          delete_days: days,
+        });
+        return hours || days ? "Saved. Cleanup runs every few minutes." : "Saved. Nothing is archived or deleted automatically.";
+      });
+    });
+  }
+
   const bell = root.querySelector("[data-notif-toggle]");
   const state = root.querySelector("[data-notif-state]");
   if (bell && state) {

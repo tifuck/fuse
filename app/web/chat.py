@@ -844,14 +844,15 @@ async def chat_compact(request: Request, thread_id: str):
     )
 
 
+@router.post("/chat/threads/{thread_id}/fork")
 @router.post("/chat/threads/{thread_id}/duplicate")
-async def chat_thread_duplicate(request: Request, thread_id: str):
+async def chat_thread_fork(request: Request, thread_id: str):
     user, err = _chat_auth(request)
     if err:
         return err
     raw = await _json_object(request)
     try:
-        thread = chats.duplicate_thread(user["id"], thread_id, expected_revision=_chat_revision(raw), command_id=_chat_command(raw))
+        thread = chats.fork_thread(user["id"], thread_id, expected_revision=_chat_revision(raw), command_id=_chat_command(raw))
     except chats.ChatValidationError as exc:
         raise _chat_validation_error(exc) from None
     if not thread:

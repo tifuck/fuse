@@ -24,17 +24,6 @@
   const historyKicker = root.querySelector("[data-history-kicker]");
   const historySearch = root.querySelector("[data-history-search]");
   const archivedBtn = root.querySelector("[data-history-archived]");
-  const projectPicker = root.querySelector("[data-project-picker]");
-  const projectPickerList = root.querySelector("[data-project-picker-list]");
-  const projectPickerForm = root.querySelector("[data-project-picker-form]");
-  const projectPickerTitle = root.querySelector("[data-project-picker-title]");
-  const projectPickerBack = root.querySelector("[data-project-picker-back]");
-  const projectPickerHost = root.querySelector("[data-project-picker-host]");
-  const projectPickerName = root.querySelector("[data-project-picker-name]");
-  const projectPickerPath = root.querySelector("[data-project-picker-path]");
-  const projectPickerBrowseBtn = root.querySelector("[data-project-picker-browse]");
-  const projectPickerBrowser = root.querySelector("[data-project-picker-browser]");
-  const projectPickerError = root.querySelector("[data-project-picker-error]");
   const slashMenu = root.querySelector("[data-chat-slash]");
   const slashList = root.querySelector("[data-chat-slash-list]");
   const slashKicker = slashMenu ? slashMenu.querySelector(".chat-slash-kicker") : null;
@@ -56,6 +45,7 @@
   const titleEl = root.querySelector("[data-chat-title]");
   const projectChip = root.querySelector("[data-project-chip]");
   const projectName = root.querySelector("[data-project-name]");
+  const projectIconEl = root.querySelector("[data-project-icon]");
   const welcomeEl = root.querySelector("[data-chat-welcome]");
   const memoryPanel = root.querySelector("[data-chat-memory]");
   const memoryToggle = root.querySelector("[data-memory-toggle]");
@@ -455,7 +445,6 @@
     else if (kind === "rewind") closeRewind();
     else if (kind === "agent") closeAgentView();
     else if (kind === "search") setSearchOpen(false);
-    else if (kind === "project-picker") setProjectPickerOpen(false);
     else if (kind === "pop") closePop();
     else if (kind === "context") closeContextPop();
     else if (kind === "agent-context") closeAgentContextPop();
@@ -474,7 +463,7 @@
   // Layers that live inside the chat drawer. Opening a chat from the drawer
   // must retire their history entries before the chat's own URL is written.
   function dropDrawerLayers() {
-    for (const kind of ["pop", "search", "project-picker", "history"]) overlayDrop(kind);
+    for (const kind of ["pop", "search", "history"]) overlayDrop(kind);
   }
   document.addEventListener("click", (event) => {
     if (event.detail === 0) return; // Keyboard/programmatic activation is not a touch ghost.
@@ -507,8 +496,6 @@
   let archivedThreads = [];
   let projects = [];
   let pickerHosts = [];
-  let pickerMode = "list";
-  let pickerBrowse = null;
   let currentId = null;
   let showArchived = false;
   let historyQuery = "";
@@ -2452,10 +2439,8 @@
     sendBtn.disabled = streaming ? false : sending || loading || !(hasText || hasAttach) || !modelId || !isLive();
     sendBtn.classList.toggle("is-stop", stop);
     sendBtn.setAttribute("aria-label", stop ? "Stop" : "Send");
-    const pickerOpen = Boolean(projectPicker && !projectPicker.hidden);
     newBtns.forEach((btn) => {
       btn.disabled = sending;
-      btn.setAttribute("aria-expanded", String(historyTab === "projects" && pickerOpen));
     });
     input.disabled = !allModels.length;
     if (attachBtn) attachBtn.disabled = streaming || sending || !modelId;
@@ -3932,6 +3917,8 @@
         project_name: info?.project_name || current.project_name || "",
         remote_path: info?.remote_path || "",
         permission_mode: info?.permission_mode || "",
+        color: info?.color || current.project_color || "",
+        logo_url: info?.logo_url || current.project_logo_url || "",
       };
     }
     return null;
@@ -3961,6 +3948,7 @@
       if (bound && project) {
         projectChip.hidden = false;
         if (projectName) projectName.textContent = project;
+        if (projectIconEl) projectIconEl.innerHTML = projectIcon(bound, 14);
         projectChip.title = [project, ...projectWorkspaceDetails(bound)].join(" | ");
         projectChip.setAttribute("aria-label", projectChip.title);
       } else {
@@ -4145,17 +4133,14 @@
     const projectLabel = historyTab === "projects";
     if (newLabel) newLabel.textContent = projectLabel ? "New project" : "New chat";
     if (newBtn) {
-      newBtn.setAttribute("aria-label", projectLabel ? "New project" : "New chat");
-      newBtn.title = projectLabel ? "New project" : "New chat";
+      newBtn.setAttribute("aria-label", projectLabel ? "New project session" : "New chat");
+      newBtn.title = projectLabel ? "New project session" : "New chat";
+      if (projectLabel) newBtn.setAttribute("aria-haspopup", "dialog");
+      else newBtn.removeAttribute("aria-haspopup");
     }
-    if (!projectLabel) setProjectPickerOpen(false);
     const filters = root.querySelector("[data-project-filters]");
     if (filters) {
-      filters.hidden =
-        historyTab !== "projects" ||
-        Boolean(historyQuery.trim()) ||
-        showArchived ||
-        Boolean(projectPicker && !projectPicker.hidden);
+      filters.hidden = historyTab !== "projects" || Boolean(historyQuery.trim()) || showArchived;
     }
     fillProjectFilterOptions();
     syncComposer();
@@ -4166,6 +4151,10 @@
   function archivedForTab() {
     const projectTab = historyTab === "projects";
     return archivedThreads.filter((item) => (item.kind === "project") === projectTab);
+  }
+
+  function archivedProjects() {
+    return historyTab === "projects" ? projects.filter((item) => item.archived) : [];
   }
 
   function filteredHistory() {
@@ -4385,6 +4374,13 @@
     };
   }
 
+  // A project's folder in its own color, or its logo. Falls back to the
+  // plain glyph if the shared helper failed to load.
+  function projectIcon(project, size) {
+    if (!window.FuseProjects) return historyIcons().folder;
+    return window.FuseProjects.icon(project || {}, { size: size || 13, className: "chat-history-glyph" });
+  }
+
   function projectMeta(name, host) {
     const hostLabel = host
       ? `<span class="chat-history-host-label">${escapeHtml(host)}</span>`
@@ -4405,7 +4401,7 @@
       project && !grouped ? projectMeta(item.project_name || "Project", item.host_alias) : "";
     const lead =
       (running ? runSpinMarkup("h-" + item.id) : ageChip(item)) +
-      (project ? historyIcons().folder : "");
+      (project ? projectIcon({ color: item.project_color, logo_url: item.project_logo_url }) : "");
     const groupedClass = project && grouped ? " is-grouped" : "";
     const runningClass = running ? " is-running" : "";
     const busy = running ? ' aria-busy="true"' : "";
@@ -4431,16 +4427,18 @@
     const path = item.remote_path
       ? `<span class="chat-history-meta"><span class="chat-history-project">${escapeHtml(item.remote_path)}</span>${hostLabel}</span>`
       : "";
-    const chip = historyQuery.trim() ? '<span class="chat-history-chip">Project</span>' : "";
+    const chip = item.archived
+      ? '<span class="chat-history-chip">Archived</span>'
+      : historyQuery.trim() ? '<span class="chat-history-chip">Project</span>' : "";
     const threadAttr = item.thread_id ? ` data-thread="${escapeHtml(String(item.thread_id))}"` : "";
     const lead =
       (running ? runSpinMarkup("p-" + item.host_id + "-" + item.id) : ageChip(item)) +
-      historyIcons().folder;
+      projectIcon(item);
     const runningClass = running ? " is-running" : "";
     const busy = running ? ' aria-busy="true"' : "";
     const working = running ? '<span class="visually-hidden">Working</span>' : "";
     const twoLine = Boolean(item.remote_path);
-    return `<div class="chat-history-item is-project${on}${twoLine ? " has-snip" : ""}${runningClass}" data-project="${item.host_id}:${item.id}"${threadAttr}${busy}><button type="button" class="open" title="${escapeHtml(name)}">${working}<span class="chat-history-title">${lead}<span class="chat-history-copy"><span class="chat-history-name">${escapeHtml(name)}</span>${path}</span></span>${chip}</button></div>`;
+    return `<div class="chat-history-item is-project${on}${twoLine ? " has-snip" : ""}${runningClass}" data-project="${item.host_id}:${item.id}"${threadAttr}${busy}><button type="button" class="open" title="${escapeHtml(name)}">${working}<span class="chat-history-title">${lead}<span class="chat-history-copy"><span class="chat-history-name">${escapeHtml(name)}</span>${path}</span></span>${chip}</button><button type="button" class="more" aria-label="Project actions">⋯</button></div>`;
   }
 
   function searchingChip(item) {
@@ -4471,6 +4469,7 @@
     if (!select) return;
     const seen = new Map();
     projects.forEach((item) => {
+      if (item.archived) return;
       const key = projectKey(item.host_id, item.id);
       seen.set(key, item.host_alias ? `${item.name || "Project"} · ${item.host_alias}` : (item.name || "Project"));
     });
@@ -4514,28 +4513,6 @@
     return items;
   }
 
-  function projectOverviewHtml(items, opts) {
-    if (!items.length) return "";
-    const bound = sessionProject();
-    const heading = opts && opts.heading === false
-      ? ""
-      : '<p class="project-overview-heading">Workspaces</p>';
-    return '<section class="project-overview" aria-label="Project overview">' + heading +
-      items.map((item) => {
-        const key = projectKey(item.host_id, item.id);
-        const selected = bound && projectKey(bound.host_id, bound.project_id) === key;
-        const name = item.name || "Project";
-        const details = projectWorkspaceDetails(item).map((detail) =>
-          `<span class="project-overview-detail">${escapeHtml(detail)}</span>`
-        ).join("");
-        return `<div class="project-overview-item${selected ? " project-overview-current" : ""}">` +
-          `<button type="button" class="project-overview-open" data-project-overview-open="${escapeHtml(key)}" title="${escapeHtml([name, ...projectWorkspaceDetails(item)].join(" | "))}"${selected ? ' aria-current="true"' : ""}>` +
-          `<span class="project-overview-name">${escapeHtml(name)}</span>` +
-          `<span class="project-overview-details">${details}</span></button>` +
-          `<button type="button" class="project-overview-start" data-project-overview-start="${escapeHtml(key)}" aria-label="${escapeHtml("Start session in " + name + (item.host_alias ? " on " + item.host_alias : ""))}">Start session</button></div>`;
-      }).join("") + '</section>';
-  }
-
   function groupedProjectSessions(items) {
     const byKey = new Map();
     items.forEach((item) => {
@@ -4544,6 +4521,7 @@
         byKey.set(key, {
           name: item.project_name || "Project",
           host: item.host_alias || "",
+          icon: { color: item.project_color, logo_url: item.project_logo_url },
           items: [],
         });
       }
@@ -4555,7 +4533,7 @@
   function syncHistoryFooter() {
     const footer = root.querySelector(".chat-history-footer");
     if (!footer) return;
-    footer.hidden = Boolean(projectPicker && !projectPicker.hidden);
+    footer.hidden = false;
     syncRunSpinners();
   }
 
@@ -4574,13 +4552,13 @@
     }
     const archived = archivedForTab();
     if (archivedBtn) {
-      archivedBtn.hidden = searching || (archived.length === 0 && !showArchived);
+      archivedBtn.hidden = searching || (archived.length === 0 && archivedProjects().length === 0 && !showArchived);
       archivedBtn.classList.toggle("is-on", showArchived);
       archivedBtn.setAttribute("aria-pressed", String(showArchived));
       const label = archivedBtn.querySelector("[data-history-archived-label]");
       const count = archivedBtn.querySelector("[data-history-archived-count]");
       if (label) label.textContent = showArchived ? (historyTab === "projects" ? "Back to projects" : "Back to chats") : "Archived";
-      if (count) count.textContent = showArchived ? "" : String(archived.length);
+      if (count) count.textContent = showArchived ? "" : String(archived.length + archivedProjects().length);
     }
     if (searching) {
       const q = historyQuery.trim().toLowerCase();
@@ -4610,9 +4588,15 @@
       return;
     }
     if (showArchived) {
-      historyList.innerHTML = archived.length
-        ? archived.map((item) => historyRow(item)).join("")
-        : `<p class="chat-history-empty">${historyTab === "projects" ? "No archived project sessions." : "No archived chats."}</p>`;
+      const shelved = archivedProjects();
+      let html = "";
+      if (shelved.length) {
+        html += `<p class="chat-history-kicker">Projects</p>` + shelved.map(projectRow).join("");
+        if (archived.length) html += `<p class="chat-history-kicker">Sessions</p>`;
+      }
+      html += archived.map((item) => historyRow(item)).join("");
+      historyList.innerHTML = html ||
+        `<p class="chat-history-empty">${historyTab === "projects" ? "No archived projects or sessions." : "No archived chats."}</p>`;
       syncHistoryFooter();
       return;
     }
@@ -4620,6 +4604,7 @@
       const sessions = projectSessionList();
       const used = new Set(sessions.map((item) => projectKey(item.host_id, item.project_id)));
       const unused = projects.filter((item) => {
+        if (item.archived) return false;
         if (projectFilter && projectKey(item.host_id, item.id) !== projectFilter) return false;
         return !used.has(projectKey(item.host_id, item.id));
       });
@@ -4634,6 +4619,7 @@
         groupedProjectSessions(sessions).forEach((group) => {
           html +=
             `<div class="chat-history-project-head">` +
+            projectIcon(group.icon) +
             `<span class="chat-history-project">${escapeHtml(group.name)}</span>` +
             (group.host ? `<span class="chat-history-host-label">${escapeHtml(group.host)}</span>` : "") +
             `</div>`;
@@ -4679,7 +4665,6 @@
     if (open && !was) overlayPush("search");
     else if (!open && was) overlayDrop("search");
     if (open) {
-      setProjectPickerOpen(false);
       row.hidden = false;
       historySearch.focus();
       historySearch.select();
@@ -4746,182 +4731,22 @@
     await startProjectThread(hostId, projectId);
   }
 
-  function setProjectPickerOpen(open) {
-    if (!projectPicker) return;
-    if (!open) {
-      if (!projectPicker.hidden) overlayDrop("project-picker");
-      projectPicker.hidden = true;
-      if (historyList) historyList.hidden = false;
-      pickerMode = "list";
-      pickerBrowse = null;
-      if (projectPickerForm) projectPickerForm.hidden = true;
-      if (projectPickerList) projectPickerList.hidden = false;
-      if (projectPickerBack) projectPickerBack.hidden = true;
-      if (projectPickerBrowser) {
-        projectPickerBrowser.hidden = true;
-        projectPickerBrowser.innerHTML = "";
-      }
-      if (projectPickerError) {
-        projectPickerError.hidden = true;
-        projectPickerError.textContent = "";
-      }
-      if (projectPickerTitle) projectPickerTitle.textContent = "Workspaces";
-      syncHistoryFooter();
-      syncComposer();
-      return;
-    }
-    if (historyList) historyList.hidden = true;
-    const footer = root.querySelector(".chat-history-footer");
-    if (footer) footer.hidden = true;
-    if (historyKicker) historyKicker.hidden = true;
-    if (projectPicker.hidden) overlayPush("project-picker");
-    projectPicker.hidden = false;
-    syncHistoryFooter();
-    syncComposer();
-  }
-
   function pickerHostById(id) {
     return pickerHosts.find((host) => String(host.id) === String(id));
   }
 
-  function pickerWorkspaceItems() {
-    const items = [];
-    pickerHosts.forEach((host) => {
-      (Array.isArray(host.projects) ? host.projects : []).forEach((item) => {
-        items.push({
-          host_id: host.id,
-          id: item.id,
-          host_alias: host.alias || "",
-          name: item.name || "Project",
-          remote_path: item.remote_path || "",
-          permission_mode: item.permission_mode || "",
-        });
-      });
-    });
-    return items;
-  }
-
-  function renderProjectPickerList() {
-    if (!projectPickerList) return;
-    if (!pickerHosts.length) {
-      projectPickerList.innerHTML =
-        `<p class="chat-history-empty">No machines yet. Add one from Machines in the account menu.</p>` +
-        `<a class="chat-history-empty-link" href="/projects">Add a machine</a>`;
-      return;
-    }
-    const workspaces = pickerWorkspaceItems();
-    projectPickerList.innerHTML =
-      (workspaces.length
-        ? projectOverviewHtml(workspaces, { heading: false })
-        : `<p class="chat-history-empty">No projects yet. Create one on a host.</p>`) +
-      `<button type="button" class="chat-project-pick is-add" data-project-picker-add>New project on a host</button>`;
-  }
-
-  function fillPickerHosts() {
-    if (!projectPickerHost) return;
-    projectPickerHost.innerHTML = pickerHosts
-      .map((host) => `<option value="${escapeHtml(String(host.id))}">${escapeHtml(host.alias || "host")}</option>`)
-      .join("");
-    syncPickerHostDefaults();
-  }
-
-  function syncPickerHostDefaults() {
-    const host = pickerHostById(projectPickerHost && projectPickerHost.value);
-    if (!host) return;
-    if (projectPickerPath && !projectPickerPath.value) {
-      projectPickerPath.value = host.default_cwd || "";
-    }
-  }
-
-  function showPickerForm() {
-    pickerMode = "form";
-    pickerBrowse = null;
-    if (projectPickerList) projectPickerList.hidden = true;
-    if (projectPickerForm) projectPickerForm.hidden = false;
-    if (projectPickerBack) projectPickerBack.hidden = false;
-    if (projectPickerTitle) projectPickerTitle.textContent = "New on a host";
-    if (projectPickerName) projectPickerName.value = "";
-    if (projectPickerPath) projectPickerPath.value = "";
-    if (projectPickerBrowser) {
-      projectPickerBrowser.hidden = true;
-      projectPickerBrowser.innerHTML = "";
-    }
-    if (projectPickerError) {
-      projectPickerError.hidden = true;
-      projectPickerError.textContent = "";
-    }
-    fillPickerHosts();
-    if (projectPickerName) projectPickerName.focus();
-  }
-
-  function showPickerList() {
-    pickerMode = "list";
-    pickerBrowse = null;
-    if (projectPickerForm) projectPickerForm.hidden = true;
-    if (projectPickerList) projectPickerList.hidden = false;
-    if (projectPickerBack) projectPickerBack.hidden = true;
-    if (projectPickerBrowser) {
-      projectPickerBrowser.hidden = true;
-      projectPickerBrowser.innerHTML = "";
-    }
-    if (projectPickerTitle) projectPickerTitle.textContent = "Workspaces";
-    if (projectPickerError) {
-      projectPickerError.hidden = true;
-      projectPickerError.textContent = "";
-    }
-  }
-
-  function renderPickerBrowse() {
-    if (!projectPickerBrowser || !pickerBrowse) return;
-    const path = pickerBrowse.path || "/";
-    const dirs = (pickerBrowse.entries || []).filter((item) => item && (item.dir || item.kind === "dir"));
-    const rows = dirs
-      .map(
-        (item) =>
-          `<li><button type="button" class="hosts-browse-item" data-picker-into="${escapeHtml(item.name)}"><span class="hosts-browse-kind">dir</span><span>${escapeHtml(item.name)}</span></button></li>`
-      )
-      .join("");
-    projectPickerBrowser.hidden = false;
-    projectPickerBrowser.innerHTML =
-      `<div class="hosts-browse-bar"><span class="hosts-browse-path">${escapeHtml(path)}</span>` +
-      `<button type="button" class="btn sm ghost" data-picker-up>Up</button>` +
-      `<button type="button" class="btn sm" data-picker-use>Use this folder</button></div>` +
-      `<ul class="hosts-browse-list">${rows || "<li class='usage-sub'>Empty folder</li>"}</ul>`;
-  }
-
-  async function loadPickerBrowse(path) {
-    const hostId = projectPickerHost && projectPickerHost.value;
-    if (!hostId) return;
-    const data = await api(`/hosts/${hostId}/browse`, {
-      method: "POST",
-      body: JSON.stringify({ path: path || "" }),
-    });
-    pickerBrowse = {
-      path: data.path || path || "/",
-      parent: data.parent || "",
-      entries: Array.isArray(data.entries) ? data.entries : [],
-    };
-    if (projectPickerPath) projectPickerPath.value = pickerBrowse.path;
-    const base = String(pickerBrowse.path).replace(/\/+$/, "").split("/").pop();
-    if (projectPickerName && !projectPickerName.value && base && base !== "/") projectPickerName.value = base;
-    renderPickerBrowse();
-  }
-
   async function openProjectPicker() {
-    if (sending) return;
-    if (projectPicker && !projectPicker.hidden) {
-      setProjectPickerOpen(false);
-      return;
-    }
-    try {
-      const data = await api("/hosts/api");
-      pickerHosts = Array.isArray(data.hosts) ? data.hosts : [];
-      showPickerList();
-      renderProjectPickerList();
-      setProjectPickerOpen(true);
-    } catch (error) {
-      showFailure("Could not load projects", error);
-    }
+    if (sending || !window.FuseProjects) return;
+    const bound = sessionProject();
+    const picked = await window.FuseProjects.openChooser({
+      title: "Start a project session",
+      current: bound ? { host_id: bound.host_id, project_id: bound.project_id } : null,
+    });
+    if (!picked) return;
+    if (picked.created || picked.archived === false) await refreshThreads().catch(() => {});
+    if (!requireLive()) return;
+    if (historyMobile.matches) setHistoryOpen(false);
+    await startProjectThread(picked.host_id, picked.id, picked);
   }
 
   function resolveProjectInfo(hostId, projectId, extra) {
@@ -4938,6 +4763,8 @@
         remote_path: native.remote_path || "",
         permission_mode: native.permission_mode || "",
         default_model: native.default_model || "",
+        color: native.color || "",
+        logo_url: native.logo_url || "",
       };
     }
     const host = pickerHostById(hostId);
@@ -4951,6 +4778,8 @@
         remote_path: proj.remote_path || "",
         permission_mode: proj.permission_mode || "",
         default_model: proj.default_model || "",
+        color: proj.color || "",
+        logo_url: proj.logo_url || "",
       };
     }
     if (extra && (extra.id == null || Number(extra.id) === pid)) {
@@ -4962,6 +4791,8 @@
         remote_path: extra.remote_path || "",
         permission_mode: extra.permission_mode || "",
         default_model: extra.default_model || "",
+        color: extra.color || "",
+        logo_url: extra.logo_url || "",
       };
     }
     return null;
@@ -4987,7 +4818,6 @@
     try {
       await flushPending();
       if (nav !== navigation) return;
-      setProjectPickerOpen(false);
       setHistoryTab("projects", { persist: true, silent: true });
       clearChatState();
       pendingProject = info;
@@ -5000,38 +4830,6 @@
       renderHistory();
     } catch (error) {
       showFailure("Could not start a project session", error);
-    }
-  }
-
-  async function createPickerProject(event) {
-    event.preventDefault();
-    if (!projectPickerHost || !projectPickerName || !projectPickerPath) return;
-    const hostId = projectPickerHost.value;
-    const name = projectPickerName.value.trim();
-    const path = projectPickerPath.value.trim();
-    if (!hostId || !name || !path) return;
-    if (projectPickerError) {
-      projectPickerError.hidden = true;
-      projectPickerError.textContent = "";
-    }
-    const submitBtn = projectPickerForm.querySelector('button[type="submit"]');
-    if (submitBtn) submitBtn.disabled = true;
-    try {
-      const created = await api(`/hosts/${hostId}/projects`, {
-        method: "POST",
-        body: JSON.stringify({ name, remote_path: path }),
-      });
-      await refreshThreads().catch(() => {});
-      await startProjectThread(hostId, created.id, created);
-    } catch (error) {
-      if (projectPickerError) {
-        projectPickerError.hidden = false;
-        projectPickerError.textContent = error.message || "Could not create the project.";
-      } else {
-        showFailure("Could not create the project", error);
-      }
-    } finally {
-      if (submitBtn) submitBtn.disabled = false;
     }
   }
 
@@ -5246,6 +5044,78 @@
     return threads.concat(archivedThreads).find((item) => item.id === id);
   }
 
+  function sidebarProject(hostId, projectId) {
+    return projects.find((item) => Number(item.host_id) === Number(hostId) && Number(item.id) === Number(projectId));
+  }
+
+  function boundTo(hostId, projectId) {
+    const bound = sessionProject();
+    return Boolean(bound && Number(bound.host_id) === Number(hostId) && Number(bound.project_id) === Number(projectId));
+  }
+
+  async function editProject(hostId, projectId) {
+    if (!window.FuseProjects) return;
+    const item = sidebarProject(hostId, projectId);
+    const saved = await window.FuseProjects.openEditor({
+      hostId,
+      project: item
+        ? { ...item, host_id: Number(hostId) }
+        : { id: Number(projectId), host_id: Number(hostId), name: "Project", remote_path: "" },
+    });
+    if (!saved) return;
+    if (pendingProject && boundTo(hostId, projectId)) {
+      pendingProject = { ...pendingProject, project_name: saved.name, remote_path: saved.remote_path,
+        permission_mode: saved.permission_mode, color: saved.color, logo_url: saved.logo_url };
+    }
+    await refreshThreads();
+  }
+
+  function projectMenu(anchor, key) {
+    const [hostId, projectId] = String(key || "").split(":");
+    const item = sidebarProject(hostId, projectId);
+    if (!item || !requireLive()) return;
+    anchor.closest(".chat-history-item")?.classList.add("is-menu");
+    const items = [
+      {
+        label: "New session",
+        run: async () => {
+          if (historyMobile.matches) setHistoryOpen(false);
+          await startProjectThread(hostId, projectId, item);
+        },
+      },
+      { label: "Edit project", run: () => editProject(hostId, projectId) },
+      {
+        label: item.archived ? "Unarchive project" : "Archive project",
+        run: async () => {
+          await api(`/hosts/${hostId}/projects/${projectId}`, {
+            method: "PATCH",
+            body: JSON.stringify({ archived: !item.archived }),
+          });
+          if (!item.archived && boundTo(hostId, projectId)) clearChatState({ keepList: true });
+          await refreshThreads();
+        },
+      },
+      {
+        label: "Delete project",
+        danger: true,
+        run: async () => {
+          const n = Number(item.sessions || 0);
+          const what = n ? ` and its ${n === 1 ? "session" : n + " sessions"}` : "";
+          const ok = await askConfirm(
+            `Delete project "${item.name || "Project"}"${what}? The folder on ${item.host_alias || "the machine"} is not touched. This cannot be undone.`,
+            { confirmLabel: "Delete", danger: true }
+          );
+          if (!ok) return;
+          const wasBound = boundTo(hostId, projectId);
+          await api(`/hosts/${hostId}/projects/${projectId}?sessions=delete`, { method: "DELETE" });
+          if (wasBound) clearChatState({ keepList: true });
+          await refreshThreads();
+        },
+      },
+    ];
+    showPop(anchor, items);
+  }
+
   function threadMenu(anchor, id) {
     if (streaming) return;
     const thread = threadById(id);
@@ -5255,15 +5125,16 @@
     const items = [
       { label: "Rename", run: () => startRename(anchor.closest(".chat-history-item"), thread) },
       {
-        label: "Duplicate",
+        label: "Fork",
         run: async () => {
           if (!requireLive()) return;
           const nav = navigation;
           await flushPending();
           if (nav !== navigation) return;
-          const copy = await api("/chat/threads/" + id + "/duplicate", { method: "POST", body: JSON.stringify({ expected_revision: threadById(id)?.revision, command_id: newSession() }) });
+          const copy = await api("/chat/threads/" + id + "/fork", { method: "POST", body: JSON.stringify({ expected_revision: threadById(id)?.revision, command_id: newSession() }) });
           upsertLocal(copy);
           renderHistory();
+          setHint("Forked. The copy runs on its own: new chat, subagent and command ids.");
           if (nav === navigation) await openThread(copy.id);
         },
       },
@@ -5286,8 +5157,13 @@
           upsertLocal(updated);
           if (nav === navigation && currentId === id && updated.archived) clearChatState({ keepList: true });
           renderHistory();
+          // Restoring a session also restores its archived project.
+          if (!updated.archived && updated.kind === "project") refreshThreads().catch(() => {});
         },
       },
+      ...(thread.kind === "project" && thread.project_id != null
+        ? [{ label: "Project settings", run: () => editProject(thread.host_id, thread.project_id) }]
+        : []),
       {
         label: "Delete",
         danger: true,
@@ -15427,80 +15303,6 @@
       resetChat().catch((error) => showFailure("Could not start a new chat", error));
     })
   );
-  if (projectPicker) {
-    projectPicker.addEventListener("click", (event) => {
-      const overview = event.target.closest("[data-project-overview-open], [data-project-overview-start]");
-      if (overview) {
-        const start = overview.hasAttribute("data-project-overview-start");
-        const [hostId, projectId] = (start ? overview.dataset.projectOverviewStart : overview.dataset.projectOverviewOpen).split(":");
-        if (hostId && projectId && requireLive()) {
-          setProjectPickerOpen(false);
-          startProjectThread(hostId, projectId).catch((error) => showFailure("Could not start a project session", error));
-        }
-        return;
-      }
-      const pick = event.target.closest("[data-pick-project]");
-      if (pick) {
-        const [hostId, projectId] = String(pick.getAttribute("data-pick-project") || "").split(":");
-        if (hostId && projectId) {
-          setProjectPickerOpen(false);
-          startProjectThread(hostId, projectId);
-        }
-        return;
-      }
-      if (event.target.closest("[data-project-picker-add]")) {
-        if (!pickerHosts.length) return;
-        showPickerForm();
-        return;
-      }
-      if (event.target.closest("[data-project-picker-close]")) {
-        setProjectPickerOpen(false);
-        return;
-      }
-      if (event.target.closest("[data-project-picker-back]")) {
-        showPickerList();
-        return;
-      }
-      if (event.target.closest("[data-project-picker-browse]")) {
-        const path = (projectPickerPath && projectPickerPath.value) || "";
-        loadPickerBrowse(path).catch((error) => showFailure("Could not browse that host", error));
-        return;
-      }
-      const into = event.target.closest("[data-picker-into]");
-      if (into && pickerBrowse) {
-        const name = into.getAttribute("data-picker-into") || "";
-        const base = String(pickerBrowse.path || "").replace(/\/+$/, "");
-        const next = !base || base === "/" ? "/" + name : base + "/" + name;
-        loadPickerBrowse(next).catch((error) => showFailure("Could not browse that folder", error));
-        return;
-      }
-      if (event.target.closest("[data-picker-up]") && pickerBrowse) {
-        loadPickerBrowse(pickerBrowse.parent || "/").catch((error) => showFailure("Could not browse that folder", error));
-        return;
-      }
-      if (event.target.closest("[data-picker-use]") && pickerBrowse) {
-        if (projectPickerPath) projectPickerPath.value = pickerBrowse.path || "";
-        const base = String(pickerBrowse.path || "").replace(/\/+$/, "").split("/").pop();
-        if (projectPickerName && !projectPickerName.value && base && base !== "/") projectPickerName.value = base;
-      }
-    });
-  }
-  if (projectPickerForm) {
-    projectPickerForm.addEventListener("submit", (event) => {
-      createPickerProject(event).catch((error) => showFailure("Could not create the project", error));
-    });
-  }
-  if (projectPickerHost) {
-    projectPickerHost.addEventListener("change", () => {
-      const host = pickerHostById(projectPickerHost.value);
-      if (projectPickerPath) projectPickerPath.value = (host && host.default_cwd) || "";
-      pickerBrowse = null;
-      if (projectPickerBrowser) {
-        projectPickerBrowser.hidden = true;
-        projectPickerBrowser.innerHTML = "";
-      }
-    });
-  }
   if (rewindClose) rewindClose.addEventListener("click", closeRewind);
   const historyPanel = root.querySelector("[data-history]");
   const historyCollapse = historyPanel?.querySelector("[data-history-toggle]");
@@ -15799,21 +15601,16 @@
   }
   if (historyList) {
     historyList.addEventListener("click", (event) => {
-      const overview = event.target.closest("[data-project-overview-open], [data-project-overview-start]");
-      if (overview) {
-        const start = overview.hasAttribute("data-project-overview-start");
-        const [hostId, projectId] = (start ? overview.dataset.projectOverviewStart : overview.dataset.projectOverviewOpen).split(":");
-        if (hostId && projectId && requireLive()) {
-          const action = start ? startProjectThread(hostId, projectId) : openProject(hostId, projectId);
-          action.catch((error) => showFailure("Project could not be opened", error));
-        }
-        return;
-      }
       const more = event.target.closest("button.more");
       if (more) {
         event.preventDefault();
         event.stopPropagation();
-        const id = more.closest("[data-thread]")?.dataset.thread;
+        const row = more.closest("[data-project], [data-thread]");
+        if (row?.dataset.project) {
+          projectMenu(more, row.dataset.project);
+          return;
+        }
+        const id = row?.dataset.thread;
         if (id) threadMenu(more, id);
         return;
       }
@@ -15847,7 +15644,7 @@
     if (pop && !pop.contains(event.target) && !event.target.closest(".more") && !event.target.closest(".chat-msg-actions")) {
       closePop();
     }
-    if (root.classList.contains("is-history") && historyToggle && !historyPanel.contains(event.target) && !historyToggle.contains(event.target) && !event.target.closest(".chat-pop")) {
+    if (root.classList.contains("is-history") && historyToggle && !historyPanel.contains(event.target) && !historyToggle.contains(event.target) && !event.target.closest(".chat-pop, dialog")) {
       setHistoryOpen(false);
     }
   });
@@ -15862,7 +15659,7 @@
       controls[next]?.focus({ preventScroll: true });
     }
     if (event.key === "Escape") {
-      const confirmOpen = document.querySelector("dialog.modal[data-confirm][open]");
+      const confirmOpen = document.querySelector("dialog.modal[data-confirm][open], dialog.fp-dialog[open]");
       if (confirmOpen) return;
       closePop();
       if (window.FuseComposerSpell && FuseComposerSpell.isOpen()) {
@@ -15882,10 +15679,6 @@
       }
       if (searchOpen) {
         setSearchOpen(false);
-        return;
-      }
-      if (projectPicker && !projectPicker.hidden) {
-        setProjectPickerOpen(false);
         return;
       }
       setHistoryOpen(false);

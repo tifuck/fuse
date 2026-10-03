@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Machines · Fuse{% endblock %}
 {% block page_title %}Machines{% endblock %}
-{% block page_lead %}<p>Connect a machine, then add project folders and open them from chat. Connector machines phone home over HTTPS; SSH still works if the box allows it. What chats may do here is under <a href="/settings#agents">Settings › Coding agents</a>.</p>{% endblock %}
+{% block page_lead %}<p>Connect a machine, then add project folders and open them from chat. All your projects are also listed under <a href="/projects">Projects</a>. Connector machines phone home over HTTPS; SSH still works if the box allows it. What chats may do here is under <a href="/settings#agents">Settings › Coding agents</a>.</p>{% endblock %}
 {% block page_actions %}
 <button type="button" class="btn sm" data-wizard-start data-hosts-add>Add a machine</button>
 {% endblock %}
@@ -168,33 +168,6 @@
     </div>
   </dialog>
 
-  <dialog class="modal" data-edit-project-modal aria-labelledby="edit-project-title">
-    <div class="modal-shell">
-      <header class="modal-head">
-        <div>
-          <p class="metric-label">Project</p>
-          <h2 id="edit-project-title" data-project-title>Add project</h2>
-        </div>
-        <button type="button" class="btn ghost sm" data-dialog-close aria-label="Close project editor">Close</button>
-      </header>
-      <p class="callout fault" data-edit-project-error hidden></p>
-      <form class="hosts-grid" data-edit-project-form>
-        <label class="hosts-field"><span>Name</span><input name="name" required maxlength="80" autocomplete="off" placeholder="api"></label>
-        <label class="hosts-field"><span>Folder</span>
-          <span class="hosts-path-row">
-            <input name="remote_path" required maxlength="400" placeholder="Choose a folder" data-browse data-browse-target="project" readonly title="Click to browse folders">
-            <button type="button" class="btn sm ghost" data-browse data-browse-target="project">Browse</button>
-          </span>
-        </label>
-        <label class="check hosts-check hosts-field-wide"><input type="checkbox" name="read_only"><span>Read-only (no writes or shell on this project)</span></label>
-        <div class="hosts-field-wide modal-actions">
-          <button type="submit" class="btn sm" data-project-submit>Add project</button>
-          <button type="button" class="btn sm ghost" data-dialog-close>Cancel</button>
-        </div>
-      </form>
-    </div>
-  </dialog>
-
   <dialog class="modal hosts-browse-modal" data-browse-modal aria-labelledby="browse-title">
     <div class="modal-shell">
       <header class="modal-head">
@@ -215,5 +188,5 @@
 <script type="application/json" id="hosts-config">{{ hosts_bundle | tojson }}</script>
 {% endblock %}
 {% block scripts %}
-<script src="/static/hosts.js?v=19"></script>
+<script src="/static/hosts.js?v=20"></script>
 {% endblock %}

@@ -73,34 +73,6 @@
     </div>
     <p class="chat-history-kicker" data-history-kicker hidden>Chats</p>
     <div class="chat-history-list" data-history-list><div class="chat-history-loading" aria-busy="true" aria-label="Loading chats"><span></span><span></span><span></span><span></span><span></span><span></span></div></div>
-    <div class="chat-project-picker" data-project-picker hidden>
-      <div class="chat-project-picker-head">
-        <button type="button" class="chat-project-picker-back" data-project-picker-back hidden>Back</button>
-        <p data-project-picker-title>Workspaces</p>
-        <button type="button" class="chat-project-picker-close" data-project-picker-close aria-label="Close">Close</button>
-      </div>
-      <div class="chat-project-picker-body" data-project-picker-list></div>
-      <form class="chat-project-picker-form" data-project-picker-form hidden>
-        <label class="chat-project-picker-field">
-          <span>Host</span>
-          <select name="host_id" data-project-picker-host required></select>
-        </label>
-        <label class="chat-project-picker-field">
-          <span>Name</span>
-          <input name="name" maxlength="80" required placeholder="api" data-project-picker-name>
-        </label>
-        <label class="chat-project-picker-field">
-          <span>Folder</span>
-          <span class="chat-project-picker-path">
-            <input name="remote_path" maxlength="400" required placeholder="/srv/app" data-project-picker-path>
-            <button type="button" class="btn sm ghost" data-project-picker-browse>Browse</button>
-          </span>
-        </label>
-        <div class="chat-project-picker-browse" data-project-picker-browser hidden></div>
-        <p class="callout fault" data-project-picker-error hidden></p>
-        <button type="submit" class="btn sm">Create project</button>
-      </form>
-    </div>
     <div class="chat-history-footer">
       <button type="button" class="chat-history-foot" data-history-archived aria-pressed="false" hidden>
         <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="2.4" y="3" width="11.2" height="3" rx="0.8" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M3.4 6v6.2a.8.8 0 0 0 .8.8h7.6a.8.8 0 0 0 .8-.8V6M6.5 8.6h3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
@@ -118,7 +90,7 @@
       <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><rect x="2.5" y="3.5" width="15" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M7.5 4v12" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>
     </button>
     <div class="chat-project-chip" data-project-chip hidden>
-      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2.6 4.7h3.2l1.1 1.4H13.4v6.4H2.6z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
+      <span class="chat-project-icon" data-project-icon aria-hidden="true"></span>
       <span class="chat-project-name" data-project-name></span>
     </div>
     <h1 class="chat-bar-title" aria-busy="false"><span class="chat-run-spin" data-run-spin="title" hidden aria-hidden="true"></span><span data-chat-title class="is-untitled"></span></h1>

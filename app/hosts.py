@@ -22,6 +22,18 @@ PAIRING_TTL = timedelta(minutes=15)
 MAX_PENDING_PAIRINGS = 3
 MAX_AGENT_HOSTS = 8
 AGENT_TOKEN_PREFIX = "fa_"
+# Folder colors a new project picks from at random. Users can pick any hex.
+PROJECT_COLORS = (
+    "#E5484D", "#F76B15", "#FFC53D", "#46A758", "#12A594",
+    "#0090FF", "#3E63DD", "#8E4EC6", "#D6409F", "#A18072",
+)
+_COLOR_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
+LOGO_MAX_BYTES = 96 * 1024
+_LOGO_MAGIC = {
+    "image/png": (b"\x89PNG\r\n\x1a\n",),
+    "image/jpeg": (b"\xff\xd8\xff",),
+    "image/webp": (b"RIFF",),
+}
 
 
 class HostError(Exception):
@@ -172,6 +184,32 @@ def _permission_mode(raw, *, required: bool = False) -> str:
     return mode
 
 
+def project_color(project_id, stored="") -> str:
+    """The stored folder color, or a stable palette pick for projects made
+    before colors existed (so they do not all share the theme accent)."""
+    if isinstance(stored, str) and _COLOR_RE.match(stored):
+        return stored.upper()
+    try:
+        index = int(project_id)
+    except (TypeError, ValueError):
+        index = 0
+    return PROJECT_COLORS[index % len(PROJECT_COLORS)]
+
+
+def _color(raw) -> str:
+    if not isinstance(raw, str) or not _COLOR_RE.match(raw.strip()):
+        raise HostError("color must be a #RRGGBB hex value")
+    return raw.strip().upper()
+
+
+def logo_url(project_id, rev) -> str:
+    try:
+        rev = int(rev or 0)
+    except (TypeError, ValueError):
+        rev = 0
+    return f"/projects/{int(project_id)}/logo?v={rev}" if rev > 0 else ""
+
+
 def _project_view(row) -> dict:
     mode = _row_get(row, "permission_mode") or "project"
     if mode not in ("project", "read_only"):
@@ -183,6 +221,10 @@ def _project_view(row) -> dict:
         "notes": _row_get(row, "notes") or "",
         "default_model": _row_get(row, "default_model") or "",
         "permission_mode": mode,
+        "color": project_color(row["id"], _row_get(row, "color") or ""),
+        "logo_url": logo_url(row["id"], _row_get(row, "logo_rev") or 0),
+        "archived": bool(_row_get(row, "archived") or 0),
+        "archived_at": _row_get(row, "archived_at") or "",
         "created_at": row["created_at"],
         "updated_at": _row_get(row, "updated_at") or row["created_at"],
     }
@@ -462,6 +504,7 @@ def add_project(user_id: int, host_id: int, raw: dict) -> dict:
     if not isinstance(model, str) or len(model) > 200:
         raise HostError("invalid default_model")
     mode = _permission_mode(raw.get("permission_mode"))
+    color = _color(raw["color"]) if raw.get("color") else secrets.choice(PROJECT_COLORS)
     ts = db.now()
     with db.tx() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -473,9 +516,9 @@ def add_project(user_id: int, host_id: int, raw: dict) -> dict:
         try:
             conn.execute(
                 """INSERT INTO user_projects(
-                    user_id, host_id, name, remote_path, notes, default_model, permission_mode, created_at, updated_at
-                ) VALUES (?,?,?,?,?,?,?,?,?)""",
-                (user_id, host_id, name, path, notes.strip(), model.strip(), mode, ts, ts),
+                    user_id, host_id, name, remote_path, notes, default_model, permission_mode, color, created_at, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (user_id, host_id, name, path, notes.strip(), model.strip(), mode, color, ts, ts),
             )
         except IntegrityError as exc:
             raise HostError("project already exists on this host", 409) from exc
@@ -485,7 +528,7 @@ def add_project(user_id: int, host_id: int, raw: dict) -> dict:
 
 
 def patch_project(user_id: int, host_id: int, project_id: int, raw: dict) -> dict:
-    allowed = {"name", "remote_path", "notes", "default_model", "permission_mode"}
+    allowed = {"name", "remote_path", "notes", "default_model", "permission_mode", "color", "archived"}
     if set(raw) - allowed:
         raise HostError("unsupported project fields")
     with db.tx() as conn:
@@ -511,20 +554,165 @@ def patch_project(user_id: int, host_id: int, project_id: int, raw: dict) -> dic
         mode = _permission_mode(_row_get(row, "permission_mode") or "project")
         if "permission_mode" in raw:
             mode = _permission_mode(raw.get("permission_mode"), required=True)
+        color = _color(raw["color"]) if "color" in raw else project_color(row["id"], _row_get(row, "color") or "")
+        if "archived" in raw and not isinstance(raw["archived"], bool):
+            raise HostError("archived must be true or false")
         ts = db.now()
         try:
             conn.execute(
-                """UPDATE user_projects SET name=?, remote_path=?, notes=?, default_model=?, permission_mode=?, updated_at=?
+                """UPDATE user_projects SET name=?, remote_path=?, notes=?, default_model=?, permission_mode=?, color=?, updated_at=?
                    WHERE id=?""",
-                (name, path, notes, model, mode, ts, project_id),
+                (name, path, notes, model, mode, color, ts, project_id),
             )
         except IntegrityError as exc:
             raise HostError("project already exists on this host", 409) from exc
+        if "archived" in raw and raw["archived"] != bool(_row_get(row, "archived") or 0):
+            set_project_archived(conn, user_id, project_id, raw["archived"])
         row = conn.execute("SELECT * FROM user_projects WHERE id=?", (project_id,)).fetchone()
         return _project_view(row)
 
 
-def delete_project(user_id: int, host_id: int, project_id: int) -> bool:
+def set_project_archived(conn, user_id: int, project_id: int, archived: bool, *, skip_running: bool = False) -> list[int]:
+    """Archive a project with its open sessions, or restore it with the
+    sessions that were archived along with it. Returns the touched thread ids."""
+    from . import chat_store as store
+
+    ts = db.now()
+    if archived:
+        conn.execute(
+            "UPDATE user_projects SET archived=1, archived_at=?, updated_at=? WHERE id=? AND user_id=?",
+            (ts, ts, project_id, user_id),
+        )
+        rows = conn.execute(
+            "SELECT id FROM chat_threads WHERE user_id=? AND project_id=? AND kind='project' AND archived=0",
+            (user_id, project_id),
+        ).fetchall()
+        ids = [int(r["id"]) for r in rows]
+        if skip_running and ids:
+            marks = ",".join("?" * len(ids))
+            # Grouped so MariaDB does not take run row locks for a read.
+            busy = {int(r["thread_id"]) for r in conn.execute(
+                f"""SELECT thread_id, COUNT(*) AS n FROM chat_runs
+                    WHERE thread_id IN ({marks}) AND status IN ('queued','running') GROUP BY thread_id""",
+                ids,
+            ).fetchall()}
+            ids = [i for i in ids if i not in busy]
+        for tid in ids:
+            conn.execute(
+                """UPDATE chat_threads SET archived=1, archived_at=?, archived_by_project=1, updated_at=?, revision=revision+1
+                   WHERE id=? AND user_id=?""",
+                (ts, ts, tid, user_id),
+            )
+    else:
+        conn.execute(
+            "UPDATE user_projects SET archived=0, archived_at='', updated_at=? WHERE id=? AND user_id=?",
+            (ts, project_id, user_id),
+        )
+        rows = conn.execute(
+            "SELECT id FROM chat_threads WHERE user_id=? AND project_id=? AND kind='project' AND archived=1 AND archived_by_project=1",
+            (user_id, project_id),
+        ).fetchall()
+        ids = [int(r["id"]) for r in rows]
+        for tid in ids:
+            conn.execute(
+                """UPDATE chat_threads SET archived=0, archived_at='', archived_by_project=0, active_at=?, updated_at=?, revision=revision+1
+                   WHERE id=? AND user_id=?""",
+                (ts, ts, tid, user_id),
+            )
+    for tid in ids:
+        store.thread_event(conn, user_id, tid)
+    return ids
+
+
+def set_project_logo(user_id: int, project_id: int, mime: str, data: bytes) -> dict:
+    if mime not in _LOGO_MAGIC:
+        raise HostError("logo must be PNG, JPEG or WebP")
+    if not data or len(data) > LOGO_MAX_BYTES:
+        raise HostError(f"logo must be under {LOGO_MAX_BYTES // 1024} KB")
+    if not any(data.startswith(magic) for magic in _LOGO_MAGIC[mime]) or (mime == "image/webp" and data[8:12] != b"WEBP"):
+        raise HostError("logo file does not match its type")
+    ts = db.now()
+    with db.tx() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT * FROM user_projects WHERE id=? AND user_id=?", (project_id, user_id)).fetchone()
+        if row is None:
+            raise HostError("project not found", 404)
+        conn.execute("DELETE FROM project_logos WHERE project_id=?", (project_id,))
+        conn.execute(
+            "INSERT INTO project_logos(project_id, user_id, mime, data, updated_at) VALUES (?,?,?,?,?)",
+            (project_id, user_id, mime, data, ts),
+        )
+        conn.execute(
+            "UPDATE user_projects SET logo_rev=logo_rev+1, updated_at=? WHERE id=? AND user_id=?",
+            (ts, project_id, user_id),
+        )
+        row = conn.execute("SELECT * FROM user_projects WHERE id=?", (project_id,)).fetchone()
+        return _project_view(row)
+
+
+def clear_project_logo(user_id: int, project_id: int) -> dict:
+    with db.tx() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT * FROM user_projects WHERE id=? AND user_id=?", (project_id, user_id)).fetchone()
+        if row is None:
+            raise HostError("project not found", 404)
+        conn.execute("DELETE FROM project_logos WHERE project_id=? AND user_id=?", (project_id, user_id))
+        conn.execute("UPDATE user_projects SET logo_rev=0, updated_at=? WHERE id=? AND user_id=?", (db.now(), project_id, user_id))
+        row = conn.execute("SELECT * FROM user_projects WHERE id=?", (project_id,)).fetchone()
+        return _project_view(row)
+
+
+def project_logo(user_id: int, project_id: int):
+    row = db.fetchone("SELECT mime, data FROM project_logos WHERE project_id=? AND user_id=?", (project_id, user_id))
+    if row is None:
+        return None
+    data = row["data"]
+    if isinstance(data, str):
+        data = data.encode("latin-1")
+    return row["mime"], bytes(data)
+
+
+def project_session_ids(user_id: int, project_id: int) -> list:
+    rows = db.fetchall(
+        "SELECT id FROM chat_threads WHERE user_id=? AND project_id=? AND kind='project'",
+        (user_id, project_id),
+    )
+    return [int(r["id"]) for r in rows]
+
+
+def delete_project(user_id: int, host_id: int, project_id: int, *, sessions: str = "delete") -> bool:
+    """Forget a project (the folder on the machine is never touched).
+
+    sessions="delete" removes its chats too; "keep" turns them into plain
+    chats so no thread points at a project id that no longer exists."""
+    from . import chats
+
+    if sessions not in ("delete", "keep"):
+        raise HostError("sessions must be delete or keep")
+    row = db.fetchone(
+        "SELECT id FROM user_projects WHERE id=? AND user_id=? AND host_id=?",
+        (project_id, user_id, host_id),
+    )
+    if row is None:
+        return False
+    if sessions == "delete":
+        for tid in project_session_ids(user_id, project_id):
+            chats.delete_thread(user_id, tid)
+    else:
+        from . import chat_store as store
+
+        with db.tx() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            ids = [int(r["id"]) for r in conn.execute(
+                "SELECT id FROM chat_threads WHERE user_id=? AND project_id=?", (user_id, project_id)
+            ).fetchall()]
+            for tid in ids:
+                conn.execute(
+                    """UPDATE chat_threads SET kind='chat', host_id=NULL, project_id=NULL, archived_by_project=0,
+                       updated_at=?, revision=revision+1 WHERE id=? AND user_id=?""",
+                    (db.now(), tid, user_id),
+                )
+                store.thread_event(conn, user_id, tid)
     result = db.execute(
         "DELETE FROM user_projects WHERE id=? AND user_id=? AND host_id=?",
         (project_id, user_id, host_id),

@@ -542,7 +542,7 @@ html[data-chat-backdrop="none"] .chat-scene,
 .chat .chat-search-btn.is-on { color: var(--brass); background: transparent; }
 
 body.is-chat :is(.chat-pop, .chat-picker-menu, .chat-perms-menu, .chat-context-pop,
-  .chat-slash, .chat-rewind, .chat-sheet, .chat-project-picker, .chat-agents,
+  .chat-slash, .chat-rewind, .chat-sheet, .chat-agents,
   .chat-artifact, .chat-latest) {
   background: var(--panel);
   color: var(--mist);
@@ -868,26 +868,6 @@ html[data-chat-theme="ivory"] ::selection {
 .chat[data-view="compact"] .chat-substeps { padding: 0.15rem 0 0.35rem 0.2rem; border-left: 1px solid var(--line); margin-left: 0.45rem; }
 .chat[data-view="compact"] .chat-query { min-height: var(--row); font: calc(0.72rem * var(--chat-text-scale, 1))/var(--row) var(--mono); color: var(--mute); }
 .chat[data-view="compact"] .chat-step-state { font-size: calc(0.58rem * var(--chat-text-scale, 1)); letter-spacing: 0.04em; text-transform: uppercase; }
-.project-overview { min-width: 0; margin: 0.15rem 0 0.75rem; }
-.project-overview-heading, .project-overview-sessions-heading {
-  margin: 0;
-  padding: 0.75rem 0.5rem;
-  color: var(--mute);
-  font: 0.65rem/1.5 var(--mono);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-.project-overview-item { min-width: 0; margin-bottom: 0.55rem; padding: 0.85rem; background: var(--ink); border: 1px solid var(--line); border-radius: 6px; }
-.project-overview-current { border-color: var(--brass); }
-.project-overview-open { display: flex; flex-direction: column; align-items: stretch; width: 100%; min-width: 0; min-height: 2.25rem; text-align: left; color: var(--mist); }
-.project-overview-open:hover { color: var(--brass); }
-.project-overview-name { min-width: 0; font-size: 0.95rem; font-weight: 650; line-height: 1.4; overflow-wrap: anywhere; }
-.project-overview-details { display: grid; gap: 0.45rem; margin: 0.5rem 0 0.85rem; min-width: 0; }
-.project-overview-detail { display: block; min-width: 0; color: var(--mute); font: 0.72rem/1.6 var(--mono); white-space: normal; overflow-wrap: anywhere; }
-.project-overview-detail :is(span, code, strong) { white-space: normal; overflow-wrap: anywhere; }
-.project-overview-start { display: flex; align-items: center; justify-content: center; width: 100%; min-height: 2.4rem; padding: 0.45rem 0.65rem; color: var(--brass); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; font-size: 0.8rem; }
-.project-overview-start:hover { border-color: var(--brass); background: var(--raise); }
-.chat-project-picker .project-overview-heading { padding-top: 0.15rem; }
 
 /* Full-window console. Specificity deliberately exceeds every per-view rule. */
 html[data-chat-terminal="true"] .chat[data-view="cli"],
@@ -1881,7 +1861,7 @@ html[data-chat-console="true"] body.is-chat:has(.chat[data-view="console"]) .cha
   .chat .chat-history-bar .chat-history-tabs { min-height: 44px; height: auto; }
   .chat .chat-history-tab,
   .chat .chat-history-item > button.open,
-  .chat :is(.chat-picker-btn, .project-overview-open, .project-overview-start),
+  .chat :is(.chat-picker-btn),
   body.is-chat :is(.chat-pop button, .chat-picker-list button) { min-height: 44px; }
   .chat .chat-history-item > button.more { opacity: 1; width: 44px; height: 44px; }
   /* The wrapped title sits on the bar's bottom edge here, so hold a short
@@ -1950,8 +1930,6 @@ html[data-chat-console="true"] body.is-chat:has(.chat[data-view="console"]) .cha
   .chat-view-sheet-body { padding: 0.65rem 0.85rem 1.35rem; }
   .chat.view-sheet-open .chat-thread { overflow: hidden; }
   body.is-chat :is(.chat-pop, .chat-context-pop, .chat-picker-menu:not(.is-sheet)) { max-width: calc(100vw - 1rem); }
-  .project-overview-item { padding: 0.75rem; }
-  .project-overview-detail { font-size: 0.75rem; }
   html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-dock,
   html[data-chat-terminal="true"] .chat[data-view="cli"].is-empty .chat-dock,
   html[data-chat-console="true"] .chat[data-view="console"] .chat-dock,

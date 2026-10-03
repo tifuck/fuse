@@ -9,6 +9,7 @@
   <a href="#chat">Chat defaults</a>
   <a href="#alerts">Alerts</a>
   <a href="#agents">Coding agents</a>
+  <a href="#cleanup">Cleanup</a>
   <a href="#appearance">Appearance</a>
 </nav>
 
@@ -102,7 +103,7 @@
 <form class="panel set" id="agents" aria-labelledby="set-agents-title" data-agent-form>
   <header class="set-head">
     <h2 id="set-agents-title">Coding agents</h2>
-    <p>What chats may do on the machines you connected under <a href="/projects">Machines</a>. Read-only is set per project there.</p>
+    <p>What chats may do on the machines you connected under <a href="/hosts">Machines</a>. Read-only is set per project under <a href="/projects">Projects</a>.</p>
   </header>
   <div class="set-row">
     <div class="set-label"><strong>Workspace tools</strong><span>Lets chats read files and run commands on your machines. Turned on automatically when you add your first machine.</span></div>
@@ -122,6 +123,48 @@
   </div>
 </form>
 
+<form class="panel set" id="cleanup" aria-labelledby="set-cleanup-title" data-cleanup-form>
+  <header class="set-head">
+    <h2 id="set-cleanup-title">Cleanup</h2>
+    <p>Keep the sidebar short. Archived chats and projects stay in the Archived list until you restore them; a new message, a restore or a new session counts as activity. Running work is never touched.</p>
+  </header>
+  {% set hours = cleanup.archive_hours %}
+  {% set in_days = hours and hours % 24 == 0 %}
+  <div class="set-row">
+    <div class="set-label"><strong>Auto-archive</strong><span>Archive what has had no activity for this long.</span></div>
+    <div class="set-control">
+      <label class="check"><input type="checkbox" name="archive_on" data-cleanup-toggle="archive"{% if hours %} checked{% endif %}> Archive inactive items</label>
+      <div class="set-inline" data-cleanup-group="archive">
+        <label><span class="visually-hidden">Inactive for</span><input type="number" name="archive_value" min="1" max="8760" step="1" value="{{ (hours // 24) if in_days else (hours or 3) }}" inputmode="numeric"></label>
+        <label><span class="visually-hidden">Unit</span><select name="archive_unit">
+          <option value="hours"{% if hours and not in_days %} selected{% endif %}>hours</option>
+          <option value="days"{% if in_days or not hours %} selected{% endif %}>days</option>
+        </select></label>
+      </div>
+      <label class="check" data-cleanup-group="archive"><input type="checkbox" name="archive_chats"{% if cleanup.archive_chats %} checked{% endif %}> Chats and project sessions</label>
+      <label class="check" data-cleanup-group="archive"><input type="checkbox" name="archive_projects"{% if cleanup.archive_projects %} checked{% endif %}> Projects (with their sessions)</label>
+    </div>
+  </div>
+  <div class="set-row">
+    <div class="set-label"><strong>Auto-delete</strong><span>Permanently delete what has been archived for this many days. Deleting a project never touches its folder.</span></div>
+    <div class="set-control">
+      <label class="check"><input type="checkbox" name="delete_on" data-cleanup-toggle="delete"{% if cleanup.delete_days %} checked{% endif %}> Delete old archived items</label>
+      <div class="set-inline" data-cleanup-group="delete">
+        <label><span class="visually-hidden">Archived for</span><input type="number" name="delete_days" min="1" max="3650" step="1" value="{{ cleanup.delete_days or 30 }}" inputmode="numeric"></label>
+        <span>days after archiving</span>
+      </div>
+    </div>
+  </div>
+  {% if cleanup.limits.archive_days or cleanup.limits.delete_days %}
+  <p class="set-note">This server also applies its own limit{% if cleanup.limits.archive_days and cleanup.limits.delete_days %}s{% endif %}:
+    {% if cleanup.limits.archive_days %}items inactive for {{ cleanup.limits.archive_days }} days are archived{% endif %}{% if cleanup.limits.archive_days and cleanup.limits.delete_days %}, and {% endif %}{% if cleanup.limits.delete_days %}archived items are deleted after {{ cleanup.limits.delete_days }} days{% endif %}. Shorter settings above still apply.</p>
+  {% endif %}
+  <div class="set-foot">
+    <button type="submit" class="btn sm">Save cleanup</button>
+    <span class="set-status" data-cleanup-status role="status"></span>
+  </div>
+</form>
+
 <section class="panel set" id="appearance" aria-labelledby="set-appearance-title">
   <header class="set-head">
     <h2 id="set-appearance-title">Appearance</h2>
@@ -136,4 +179,4 @@
 </section>
 </div>
 {% endblock %}
-{% block scripts %}<script src="/static/settings.js?v=4"></script>{% endblock %}
+{% block scripts %}<script src="/static/settings.js?v=5"></script>{% endblock %}

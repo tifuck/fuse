@@ -178,10 +178,12 @@
 
   function projectRow(host, p) {
     const ro = p.permission_mode === "read_only" ? '<span class="badge">Read-only</span>' : "";
+    const archived = p.archived ? '<span class="badge">Archived</span>' : "";
+    const icon = window.FuseProjects ? window.FuseProjects.icon(p, { size: 18, className: "hosts-proj-icon" }) : "";
     return (
-      `<li class="hosts-proj" data-project-row="${host.id}:${p.id}">` +
+      `<li class="hosts-proj${p.archived ? " is-archived" : ""}" data-project-row="${host.id}:${p.id}">` +
       `<button type="button" class="hosts-proj-open" data-open-project="${host.id}:${p.id}" title="Start a new chat for ${esc(p.name)}">` +
-      `<span class="hosts-proj-name">${esc(p.name)}${ro}</span>` +
+      `<span class="hosts-proj-name">${icon}${esc(p.name)}${ro}${archived}</span>` +
       `<span class="hosts-proj-path">${esc(p.remote_path)}</span>` +
       `<span class="hosts-proj-go">New chat →</span>` +
       `</button>` +
@@ -434,13 +436,6 @@
       const name = wizard && wizard.querySelector("[data-w-proj-name]");
       if (input) input.value = path || "";
       if (name && !name.value.trim() && base && base !== "/") name.value = base;
-      return;
-    }
-    const form = projModal && projModal.querySelector("[data-edit-project-form]");
-    if (!form) return;
-    form.remote_path.value = path || "";
-    if (projModal.dataset.mode === "add" && !form.name.value.trim() && base && base !== "/") {
-      form.name.value = base;
     }
   }
 
@@ -848,9 +843,7 @@
   wizard.querySelector("[data-w-auth]").addEventListener("change", syncWizardAuth);
 
   const hostModal = root.querySelector("[data-edit-host-modal]");
-  const projModal = root.querySelector("[data-edit-project-modal]");
   const hostModalErr = hostModal ? hostModal.querySelector("[data-edit-host-error]") : null;
-  const projModalErr = projModal ? projModal.querySelector("[data-edit-project-error]") : null;
 
   function findHost(id) {
     return (bundle.hosts || []).find((h) => String(h.id) === String(id));
@@ -876,32 +869,15 @@
     if (hostModal.showModal) hostModal.showModal();
   }
 
-  function openProjectModal(host, p) {
-    if (!projModal || !host) return;
-    showErr(projModalErr, "");
-    projModal.dataset.hostId = String(host.id);
-    const form = projModal.querySelector("[data-edit-project-form]");
-    const title = projModal.querySelector("[data-project-title]");
-    const submitBtn = projModal.querySelector("[data-project-submit]");
-    if (p) {
-      projModal.dataset.mode = "edit";
-      projModal.dataset.projectId = String(p.id);
-      form.name.value = p.name || "";
-      form.remote_path.value = p.remote_path || "";
-      if (form.read_only) form.read_only.checked = p.permission_mode === "read_only";
-      if (title) title.textContent = "Edit project";
-      if (submitBtn) submitBtn.textContent = "Save project";
-    } else {
-      projModal.dataset.mode = "add";
-      delete projModal.dataset.projectId;
-      form.name.value = "";
-      form.remote_path.value = "";
-      if (form.read_only) form.read_only.checked = false;
-      if (title) title.textContent = "Add project";
-      if (submitBtn) submitBtn.textContent = "Add project";
-    }
-    projModal.querySelectorAll("[data-browse]").forEach((el) => el.setAttribute("data-browse", String(host.id)));
-    if (projModal.showModal) projModal.showModal();
+  // Add and edit use the same project dialog as chat and Projects.
+  async function editProject(host, p) {
+    if (!host || !window.FuseProjects) return;
+    const saved = await window.FuseProjects.openEditor({
+      hostId: host.id,
+      hosts: bundle.hosts || [],
+      project: p ? { ...p, host_id: host.id, host_alias: host.alias } : null,
+    });
+    if (saved) await reload();
   }
 
   if (hostModal) {
@@ -927,35 +903,6 @@
     });
   }
 
-  if (projModal) {
-    const form = projModal.querySelector("[data-edit-project-form]");
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      showErr(projModalErr, "");
-      const hostId = projModal.dataset.hostId;
-      const body = {
-        name: form.name.value,
-        remote_path: form.remote_path.value,
-        permission_mode: form.read_only.checked ? "read_only" : "project",
-      };
-      try {
-        if (projModal.dataset.mode === "add") {
-          await api(`/hosts/${hostId}/projects`, { method: "POST", body: JSON.stringify(body) });
-        } else {
-          const projectId = projModal.dataset.projectId;
-          await api(`/hosts/${hostId}/projects/${projectId}`, { method: "PATCH", body: JSON.stringify(body) });
-        }
-        projModal.close();
-        await reload();
-      } catch (err) {
-        showErr(projModalErr, err.message || "Could not save project");
-      }
-    });
-    projModal.addEventListener("close", () => {
-      if (browseState.open && browseState.target === "project") closeBrowse();
-    });
-  }
-
   if (browseModal) {
     browseModal.addEventListener("close", () => {
       browseState.open = false;
@@ -976,7 +923,6 @@
     const editProj = event.target.closest("[data-edit-project]");
     const wizardBrowseBtn = event.target.closest("[data-w-browse]");
     const wizardPathInput = event.target.closest("[data-w-proj-path]");
-    const browseBtn = event.target.closest("[data-browse]");
     const browseInto = event.target.closest("[data-browse-into]");
     const browseUp = event.target.closest("[data-browse-up]");
     const browseHome = event.target.closest("[data-browse-home]");
@@ -993,7 +939,7 @@
       if (addBtn) {
         const host = findHost(addBtn.getAttribute("data-add-project"));
         openCards.add(Number(addBtn.getAttribute("data-add-project")));
-        openProjectModal(host, null);
+        await editProject(host, null);
         return;
       }
       if (editHost) {
@@ -1004,7 +950,7 @@
         const [hid, pid] = editProj.getAttribute("data-edit-project").split(":");
         const host = findHost(hid);
         const p = host && (host.projects || []).find((x) => String(x.id) === String(pid));
-        openProjectModal(host, p);
+        await editProject(host, p);
         return;
       }
       if (wizardBrowseBtn || wizardPathInput) {
@@ -1014,13 +960,6 @@
         }
         const start = ((wizard.querySelector("[data-w-proj-path]") || {}).value || "").trim();
         openBrowse(wizardHostId, "wizard", start);
-        return;
-      }
-      if (browseBtn) {
-        const hostId = Number(browseBtn.getAttribute("data-browse"));
-        const form = projModal && projModal.querySelector("[data-edit-project-form]");
-        const start = form && projModal.open ? (form.remote_path.value || "").trim() : "";
-        openBrowse(hostId, "project", start);
         return;
       }
       if (browseInto) {
@@ -1072,9 +1011,12 @@
         await api(`/hosts/${delHost.getAttribute("data-del-host")}`, { method: "DELETE" });
         await reload();
       } else if (delProj) {
-        if (!(await ask("Remove this project?", { confirmLabel: "Remove", danger: true }))) return;
         const [hid, pid] = delProj.getAttribute("data-del-project").split(":");
-        await api(`/hosts/${hid}/projects/${pid}`, { method: "DELETE" });
+        const host = findHost(hid);
+        const p = host && (host.projects || []).find((x) => String(x.id) === String(pid));
+        const label = p ? `"${p.name}"` : "this project";
+        if (!(await ask(`Delete project ${label} and its chats? The folder on the machine is not touched.`, { confirmLabel: "Delete", danger: true }))) return;
+        await api(`/hosts/${hid}/projects/${pid}?sessions=delete`, { method: "DELETE" });
         await reload();
       } else if (open) {
         const [hid, pid] = open.getAttribute("data-open-project").split(":");

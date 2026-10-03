@@ -141,6 +141,7 @@ _THREAD_LIST_COLS = (
     "t.id, t.public_id, t.title, t.model, t.archived, t.created_at, t.updated_at, t.revision, "
     "t.kind, t.host_id, t.project_id, t.schedule_id, t.bypass_permissions, t.auto_permissions, "
     "h.alias AS host_alias, p.name AS project_name, "
+    "p.color AS project_color, p.logo_rev AS project_logo_rev, p.archived AS project_archived, t.archived_at, "
     "s.name AS schedule_name, "
     f"{_THREAD_RUNNING_SQL} AS running"
 )
@@ -1793,11 +1794,18 @@ def _view(row, *, include_messages: bool = False, coding: bool = False, conn=Non
         "host_alias": row["host_alias"] if "host_alias" in keys else None,
         "project_name": row["project_name"] if "project_name" in keys else None,
         "running": bool(row["running"]) if "running" in keys else False,
+        "archived_at": (row["archived_at"] or "") if "archived_at" in keys else "",
         "schedule_id": int(row["schedule_id"]) if "schedule_id" in keys and row["schedule_id"] is not None else None,
         "schedule_name": _legacy_text(row["schedule_name"], TITLE_MAX) if "schedule_name" in keys and row["schedule_name"] else "",
         "bypass_permissions": bool(row["bypass_permissions"]) if "bypass_permissions" in keys else False,
         "auto_permissions": bool(row["auto_permissions"]) if "auto_permissions" in keys else False,
     }
+    if kind == "project" and data["project_id"] is not None and "project_name" in keys and row["project_name"] is not None:
+        from . import hosts
+
+        data["project_color"] = hosts.project_color(data["project_id"], row["project_color"] if "project_color" in keys else "")
+        data["project_logo_url"] = hosts.logo_url(data["project_id"], row["project_logo_rev"] if "project_logo_rev" in keys else 0)
+        data["project_archived"] = bool(row["project_archived"]) if "project_archived" in keys and row["project_archived"] else False
     if include_messages:
         data["context"] = _legacy_text(row["context"], CONTEXT_MAX)
         data["tools"] = parse_thread_tools(row["tools"])
@@ -2026,6 +2034,8 @@ def create_thread(
             ).fetchone()
             if proj is None:
                 raise ChatValidationError("project not found", 404)
+            # A new session brings an archived project back.
+            conn.execute("UPDATE user_projects SET archived=0, archived_at='' WHERE id=? AND user_id=? AND archived=1", (pid, user_id))
             if not model:
                 try:
                     model = (proj["default_model"] or "") if "default_model" in proj.keys() else ""
@@ -2043,9 +2053,9 @@ def create_thread(
                 sid = None
         conn.execute(
             """INSERT INTO chat_threads (id, user_id, title, model, archived, messages, context, tools,
-               created_at, updated_at, kind, host_id, project_id, public_id, schedule_id)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (tid, user_id, title, model, 0, payload, context, tool_json, ts, ts, thread_kind, hid, pid, public, sid),
+               created_at, updated_at, active_at, kind, host_id, project_id, public_id, schedule_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (tid, user_id, title, model, 0, payload, context, tool_json, ts, ts, ts, thread_kind, hid, pid, public, sid),
         )
         store.thread_event(conn, user_id, tid)
         result = store.thread_view(conn, user_id, tid)
@@ -2164,6 +2174,20 @@ def _update_thread(conn, row, *, title, model, archived, messages, context, tool
         if compaction_json is None
         else (new_title, new_state, new_model, new_archived, payload, new_context, tool_json, ts, compaction_json, row["id"], row["user_id"]),
     )
+    old_archived = int(row["archived"] or 0)
+    if new_archived != old_archived:
+        if new_archived:
+            conn.execute("UPDATE chat_threads SET archived_at=?, archived_by_project=0 WHERE id=?", (ts, row["id"]))
+        else:
+            # Restoring counts as activity, so auto-archive does not take it straight back.
+            conn.execute("UPDATE chat_threads SET archived_at='', archived_by_project=0, active_at=? WHERE id=?", (ts, row["id"]))
+            if (row["kind"] if "kind" in row.keys() else "") == "project" and row["project_id"] is not None:
+                conn.execute(
+                    "UPDATE user_projects SET archived=0, archived_at='' WHERE id=? AND user_id=? AND archived=1",
+                    (row["project_id"], row["user_id"]),
+                )
+    elif messages is not None:
+        conn.execute("UPDATE chat_threads SET active_at=? WHERE id=?", (ts, row["id"]))
     if title is not None:
         conn.execute("UPDATE chat_threads SET title_job_token='',title_job_until='' WHERE id=?", (row["id"],))
     elif model is not None and new_model != row["model"] and not new_state:
@@ -2242,66 +2266,217 @@ def delete_schedule_owned_thread(user_id: int, thread_id: int, *, keep_thread_id
     return True
 
 
-def duplicate_thread(user_id: int, thread_id, *, expected_revision=None, command_id=None) -> dict | None:
+# Run ids and message ids are UUIDs; command job ids are 12 hex digits. A
+# fork rewrites every occurrence (traces, provider transcripts, "task_id: …"
+# lines the model saw) so the copy never shares an id with its source.
+_FORK_ID_EDGE = r"(?<![0-9A-Za-z-])(?:{alts})(?![0-9A-Za-z-])"
+
+
+def _fork_rewriter(id_map: dict):
+    ids = [old for old in id_map if old]
+    if not ids:
+        return lambda text: text
+    pattern = re.compile(_FORK_ID_EDGE.format(alts="|".join(re.escape(i) for i in sorted(ids, key=len, reverse=True))))
+
+    def rewrite(text):
+        if not isinstance(text, str) or not text:
+            return text
+        return pattern.sub(lambda m: id_map.get(m.group(0), m.group(0)), text)
+
+    return rewrite
+
+
+def _fork_request(text, rewrite, old_pk: int, new_pk: int):
+    text = rewrite(text)
+    try:
+        req = json.loads(text)
+    except (TypeError, ValueError):
+        return text
+    if isinstance(req, dict) and req.get("thread_id") == old_pk:
+        req["thread_id"] = new_pk
+        return json.dumps(req, ensure_ascii=False, separators=(",", ":"))
+    return text
+
+
+def _fork_retained(raw, rewrite, old_messages, new_messages) -> str:
+    """Carry the provider-history cache over to the fork. Its anchors hash
+    message ids, so re-anchor them to the new ids, but only when the cache
+    was valid for the source; a stale cache is dropped and rebuilt on send."""
+    from . import chat_history
+
+    try:
+        memory = json.loads(rewrite(raw or "{}"))
+        old_anchor = json.loads(raw or "{}").get("anchor") or []
+    except (TypeError, ValueError, AttributeError):
+        return "{}"
+    if not isinstance(memory, dict) or not old_anchor:
+        return "{}"
+    if chat_history.anchors(chat_history._retained_display(old_messages))[:len(old_anchor)] != old_anchor:
+        return "{}"
+    memory["anchor"] = chat_history.anchors(chat_history._retained_display(new_messages))[:len(old_anchor)]
+    return json.dumps(memory, ensure_ascii=False, separators=(",", ":"))
+
+
+def _copyable_columns(conn, table: str, names) -> list:
+    """Row columns minus MariaDB generated ones, which refuse explicit values."""
+    native = getattr(conn, "native", None)
+    if native is None:
+        return list(names)
+    generated = {r[0] for r in native(
+        "SELECT column_name FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name=%s AND extra LIKE %s",
+        (table, "%GENERATED%"),
+    ).fetchall()}
+    return [name for name in names if name not in generated]
+
+
+def _fork_title(title: str) -> str:
+    base = _legacy_text(title, TITLE_MAX) or "New chat"
+    suffix = " (fork)"
+    return _clean_title(base[: TITLE_MAX - len(suffix)].rstrip() + suffix) or "Fork"
+
+
+def fork_thread(user_id: int, thread_id, *, expected_revision=None, command_id=None) -> dict | None:
+    """Copy a chat or project session with everything it references:
+    messages, subagent runs (and their transcripts), command jobs, recaps,
+    thread permission grants and artifact links. Every run, message and job
+    id is new, so the fork and its source can run side by side."""
     from . import chat_store as store
 
     with store.transaction() as conn:
-        fingerprint, previous = store.command(conn, user_id, command_id, ["duplicate", thread_id, expected_revision])
+        fingerprint, previous = store.command(conn, user_id, command_id, ["fork", thread_id, expected_revision])
         if previous is not None:
             return previous
         pk = resolve_thread_pk(user_id, thread_id, conn)
         if pk is None:
             return None
-        src = store.thread_view(conn, user_id, pk)
-        if not src:
+        src = conn.execute("SELECT * FROM chat_threads WHERE id=? AND user_id=?", (pk, user_id)).fetchone()
+        if src is None:
             return None
-        store.check_revision(src["revision"], expected_revision)
-        copy_title = _clean_title("Copy of " + src["title"]) or "Copy"
-        ts = db.now()
+        store.check_revision(int(src["revision"]), expected_revision)
+        active = conn.execute(
+            "SELECT COUNT(*) AS n FROM chat_runs WHERE thread_id=? AND user_id=? AND status IN ('queued','running')",
+            (pk, user_id),
+        ).fetchone()
+        if int(active["n"] if active else 0):
+            raise ChatValidationError("Wait for the running turn and its subagents to finish, or stop them, before forking.", 409)
+        has_jobs = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='command_jobs'").fetchone() is not None
+        jobs = conn.execute("SELECT * FROM command_jobs WHERE user_id=? AND thread_id=?", (user_id, pk)).fetchall() if has_jobs else []
+        if any(job["status"] in ("queued", "running", "cancelling") for job in jobs):
+            raise ChatValidationError("A background command in this chat is still running. Wait for it or stop it before forking.", 409)
         count = conn.execute("SELECT COUNT(*) AS n FROM chat_threads WHERE user_id=?", (user_id,)).fetchone()
         if int(count["n"] if count else 0) >= MAX_THREADS:
             raise ChatValidationError(f"chat limit of {MAX_THREADS} reached", 413)
+        runs = conn.execute("SELECT * FROM chat_runs WHERE thread_id=? AND user_id=? ORDER BY created_at, id", (pk, user_id)).fetchall()
+        messages = parse_messages(src["messages"])
+        id_map: dict[str, str] = {}
+        for msg in messages:
+            if msg.get("id"):
+                id_map[str(msg["id"])] = str(uuid4())
+        for run in runs:
+            id_map[str(run["id"])] = str(uuid4())
+            if run["message_id"] and str(run["message_id"]) not in id_map:
+                id_map[str(run["message_id"])] = str(uuid4())
+        for job in jobs:
+            id_map[str(job["id"])] = uuid4().hex[:12]
+        rewrite = _fork_rewriter(id_map)
+
+        ts = db.now()
         tid = conn.execute("INSERT INTO chat_thread_ids DEFAULT VALUES").lastrowid
         conn.execute("DELETE FROM chat_thread_ids WHERE id=?", (tid,))
         public = _alloc_public_id(conn)
-        messages = [{**msg, "id": str(uuid4())} for msg in src["messages"]]
+        keys = src.keys()
+
+        def col(name, default=None):
+            return src[name] if name in keys and src[name] is not None else default
+
+        new_messages_json = rewrite(src["messages"])
+        retained = _fork_retained(col("retained_history", "{}"), rewrite, messages, parse_messages(new_messages_json))
+
         conn.execute(
-            """INSERT INTO chat_threads (id, user_id, title, model, archived, messages, context, tools,
-               created_at, updated_at, kind, host_id, project_id, public_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            """INSERT INTO chat_threads (id, user_id, title, title_state, model, archived, messages, context, tools,
+               created_at, updated_at, active_at, kind, host_id, project_id, public_id, compaction, loaded_tools,
+               retained_history, bypass_permissions, auto_permissions, recap_epoch, recap_start_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
-                tid,
-                user_id,
-                copy_title,
-                src["model"] or "",
-                0,
-                store.dumps(messages),
-                src.get("context") or "",
-                store.dumps(src.get("tools")),
-                ts,
-                ts,
-                src.get("kind") or "chat",
-                src.get("host_id"),
-                src.get("project_id"),
-                public,
+                tid, user_id, _fork_title(src["title"]), "user", src["model"] or "", 0,
+                new_messages_json, col("context", ""), col("tools", json.dumps(DEFAULT_TOOLS)),
+                ts, ts, ts, col("kind", "chat") or "chat", col("host_id"), col("project_id"), public,
+                rewrite(col("compaction", "{}")), col("loaded_tools", "[]"), retained,
+                int(col("bypass_permissions", 0) or 0), int(col("auto_permissions", 0) or 0),
+                int(col("recap_epoch", 0) or 0), rewrite(col("recap_start_id", "")),
             ),
         )
-        from . import chat_history, context as ctxmod
-        source_row = conn.execute("SELECT compaction,loaded_tools FROM chat_threads WHERE id=? AND user_id=?", (pk, user_id)).fetchone()
-        state = ctxmod.parse_state(source_row["compaction"])
-        replay, info = chat_history.build(conn, user_id, pk, src["messages"], state)
-        id_map = {old["id"]: new["id"] for old, new in zip(src["messages"], messages)}
-        for cp in state["checkpoints"]:
-            if cp.get("through_message_id") in id_map:
-                cp["through_message_id"] = id_map[cp["through_message_id"]]
-        conn.execute("UPDATE chat_threads SET retained_history=?,compaction=?,loaded_tools=? WHERE id=? AND user_id=?",
-            (chat_history.envelope(messages, replay, state, info=info), ctxmod.dump_state(state), source_row["loaded_tools"], tid, user_id))
+        mapped = {"id", "thread_id", "parent_run_id", "root_run_id", "message_id", "request", "message", "provider_messages"}
+        run_columns = _copyable_columns(conn, "chat_runs", runs[0].keys()) if runs else []
+        job_columns = _copyable_columns(conn, "command_jobs", jobs[0].keys()) if jobs else []
+        for run in runs:
+            names = run_columns
+            values = []
+            for name in names:
+                value = run[name]
+                if name == "id":
+                    value = id_map[str(value)]
+                elif name == "thread_id":
+                    value = tid
+                elif name in ("parent_run_id", "root_run_id", "message_id") and value:
+                    value = id_map.get(str(value), value)
+                elif name == "request":
+                    value = _fork_request(value, rewrite, pk, tid)
+                elif name in mapped:
+                    value = rewrite(value)
+                values.append(value)
+            conn.execute(
+                f"INSERT INTO chat_runs ({','.join(names)}) VALUES ({','.join('?' * len(names))})",
+                values,
+            )
+        for job in jobs:
+            names = job_columns
+            values = []
+            for name in names:
+                value = job[name]
+                if name == "id":
+                    value = id_map[str(value)]
+                elif name == "thread_id":
+                    value = tid
+                elif name == "run_id" and value:
+                    value = id_map.get(str(value), value)
+                values.append(value)
+            conn.execute(
+                f"INSERT INTO command_jobs ({','.join(names)}) VALUES ({','.join('?' * len(names))})",
+                values,
+            )
+        for recap in conn.execute(
+            "SELECT * FROM chat_recaps WHERE user_id=? AND thread_id=? AND state='ready'", (user_id, pk)
+        ).fetchall():
+            conn.execute(
+                """INSERT INTO chat_recaps (user_id, thread_id, epoch, episode_id, anchor_id, fingerprint, text, state,
+                   manual, attempts, lease_token, next_at, quiet_since, model, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (user_id, tid, recap["epoch"], rewrite(recap["episode_id"]), rewrite(recap["anchor_id"]), recap["fingerprint"],
+                 recap["text"], "ready", recap["manual"], recap["attempts"], "", "", "", recap["model"], ts),
+            )
+        for grant in conn.execute(
+            "SELECT host_id, kind, value FROM chat_permission_grants WHERE user_id=? AND thread_id=?", (user_id, pk)
+        ).fetchall():
+            conn.execute(
+                "INSERT OR IGNORE INTO chat_permission_grants(user_id, thread_id, host_id, kind, value, created_at) VALUES (?,?,?,?,?,?)",
+                (user_id, tid, grant["host_id"], grant["kind"], grant["value"], ts),
+            )
+        for link in conn.execute("SELECT artifact_id FROM artifact_threads WHERE thread_id=?", (pk,)).fetchall():
+            conn.execute("INSERT OR IGNORE INTO artifact_threads(artifact_id, thread_id) VALUES (?,?)", (link["artifact_id"], tid))
         store.thread_event(conn, user_id, tid)
         result = store.thread_view(conn, user_id, tid)
         store.remember(conn, user_id, command_id, fingerprint, result)
         return result
 
 
+# The old name; the dashboard menu now says Fork.
+duplicate_thread = fork_thread
+
+
 def _project_sidebar_view(row) -> dict:
+    from . import hosts
+
     thread_id = row["thread_id"] if "thread_id" in row.keys() else None
     updated = row["updated_at"] if "updated_at" in row.keys() and row["updated_at"] else row["created_at"]
     return {
@@ -2316,11 +2491,22 @@ def _project_sidebar_view(row) -> dict:
         "created_at": row["created_at"],
         "updated_at": updated,
         "running": bool(row["running"]) if "running" in row.keys() else False,
+        "color": hosts.project_color(row["id"], row["color"] if "color" in row.keys() else ""),
+        "logo_url": hosts.logo_url(row["id"], row["logo_rev"] if "logo_rev" in row.keys() else 0),
+        "archived": bool(row["archived"]) if "archived" in row.keys() and row["archived"] else False,
+        "archived_at": (row["archived_at"] or "") if "archived_at" in row.keys() else "",
+        "sessions": int(row["sessions"] or 0) if "sessions" in row.keys() else 0,
+        "last_active_at": (row["last_active_at"] or "") if "last_active_at" in row.keys() else "",
     }
 
 
 _PROJECT_SIDEBAR_SQL = """
     SELECT p.id, p.host_id, p.name, p.remote_path, p.default_model, p.permission_mode,
+           p.color, p.logo_rev, p.archived, p.archived_at,
+           (SELECT COUNT(*) FROM chat_threads c
+            WHERE c.user_id=p.user_id AND c.project_id=p.id AND c.kind='project') AS sessions,
+           (SELECT MAX(c.updated_at) FROM chat_threads c
+            WHERE c.user_id=p.user_id AND c.project_id=p.id AND c.kind='project') AS last_active_at,
            p.created_at, CASE WHEN p.updated_at IS NULL OR p.updated_at='' THEN p.created_at ELSE p.updated_at END AS updated_at,
            h.alias AS host_alias,
            (SELECT t.public_id FROM chat_threads t

@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Projects · Fuse{% endblock %}
+{% block page_title %}Projects{% endblock %}
+{% block page_lead %}<p>Every folder you work in, across all your <a href="/hosts">machines</a>. Give a project a folder color or a logo and it shows that way everywhere in chat.</p>{% endblock %}
+{% block page_actions %}
+<button type="button" class="btn sm" data-proj-add>New project</button>
+{% endblock %}
+{% block body %}
+<div class="stack-y proj-page" data-projects-page>
+  <div class="proj-toolbar">
+    <label class="proj-search">
+      <span class="visually-hidden">Search projects</span>
+      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10.4 10.4L13.8 13.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      <input type="search" data-proj-search placeholder="Search by name, folder or machine" autocomplete="off">
+    </label>
+    <div class="proj-tabs" role="tablist" aria-label="Show">
+      <button type="button" role="tab" class="proj-tab" data-proj-tab="active" aria-selected="true">Active <span data-proj-count="active"></span></button>
+      <button type="button" role="tab" class="proj-tab" data-proj-tab="archived" aria-selected="false">Archived <span data-proj-count="archived"></span></button>
+    </div>
+    <label class="proj-machine">
+      <span class="visually-hidden">Machine</span>
+      <select data-proj-machine><option value="">All machines</option></select>
+    </label>
+  </div>
+  <p class="callout fault" data-proj-error role="alert" hidden></p>
+  <ul class="proj-grid" data-proj-grid aria-live="polite"></ul>
+</div>
+<script type="application/json" id="projects-config">{{ projects_bundle | tojson }}</script>
+{% endblock %}
+{% block scripts %}
+<script src="/static/projects.js?v=1"></script>
+{% endblock %}

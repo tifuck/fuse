@@ -445,26 +445,28 @@ class HostsHttpTest(unittest.TestCase):
         self.assertEqual(page.status_code, 200)
         return self._csrf(page.text)
 
-    def test_chat_page_has_project_picker(self):
-        html = Path(__file__).resolve().parents[1].joinpath("templates", "chat.html").read_text()
+    def test_chat_page_uses_shared_project_chooser(self):
+        root = Path(__file__).resolve().parents[1]
+        html = root.joinpath("templates", "chat.html").read_text()
         self.assertIn("data-chat-new", html)
         self.assertIn("data-chat-context", html)
         self.assertIn("data-context-alert", html)
-        self.assertIn("data-project-picker", html)
-        self.assertIn("data-project-picker-host", html)
+        self.assertNotIn("data-project-picker", html)  # the sidebar workspace picker is gone
         self.assertIn('data-history-tab="projects"', html)
-        js = Path(__file__).resolve().parents[1].joinpath("static", "chat.js").read_text()
+        self.assertIn("projects-ui.js", root.joinpath("templates", "base.html").read_text())
+        js = root.joinpath("static", "chat.js").read_text()
         self.assertIn("openProjectPicker", js)
+        self.assertIn("FuseProjects.openChooser", js)
         self.assertIn("runCompact", js)
         self.assertIn('name: "compact"', js)
-        self.assertIn("data-project-picker-add", js)
         self.assertIn("startProjectThread(hostId, projectId", js)
         self.assertIn("pendingProject", js)
         self.assertIn("bindCreatePayload", js)
         start = js.index("async function startProjectThread")
-        end = js.index("async function createPickerProject")
+        end = js.index("async function openThread")
         self.assertNotIn('/chat/threads', js[start:end])
         self.assertIn('historyTab === "projects"', js)
+        self.assertIn('"/fork"', js)
 
     def test_create_project_and_thread_from_chat_apis(self):
         csrf = self._login()
