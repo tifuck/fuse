@@ -39,7 +39,8 @@ _TOOLS_UNSUPPORTED = re.compile(
     r"does not support (tools|function.?call)"
     r"|unknown (parameter|field) ['\"]tools"
     r"|['\"]tools['\"] is not (allowed|supported)"
-    r"|invalid tools\b",
+    r"|invalid tools\b"
+    r"|failed to (parse|initialize).{0,20}(grammar|sampler)",
     re.I,
 )
 logger = logging.getLogger(__name__)
