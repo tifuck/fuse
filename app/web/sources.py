@@ -15,6 +15,7 @@ from ..sources import TYPES, grok as grok_mod, invalidate_model_cache
 from ..sources import chatgpt as chatgpt_mod
 from ..sources import devin as devin_mod
 from ..sources import openrouter as openrouter_mod
+from ..sources import explabs as explabs_mod
 from ..sources import kimi as kimi_mod
 from ..sources import mimo as mimo_mod
 from ..sources import claude as claude_mod
@@ -48,7 +49,7 @@ from .deps import (
 )
 
 router = APIRouter()
-_BUILTINS = {"grok", "llama", "ollama", "zai", "chatgpt", "devin", "kimi", "mimo", "claude", "openrouter"}
+_BUILTINS = {"grok", "llama", "ollama", "zai", "chatgpt", "devin", "kimi", "mimo", "claude", "openrouter", "explabs"}
 _OLLAMA_PAGE = 10
 
 def _source_cfg(row) -> dict:
@@ -182,6 +183,12 @@ def _admin_sources_ctx(error: str | None = None, notice: str | None = None, olla
     llama_id = ensure_llama_source()
     ollama_id = ensure_ollama_source()
     openrouter_id = openrouter_mod.ensure_openrouter_source()
+    explabs_id = explabs_mod.ensure_explabs_source()
+    explabs = db.fetchone("SELECT * FROM sources WHERE id=?", (explabs_id,))
+    explabs_user_n = db.fetchone(
+        "SELECT COUNT(*) AS n FROM credentials WHERE source_id=? AND disabled=0 AND donated_by IS NOT NULL",
+        (explabs_id,),
+    )
     llama = db.fetchone("SELECT * FROM sources WHERE id=?", (llama_id,))
     ollama = db.fetchone("SELECT * FROM sources WHERE id=?", (ollama_id,))
     openrouter = db.fetchone("SELECT * FROM sources WHERE id=?", (openrouter_id,))
@@ -225,6 +232,8 @@ def _admin_sources_ctx(error: str | None = None, notice: str | None = None, olla
         "ollama_has_prev": paged["has_prev"],
         "ollama_has_next": paged["has_next"],
         "ollama_catalog": ollama_access.catalog_summary(ollama_id) if ollama_id else {"free": [], "gated": []},
+        "explabs": explabs,
+        "explabs_user_count": int(explabs_user_n["n"] if explabs_user_n else 0),
         "openrouter": openrouter,
         "openrouter_user_count": int(openrouter_user_n["n"] if openrouter_user_n else 0),
         "extras": extras,
@@ -801,6 +810,15 @@ async def user_sources(request: Request):
                 {"id": mid, "name": str(rec.get("name") or mid), "enabled": mid in enabled}
             )
         openrouter_paid_models.sort(key=lambda row: row["name"].lower())
+    explabs_sid = explabs_mod.ensure_explabs_source()
+    explabs_access = explabs_mod.access_state(user["id"])
+    explabs_owned = explabs_mod.user_credential(user["id"], explabs_sid)
+    explabs_card = None
+    if explabs_owned:
+        explabs_card = {
+            "id": explabs_owned["id"],
+            "label": explabs_owned["label"] or "Experiential Labs key",
+        }
     flash = _pool_flash.pop(user["id"], None)
     if flash and len(flash) < 3:
         flash = (flash[0], flash[1], "zai")
@@ -879,6 +897,10 @@ async def user_sources(request: Request):
         devin_flash_msg=flash[1] if flash and flash[2] == "devin" else "",
         devin_pending=_devin_pending_for(user["id"]),
         devin_auth_url=safe_verify_url((_devin_pending_for(user["id"]) or {}).get("auth_url") or ""),
+        explabs_access=explabs_access,
+        explabs_account=explabs_card,
+        explabs_flash_kind=flash[0] if flash and flash[2] == "explabs" else "",
+        explabs_flash_msg=flash[1] if flash and flash[2] == "explabs" else "",
         openrouter_ok=or_access["ok"],
         openrouter_reason=or_access["reason"],
         openrouter_user_key=or_access["user_key"],
@@ -1641,6 +1663,41 @@ async def zai_revoke(request: Request, cred_id: int):
     return RedirectResponse("/sources", status_code=303)
 
 
+@router.post("/sources/explabs/add")
+async def explabs_add(request: Request, api_key: str = Form(""), label: str = Form("")):
+    user, redir = require_user(request)
+    if redir:
+        return redir
+    if not limiter.allow(f"explabs-add:{user['id']}", 5, 60):
+        _pool_flash[user["id"]] = ("err", "Too many attempts. Try again in a minute.", "explabs")
+        return RedirectResponse("/sources", status_code=303)
+    sid = explabs_mod.ensure_explabs_source()
+    cred_id, err = await explabs_mod.add_user_key(sid, api_key, user["id"], label=label)
+    if err or not cred_id:
+        _pool_flash[user["id"]] = ("err", err or "Could not add that key.", "explabs")
+        return RedirectResponse("/sources", status_code=303)
+    invalidate_model_cache("explabs")
+    _pool_flash[user["id"]] = ("ok", "Experiential Labs key saved for your account.", "explabs")
+    return RedirectResponse("/sources", status_code=303)
+
+
+@router.post("/sources/explabs/{cred_id}/revoke")
+async def explabs_revoke(request: Request, cred_id: int):
+    user, redir = require_user(request)
+    if redir:
+        return redir
+    sid = explabs_mod.ensure_explabs_source()
+    row = db.fetchone("SELECT id, donated_by, source_id FROM credentials WHERE id=?", (cred_id,))
+    if not row or row["source_id"] != sid:
+        raise HTTPException(404, "Not found")
+    if row["donated_by"] != user["id"]:
+        raise HTTPException(403, "Forbidden")
+    explabs_mod.disable_credential(cred_id)
+    invalidate_model_cache("explabs")
+    _pool_flash[user["id"]] = ("ok", "Experiential Labs key removed.", "explabs")
+    return RedirectResponse("/sources", status_code=303)
+
+
 @router.post("/sources/openrouter/add")
 @router.post("/pool/openrouter/add")
 async def openrouter_add(request: Request, api_key: str = Form(""), label: str = Form("")):
@@ -2046,6 +2103,19 @@ async def admin_zai_save(
             conn.execute("UPDATE credentials SET pool_held_until=NULL WHERE source_id=?", (sid,))
     _notices[user["id"]] = "Z.AI outside-usage guard saved."
     return RedirectResponse("/admin/pools#guards", status_code=303)
+
+
+@router.post("/admin/sources/explabs")
+async def admin_explabs_save(request: Request, enabled: str = Form("0")):
+    user, redir = require_admin(request)
+    if redir:
+        return redir
+    sid = explabs_mod.ensure_explabs_source()
+    on = 1 if enabled in ("1", "on", "true") else 0
+    db.execute("UPDATE sources SET enabled=? WHERE id=?", (on, sid))
+    invalidate_model_cache("explabs")
+    _notices[user["id"]] = "Experiential Labs settings saved."
+    return RedirectResponse("/admin/sources", status_code=303)
 
 
 @router.post("/admin/sources/openrouter")

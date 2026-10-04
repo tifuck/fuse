@@ -45,6 +45,8 @@ _PROVIDER_ALIASES = {
     "cascade": "devin",
     "windsurf": "devin",
     "openrouter": "openrouter",
+    "explabs": "explabs",
+    "experiential-labs": "explabs",
     "ollama": "ollama",
     "llama": "llama",
     "llama.cpp": "llama",
@@ -103,6 +105,8 @@ def _query_parts(query: str) -> tuple[str, set[str]]:
 def _item_providers(item: dict) -> set[str]:
     type_id = str(item.get("type") or "").lower()
     mid = str(item.get("id") or "").lower()
+    if mid.startswith("explabs/") or type_id == "explabs":
+        return {"explabs"}
     if mid.startswith("devin/") or type_id == "devin":
         return {"devin"}
     out: set[str] = set()
@@ -274,7 +278,7 @@ async def search_models(*, user_id: int, arguments: str) -> tuple[str, dict]:
             {
                 "query": query,
                 "models": [],
-                "usage": "No models matched. Try a provider name (grok, chatgpt, zai, openrouter) or a model family.",
+                "usage": "No models matched. Try a provider name (grok, chatgpt, zai, openrouter, explabs) or a model family.",
             },
             ensure_ascii=False,
         )
@@ -305,6 +309,9 @@ async def resolve_spawn_model(*, user_id: int, slug: str, parent_model: str) -> 
     if exact:
         return str(exact["id"]), ""
     hits = _match_entries(entries, want)
+    _, providers = _query_parts(want)
+    if "explabs" not in providers:
+        hits = [h for h in hits if h["provider"] != "explabs"]
     if len(hits) == 1:
         return hits[0]["id"], ""
     if not hits:

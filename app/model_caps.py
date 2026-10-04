@@ -39,14 +39,19 @@ def remember(type_id: str, model: str, value) -> None:
 
 def _bare(type_id: str, model: str) -> str:
     mid = (model or "").strip()
-    prefix = {"devin": "devin/", "claude": "claude/", "openrouter": "openrouter/"}.get(type_id)
+    prefix = {"devin": "devin/", "claude": "claude/", "openrouter": "openrouter/", "explabs": "explabs/"}.get(type_id)
     if prefix and mid.startswith(prefix):
         mid = mid[len(prefix):]
     return mid.replace(".", "-") if type_id == "devin" else mid
 
 
-def image_input(type_id: str, model: str) -> bool | None:
+def image_input(type_id: str, model: str, *, user_id: int | None = None) -> bool | None:
     mid = _bare(type_id, model)
+    if type_id == "explabs":
+        from .sources.explabs import cached_catalog
+
+        rec = ((cached_catalog(user_id) or {}).get("by_id") or {}).get(mid, {})
+        return rec.get("image")
     if type_id == "chatgpt" and mid.endswith("-fast"):
         # `{slug}-fast` is the same model at the fast service tier.
         mid = mid[:-5]
@@ -74,12 +79,12 @@ def _image_part(part) -> bool:
     return isinstance(part, dict) and part.get("type") in ("image_url", "input_image")
 
 
-def prepare(messages, type_id: str, model: str) -> tuple[list, int]:
+def prepare(messages, type_id: str, model: str, *, user_id: int | None = None) -> tuple[list, int]:
     """Outgoing copy: Responses `input_image` becomes `image_url` (what every
     adapter reads); text-only or over-budget images become explicit notes."""
     if not isinstance(messages, list):
         return messages, 0
-    strip = image_input(type_id, model) is False
+    strip = image_input(type_id, model, user_id=user_id) is False
     # Newest evidence wins; never rewrite the canonical saved transcript.
     allowed = set()
     count = size = 0

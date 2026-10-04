@@ -31,6 +31,7 @@ from .sources import (
 from .sources import pool_policy
 from .sources.base import ChatResult
 from .sources import openrouter as openrouter_mod
+from .sources import explabs as explabs_mod
 from .sources import devin as devin_mod
 from .sources import kimi as kimi_mod
 from .sources import mimo as mimo_mod
@@ -258,7 +259,7 @@ def _validate_reasoning(body: dict) -> None:
 
 
 async def _run_chat(src, body: dict, user_id: int, session_id: str | None = None):
-    if src.type_id == "openrouter":
+    if src.type_id in ("openrouter", "explabs"):
         return await src.chat(body, user_id=user_id, session_id=session_id)
     if src.type_id in POOL_TYPES:
         return await src.chat(body, session_id=session_id, user_id=user_id)
@@ -499,25 +500,33 @@ async def _invoke_chat(request: Request, user, body: dict, *, prefer_openrouter:
     picked = None
     if (
         prefer_openrouter
+        and not model.startswith("explabs/")
         and not devin_mod.is_devin_model(model)
         and not kimi_mod.is_kimi_model(model)
         and not mimo_mod.is_mimo_model(model)
         and not claude_mod.is_claude_model(model)
     ):
         picked = await openrouter_pool_fallback(model, user["id"])
+    if model.startswith("explabs/") and not explabs_mod.user_has_explabs(user["id"]):
+        raise HTTPException(403, "Connect an Experiential Labs API key to use its models")
     if picked is None:
-        picked = await pick(
-            model,
-            allow_grok=grok_ok,
-            allow_chatgpt=chatgpt_ok,
-            allow_zai=zai_ok,
-            allow_devin=devin_ok,
-            allow_kimi=kimi_ok,
-            allow_mimo=mimo_ok,
-            allow_claude=claude_ok,
-            user_id=user["id"],
-        )
+        try:
+            picked = await pick(
+                model,
+                allow_grok=grok_ok,
+                allow_chatgpt=chatgpt_ok,
+                allow_zai=zai_ok,
+                allow_devin=devin_ok,
+                allow_kimi=kimi_ok,
+                allow_mimo=mimo_ok,
+                allow_claude=claude_ok,
+                user_id=user["id"],
+            )
+        except explabs_mod.CatalogError:
+            raise HTTPException(503, "Experiential Labs model catalog is temporarily unavailable") from None
     if not picked:
+        if model.startswith("explabs/") and not explabs_mod.user_has_explabs(user["id"]):
+            raise HTTPException(403, "Reconnect your Experiential Labs API key to use its models")
         denied = openrouter_mod.denied_reason(model, user["id"])
         if denied:
             raise HTTPException(403, denied)
@@ -545,7 +554,7 @@ async def _invoke_chat(request: Request, user, body: dict, *, prefer_openrouter:
     requested = model
     body["model"] = upstream
     original_messages = body["messages"]
-    body["messages"], omitted = model_caps.prepare(original_messages, src.type_id, upstream)
+    body["messages"], omitted = model_caps.prepare(original_messages, src.type_id, upstream, user_id=user["id"])
     session_id = None
     if src.type_id in POOL_TYPES or src.type_id in ("openai", "ollama", "openrouter"):
         session_id = session_id_from(request.headers, body, user_id=user["id"], model=upstream)

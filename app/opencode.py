@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import json
 
-from . import model_caps
+from . import context as ctxmod, model_caps
 from .sources import chatgpt as chatgpt_mod
 from .sources import devin as devin_mod
 from .sources import models_by_source
 from .sources import openrouter as openrouter_mod
+from .sources import explabs as explabs_mod
 from .sources import kimi as kimi_mod
 from .sources import mimo as mimo_mod
 from .sources import claude as claude_mod
@@ -19,6 +20,7 @@ OPENCODE_SCHEMA = "https://opencode.ai/config.json"
 FUSE_NPM = "@ai-sdk/openai-compatible"
 _OPENCODE_NAME_PREFIX = {
     "devin": "Devin",
+    "explabs": "Experiential Labs",
 }
 
 
@@ -55,6 +57,7 @@ async def model_options(user_id: int, groups: list[dict] | None = None) -> list[
     entries: list[dict] = []
     seen: set[str] = set()
     openrouter_catalog = None
+    explabs_catalog = None
     for group in groups:
         if not group.get("models"):
             continue
@@ -62,6 +65,14 @@ async def model_options(user_id: int, groups: list[dict] | None = None) -> list[
             openrouter_catalog = openrouter_mod.cached_catalog()
             if openrouter_catalog is None:
                 openrouter_catalog = await openrouter_mod.fetch_catalog()
+        if group["type"] == "explabs":
+            if not explabs_mod.user_has_explabs(user_id):
+                continue
+            if explabs_catalog is None:
+                explabs_catalog = explabs_mod.cached_catalog(user_id)
+                if explabs_catalog is None:
+                    explabs_catalog = await explabs_mod.fetch_catalog(user_id)
+        catalog = explabs_catalog if group["type"] == "explabs" else openrouter_catalog
         for model in group["models"]:
             mid = model
             if group["type"] == "devin":
@@ -73,10 +84,24 @@ async def model_options(user_id: int, groups: list[dict] | None = None) -> list[
             seen.add(mid)
             display = opencode_display_name(
                 group["type"],
-                _model_display_name(mid, group["type"], openrouter_catalog),
+                _model_display_name(mid, group["type"], catalog),
             )
-            config = _opencode_model_config(display, group["type"], mid)
-            image = model_caps.image_input(group["type"], mid)
+            config = _opencode_model_config(display, group["type"], mid, user_id=user_id)
+            image = model_caps.image_input(group["type"], mid, user_id=user_id)
+            if group["type"] == "explabs":
+                if not mid.startswith("explabs/"):
+                    continue
+                record = (catalog or {}).get("by_id", {}).get(explabs_mod.upstream_id(mid))
+                if not record:
+                    continue
+                image = record.get("image")
+                parameters = record.get("supported_parameters") or []
+                efforts = record.get("reasoning_efforts") or []
+                config["reasoning"] = bool(efforts) or any(p in parameters for p in ("reasoning", "reasoning_effort"))
+                config["variants"] = {effort: {"reasoningEffort": effort} for effort in efforts}
+                window = ctxmod.window_for(mid, "explabs", catalog=catalog)
+                if window:
+                    config["limit"] = {"context": window}
             if image is not None:
                 config["modalities"] = {"input": ["text", "image"] if image else ["text"], "output": ["text"]}
             entries.append(

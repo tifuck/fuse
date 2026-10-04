@@ -15,6 +15,7 @@ from .llama import LlamaSource
 from .openai_compat import OpenAICompatSource
 from .ollama import OllamaSource
 from .openrouter import OpenRouterSource, ensure_openrouter_source, user_has_openrouter
+from .explabs import ExperientialLabsSource, ensure_explabs_source
 from .zai import ZAI_MODELS, ZaiSource, ensure_zai_source, user_has_zai
 from .devin import DEVIN_MODELS, DevinSource, ensure_devin_source, user_has_devin
 from .kimi import KIMI_MODELS, KimiSource, ensure_kimi_source, user_has_kimi
@@ -35,6 +36,7 @@ _BUILDERS: dict[str, Callable] = {
     "mimo": MimoSource,
     "claude": ClaudeSource,
     "openrouter": OpenRouterSource,
+    "explabs": ExperientialLabsSource,
 }
 
 TYPES = {
@@ -49,6 +51,7 @@ TYPES = {
     "mimo": "Xiaomi pool",
     "claude": "Claude pool",
     "openrouter": "OpenRouter",
+    "explabs": "Experiential Labs",
 }
 
 PROVIDER_LABELS = {
@@ -63,6 +66,7 @@ PROVIDER_LABELS = {
     "mimo": "Xiaomi",
     "claude": "Anthropic",
     "openrouter": "OpenRouter",
+    "explabs": "Experiential Labs",
     "unknown": "Unknown",
 }
 
@@ -241,6 +245,14 @@ def _fallback_models(s: Source) -> list[str]:
 
 
 async def _source_models(s: Source, user_id: int | None) -> list[str]:
+    if s.type_id == "explabs":
+        # Private catalogs have credential revisions and never enter shared caches.
+        from .explabs import CatalogError
+
+        try:
+            return await s.models(user_id=user_id)
+        except CatalogError:
+            return []
     key = _cache_key(s, user_id)
     hit = _model_cache.get(key)
     if hit and key not in _live and s.type_id in POOL_TYPES:
@@ -283,6 +295,8 @@ def invalidate_model_cache(source_type: str | None = None) -> None:
 
 
 def catalog_unavailable_for(model: str) -> bool:
+    if model.startswith("explabs/"):
+        return False
     if model.startswith("openrouter/") or ("/" in model and not model.startswith("/")):
         return "openrouter" in _unavailable_types
     if model.startswith("grok"):
@@ -417,10 +431,18 @@ async def pick(
     from . import mimo as mimo_mod
     from . import claude as claude_mod
 
+    from . import explabs as explabs_mod
+
+    if model.startswith(explabs_mod.PUBLIC_PREFIX):
+        for src in all_enabled():
+            if src.type_id == "explabs":
+                resolved = await explabs_mod.resolve(model, user_id)
+                return (src, resolved) if resolved else None
+        return None
     route = db.fetchone("SELECT * FROM model_routes WHERE model=?", (model,))
     if route:
         src = get(route["source_id"])
-        if src and (allow_grok or src.type_id != "grok") and (allow_chatgpt or src.type_id != "chatgpt") and (allow_zai or src.type_id != "zai") and (allow_devin or src.type_id != "devin") and (allow_kimi or src.type_id != "kimi") and (allow_mimo or src.type_id != "mimo") and (allow_claude or src.type_id != "claude"):
+        if src and src.type_id != "explabs" and (allow_grok or src.type_id != "grok") and (allow_chatgpt or src.type_id != "chatgpt") and (allow_zai or src.type_id != "zai") and (allow_devin or src.type_id != "devin") and (allow_kimi or src.type_id != "kimi") and (allow_mimo or src.type_id != "mimo") and (allow_claude or src.type_id != "claude"):
             return src, route["upstream_model"] or model
     # Devin-prefixed ids never leave this pool — including GPT/Astra/Claude
     # slugs that would otherwise match ChatGPT or look like OpenRouter.
@@ -490,6 +512,8 @@ async def pick(
         allow_mimo=allow_mimo,
         allow_claude=allow_claude,
     ):
+        if s.type_id == "explabs":
+            continue
         hit = _cache.get(s.source_id)
         if hit and model in hit[1]:
             if s.type_id == "devin":
@@ -622,6 +646,7 @@ async def bootstrap() -> None:
     ensure_kimi_source()
     ensure_mimo_source()
     ensure_claude_source()
+    ensure_explabs_source()
     or_id = ensure_openrouter_source()
     from .openrouter import clear_global_key
 

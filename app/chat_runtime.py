@@ -546,6 +546,8 @@ def _client_obj(obj: dict, *, hide_tool_calls: bool = True) -> dict | None:
 
 def _model_type_guess(model: str) -> str | None:
     mid = (model or "").strip()
+    if mid.startswith("explabs/"):
+        return "explabs"
     if mid.startswith("openrouter/"):
         return "openrouter"
     if mid.startswith("devin/"):
@@ -2695,6 +2697,10 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             stored_meter = ((thread or {}).get("compaction") or {}).get("meter") if isinstance(thread, dict) else None
         src_type_guess = ctxmod.source_type_for_model(model, stored_meter)
         resolved_window = int((stored_meter or {}).get("limit") or 0) if (stored_meter or {}).get("model") == model else None
+        if src_type_guess == "explabs":
+            from .sources.explabs import cached_catalog
+
+            resolved_window = ctxmod.window_for(model, "explabs", catalog=cached_catalog(user["id"]))
         calibration = (stored_meter or {}).get("calibration")
         if calibration and calibration.get("model") != model:
             calibration = None
@@ -3115,8 +3121,13 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 src_type = src.type_id
                 if not (src_type in ("llama", "ollama", "openai") and src_type == src_type_guess
                         and resolved_window and not ctxmod.cached_window(src_type, upstream or model)):
-                    resolved_window = ctxmod.window_for(upstream or model, src_type)
-                if not window_override:
+                    catalog = None
+                    if src_type == "explabs":
+                        from .sources.explabs import cached_catalog
+
+                        catalog = cached_catalog(user["id"])
+                    resolved_window = ctxmod.window_for(upstream or model, src_type, catalog=catalog)
+                if not window_override and src_type != "explabs":
                     ctxmod.remember_window(src_type, model, resolved_window)
                 msg = api._error_message(result.body) if result.status != 200 else ""
                 if result.status != 400:

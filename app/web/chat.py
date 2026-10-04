@@ -56,10 +56,10 @@ async def chat_page(request: Request):
                 {
                     "id": m["id"],
                     "name": m.get("name") or m["id"],
-                    "reasoning": list(_reasoning_efforts(group["type"], m["id"])),
-                    "reasoning_default": _reasoning_default(group["type"], m["id"]),
+                    "reasoning": list(_reasoning_efforts(group["type"], m["id"], user_id=user["id"])),
+                    "reasoning_default": _reasoning_default(group["type"], m["id"], user_id=user["id"]),
                     "context_window": m.get("context_window") or ctxmod.window_for(m["id"], group["type"]),
-                    "image": model_caps.image_input(group["type"], m["id"]),
+                    "image": model_caps.image_input(group["type"], m["id"], user_id=user["id"]),
                 }
                 for m in group["models"]
             ],

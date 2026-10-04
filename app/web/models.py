@@ -10,6 +10,7 @@ from ..sources import TYPES, grok as grok_mod, models_by_source
 from ..sources import chatgpt as chatgpt_mod
 from ..sources import devin as devin_mod
 from ..sources import openrouter as openrouter_mod
+from ..sources import explabs as explabs_mod
 from ..sources import kimi as kimi_mod
 from ..sources import mimo as mimo_mod
 from ..sources import claude as claude_mod
@@ -20,7 +21,11 @@ from .deps import render, require_user
 
 router = APIRouter()
 
-def _reasoning_efforts(type_id: str, model: str | None = None) -> tuple[str, ...]:
+def _reasoning_efforts(type_id: str, model: str | None = None, user_id: int | None = None) -> tuple[str, ...]:
+    if type_id == "explabs":
+        catalog = explabs_mod.cached_catalog(user_id) or {}
+        record = catalog.get("by_id", {}).get(explabs_mod.upstream_id(model or "")) or {}
+        return tuple(record.get("reasoning_efforts") or [])
     if type_id == "devin":
         return devin_mod.efforts_for(model) if model else devin_mod.SEEDED_EFFORTS
     if type_id == "grok":
@@ -38,12 +43,12 @@ def _reasoning_efforts(type_id: str, model: str | None = None) -> tuple[str, ...
     return ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 
-def _reasoning_default(type_id: str, model: str | None = None) -> str:
+def _reasoning_default(type_id: str, model: str | None = None, user_id: int | None = None) -> str:
     if type_id == "kimi":
         return kimi_mod.default_effort(model)
     if type_id == "claude":
         return claude_mod.default_effort(model)
-    efforts = _reasoning_efforts(type_id, model)
+    efforts = _reasoning_efforts(type_id, model, user_id)
     if not efforts:
         return ""
     for pref in ("medium", "high", "low"):
@@ -52,8 +57,8 @@ def _reasoning_default(type_id: str, model: str | None = None) -> str:
     return efforts[0]
 
 
-def _opencode_model_config(name: str, type_id: str, model: str | None = None) -> dict:
-    efforts = _reasoning_efforts(type_id, model)
+def _opencode_model_config(name: str, type_id: str, model: str | None = None, user_id: int | None = None) -> dict:
+    efforts = _reasoning_efforts(type_id, model, user_id)
     return {
         "name": name,
         "reasoning": bool(efforts),
@@ -73,6 +78,7 @@ _FAMILY_TITLES = {
     "llama": "Local inference",
     "ollama": "Ollama Cloud",
     "openrouter": "OpenRouter",
+    "explabs": "Experiential Labs",
 }
 
 _LOCK_COPY = {
@@ -291,6 +297,10 @@ def _named_model(model: str, *alts: str) -> str:
 
 
 def _model_display_name(model: str, type_id: str, openrouter_catalog: dict | None = None) -> str:
+    if type_id == "explabs":
+        upstream = explabs_mod.upstream_id(model)
+        record = (openrouter_catalog or {}).get("by_id", {}).get(upstream) or {}
+        return _standardize_display_name(str(record.get("name") or _humanize_model_id(upstream)))
     if type_id == "openrouter":
         upstream = openrouter_mod.upstream_id(model)
         slug = upstream.split("/")[-1]
@@ -330,7 +340,10 @@ def _model_rows(type_id: str, names: list[str], catalog: dict | None = None) -> 
     return [
         {
             "id": name,
-            "display_id": openrouter_mod.upstream_id(name) if type_id == "openrouter" else name,
+            "display_id": (
+                explabs_mod.upstream_id(name) if type_id == "explabs"
+                else openrouter_mod.upstream_id(name) if type_id == "openrouter" else name
+            ),
             "name": _model_display_name(name, type_id, catalog),
             "context_window": ctxmod.window_for(name, type_id, catalog=catalog),
         }
@@ -393,6 +406,9 @@ async def _models_page_families(user) -> tuple[list[dict], list[dict]]:
     catalog = openrouter_mod.cached_catalog()
     if catalog is None and or_state["ok"]:
         catalog = await openrouter_mod.fetch_catalog()
+    explabs_catalog = explabs_mod.cached_catalog(user["id"])
+    if explabs_catalog is None and any(g["type"] == "explabs" and g.get("models") for g in groups):
+        explabs_catalog = await explabs_mod.fetch_catalog(user["id"])
     available: list[dict] = []
     for group in groups:
         names = list(group.get("models") or [])
@@ -404,7 +420,7 @@ async def _models_page_families(user) -> tuple[list[dict], list[dict]]:
             {
                 "type": group["type"],
                 "title": _family_title(group),
-                "models": _model_rows(group["type"], names, catalog),
+                "models": _model_rows(group["type"], names, explabs_catalog if group["type"] == "explabs" else catalog),
             }
         )
     have = {g["type"] for g in available}

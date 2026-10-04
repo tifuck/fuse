@@ -98,6 +98,7 @@ TYPE_WINDOWS = {
     "mimo": 1_048_576,
     "claude": 1_000_000,
     "openrouter": 128_000,
+    "explabs": 128_000,
     "openai": 128_000,
     "ollama": 128_000,
     "llama": 8_192,
@@ -263,6 +264,8 @@ def learned_window(model: str) -> int | None:
 
 def type_id_for_model(model: str) -> str | None:
     mid = (model or "").strip()
+    if mid.startswith("explabs/"):
+        return "explabs"
     if mid.startswith("openrouter/"):
         return "openrouter"
     if mid.startswith("devin/"):
@@ -323,6 +326,8 @@ def window_for(
                 got = _positive_int(rec.get(key))
                 if got:
                     return _clamp_window(got, cfg.default_window)
+    if kind == "explabs":
+        return TYPE_WINDOWS[kind]
     if kind:
         cached = cached_window(kind, mid)
         if cached:
@@ -392,9 +397,10 @@ def _catalog_record(model: str, catalog: dict) -> dict | None:
     mid = (model or "").strip()
     if mid in by_id and isinstance(by_id[mid], dict):
         return by_id[mid]
-    if mid.startswith("openrouter/") and mid[len("openrouter/") :] in by_id:
-        rec = by_id[mid[len("openrouter/") :]]
-        return rec if isinstance(rec, dict) else None
+    for prefix in ("openrouter/", "explabs/"):
+        if mid.startswith(prefix) and mid[len(prefix):] in by_id:
+            rec = by_id[mid[len(prefix):]]
+            return rec if isinstance(rec, dict) else None
     return None
 
 

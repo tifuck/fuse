@@ -10,6 +10,7 @@
   <a href="#llama">Local llama</a>
   <a href="#ollama">Ollama Cloud</a>
   <a href="#openrouter">OpenRouter</a>
+  <a href="#explabs">Experiential Labs</a>
   <a href="#compat">OpenAI-compatible</a>
 </nav>
 
@@ -152,6 +153,20 @@
   </form>
 </section>
 
+<section class="panel" id="explabs">
+  <div class="account-head">
+    <div><p class="eyebrow">Experiential Labs</p><h2>Personal keys only</h2></div>
+    <span class="badge {{ 'on' if explabs and explabs['enabled'] else 'off' }}">{{ 'On' if explabs and explabs['enabled'] else 'Off' }}</span>
+  </div>
+  <p class="aside">Each user adds their own key on <a href="/sources">Sources</a>. There is no shared key. Only explicit <code>explabs/…</code> model selections use this provider; pool requests never fall back here.</p>
+  <p class="usage-sub">{{ explabs_user_count }} personal key{{ 's' if explabs_user_count != 1 else '' }} on Sources</p>
+  <form method="post" action="/admin/sources/explabs" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label class="check"><input type="checkbox" name="enabled" value="1"{% if explabs and explabs['enabled'] %} checked{% endif %}> Enabled — route personal Experiential Labs keys</label>
+    <button type="submit" class="btn">Save Experiential Labs</button>
+  </form>
+</section>
+
 {% if extras %}
 <section class="panel">
   <h2>Other OpenAI-compatible</h2>
@@ -188,7 +203,7 @@
 
 <section class="panel" id="compat">
   <h2>Add OpenAI-compatible</h2>
-  <p class="aside">Optional extra upstream. Llama, Ollama, and OpenRouter are above — do not add them here.</p>
+  <p class="aside">Optional extra upstream. Llama, Ollama, OpenRouter, and Experiential Labs are above — do not add them here.</p>
   <form method="post" action="/admin/sources" class="stack">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="type" value="openai">

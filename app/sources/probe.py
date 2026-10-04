@@ -151,6 +151,8 @@ async def probe_source(source_id: int) -> dict:
         checks = await _probe_mimo(src)
     elif src.type_id == "claude":
         checks = await _probe_claude(src)
+    elif src.type_id == "explabs":
+        checks = [_check("Personal keys", True, "Validated when each user connects a key; no shared-key or completion probe.", skip=True)]
     elif src.type_id == "openrouter":
         checks = await _probe_openrouter(src)
     else:

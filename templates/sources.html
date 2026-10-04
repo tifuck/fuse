@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Sources · Fuse{% endblock %}
 {% block page_title %}Sources{% endblock %}
-{% block page_lead %}<p>Link your own subscriptions to unlock their models, or add a personal OpenRouter key. Linked subscriptions join a shared pool when the server allows it; your OpenRouter key is never shared. See what each unlocks on <a href="/models">Models</a>.</p>{% endblock %}
+{% block page_lead %}<p>Link your own subscriptions to unlock their models, or add a personal OpenRouter or Experiential Labs key. Linked subscriptions join a shared pool when the server allows it; personal keys are never shared. See what each unlocks on <a href="/models">Models</a>.</p>{% endblock %}
 {% block page_actions %}
 <div class="head-actions">
   <button type="button" class="btn sm" data-dialog-open="grok-connect-dialog">{{ 'Continue x.ai' if pending else 'Add x.ai' }}</button>
@@ -219,11 +219,12 @@
 
 <div class="stack-y sources-page" data-tab-root>
   <nav class="usage-tabs" role="tablist" aria-label="Source kinds" data-page-tabs>
-    <button type="button" role="tab"{% if not openrouter_flash_msg %} class="on" aria-selected="true"{% else %} aria-selected="false"{% endif %} data-tab="pool">Subscriptions</button>
+    <button type="button" role="tab"{% if not openrouter_flash_msg and not explabs_flash_msg %} class="on" aria-selected="true"{% else %} aria-selected="false"{% endif %} data-tab="pool">Subscriptions</button>
+    <button type="button" role="tab"{% if explabs_flash_msg %} class="on" aria-selected="true"{% else %} aria-selected="false"{% endif %} data-tab="explabs">Experiential Labs</button>
     <button type="button" role="tab"{% if openrouter_flash_msg %} class="on" aria-selected="true"{% else %} aria-selected="false"{% endif %} data-tab="openrouter">OpenRouter</button>
   </nav>
 
-  <div data-tab-panel="pool" class="stack-y{% if openrouter_flash_msg %} hidden{% endif %}">
+  <div data-tab-panel="pool" class="stack-y{% if openrouter_flash_msg or explabs_flash_msg %} hidden{% endif %}">
     <p class="usage-note">x.ai, OpenAI, Z.AI, Devin, Kimi, and Xiaomi are donated subscription pools. Linking an account unlocks that provider. Z.AI is also unlocked if you donate a live x.ai or OpenAI account and sharing is on. Admins can open a pool to every registered user, or limit routing to accounts you linked. When sharing is on, you can opt out and use only your own.</p>
     {% if pool_flash_msg %}
     <p class="callout {% if pool_flash_kind == 'ok' %}ok{% else %}fault{% endif %}" role="alert">{{ pool_flash_msg }}</p>
@@ -527,6 +528,38 @@
       {% if a.key_info and a.key_info.last_error %}
       <p class="callout fault">{{ a.key_info.last_error }}</p>
       {% endif %}
+    </article>
+    {% endif %}
+  </div>
+  <div data-tab-panel="explabs" class="stack-y{% if not explabs_flash_msg %} hidden{% endif %}">
+    <p class="usage-note">Your Experiential Labs key is never shared. All callable chat models are available for your account. Select an exact <code>explabs/…</code> model to use it; subscription pools never fall back to this key.</p>
+    {% if explabs_flash_msg %}
+    <p class="callout {% if explabs_flash_kind == 'ok' %}ok{% else %}fault{% endif %}" role="alert">{{ explabs_flash_msg }}</p>
+    {% endif %}
+    <article class="panel">
+      <div class="section-heading">
+        <h2>{% if explabs_account %}Replace key{% else %}Add your key{% endif %}</h2>
+        <span class="usage-sub">personal · not a pool</span>
+      </div>
+      <p class="usage-note">The key is stored encrypted and is never displayed.</p>
+      <form method="post" action="/sources/explabs/add" class="stack">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label>API key <input name="api_key" type="password" autocomplete="off" required maxlength="4096"></label>
+        <label>Label (optional) <input name="label" maxlength="80" placeholder="Experiential Labs key"></label>
+        <button type="submit" class="btn">{% if explabs_account %}Replace my key{% else %}Save my key{% endif %}</button>
+      </form>
+    </article>
+    {% if explabs_account %}
+    <article class="panel">
+      <div class="section-heading">
+        <h2>{{ explabs_account.label }} <span class="badge">Yours only</span> <span class="badge {{ 'on' if explabs_access.ok else 'off' }}">{{ 'Linked' if explabs_access.ok else 'Unavailable' }}</span></h2>
+        <form method="post" action="/sources/explabs/{{ explabs_account.id }}/revoke" data-confirm="Remove your Experiential Labs key? Other users are not affected.">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="btn danger sm">Remove</button>
+        </form>
+      </div>
+      <p class="usage-sub">{{ explabs_access.model_count }} callable chat models · <a href="/models">Models</a></p>
+      {% if explabs_access.last_error %}<p class="callout fault">{{ explabs_access.last_error }}</p>{% endif %}
     </article>
     {% endif %}
   </div>
