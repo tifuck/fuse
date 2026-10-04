@@ -35,6 +35,10 @@ deb:
 linux:
   icon: build/icon.png
   category: Network
+  # Native Wayland on Wayland sessions (X11 elsewhere). Under XWayland the
+  # window loses the composer caret when tray apps like Handy update.
+  executableArgs:
+    - --ozone-platform-hint=auto
   target:
     - AppImage
     - deb
