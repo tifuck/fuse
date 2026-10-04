@@ -44,6 +44,9 @@ def _bare(type_id: str, model: str) -> str:
 
 def image_input(type_id: str, model: str) -> bool | None:
     mid = _bare(type_id, model)
+    if type_id == "chatgpt" and mid.endswith("-fast"):
+        # `{slug}-fast` is the same model at the fast service tier.
+        mid = mid[:-5]
     hit = _seen.get((type_id, mid))
     if hit is not None:
         return hit

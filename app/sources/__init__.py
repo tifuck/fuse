@@ -457,7 +457,8 @@ async def pick(
     if allow_chatgpt and chatgpt_mod.is_chatgpt_model(model):
         for s in all_enabled():
             if s.type_id == "chatgpt":
-                return s, model
+                # `{slug}-fast` is the same Codex slug at service_tier fast.
+                return s, chatgpt_mod.base_slug(model)
     if allow_zai and (model in ZAI_MODELS or model.startswith("glm-")):
         for s in all_enabled():
             if s.type_id == "zai":

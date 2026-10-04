@@ -34,6 +34,42 @@ def test_codex_catalog_lists_visible_slugs_only():
     assert chatgpt.parse_catalog_payload({"detail": "nope"}) == []
 
 
+def test_codex_catalog_lists_advertised_fast_tier():
+    """Fast mode is a service tier, not a slug. Only rows that advertise it
+    get a `{slug}-fast` picker id, placed right after the base slug."""
+    catalog = {
+        "models": [
+            {
+                "slug": "gpt-6.1-sol",
+                "visibility": "list",
+                "service_tiers": [{"id": "fast", "name": "Fast"}],
+                "input_modalities": ["text", "image"],
+            },
+            {"slug": "gpt-6-sol", "visibility": "list", "additional_speed_tiers": ["priority"]},
+            {"slug": "gpt-6-luna", "visibility": "list"},
+            {"slug": "gpt-reserve", "visibility": "hide", "service_tiers": [{"id": "fast"}]},
+        ]
+    }
+    assert chatgpt.parse_catalog_payload(catalog) == [
+        "gpt-6.1-sol",
+        "gpt-6.1-sol-fast",
+        "gpt-6-sol",
+        "gpt-6-sol-fast",
+        "gpt-6-luna",
+    ]
+
+
+def test_fast_picker_id_sends_base_slug_at_fast_tier():
+    from app.sources.chatgpt import build_responses_payload
+
+    payload = build_responses_payload({"messages": [{"role": "user", "content": "hi"}]}, "gpt-6.1-sol-fast")
+    assert payload["model"] == "gpt-6.1-sol"
+    assert payload["service_tier"] == "fast"
+    plain = build_responses_payload({"messages": [{"role": "user", "content": "hi"}]}, "gpt-6.1-sol")
+    assert plain["model"] == "gpt-6.1-sol"
+    assert "service_tier" not in plain
+
+
 def test_codex_catalog_url_is_the_codex_backend():
     assert chatgpt._models_url() == chatgpt.settings.openai_chatgpt_base.rstrip("/") + "/models"
 
@@ -59,12 +95,17 @@ def test_pick_keeps_new_codex_model_on_the_pool(fresh_chatgpt_cache):
     class Src:
         type_id = "chatgpt"
 
-    chatgpt._remember_models(["gpt-6.1-sol"])
+    chatgpt._remember_models(["gpt-6.1-sol", "gpt-6.1-sol-fast"])
     with patch.object(sources.db, "fetchone", return_value=None), patch.object(
         sources, "all_enabled", return_value=[Src()]
     ):
         picked = asyncio.run(sources.pick("gpt-6.1-sol", allow_chatgpt=True, user_id=7))
+        fast = asyncio.run(sources.pick("gpt-6.1-sol-fast", allow_chatgpt=True, user_id=7))
     assert picked is not None and picked[0].type_id == "chatgpt" and picked[1] == "gpt-6.1-sol"
+    # The fast picker id stays on the pool but upstream sees the base slug.
+    assert fast is not None and fast[1] == "gpt-6.1-sol"
+    # A guessed suffix for a model that never advertised fast is not a pool model.
+    assert not chatgpt.is_chatgpt_model("gpt-5.4-fast")
 
 
 def test_price_keys_unify_spellings_and_strip_sku_tails():

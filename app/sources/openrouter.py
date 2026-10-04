@@ -262,7 +262,9 @@ def pool_openrouter_id(model: str) -> str | None:
     if mid.startswith("grok"):
         return f"x-ai/{mid}"
     if mid.startswith("gpt-"):
-        return f"openai/{mid}"
+        from .chatgpt import base_slug
+
+        return f"openai/{base_slug(mid)}"
     return None
 
 

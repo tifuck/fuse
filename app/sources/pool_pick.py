@@ -165,7 +165,9 @@ def _as_float(v) -> float | None:
 
 
 def chatgpt_allows_model(plan: str | None, model: str) -> bool:
-    model = model or ""
+    from .chatgpt import base_slug
+
+    model = base_slug(model or "")
     if model in CHATGPT_BLOCKED_MODELS:
         return False
     plan = (plan or "").strip().lower()
@@ -181,7 +183,9 @@ def chatgpt_plan_rank(plan: str | None, model: str) -> int:
     account is eligible. Paid-only models never rank Free/Go (those plans
     are filtered out by chatgpt_allows_model).
     """
-    if not chatgpt_free_model(model or ""):
+    from .chatgpt import base_slug
+
+    if not chatgpt_free_model(base_slug(model or "")):
         return 0
     return 0 if (plan or "").strip().lower() in CHATGPT_FREE_PLANS else 1
 

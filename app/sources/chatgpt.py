@@ -46,6 +46,9 @@ CHATGPT_MODELS = [
     "gpt-5.6-terra",
     "gpt-5.6-luna",
 ]
+# Codex Fast mode is a service tier on the base slug, not its own model.
+# The catalog advertises it as service_tiers id "fast" (older catalogs: "priority").
+_FAST_TIER_IDS = frozenset({"fast", "priority"})
 
 
 def _auth_base() -> str:
@@ -504,9 +507,40 @@ def _models_url() -> str:
     return _backend_base() + "/models"
 
 
+def fast_id(slug: str) -> str:
+    return f"{slug}-fast"
+
+
+def base_slug(model: str) -> str:
+    """Picker id → Codex slug. `gpt-6.1-sol-fast` is `gpt-6.1-sol` at the fast tier."""
+    mid = (model or "").strip()
+    if len(mid) > 5 and mid.endswith("-fast"):
+        return mid[:-5]
+    return mid
+
+
+def is_fast(model: str) -> bool:
+    return bool(model) and model.endswith("-fast") and base_slug(model) != model
+
+
+def _row_has_fast(row: dict) -> bool:
+    tiers = row.get("service_tiers")
+    if isinstance(tiers, list):
+        for tier in tiers:
+            tid = tier.get("id") if isinstance(tier, dict) else tier
+            if str(tid or "") in _FAST_TIER_IDS:
+                return True
+    speeds = row.get("additional_speed_tiers")
+    return isinstance(speeds, list) and any(str(s) in _FAST_TIER_IDS for s in speeds)
+
+
 def parse_catalog_payload(data) -> list[str]:
     """Listed Codex slugs. `visibility: hide` rows (auto-review, reserve) are
-    internal and not callable as chat models."""
+    internal and not callable as chat models.
+
+    A slug whose row advertises the fast service tier is also listed as
+    `{slug}-fast`, right after the base slug, so the picker can offer it.
+    """
     rows = (data.get("models") or data.get("data")) if isinstance(data, dict) else None
     if not isinstance(rows, list):
         return []
@@ -515,16 +549,28 @@ def parse_catalog_payload(data) -> list[str]:
         if not isinstance(row, dict) or str(row.get("visibility") or "list") == "hide":
             continue
         slug = str(row.get("slug") or row.get("id") or "")
-        if slug and slug not in names:
-            names.append(slug)
-            inputs = row.get("input_modalities")
-            if isinstance(inputs, list):
-                model_caps.remember("chatgpt", slug, "image" in inputs)
+        if not slug or slug in names:
+            continue
+        names.append(slug)
+        inputs = row.get("input_modalities")
+        if isinstance(inputs, list):
+            model_caps.remember("chatgpt", slug, "image" in inputs)
+        if _row_has_fast(row):
+            fid = fast_id(slug)
+            if fid not in names:
+                names.append(fid)
+                if isinstance(inputs, list):
+                    model_caps.remember("chatgpt", fid, "image" in inputs)
     return names
 
 
 def is_chatgpt_model(model: str) -> bool:
-    """Seeded or live-listed Codex slug."""
+    """Seeded or live-listed Codex slug.
+
+    `{slug}-fast` counts only when the catalog listed it: Fast mode is a
+    service tier some models do not advertise, so a guessed suffix must not
+    route to the pool.
+    """
     if model in CHATGPT_MODELS:
         return True
     return bool(_models_cache and model in _models_cache[1])
@@ -827,7 +873,14 @@ def build_responses_payload(body: dict, model: str, session_id: str | None = Non
                     "output": _text_of(content),
                 }
             )
-    payload: dict = {"model": model, "input": input_items, "stream": True, "store": False}
+    payload: dict = {
+        "model": base_slug(model),
+        "input": input_items,
+        "stream": True,
+        "store": False,
+    }
+    if is_fast(model):
+        payload["service_tier"] = "fast"
     # Always the scoped session id (hmac of user+model+client key), never the
     # raw prompt_cache_key. Two tenants sending the same client string must
     # not share an upstream routing group on a pooled account.
