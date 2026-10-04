@@ -71,6 +71,19 @@ window.fuseToolFixture = {
   jobs: reconcileBgTraces,
   work(rows) { setAgentsOpen(true); jobsRows = structuredClone(rows); renderJobsList(); syncAgentsUi(); },
   event: receiveEvent,
+  sidebar: {
+    mount(thread, nativeProjects = []) {
+      threads = [];
+      archivedThreads = [];
+      projects = structuredClone(nativeProjects);
+      pendingProject = null;
+      currentId = thread.id;
+      upsertLocal(structuredClone(thread));
+      renderHistory();
+    },
+    update(thread) { upsertLocal(structuredClone(thread)); renderHistory(); },
+    snapshot: () => structuredClone([...threads, ...archivedThreads]),
+  },
   state: toolPresentation,
   activity: currentActivity,
   merge: mergeToolEvent,

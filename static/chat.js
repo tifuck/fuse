@@ -3751,6 +3751,8 @@
       project_id: thread.project_id ?? null,
       host_alias: thread.host_alias || "",
       project_name: thread.project_name || "",
+      project_color: thread.project_color ?? prior?.project_color ?? "",
+      project_logo_url: thread.project_logo_url ?? prior?.project_logo_url ?? "",
       updated_at: thread.updated_at,
       running,
     };
