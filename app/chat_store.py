@@ -1819,6 +1819,7 @@ def steer_turn(user_id, thread_id, text, command_id, attachments=None):
             "UPDATE chat_threads SET messages=?,revision=?,updated_at=? WHERE id=?",
             (dumps(messages), revision, db.now(), pk),
         )
+        chats.unarchive_on_activity(conn, row, db.now())
         remember(conn, user_id, command_id, fingerprint, {"thread_id": pk, "message_id": user_message.get("id")})
         thread_event(conn, user_id, pk, transcript_changed=True)
         return {"idempotent": False, "thread": thread_view(conn, user_id, pk)}
@@ -2670,6 +2671,7 @@ def start_turn(user_id, thread_id, text, expected_revision, command_id, model=No
             )
             conn.execute("""UPDATE chat_threads SET messages=?,title=?,model=?,tools=?,context=?,compaction=?,revision=revision+1,updated_at=? WHERE id=?""",
                          (dumps(messages), title, request["model"], dumps(request["tools"]), request["thread_context"], ctxmod.dump_state(state), ts, thread_id))
+            chats.unarchive_on_activity(conn, row, ts)
             thread_event(conn, user_id, thread_id)
             event(conn, user_id, "run.started", thread_id, {"run_id": run_id, "message_id": assistant["id"]})
             from . import command_jobs as command_jobs_mod
@@ -5365,6 +5367,13 @@ def resume_run(user_id, run_id):
         if active_root:
             raise chats.ChatValidationError("this chat already has an active run", 409)
     _requeue_for_resume(row, messages, allowed=set(ACTIVE) | {"interrupted", "cancelled"}, by_user=True)
+    if not is_child:
+        with transaction() as conn:
+            thread = conn.execute("SELECT * FROM chat_threads WHERE id=? AND user_id=?", (row["thread_id"], user_id)).fetchone()
+            if thread is not None and int(thread["archived"] or 0):
+                chats.unarchive_on_activity(conn, thread, db.now())
+                conn.execute("UPDATE chat_threads SET revision=revision+1 WHERE id=?", (thread["id"],))
+                thread_event(conn, user_id, thread["id"])
     updated = get_run(user_id, run_id)
     if is_child and updated is not None and updated["status"] in ACTIVE:
         # Tell a live parent the child is back; its real report still arrives

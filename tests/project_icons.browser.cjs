@@ -50,6 +50,15 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       // Without the native project cache, the title must use preserved thread metadata too.
       await page.evaluate(thread => fuseToolFixture.sidebar.mount(thread), { ...thread, project_color: '#0090FF' });
       await checkColor('#0090FF', 'snapshot without project cache');
+      // A new message in an archived project session brings both back without a refresh.
+      const shelved = { ...thread, revision: 8, archived: true, project_archived: true };
+      await page.evaluate(({ thread, project }) => fuseToolFixture.sidebar.mount(thread, [project]), { thread: shelved, project: { ...project, archived: true } });
+      const archivedCount = page.locator('[data-history-archived-count]');
+      assert.equal(await archivedCount.textContent(), '2', 'archived session and project counted');
+      assert.equal(await row.count(), 0, 'archived session hidden from main list');
+      await page.evaluate(thread => fuseToolFixture.sidebar.update(thread), { ...shelved, revision: 9, archived: false, project_archived: false });
+      assert.equal(await row.count(), 1, 'restored session pops back into the list');
+      assert.equal(await page.locator('[data-history-archived]').isHidden(), true, 'archived count drops to nothing');
       console.log(`PASS project colors, groups, live updates, partial metadata, logos, archive/restore (${width})`);
       await context.close();
     }

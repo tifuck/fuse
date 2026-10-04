@@ -3878,6 +3878,11 @@
     const drop = other.findIndex((item) => item.id === thread.id);
     if (drop >= 0) other.splice(drop, 1);
     bucket.sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
+    if (!thread.archived && thread.kind === "project" && thread.project_archived === false) {
+      const project = sidebarProject(thread.host_id, thread.project_id);
+      if (project) project.archived = false;
+    }
+    if (!thread.archived && prior?.archived && thread.id === currentId) showArchived = false;
     if (thread.kind === "project" && thread.id === currentId && !historyQuery) {
       setHistoryTab("projects", { persist: true, silent: true });
     }

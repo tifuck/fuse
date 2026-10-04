@@ -2121,6 +2121,16 @@ def update_thread(
     return result
 
 
+def unarchive_on_activity(conn, row, ts):
+    """A new message or transcript edit brings an archived chat (and its project) back."""
+    if not int(row["archived"] or 0):
+        return
+    conn.execute("UPDATE chat_threads SET archived=0, archived_at='', archived_by_project=0, active_at=? WHERE id=?", (ts, row["id"]))
+    if (row["kind"] if "kind" in row.keys() else "") == "project" and row["project_id"] is not None:
+        conn.execute("UPDATE user_projects SET archived=0, archived_at='' WHERE id=? AND user_id=? AND archived=1",
+                     (row["project_id"], row["user_id"]))
+
+
 def _update_thread(conn, row, *, title, model, archived, messages, context, tools):
     if not row:
         return None
@@ -2130,12 +2140,14 @@ def _update_thread(conn, row, *, title, model, archived, messages, context, tool
     new_state = "user" if title is not None else (row["title_state"] if "title_state" in row.keys() else "")
     new_model = _text(model, "model", 200) if model is not None else row["model"]
     new_archived = 1 if archived else 0 if archived is not None else int(row["archived"] or 0)
+    edited = False
     if messages is not None:
         msgs = parse_messages(messages, strict=True)
         payload = json.dumps(msgs, ensure_ascii=False, separators=(",", ":"))
         from . import chat_recaps
         if dump_messages(msgs) != dump_messages(parse_messages(row["messages"])):
             chat_recaps.activity(conn, row["user_id"], row["id"])
+            edited = True
     else:
         payload = row["messages"]
     if not new_title:
@@ -2188,6 +2200,8 @@ def _update_thread(conn, row, *, title, model, archived, messages, context, tool
                 )
     elif messages is not None:
         conn.execute("UPDATE chat_threads SET active_at=? WHERE id=?", (ts, row["id"]))
+        if edited and archived is None:
+            unarchive_on_activity(conn, row, ts)
     if title is not None:
         conn.execute("UPDATE chat_threads SET title_job_token='',title_job_until='' WHERE id=?", (row["id"],))
     elif model is not None and new_model != row["model"] and not new_state:

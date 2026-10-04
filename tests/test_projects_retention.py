@@ -100,6 +100,32 @@ class ProjectsRetentionTest(unittest.TestCase):
         chats.update_thread(1, kept["id"], archived=False)
         self.assertFalse(hosts.get_project(1, 7, made["id"])["archived"])  # a restored session restores its project
 
+    def test_activity_unarchives_but_settings_changes_do_not(self):
+        thread = chats.create_thread(1, model="offline")
+        chats.update_thread(1, thread["id"], archived=True)
+        chats.update_thread(1, thread["id"], model="other")
+        self.assertTrue(chats.get_thread(1, thread["id"])["archived"])
+        current = chats.get_thread(1, thread["id"])
+        store.start_turn(1, thread["id"], "hello", current["revision"], "send-archived")
+        self.assertFalse(chats.get_thread(1, thread["id"])["archived"])
+
+        edited = chats.create_thread(1, model="offline")
+        chats.update_thread(1, edited["id"], messages=[{"role": "user", "content": "hi"}])
+        chats.update_thread(1, edited["id"], archived=True)
+        same = chats.get_thread(1, edited["id"])["messages"]
+        chats.update_thread(1, edited["id"], messages=same)
+        self.assertTrue(chats.get_thread(1, edited["id"])["archived"])  # no-op save
+        chats.update_thread(1, edited["id"], messages=[])
+        self.assertFalse(chats.get_thread(1, edited["id"])["archived"])  # delete/undo/edit
+
+        made = self.project()
+        session, _ = self.session(made)
+        hosts.patch_project(1, 7, made["id"], {"archived": True})
+        current = chats.get_thread(1, session["id"])
+        store.start_turn(1, session["id"], "hello", current["revision"], "send-project", scheduled=True)
+        self.assertFalse(chats.get_thread(1, session["id"])["archived"])
+        self.assertFalse(hosts.get_project(1, 7, made["id"])["archived"])
+
     def test_delete_project_deletes_or_detaches_sessions(self):
         doomed = self.project("doomed")
         thread, _ = self.session(doomed)
