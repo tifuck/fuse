@@ -390,7 +390,7 @@ def _cancelled_before_start(rec: dict, task) -> None:
         async def _finish_cancelled():
             await asyncio.to_thread(
                 _persist_finish, rec, status="cancelled", exit_code=None,
-                error="cancelled by request", duration=int(rec.get("duration_ms") or 0),
+                error=rec["error"], duration=int(rec.get("duration_ms") or 0),
             )
             if rec.get("notify"):
                 try:
@@ -630,6 +630,8 @@ def _apply_finish(rec: dict, *, status: str, exit_code: int | None, error: str) 
     if rec.get("termination_confirmed") is None:
         rec["termination_confirmed"] = False
     duration = int((time.monotonic() - rec["started"]) * 1000)
+    if status == "cancelled" and rec.get("user_cancelled"):
+        error = "Stopped by the user. " + error
     rec.update(
         {
             "status": status,
@@ -677,6 +679,7 @@ def _persist_finish(rec: dict, *, status: str, exit_code: int | None, error: str
 
 async def _finish(rec: dict, *, status: str, exit_code: int | None, error: str) -> None:
     _apply_finish(rec, status=status, exit_code=exit_code, error=error)
+    error = rec["error"]
     # In-memory state lands first (render/job_status read it immediately);
     # the row write goes through a worker thread so the loop never blocks
     # on the pool for every completing command.
@@ -689,7 +692,7 @@ async def _finish(rec: dict, *, status: str, exit_code: int | None, error: str) 
             await _deliver(rec)
         except Exception:
             logger.exception("Failed to deliver command job %s", rec["id"])
-    if status == "cancelled" and not _is_monitor(rec):
+    if status == "cancelled" and not _is_monitor(rec) and not rec.get("user_cancelled"):
         await asyncio.to_thread(_mark_delivered, [str(rec["id"])])
 
 
@@ -719,7 +722,7 @@ async def _deliver(rec: dict) -> None:
         return
     # kill_command already answered the model; a cancelled receipt is noise.
     # Monitor stop still reports the event count so the model can re-arm.
-    if rec.get("status") == "cancelled" and not _is_monitor(rec):
+    if rec.get("status") == "cancelled" and not _is_monitor(rec) and not rec.get("user_cancelled"):
         return
     run_id = rec.get("run_id")
     queued = False
@@ -1353,6 +1356,9 @@ def kill_thread_job(user_id: int, thread_id: int, job_id: str) -> tuple[str, dic
     rec = _get(job_id, user_id)
     if rec is None or rec.get("thread_id") != thread_id or not rec.get("background"):
         return None
+    if rec.get("status") not in TERMINAL and rec.get("status") != "cancelling":
+        rec["user_cancelled"] = True
+        mark_notified(rec)
     return kill(job_id, user_id)
 
 

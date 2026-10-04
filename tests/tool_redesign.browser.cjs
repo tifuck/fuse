@@ -116,13 +116,15 @@ const out = process.env.TOOL_UI_ARTIFACTS || '/tmp/opencode/tool-redesign';
     // The badge is a bare count; the breakdown is the button's accessible name.
     assert.equal(await page.locator('.chat-agents-bar [data-agents-count]').textContent(), '1');
     assert.match(await page.locator('.chat-agents-bar').getAttribute('aria-label'), /1 command/);
+    await page.locator('[data-agents-close]').click();
+    assert.equal(await page.locator('[data-jobs-list]').evaluate(el => el.nextElementSibling.matches('[data-chat-thread]')), true, 'commands stay outside the scrolling transcript');
     await page.locator('[data-show-job="job-linked"]').click();
     assert.equal(await page.locator('[data-step="tool-work-job"] .chat-step-toggle').getAttribute('aria-expanded'), 'true');
     await page.evaluate(() => fuseToolFixture.work([{ id: 'job-child', command_id: 'job-child', state: 'running', host: 'workstation', cwd: '/repo', command: 'npm run build', output: 'Child command output', background: true }]));
+    await page.locator('[data-agents-close]').click();
     await page.locator('[data-show-job="job-child"]').click();
     await page.getByText('Child command output', { exact: true }).waitFor();
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
-    await page.locator('[data-agents-close]').click();
 
     // Both directions animate, and a completion arriving during motion retains
     // disclosure/focus and paints the final state rather than dropping the update.

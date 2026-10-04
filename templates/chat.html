@@ -127,6 +127,7 @@
     </div>
   </header>
   <div class="chat-edge chat-edge-top" aria-hidden="true"></div>
+  <section class="chat-work-section chat-command-strip" data-jobs-list hidden aria-label="Main agent background commands"></section>
   <div class="chat-thread" data-chat-thread role="region" aria-label="Conversation" tabindex="0">
     <div class="chat-log" data-chat-log hidden></div>
     <div class="chat-live-dock" data-live-dock hidden role="status">
@@ -260,29 +261,37 @@
         <p>Agents & commands</p>
         <span class="chat-agents-live-label" data-agents-live hidden></span>
       </div>
+      <div class="chat-agent-view-head" data-agent-head hidden>
+        <button type="button" class="chat-menu-close chat-agent-view-back" data-agent-back aria-label="Back">
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M10.2 3.4L5.6 8l4.6 4.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="chat-agent-view-copy">
+          <p data-agent-title>Subagent</p>
+          <span class="badge" data-agent-status></span>
+        </div>
+        <span class="chat-agent-meter" data-agent-meter hidden>
+          <button type="button" class="chat-context chat-agent-context" data-agent-context aria-label="Subagent context usage" aria-expanded="false" aria-controls="chat-agent-context-pop" title="Subagent context usage">
+            <svg viewBox="0 0 32 32" aria-hidden="true">
+              <circle class="chat-context-track" cx="16" cy="16" r="12" fill="none"></circle>
+              <circle class="chat-context-fill" data-agent-context-fill cx="16" cy="16" r="12" fill="none"></circle>
+            </svg>
+          </button>
+          <div class="chat-context-pop" id="chat-agent-context-pop" data-agent-context-pop role="dialog" aria-label="Subagent context usage" hidden></div>
+        </span>
+        <button type="button" class="chat-agent-view-tool" data-agent-resume hidden>Resume</button>
+        <button type="button" class="chat-agent-view-tool" data-agent-force hidden>Force stop</button>
+        <button type="button" class="chat-agent-view-tool" data-agent-stop hidden>Stop</button>
+      </div>
       <button type="button" class="chat-menu-close" data-agents-close aria-label="Close">
         <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
       </button>
     </div>
     <div class="chat-agents-body">
       <div class="chat-agents-overview" data-agents-overview>
-        <section class="chat-work-section" data-jobs-list hidden aria-label="Main agent background commands"></section>
         <section class="chat-agents-list" data-agents-list aria-label="Subagents"></section>
       </div>
       <div class="chat-agent-view" data-agent-view hidden>
-        <div class="chat-agent-view-head">
-          <button type="button" class="chat-menu-close chat-agent-view-back" data-agent-back aria-label="Back">
-            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M10.2 3.4L5.6 8l4.6 4.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          </button>
-          <div class="chat-agent-view-copy">
-            <p data-agent-title>Subagent</p>
-            <span class="badge" data-agent-status></span>
-          </div>
-          <button type="button" class="chat-agent-view-tool" data-agent-resume hidden>Resume</button>
-          <button type="button" class="chat-agent-view-tool" data-agent-force hidden>Force stop</button>
-          <button type="button" class="chat-agent-view-tool" data-agent-stop hidden>Stop</button>
-        </div>
-        <section class="chat-work-section chat-agent-jobs" data-agent-jobs hidden aria-label="Subagent background commands"></section>
+        <section class="chat-work-section chat-command-strip chat-agent-jobs" data-agent-jobs hidden aria-label="Subagent background commands"></section>
         <div class="chat-agent-error" data-agent-error role="alert" hidden>
           <p data-agent-error-text></p>
           <button type="button" class="chat-agent-view-tool" data-agent-retry>Retry</button>
@@ -291,15 +300,6 @@
         <div class="chat-agent-live-dock" data-agent-live-dock hidden role="status">
           <span class="chat-activity-spin" data-agent-live-spin aria-hidden="true"></span>
           <span class="chat-status-shimmer"><span class="chat-activity-text"><span data-agent-live-label><span class="chat-status-verb">Working</span><span class="chat-status-meta" hidden></span></span><span class="chat-dock-dots" aria-hidden="true"><i></i><i></i><i></i></span></span></span>
-          <span class="chat-agent-meter" data-agent-meter hidden>
-            <button type="button" class="chat-context chat-agent-context" data-agent-context aria-label="Subagent context usage" aria-expanded="false" aria-controls="chat-agent-context-pop" title="Subagent context usage">
-              <svg viewBox="0 0 32 32" aria-hidden="true">
-                <circle class="chat-context-track" cx="16" cy="16" r="12" fill="none"></circle>
-                <circle class="chat-context-fill" data-agent-context-fill cx="16" cy="16" r="12" fill="none"></circle>
-              </svg>
-            </button>
-            <div class="chat-context-pop" id="chat-agent-context-pop" data-agent-context-pop role="dialog" aria-label="Subagent context usage" hidden></div>
-          </span>
         </div>
         <div class="chat-agent-live-todos" data-agent-live-todos hidden aria-label="Subagent todo list"></div>
       </div>

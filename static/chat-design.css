@@ -2806,18 +2806,15 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-liv
 /* Console status line: one animated glyph, a lowercase verb that carries the
    shimmer, and a quiet clock/token counter. The subagent dock uses the same
    pieces so a subagent chat reads exactly like the main chat. */
-/* Terminal and Console end both panes on a flat row under one rule, so the
-   subagent dock takes the composer's single-line height: its 1.75rem control
-   line plus the same padding and 1px rule. With the pane open the two rules
-   meet as one line. */
+/* A subagent has a status line, not a placeholder composer. */
 html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-agent-live-dock {
   box-sizing: border-box;
-  min-height: calc(1.75rem + 0.7rem + 1px);
+  min-height: 0;
   padding-block: 0.35rem max(0.35rem, env(safe-area-inset-bottom));
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-agent-live-dock {
   box-sizing: border-box;
-  min-height: calc(1.75rem + 0.48rem + 1px);
+  min-height: 0;
   padding-block: 0.28rem max(0.2rem, env(safe-area-inset-bottom));
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-agent-live-dock {
@@ -4355,6 +4352,44 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-ste
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-call.is-interrupted > .chat-step-node::after,
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-notice.is-gold > .chat-step-node::after {
   background: var(--call-fail);
+}
+
+/* Shared pane chrome; unsupported composer controls do not reserve space. */
+.chat .chat-agents-copy[hidden], .chat .chat-agent-view-head[hidden] { display: none; }
+.chat .chat-agent-view-head { flex: 1; min-width: 0; min-height: 0; padding: 0; border: 0; }
+.chat .chat-agent-view-copy p { font: inherit; letter-spacing: inherit; }
+.chat .chat-agent-view-head .chat-context-pop { top: calc(100% + 0.5rem); bottom: auto; }
+.chat .chat-agent-view-head .chat-agent-view-tool { height: var(--chat-bar-btn); min-height: 0; padding-inline: 0.3rem; font-size: 0.7rem; }
+.chat .chat-agent-live-dock { border: 0; }
+.chat .chat-agent-live-todos { border: 0; }
+.chat .chat-command-strip {
+  position: relative;
+  z-index: 5;
+  width: 100%;
+  max-height: min(14rem, 30vh);
+  overflow: auto;
+  overscroll-behavior: contain;
+  flex: 0 0 auto;
+  padding: 0.25rem 0.5rem;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--ink);
+  scrollbar-width: thin;
+}
+.chat .chat-stage > .chat-command-strip { margin-top: var(--chat-bar-h); }
+.chat .chat-stage:has(> .chat-command-strip:not([hidden])) > .chat-thread { padding-top: 0.45rem; }
+.chat .chat-command-strip .chat-jobs-row { border-radius: 0; grid-template-columns: 0.5rem minmax(0, 1fr) 6ch 1.75rem; min-height: 2rem; padding-block: 0; }
+.chat .chat-command-strip .chat-jobs-row + .chat-jobs-row { border-top: 1px solid var(--line); }
+.chat .chat-command-strip .chat-jobs-output-link { flex-direction: row; align-items: center; gap: 0.75rem; }
+.chat .chat-command-strip .chat-jobs-cmd { flex: 1; }
+.chat .chat-command-strip .chat-jobs-meta { max-width: 28%; }
+.chat .chat-command-strip .chat-agents-dot { align-self: center; margin: 0; }
+.chat .chat-command-strip .chat-agents-time { align-self: center; }
+.chat .chat-command-strip .chat-jobs-kill { align-self: center; width: 1.75rem; height: 1.75rem; padding: 0; border: 0; background: none; font-size: 1.1rem; }
+.chat .chat-command-strip :is(.chat-jobs-kill, .chat-jobs-output-link):focus-visible { outline: 2px solid var(--brass); outline-offset: -2px; }
+@media (max-width: 800px) {
+  .chat .chat-command-strip .chat-jobs-row { min-height: 2.75rem; grid-template-columns: 0.5rem minmax(0, 1fr) 6ch 2.75rem; }
+  .chat .chat-command-strip .chat-jobs-kill { width: 2.75rem; height: 2.75rem; }
 }
 
 /* —— Todo section, per reading mode. —— */

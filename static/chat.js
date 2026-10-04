@@ -14917,9 +14917,7 @@
     if (!agentLiveDock) return;
     const stalled = Boolean(agentRun && agentIsStalled(agentRun));
     const live = Boolean(agentViewId && agentsOpen && agentRun && agentLive(agentRun.status) && agentViewFailCount < 3 && !stalled);
-    const meter = agentRun && agentRun.compaction && agentRun.compaction.meter;
-    const hasMeter = Boolean(meter && Number(meter.limit) > 0);
-    if (!live && !hasMeter && !stalled) {
+    if (!live && !stalled) {
       if (!agentLiveDock.hidden) agentLiveDock.hidden = true;
       agentLiveDock.setAttribute("aria-hidden", "true");
       if (agentLiveSpin && (agentLiveSpin.firstChild || agentLiveSpin.dataset.spinSet)) {
@@ -14932,7 +14930,7 @@
     agentLiveDock.setAttribute("aria-hidden", "false");
     if (agentLiveSpin) agentLiveSpin.hidden = !live;
     const shimmer = agentLiveDock.querySelector(".chat-status-shimmer");
-    if (shimmer) shimmer.hidden = !live;
+    if (shimmer) shimmer.hidden = !live && !stalled;
     if (stalled) {
       setLivePhase(agentLiveDock, "stalled");
       setLiveLabelText(agentLiveLabel, isConsoleView() ? "stalled — no progress" : "Stalled — no progress");
@@ -15231,7 +15229,6 @@
         revealToolRow(row);
         setTimeout(() => { if (row.isConnected) { row.scrollIntoView({ block: "center", behavior: reduceMotion.matches ? "auto" : "smooth" }); row.classList.add("is-work-highlight"); setTimeout(() => row.classList.remove("is-work-highlight"), 1800); } }, reduceMotion.matches ? 0 : 230);
       } else if (row) {
-        setAgentsOpen(false);
         pauseThreadFollow();
         revealToolRow(row);
         setTimeout(() => { if (row.isConnected) { row.scrollIntoView({ block: "center", behavior: reduceMotion.matches ? "auto" : "smooth" }); row.classList.add("is-work-highlight"); setTimeout(() => row.classList.remove("is-work-highlight"), 1800); } }, reduceMotion.matches ? 0 : 230);
@@ -15293,13 +15290,12 @@
       `<span class="chat-jobs-cmd">${escapeHtml(toolText(title))}</span>` +
       `<span class="chat-jobs-meta" title="${escapeHtml(job.command_id || job.id)}">${escapeHtml(meta)}</span></button>` +
       `<span class="chat-agents-time" data-job-time="${escapeHtml(job.id)}">${formatActivityClock(secs)}</span>` +
-      `<button type="button" class="chat-jobs-kill" data-kill-job="${escapeHtml(job.command_id || job.id)}" title="Stop this background command">${cancelling ? "Cancelling" : "Stop"}</button>` +
+      `<button type="button" class="chat-jobs-kill" data-kill-job="${escapeHtml(job.command_id || job.id)}" aria-label="${cancelling ? "Cancelling command" : "Stop background command"}" title="Stop this background command"${cancelling ? " disabled" : ""}>${cancelling ? "…" : "×"}</button>` +
       "</div>"
     );
   }
 
-  // Background commands belong to the agent that started them: the overview
-  // lists the main agent's, and each subagent's view lists its own.
+  // Each transcript's pinned strip contains only its owner's commands.
   function jobsFor(agentId) {
     const owner = String(agentId || "");
     return jobsRows.filter((job) => String(job.agent_run_id || "") === owner);
@@ -15316,7 +15312,7 @@
         jobsRendered = sig;
         jobsListEl.hidden = !rows.length;
         jobsListEl.innerHTML = rows.length
-          ? workHeadHtml("Main agent", `${rows.length} background command${rows.length === 1 ? "" : "s"}`) +
+          ? workHeadHtml("Background commands", String(rows.length)) +
             rows.map((job) => jobRowHtml(job, nowMs)).join("")
           : "";
       }
@@ -15328,7 +15324,7 @@
         agentJobsRendered = sig;
         agentJobsEl.hidden = !rows.length;
         agentJobsEl.innerHTML = rows.length
-          ? `<p class="chat-agents-kicker">Background commands · ${rows.length}</p>` + rows.map((job) => jobRowHtml(job, nowMs)).join("")
+          ? workHeadHtml("Background commands", String(rows.length)) + rows.map((job) => jobRowHtml(job, nowMs)).join("")
           : "";
       }
     }
@@ -15339,7 +15335,7 @@
     if (!agentsPanel || !jobsRows.length) return;
     const nowMs = Date.now();
     jobsRows.forEach((job) => {
-      agentsPanel.querySelectorAll('[data-job-time="' + CSS.escape(String(job.id)) + '"]').forEach((el) => {
+      root.querySelectorAll('[data-job-time="' + CSS.escape(String(job.id)) + '"]').forEach((el) => {
         el.textContent = formatActivityClock(Math.round(jobElapsedMs(job, nowMs) / 1000));
       });
     });
@@ -15451,7 +15447,7 @@
   }
 
   setInterval(() => {
-    if (currentId && (agentsOpen || hasRunningBgTraces())) refreshJobs();
+    if (currentId && (agentsOpen || jobsRows.length || hasRunningBgTraces())) refreshJobs();
   }, 3000);
   // agent.tick events drive the closed-panel list now; the poll is only a
   // fallback for missed started/ended events (socket resync, older server).
@@ -15483,6 +15479,10 @@
     if (agentsLiveEl) {
       agentsLiveEl.hidden = !liveCount;
       agentsLiveEl.textContent = liveCount ? `${liveCount} live` : "";
+    }
+    if (agentsPanel) {
+      agentsPanel.querySelector('.chat-agents-copy').hidden = Boolean(agentViewId);
+      agentsPanel.querySelector('[data-agent-head]').hidden = !agentViewId;
     }
     if (agentsOverviewEl) agentsOverviewEl.hidden = Boolean(agentViewId);
     if (agentViewEl) agentViewEl.hidden = !agentViewId;
