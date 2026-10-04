@@ -943,8 +943,11 @@ async def _auto_verdict(gate: Gate, tool: str, action: dict, roots: list[str]) -
 
 async def review(*, tool: str, args: dict, user_id: int,
                  host_id: int, host_alias: str, root: str, windows: bool,
-                 gate: Gate | None) -> ReviewResult:
-    """Decide whether a workspace tool call may run. Pure verdict + ask flow."""
+                 gate: Gate | None, deny_reason: str = "") -> ReviewResult:
+    """Decide whether a workspace tool call may run. Pure verdict + ask flow.
+
+    deny_reason (workspace denylist hit): the command may only run on the
+    user's own Allow or bypass — never a grant, Allow-always, or Jev auto."""
     if gate is None or tool not in _GATED_TOOLS:
         return ReviewResult(allowed=True)
     if gate.thread_id is None:
@@ -985,9 +988,11 @@ async def review(*, tool: str, args: dict, user_id: int,
         # Shell programs can access paths that never appear as operands. Only
         # simple read-only commands can pass without explicit authorization.
         simple = re.fullmatch(r"\s*(?:cat|head|tail|ls|pwd|wc|stat|file|echo)\b[^;&|<>\n*?\[\]{}]*", command)
-        restricted_shell = paths is None or not simple or _destructive_command(command)
+        restricted_shell = paths is None or not simple or _destructive_command(command) or bool(deny_reason)
         if restricted_shell:
             reasons.append(_SHELL_APPROVAL)
+        if deny_reason:
+            reasons.append(deny_reason)
         if paths is not None:
             for cand, is_dir in paths:
                 if is_secret_path(cand):
@@ -1073,7 +1078,7 @@ async def review(*, tool: str, args: dict, user_id: int,
     # the whole point of the mode. Secret-named targets and regex-destructive
     # shells never reach Jev and always wait for the user.
     auto_judge = None
-    if not secret and not _destructive_command(command):
+    if not secret and not deny_reason and not _destructive_command(command):
         jev_action = {
             "tool": tool,
             "host": host_alias,

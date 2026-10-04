@@ -411,6 +411,58 @@ class ShellExitCodeTest(unittest.IsolatedAsyncioTestCase):
         # An explicit join is the one case that renders as get_command_output.
         self.assertEqual(rec["name"], "get_command_output")
 
+    async def test_gateless_denylist_form_still_blocked(self):
+        with patch.object(workspace, "resolve_host_row", return_value=self.row), patch.object(
+            workspace, "_make_ssh_runner", side_effect=_fake_runner_factory(result=_FakeExec(0, stdout="ok"))
+        ) as maker:
+            text, rec = await workspace.execute(
+                "run_terminal_command", json.dumps({"command": "sudo reboot"}), user_id=1
+            )
+        self.assertEqual(rec["status"], "error")
+        self.assertIn("command blocked by denylist", text)
+        self.assertEqual(maker.call_count, 0)
+
+    async def test_accepted_denylist_form_runs(self):
+        # The reported bug: the user hits Accept on the card and the command
+        # still fails with "command blocked by denylist".
+        from app import chats, db, permissions as permissions_mod
+
+        thread = chats.create_thread(1, model="offline")
+        tid = chats.resolve_thread_pk(1, thread["id"])
+        self.addCleanup(db.execute, "DELETE FROM chat_threads WHERE id=?", (tid,))
+        events: list = []
+        gate = permissions_mod.Gate(
+            user_id=1, thread_id=tid, run_id="run-deny", requester={"role": "main"},
+            unattended=False, notify=events.append, cancel=None,
+        )
+
+        async def wait_pending():
+            for _ in range(250):
+                await asyncio.sleep(0.02)
+                for event in events:
+                    if event.get("event") == "permission" and event.get("status") == "pending":
+                        return event
+            raise AssertionError("no permission card was raised")
+
+        async def flow():
+            task = asyncio.create_task(workspace.execute(
+                "run_terminal_command", json.dumps({"command": "sudo id", "host": "prod"}),
+                user_id=1, gate=gate,
+            ))
+            card = await wait_pending()
+            self.assertIn("denylist", " ".join(card.get("reasons") or []))
+            permissions_mod.resolve(1, tid, card["id"], "allow")
+            return await task
+
+        with patch.object(workspace, "resolve_host_row", return_value=self.row), patch.object(
+            workspace, "_make_ssh_runner", side_effect=_fake_runner_factory(result=_FakeExec(0, stdout="uid=0(root)"))
+        ) as maker:
+            text, rec = await flow()
+        self.assertEqual(rec["status"], "done")
+        self.assertEqual(rec["exit_code"], 0)
+        self.assertIn("uid=0(root)", text)
+        self.assertEqual(maker.call_count, 1)
+
     async def test_background_exception_is_still_an_error(self):
         with patch.object(workspace, "resolve_host_row", return_value=self.row), patch.object(
             workspace, "_make_ssh_runner", side_effect=_fake_runner_factory(exc=workspace.WorkspaceError("command timed out"))

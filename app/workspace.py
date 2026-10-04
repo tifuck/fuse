@@ -31,6 +31,8 @@ logger = logging.getLogger(__name__)
 # A command starts at the beginning of a line, after a separator (; & | or a
 # newline), or inside a subshell/substitution. The denylist targets the named
 # catastrophic forms only; it is not a sandbox (the permission gate is).
+# With a gate these forms always raise the ask card (never Jev, never a grant)
+# and run on the user's own Allow or on bypass; gateless callers are blocked.
 _CMD_START = r"(?:^|[;&|(`{]\s*|\$\(\s*|\b(?:then|do|else|exec|xargs|env|nohup|time)\s+)"
 _DENY = re.compile(
     _CMD_START
@@ -1183,12 +1185,17 @@ async def execute(name: str, arguments: str, *, user_id: int, bound_host_id=None
     if mode == "read_only" and name in ("write_file", "search_replace", "run_terminal_command", "monitor"):
         detail = "project is read-only"
         return detail, _error_rec(name, detail, host=alias, kind="not_allowed")
+    deny_reason = ""
+    if name in ("run_terminal_command", "monitor"):
+        deny_reason = denied(str(args.get("command") or ""), windows=windows) or ""
+    if deny_reason and gate is None:
+        return deny_reason, _error_rec(name, deny_reason, host=alias)
     if gate is not None:
         from . import permissions as permissions_mod
 
         verdict = await permissions_mod.review(
             tool=name, args=args, user_id=user_id, host_id=host_id, host_alias=alias,
-            root=root, windows=windows, gate=gate,
+            root=root, windows=windows, gate=gate, deny_reason=deny_reason,
         )
         if not verdict.allowed:
             return verdict.detail, _error_rec(name, verdict.detail, host=alias, kind="permission_denied")
@@ -1696,9 +1703,6 @@ async def _shell(user_id, host_id, alias, args, root, *, windows: bool = False, 
     command = str(args.get("command") or "")
     if not command.strip() or len(command) > 8000:
         raise WorkspaceError("invalid command")
-    blocked = denied(command, windows=windows)
-    if blocked:
-        raise WorkspaceError(blocked)
     cwd = _shell_cwd(args, root, windows=windows)
     timeout_ms = _deadline_ms(args)
     background = _as_bool(args.get("background"))
@@ -1899,9 +1903,6 @@ async def _monitor(user_id, host_id, alias, args, root, *, windows: bool = False
     if command:
         if len(command) > 8000:
             raise WorkspaceError("invalid command")
-        blocked = denied(command, windows=windows)
-        if blocked:
-            raise WorkspaceError(blocked)
     pattern = str(args.get("pattern") or "")
     try:
         monitor_mod.compile_pattern(pattern)

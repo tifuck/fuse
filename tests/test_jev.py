@@ -69,13 +69,13 @@ class DbCase(unittest.TestCase):
             unattended=unattended, notify=notify or (lambda event: None), cancel=None,
         )
 
-    def review(self, tool, args, gate=None):
-        return asyncio.run(self.areview(tool, args, gate))
+    def review(self, tool, args, gate=None, **kwargs):
+        return asyncio.run(self.areview(tool, args, gate, **kwargs))
 
-    def areview(self, tool, args, gate=None):
+    def areview(self, tool, args, gate=None, **kwargs):
         return permissions.review(
             tool=tool, args=args, user_id=1, host_id=7, host_alias="prod",
-            root="/srv/app", windows=False, gate=gate or self.gate(),
+            root="/srv/app", windows=False, gate=gate or self.gate(), **kwargs,
         )
 
     def pending(self):
@@ -373,6 +373,61 @@ class ReviewAutoTest(DbCase):
         self.assertGreater(key_check, 0)
         self.assertGreater(tx, 0)
         self.assertLess(key_check, tx)
+
+
+class DenyFormGateTest(DbCase):
+    """Denylist hits: the card is the only way in — never Jev, grants, or
+    Allow-always. The user's Allow (or bypass) is an explicit ok, so the
+    command then runs instead of failing after acceptance."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = patch.object(jev, "user_can_auto", return_value=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def auto(self, on=True):
+        permissions.set_auto(1, self.tid, on)
+
+    def test_user_allow_admits_the_command(self):
+        events = []
+
+        async def flow():
+            task = asyncio.create_task(self.areview(
+                "run_terminal_command", {"command": "sudo systemctl restart fuse-dev"},
+                self.gate(notify=events.append), deny_reason="command blocked by denylist"))
+            card = await self.wait_pending(events)
+            self.assertIn("denylist", " ".join(card.get("reasons") or []))
+            self.assertEqual(card.get("grant_kind"), "")  # no Allow-always
+            permissions.resolve(1, self.tid, card["id"], "allow")
+            return await task
+
+        self.assertTrue(asyncio.run(flow()).allowed)
+
+    def test_auto_never_covers_a_deny_form(self):
+        events = []
+        self.auto()
+
+        async def flow():
+            with patch.object(jev, "judge", new_callable=AsyncMock, return_value=True) as judge:
+                task = asyncio.create_task(self.areview(
+                    "run_terminal_command", {"command": "sudo reboot"},
+                    self.gate(notify=events.append), deny_reason="command blocked by denylist"))
+                card = await self.wait_pending(events)
+                await asyncio.sleep(0.6)  # the waiting loop must not reach Jev
+                self.assertEqual(judge.await_count, 0)
+                self.assertEqual(self.pending(), 1)
+                permissions.resolve(1, self.tid, card["id"], "deny")
+                return await task
+
+        self.assertFalse(asyncio.run(flow()).allowed)
+
+    def test_bypass_admits_the_command(self):
+        permissions.set_bypass(1, self.tid, True)
+        res = self.review(
+            "run_terminal_command", {"command": "sudo reboot"},
+            deny_reason="command blocked by denylist")
+        self.assertTrue(res.allowed)
 
 
 class ShellGrantTest(DbCase):
