@@ -61,6 +61,12 @@ window.fuseToolFixture = {
     updateAssistant(log.lastElementChild, msg, live);
   },
   agents: reconcileAgentTraces,
+  todo: {
+    sync: syncTodoSections,
+    openAgent(id) { setAgentsOpen(true); return showAgent(id); },
+    agents(rows) { agentsRows = structuredClone(rows); syncTodoSections(); },
+    reset() { Object.values(todoSections).forEach((sec) => { sec.sig = ''; sec.shownKey = ''; sec.lingerUntil = 0; sec.expanded = false; }); todoDismissedKeys = new Set(); },
+  },
   pollAgent: pollAgentView,
   jobs: reconcileBgTraces,
   work(rows) { setAgentsOpen(true); jobsRows = structuredClone(rows); renderJobsList(); syncAgentsUi(); },

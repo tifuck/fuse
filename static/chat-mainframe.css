@@ -294,7 +294,7 @@
 /* Collapsed: a short preview under a single rule. Expanded: the full pane. */
 .chat[data-view="mainframe"] .chat-console-hang:not(.is-expanded) .chat-console-out { display: none; }
 .chat[data-view="mainframe"] .chat-console-hang.is-expanded .chat-console-preview { display: none; }
-.chat[data-view="mainframe"] .chat-step.is-console-call :is(.chat-console-preview, .chat-console-out, .chat-todo) {
+.chat[data-view="mainframe"] .chat-step.is-console-call :is(.chat-console-preview, .chat-console-out) {
   grid-column: 2 / -1;
   min-width: 0;
 }
@@ -392,30 +392,6 @@
 .chat[data-view="mainframe"] .chat-web-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat[data-view="mainframe"] .chat-web-domain { flex: 0 0 auto; margin-left: auto; color: var(--mute); font: inherit; }
 .chat[data-view="mainframe"] .chat-web-row:hover .chat-web-title { color: var(--brass); text-decoration: underline; text-underline-offset: 3px; }
-
-/* Todos: a checklist on the grid. */
-.chat[data-view="mainframe"] .chat-todo.is-console {
-  display: grid;
-  gap: 0;
-  margin: 0 0 0.35rem;
-  padding: 0;
-  list-style: none;
-}
-.chat[data-view="mainframe"] .chat-todo.is-console .chat-todo-item {
-  display: grid;
-  grid-template-columns: 2ch minmax(0, 1fr);
-  column-gap: 1ch;
-  align-items: baseline;
-  color: var(--mist);
-  font: var(--mf-size)/1.6 var(--mf-font);
-}
-.chat[data-view="mainframe"] .chat-todo.is-console .chat-todo-status { display: none; }
-.chat[data-view="mainframe"] .chat-todo.is-console .chat-todo-mark { font-size: 0; }
-.chat[data-view="mainframe"] .chat-todo.is-console .chat-todo-mark::before { content: "·"; color: var(--mute); font-size: var(--mf-size); }
-.chat[data-view="mainframe"] .chat-todo.is-console .is-completed .chat-todo-mark::before { content: "✓"; color: var(--ok); }
-.chat[data-view="mainframe"] .chat-todo.is-console .is-in-progress .chat-todo-mark::before { content: "›"; color: var(--brass); }
-.chat[data-view="mainframe"] .chat-todo.is-console .is-completed .chat-todo-copy { color: var(--mute); text-decoration: line-through; }
-.chat[data-view="mainframe"] .chat-todo.is-console .is-in-progress .chat-todo-copy { color: var(--mist); }
 
 /* Structured bodies. */
 .chat[data-view="mainframe"] .chat-kv-row { padding: 0; font: inherit; }
@@ -666,3 +642,30 @@
 .chat[data-view="mainframe"] .chat-recap-copy { min-width: 0; }
 .chat[data-view="mainframe"] .chat-recap-label { font-weight: 650; }
 .chat[data-view="mainframe"] .chat-recap-text { font-style: italic; }
+
+/* —— Todo section: the same 2ch gutter and row size as every call row. —— */
+.chat[data-view="mainframe"] :is(.chat-live-todos, .chat-agent-live-todos):not([hidden]) {
+  font: var(--mf-size)/1.6 var(--mf-font);
+  color: var(--mist);
+}
+.chat[data-view="mainframe"] .chat-live-todos:not([hidden]) { margin-top: 0.15rem; }
+.chat[data-view="mainframe"] :is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-head {
+  font-size: 1em;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.chat[data-view="mainframe"] :is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-title { color: var(--mist); }
+.chat[data-view="mainframe"] :is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-bar { padding-left: 3ch; }
+.chat[data-view="mainframe"] :is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-rows { gap: 0; margin: 0; }
+.chat[data-view="mainframe"] :is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-row {
+  grid-template-columns: 2ch minmax(0, 1fr);
+  column-gap: 1ch;
+}
+.chat[data-view="mainframe"] :is(.chat-live-todos, .chat-agent-live-todos) .is-pending .chat-todo-box::before { content: "·"; }
+.chat[data-view="mainframe"] :is(.chat-live-todos, .chat-agent-live-todos) .is-in-progress .chat-todo-text { font-weight: 400; }
+.chat[data-view="mainframe"] .chat-todo-line {
+  display: grid;
+  grid-template-columns: 2ch minmax(0, 1fr);
+  column-gap: 1ch;
+  font: var(--mf-size)/1.6 var(--mf-font);
+}

@@ -98,6 +98,11 @@ let assertions = 0;
           // Exit status is independent of tool failure; do not mask error fixtures with exit=0.
           const t = trace(name, status, status === 'done' ? {} : { exit_code: undefined });
           await mount([t], status === 'running');
+          if (name === 'todo_write') {
+            // A todo list is not a transcript row: it has its own section under the status line.
+            assert.equal(await page.locator('[data-step="tool-tool-a"]').count(), 0, `todo_write printed a row (${status}/${view})`);
+            continue;
+          }
           const r = row('tool-a');
           assert.equal(await toggle(r).getAttribute('aria-expanded'), 'false');
           assert.equal(await body(r).isVisible(), false);

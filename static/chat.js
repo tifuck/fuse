@@ -2740,8 +2740,7 @@
       rec.edited_files = trace.edited_files.filter((f) => typeof f === "string" && f).slice(0, 20).map((f) => f.slice(0, 400));
     }
     if (trace.edit_diff) rec.edit_diff = String(trace.edit_diff).slice(0, 12000);
-    const todos = normalizeTodos(trace.todos);
-    if (todos.length) rec.todos = todos;
+    if (Array.isArray(trace.todos)) rec.todos = normalizeTodos(trace.todos);
     if (trace.exit_code != null && Number.isFinite(Number(trace.exit_code))) rec.exit_code = Number(trace.exit_code);
     EXECUTION_FIELDS.forEach(key => { if (Object.prototype.hasOwnProperty.call(trace, key)) rec[key] = trace[key]; });
     if (Array.isArray(trace.results)) {
@@ -6894,7 +6893,9 @@
   function lastCurrentTrace(groups) {
     const items = groups.flatMap((g) => g.items);
     for (let i = items.length - 1; i >= 0; i--) {
-      if (toolIsCurrent(items[i].trace)) return items[i].trace;
+      // The todo list is bookkeeping with its own section; it never names what
+      // the run is doing.
+      if (items[i].trace.name !== "todo_write" && toolIsCurrent(items[i].trace)) return items[i].trace;
     }
     return null;
   }
@@ -6961,7 +6962,7 @@
     const activity = msg?.id === activeRun?.message_id ? activeRun?.activity : msg?._activity;
     if (activity?.phase === "model" || activity?.phase === "calling") current = null;
     else if (live && !stopping && activity?.phase === "tools" && activity.tool_id) {
-      current = traces.find(trace => trace.id === activity.tool_id && toolIsCurrent(trace)) || current;
+      current = traces.find(trace => trace.id === activity.tool_id && trace.name !== "todo_write" && toolIsCurrent(trace)) || current;
     }
     const segments = assistantSegments(msg);
     const last = [...segments].reverse().find(part => part && (part.type === "tool" || String(part.text || "").trim()));
@@ -7171,6 +7172,7 @@
   }
 
   function syncLiveDock() {
+    scheduleTodoSync();
     if (!liveDock) return;
     const live = Boolean(streaming || (runIsActive(activeRun) && runIsStopping(activeRun)));
     const msg = live ? activeAssistant() : null;
@@ -7369,19 +7371,9 @@
     "Wrangling", "Zesting", "Zigzagging",
   ];
 
-  // The spinner's word: the todo in progress, as an -ing phrase ("Running the
-  // tests"), as Claude Code shows a task's active form; else the turn's verb.
+  // The spinner's word: one of Claude Code's verbs, fixed per turn. It only
+  // says the run is alive; the todo list has its own section under it.
   function ccSpinnerVerb(msg) {
-    const traces = Array.isArray(msg && msg.tools) ? msg.tools : [];
-    for (let i = traces.length - 1; i >= 0; i -= 1) {
-      if (traces[i].name !== "todo_write") continue;
-      const doing = normalizeTodos(traces[i].todos).find((item) => item.status === "in_progress");
-      if (doing) {
-        const text = ccRunningForm(doing.content) ?? doing.content;
-        return text.charAt(0).toUpperCase() + text.slice(1);
-      }
-      break;
-    }
     const key = String((msg && msg.id) || "");
     let hash = 0;
     for (let i = 0; i < key.length; i += 1) hash = (Math.imul(hash, 31) + key.charCodeAt(i)) | 0;
@@ -7415,7 +7407,7 @@
     run_terminal_command: "running command", get_command_output: "waiting for command", kill_command: "stopping command",
     read_file: "reading", grep: "searching", glob: "searching", list_dir: "listing", search_replace: "editing",
     write_file: "writing file", read_url: "fetching", spawn_subagent: "running agent", get_subagent_output: "waiting for agent",
-    kill_subagent: "stopping agent", list_subagents: "listing agents", monitor: "watching", todo_write: "updating todos",
+    kill_subagent: "stopping agent", list_subagents: "listing agents", monitor: "watching",
     create_artifact: "building artifact", update_artifact: "building artifact", search_models: "finding models",
   };
   function ccSpinnerState(status) {
@@ -8348,10 +8340,6 @@
       return { status, preview: "", full: detail() };
     }
     if (name === "read_file" || name === "kill_command" || name === "kill_subagent") return { status, preview: "", full: "" };
-    if (name === "todo_write") {
-      const list = consoleDetailHtml(trace, failed, running);
-      return { status: list ? "" : status, preview: list, full: "" };
-    }
     if (name === "search_replace" || name === "write_file") {
       const diff = [trace.preview, trace.output].find((value) => looksLikeDiff(value));
       if (diff) {
@@ -8432,11 +8420,6 @@
   }
 
   function consoleDetailHtml(trace, failed, running) {
-    if (trace && trace.name === "todo_write") {
-      // Not wrapped in .chat-console-out: the list is always shown inline and
-      // the step is never expandable, so the hang stays out of the band flow.
-      return todoListHtml(trace.todos, { live: running, console: true });
-    }
     if (trace && ["read_file", "write_file"].includes(trace.name) && !failed) {
       const body = trace.name === "write_file" ? (typeof trace.content === "string" ? trace.content : "") : consoleFileBody(trace);
       if (!body) return "";
@@ -8923,21 +8906,222 @@
     return out;
   }
 
-  function todoListHtml(todos, { live = false, console = false } = {}) {
-    const items = normalizeTodos(todos);
-    if (!items.length) return "";
-    return `<ol class="chat-todo${console ? " is-console" : ""}" data-todo-list>${items.map((item) => {
-      const mark = console
-        ? (item.status === "completed" || item.status === "cancelled" ? "☒" : "☐")
-        : item.status === "completed" ? "✓" : item.status === "cancelled" ? "×" : item.status === "in_progress" ? "›" : "○";
-      return `<li class="chat-todo-item is-${item.status.replace("_", "-")}${live && item.status === "in_progress" ? " is-current" : ""}">` +
-        `<span class="chat-todo-mark" aria-hidden="true">${mark}</span>` +
-        `<span class="chat-todo-copy">${escapeHtml(item.content)}</span>` +
-        `<span class="chat-todo-status">${TODO_STATUSES[item.status]}</span></li>`;
-    }).join("")}</ol>`;
+  // —— The todo list ——
+  // todo_write never prints as a transcript row. The model re-sends the whole
+  // list on every call, so a list is the newest successful call in ONE message:
+  // the main chat's section reads the thread's own messages, a subagent's reads
+  // that child's message. Nothing is looked up by tool id across messages (ids
+  // restart in every run: a parent and a child can both own "ts_0_0"), so one
+  // agent's list can never show up in, or be updated by, another's.
+  const todoClosed = (item) => item.status === "completed" || item.status === "cancelled";
+  const todoSettled = (items) => items.length > 0 && items.every(todoClosed);
+  const todoLanded = (trace) => Boolean(trace && trace.name === "todo_write" && trace.status !== "error" && !trace.error && Array.isArray(trace.todos));
+
+  function latestTodoState(msg) {
+    const traces = Array.isArray(msg && msg.tools) ? msg.tools : [];
+    for (let i = traces.length - 1; i >= 0; i -= 1) {
+      const trace = traces[i];
+      if (!todoLanded(trace)) continue;
+      const state = { key: `${msg.id || ""}:${trace.id || i}`, items: normalizeTodos(trace.todos) };
+      // A subagent's compaction prunes the traces it already acted on; its
+      // list is still the one the model is working from.
+      if (msg.noActions) msg._todoLast = state;
+      return state;
+    }
+    return msg && msg.noActions && msg._todoLast || null;
   }
 
+  function todoSettledText(items) {
+    const done = items.filter((item) => item.status === "completed").length;
+    const cancelled = items.length - done;
+    return `Todos · ${done}/${items.length} done${cancelled ? ` · ${cancelled} cancelled` : ""}`;
+  }
 
+  // The call that takes a list from open to settled leaves one line in the
+  // transcript: tool id -> its text. Every other todo_write prints nothing.
+  function todoSettleLines(msg) {
+    const lines = new Map();
+    let before = false;
+    (Array.isArray(msg && msg.tools) ? msg.tools : []).forEach((trace) => {
+      if (!todoLanded(trace)) return;
+      const items = normalizeTodos(trace.todos);
+      const settled = todoSettled(items);
+      if (settled && !before) lines.set(trace.id, todoSettledText(items));
+      before = settled;
+    });
+    return lines;
+  }
+
+  function todoLineHtml(text) {
+    return `<p class="chat-todo-line" data-todo-line><span class="chat-todo-line-mark" aria-hidden="true"></span><span class="chat-todo-line-text">${escapeHtml(text)}</span></p>`;
+  }
+
+  const TODO_ROWS = 8;
+  const TODO_LINGER_MS = 1500;
+  const STORE_TODO_DISMISSED = "fuse.chat.todos.dismissed.v1";
+  let todoDismissedKeys = null;
+
+  function todoDismissed(key) {
+    if (!todoDismissedKeys) {
+      try { todoDismissedKeys = new Set(JSON.parse(localStorage.getItem(STORE_TODO_DISMISSED) || "[]")); } catch { todoDismissedKeys = new Set(); }
+    }
+    return todoDismissedKeys.has(key);
+  }
+
+  function dismissTodos(key) {
+    todoDismissed(key);
+    todoDismissedKeys.add(key);
+    try { localStorage.setItem(STORE_TODO_DISMISSED, JSON.stringify([...todoDismissedKeys].slice(-60))); } catch {}
+  }
+
+  // The checklist, as the bottom section prints it. Past TODO_ROWS items the
+  // finished ones fold into a count first, then the far end of the open ones;
+  // the item in progress always stays, and the head opens the full list.
+  function todoPanelHtml(state, { active, expanded }) {
+    const items = state.items;
+    const done = items.filter(todoClosed).length;
+    let rows = items.map((item) => ({ item }));
+    let hiddenDone = 0;
+    let hiddenMore = 0;
+    const folds = items.length > TODO_ROWS;
+    if (folds && !expanded) {
+      for (let i = 0; i < rows.length && rows.length > TODO_ROWS;) {
+        if (todoClosed(rows[i].item)) { rows.splice(i, 1); hiddenDone += 1; } else i += 1;
+      }
+      while (rows.length > TODO_ROWS) {
+        let k = rows.length - 1;
+        while (k > 0 && rows[k].item.status === "in_progress") k -= 1;
+        rows.splice(k, 1);
+        hiddenMore += 1;
+      }
+    }
+    const count = `<span class="chat-todo-count">${done}/${items.length}</span>`;
+    const title = `<span class="chat-todo-title">Todos</span>${count}`;
+    const head = folds
+      ? `<button type="button" class="chat-todo-head" data-todo-toggle aria-expanded="${expanded ? "true" : "false"}">${title}<span class="chat-todo-fold" aria-hidden="true">${expanded ? "less" : "all"}</span></button>`
+      : `<div class="chat-todo-head">${title}</div>`;
+    const dismiss = active ? "" : '<button type="button" class="chat-todo-dismiss" data-todo-dismiss aria-label="Dismiss todo list" title="Dismiss">×</button>';
+    const list = rows.map(({ item }) =>
+      `<li class="chat-todo-row is-${item.status.replace("_", "-")}"><span class="chat-todo-box" aria-hidden="true"></span>` +
+      `<span class="chat-todo-text">${escapeHtml(item.content)}</span></li>`);
+    if (hiddenDone) list.unshift(`<li class="chat-todo-row is-more"><span class="chat-todo-box" aria-hidden="true"></span><span class="chat-todo-text">${hiddenDone} done</span></li>`);
+    if (hiddenMore) list.push(`<li class="chat-todo-row is-more"><span class="chat-todo-box" aria-hidden="true"></span><span class="chat-todo-text">+${hiddenMore} more</span></li>`);
+    return `<div class="chat-todo-bar">${head}${dismiss}</div><ol class="chat-todo-rows" data-todo-list>${list.join("")}</ol>`;
+  }
+
+  const todoSections = {
+    main: { el: root.querySelector("[data-live-todos]"), sig: "", expanded: false, shownKey: "", lingerUntil: 0, timer: 0, key: "" },
+    agent: { el: root.querySelector("[data-agent-live-todos]"), sig: "", expanded: false, shownKey: "", lingerUntil: 0, timer: 0, key: "" },
+  };
+
+  // An unfinished list stays until it is dismissed. A finished one shows only
+  // while something is still running on the message that owns it, then holds
+  // for a beat so the last check lands before the section goes.
+  function todoShown(sec, candidate, active) {
+    const state = candidate && candidate.state;
+    if (!state || !state.items.length || todoDismissed(state.key)) {
+      sec.shownKey = "";
+      sec.lingerUntil = 0;
+      return false;
+    }
+    if (!todoSettled(state.items) || (active && candidate.latest)) {
+      sec.shownKey = state.key;
+      sec.lingerUntil = 0;
+      return true;
+    }
+    if (sec.shownKey === state.key) {
+      const now = Date.now();
+      if (!sec.lingerUntil) sec.lingerUntil = now + TODO_LINGER_MS;
+      if (now < sec.lingerUntil) {
+        clearTimeout(sec.timer);
+        sec.timer = setTimeout(scheduleTodoSync, sec.lingerUntil - now + 20);
+        return true;
+      }
+    }
+    sec.shownKey = "";
+    sec.lingerUntil = 0;
+    return false;
+  }
+
+  function paintTodoSection(sec, candidate, active, afterResize) {
+    const el = sec.el;
+    if (!el) return;
+    const state = candidate && candidate.state;
+    if (!todoShown(sec, candidate, active)) {
+      if (!el.hidden) {
+        el.hidden = true;
+        el.replaceChildren();
+        sec.sig = "";
+        sec.key = "";
+        afterResize();
+      }
+      return;
+    }
+    const sig = `${state.key}|${active}|${sec.expanded}|${JSON.stringify(state.items)}`;
+    sec.key = state.key;
+    if (sig === sec.sig && !el.hidden) return;
+    sec.sig = sig;
+    el.innerHTML = todoPanelHtml(state, { active, expanded: sec.expanded });
+    el.hidden = false;
+    afterResize();
+  }
+
+  // The newest list in the thread, and whether its message is the thread's last
+  // reply (an old finished list never reappears under a later turn).
+  function mainTodoCandidate() {
+    let latest = true;
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const msg = messages[i];
+      if (!msg || msg.role !== "assistant") continue;
+      const state = latestTodoState(msg);
+      if (state) return { state, latest };
+      latest = false;
+    }
+    return null;
+  }
+
+  function mainTodoActive() {
+    if (streaming || runIsActive(activeRun)) return true;
+    for (const row of agentLifecycle.values()) if (agentLive(row.status)) return true;
+    return agentsRows.some((row) => agentLive(row.status));
+  }
+
+  function syncTodoSections() {
+    paintTodoSection(todoSections.main, mainTodoCandidate(), mainTodoActive(), () => {
+      followLiveDockSlide();
+      if (stickToBottom) scrollThread();
+      syncLatest();
+    });
+    const child = agentViewId && agentRun && agentMsgState ? latestTodoState(agentMsgState) : null;
+    paintTodoSection(todoSections.agent, child && { state: child, latest: true }, Boolean(agentRun && agentLive(agentRun.status)), () => {
+      if (agentStick && agentLogEl) restoreAgentScroll(true, 0);
+    });
+  }
+
+  let todoSyncQueued = false;
+  function scheduleTodoSync() {
+    if (todoSyncQueued) return;
+    todoSyncQueued = true;
+    requestAnimationFrame(() => {
+      todoSyncQueued = false;
+      syncTodoSections();
+    });
+  }
+
+  function onTodoClick(event) {
+    const kind = Object.keys(todoSections).find((name) => todoSections[name].el && todoSections[name].el.contains(event.target));
+    if (!kind) return;
+    const sec = todoSections[kind];
+    if (event.target.closest("[data-todo-dismiss]")) {
+      dismissTodos(sec.key);
+      sec.sig = "";
+      scheduleTodoSync();
+    } else if (event.target.closest("[data-todo-toggle]")) {
+      sec.expanded = !sec.expanded;
+      scheduleTodoSync();
+    }
+  }
+  Object.values(todoSections).forEach((sec) => sec.el && sec.el.addEventListener("click", onTodoClick));
 
   function exitNoteHtml(code) {
     const text = `exit ${Number(code)}`;
@@ -8985,10 +9169,7 @@
     const fileBody = trace.name === "write_file" && !failed && !diff
       ? (looksLikeDiff(trace.preview) ? "" : String(trace.preview || "").trim()) : "";
     let shownOutput = !hasResults;
-    if (trace.name === "todo_write") {
-      const list = todoListHtml(trace.todos, { live: running });
-      if (list) sections.push(`<section class="chat-tool-section is-todos" data-tool-section="Tasks">${list}</section>`);
-    } else if (hasResults) {
+    if (hasResults) {
       const snippet = trace.name === "read_url" ? String(trace.results[0].snippet || "").trim() : "";
       sections.push(`<section class="chat-tool-section is-sources" data-tool-section="Sources"><span class="chat-tool-section-label visually-hidden">Sources</span>${webResultsHtml(trace.results)}` +
         (snippet ? `<pre class="chat-tool-out">${escapeHtml(toolText(snippet, 1600))}</pre>` : "") + "</section>");
@@ -9095,8 +9276,7 @@
     const openKind = artifact && trace.identifier && presentation.state === "done" ? "artifact"
       : ["spawn_subagent", "get_subagent_output"].includes(trace.name) && trace.child_id ? "agent" : "";
     const openId = openKind === "artifact" ? trace.identifier : openKind === "agent" ? trace.child_id : "";
-    // Todo lists are plain inline content in console view: always shown, no disclosure.
-    const revealed = open || (!isConsoleView() && trace.name === "todo_write" && normalizeTodos(trace.todos).length > 0);
+    const revealed = open;
     let inner;
     if (isConsoleView()) inner = consoleDetailHtml(trace, failed, running);
     else if (revealed) inner = toolDetailHtml(trace, failed, running);
@@ -11894,6 +12074,7 @@
     const segments = assistantSegments(msg);
     const toolById = new Map(traces.map((trace, index) => [trace.id, { trace, index }]));
     const permById = new Map((msg.permissions || []).map((perm) => [perm.id, perm]));
+    const settleLines = todoSettleLines(msg);
     const normalized = segments.flatMap((part, segmentIndex) => {
       if (!part || !part.type) return [];
       if (part.type === "marker") {
@@ -11901,7 +12082,14 @@
       }
       if (part.type === "tool") {
         const found = toolById.get(part.id);
-        return found ? [{ type: "tool", segmentIndex, ...found }] : [];
+        if (!found) return [];
+        // A todo list is not a row: it lives in the section under the status
+        // line. Only the call that finishes the list leaves a line behind.
+        if (found.trace.name === "todo_write") {
+          const text = settleLines.get(found.trace.id);
+          return text ? [{ type: "todo-line", segmentIndex, text }] : [];
+        }
+        return [{ type: "tool", segmentIndex, ...found }];
       }
       if (part.type === "permission") {
         const found = permById.get(part.id);
@@ -11920,6 +12108,10 @@
       }
       if (part.type === "marker") {
         blocks.push({ kind: "marker", text: part.text, summary: part.summary || "" });
+        return;
+      }
+      if (part.type === "todo-line") {
+        blocks.push({ kind: "todos", text: part.text });
         return;
       }
       const kind = part.type === "content" ? "content" : "activity";
@@ -11954,10 +12146,11 @@
         }).join("~") + (consoleLive && blockIndex === blocks.length - 1 ? `~ph:${phase}` : "");
       }
       if (block.kind === "marker") return `m:${block.text}:${block.summary || ""}`;
+      if (block.kind === "todos") return `o:${block.text}`;
       if (block.kind === "permission") return `p:${block.entries[0] && block.entries[0].perm && block.entries[0].perm.id}`;
       return `c:${blockIndex}`;
     };
-    const sig = `${Boolean(live)}|${chatView}|${liveKind}|${structure}|${permSig}`;
+    const sig = `${Boolean(live)}|${chatView}|${liveKind}|${structure}|${permSig}|${[...settleLines.keys()].join(",")}`;
     let reasoningPositions = null;
     const sameShape = flow._sig === sig && flow.childElementCount === blocks.length;
     if (sameShape) {
@@ -11970,7 +12163,7 @@
         if (block.kind !== "activity") {
           const html = block.kind === "permission"
             ? permissionCardHtml(block.entries[0].perm, msg)
-            : compactionMarkHtml(block.text, block.summary);
+            : block.kind === "todos" ? todoLineHtml(block.text) : compactionMarkHtml(block.text, block.summary);
           if (node.outerHTML === html) { node._blockSig = next; return; }
           const fresh = document.createElement("template");
           fresh.innerHTML = html;
@@ -12014,6 +12207,7 @@
         if (block.kind === "marker") {
           return compactionMarkHtml(block.text, block.summary);
         }
+        if (block.kind === "todos") return todoLineHtml(block.text);
         if (block.kind === "content") {
           const text = block.entries.map((entry) => entry.text).join("");
           const writing = live && blockIndex === blocks.length - 1;
@@ -14544,6 +14738,7 @@
   }
 
   function syncAgentLiveDock() {
+    scheduleTodoSync();
     if (!agentLiveDock) return;
     const stalled = Boolean(agentRun && agentIsStalled(agentRun));
     const live = Boolean(agentViewId && agentsOpen && agentRun && agentLive(agentRun.status) && agentViewFailCount < 3 && !stalled);
@@ -14627,6 +14822,8 @@
       // Without it the live clock fell back to another run's start time.
       elapsedMs: raw.elapsedMs ?? null,
     });
+    // Before compaction prunes the traces: the list the child works from.
+    latestTodoState(agentMsgState);
     const seed = Array.isArray(agentRun.messages) ? agentRun.messages : [];
     const compacted = seed.some((item) => item && (item.compaction || item.kind === "compaction"));
     if (compacted) {
@@ -15070,6 +15267,7 @@
   }, 5000);
 
   function syncAgentsUi() {
+    scheduleTodoSync();
     syncCurrentThreadBusy();
     const { live } = agentRowsSorted();
     const liveCount = live.length;

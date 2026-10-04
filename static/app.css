@@ -2182,6 +2182,7 @@ body.is-chat main {
 }
 .chat-log,
 .chat-live-dock,
+.chat-live-todos,
 .chat-dock,
 .chat-empty {
   width: min(var(--chat-col), calc(100% - 2.5rem));
@@ -2430,34 +2431,6 @@ body.is-chat main {
   font-weight: 600;
 }
 .chat-md-details[open] summary { margin-bottom: 0.4rem; }
-.chat-todo {
-  list-style: none;
-  margin: 0.45rem 0 0.2rem;
-  padding: 0;
-  display: grid;
-  gap: 0.28rem;
-}
-.chat-todo-item {
-  display: grid;
-  grid-template-columns: 1.1rem minmax(0, 1fr) auto;
-  gap: 0.45rem;
-  align-items: baseline;
-  font-size: calc(0.88rem * var(--chat-text-scale, 1));
-}
-.chat-todo-mark { color: var(--mute); font-family: var(--mono); }
-.chat-todo-item.is-in-progress .chat-todo-mark,
-.chat-todo-item.is-current .chat-todo-copy { color: var(--brass); }
-.chat-todo-item.is-completed .chat-todo-mark { color: var(--ok); }
-.chat-todo-item.is-completed .chat-todo-copy { color: var(--mute); text-decoration: line-through; }
-.chat-todo-item.is-cancelled .chat-todo-copy { color: var(--mute); text-decoration: line-through; }
-.chat-todo-status {
-  color: var(--mute);
-  font-family: var(--mono);
-  font-size: 0.72em;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-}
-.chat-todo-count { margin: 0.2rem 0 0; color: var(--mute); font-size: 0.78rem; }
 .chat-md ul ul, .chat-md ol ol, .chat-md ul ol, .chat-md ol ul {
   margin: 0.2rem 0;
   padding-left: calc(1.1rem * var(--chat-text-scale, 1));
@@ -3771,6 +3744,7 @@ body.is-chat main {
   .chat-bar, .chat-stage { grid-column: 1; }
   .chat-log,
   .chat-live-dock,
+  .chat-live-todos,
   .chat-dock,
   .chat-empty { width: min(var(--chat-col), calc(100% - 1.25rem)); }
   .chat-dock { padding-bottom: max(0.7rem, env(safe-area-inset-bottom)); }
@@ -3805,7 +3779,7 @@ body.is-chat .topbar { flex-shrink: 0; }
 @keyframes chat-search-enter { from { opacity: 0; transform: translateY(-0.35rem); } to { opacity: 1; transform: none; } }
 .chat-bar .btn { height: 2.5rem; border-color: transparent; color: var(--chat-secondary); }
 .chat-thread { min-width: 0; flex: 1 1 0; scrollbar-width: thin; scroll-padding-block: 1.25rem 1.5rem; transition: flex-grow calc(var(--dur-3) + 80ms) var(--ease-glide); }
-.chat-log, .chat-live-dock, .chat-dock, .chat-empty { width: min(var(--chat-col), calc(100% - 4rem)); }
+.chat-log, .chat-live-dock, .chat-live-todos, .chat-dock, .chat-empty { width: min(var(--chat-col), calc(100% - 4rem)); }
 .chat-log { gap: 2.6rem; padding: 2rem 0 4.5rem; }
 .chat-assistant { gap: 1rem; min-width: 0; }
 .chat-flow { display: flex; flex-direction: column; gap: inherit; min-width: 0; }
@@ -5144,12 +5118,12 @@ a.chat-query-label:hover { color: var(--mist); }
   .chat.history-collapsed { grid-template-columns: 0 minmax(0, 1fr); }
 }
 @media (max-width: 1100px) and (min-width: 801px) {
-  .chat-log, .chat-live-dock, .chat-dock, .chat-empty { width: min(var(--chat-col), calc(100% - 2.5rem)); }
+  .chat-log, .chat-live-dock, .chat-live-todos, .chat-dock, .chat-empty { width: min(var(--chat-col), calc(100% - 2.5rem)); }
 }
 @media (max-width: 800px) {
   body.is-chat.is-app { grid-template-rows: auto minmax(0, 1fr); }
   .chat-bar .btn { min-height: 2.5rem; }
-  .chat-log, .chat-live-dock, .chat-dock, .chat-empty { width: min(var(--chat-col), calc(100% - 1.5rem)); }
+  .chat-log, .chat-live-dock, .chat-live-todos, .chat-dock, .chat-empty { width: min(var(--chat-col), calc(100% - 1.5rem)); }
   .chat-log { gap: 2rem; padding-top: 1.25rem; padding-bottom: 4rem; }
   .chat-md { font-size: calc(1rem * var(--chat-text-scale, 1)); line-height: 1.8; }
   .chat-bubble { max-width: 90%; font-size: calc(1rem * var(--chat-text-scale, 1)); padding: 0.8rem 1rem; }
@@ -6005,6 +5979,7 @@ body.is-chat.is-keyboard .chat-dock {
 }
 .chat-log,
 .chat-live-dock,
+.chat-live-todos,
 .chat-dock,
 .chat-empty {
   width: min(var(--chat-col), calc(100% - 2.75rem));
@@ -6185,7 +6160,7 @@ body.is-chat.is-keyboard .chat-dock {
   .chat-bar::after { content: ""; order: 5; flex: 1 1 100%; height: 0; }
   .chat-project-chip { order: 6; }
   .chat-bar .chat-bar-title { order: 7; flex: 1 1 0; }
-  .chat-log, .chat-live-dock, .chat-dock, .chat-empty {
+  .chat-log, .chat-live-dock, .chat-live-todos, .chat-dock, .chat-empty {
     width: min(var(--chat-col), calc(100% - 1.15rem));
   }
   .chat-log { gap: 1rem; padding: 0.35rem 0 0.6rem; }
@@ -8672,9 +8647,9 @@ body.is-settings .page-head { display: none; }
 @media (max-width: 800px) {
   .chat-view-menu button[data-view] span { display: block; }
   .chat-view-menu button[data-view] small { display: block; }
-  .chat[data-view="compact"] :is(.chat-log, .chat-live-dock) { width: calc(100% - 1rem); }
-  .chat[data-view="cli"] :is(.chat-log, .chat-live-dock),
-  .chat[data-view="console"] :is(.chat-log, .chat-live-dock) { width: calc(100% - 1rem); }
+  .chat[data-view="compact"] :is(.chat-log, .chat-live-dock, .chat-live-todos) { width: calc(100% - 1rem); }
+  .chat[data-view="cli"] :is(.chat-log, .chat-live-dock, .chat-live-todos),
+  .chat[data-view="console"] :is(.chat-log, .chat-live-dock, .chat-live-todos) { width: calc(100% - 1rem); }
   .chat[data-view="compact"] .chat-turn.is-user .chat-bubble { max-width: 88%; }
   .chat[data-view="cli"] .chat-turn.is-user .chat-bubble,
   .chat[data-view="console"] .chat-turn.is-user .chat-bubble { max-width: 92%; }
@@ -10652,3 +10627,116 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-history-tab { fo
   .proj-menu button { min-height: 44px; }
   .proj-more { width: 2.5rem; height: 2.5rem; }
 }
+
+/* —— Todo section: under the status line, above the composer. ——
+   todo_write never prints as a transcript row; the list lives here and updates
+   in place. The main chat's section is the transcript's last row after the
+   status line, so it takes over the clearance above the composer; a subagent's
+   sits under its own status dock. */
+.chat-live-todos,
+.chat-agent-live-todos { display: none; }
+.chat-live-todos:not([hidden]),
+.chat-agent-live-todos:not([hidden]) {
+  display: block;
+  flex: 0 0 auto;
+  color: var(--mist);
+  font: calc(0.84rem * var(--chat-text-scale, 1))/1.45 var(--sans);
+  animation: chat-todo-in var(--dur-2) var(--ease-snap) both;
+}
+.chat-live-todos:not([hidden]) { margin-top: 0.5rem; }
+.chat:not(.is-empty) .chat-live-todos:not([hidden]) { padding-bottom: calc(var(--dock-h, 7rem) + var(--dock-clearance)); }
+.chat:not(.is-empty) .chat-thread:has(> .chat-live-todos:not([hidden])) > .chat-live-dock { padding-bottom: 0 !important; }
+.chat:not(.is-empty) .chat-thread:has(> .chat-live-todos:not([hidden])):not(:has(> .chat-live-dock:not([hidden]))) > .chat-log { padding-bottom: 0 !important; }
+.chat-agent-live-todos:not([hidden]) {
+  padding: 0.45rem 0.75rem max(0.55rem, env(safe-area-inset-bottom));
+  border-top: 1px solid var(--line);
+}
+.chat-agent-live-dock:not([hidden]):has(+ .chat-agent-live-todos:not([hidden])) { padding-bottom: 0.2rem; border-bottom: 0; }
+.chat-agent-live-dock:not([hidden]) + .chat-agent-live-todos:not([hidden]) { border-top: 0; padding-top: 0; }
+@keyframes chat-todo-in {
+  from { opacity: 0; transform: translateY(0.3rem); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-live-todos:not([hidden]),
+  .chat-agent-live-todos:not([hidden]) { animation: none; }
+}
+:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 1.4em;
+}
+:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-head {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--mute);
+  font: inherit;
+  font-size: 0.82em;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  cursor: default;
+}
+:is(.chat-live-todos, .chat-agent-live-todos) button.chat-todo-head { cursor: pointer; }
+:is(.chat-live-todos, .chat-agent-live-todos) button.chat-todo-head:hover .chat-todo-fold { color: var(--mist); }
+:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-count {
+  color: var(--brass);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-fold { color: var(--mute); letter-spacing: 0; text-transform: none; }
+:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-dismiss {
+  margin-left: auto;
+  padding: 0 0.3rem;
+  border: 0;
+  background: none;
+  color: var(--mute);
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-dismiss:hover { color: var(--mist); }
+:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-rows {
+  display: grid;
+  gap: 0.12rem;
+  margin: 0.15rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-row {
+  display: grid;
+  grid-template-columns: 1.1rem minmax(0, 1fr);
+  column-gap: 0.45rem;
+  align-items: baseline;
+  min-width: 0;
+}
+:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-text { min-width: 0; overflow-wrap: anywhere; }
+:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-box { color: var(--mute); font-family: var(--mono); text-align: center; }
+:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-box::before { content: "○"; }
+:is(.chat-live-todos, .chat-agent-live-todos) .is-in-progress .chat-todo-box { color: var(--brass); }
+:is(.chat-live-todos, .chat-agent-live-todos) .is-in-progress .chat-todo-box::before { content: "›"; }
+:is(.chat-live-todos, .chat-agent-live-todos) .is-in-progress .chat-todo-text { color: var(--mist); font-weight: 600; }
+:is(.chat-live-todos, .chat-agent-live-todos) .is-completed .chat-todo-box { color: var(--ok); }
+:is(.chat-live-todos, .chat-agent-live-todos) .is-completed .chat-todo-box::before { content: "✓"; }
+:is(.chat-live-todos, .chat-agent-live-todos) .is-cancelled .chat-todo-box::before { content: "×"; }
+:is(.chat-live-todos, .chat-agent-live-todos) :is(.is-completed, .is-cancelled) .chat-todo-text { color: var(--mute); text-decoration: line-through; }
+:is(.chat-live-todos, .chat-agent-live-todos) .is-more .chat-todo-box::before { content: "…"; }
+:is(.chat-live-todos, .chat-agent-live-todos) .is-more .chat-todo-text { color: var(--mute); font-style: italic; }
+:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-row.is-pending .chat-todo-text { color: var(--mist); }
+
+/* The one line left in the transcript when a list finishes. */
+.chat .chat-todo-line {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  margin: 0;
+  color: var(--mute);
+  font: calc(0.78rem * var(--chat-text-scale, 1))/1.45 var(--mono);
+}
+.chat .chat-todo-line-mark::before { content: "✓"; color: var(--ok); }

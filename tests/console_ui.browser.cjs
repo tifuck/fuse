@@ -188,7 +188,7 @@ function scenarios() {
           fuseToolFixture.view(view);
           await new Promise((resolve) => requestAnimationFrame(resolve));
           const todo = { id: 'scale-todo', name: 'todo_write', status: 'done', todos: [{ content: 'Audit chat text scaling across every reading mode and every tool output', status: 'in_progress' }], results: [], error: '' };
-          fuseToolFixture.mountThread([{ role: 'user', content: 'Go.' }, { id: 'scale-turn', role: 'assistant', content: '', reasoning: 'Checking.', elapsedMs: 65000, tools: [todo, call], segments: [{ type: 'tool', id: todo.id }, { type: 'tool', id: call.id }] }], { live: true, phase: 'tools' });
+          fuseToolFixture.mountThread([{ role: 'user', content: 'Go.' }, { id: 'scale-turn', role: 'assistant', content: '', reasoning: 'Checking.', elapsedMs: 65000, content: 'Working.', tools: [todo, call], segments: [{ type: 'tool', id: todo.id }, { type: 'content', text: 'Working.' }, { type: 'tool', id: call.id }] }], { live: true, phase: 'tools' });
           const dock = document.querySelector('[data-live-dock]');
           const label = dock.querySelector('.chat-status-verb');
           const probe = document.createElement('div');
@@ -211,15 +211,25 @@ function scenarios() {
             // the same type, at every text size.
             const row = document.querySelector('.chat-step.is-console-call');
             const dot = row && row.querySelector(':scope > .chat-step-node');
-            const head = row && row.querySelector('.chat-step-label');
+            const head = row && (row.querySelector('.chat-console-call') || row.querySelector('.chat-step-label'));
             const glyph = dock.querySelector('.chat-activity-spin');
-            if (row && dot && head && glyph) {
-              const box = (el) => el.getBoundingClientRect();
+            const prose = document.querySelector('.chat-md');
+            const box = (el) => el.getBoundingClientRect();
+            if (view === 'mainframe' && glyph && prose) {
+              // Mainframe folds a running call into the live line, so its text column is the prose's.
+              aligned.push({
+                size,
+                text: Math.abs(box(label).left - (box(prose).left + parseFloat(getComputedStyle(prose).paddingLeft))),
+                type: Math.abs(parseFloat(getComputedStyle(label).fontSize) - parseFloat(getComputedStyle(prose).fontSize)),
+                at: 'prose',
+              });
+            } else if (row && dot && head && glyph) {
               aligned.push({
                 size,
                 glyph: Math.abs(box(glyph).left + box(glyph).width / 2 - (box(dot).left + box(dot).width / 2)),
                 text: Math.abs(box(label).left - box(head).left),
                 type: Math.abs(parseFloat(getComputedStyle(label).fontSize) - parseFloat(getComputedStyle(head).fontSize)),
+                at: head.className,
               });
             } else aligned.push({ size, missing: true });
           }
@@ -237,11 +247,11 @@ function scenarios() {
         if (view === 'console' || view === 'mainframe') {
           for (const row of result.aligned) {
             if (row.missing) failures.push(`status line alignment ${view} @${width}: no call row to compare with`);
-            else if ((view === 'console' && row.glyph > 1) || row.text > 1.5 || row.type > 0.1) failures.push(`status line off the rows ${view} @${width} ${row.size}%: glyph ${row.glyph.toFixed(1)}px, text ${row.text.toFixed(1)}px, type ${row.type.toFixed(2)}px`);
+            else if ((view === 'console' && row.glyph > 1) || row.text > 1.5 || row.type > 0.1) failures.push(`status line off the rows ${view} @${width} ${row.size}%: glyph ${(row.glyph || 0).toFixed(1)}px, text ${row.text.toFixed(1)}px, type ${row.type.toFixed(2)}px [${row.at}]`);
           }
         }
         if (view === 'console') {
-          if (!result.label.startsWith('Audit chat text scaling')) failures.push('Console status follows the in-progress todo');
+          if (result.label.startsWith('Audit chat text scaling')) failures.push('Console status must never show the in-progress todo; it has its own section');
           if (width <= 600 && (!result.metaHidden || !result.fits || !result.ellipsis)) failures.push('mobile Console status must hide counters and ellipsize the task');
           if (width === 1280 && result.metaHidden) failures.push('desktop Console keeps status counters');
         }

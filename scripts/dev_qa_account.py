@@ -597,6 +597,12 @@ def _child_message(desc, status):
         _tool("ts_0_0", "read_file", path="/srv/fuse-qa/static/chat.css", cwd="/srv/fuse-qa", host="qa-box",
               platform="posix", project_root="/srv/fuse-qa", offset=1, limit=80, output="1: .chat {\n", preview=".chat {"),
         _command("ts_0_1", "qa00000000c" + str(abs(hash(desc)) % 10), "rg -n 'min-height' static/", "static/chat.css:88: min-height: 44px;\n"),
+        # Each child keeps its own list; none of it may appear in the main chat's
+        # section or in a sibling's.
+        _tool("ts_0_2", "todo_write", preview="2 todos", output='{"todos": 2}', todos=[
+            {"id": "1", "content": f"Inspect: {desc[:48]}", "status": "completed"},
+            {"id": "2", "content": "Report what changed", "status": "completed" if status == "completed" else "in_progress"},
+        ] + ([{"id": "3", "content": "Re-run the checks", "status": "pending"}] if status != "completed" else [])),
     ]
     content = {
         "completed": f"Finished: {desc}.\n\n- Checked three files\n- No regressions",
@@ -609,7 +615,7 @@ def _child_message(desc, status):
         "error": "Upstream returned 502 after 3 retries" if status == "failed" else "",
         "elapsedMs": 42000, "tools": tools,
         "segments": [{"type": "reasoning", "text": "Inspecting the relevant styles."},
-                     {"type": "tool", "id": "ts_0_0"}, {"type": "tool", "id": "ts_0_1"},
+                     {"type": "tool", "id": "ts_0_0"}, {"type": "tool", "id": "ts_0_1"}, {"type": "tool", "id": "ts_0_2"},
                      *([{"type": "content", "text": content}] if content else [])],
         "usage": {"prompt_tokens": 9000, "completion_tokens": 400, "total_tokens": 9400},
     }

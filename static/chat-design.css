@@ -1504,8 +1504,8 @@ html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty) .chat-d
 }
 html[data-chat-terminal="true"] .chat[data-view="cli"]:not(.is-empty) .chat-thread,
 html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty) .chat-thread { min-height: 0; }
-html[data-chat-terminal="true"] .chat[data-view="cli"]:not(.is-empty) :is(.chat-log, .chat-live-dock),
-html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty) :is(.chat-log, .chat-live-dock) {
+html[data-chat-terminal="true"] .chat[data-view="cli"]:not(.is-empty) :is(.chat-log, .chat-live-dock, .chat-live-todos),
+html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty) :is(.chat-log, .chat-live-dock, .chat-live-todos) {
   padding-bottom: 1rem;
 }
 @keyframes cli-output-reveal {
@@ -3562,7 +3562,6 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-perm-card-grant 
   overflow-wrap: anywhere;
 }
 :root .chat:is([data-view="cli"], [data-view="compact"]) .chat-tool-details .chat-tool-context > span { min-width: 0; }
-:root .chat:is([data-view="cli"], [data-view="compact"]) .chat-tool-details .chat-todo { margin: 0; }
 
 /* Provider logos ship as light monochrome (#E8EBE8) marks. On light palettes
    they would vanish into the surface, so they flip to a dark mark there. */
@@ -3623,23 +3622,6 @@ html[data-chat-scheme="light"] .provider-logo { filter: invert(1) brightness(0.9
 :root .chat[data-view="cli"] .chat-tool-details .chat-tool-out { padding: 0; background: none; border-radius: 0; font-size: calc(0.78rem * var(--chat-text-scale, 1)); }
 :root .chat[data-view="cli"] .chat-tool-details .chat-tool-copy { background: var(--ink); }
 
-/* Console todos: Claude Code's checklist — ☒ done (dim, struck), ☐ open,
-   the active item bright; no status column. First item sits on the └ row. */
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-todo.is-console { margin: 0; padding: 0; list-style: none; }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-todo.is-console .chat-todo-item {
-  display: grid;
-  grid-template-columns: 1.1rem minmax(0, 1fr);
-  align-items: baseline;
-  min-height: var(--console-row);
-  margin: 0;
-  padding: 0;
-  color: var(--mist);
-}
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-todo.is-console .chat-todo-mark { color: var(--mute); font-size: 1em; }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-todo.is-console .chat-todo-status { display: none; }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-todo.is-console .is-completed .chat-todo-copy { color: var(--mute); text-decoration: line-through; }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-todo.is-console .is-in-progress .chat-todo-copy { font-weight: 600; }
-
 /* Snippet diffs (search_replace) carry no real line numbers: marks only. */
 .chat .chat-console-nline.is-bare,
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-nline.is-bare { grid-template-columns: max-content minmax(0, 1fr); }
@@ -3648,10 +3630,6 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-con
    and text stay (status column alignment, assistive tech); running, failed
    and stopped remain visible. */
 .chat .chat-step.is-done > .chat-step-main > .chat-step-head > .chat-step-state { color: transparent; }
-/* Todo marks carry the state; no status column. Items read at tool-output
-   size, not prose size, so the checklist sits flush with its sibling rows. */
-.chat .chat-todo .chat-todo-status { display: none; }
-.chat .chat-todo .chat-todo-item { font-size: calc(0.78rem * var(--chat-text-scale, 1)); }
 
 /* Structured tool bodies: key/value rows, notes, rendered markdown. */
 .chat .chat-kv-list { display: grid; gap: 0.05rem; min-width: 0; }
@@ -4372,3 +4350,49 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-ste
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-notice.is-gold > .chat-step-node::after {
   background: var(--call-fail);
 }
+
+/* —— Todo section, per reading mode. —— */
+/* Terminal: flat mono rows on the log's column. */
+html[data-chat-terminal="true"] .chat[data-view="cli"] :is(.chat-live-todos, .chat-agent-live-todos):not([hidden]) {
+  font: calc(0.78rem * var(--chat-text-scale, 1))/1.5 var(--mono);
+}
+html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-todo-line {
+  font: calc(0.74rem * var(--chat-text-scale, 1))/1.5 var(--mono);
+}
+/* Console: the call rows' grid. Marks sit in the dot column, the text where a
+   call's text starts, in the same type at the reader's text size. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-live-todos:not([hidden]) {
+  width: min(100%, var(--chat-col));
+  margin-top: 0.4rem;
+  padding-inline: var(--console-gutter);
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos):not([hidden]) {
+  font: var(--console-type)/var(--console-leading) var(--mono);
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-agent-live-todos:not([hidden]) { padding-inline: var(--console-gutter); }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-bar { min-height: var(--console-row); padding-left: calc(var(--console-col) + 0.45rem); }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-head {
+  font-size: 1em;
+  letter-spacing: 0;
+  text-transform: none;
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-title { color: var(--mist); font-weight: 600; }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-rows { gap: 0; margin: 0; }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-row {
+  grid-template-columns: var(--console-col) minmax(0, 1fr);
+  column-gap: 0.45rem;
+  min-height: var(--console-row);
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .is-pending .chat-todo-box::before { content: "☐"; }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .is-in-progress .chat-todo-box::before { content: "◼"; }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) :is(.is-completed, .is-cancelled) .chat-todo-box::before { content: "☒"; }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .is-completed .chat-todo-box { color: var(--mute); }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-todo-line {
+  display: grid;
+  grid-template-columns: var(--console-col) minmax(0, 1fr);
+  column-gap: 0.45rem;
+  min-height: var(--console-row);
+  font: var(--console-type)/var(--console-leading) var(--mono);
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-todo-line-mark { text-align: center; }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-todo-line-mark::before { content: "☒"; color: var(--mute); }
