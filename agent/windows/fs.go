@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -94,6 +96,62 @@ func parentOf(p string) string {
 		return ""
 	}
 	return dir
+}
+
+const binaryFileMax = 20 << 20
+const binaryChunkMax = 32768
+
+// readBinary returns an internal, byte-oriented result; text reads stay separate.
+func readBinary(path string, offset, limit int) (map[string]any, error) {
+	if offset < 0 || offset > binaryFileMax || limit < 1 || limit > binaryChunkMax {
+		return nil, fmt.Errorf("invalid binary offset or limit")
+	}
+	path = expandHome(path)
+	before, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !before.Mode().IsRegular() || before.Size() > binaryFileMax {
+		return nil, fmt.Errorf("binary source must be a regular file of at most 20 MiB")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil || !os.SameFile(before, opened) {
+		return nil, fmt.Errorf("binary source changed before read")
+	}
+	h := sha256.New()
+	buf := make([]byte, binaryChunkMax)
+	data := make([]byte, 0, limit)
+	var size int64
+	for {
+		n, readErr := f.Read(buf)
+		if size+int64(n) > binaryFileMax {
+			return nil, fmt.Errorf("binary source exceeds 20 MiB")
+		}
+		h.Write(buf[:n])
+		lo, hi := max(int64(offset), size), min(int64(offset+limit), size+int64(n))
+		if lo < hi {
+			data = append(data, buf[lo-size:hi-size]...)
+		}
+		size += int64(n)
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return nil, readErr
+		}
+	}
+	after, err := f.Stat()
+	current, pathErr := os.Stat(path)
+	if err != nil || pathErr != nil || !os.SameFile(before, current) || before.Size() != size || after.Size() != size || !before.ModTime().Equal(after.ModTime()) {
+		return nil, fmt.Errorf("binary source changed during read")
+	}
+	return map[string]any{"ok": true, "data": base64.StdEncoding.EncodeToString(data), "size": size,
+		"identity": fmt.Sprintf("sha256:%x", h.Sum(nil)), "eof": int64(offset+len(data)) >= size}, nil
 }
 
 func readFileSlice(path string, offset, limit int) (string, error) {

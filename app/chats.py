@@ -1404,6 +1404,20 @@ TOOL_EDIT_DIFF_MAX = 12_000
 TOOL_EDIT_FILES_MAX = 20
 
 
+def tool_image_metadata(image: dict) -> dict:
+    """Display traces never carry pixels; canonical provider history owns them."""
+    out = {k: image[k] for k in ("width", "height", "original_width", "original_height", "frame", "frames")
+           if type(image.get(k)) is int and image[k] >= 0}
+    for key in ("mime", "format"):
+        if isinstance(image.get(key), str):
+            out[key] = image[key][:40]
+    preview = image.get("preview_url")
+    if isinstance(preview, str) and re.fullmatch(r"/chat/runs/[A-Za-z0-9_-]{1,80}/images/[A-Za-z0-9_-]{1,80}", preview):
+        out["preview_url"] = preview
+    out["stored_separately"] = True
+    return out
+
+
 def _parse_tool_traces(raw, *, strict: bool = False, field: str = "tools") -> list[dict]:
     if raw is None:
         return []
@@ -1460,7 +1474,7 @@ def _parse_tool_traces(raw, *, strict: bool = False, field: str = "tools") -> li
             "max_events",
             "bytes", "http_status",
             "subagent_type", "agent_tool_uses", "agent_tokens",
-            "edited_files", "edit_diff", "lines_added", "lines_removed",
+            "edited_files", "edit_diff", "lines_added", "lines_removed", "image",
         }:
             raise ChatValidationError(f"{field}[{index}] contains unsupported fields")
         name = item.get("name")
@@ -1500,6 +1514,9 @@ def _parse_tool_traces(raw, *, strict: bool = False, field: str = "tools") -> li
             raise ChatValidationError(f"{field}[{index}] has an invalid status")
         status = item.get("status") if item.get("status") in ("running", "done", "error", "interrupted") else "done"
         rec = {"name": name, "status": status}
+        image = item.get("image")
+        if name == "read_file" and isinstance(image, dict):
+            rec["image"] = tool_image_metadata(image)
         for key, limit in (
             ("query", 300),
             ("url", 2000),

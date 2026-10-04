@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import codecs
 import contextlib
 import difflib
@@ -2400,15 +2402,145 @@ async def _agent_read_page(user_id, host_id, path: str, offset: int, limit: int)
         attempt = max(1, attempt // 2)
 
 
+def _image_read_error(data):
+    detail = " ".join(str(data.get(key) or "") for key in ("err", "error")).strip()
+    if any(word in detail.lower() for word in ("unknown op", "unsupported op", "not supported")):
+        return WorkspaceError("image read requires read_binary support; update the connector")
+    return WorkspaceError("connector image read failed: " + (detail[:1000] or "no error detail returned"))
+
+
+def _image_arguments(args, magic):
+    if magic and ("offset" in args or "limit" in args):
+        raise WorkspaceError("offset and limit apply only to text files; omit them when reading an image")
+    if not magic and "frame" in args:
+        raise WorkspaceError("frame applies only to supported image files, not text")
+
+
+async def _image_read(user_id, host_id, alias, path, args, *, probe=False):
+    try:
+        async with asyncio.timeout(120):
+            return await _image_read_bounded(user_id, host_id, alias, path, args, probe=probe)
+    except asyncio.TimeoutError:
+        raise WorkspaceError("image read exceeded the time limit") from None
+
+
+async def _image_read_bounded(user_id, host_id, alias, path, args, *, probe=False):
+    from . import file_images
+
+    payload = bytearray()
+    if _is_agent(user_id, host_id):
+        identity = None
+        size = None
+        while True:
+            data = await _agent_call(user_id, host_id, "read_binary", {
+                "path": path, "offset": len(payload), "limit": 32768,
+            }, 30)
+            if not data.get("ok"):
+                raise _image_read_error(data)
+            try:
+                if "out" in data:
+                    data = json.loads(data["out"])
+                if not isinstance(data, dict):
+                    raise ValueError
+                if not data.get("ok"):
+                    raise _image_read_error(data)
+                if not isinstance(data["data"], str) or len(data["data"]) > 43692:
+                    raise ValueError
+                chunk = base64.b64decode(data["data"], validate=True)
+                current_size = data["size"]
+                current_identity = data["identity"]
+                eof = data["eof"]
+                if (type(current_size) is not int or current_size < 0 or not current_identity
+                        or type(eof) is not bool or len(chunk) > 32768):
+                    raise ValueError
+            except (KeyError, TypeError, ValueError, binascii.Error):
+                raise WorkspaceError("invalid connector binary response") from None
+            if identity is None:
+                _image_arguments(args, file_images.image_magic(chunk))
+                if probe and not file_images.image_magic(chunk):
+                    return None
+                identity, size = current_identity, current_size
+                if size > file_images.MAX_SOURCE:
+                    raise WorkspaceError("image source exceeds 20 MiB")
+            elif identity != current_identity or size != current_size:
+                raise WorkspaceError("image changed while it was being read; retry read_file")
+            payload.extend(chunk)
+            if len(payload) > file_images.MAX_SOURCE or len(payload) > size:
+                raise WorkspaceError("invalid connector image size")
+            if eof:
+                if len(payload) != size:
+                    raise WorkspaceError("incomplete connector image read")
+                break
+            if not chunk or len(payload) == size:
+                raise WorkspaceError("incomplete connector image read")
+    else:
+        lease = await _sftp(user_id, host_id)
+        async with lease as sftp:
+            try:
+                path = await _sftp_expand_home(sftp, path, int(host_id))
+                async with sftp.open(path, "rb") as handle:
+                    before = await handle.stat()
+                    if not stat.S_ISREG(getattr(before, "permissions", 0) or 0):
+                        raise WorkspaceError("image source must be a regular file")
+                    chunk = await handle.read(32768)
+                    _image_arguments(args, file_images.image_magic(chunk))
+                    if probe and not file_images.image_magic(chunk):
+                        return None
+                    if (getattr(before, "size", 0) or 0) > file_images.MAX_SOURCE:
+                        raise WorkspaceError("image source exceeds 20 MiB")
+                    while chunk:
+                        payload.extend(chunk)
+                        if len(payload) > file_images.MAX_SOURCE:
+                            raise WorkspaceError("image source exceeds 20 MiB")
+                        chunk = await handle.read(min(32768, file_images.MAX_SOURCE + 1 - len(payload)))
+                    after = await handle.stat()
+                    if _content_version(before) != _content_version(after) or len(payload) != before.size:
+                        raise WorkspaceError("image changed while it was being read; retry read_file")
+            except WorkspaceError:
+                raise
+            except Exception as exc:
+                if _sftp_transport_error(exc):
+                    raise
+                raise _sftp_error(exc, path, "read") from exc
+    try:
+        image = await file_images.decode_image(bytes(payload), args.get("frame", 0))
+    except asyncio.TimeoutError:
+        raise WorkspaceError("image decoding exceeded the time limit") from None
+    except ValueError as exc:
+        raise WorkspaceError(str(exc)) from None
+    body = (f"Image: {image['format']}, {image['original_width']}×{image['original_height']}; "
+            f"displayed {image['width']}×{image['height']}. "
+            f"Frame {image['frame']} (zero-based) of {image['frames']}; only this frame is shown.")
+    return _label(alias, body), {"name": "read_file", "status": "done", "host": alias,
+                                 "path": path, "preview": body, "image": image}
+
+
 async def _read(user_id, host_id, alias, args, root, *, windows: bool = False, max_chars: int | None = None, raw: bool = False, run_id: str = ""):
     path = _confine(str(args.get("path") or ""), root, windows=windows)
     ledger_path = path
+    from . import file_images
+
+    if not raw and (posixpath.splitext(path)[1].lower() in file_images.EXTENSIONS or "frame" in args):
+        result = await _image_read(user_id, host_id, alias, path, args, probe=True)
+        if result is not None:
+            return result
     offset = _int_arg(args, "offset", 1, 1, 10_000_000)
     limit = _int_arg(args, "limit", _READ_DEFAULT_LIMIT, 1, _READ_MAX_LINES)
     chars = _READ_MAX_CHARS if max_chars is None else max_chars
     if _is_agent(user_id, host_id):
         limit = min(limit, _READ_MAX_LINES)
-        source, got_limit = await _agent_read_page(user_id, host_id, path, offset, limit)
+        try:
+            source, got_limit = await _agent_read_page(user_id, host_id, path, offset, limit)
+        except WorkspaceError as exc:
+            if not raw and any(word in exc.detail.lower() for word in ("binary", "nul", "utf-8", "utf8")):
+                return await _image_read(user_id, host_id, alias, path, args)
+            raise
+        if not raw and ("\x00" in source or file_images.image_magic(source.encode("latin-1", "replace"))):
+            return await _image_read(user_id, host_id, alias, path, args)
+        if not raw and source.startswith(("\ufffd\ufffd\ufffd", r"\xff\xd8\xff", r"\u00ff\u00d8\u00ff")):
+            result = await _image_read(user_id, host_id, alias, path, args, probe=True)
+            if result is not None:
+                return result
         ledger_note(run_id, host_id, _canonical_path(host_id, ledger_path, windows=windows), None, windows=windows)
         if raw:
             body = source[:chars]
@@ -2475,8 +2607,10 @@ async def _read(user_id, host_id, alias, args, root, *, windows: bool = False, m
             if listable:
                 raise WorkspaceError("path is a directory; use list_dir to list it") from exc
             raise _sftp_error(exc, path, "read") from exc
-    ledger_note(run_id, host_id, _canonical_path(host_id, ledger_path, windows=windows), version, windows=windows)
+    if not raw and isinstance(data, bytes) and (file_images.image_magic(data) or b"\x00" in data):
+        return await _image_read(user_id, host_id, alias, path, args)
     text = _decode_text(data) if isinstance(data, bytes) else str(data)
+    ledger_note(run_id, host_id, _canonical_path(host_id, ledger_path, windows=windows), version, windows=windows)
     lines = text.split("\n")
     if lines and lines[-1] == "":
         lines.pop()

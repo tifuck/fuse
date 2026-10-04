@@ -60,12 +60,16 @@ tests/test_lifecycle: tests/test_lifecycle.c $(SRC) src/reconnect.h
 tests/test_output_queue: tests/test_output_queue.c $(SRC) src/reconnect.h
 	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ tests/test_output_queue.c src/reconnect.c third_party/cJSON.c $(LIBS)
 
-test: tests/test_expand_home tests/test_reconnect tests/test_files tests/test_lifecycle tests/test_output_queue
+tests/test_binary: tests/test_binary.c $(SRC) src/reconnect.h
+	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ tests/test_binary.c src/reconnect.c third_party/cJSON.c $(LIBS)
+
+test: tests/test_expand_home tests/test_reconnect tests/test_files tests/test_lifecycle tests/test_output_queue tests/test_binary
 	tests/test_expand_home
 	tests/test_reconnect
 	tests/test_files
 	tests/test_lifecycle
 	tests/test_output_queue
+	tests/test_binary
 
 clean:
 	rm -f dist/fuse-agent-* tests/test_expand_home tests/test_reconnect tests/test_files

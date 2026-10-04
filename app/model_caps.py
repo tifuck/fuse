@@ -2,8 +2,8 @@
 
 True / False come from the provider's own catalog when it reports them
 (OpenRouter, Codex, Kimi, llama.cpp /props), else from the rules below.
-None means unknown: images are sent as before. Only False strips them, and
-only from the outgoing copy, so saved chats keep every image and a later
+None means unknown: images are sent within the request budget. False strips
+them only from the outgoing copy, so saved chats keep every image and a later
 switch back to an image model sees them again.
 """
 from __future__ import annotations
@@ -11,6 +11,9 @@ from __future__ import annotations
 import re
 
 OMITTED = "[Image omitted: this model cannot view images. It stays in the chat for image-capable models.]"
+BUDGET_OMITTED = "[Image omitted from this request to fit the image budget. Pixels remain in saved history; re-read the file if visual inspection is needed now.]"
+MAX_REQUEST_IMAGES = 16
+MAX_REQUEST_IMAGE_CHARS = 4 * ((20 * 1024 * 1024 + 2) // 3)
 
 _seen: dict[tuple[str, str], bool] = {}
 
@@ -73,23 +76,41 @@ def _image_part(part) -> bool:
 
 def prepare(messages, type_id: str, model: str) -> tuple[list, int]:
     """Outgoing copy: Responses `input_image` becomes `image_url` (what every
-    adapter reads); images are replaced by a note for text-only models."""
+    adapter reads); text-only or over-budget images become explicit notes."""
     if not isinstance(messages, list):
         return messages, 0
     strip = image_input(type_id, model) is False
+    # Newest evidence wins; never rewrite the canonical saved transcript.
+    allowed = set()
+    count = size = 0
+    for mi in range(len(messages) - 1, -1, -1):
+        content = messages[mi].get("content") if isinstance(messages[mi], dict) else None
+        if not isinstance(content, list):
+            continue
+        for pi in range(len(content) - 1, -1, -1):
+            part = content[pi]
+            if not _image_part(part):
+                continue
+            image = part.get("image_url")
+            url = image.get("url") if isinstance(image, dict) else image
+            chars = len(url) if isinstance(url, str) and url.startswith("data:") else 0
+            if count < MAX_REQUEST_IMAGES and size + chars <= MAX_REQUEST_IMAGE_CHARS:
+                allowed.add((mi, pi))
+                count += 1
+                size += chars
     out, omitted = [], 0
-    for msg in messages:
+    for mi, msg in enumerate(messages):
         content = msg.get("content") if isinstance(msg, dict) else None
         if not isinstance(content, list) or not any(_image_part(p) for p in content):
             out.append(msg)
             continue
         parts = []
-        for part in content:
+        for pi, part in enumerate(content):
             if not _image_part(part):
                 parts.append(part)
-            elif strip:
+            elif strip or (mi, pi) not in allowed:
                 omitted += 1
-                parts.append({"type": "text", "text": OMITTED})
+                parts.append({"type": "text", "text": OMITTED if strip else BUDGET_OMITTED})
             elif part["type"] == "input_image":
                 image = part.get("image_url")
                 image = image if isinstance(image, dict) else {"url": image}

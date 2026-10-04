@@ -223,6 +223,23 @@ async def chat_turn(request: Request, thread_id: str):
                          "run": _chat_public_run(result["run"])}, headers={"Cache-Control": "no-store"})
 
 
+@router.get("/chat/runs/{run_id}/images/{event_id}")
+async def chat_run_image(request: Request, run_id: str, event_id: str):
+    user, err = _chat_auth(request)
+    if err:
+        return err
+    image = await asyncio.to_thread(chat_store.read_file_image, user["id"], run_id, event_id)
+    if image is None:
+        raise HTTPException(404, "Image unavailable")
+    mime, pixels = image
+    return Response(pixels, media_type=mime, headers={
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; sandbox",
+        "Cross-Origin-Resource-Policy": "same-origin",
+    })
+
+
 @router.get("/chat/runs/{run_id}")
 async def chat_run_get(request: Request, run_id: str):
     user, err = _chat_auth(request)

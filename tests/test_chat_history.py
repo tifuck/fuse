@@ -44,6 +44,31 @@ class HistoryTest(unittest.TestCase):
         store.finish_run(run["id"], {"content": content, "reasoning": ""}, "completed")
         return rows
 
+    def test_file_image_survives_save_reload_and_model_switch(self):
+        from app import chat_runtime, model_caps
+        from tests.test_read_file_images_runtime import job, pixels
+
+        run = self.start("inspect screenshot")
+        rows = [*run["request"]["messages"], *chat_runtime._tool_messages([job()]),
+                {"role": "assistant", "content": "read complete"}]
+        # Reading on a text-only model must not save that route's omission.
+        outgoing, omitted = model_caps.prepare(rows, "zai", "glm-5.3")
+        self.assertEqual(omitted, 1)
+        self.assertFalse(pixels(outgoing))
+        store.save_turn_progress(run["id"], rows)
+        saved = json.loads(db.fetchone("SELECT provider_messages FROM chat_runs WHERE id=?", (run["id"],))[0])
+        self.assertEqual(pixels(saved), pixels(rows))
+        preview = store.read_file_image(1, run["id"], "event-0")
+        self.assertEqual(preview, ("image/png", b"\x89PNG\r\n\x1a\n"))
+        self.assertIsNone(store.read_file_image(2, run["id"], "event-0"))
+        self.assertIsNone(store.read_file_image(1, run["id"], "event-missing"))
+        store.finish_run(run["id"], {"content": "read complete", "reasoning": "",
+            "tools": [{"id": "event-0", "name": "read_file", "status": "done", **job().trace}]}, "completed")
+        replay = self.start("inspect again")["request"]["messages"]
+        vision, omitted = model_caps.prepare(replay, "claude", "claude-sonnet-5")
+        self.assertEqual(omitted, 0)
+        self.assertEqual(pixels(vision), pixels(rows))
+
     def test_tool_history_survives_multiple_turns_and_meter_reload(self):
         for i in range(3):
             run = self.start(f"question {i}")

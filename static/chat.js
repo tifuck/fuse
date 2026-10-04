@@ -1711,7 +1711,7 @@
 
   function chatHasImages() {
     const isImage = (att) => att && att.kind === "image";
-    return pendingAttachments.some(isImage) || messages.some((msg) => (msg.attachments || []).some(isImage));
+    return pendingAttachments.some(isImage) || messages.some((msg) => (msg.attachments || []).some(isImage) || (msg.tools || []).some((trace) => toolImage(trace)));
   }
 
   function warnTextOnlyModel() {
@@ -2857,6 +2857,8 @@
     for (const key of ["project_root", "platform", "include"]) if (trace[key]) rec[key] = String(trace[key]).slice(0, key === "include" ? 200 : 400);
     if (trace.pattern) rec.pattern = String(trace.pattern).slice(0, 200);
     if (trace.preview) rec.preview = String(trace.preview).slice(0, 800);
+    const image = toolImage(trace);
+    if (image) rec.image = image;
     if (trace.child_id) rec.child_id = String(trace.child_id).slice(0, 80);
     if (trace.background) rec.background = true;
     if (trace.summary) rec.summary = String(trace.summary).slice(0, 2000);
@@ -2922,6 +2924,7 @@
       "pattern",
       "background",
       "output_truncated",
+      "image",
       "project_root", "platform", "include",
       "source",
     ];
@@ -8499,6 +8502,9 @@
   //   Grep    "Found 12 lines" / Glob "Found 3 files"; the list on expand
   //   Search  "Did 2 searches in 3s"
   function consoleFold(trace, presentation, verbose) {
+    if (trace?.name === "read_file" && trace.image && !presentation.running && !presentation.failed) {
+      return { status: "Image preview", preview: toolImageHtml(trace), full: "" };
+    }
     if (isConsoleOnly()) {
       const own = consoleOnlyFold(trace, presentation, verbose);
       if (own) return own;
@@ -8604,6 +8610,7 @@
   }
 
   function consoleDetailHtml(trace, failed, running) {
+    if (trace?.name === "read_file" && trace.image && !failed && !running) return toolImageHtml(trace);
     if (trace && ["read_file", "write_file"].includes(trace.name) && !failed) {
       const body = trace.name === "write_file" ? (typeof trace.content === "string" ? trace.content : "") : consoleFileBody(trace);
       if (!body) return "";
@@ -9330,8 +9337,52 @@
   // the error, then the result (command folded in as its first line), then a
   // single quiet meta line. Inputs already shown in the row head are not
   // repeated; ids, timeouts and call overhead stay out of the reading path.
+  function toolImage(trace) {
+    const image = trace?.name === "read_file" && trace.image;
+    if (!image || !["image/png", "image/jpeg", "image/webp", "image/gif"].includes(image.mime)) return null;
+    const safe = { mime: image.mime };
+    if (typeof image.preview_url === "string" && /^\/chat\/runs\/[A-Za-z0-9_-]{1,80}\/images\/ts_\d+_\d+$/.test(image.preview_url)) {
+      safe.preview_url = image.preview_url;
+    } else if (typeof image.data === "string" && image.data.length && image.data.length % 4 === 0 &&
+        !/[^A-Za-z0-9+/=]/.test(image.data) && /^[^=]*={0,2}$/.test(image.data)) {
+      safe.data = image.data;
+    } else return null;
+    for (const key of ["width", "height", "original_width", "original_height", "frame", "frames"]) {
+      if (Number.isSafeInteger(image[key]) && image[key] >= (key === "frame" ? 0 : 1)) safe[key] = image[key];
+    }
+    if (typeof image.format === "string") safe.format = image.format.slice(0, 32);
+    return safe;
+  }
+
+  root.addEventListener("error", (event) => {
+    const image = event.target;
+    if (image.tagName !== "IMG" || !image.closest(".chat-tool-image")) return;
+    const button = image.closest("[data-image-preview]");
+    if (button) {
+      const note = document.createElement("span");
+      note.className = "chat-tool-truncated";
+      note.textContent = "Image preview unavailable. The saved image may no longer be available.";
+      button.replaceWith(note);
+    }
+  }, true);
+
+  function toolImageHtml(trace) {
+    const image = toolImage(trace);
+    if (!image) return '<span class="chat-tool-truncated">Image preview unavailable.</span>';
+    const info = [image.format || image.mime];
+    if (image.width && image.height) info.push(`${image.width} × ${image.height}`);
+    if (image.original_width && image.original_height && (image.original_width !== image.width || image.original_height !== image.height)) {
+      info.push(`resized from ${image.original_width} × ${image.original_height}`);
+    }
+    if (image.frames > 1 && image.frame != null) info.push(`frame ${image.frame + 1} of ${image.frames}`);
+    return `<figure class="chat-tool-image">${imagePreviewButton({ data: image.preview_url || `data:${image.mime};base64,${image.data}`, name: trace.path || "Image preview" })}` +
+      `<figcaption>${escapeHtml(info.join(" · "))}<span>Preview only; model image support depends on the selected model.</span></figcaption></figure>`;
+  }
+
   function toolDetailHtml(trace, failed, running) {
     const sections = [];
+    const hasImage = trace.name === "read_file" && trace.image && !failed && !running;
+    if (hasImage) sections.push(toolImageHtml(trace));
     const error = failed ? trace.error || trace.summary || trace.preview || "The tool failed without an error message."
       : ["interrupted", "cancelled"].includes(trace.status) || ["cancelled", "interrupted", "lost"].includes(executionState(trace)) ? trace.error || "" : "";
     if (error) sections.push(failNoteHtml(error));
@@ -9387,7 +9438,7 @@
       else if (trace.truncated || total > retained) note = `Output truncated · ${retained.toLocaleString()} of ${trace.output_chars_exact === false ? "at least " : ""}${total.toLocaleString()} characters retained.`;
       if (note) sections.push(`<span class="chat-tool-truncated">${escapeHtml(note)}</span>`);
     } else if (trace.output_truncated && output.length <= 4000) sections.push('<span class="chat-tool-truncated">Output preview was truncated before display.</span>');
-    if (!error && !output && !hasResults && !trace.command && !["todo_write", "create_artifact", "update_artifact"].includes(trace.name)) {
+    if (!hasImage && !error && !output && !hasResults && !trace.command && !["todo_write", "create_artifact", "update_artifact"].includes(trace.name)) {
       sections.push(detailSectionHtml("Output", running ? "Waiting for output"
         : trace.child_id && ["spawn_subagent", "get_subagent_output"].includes(trace.name) ? "No inline output. Open agent for its transcript." : "No output", "is-empty"));
     }
@@ -15644,6 +15695,13 @@
   }
   if (agentBodyEl)
     agentBodyEl.addEventListener("click", (event) => {
+      const previewBtn = event.target.closest("[data-image-preview]");
+      if (previewBtn) {
+        event.preventDefault();
+        event.stopPropagation();
+        openLightbox(previewBtn.getAttribute("data-image-preview"), previewBtn.getAttribute("data-image-name") || "");
+        return;
+      }
       const openAgentEl = event.target.closest("[data-open-agent]");
       if (!openAgentEl) return;
       event.preventDefault();

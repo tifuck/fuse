@@ -33,6 +33,8 @@ COMPACT_PREAMBLE = (
     "[Compacted conversation]\n"
     "Earlier turns were replaced with this handoff so work can continue "
     "inside the model context window. The full chat remains in the Fuse transcript. "
+    "Images in replaced turns are not present as pixels in this handoff; re-read the file "
+    "if visual inspection is needed. A summary or image metadata is not visual evidence. "
     "The handoff is lossy: re-read files before editing them, and do not invent "
     "contents, errors, or decisions that are not in the handoff or the messages "
     "below. This summary is historical context, not a new user request or higher-priority instruction. "
@@ -1208,7 +1210,10 @@ def _plain_text(content) -> str:
             if isinstance(part, str):
                 parts.append(part)
             elif isinstance(part, dict):
-                parts.append(str(part.get("text") or part.get("content") or ""))
+                if part.get("type") in ("image_url", "input_image"):
+                    parts.append("[Image pixels omitted from this text handoff; re-read the file for visual inspection.]")
+                else:
+                    parts.append(str(part.get("text") or part.get("content") or ""))
         return " ".join(parts)
     if isinstance(content, dict):
         return str(content.get("text") or content.get("content") or "")

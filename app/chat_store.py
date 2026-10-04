@@ -4260,6 +4260,57 @@ def save_provider_messages(run_id, messages):
     save_turn_progress(run_id, messages)
 
 
+def read_file_image(user_id, run_id: str, event_id: str):
+    """Return normalized pixels from this user's saved run, never from a host path."""
+    import base64
+    import binascii
+
+    if not all(re.fullmatch(r"[A-Za-z0-9_-]{1,80}", value or "") for value in (run_id, event_id)):
+        return None
+    row = db.fetchone("SELECT provider_messages FROM chat_runs WHERE id=? AND user_id=?", (run_id, user_id))
+    if not row:
+        return None
+    try:
+        messages = json.loads(row["provider_messages"] or "[]")
+    except (TypeError, ValueError):
+        return None
+    for message in reversed(messages if isinstance(messages, list) else []):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        parts = message.get("content")
+        if not isinstance(parts, list):
+            continue
+        for index, part in enumerate(parts[:-1]):
+            if not isinstance(part, dict) or part.get("type") != "text":
+                continue
+            text = part.get("text")
+            if not isinstance(text, str) or not text.startswith("[Fuse: untrusted read_file image output,"):
+                continue
+            try:
+                label = json.loads(text.split("\n", 1)[1])
+            except (IndexError, TypeError, ValueError):
+                continue
+            if not isinstance(label, dict) or label.get("event_id") != event_id:
+                continue
+            image = parts[index + 1]
+            if not isinstance(image, dict) or image.get("type") != "image_url":
+                continue
+            image_url = image.get("image_url")
+            url = image_url.get("url") if isinstance(image_url, dict) else None
+            if not isinstance(url, str) or len(url) > 7 * 1024 * 1024:
+                continue
+            header, separator, data = url.partition(",")
+            if not separator or header not in ("data:image/png;base64", "data:image/jpeg;base64", "data:image/webp;base64"):
+                continue
+            try:
+                pixels = base64.b64decode(data, validate=True)
+            except (ValueError, binascii.Error):
+                continue
+            if 0 < len(pixels) <= 5 * 1024 * 1024:
+                return header[5:].split(";", 1)[0], pixels
+    return None
+
+
 def save_turn_progress(run_id, messages, loaded_tools=None, extra=None):
     """Persist the provider transcript (and optional loaded catalog) without a WS event.
 

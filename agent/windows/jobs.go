@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -155,6 +156,22 @@ func jsonInt(m map[string]any, k string, fallback int) int {
 	}
 }
 
+func binaryInt(m map[string]any, key string, fallback, low, high int) (int, bool) {
+	v, exists := m[key]
+	if !exists {
+		return fallback, true
+	}
+	switch n := v.(type) {
+	case int:
+		return n, n >= low && n <= high
+	case float64:
+		if n >= float64(low) && n <= float64(high) && n == float64(int(n)) {
+			return int(n), true
+		}
+	}
+	return 0, false
+}
+
 func jsonFlag(m map[string]any, k string) bool {
 	b, _ := m[k].(bool)
 	return b
@@ -272,6 +289,24 @@ func (h *jobHub) run(s *session, msg map[string]any) {
 			}
 		}
 		s.sendResFull(id, code == 0, code, out, errb, errText, timedOut)
+	case "read_binary":
+		offset, offsetOK := binaryInt(msg, "offset", 0, 0, binaryFileMax)
+		limit, limitOK := binaryInt(msg, "limit", binaryChunkMax, 1, binaryChunkMax)
+		if !offsetOK || !limitOK {
+			s.sendRes(id, false, 1, "", "", "invalid binary offset or limit")
+			return
+		}
+		result, err := readBinary(jsonStr(msg, "path", ""), offset, limit)
+		if err != nil {
+			s.sendRes(id, false, 1, "", err.Error(), "read_binary failed")
+			return
+		}
+		out, err := json.Marshal(result)
+		if err != nil {
+			s.sendRes(id, false, 1, "", err.Error(), "read_binary failed")
+			return
+		}
+		s.sendRes(id, true, 0, string(out), "", "")
 	case "read":
 		out, err := readFileSlice(jsonStr(msg, "path", ""), jsonInt(msg, "offset", 1), jsonInt(msg, "limit", 200))
 		if err != nil {

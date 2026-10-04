@@ -1040,6 +1040,71 @@ static int run_exec(const char *cwd, const char *cmd, int timeout_ms, char *out,
 
 static int expand_home(const char *path, char *out, size_t cap);
 
+#define BINARY_FILE_MAX (20 * 1024 * 1024)
+#define BINARY_CHUNK_MAX 32768
+
+static char *read_binary(const char *path, int offset, int limit) {
+    if (offset < 0 || offset > BINARY_FILE_MAX || limit < 1 || limit > BINARY_CHUNK_MAX) {
+        errno = EINVAL;
+        return NULL;
+    }
+    char expanded[PATH_MAX];
+    if (expand_home(path, expanded, sizeof(expanded)) != 0) return NULL;
+    int fd = open(expanded, O_RDONLY | O_NONBLOCK);
+    if (fd < 0) return NULL;
+    struct stat before, after, current;
+    if (fstat(fd, &before) != 0 || !S_ISREG(before.st_mode)) {
+        close(fd); errno = EINVAL; return NULL;
+    }
+    if (before.st_size > BINARY_FILE_MAX) {
+        close(fd); errno = EFBIG; return NULL;
+    }
+    unsigned char buf[BINARY_CHUNK_MAX], data[BINARY_CHUNK_MAX], digest[EVP_MAX_MD_SIZE];
+    char encoded[4 * ((BINARY_CHUNK_MAX + 2) / 3) + 1], identity[72];
+    int size = 0, used = 0, failure = 0;
+    unsigned int digest_len = 0;
+    EVP_MD_CTX *hash = EVP_MD_CTX_new();
+    if (!hash || EVP_DigestInit_ex(hash, EVP_sha256(), NULL) != 1) failure = EIO;
+    while (!failure) {
+        ssize_t n = read(fd, buf, sizeof(buf));
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            failure = errno; break;
+        }
+        if (!n) break;
+        if (size + n > BINARY_FILE_MAX) { failure = EFBIG; break; }
+        if (EVP_DigestUpdate(hash, buf, (size_t)n) != 1) { failure = EIO; break; }
+        int lo = offset > size ? offset : size;
+        int hi = offset + limit < size + n ? offset + limit : size + (int)n;
+        if (lo < hi) {
+            memcpy(data + used, buf + lo - size, (size_t)(hi - lo));
+            used += hi - lo;
+        }
+        size += (int)n;
+    }
+    if (!failure && (fstat(fd, &after) != 0 || stat(expanded, &current) != 0 ||
+        before.st_dev != current.st_dev || before.st_ino != current.st_ino ||
+        before.st_size != size || after.st_size != size ||
+        before.st_mtim.tv_sec != after.st_mtim.tv_sec || before.st_mtim.tv_nsec != after.st_mtim.tv_nsec ||
+        before.st_ctim.tv_sec != after.st_ctim.tv_sec || before.st_ctim.tv_nsec != after.st_ctim.tv_nsec)) failure = ESTALE;
+    close(fd);
+    if (!failure && EVP_DigestFinal_ex(hash, digest, &digest_len) != 1) failure = EIO;
+    EVP_MD_CTX_free(hash);
+    if (failure) { errno = failure; return NULL; }
+    memcpy(identity, "sha256:", 7);
+    for (unsigned int i = 0; i < digest_len; i++) snprintf(identity + 7 + i * 2, 3, "%02x", digest[i]);
+    EVP_EncodeBlock((unsigned char *)encoded, data, used);
+    cJSON *result = cJSON_CreateObject();
+    cJSON_AddBoolToObject(result, "ok", 1);
+    cJSON_AddStringToObject(result, "data", encoded);
+    cJSON_AddNumberToObject(result, "size", size);
+    cJSON_AddStringToObject(result, "identity", identity);
+    cJSON_AddBoolToObject(result, "eof", offset + used >= size);
+    char *json = cJSON_PrintUnformatted(result);
+    cJSON_Delete(result);
+    return json;
+}
+
 static int read_file_slice(const char *path, int offset, int limit, char *out, size_t cap) {
     char expanded[PATH_MAX];
     if (expand_home(path, expanded, sizeof(expanded)) != 0) return -1;
@@ -1678,6 +1743,22 @@ static void handle_job_impl(struct tls *t, cJSON *msg) {
             }
             if (timed_out) emsg = "timed out";
             send_res_tmo(t, id, code == 0, code, out, err, emsg, timed_out);
+        }
+        return;
+    }
+    if (strcmp(op, "read_binary") == 0) {
+        cJSON *off = cJSON_GetObjectItemCaseSensitive(msg, "offset");
+        cJSON *lim = cJSON_GetObjectItemCaseSensitive(msg, "limit");
+        if ((off && (!cJSON_IsNumber(off) || !(off->valuedouble >= 0 && off->valuedouble <= BINARY_FILE_MAX) || off->valuedouble != off->valueint)) ||
+            (lim && (!cJSON_IsNumber(lim) || !(lim->valuedouble >= 1 && lim->valuedouble <= BINARY_CHUNK_MAX) || lim->valuedouble != lim->valueint))) {
+            send_res(t, id, 0, 1, "", "", "invalid binary offset or limit");
+            return;
+        }
+        char *js = read_binary(json_cstr(msg, "path", ""), off ? off->valueint : 0, lim ? lim->valueint : BINARY_CHUNK_MAX);
+        if (!js) send_res(t, id, 0, 1, "", strerror(errno), "read_binary failed");
+        else {
+            send_res(t, id, 1, 0, js, "", "");
+            free(js);
         }
         return;
     }
