@@ -6148,7 +6148,7 @@ body.is-chat.is-keyboard .chat-dock {
 }
 
 @media (max-width: 800px) {
-  .chat { --chat-bar-h: 4.35rem; }
+  .chat { --chat-bar-h: 3.6rem; }
   .chat-bar {
     padding: 0 0.55rem;
     flex-wrap: wrap;
