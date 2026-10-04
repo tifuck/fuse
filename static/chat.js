@@ -4469,25 +4469,20 @@
   function syncRunSpinners() {
     const chatBusy = anyRunningOfKind("chat");
     const projectBusy = anyRunningOfKind("project");
-    const current = threadById(currentId);
-    const currentBusy = streaming;
     const headingBusy = historyTab === "projects" ? projectBusy : chatBusy;
     setSpinVisible(root.querySelector("[data-run-spin='heading']"), headingBusy, "heading");
     setSpinVisible(root.querySelector("[data-run-spin='chats']"), chatBusy, "chats");
     setSpinVisible(root.querySelector("[data-run-spin='projects']"), projectBusy, "projects");
-    setSpinVisible(root.querySelector("[data-run-spin='title']"), currentBusy, "title");
     root.querySelectorAll("[data-history-tab]").forEach((btn) => {
       const tab = btn.getAttribute("data-history-tab");
       const busy = tab === "projects" ? projectBusy : chatBusy;
       btn.classList.toggle("is-busy", busy);
       btn.setAttribute("aria-busy", busy ? "true" : "false");
     });
-    const titleWrap = titleEl && titleEl.closest(".chat-bar-title");
-    if (titleWrap) titleWrap.setAttribute("aria-busy", currentBusy ? "true" : "false");
     root.querySelectorAll("[data-run-spin]").forEach((el) => {
       if (!el.hidden) fillSpinEl(el, el.getAttribute("data-run-spin") || "run", false);
     });
-    const any = chatBusy || projectBusy || currentBusy;
+    const any = chatBusy || projectBusy;
     if (any) {
       if (!runSpinOrigin) runSpinOrigin = Date.now();
       startRunSpinClock();

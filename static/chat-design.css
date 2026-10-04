@@ -941,11 +941,11 @@ body.is-chat :is(.chat-history-head, .chat-agents-head) {
 }
 @media (max-width: 800px) {
   body.is-chat .chat { --chat-bar-h: 4.35rem; --chat-bar-min-h: 4.35rem; }
-  body.is-chat .chat.is-untitled { --chat-bar-h: 2.8rem; --chat-bar-min-h: 2.8rem; }
+  body.is-chat .chat.is-untitled { --chat-bar-h: 2.75rem; --chat-bar-min-h: 2.75rem; }
   body.is-chat .chat .chat-bar {
-    padding-top: 0.15rem;
-    padding-bottom: 0.15rem;
-    row-gap: 0.1rem;
+    padding-top: 0;
+    padding-bottom: 0;
+    row-gap: 0;
   }
   body.is-chat .chat { --chat-bar-btn: 2.75rem; }
   body.is-chat .chat .chat-history-collapse,
@@ -1867,10 +1867,11 @@ html[data-chat-console="true"] body.is-chat:has(.chat[data-view="console"]) .cha
 }
 
 @media (max-width: 800px) {
-  .chat { --chat-bar-h: 5.25rem; --chat-bar-min-h: 5.25rem; }
-  /* Untitled chats drop the second bar row, so give back the single-row
-     height; the bar, thread offset and top fade all key off this variable. */
-  .chat.is-untitled { --chat-bar-h: 3.2rem; --chat-bar-min-h: 3.2rem; }
+  /* Two rows (icons, then the title) with no spare band above or below.
+     Untitled chats drop the title row. The bar, thread offset and top fade
+     all key off this variable; fitChatBar replaces it with the measured height. */
+  .chat { --chat-bar-h: 4.35rem; --chat-bar-min-h: 4.35rem; }
+  .chat.is-untitled { --chat-bar-h: 2.75rem; --chat-bar-min-h: 2.75rem; }
   .chat.is-untitled .chat-bar {
     flex-wrap: nowrap;
     align-items: center;
@@ -1880,7 +1881,12 @@ html[data-chat-console="true"] body.is-chat:has(.chat[data-view="console"]) .cha
     order: 0;
     max-width: min(9.5rem, 34%);
   }
-  .chat .chat-bar { gap: 0.25rem; padding-inline: 0.5rem; }
+  .chat .chat-bar { gap: 0 0.25rem; padding-inline: 0.5rem; align-content: center; }
+  .chat:not(.is-untitled) .chat-bar-title {
+    flex: 1 1 auto;
+    height: auto;
+    line-height: 1.15;
+  }
   /* Controls retain their touch targets; extra rows grow the bar. The runtime
      measures its height for transcript clearance rather than guessing rows. */
   .chat[data-view] .chat-bar { height: auto; min-height: var(--chat-bar-min-h); }

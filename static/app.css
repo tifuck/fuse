@@ -6150,10 +6150,10 @@ body.is-chat.is-keyboard .chat-dock {
 @media (max-width: 800px) {
   .chat { --chat-bar-h: 4.35rem; }
   .chat-bar {
-    padding: 0.14rem 0.55rem 0.24rem;
+    padding: 0 0.55rem;
     flex-wrap: wrap;
     align-content: center;
-    row-gap: 0.12rem;
+    row-gap: 0;
     container-type: normal;
   }
   .chat-bar-actions {
@@ -7467,8 +7467,7 @@ label.check.hosts-check,
 .chat-run-spin .cas-still {
   border-width: 1.15px;
 }
-.chat-history-item.is-on .chat-run-spin,
-.chat-bar-title .chat-run-spin {
+.chat-history-item.is-on .chat-run-spin {
   color: color-mix(in srgb, var(--brass) 70%, var(--mist));
   opacity: 1;
 }
