@@ -46,10 +46,10 @@ def _flatten(content, images_out: list) -> str:
         elif part.get("type") == "image_url":
             iu = part.get("image_url")
             url = iu.get("url", "") if isinstance(iu, dict) else (iu or "")
-            if url.startswith("data:") and "," in url:
+            if url.startswith("data:") and ";base64," in url:
                 images_out.append(url.split(",", 1)[1])
             else:
-                raise UnsupportedAttachment("Ollama Cloud supports only data-URI images")
+                raise UnsupportedAttachment("Ollama Cloud supports only base64 data-URI images")
         elif part.get("type") in ("file", "input_file"):
             raise UnsupportedAttachment("Ollama Cloud does not support file attachments")
     return "\n".join(parts)
@@ -81,10 +81,9 @@ def to_ollama(messages: list) -> list:
             item = {"role": "tool", "content": content}
             if msg.get("tool_call_id"):
                 item["tool_call_id"] = str(msg["tool_call_id"])
+        images = [*(msg.get("images") or []), *images]
         if images:
             item["images"] = images
-        elif msg.get("images"):
-            item["images"] = msg["images"]
         out.append(item)
     return out
 

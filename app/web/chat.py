@@ -20,6 +20,7 @@ from .. import (
     context as ctxmod,
     db,
     hosts,
+    model_caps,
     permissions as permissions_mod,
     skills,
     vault,
@@ -58,6 +59,7 @@ async def chat_page(request: Request):
                     "reasoning": list(_reasoning_efforts(group["type"], m["id"])),
                     "reasoning_default": _reasoning_default(group["type"], m["id"]),
                     "context_window": m.get("context_window") or ctxmod.window_for(m["id"], group["type"]),
+                    "image": model_caps.image_input(group["type"], m["id"]),
                 }
                 for m in group["models"]
             ],

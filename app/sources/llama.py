@@ -101,6 +101,12 @@ class LlamaSource(OpenAICompatSource):
                         gen = payload.get("default_generation_settings") if isinstance(payload, dict) else None
                         if isinstance(gen, dict):
                             n_ctx = int(gen.get("n_ctx") or 0) or None
+                        modalities = payload.get("modalities") if isinstance(payload, dict) else None
+                        if isinstance(modalities, dict) and isinstance(modalities.get("vision"), bool):
+                            from .. import model_caps
+
+                            for name in names:
+                                model_caps.remember(self.type_id, name, modalities["vision"])
                 except Exception:
                     n_ctx = n_ctx
             if n_ctx:

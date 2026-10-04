@@ -7,7 +7,7 @@ import anyio
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from . import accounts, db, opencode as opencode_mod
+from . import accounts, db, model_caps, opencode as opencode_mod
 from .config import settings
 from .proxy import merge_usage, usage_from_obj
 from .security import client_ip, limiter
@@ -396,10 +396,14 @@ async def list_models(request: Request):
     )
     if not names and catalog_unavailable_for(""):
         raise HTTPException(503, "Model catalog is temporarily unavailable")
-    return {
-        "object": "list",
-        "data": [{"id": n, "object": "model", "owned_by": "fuse"} for n in names],
-    }
+    image = {e["id"]: e["image"] for e in await opencode_mod.model_options(user["id"])}
+    data = []
+    for n in names:
+        row = {"id": n, "object": "model", "owned_by": "fuse"}
+        if image.get(n) is not None:
+            row["input_modalities"] = ["text", "image"] if image[n] else ["text"]
+        data.append(row)
+    return {"object": "list", "data": data}
 
 
 @router.get("/v1/opencode")
@@ -522,6 +526,8 @@ async def _invoke_chat(request: Request, user, body: dict, *, prefer_openrouter:
     _ensure_encodable(body)
     requested = model
     body["model"] = upstream
+    original_messages = body["messages"]
+    body["messages"], omitted = model_caps.prepare(original_messages, src.type_id, upstream)
     session_id = None
     if src.type_id in POOL_TYPES or src.type_id in ("openai", "ollama", "openrouter"):
         session_id = session_id_from(request.headers, body, user_id=user["id"], model=upstream)
@@ -566,6 +572,7 @@ async def _invoke_chat(request: Request, user, body: dict, *, prefer_openrouter:
             or_src, or_upstream = fallback
             retry_body = dict(body)
             retry_body["model"] = or_upstream
+            retry_body["messages"], omitted = model_caps.prepare(original_messages, or_src.type_id, or_upstream)
             retry_session = session_id_from(
                 request.headers, retry_body, user_id=user["id"], model=or_upstream
             )
@@ -582,6 +589,8 @@ async def _invoke_chat(request: Request, user, body: dict, *, prefer_openrouter:
                 )
             _record_attempts(retry, user, or_src, or_upstream, requested)
             src, upstream, result = or_src, or_upstream, retry
+    if omitted:
+        result.response_headers = {**result.response_headers, "X-Fuse-Images-Omitted": str(omitted)}
     return user, src, upstream, requested, result
 
 
@@ -612,6 +621,7 @@ async def dispatch_chat(request: Request, user, body: dict):
         response.headers.update(result.response_headers)
         return response
     key_id = user.get("key_id")
+    omitted = {k: v for k, v in result.response_headers.items() if k == "X-Fuse-Images-Omitted"}
     if result.stream is not None:
         return StreamingResponse(
             _tap(
@@ -625,7 +635,7 @@ async def dispatch_chat(request: Request, user, body: dict):
                 requested_model=requested,
             ),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", **omitted},
         )
     _safe_record_usage(
         user["id"],
@@ -637,7 +647,7 @@ async def dispatch_chat(request: Request, user, body: dict):
         provider=src.type_id,
         requested_model=requested,
     )
-    return JSONResponse(result.body or {})
+    return JSONResponse(result.body or {}, headers=omitted)
 
 
 @router.post("/v1/chat/completions")

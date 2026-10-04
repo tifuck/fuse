@@ -183,7 +183,10 @@ async def fetch_catalog(*, force: bool = False) -> dict:
             continue
         mid = str(item.get("id") or "")
         free = _is_free_item(item)
+        arch = item.get("architecture") if isinstance(item.get("architecture"), dict) else {}
+        inputs = arch.get("input_modalities")
         rec = {
+            "image": "image" in inputs if isinstance(inputs, list) else None,
             "id": mid,
             "name": str(item.get("name") or mid),
             "free": free,

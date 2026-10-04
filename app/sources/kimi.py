@@ -165,6 +165,7 @@ def parse_catalog_payload(data: dict) -> list[dict]:
                 "window": window or int(seeded.get("window") or 0),
                 "efforts": efforts if efforts or mid == "kimi-for-coding-highspeed" else tuple(seeded.get("efforts") or ()),
                 "default_effort": default or str(seeded.get("default_effort") or ""),
+                "image": bool(item["supports_image_in"]) if "supports_image_in" in item else None,
             }
         )
     return out

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 
+from . import model_caps
 from .sources import chatgpt as chatgpt_mod
 from .sources import devin as devin_mod
 from .sources import models_by_source
@@ -74,12 +75,17 @@ async def model_options(user_id: int, groups: list[dict] | None = None) -> list[
                 group["type"],
                 _model_display_name(mid, group["type"], openrouter_catalog),
             )
+            config = _opencode_model_config(display, group["type"], mid)
+            image = model_caps.image_input(group["type"], mid)
+            if image is not None:
+                config["modalities"] = {"input": ["text", "image"] if image else ["text"], "output": ["text"]}
             entries.append(
                 {
                     "id": mid,
                     "name": display,
                     "type": group["type"],
-                    "config": _opencode_model_config(display, group["type"], mid),
+                    "image": image,
+                    "config": config,
                 }
             )
     return entries

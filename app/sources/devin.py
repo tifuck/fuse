@@ -1268,6 +1268,17 @@ class _ToolBook:
         return out
 
 
+def _has_remote_image(messages) -> bool:
+    for msg in messages or []:
+        content = msg.get("content") if isinstance(msg, dict) else None
+        for part in content if isinstance(content, list) else []:
+            img = part.get("image_url") if isinstance(part, dict) else None
+            url = img.get("url") if isinstance(img, dict) else img
+            if isinstance(url, str) and not url.startswith("data:"):
+                return True
+    return False
+
+
 def _messages_to_prompts(messages: list, cascade_id: str) -> tuple[str, list[dict]]:
     system = []
     prompts = []
@@ -1416,6 +1427,12 @@ class DevinSource:
         last = ChatResult(status=503, body={"error": "No Devin accounts in the pool"})
         requested = body.get("model") or DEVIN_MODELS[0]
         model = listed_upstream(requested) or upstream_id(requested)
+        if _has_remote_image(body.get("messages")):
+            return ChatResult(
+                status=400,
+                body={"error": {"message": "Devin accepts only base64 data-URI images, not image URLs"}},
+                model=model,
+            )
         payload = drop_cache_routing_fields(body)
         effort = payload.get("reasoning_effort")
         if not isinstance(effort, str):

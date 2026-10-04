@@ -791,11 +791,9 @@ def _image_block(part: dict) -> dict | None:
         return None
     if url.startswith("data:"):
         header, _, data = url.partition(",")
-        media = "image/png"
-        if header.startswith("data:") and ";" in header:
-            media = header[5:].split(";", 1)[0] or media
-        if not data:
+        if not header.endswith(";base64") or not data:
             return None
+        media = header[5:].split(";", 1)[0] or "image/png"
         return {"type": "image", "source": {"type": "base64", "media_type": media, "data": data}}
     if url.startswith("https://") or url.startswith("http://"):
         return {"type": "image", "source": {"type": "url", "url": url}}

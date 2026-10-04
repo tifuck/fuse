@@ -181,6 +181,7 @@
         : defaultReasoningFor(family.type),
       reasoningDefault: model.reasoning_default || "",
       contextWindow: Number(model.context_window) || 0,
+      image: typeof model.image === "boolean" ? model.image : null,
     }))
   );
   const modelsById = new Map(allModels.map((model) => [model.id, model]));
@@ -1702,6 +1703,24 @@
     return modelsById.get(modelId) || null;
   }
 
+  // Text-only models get a short note instead of each image (app/model_caps.py).
+  function imageTokens() {
+    const model = currentModel();
+    return model && model.image === false ? 30 : 1500;
+  }
+
+  function chatHasImages() {
+    const isImage = (att) => att && att.kind === "image";
+    return pendingAttachments.some(isImage) || messages.some((msg) => (msg.attachments || []).some(isImage));
+  }
+
+  function warnTextOnlyModel() {
+    const model = currentModel();
+    if (model && model.image === false && chatHasImages()) {
+      setHint(model.name + " can't view images. They'll be skipped and kept for image models.", false, 6000);
+    }
+  }
+
   const compactCfg = Object.assign(
     { warn_ratio: 0.8, auto_ratio: 0.9, auto: true, default_window: 128000, strategy: "summarize" },
     config.compaction && typeof config.compaction === "object" ? config.compaction : {}
@@ -1810,7 +1829,7 @@
         for (const part of content) {
           if (typeof part === "string") messagesN += estimateChars(part);
           else if (part && typeof part === "object") {
-            if (part.type === "image_url" || part.type === "input_image") messagesN += 1500;
+            if (part.type === "image_url" || part.type === "input_image") messagesN += imageTokens();
             else messagesN += estimateChars(part.text || part.content || "");
           }
         }
@@ -1827,7 +1846,7 @@
         families[family] = (families[family] || 0) + estimateTrace(trace);
       }
       for (const att of msg.attachments || []) {
-        if (String(att.kind || att.mime || "").startsWith("image")) messagesN += 1500;
+        if (String(att.kind || att.mime || "").startsWith("image")) messagesN += imageTokens();
         else messagesN += estimateChars(att.data || att.text || "");
       }
     }
@@ -1859,7 +1878,7 @@
     if (text) total += Math.max(1, Math.ceil(text.length / 4));
     for (const att of pendingAttachments) {
       if (String(att.kind || att.mime || "").startsWith("image")) {
-        total += 1500;
+        total += imageTokens();
       } else {
         const data = att.data || att.text || "";
         if (typeof data === "string" && data) total += Math.max(1, Math.ceil(data.length / 4));
@@ -2267,6 +2286,8 @@
   };
   const PICKER_CHECK =
     '<svg class="chat-picker-check" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3 8.6l3.2 3.2L13 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const IMAGE_ICON =
+    '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="6" cy="6.6" r="1.2" fill="currentColor"/><path d="M2.8 12l3.6-3.6 2.4 2.4 1.6-1.6 3 3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>';
   const PICKER_CHEV =
     '<svg class="chat-picker-chev" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M3.5 6l4.5 4.5L12.5 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
@@ -12767,6 +12788,7 @@
                   selected ? "true" : "false"
                 }" class="${selected ? "is-selected" : ""}${index === pickerIndex ? " is-active" : ""}">` +
                 `<span>${escapeHtml(model.name)}</span>` +
+                (model.image ? `<i class="chat-picker-image" title="Reads images" aria-label="Reads images">${IMAGE_ICON}</i>` : "") +
                 (ctx ? `<small class="chat-picker-meta" title="Context window">${ctx}</small>` : "") +
                 `<i class="chat-picker-mark" aria-hidden="true">${selected ? PICKER_CHECK : ""}</i>` +
                 `</button>`;
@@ -12902,6 +12924,7 @@
       if (search && !pickerSheetQuery.matches) search.focus();
     }
     syncComposer();
+    warnTextOnlyModel();
     if (liveMeter) {
       const changed = liveMeter.model !== id;
       liveMeter = { ...liveMeter, model: id, limit: modelWindow() };
@@ -14290,6 +14313,11 @@
     if (file.type === "image/gif" && original.length <= ATTACH_CHARS) return { url: original, mime: "image/gif" };
     const img = await loadImage(original);
     const maxEdge = 1280;
+    // PNG/WebP keep transparency and sharp text; re-encode only when too big.
+    const keep = file.type === "image/png" || file.type === "image/webp";
+    if (keep && original.length <= ATTACH_CHARS && Math.max(img.width || 0, img.height || 0) <= maxEdge) {
+      return { url: original, mime: file.type };
+    }
     const scale = Math.min(1, maxEdge / Math.max(img.width || 1, img.height || 1));
     const width = Math.max(1, Math.round((img.width || 1) * scale));
     const height = Math.max(1, Math.round((img.height || 1) * scale));
@@ -14298,6 +14326,9 @@
     canvas.height = height;
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("Could not process image");
+    // JPEG has no alpha: without a fill, transparent pixels turn black.
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, width, height);
     ctx.drawImage(img, 0, 0, width, height);
     let quality = 0.84;
     let url = canvas.toDataURL("image/jpeg", quality);
@@ -14363,6 +14394,7 @@
       }
     }
     renderAttachList();
+    warnTextOnlyModel();
   }
 
   if (attachBtn && fileInput) {

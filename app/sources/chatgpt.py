@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from .. import accounts, db
+from .. import accounts, db, model_caps
 from ..config import settings
 from ..crypto import encrypt
 from ..proxy import UsageStream, usage_from_obj
@@ -517,6 +517,9 @@ def parse_catalog_payload(data) -> list[str]:
         slug = str(row.get("slug") or row.get("id") or "")
         if slug and slug not in names:
             names.append(slug)
+            inputs = row.get("input_modalities")
+            if isinstance(inputs, list):
+                model_caps.remember("chatgpt", slug, "image" in inputs)
     return names
 
 

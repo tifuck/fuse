@@ -751,6 +751,10 @@ def meter_from_messages(
     limit = window_for(model, type_id, catalog=catalog, override=override)
     extra = max(0, extra_tokens)
     from_usage = used_from_usage(usage)
+    if type_id:
+        from . import model_caps
+
+        messages, _ = model_caps.prepare(messages, type_id, model)
     parts = occupancy_parts(messages, tools=tools)
     if extra:
         parts["draft"] = extra
