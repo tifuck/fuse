@@ -627,7 +627,7 @@
   max-width: 72rem;
   margin: 0.35rem 0 0.8rem;
   color: color-mix(in srgb, var(--mute) 85%, var(--ink));
-  font-size: calc(0.92rem * var(--chat-text-scale, 1));
+  font-size: var(--mf-size);
   font-weight: 400;
   line-height: 1.45;
 }

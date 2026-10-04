@@ -8,9 +8,15 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-recap {
   max-width: 72rem;
   margin: 0.35rem 0 0.8rem;
   color: color-mix(in srgb, var(--mute) 85%, var(--ink));
-  font-size: calc(0.92rem * var(--chat-text-scale, 1));
+  font-size: calc(0.88rem * var(--chat-text-scale, 1));
   font-weight: 400;
   line-height: 1.45;
+}
+/* Recap is body text: match each view's answer text (.chat-md), not its own size. */
+.chat[data-view="compact"] .chat-recap { font-size: calc(0.9rem * var(--chat-text-scale, 1)); font-family: var(--chat-view-font, inherit); }
+html[data-chat-console="true"] .chat[data-view="console"] .chat-recap { font-size: var(--console-type, calc(0.78rem * var(--chat-text-scale, 1))); }
+@media (max-width: 800px) {
+  html[data-chat-terminal="true"] .chat[data-view="cli"] .chat-recap { font-size: calc(0.82rem * var(--chat-text-scale, 1)); }
 }
 .chat:is([data-view="cli"], [data-view="compact"]) .chat-recap-icon,
 html[data-chat-console="true"] .chat[data-view="console"] .chat-recap-icon {
