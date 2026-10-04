@@ -279,6 +279,46 @@ async def _user_source_models(s: Source, user_id: int | None) -> list[str]:
     return names
 
 
+# Picker efforts per provider. Providers without their own list get every
+# OpenAI-style level; GENERIC_EFFORTS marks that as a guess, not a capability.
+GENERIC_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+
+
+def reasoning_efforts(type_id: str, model: str | None = None, user_id: int | None = None) -> tuple[str, ...]:
+    from . import claude as claude_mod, devin as devin_mod, explabs as explabs_mod, kimi as kimi_mod
+
+    if type_id == "explabs":
+        catalog = explabs_mod.cached_catalog(user_id) or {}
+        record = catalog.get("by_id", {}).get(explabs_mod.upstream_id(model or "")) or {}
+        return tuple(record.get("reasoning_efforts") or [])
+    if type_id == "devin":
+        return devin_mod.efforts_for(model) if model else devin_mod.SEEDED_EFFORTS
+    if type_id == "grok":
+        return ("low", "medium", "high", "xhigh")
+    if type_id == "zai":
+        return ("none", "high")
+    if type_id == "kimi":
+        return kimi_mod.efforts_for(model)
+    if type_id == "mimo":
+        return ("none", "high")
+    if type_id == "claude":
+        return claude_mod.efforts_for(model)
+    if type_id == "ollama":
+        return ("none", "low", "medium", "high", "max")
+    return GENERIC_EFFORTS
+
+
+def metadata_effort(type_id: str, model: str | None = None, user_id: int | None = None) -> str | None:
+    """Cheapest effort a provider accepts, for short title/recap calls.
+
+    None means send no effort: the provider's levels are unknown (the generic
+    list) and a guess like "none" is a 400 on Codex and Grok."""
+    efforts = reasoning_efforts(type_id, model, user_id)
+    if not efforts or efforts == GENERIC_EFFORTS:
+        return None
+    return "none" if "none" in efforts else efforts[0]
+
+
 def invalidate_model_cache(source_type: str | None = None) -> None:
     """Drop cached model lists, e.g. after a per-user key or preference change."""
     if source_type is None:

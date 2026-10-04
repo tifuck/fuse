@@ -17,6 +17,7 @@ from .sources import (
     POOL_RETRYABLE,
     POOL_TYPES,
     catalog_unavailable_for,
+    metadata_effort,
     models_union,
     openrouter_pool_fallback,
     pick,
@@ -439,17 +440,19 @@ async def opencode_provider(request: Request):
     }
 
 
-async def invoke_chat(request: Request, user, body: dict, *, prefer_openrouter: bool = False):
+async def invoke_chat(request: Request, user, body: dict, *, prefer_openrouter: bool = False, cheap_reasoning: bool = False):
     """Pick a source and run one completion.
 
     Returns (user, src, upstream, requested_model, result). Failed pool
     attempts are recorded. The caller records successful usage.
     prefer_openrouter: after a mid-stream pool death, skip the pool and
     map the same Fuse model onto the user's OpenRouter key when one exists.
+    cheap_reasoning: replace any reasoning_effort with the cheapest one the
+    resolved provider accepts (title/recap calls).
     """
     try:
         user = dict(user)
-        return await _invoke_chat(request, user, body, prefer_openrouter=prefer_openrouter)
+        return await _invoke_chat(request, user, body, prefer_openrouter=prefer_openrouter, cheap_reasoning=cheap_reasoning)
     except HTTPException as exc:
         model = body.get("model") if isinstance(body, dict) else ""
         messages = body.get("messages") if isinstance(body, dict) else None
@@ -465,7 +468,14 @@ async def invoke_chat(request: Request, user, body: dict, *, prefer_openrouter: 
         raise
 
 
-async def _invoke_chat(request: Request, user, body: dict, *, prefer_openrouter: bool = False):
+def _set_cheap_reasoning(body: dict, type_id: str, model: str, user_id: int) -> None:
+    body.pop("reasoning_effort", None)
+    effort = metadata_effort(type_id, model, user_id)
+    if effort:
+        body["reasoning_effort"] = effort
+
+
+async def _invoke_chat(request: Request, user, body: dict, *, prefer_openrouter: bool = False, cheap_reasoning: bool = False):
     user = dict(user)
     if not isinstance(body, dict):
         raise HTTPException(400, "Invalid JSON")
@@ -552,6 +562,8 @@ async def _invoke_chat(request: Request, user, body: dict, *, prefer_openrouter:
         raise HTTPException(403, "Connect a Claude account to use Claude models")
     _ensure_encodable(body)
     requested = model
+    if cheap_reasoning:
+        _set_cheap_reasoning(body, src.type_id, model, user["id"])
     body["model"] = upstream
     original_messages = body["messages"]
     body["messages"], omitted = model_caps.prepare(original_messages, src.type_id, upstream, user_id=user["id"])
@@ -598,6 +610,8 @@ async def _invoke_chat(request: Request, user, body: dict, *, prefer_openrouter:
             )
             or_src, or_upstream = fallback
             retry_body = dict(body)
+            if cheap_reasoning:
+                _set_cheap_reasoning(retry_body, or_src.type_id, requested_id, user["id"])
             retry_body["model"] = or_upstream
             retry_body["messages"], omitted = model_caps.prepare(original_messages, or_src.type_id, or_upstream)
             retry_session = session_id_from(

@@ -43,16 +43,16 @@ class TitleSweepTest(unittest.IsolatedAsyncioTestCase):
         await chat_titles.sweep()
         await asyncio.gather(*list(chat_titles._tasks))
 
-    def test_provisional_title_is_shown_while_the_turn_runs(self):
+    def test_title_is_requested_while_the_first_turn_runs(self):
+        # Claude Code names a session from its first prompt as the turn starts.
         thread = chats.create_thread(1, model="offline")
         turn = self._turn(thread, "t1", "Why does `auth.py` reject **valid** tokens after a restart today?", finish=False)
         self.assertEqual(turn["thread"]["title"], "Why does auth.py reject valid tokens…")
-        self.assertEqual(store.pending_title_threads(10, attempted_before=""), [])
-        store.finish_run(turn["run"]["id"], {"content": REPLY}, "completed")
         pending = store.pending_title_threads(10, attempted_before="")
         self.assertEqual([item["id"] for item in pending], [self._pk(thread["id"])])
-        self.assertIn("Request: Why does `auth.py`", pending[0]["prompt"])
-        self.assertIn("Result: Traced the login token", pending[0]["prompt"])
+        self.assertIn("<session>\nWhy does `auth.py` reject **valid** tokens after a restart today?\n</session>",
+                      pending[0]["prompt"])
+        self.assertIn("predominant language of the session", pending[0]["prompt"])
 
     def test_pending_placeholders_and_legacy_but_not_renamed(self):
         fresh = chats.create_thread(1, model="offline")
@@ -81,15 +81,17 @@ class TitleSweepTest(unittest.IsolatedAsyncioTestCase):
             found.extend(store.pending_title_threads(3, attempted_before=db.now()))
         self.assertIn(self._pk(eligible["id"]), {row["id"] for row in found})
 
-    def test_small_talk_defers_until_a_topic_or_third_turn(self):
+    def test_short_and_command_prompts_wait_for_a_real_prompt(self):
         thread = chats.create_thread(1, model="offline")
         pk = self._pk(thread["id"])
         self._turn(thread, "t1", "hi", reply="Hello! How can I help?")
         self.assertEqual(store.pending_title_threads(10, attempted_before=db.now(), due=[pk]), [])
-        self._turn(thread, "t2", "thanks", reply="Sure.")
+        self._turn(thread, "t2", "/init", reply="Wrote AGENTS.md.")
         self.assertEqual(store.pending_title_threads(10, attempted_before=db.now(), due=[pk]), [])
-        self._turn(thread, "t3", "ok", reply="Anything else?")
-        self.assertEqual([item["id"] for item in store.pending_title_threads(10, attempted_before="", due=[pk])], [pk])
+        self._turn(thread, "t3", "Explain the scrape retry queue", reply="It retries.")
+        pending = store.pending_title_threads(10, attempted_before="", due=[pk])
+        self.assertEqual([item["id"] for item in pending], [pk])
+        self.assertIn("<session>\nExplain the scrape retry queue\n</session>", pending[0]["prompt"])
 
     async def test_due_thread_skips_backoff_after_its_turn(self):
         thread = chats.create_thread(1, model="offline")
@@ -132,21 +134,20 @@ class TitleSweepTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(row["title_attempted_at"])
         self.assertEqual(row["title_state"], "")
 
-    async def test_fallback_after_exhaustion_never_calls_provider(self):
+    async def test_exhausted_attempts_wait_for_the_next_message(self):
         thread = chats.create_thread(1, model="offline")
-        self._turn(thread, "t1", "Fix login token validation in auth_service.py")
+        turn = self._turn(thread, "t1", "Fix login token validation in auth_service.py")
         pk = self._pk(thread["id"])
-        last_activity = "2026-09-20T12:34:56Z"
-        db.execute("UPDATE chat_threads SET updated_at=? WHERE id=?", (last_activity, pk))
+        provisional = turn["thread"]["title"]
         db.execute("UPDATE chat_threads SET title_attempts=? WHERE id=?", (chats.TITLE_SWEEP_ATTEMPTS, pk))
-        with patch("app.chat_runtime.generate_thread_title", new_callable=AsyncMock) as gen:
+        with patch("app.chat_runtime.generate_thread_title", new_callable=AsyncMock, return_value="auth_service.py token validation") as gen:
             await self._sweep()
-        row = db.fetchone("SELECT title,title_state,updated_at FROM chat_threads WHERE id=?", (pk,))
-        self.assertEqual(row["title_state"], "fallback")
-        self.assertIn("auth_service.py", row["title"])
-        self.assertLessEqual(len(row["title"].split()), chats.TITLE_WORDS)
-        self.assertEqual(row["updated_at"], last_activity)
-        gen.assert_not_awaited()
+            gen.assert_not_awaited()
+            row = db.fetchone("SELECT title,title_state FROM chat_threads WHERE id=?", (pk,))
+            self.assertEqual((row["title"], row["title_state"]), (provisional, ""))
+            await self._sweep(due=[pk])
+        gen.assert_awaited_once()
+        self.assertEqual(chats.get_thread(1, thread["id"])["title"], "auth_service.py token validation")
 
     def test_manual_rename_invalidates_generation_even_same_text(self):
         thread = chats.create_thread(1, model="offline")
@@ -179,13 +180,16 @@ class TitleSweepTest(unittest.IsolatedAsyncioTestCase):
             {"role": "user", "content": "Opening topic " + "x" * 1700},
             {"role": "assistant", "content": "Reply " + "y" * 7000},
             {"role": "user", "content": "LATEST_TOPIC recap guards"},
+            {"role": "assistant", "content": "LATEST_REPLY " + "z" * 3000},
         ])
         last_activity = "2026-09-20T12:34:56Z"
         db.execute("UPDATE chat_threads SET updated_at=? WHERE id=?", (last_activity, self._pk(thread["id"])))
         with patch("app.chat_runtime.generate_thread_title", new_callable=AsyncMock, return_value="Recap completion guards") as gen:
             await chat_titles.regenerate(1, self._pk(thread["id"]))
-        self.assertIn("LATEST_TOPIC", gen.call_args.args[3])
-        self.assertLessEqual(len(gen.call_args.args[3]), chats.TITLE_SOURCE_MAX)
+        source = gen.call_args.args[3]
+        self.assertIn("LATEST_TOPIC", source)
+        self.assertNotIn("Opening topic", source)
+        self.assertLessEqual(len(source), chats.TITLE_SOURCE_MAX)
         self.assertEqual(chats.get_thread(1, thread["id"])["updated_at"], last_activity)
 
     def test_title_only_update_preserves_sidebar_order_but_real_message_bumps_it(self):
@@ -203,27 +207,31 @@ class TitleSweepTest(unittest.IsolatedAsyncioTestCase):
 
 
 class TitleTextTest(unittest.TestCase):
-    def test_parser_repairs_drafts_to_five_words(self):
+    def test_parser_keeps_the_model_wording(self):
+        # Claude Code only trims the JSON title; Fuse also unwraps other models' prose.
         cases = {
-            "Fix the login redirect bug in auth.py": "Login redirect bug in auth.py",
-            "Add retry handling to the payment gateway webhook client": "Retry handling payment gateway webhook",
-            "Recap worker idle timer \u2014 removing the wait": "Recap worker idle timer",
-            "Login token validation investigation": "Login token validation",
+            "Fix the login redirect bug in auth.py": "Fix the login redirect bug in auth.py",
             '```json\n{"title": "auth.py redirect loop"}\n```': "auth.py redirect loop",
-            "Chat title generation review": "Chat title generation",
+            '{"title": "  Login token validation  "}': "Login token validation",
+            'Title: "Recap worker idle timer".': "Recap worker idle timer",
             "One\nTwo words": "One",
+            "x" * 200: "x" * chats.TITLE_MAX,
         }
         for raw, expected in cases.items():
-            title = chats.parse_generated_title(raw)
-            self.assertLessEqual(len(title.split()), chats.TITLE_WORDS, raw)
-            self.assertEqual(title, expected, raw)
-        self.assertEqual(chats.parse_generated_title("Investigation"), "")
+            self.assertEqual(chats.parse_generated_title(raw), expected, raw)
+        self.assertEqual(chats.parse_generated_title("Untitled"), "")
+        self.assertEqual(chats.parse_generated_title("Sorry, I can't name this."), "")
 
-    def test_parser_keeps_identifiers_when_cutting(self):
-        title = chats.parse_generated_title("Payment gateway webhook retry handling for stripe_events.py and handleRefund")
-        self.assertIn("stripe_events.py", title)
-        self.assertIn("handleRefund", title)
-        self.assertLessEqual(len(title.split()), chats.TITLE_WORDS)
+    def test_source_caps_long_prompts_like_claude_code(self):
+        long = "HEAD " + "a" * 3000 + " TAIL"
+        source = chats.title_source([{"role": "user", "content": long}])
+        body = source.split("<session>\n", 1)[1].split("\n</session>", 1)[0]
+        self.assertLessEqual(len(body), chats.TITLE_INPUT_MAX)
+        self.assertTrue(body.startswith("HEAD " + "a" * (chats.TITLE_INPUT_HEAD - 5)))
+        self.assertTrue(body.endswith(" TAIL"))
+        self.assertIn("characters omitted", body)
+        self.assertEqual(chats.title_source([{"role": "user", "content": "short"}]), "")
+        self.assertEqual(chats.title_source([{"role": "user", "content": "", "attachments": [{"name": "dot.png"}]}]), "")
 
     def test_provisional_title(self):
         self.assertEqual(chats.provisional_title([]), "New chat")
@@ -233,9 +241,3 @@ class TitleTextTest(unittest.TestCase):
         self.assertEqual(chats.provisional_title([{"role": "user", "content": "", "attachments": [{"name": "dot.png"}]}]),
                          "dot.png")
         self.assertLessEqual(len(chats.provisional_title([{"role": "user", "content": "word " * 40}])), chats.PROVISIONAL_TITLE_CHARS + 1)
-
-    def test_fallback_prefers_identifiers(self):
-        title = chats.fallback_title([{"role": "user", "content": "please can you fix TokenCache in cache_store.py it is broken"}])
-        self.assertIn("cache_store.py", title)
-        self.assertIn("TokenCache", title)
-        self.assertEqual(chats.fallback_title([{"role": "user", "content": "hi"}]), "Conversation notes")

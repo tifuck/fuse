@@ -86,10 +86,10 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         await runs.stop()
         runs._stopping = False
 
-    def turn(self, auto_title=False):
+    def turn(self, auto_title=False, text="Hello"):
         chats.set_user_context(1, instructions="Frozen instructions", profile="Frozen profile")
         thread = chats.create_thread(1, model="offline", tools=[])
-        return store.start_turn(1, thread["id"], "Hello", thread["revision"], None, auto_title=auto_title)["run"]
+        return store.start_turn(1, thread["id"], text, thread["revision"], None, auto_title=auto_title)["run"]
 
     async def launch(self, run, gen):
         async def mocked(request, user, raw, *, frozen_context):
@@ -341,13 +341,15 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
                                                 frozen_context={"instructions": "frozen", "profile": "old"})
             self.assertEqual(prompt.call_args.kwargs["instructions"], "frozen")
 
-    async def test_title_is_requested_only_after_the_root_turn_ends(self):
+    async def test_title_is_generated_while_the_root_turn_runs(self):
+        # Claude Code names the session from its first prompt in parallel with
+        # the turn; the title must not wait for the turn to end.
         from app import chat_titles
-        run = self.turn(auto_title=True)
-        seen = []
+        run = self.turn(auto_title=True, text="Convert this CSV file to JSON")
+        release = asyncio.Event()
 
         async def gen():
-            seen.append(run["thread_id"] in chat_titles._due)
+            await release.wait()
             yield frame({"choices": [{"delta": {"content": "answer " + "with details " * 30}}]})
             yield b"data: [DONE]\n\n"
 
@@ -358,13 +360,14 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         with patch.object(runtime, "stream_dashboard_chat", side_effect=mocked), \
              patch.object(runtime, "generate_thread_title", new_callable=AsyncMock, return_value="CSV to JSON") as gen_title:
             task = await runs.start(self.request, self.user, run)
-            await asyncio.wait_for(task, 2)
-            gen_title.assert_not_awaited()
-            self.assertEqual(seen, [False])
-            self.assertIn(run["thread_id"], chat_titles._due)
+            chat_titles.notify(run["thread_id"])
             await chat_titles.sweep()
             await asyncio.gather(*list(chat_titles._tasks))
-        gen_title.assert_awaited_once()
+            gen_title.assert_awaited_once()
+            self.assertFalse(task.done())
+            self.assertEqual(chats.get_thread(1, run["thread_id"])["title"], "CSV to JSON")
+            release.set()
+            await asyncio.wait_for(task, 2)
         thread = chats.get_thread(1, run["thread_id"])
         self.assertEqual(thread["title"], "CSV to JSON")
         self.assertIn("answer", thread["messages"][-1]["content"])
@@ -372,7 +375,7 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_title_failure_keeps_provisional_title(self):
         from app import chat_titles
-        run = self.turn(auto_title=True)
+        run = self.turn(auto_title=True, text="Convert this CSV file to JSON")
         provisional = chats.get_thread(1, run["thread_id"])["title"]
 
         async def gen():

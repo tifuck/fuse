@@ -2336,6 +2336,15 @@ async def _generate_metadata(request, user, model, text, system, limit, parser):
     return ""
 
 
+def _error_detail(body) -> str:
+    error = body.get("error") if isinstance(body, dict) else None
+    if isinstance(error, dict):
+        error = error.get("message") or error
+    if error is None and isinstance(body, dict):
+        error = body.get("detail")
+    return str(error if error is not None else body or "")[:300]
+
+
 async def _metadata_once(request, user, model, text, system, limit, parser):
     prompt = chats.clip_metadata_text(text or "", max(1, min(int(limit), chats.TITLE_REGEN_PROMPT_MAX)))
     if not prompt or not isinstance(model, str) or not model.strip():
@@ -2348,10 +2357,9 @@ async def _metadata_once(request, user, model, text, system, limit, parser):
         ],
         "stream": False,
         "max_tokens": TITLE_MAX_TOKENS,
-        "reasoning_effort": "none",
     }
     try:
-        _user, src, upstream, requested, result = await api.invoke_chat(request, user, body)
+        _user, src, upstream, requested, result = await api.invoke_chat(request, user, body, cheap_reasoning=True)
     except HTTPException as exc:
         logger.warning(
             "Chat title request rejected model=%s status=%s detail=%s",
@@ -2375,8 +2383,8 @@ async def _metadata_once(request, user, model, text, system, limit, parser):
             count_request=True,
         )
         logger.warning(
-            "Chat title request failed model=%s provider=%s status=%s",
-            requested[:100], src.type_id, result.status,
+            "Chat title request failed model=%s provider=%s status=%s detail=%s",
+            requested[:100], src.type_id, result.status, _error_detail(result.body),
         )
         return ""
     summary = None

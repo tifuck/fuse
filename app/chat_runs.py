@@ -1487,10 +1487,6 @@ async def _run(request, user, run):
             if current and current["status"] in chat_store.ACTIVE and not continuing:
                 await durable_call(chat_store.abort_active, ident, status if status in chat_store.TERMINAL else "interrupted")
             if status in chat_store.TERMINAL and not continuing:
-                if parent and status != "interrupted":
-                    from . import chat_titles
-
-                    chat_titles.notify(run["thread_id"])
                 child_agent = {}
                 if current and isinstance(current.get("request"), dict):
                     child_agent = current["request"].get("agent") if isinstance(current["request"].get("agent"), dict) else {}

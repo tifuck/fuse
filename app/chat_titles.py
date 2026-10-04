@@ -1,10 +1,11 @@
-"""Thread title generation after a turn settles.
+"""Thread title generation, modelled on Claude Code's session titles.
 
-A chat shows a short preview of its first request while the first root turn
-runs. Once that turn ends, chat_runs notifies this module and the chat is
-named from the request, the result and the files touched. A periodic sweep
-covers missed notifications, failures (with backoff) and legacy rows. After a
-few failed attempts it supplies a deterministic label.
+When the user sends a message to an untitled chat, the chat route notifies
+this module and the chat is named from its first real prompt in parallel with
+the turn; the sidebar shows a short preview of that prompt until the title
+lands. A periodic sweep covers missed notifications and retries failures with
+backoff. After a few failures it stops until the user sends another message,
+and the preview stays as the title meanwhile.
 """
 from __future__ import annotations
 
@@ -46,7 +47,7 @@ def release(thread_id: int, token: str, *, failed=False):
 
 
 def notify(thread_id: int) -> None:
-    """A root turn ended: name the chat now instead of waiting for the sweep."""
+    """The user sent a message: name the chat now instead of waiting for the sweep."""
     _due.add(int(thread_id))
     if _wake is not None and _wake_loop is not None:
         _wake_loop.call_soon_threadsafe(_wake.set)
@@ -57,7 +58,7 @@ def _backoff_cutoff() -> str:
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-async def _generate(user_id: int, thread_id: int, model: str, prompt: str, placeholder: str, fallback: str) -> None:
+async def _generate(user_id: int, thread_id: int, model: str, prompt: str, placeholder: str) -> None:
     from . import accounts, chat_runtime, chat_runs
 
     token = await asyncio.to_thread(claim, user_id, thread_id)
@@ -66,11 +67,6 @@ async def _generate(user_id: int, thread_id: int, model: str, prompt: str, place
         return
     failed = False
     try:
-        row = await asyncio.to_thread(db.fetchone, "SELECT title_attempts FROM chat_threads WHERE id=?", (thread_id,))
-        if row and row["title_attempts"] >= chats.TITLE_SWEEP_ATTEMPTS:
-            await asyncio.to_thread(chat_store.apply_generated_title, user_id, thread_id, fallback, placeholder,
-                                    token=token, fallback=True)
-            return
         owner = await asyncio.to_thread(accounts.get_user, user_id)
         if owner is None:
             failed = True
@@ -107,7 +103,7 @@ async def sweep() -> None:
     for item in candidates:
         _inflight.add(item["id"])
         task = asyncio.create_task(
-            _generate(item["user_id"], item["id"], item["model"], item["prompt"], item["title"], item["fallback"]),
+            _generate(item["user_id"], item["id"], item["model"], item["prompt"], item["title"]),
             name=f"chat-title-sweep-{item['id']}",
         )
         _tasks.add(task)
@@ -147,7 +143,7 @@ async def drain() -> None:
 
 
 async def regenerate(user_id: int, thread_id: int) -> bool:
-    """Regenerate a thread title from the whole conversation (explicit /title).
+    """Regenerate a thread title from the end of the conversation (explicit /title).
 
     Runs as a standalone upstream request built from the stored transcript;
     the thread's messages are never modified, so the conversation's upstream
@@ -170,7 +166,7 @@ async def regenerate(user_id: int, thread_id: int) -> bool:
         if row is None:
             return False
         try:
-            source = chats.title_source(chats.parse_messages(row["messages"]))
+            source = chats.title_tail_source(chats.parse_messages(row["messages"]))
         except Exception:
             logger.exception("Title source build failed for thread %s", thread_id)
             source = ""

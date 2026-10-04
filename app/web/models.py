@@ -6,7 +6,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
 from .. import context as ctxmod, db
-from ..sources import TYPES, grok as grok_mod, models_by_source
+from ..sources import TYPES, grok as grok_mod, models_by_source, reasoning_efforts
 from ..sources import chatgpt as chatgpt_mod
 from ..sources import devin as devin_mod
 from ..sources import openrouter as openrouter_mod
@@ -22,25 +22,7 @@ from .deps import render, require_user
 router = APIRouter()
 
 def _reasoning_efforts(type_id: str, model: str | None = None, user_id: int | None = None) -> tuple[str, ...]:
-    if type_id == "explabs":
-        catalog = explabs_mod.cached_catalog(user_id) or {}
-        record = catalog.get("by_id", {}).get(explabs_mod.upstream_id(model or "")) or {}
-        return tuple(record.get("reasoning_efforts") or [])
-    if type_id == "devin":
-        return devin_mod.efforts_for(model) if model else devin_mod.SEEDED_EFFORTS
-    if type_id == "grok":
-        return ("low", "medium", "high", "xhigh")
-    if type_id == "zai":
-        return ("none", "high")
-    if type_id == "kimi":
-        return kimi_mod.efforts_for(model)
-    if type_id == "mimo":
-        return ("none", "high")
-    if type_id == "claude":
-        return claude_mod.efforts_for(model)
-    if type_id == "ollama":
-        return ("none", "low", "medium", "high", "max")
-    return ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+    return reasoning_efforts(type_id, model, user_id)
 
 
 def _reasoning_default(type_id: str, model: str | None = None, user_id: int | None = None) -> str:

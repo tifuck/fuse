@@ -219,6 +219,9 @@ async def chat_turn(request: Request, thread_id: str):
         raise HTTPException(404, "Chat not found")
     if result["run"]:
         await chat_runs.start(request, user, result["run"])
+        # Claude Code names a session from its first prompt while the turn
+        # runs; the sweep skips threads that already have a title.
+        chat_titles.notify(pk)
     return JSONResponse({**result, "thread": _chat_public_thread(result["thread"]) if result["thread"] else None,
                          "run": _chat_public_run(result["run"])}, headers={"Cache-Control": "no-store"})
 

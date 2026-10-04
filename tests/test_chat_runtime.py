@@ -280,8 +280,9 @@ class TitleParseTest(unittest.TestCase):
     def test_strips_quotes_prefix_and_extra_words(self):
         self.assertEqual(chats.parse_generated_title('"CSV to JSON converter"'), "CSV to JSON converter")
         self.assertEqual(chats.parse_generated_title("Title: Plant watering schedule"), "Plant watering schedule")
-        self.assertEqual(chats.parse_generated_title("The quick brown fox jumps over the lazy dog"), "Quick brown fox jumps over")
-        self.assertEqual(chats.parse_generated_title("<think>nope</think>\nDebug the login form"), "Login form")
+        self.assertEqual(chats.parse_generated_title("The quick brown fox jumps over the lazy dog"),
+                         "The quick brown fox jumps over the lazy dog")
+        self.assertEqual(chats.parse_generated_title("<think>nope</think>\nDebug the login form"), "Debug the login form")
         self.assertEqual(chats.parse_generated_title("  **Hello world**  "), "Hello world")
         self.assertEqual(chats.parse_generated_title(""), "")
         self.assertEqual(chats.parse_generated_title("New chat"), "")
@@ -498,7 +499,7 @@ class TitleGenerateTest(unittest.IsolatedAsyncioTestCase):
         with patch("app.chat_runtime.api.invoke_chat", side_effect=complete), \
              patch("app.chat_runtime.api._safe_record_usage") as usage:
             title = await generate_thread_title(None, user, "offline", "why is login broken?")
-        self.assertEqual(title, "Login form")
+        self.assertEqual(title, "Debug the login form")
         usage.assert_called()
 
         from fastapi import HTTPException
@@ -512,22 +513,24 @@ class TitleGenerateTest(unittest.IsolatedAsyncioTestCase):
     async def test_regeneration_budget_and_no_tools_or_reasoning(self):
         from app import chat_runtime, chat_prompts
         captured = []
-        async def invoke(request, user, body):
-            captured.append(body)
+        async def invoke(request, user, body, **kwargs):
+            captured.append((body, kwargs))
             raise HTTPException(404, "mocked unavailable model")
-        source = chats.title_source([
+        source = chats.title_tail_source([
             {"role": "user", "content": "Initial goal " + "x" * 1700},
             {"role": "user", "content": "LATEST_PIVOT cookie authentication"},
-            {"role": "assistant", "content": "FIRST_RESULT " + "y" * 7000},
+            {"role": "assistant", "content": "FIRST_RESULT " + "y" * 300},
         ])
         with patch("app.chat_runtime.api.invoke_chat", side_effect=invoke):
             await generate_thread_title(None, {"id": 1}, "offline", source)
-        body = captured[0]
+        body, kwargs = captured[0]
         self.assertEqual(body["messages"][0]["content"], chat_prompts.TITLE_SYSTEM)
         self.assertIn("FIRST_RESULT", body["messages"][1]["content"])
         self.assertIn("LATEST_PIVOT", body["messages"][1]["content"])
         self.assertLessEqual(len(body["messages"][1]["content"]), chats.TITLE_SOURCE_MAX)
-        self.assertEqual(body["reasoning_effort"], "none")
+        # The resolved provider picks the effort; a fixed "none" is a 400 on Codex and Grok.
+        self.assertNotIn("reasoning_effort", body)
+        self.assertIs(kwargs.get("cheap_reasoning"), True)
         self.assertNotIn("tools", body)
 
     async def test_metadata_helper_falls_back_on_invalid_output(self):

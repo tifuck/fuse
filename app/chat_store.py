@@ -2551,8 +2551,8 @@ def start_turn(user_id, thread_id, text, expected_revision, command_id, model=No
                 if prow:
                     project_name = prow["name"] or ""
         title = row["title"] if str(row["title"] or "").strip() else "New chat"
-        # Chat page turns show a short preview of the first request until the
-        # turn ends and chat_titles names the chat from what actually happened.
+        # Chat page turns show a short preview of the first request until
+        # chat_titles (started alongside this turn) names the chat.
         if auto_title and (row["title_state"] if "title_state" in row.keys() else "") == "" \
                 and chats.is_placeholder_title(title, project_name=project_name):
             title = chats.provisional_title(messages)
@@ -2689,7 +2689,7 @@ def start_turn(user_id, thread_id, text, expected_revision, command_id, model=No
             raise
 
 
-def apply_generated_title(user_id, thread_id, title, placeholder="", *, token=None, fallback=False):
+def apply_generated_title(user_id, thread_id, title, placeholder="", *, token=None):
     """Replace an auto title without changing conversation activity or a user rename."""
     from . import chats
 
@@ -2732,7 +2732,7 @@ def apply_generated_title(user_id, thread_id, title, placeholder="", *, token=No
         cur = conn.execute(
             "UPDATE chat_threads SET title=?, title_state=?, title_attempts=0, title_attempted_at='', title_job_token='',title_job_until='', revision=revision+1 WHERE id=? AND user_id=? AND title_state=''"
             + (" AND title_job_token=?" if token is not None else ""),
-            (new_title, "fallback" if fallback else "generated", thread_id, user_id) + ((token,) if token is not None else ()),
+            (new_title, "generated", thread_id, user_id) + ((token,) if token is not None else ()),
         )
         if not cur.rowcount:
             return None
@@ -2787,11 +2787,12 @@ def title_regen_failed(user_id, thread_id):
 
 
 def pending_title_threads(limit=3, *, attempted_before="", due=()):
-    """Settled threads still waiting for a generated title.
+    """Threads still waiting for a generated title.
 
-    A thread is only named after its root turn ends, so the title reflects
-    what the turn did rather than just the opening request. ``due`` threads
-    (a root turn just finished) skip the retry backoff and come first.
+    Like Claude Code, a chat is named from its first prompt as soon as that
+    prompt is sent, in parallel with the turn. ``due`` threads (the user just
+    sent a message) skip the retry backoff and the attempt cap, so a failed
+    title is retried on the next message, as Claude Code does.
     """
     from . import chats
 
@@ -2801,12 +2802,10 @@ def pending_title_threads(limit=3, *, attempted_before="", due=()):
         f"""SELECT t.*, p.name AS project_name FROM chat_threads t
            LEFT JOIN user_projects p ON p.id=t.project_id
            WHERE t.title_state=''
-             AND (t.title_attempted_at='' OR t.title_attempted_at < ?{due_sql})
+             AND ((t.title_attempted_at='' OR t.title_attempted_at < ?) AND t.title_attempts < ?{due_sql})
              AND (t.title_job_until='' OR t.title_job_until < ?)
-             AND NOT EXISTS (SELECT 1 FROM chat_runs r WHERE r.thread_id=t.id AND r.parent_run_id IS NULL
-                             AND r.status IN ('queued','running'))
            ORDER BY {"(t.id IN (" + ",".join("?" for _ in due) + ")) DESC, " if due else ""}t.title_attempted_at, t.updated_at LIMIT ?""",
-        (attempted_before, *due, db.now(), *due, max(int(limit) * 8, int(limit))),
+        (attempted_before, chats.TITLE_SWEEP_ATTEMPTS, *due, db.now(), *due, max(int(limit) * 8, int(limit))),
     )
     out = []
     for row in rows:
@@ -2817,32 +2816,25 @@ def pending_title_threads(limit=3, *, attempted_before="", due=()):
         except Exception:
             continue
         source = chats.title_source(messages)
-        if not source or not any(m.get("role") == "assistant" for m in messages):
-            # Nothing to title from yet (e.g. image-only first message).
-            db.execute("UPDATE chat_threads SET title_attempted_at=? WHERE id=?", (db.now(), row["id"]))
-            continue
-        if chats.title_needs_generation(
+        if source and chats.title_needs_generation(
             row["title"], project_name=project_name,
             first_user_text=chats.title_from_messages(messages),
             title_state=row["title_state"] if "title_state" in row.keys() else "",
             provisional=chats.provisional_title(messages),
         ):
-            if chats.title_deferred(messages):
-                # Small talk names nothing; the next finished turn retries.
-                db.execute("UPDATE chat_threads SET title_attempted_at=? WHERE id=?", (db.now(), row["id"]))
-                continue
             out.append({
                 "id": int(row["id"]),
                 "user_id": int(row["user_id"]),
                 "model": row["model"] or "",
                 "title": row["title"] or "",
                 "prompt": source,
-                "fallback": chats.fallback_title(messages),
                 "attempts": int(row["title_attempts"]),
             })
             if len(out) >= int(limit):
                 break
         else:
+            # No prompt qualifies yet (empty, too short, a slash command or
+            # attachments only); the next message makes the thread due again.
             db.execute("UPDATE chat_threads SET title_attempted_at=? WHERE id=?", (db.now(), row["id"]))
     return out
 

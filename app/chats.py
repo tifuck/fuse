@@ -92,40 +92,30 @@ def _text(value, field: str, limit: int, *, strip: bool = False) -> str:
     return value.strip() if strip else value
 
 
-TITLE_WORDS = 5
 TITLE_PROMPT_MAX = 800
+# Claude Code (generateSessionTitle): the first real prompt, at least 10
+# characters, capped at 2,000 characters as a 1,500-character head plus the tail.
+TITLE_MIN_CHARS = 10
+TITLE_INPUT_MAX = 2_000
+TITLE_INPUT_HEAD = 1_500
+# Claude Code's conversation-tail source for a re-title (/title): the last
+# 1,000 characters of user and assistant text.
+TITLE_TAIL_CHARS = 1_000
 TITLE_REGEN_PROMPT_MAX = 6_000
 TITLE_SOURCE_MAX = 3_000
 PROVISIONAL_TITLE_WORDS = 6
 PROVISIONAL_TITLE_CHARS = 48
-# Failed title generation: a try after each early turn, then a slower
-# background sweep with backoff. Both stop once a title lands.
-TITLE_TURN_ATTEMPTS = 3
+# A failed title is retried by the sweep with backoff, then only when the
+# user sends another message (Claude Code retries on the next prompt).
 TITLE_SWEEP_ATTEMPTS = 3
-# A first turn like "hi" / "Hello! How can I help?" names nothing; wait for
-# a later turn unless the chat already has this many user turns.
-TITLE_DEFER_TURNS = 3
-_TITLE_VERBS = frozenset("""fix fixing add adding investigate investigating implement implementing debug debugging
-    check checking refactor refactoring update updating evaluate evaluating""".split())
-_TITLE_GENERIC = frozenset("""investigation implementation analysis review check issue issues question questions
-    problem problems help discussion overview task request""".split())
-_TITLE_STOPWORDS = frozenset("a an the of for in on to with and or into from at by about".split())
-_TITLE_FILLER = frozenset("""please can could would will you me i my we our us it its this that these those is are was
-    be do does did how what why when where which who there here just some any all so if then than also
-    should need want like get got have has hey hi hello thanks ok okay yes no not look up out tell show give
-    let lets let's help explain create make build write find improve remove change review""".split()) | _TITLE_STOPWORDS | _TITLE_VERBS
-_TITLE_IDENT = re.compile(
-    r"#\d+|[\w.-]+/[\w.-]+#\d+|\b[\w-]+\.(?:py|js|ts|tsx|jsx|go|rs|c|h|cpp|java|rb|php|sh|md|json|ya?ml|toml|html|css|sql|cjs|mjs)\b"
-    r"|\b[a-z][a-z0-9]*_[a-z0-9_]+\b|\b[a-z]+[A-Z]\w*\b|\b[A-Z][a-z0-9]+[A-Z]\w*\b|\b\w*(?:Error|Exception)\b"
-)
-_TITLE_SEPARATOR = re.compile(r"\s+[-–—]\s+|:\s+")
 _TITLE_THINK = re.compile(r"</?(?:think|thinking|thought|reasoning)>", re.I)
 _TITLE_THINK_BLOCK = re.compile(
     r"<(?:think|thinking|thought|reasoning)>.*?</(?:think|thinking|thought|reasoning)>",
     re.I | re.S,
 )
 _TITLE_WRAP = re.compile(r"^[\s\"'`“”‘’*#\-–—]+|[\s\"'`“”‘’*#\-–—.,;:!?]+$")
-_TITLE_PREFIX = re.compile(r"^(?:title|chat title|topic)\s*:\s*", re.I)
+_TITLE_PREFIX = re.compile(r"^(?:title|chat title|session title|topic)\s*:\s*", re.I)
+_TITLE_COMMAND = re.compile(r"^/[\w:-]+(?:\s|$)")
 _PLACEHOLDER_TITLES = frozenset({"", "new chat", "title", "untitled", "chat"})
 PUBLIC_ID_LEN = 22
 PUBLIC_ID_RE = re.compile(r"^[A-Za-z0-9]{16,32}$")
@@ -325,31 +315,9 @@ def clip_metadata_text(text: str, limit: int) -> str:
     return text[:head] + marker + (text[-tail:] if tail else "")
 
 
-def _is_identifier(word: str) -> bool:
-    return bool(re.search(r"[._/#\d]|[a-z][A-Z]", word)) or (len(word) > 1 and word.isupper())
-
-
-def _shorten_title(words: list[str]) -> list[str]:
-    """Repair a draft into at most TITLE_WORDS words without losing identifiers."""
-    def bare(word):
-        return word.lower().strip(".,;:!?\"'()[]")
-
-    while len(words) > 1 and bare(words[0]) in _TITLE_VERBS | _TITLE_STOPWORDS:
-        words = words[1:]
-    while len(words) > 2 and bare(words[-1]) in _TITLE_GENERIC | _TITLE_STOPWORDS:
-        words = words[:-1]
-    if len(words) > TITLE_WORDS:
-        words = [w for i, w in enumerate(words) if i == 0 or bare(w) not in _TITLE_STOPWORDS]
-    if len(words) > TITLE_WORDS:
-        keep = [i for i, w in enumerate(words) if _is_identifier(w)][:TITLE_WORDS]
-        rest = [i for i in range(len(words)) if i not in keep][:max(0, TITLE_WORDS - len(keep))]
-        words = [words[i] for i in sorted(keep + rest)]
-    while len(words) > 1 and bare(words[-1]) in _TITLE_STOPWORDS:
-        words = words[:-1]
-    return words
-
-
 def parse_generated_title(raw: str) -> str:
+    """The model's title, lightly cleaned. Claude Code only trims its JSON
+    field; this also unwraps the prose, fences and labels other models add."""
     text = _TITLE_THINK_BLOCK.sub(" ", raw or "")
     if _TITLE_THINK.search(text):
         return ""
@@ -374,19 +342,7 @@ def parse_generated_title(raw: str) -> str:
         "i cannot", "i can't", "i am unable", "i'm unable", "sorry", "as an ai",
     )):
         return ""
-    head = _TITLE_SEPARATOR.split(line, maxsplit=1)
-    if len(head) > 1 and len(head[0].split()) >= 2:
-        line = head[0]
-    line = _TITLE_WRAP.sub("", re.sub(r"\s+", " ", line.replace(":", " "))).strip()
-    words = _shorten_title(line.split())
-    if not words or (len(words) == 1 and words[0].lower() in _TITLE_GENERIC | _TITLE_VERBS):
-        return ""
-    if not _is_identifier(words[0]):
-        words[0] = words[0][:1].upper() + words[0][1:]
-    title = _clean_title(" ".join(words))
-    if not title or title.lower() in _PLACEHOLDER_TITLES:
-        return ""
-    return title
+    return _clean_title(line)
 
 
 def _title_plain(text: str) -> str:
@@ -426,73 +382,59 @@ def provisional_title(messages: list[dict]) -> str:
     return title if not is_placeholder_title(title) else "New chat"
 
 
-def title_source(messages: list[dict], *, limit: int = TITLE_SOURCE_MAX) -> str:
-    """Bounded summary of what a chat is about, for the title request."""
-    first = _first_user(messages)
-    if first is None:
-        return ""
-    users = [m for m in messages if m.get("role") == "user" and not m.get("auto")]
-    replies = [m for m in messages if m.get("role") == "assistant" and _message_plain_text(m.get("content")).strip()]
-    head = clip_metadata_text(_message_plain_text(first.get("content")), 1200)
-    if not head:
-        names = [str(a.get("name") or "Attachment") for a in first.get("attachments") or [] if isinstance(a, dict)]
-        head = "Attachments: " + ", ".join(names) if names else ""
-    if not head:
-        return ""
-    lines = ["Request: " + head]
-    if users[-1] is not first:
-        later = clip_metadata_text(_message_plain_text(users[-1].get("content")), 600)
-        if later:
-            lines.append("Later request: " + later)
-    if replies:
-        result = re.sub(r"\s+", " ", _message_plain_text(replies[-1].get("content"))).strip()
-        lines.append("Result: " + result[:800])
-    touched = []
+def _title_session(text: str) -> str:
+    return (
+        "<session>\n" + text + "\n</session>\n\n"
+        "Write the title in the predominant language of the session \u2014 a stray word or code token in "
+        "another language doesn't change it, and neither does the English of these instructions."
+    )
+
+
+def title_prompt_text(messages: list[dict]) -> str:
+    """The prompt Claude Code titles a session from: the first user message
+    that is not a slash command and has at least TITLE_MIN_CHARS characters."""
     for msg in messages:
-        for tool in msg.get("tools") or []:
-            if not isinstance(tool, dict):
-                continue
-            name = str(tool.get("path") or "").rstrip("/").rsplit("/", 1)[-1]
-            if not name and tool.get("name") == "grep":
-                name = str(tool.get("pattern") or "")[:40]
-            if name and name not in touched:
-                touched.append(name)
-    if touched:
-        lines.append("Touched: " + clip_metadata_text(", ".join(touched[-6:]), 300))
-    body = "\n".join(lines)[:max(1, limit - 21)]
-    return "<session>\n" + body + "\n</session>"
-
-
-def title_deferred(messages: list[dict]) -> bool:
-    """True while the chat is only small talk that cannot name a topic yet."""
-    users = [m for m in messages if m.get("role") == "user" and not m.get("auto")]
-    if not users or len(users) >= TITLE_DEFER_TURNS:
-        return False
-    if any(m.get("attachments") for m in users):
-        return False
-    asked = sum(len(_title_plain(_message_plain_text(m.get("content"))).split()) for m in users)
-    reply = next((_message_plain_text(m.get("content")).strip() for m in reversed(messages)
-                  if m.get("role") == "assistant"), "")
-    return asked < 4 and len(reply) < 200
-
-
-def fallback_title(messages: list[dict]) -> str:
-    """Deterministic label when the model never produced a usable title."""
-    first = _first_user(messages)
-    text = _title_plain(_message_plain_text(first.get("content")) if first else "")
-    idents = list(dict.fromkeys(_TITLE_IDENT.findall(text)))[:2]
-    words = []
-    for word in re.findall(r"[^\W_][\w'-]*", text):
-        if len(idents) + len(words) >= 4:
-            break
-        if word.lower() in _TITLE_FILLER or any(word in ident for ident in idents) or word.lower() in (w.lower() for w in words):
+        if msg.get("role") != "user" or msg.get("auto"):
             continue
-        words.append(word)
-    parts = idents + words
-    if len(parts) < 2:
-        return "Conversation notes"
-    title = parse_generated_title(" ".join(parts))
-    return title or "Conversation notes"
+        text = _message_plain_text(msg.get("content")).strip()
+        if _TITLE_COMMAND.match(text) or len(text) < TITLE_MIN_CHARS:
+            continue
+        if len(text) > TITLE_INPUT_MAX:
+            omitted = len(text) - TITLE_INPUT_HEAD
+            marker = f"\n[\u2026 {omitted} characters omitted \u2026]\n"
+            tail = max(0, TITLE_INPUT_MAX - TITLE_INPUT_HEAD - len(marker))
+            text = text[:TITLE_INPUT_HEAD] + marker + (text[-tail:] if tail else "")
+        return text
+    return ""
+
+
+def title_source(messages: list[dict]) -> str:
+    """Automatic title request body, or "" while no prompt qualifies yet."""
+    text = title_prompt_text(messages)
+    return _title_session(text) if text else ""
+
+
+def title_tail_source(messages: list[dict], *, limit: int = TITLE_TAIL_CHARS) -> str:
+    """Explicit /title body: the end of the conversation, as Claude Code
+    re-titles a session from its last 1,000 characters of text."""
+    turns = [
+        (m.get("role"), _message_plain_text(m.get("content")).strip())
+        for m in messages
+        if m.get("role") in _ROLES and not m.get("auto")
+    ]
+    text = "\n".join(part for _role, part in turns if part)
+    if not text:
+        return ""
+    if len(text) > limit:
+        tail = text[-limit:]
+        # Unlike Claude Code, keep the latest request in view when a long
+        # final answer would fill the whole tail.
+        latest = next((part for role, part in reversed(turns) if role == "user" and part), "")
+        if latest and latest not in tail:
+            head = latest[: limit // 2]
+            tail = head + "\n[\u2026]\n" + text[-(limit - len(head)):]
+        text = tail
+    return _title_session(text)
 
 
 def parse_generated_recap(raw: str) -> str:
@@ -543,45 +485,6 @@ def title_from_messages(messages: list[dict]) -> str:
             name = attachments[0].get("name") if isinstance(attachments[0], dict) else ""
             return _clean_title(str(name or "Attachment")) or "New chat"
     return "New chat"
-
-
-TITLE_TRANSCRIPT_MAX = 6_000
-TITLE_TRANSCRIPT_HEAD = 1_500
-
-
-def title_transcript(messages: list[dict], *, limit: int = TITLE_TRANSCRIPT_MAX) -> str:
-    """Flattened user/assistant turns for whole-conversation title prompts."""
-    lines: list[str] = []
-    for msg in messages:
-        role = msg.get("role")
-        if role not in _ROLES or msg.get("auto"):
-            continue
-        text = re.sub(r"\s+", " ", _message_plain_text(msg.get("content"))).strip()
-        if not text:
-            continue
-        lines.append(("User: " if role == "user" else "Assistant: ") + text)
-    if not lines:
-        return ""
-    budget = max(0, limit)
-    selected = {0: clip_metadata_text(lines[0], min(TITLE_TRANSCRIPT_HEAD, budget))}
-    budget -= len(selected[0]) + 1
-    # A huge final assistant answer must not squeeze out the latest user pivot.
-    latest_user = next((i for i in range(len(lines)-1, 0, -1) if lines[i].startswith("User: ")), None)
-    if latest_user is not None and budget > 20:
-        selected[latest_user] = clip_metadata_text(lines[latest_user], min(1000, budget))
-        budget -= len(selected[latest_user]) + 1
-    for index in range(len(lines)-1, 0, -1):
-        if index in selected:
-            continue
-        line = lines[index]
-        piece = clip_metadata_text(line, max(0, budget)) if budget > 20 else ""
-        if not piece:
-            break
-        selected[index] = piece
-        budget -= len(piece) + 1
-        if len(piece) < len(line):
-            break
-    return "\n".join(selected[index] for index in sorted(selected))
 
 
 def parse_reasoning_effort(value, *, strict: bool = False):
