@@ -6,7 +6,7 @@ import time
 import uuid
 import httpx
 
-from .. import accounts
+from .. import accounts, model_caps
 from ..config import ROOT
 from ..proxy import UsageStream, usage_from_obj
 from .base import ChatResult
@@ -191,6 +191,21 @@ class OllamaSource:
             key = accounts.cred_secret(self.creds[0])
             r = await client.get(self.base + "/tags", headers={"Authorization": f"Bearer {key}"})
             names = [m["name"] for m in r.json().get("models", []) if m.get("name")]
+
+            slots = asyncio.Semaphore(8)
+
+            async def capability(name):
+                try:
+                    async with slots:
+                        response = await client.post(self.base + "/show", headers={"Authorization": f"Bearer {key}"}, json={"model": name})
+                    if response.status_code == 200:
+                        caps = response.json().get("capabilities")
+                        if isinstance(caps, list):
+                            model_caps.remember(self.type_id, name, "vision" in caps)
+                except (httpx.HTTPError, ValueError):
+                    pass
+
+            await asyncio.gather(*(capability(name) for name in names))
         _tags_cache[self.source_id] = (time.time(), names)
         return names
 

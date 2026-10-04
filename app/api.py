@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import math
@@ -154,6 +156,22 @@ def _validate_messages(messages, *, retained=False) -> None:
                     raise HTTPException(
                         400, f"messages[{index}].content[{part_index}].image_url.url must be a string"
                     )
+                if part.get("type") in ("image_url", "input_image"):
+                    url = image.get("url") if isinstance(image, dict) else image
+                    if not isinstance(url, str) or not url:
+                        raise HTTPException(400, "Image parts must include image_url")
+                    if url.startswith("data:"):
+                        header, sep, data = url.partition(",")
+                        if not sep or not header.endswith(";base64") or not data:
+                            raise HTTPException(400, "Images must use a base64 data URI")
+                        if header[5:].split(";", 1)[0] not in {"image/png", "image/jpeg", "image/gif", "image/webp"}:
+                            raise HTTPException(400, "Unsupported image MIME type")
+                        try:
+                            base64.b64decode(data, validate=True)
+                        except (ValueError, binascii.Error):
+                            raise HTTPException(400, "Invalid base64 image data") from None
+                    elif not url.startswith(("https://", "http://")):
+                        raise HTTPException(400, "Images must use an HTTP(S) URL or base64 data URI")
                 if isinstance(image, str):
                     total += len(image)
                 elif isinstance(image, dict):

@@ -92,14 +92,14 @@ class LlamaSource(OpenAICompatSource):
                 n_ctx = int(cfg_ctx) if cfg_ctx else None
             except (TypeError, ValueError):
                 n_ctx = None
-            if not n_ctx:
+            if names:
                 try:
                     props_url = self._url()[:-3] + "/props" if self._url().endswith("/v1") else self._url().rstrip("/") + "/props"
                     props = await client.get(props_url, headers=self._headers(self._key()))
                     if props.status_code == 200:
                         payload = props.json()
                         gen = payload.get("default_generation_settings") if isinstance(payload, dict) else None
-                        if isinstance(gen, dict):
+                        if not n_ctx and isinstance(gen, dict):
                             n_ctx = int(gen.get("n_ctx") or 0) or None
                         modalities = payload.get("modalities") if isinstance(payload, dict) else None
                         if isinstance(modalities, dict) and isinstance(modalities.get("vision"), bool):

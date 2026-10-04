@@ -124,6 +124,44 @@ def test_invoke_chat_strips_per_route_and_reports(monkeypatch):
     assert result.response_headers["X-Fuse-Images-Omitted"] == "1"
 
 
+def test_image_validation_rejects_malformed_payloads():
+    import pytest
+    from fastapi import HTTPException
+    from app import api
+
+    api._validate_messages(_turn())
+    api._validate_messages(_turn("https://example.test/a.png"))
+    for url in ("", "data:image/png,hello", "data:image/png;base64,???", "data:text/plain;base64,QQ==", "file:///tmp/a.png"):
+        with pytest.raises(HTTPException) as exc:
+            api._validate_messages(_turn(url))
+        assert exc.value.status_code == 400
+
+
+def test_ollama_catalog_reads_capabilities_without_completions(monkeypatch):
+    import asyncio
+    import httpx
+
+    calls = []
+    def handle(request):
+        calls.append(request.url.path)
+        if request.url.path.endswith('/tags'):
+            return httpx.Response(200, json={"models": [{"name": "audit-eye"}, {"name": "audit-text"}]})
+        import json
+        name = json.loads(request.content)["model"]
+        return httpx.Response(200, json={"capabilities": ["completion", "vision"] if name == "audit-eye" else ["completion"]})
+
+    client_type = httpx.AsyncClient
+    monkeypatch.setattr(ollama.httpx, 'AsyncClient', lambda **kw: client_type(transport=httpx.MockTransport(handle), **kw))
+    monkeypatch.setattr(ollama.accounts, 'cred_secret', lambda cred: 'synthetic')
+    monkeypatch.setattr(ollama, '_tags_cache', {})
+    src = object.__new__(ollama.OllamaSource)
+    src.source_id, src.creds, src.base = -900, [{"id": -1}], 'https://example.test/api'
+    assert asyncio.run(src._tags()) == ['audit-eye', 'audit-text']
+    assert model_caps.image_input('ollama', 'audit-eye') is True
+    assert model_caps.image_input('ollama', 'audit-text') is False
+    assert calls == ['/api/tags', '/api/show', '/api/show']
+
+
 def test_ollama_merges_native_and_converted_images():
     msgs = [{"role": "user", "images": ["bmF0aXZl"], "content": _turn()[0]["content"]}]
     assert ollama.to_ollama(msgs)[0]["images"] == ["bmF0aXZl", "iVBORw0KGgo="]
