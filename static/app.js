@@ -264,36 +264,290 @@ window.FuseBack = (function fuseBack() {
   return { open, drop, has, layers, whenSettled, isMobile: () => mobile.matches };
 })();
 
-(function orModelPicker() {
-  document.querySelectorAll("[data-or-list]").forEach((list) => {
-    const form = list.closest("form");
-    if (!form) return;
-    const filter = form.querySelector("[data-or-filter]");
-    const count = form.querySelector("[data-or-count]");
-    const rows = Array.from(list.querySelectorAll("[data-or-row]"));
+(function openRouterSettings() {
+  const root = document.querySelector("[data-or-models]");
+  if (!root) return;
+  const settings = document.querySelector("[data-or-settings]");
+  const status = document.querySelector("[data-or-status]");
+  const tpl = document.querySelector("[data-or-drawer-tpl]");
+  const list = root.querySelector("[data-or-list]");
+  const filter = root.querySelector("[data-or-filter]");
+  const count = root.querySelector("[data-or-count]");
+  const empty = root.querySelector("[data-or-empty]");
+  const paidNote = root.querySelector("[data-or-paid-note]");
+  const rows = Array.from(list.querySelectorAll("[data-or-row]"));
+  let view = "all";
+  let statusTimer = 0;
 
-    function refresh() {
-      const needle = (filter && filter.value ? filter.value : "").trim().toLowerCase();
-      let shown = 0;
-      rows.forEach((row) => {
-        const text = row.textContent.toLowerCase();
-        const hit = !needle || text.includes(needle);
-        row.hidden = !hit;
-        if (hit) shown += 1;
-      });
-      const checked = rows.filter((row) => row.querySelector("input[type=checkbox]").checked).length;
-      if (count) count.textContent = `${shown} shown · ${checked} enabled`;
-    }
+  function say(text, bad) {
+    if (!status) return;
+    status.textContent = text;
+    status.classList.toggle("bad", Boolean(bad));
+    status.classList.add("show");
+    clearTimeout(statusTimer);
+    statusTimer = setTimeout(() => status.classList.remove("show"), bad ? 5000 : 1800);
+  }
 
-    if (filter) {
-      filter.addEventListener("input", refresh);
-      filter.addEventListener("keydown", (event) => {
-        if (event.key === "Enter") event.preventDefault();
-      });
+  async function send(method, url, body) {
+    const r = await fetch(url, {
+      method,
+      credentials: "same-origin",
+      headers: body ? { "Content-Type": "application/json", "X-CSRF-Token": csrfToken() } : {},
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    let data = {};
+    try { data = await r.json(); } catch (_) { /* non-JSON error page */ }
+    if (!r.ok) throw new Error(data.error || `Request failed (${r.status})`);
+    return data;
+  }
+
+  function isOn(row) { return row.classList.contains("is-on"); }
+
+  function refresh() {
+    const needle = (filter.value || "").trim().toLowerCase();
+    let shown = 0;
+    let on = 0;
+    rows.forEach((row) => {
+      if (isOn(row)) on += 1;
+      const text = row.dataset.id + " " + row.querySelector(".or-row-name").textContent.toLowerCase();
+      const match =
+        (!needle || text.toLowerCase().includes(needle)) &&
+        (view === "all" ||
+          (view === "on" && isOn(row)) ||
+          (view === "pinned" && Number(row.dataset.pinned) > 0) ||
+          (view === "free" && row.dataset.free === "1"));
+      row.hidden = !match;
+      if (match) shown += 1;
+    });
+    count.textContent = `${on} enabled · ${shown} shown`;
+    empty.hidden = shown > 0;
+  }
+
+  // clearPaid: "Every paid model" was just switched off, which empties the list.
+  function applyAccount(state, clearPaid) {
+    paidNote.hidden = !state.paid_all;
+    rows.forEach((row) => {
+      const box = row.querySelector("[data-or-model]");
+      const free = row.dataset.free === "1";
+      const on = free ? state.free_models : state.paid_all || (!clearPaid && box.checked);
+      box.disabled = free || state.paid_all;
+      box.checked = on;
+      row.classList.toggle("is-on", on);
+    });
+    refresh();
+  }
+
+  if (settings) {
+    settings.addEventListener("change", async (event) => {
+      const box = event.target.closest("[data-or-setting]");
+      if (!box) return;
+      const key = box.dataset.orSetting;
+      const want = box.checked;
+      box.disabled = true;
+      try {
+        const state = await send("POST", "/sources/openrouter/settings", { [key]: want });
+        settings.querySelectorAll("[data-or-setting]").forEach((el) => {
+          if (el.dataset.orSetting in state) el.checked = Boolean(state[el.dataset.orSetting]);
+        });
+        applyAccount(state, key === "paid_all" && !want);
+        say(key === "paid_all" && !want ? "Paid models are off. Turn on the ones you want." : "Saved");
+      } catch (err) {
+        box.checked = !want;
+        say(err.message, true);
+      } finally {
+        box.disabled = false;
+      }
+    });
+  }
+
+  list.addEventListener("change", async (event) => {
+    const box = event.target.closest("[data-or-model]");
+    if (!box) return;
+    const row = box.closest("[data-or-row]");
+    const want = box.checked;
+    row.classList.toggle("is-on", want);
+    refresh();
+    try {
+      const data = await send("POST", "/sources/openrouter/model", { model: row.dataset.id, enabled: want });
+      box.checked = data.enabled;
+      row.classList.toggle("is-on", data.enabled);
+      say(data.enabled ? "Added to your model picker" : "Removed from your model picker");
+    } catch (err) {
+      box.checked = !want;
+      row.classList.toggle("is-on", !want);
+      say(err.message, true);
     }
-    list.addEventListener("change", refresh);
     refresh();
   });
+
+  function money(v) {
+    if (v === null || v === undefined) return "—";
+    if (v === 0) return "Free";
+    return "$" + (v < 0.1 ? v.toPrecision(2) : Number(v.toFixed(2)).toString());
+  }
+
+  function tokens(n) {
+    if (!n) return "—";
+    return n >= 1000000 ? `${+(n / 1048576).toFixed(1)}M` : `${Math.round(n / 1024)}K`;
+  }
+
+  function closeDrawer(row) {
+    const drawer = row.querySelector("[data-or-drawer]");
+    if (drawer) drawer.remove();
+    row.classList.remove("is-open");
+    row.querySelector("[data-or-providers]").setAttribute("aria-expanded", "false");
+  }
+
+  function setPinned(row, n) {
+    row.dataset.pinned = String(n);
+    row.querySelector("[data-or-pin-label]").textContent = n ? `${n} pinned` : "Providers";
+  }
+
+  async function openDrawer(row) {
+    rows.forEach((other) => { if (other !== row && other.classList.contains("is-open")) closeDrawer(other); });
+    const drawer = tpl.content.firstElementChild.cloneNode(true);
+    row.appendChild(drawer);
+    row.classList.add("is-open");
+    row.querySelector("[data-or-providers]").setAttribute("aria-expanded", "true");
+    const title = drawer.querySelector("[data-or-drawer-title]");
+    const note = drawer.querySelector("[data-or-drawer-note]");
+    const table = drawer.querySelector("table");
+    const body = table.querySelector("tbody");
+    const actions = drawer.querySelector(".or-drawer-actions");
+    const hint = drawer.querySelector("[data-or-hint]");
+    let data;
+    try {
+      data = await send("GET", "/sources/openrouter/providers?model=" + encodeURIComponent(row.dataset.id));
+    } catch (err) {
+      note.textContent = err.message;
+      note.classList.add("bad");
+      return;
+    }
+    if (!row.contains(drawer)) return;
+    const providers = data.providers || [];
+    title.textContent = `Providers for ${row.querySelector(".or-row-name").textContent}`;
+    if (!providers.length) {
+      note.textContent = "OpenRouter lists no providers for this model right now.";
+      return;
+    }
+    const chosen = new Set(data.selected || []);
+    const stale = [...chosen].filter((slug) => !providers.some((p) => p.slug === slug));
+    note.textContent = chosen.size
+      ? "Requests for this model only go to the checked providers. OpenRouter still balances between them."
+      : "Any provider can serve this model. Check providers to allow only those.";
+    if (stale.length) note.textContent += ` No longer listed: ${stale.join(", ")}.`;
+    providers.forEach((p) => {
+      const tr = document.createElement("tr");
+      if (!p.up) tr.className = "down";
+      // Provider fields come from OpenRouter: build with text nodes only.
+      const cell = (text, cls) => {
+        const td = document.createElement("td");
+        if (cls) td.className = cls;
+        if (text !== undefined) td.textContent = text;
+        tr.appendChild(td);
+        return td;
+      };
+      const tag = (parent, text, cls) => {
+        const s = document.createElement("span");
+        s.className = cls;
+        s.textContent = text;
+        parent.append(" ", s);
+      };
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.setAttribute("aria-label", "Allow " + p.name);
+      cell().appendChild(box);
+      const nameTd = cell(undefined, "or-prov-name");
+      const nameCell = document.createElement("span");
+      nameTd.appendChild(nameCell);
+      if (p.quantization) tag(nameTd, p.quantization, "or-sub");
+      if ((p.variants || []).length > 1) tag(nameTd, p.variants.length + " endpoints", "or-sub");
+      cell(money(p.input), "num");
+      cell(money(p.output), "num");
+      cell(money(p.cache_read), "num");
+      cell(tokens(p.context), "num");
+      cell(p.uptime === null ? "—" : p.uptime + "%", "num");
+      if (p.privacy_url && /^https:\/\//.test(p.privacy_url)) {
+        const a = document.createElement("a");
+        a.href = p.privacy_url;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.textContent = p.name;
+        a.title = "Privacy policy";
+        nameCell.appendChild(a);
+      } else {
+        nameCell.textContent = p.name;
+      }
+      box.value = p.slug;
+      box.checked = chosen.has(p.slug);
+      tr.addEventListener("click", (event) => {
+        if (event.target === box || event.target.closest("a")) return;
+        box.checked = !box.checked;
+        box.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      body.appendChild(tr);
+    });
+    function checked() {
+      return Array.from(body.querySelectorAll("input:checked")).map((el) => el.value);
+    }
+    function sync() {
+      const n = checked().length;
+      hint.textContent = n ? `Only ${n} provider${n === 1 ? "" : "s"} will be used.` : "No providers checked: any provider can serve it.";
+    }
+    body.addEventListener("change", sync);
+    table.hidden = false;
+    actions.hidden = false;
+    sync();
+    async function save(slugs) {
+      const buttons = actions.querySelectorAll("button");
+      buttons.forEach((b) => { b.disabled = true; });
+      try {
+        const res = await send("POST", "/sources/openrouter/providers", { model: row.dataset.id, providers: slugs });
+        setPinned(row, (res.selected || []).length);
+        closeDrawer(row);
+        say(res.selected && res.selected.length ? "Providers pinned" : "Using any provider");
+        refresh();
+      } catch (err) {
+        say(err.message, true);
+        buttons.forEach((b) => { b.disabled = false; });
+      }
+    }
+    drawer.querySelector("[data-or-save]").addEventListener("click", () => save(checked()));
+    drawer.querySelector("[data-or-any]").addEventListener("click", () => save([]));
+  }
+
+  list.addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-or-providers]");
+    if (!btn) return;
+    const row = btn.closest("[data-or-row]");
+    if (row.classList.contains("is-open")) closeDrawer(row);
+    else openDrawer(row);
+  });
+
+  list.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    const row = event.target.closest(".is-open");
+    if (!row) return;
+    closeDrawer(row);
+    row.querySelector("[data-or-providers]").focus();
+  });
+
+  root.querySelectorAll("[data-or-view]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      view = btn.dataset.orView;
+      root.querySelectorAll("[data-or-view]").forEach((b) => {
+        const on = b === btn;
+        b.classList.toggle("on", on);
+        b.setAttribute("aria-pressed", on ? "true" : "false");
+      });
+      refresh();
+    });
+  });
+  filter.addEventListener("input", refresh);
+  filter.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") event.preventDefault();
+  });
+  refresh();
 })();
 
 (function accountMenu() {

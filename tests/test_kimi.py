@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 import sys
 import tempfile
@@ -116,13 +115,6 @@ class KimiParseTest(unittest.TestCase):
         self.assertEqual(by_id["k3"]["efforts"], ("low", "high", "max"))
         self.assertEqual(by_id["k3"]["default_effort"], "high")
         self.assertEqual(by_id["kimi-for-coding-highspeed"]["efforts"], ())
-
-    def test_k3_never_maps_to_openrouter(self):
-        from app.sources.openrouter import pool_openrouter_id, resolve_pool_alias
-
-        self.assertIsNone(pool_openrouter_id("k3"))
-        self.assertIsNone(pool_openrouter_id("kimi-for-coding"))
-        self.assertIsNone(asyncio.run(resolve_pool_alias("k3", 1)))
 
 
 class KimiPoolTest(unittest.IsolatedAsyncioTestCase):

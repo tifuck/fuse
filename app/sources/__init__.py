@@ -71,7 +71,6 @@ PROVIDER_LABELS = {
 }
 
 POOL_TYPES = frozenset({"grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude"})
-POOL_RETRYABLE = frozenset({402, 429, 500, 502, 503, 529})
 _SEEDED_MODELS = {
     "grok": GROK_MODELS,
     "chatgpt": CHATGPT_MODELS,
@@ -386,21 +385,6 @@ def _openrouter_source() -> Source | None:
     return None
 
 
-async def openrouter_pool_fallback(model: str, user_id: int | None) -> tuple[Source, str] | None:
-    """If this user has a personal OpenRouter key, map a pool model onto it."""
-    if not user_id:
-        return None
-    from . import openrouter as openrouter_mod
-
-    or_src = _openrouter_source()
-    if not or_src:
-        return None
-    aliased = await openrouter_mod.resolve_pool_alias(model, user_id)
-    if not aliased:
-        return None
-    return or_src, aliased
-
-
 def _seed_pool_catalogs() -> None:
     stale = time.time() - _MODEL_TTL - 1
     for s in all_enabled():
@@ -439,16 +423,6 @@ async def models_union(
         for n in m:
             if n not in names:
                 names.append(n)
-    if user_id and user_has_openrouter(user_id):
-        from . import openrouter as openrouter_mod
-
-        catalog = openrouter_mod.cached_catalog()
-        if catalog is None:
-            catalog = await openrouter_mod.fetch_catalog()
-        for aliases in openrouter_mod.pool_aliases_from_catalog(catalog).values():
-            for name in aliases:
-                if name not in names:
-                    names.append(name)
     return names
 
 
@@ -530,9 +504,6 @@ async def pick(
         resolved = await openrouter_mod.resolve(model, user_id)
         if resolved:
             return or_src, resolved[0]
-        aliased = await openrouter_mod.resolve_pool_alias(model, user_id)
-        if aliased:
-            return or_src, aliased
     await models_union(
         allow_grok=allow_grok,
         allow_chatgpt=allow_chatgpt,
@@ -632,33 +603,6 @@ async def models_by_source(
         }
         for s, names in zip(sources, results)
     ]
-    if user_id and user_has_openrouter(user_id):
-        from . import openrouter as openrouter_mod
-
-        catalog = openrouter_mod.cached_catalog()
-        if catalog is None:
-            catalog = await openrouter_mod.fetch_catalog()
-        aliases = openrouter_mod.pool_aliases_from_catalog(catalog)
-        by_type = {g["type"]: g for g in groups}
-        for type_id, names in aliases.items():
-            if not names:
-                continue
-            existing = by_type.get(type_id)
-            if existing is None:
-                groups.append(
-                    {
-                        "type": type_id,
-                        "name": PROVIDER_LABELS.get(type_id, type_id),
-                        "label": PROVIDER_LABELS.get(type_id, type_id),
-                        "models": list(names),
-                    }
-                )
-                by_type[type_id] = groups[-1]
-                continue
-            have = set(existing.get("models") or [])
-            extra = [name for name in names if name not in have]
-            if extra:
-                existing["models"] = list(existing.get("models") or []) + extra
     return groups
 
 

@@ -141,7 +141,7 @@
     </div>
   </div>
   <div class="probe-out hidden" {% if openrouter %}id="probe-{{ openrouter['id'] }}"{% endif %}></div>
-  <p class="aside">There is no site-wide OpenRouter key. Each user adds their own key on <a href="/sources">Sources</a>. Pool models such as GLM then retry on OpenRouter when that user has a key. Test checks the catalog; it does not send a completion.</p>
+  <p class="aside">There is no site-wide OpenRouter key. Each user adds their own key on <a href="/sources">Sources</a>. Test checks the catalog; it does not send a completion.</p>
   <p class="usage-sub">{{ openrouter_user_count }} personal key{{ 's' if openrouter_user_count != 1 else '' }} on Sources</p>
   <form method="post" action="/admin/sources/openrouter" class="stack">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

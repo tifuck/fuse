@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from app import db, pricing
-from app.sources import chatgpt, openrouter
+from app.sources import chatgpt
 from tests.mariadb_fixture import isolated_database
 
 CODEX_CATALOG = {
@@ -80,13 +80,6 @@ def test_new_codex_model_is_a_pool_model_once_listed(fresh_chatgpt_cache):
     assert chatgpt.is_chatgpt_model("gpt-6.1-sol")
     # Seeds stay listed even when the live catalog omits them.
     assert chatgpt.is_chatgpt_model("gpt-5.4")
-
-
-def test_openrouter_alias_includes_live_pool_models(fresh_chatgpt_cache):
-    catalog = {"by_id": {"openai/gpt-6.1-sol": {"id": "openai/gpt-6.1-sol"}}}
-    assert "gpt-6.1-sol" not in openrouter.pool_aliases_from_catalog(catalog)["chatgpt"]
-    chatgpt._remember_models(["gpt-6.1-sol"])
-    assert "gpt-6.1-sol" in openrouter.pool_aliases_from_catalog(catalog)["chatgpt"]
 
 
 def test_pick_keeps_new_codex_model_on_the_pool(fresh_chatgpt_cache):

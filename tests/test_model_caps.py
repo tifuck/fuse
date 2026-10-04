@@ -83,7 +83,7 @@ def test_devin_refuses_remote_images_instead_of_dropping():
 
 
 def test_invoke_chat_strips_per_route_and_reports(monkeypatch):
-    """Pool route is text-only; the OpenRouter fallback sees images again."""
+    """Pool route is text-only; a failed pool attempt is not retried elsewhere."""
     import asyncio
 
     from app import api
@@ -102,10 +102,8 @@ def test_invoke_chat_strips_per_route_and_reports(monkeypatch):
     for name in ("grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude"):
         monkeypatch.setattr(api, f"user_has_{name}", lambda _uid: True)
     monkeypatch.setattr(api, "pick", lambda *a, **k: asyncio.sleep(0, (Src("zai", 503), "glm-5.3")))
-    monkeypatch.setattr(api, "openrouter_pool_fallback", lambda *a, **k: asyncio.sleep(0, (Src("openrouter", 200), "z/glm-eye")))
     monkeypatch.setattr(api, "_safe_record_usage", lambda *a, **k: True)
     monkeypatch.setattr(api, "session_id_from", lambda *a, **k: None)
-    monkeypatch.setattr(openrouter, "cached_catalog", lambda: {"by_id": {"z/glm-eye": {"image": True}}})
 
     class Req:
         headers = {}
@@ -113,9 +111,9 @@ def test_invoke_chat_strips_per_route_and_reports(monkeypatch):
 
     body = {"model": "glm-5.3", "messages": _turn()}
     *_, result = asyncio.run(api._invoke_chat(Req(), {"id": 1}, body))
-    assert sent[0] == ("zai", [{"role": "user", "content": "what is this\n\n" + model_caps.OMITTED}])
-    assert sent[1][1][0]["content"][1]["image_url"]["url"] == PNG
-    assert "X-Fuse-Images-Omitted" not in result.response_headers
+    assert sent == [("zai", [{"role": "user", "content": "what is this\n\n" + model_caps.OMITTED}])]
+    assert result.status == 503
+    assert result.response_headers["X-Fuse-Images-Omitted"] == "1"
     assert body["messages"] == _turn()
 
     sent.clear()

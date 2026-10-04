@@ -288,7 +288,6 @@ def test_explicit_namespace_cannot_be_overridden_by_generic_route_or_fallback(ba
     monkeypatch.setattr(sources, "_sources", lambda **kwargs: [src, generic])
     fallback = AsyncMock(return_value=(generic, "wrong-upstream"))
     monkeypatch.setattr(sources.openrouter, "resolve", fallback)
-    monkeypatch.setattr(sources.openrouter, "resolve_pool_alias", fallback)
     monkeypatch.setattr(sources, "_openrouter_source", lambda: generic)
     db.execute("INSERT INTO model_routes (model, source_id, upstream_model) VALUES (?,?,?)", ("explabs/" + MODEL, src.source_id, "wrong-upstream"))
 
@@ -568,7 +567,7 @@ def test_stream_early_close_releases_response_and_client_even_before_iteration(b
 
 
 @pytest.mark.parametrize("has_key", [False, True])
-def test_api_invoke_explicit_explabs_requires_key_and_never_prefers_openrouter(backend, monkeypatch, has_key):
+def test_api_invoke_explicit_explabs_requires_key(backend, monkeypatch, has_key):
     from fastapi import HTTPException
     from starlette.requests import Request
     from app import api
@@ -581,9 +580,7 @@ def test_api_invoke_explicit_explabs_requires_key_and_never_prefers_openrouter(b
     result = ChatResult(status=429, body={"error": {"message": "Synthetic quota exhausted"}})
     src = SimpleNamespace(type_id="explabs", source_id=123, chat=AsyncMock(return_value=result))
     pick = AsyncMock(return_value=(src, MODEL))
-    fallback = AsyncMock()
     monkeypatch.setattr(api, "pick", pick)
-    monkeypatch.setattr(api, "openrouter_pool_fallback", fallback)
     monkeypatch.setattr(api, "_record_attempts", lambda *args: None)
     request = Request({"type": "http", "method": "POST", "path": "/v1/chat/completions", "headers": []})
     body = {"model": "explabs/" + MODEL, "messages": [{"role": "user", "content": "Synthetic hello"}]}
@@ -591,17 +588,16 @@ def test_api_invoke_explicit_explabs_requires_key_and_never_prefers_openrouter(b
     async def run():
         if not has_key:
             with pytest.raises(HTTPException) as exc:
-                await api.invoke_chat(request, {"id": uid}, body, prefer_openrouter=True)
+                await api.invoke_chat(request, {"id": uid}, body)
             assert exc.value.status_code == 403
             assert "Experiential Labs API key" in exc.value.detail
             pick.assert_not_awaited()
             src.chat.assert_not_awaited()
         else:
-            invoked = await api.invoke_chat(request, {"id": uid}, body, prefer_openrouter=True)
+            invoked = await api.invoke_chat(request, {"id": uid}, body)
             assert invoked[-1] is result
             assert invoked[1] is src and invoked[2] == MODEL
             assert pick.await_args.kwargs["user_id"] == uid
             src.chat.assert_awaited_once_with({**body, "model": MODEL}, user_id=uid, session_id=None)
-        fallback.assert_not_awaited()
 
     asyncio.run(run())

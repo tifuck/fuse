@@ -2891,18 +2891,9 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
         last_call_sig: tuple | None = None
         extra_wrap = False
         last_compact_used = None
-        resume_round_i = -1
-        pool_resume_no = 0
-        prefer_or = False
         while True:
             from . import chat_store as store
 
-            if completion_i != resume_round_i:
-                # New round: the OpenRouter escalation below is per-round, not
-                # per-turn — a later healthy round starts on the pool again.
-                resume_round_i = completion_i
-                pool_resume_no = 0
-                prefer_or = False
             if not (is_child or completion_i < completion_limit or extra_wrap):
                 if run_id and not store.close_steer_window(str(run_id)):
                     extra_wrap = True
@@ -3083,7 +3074,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     _user = src = upstream = requested = result = None
                     # `invoked`, not `payload`: the loop variable must not
                     # shadow the request payload gen() was built from.
-                    async for kind, invoked in _with_beats(api.invoke_chat(request, user, send, prefer_openrouter=prefer_or)):
+                    async for kind, invoked in _with_beats(api.invoke_chat(request, user, send)):
                         if kind == "beat":
                             yield _sse({"fuse": {"event": "heartbeat"}})
                             continue
@@ -3098,8 +3089,6 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                         and not await request.is_disconnected()
                     ):
                         resumes_left -= 1
-                        pool_resume_no += 1
-                        prefer_or = prefer_or or (src_type in POOL_TYPES and pool_resume_no >= 2)
                         attempt_no = MAX_RESUME_RETRIES - resumes_left
                         delay = _resume_delay(attempt_no)
                         yield _sse(
@@ -3250,8 +3239,6 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     and not await request.is_disconnected()
                 ):
                     resumes_left -= 1
-                    pool_resume_no += 1
-                    prefer_or = prefer_or or (src_type in POOL_TYPES and pool_resume_no >= 2)
                     attempt_no = MAX_RESUME_RETRIES - resumes_left
                     delay = _resume_delay(attempt_no, _header_retry_after(getattr(result, "response_headers", None)))
                     yield _sse(
@@ -3313,8 +3300,6 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     and not await request.is_disconnected()
                 ):
                     resumes_left -= 1
-                    pool_resume_no += 1
-                    prefer_or = prefer_or or (src_type in POOL_TYPES and pool_resume_no >= 2)
                     attempt_no = MAX_RESUME_RETRIES - resumes_left
                     delay = _resume_delay(attempt_no)
                     yield _sse(
@@ -3363,8 +3348,6 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     idle_stalls += 1
                 if _should_resume(err_code, err_msg, resumes_left=resumes_left, idle_stalls=idle_stalls) and not await request.is_disconnected():
                     resumes_left -= 1
-                    pool_resume_no += 1
-                    prefer_or = prefer_or or (src_type in POOL_TYPES and pool_resume_no >= 2)
                     attempt_no = MAX_RESUME_RETRIES - resumes_left
                     delay = _resume_delay(
                         attempt_no, _header_retry_after(getattr(result, "response_headers", None))

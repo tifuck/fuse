@@ -452,7 +452,7 @@ async def _models_page_families(user) -> tuple[list[dict], list[dict]]:
                     "type": "openrouter",
                     "title": "OpenRouter",
                     "models": _model_rows("openrouter", names, catalog),
-                    "why": "Free OpenRouter models are turned off for this account. Pool models still fall back to your key automatically.",
+                    "why": "Free OpenRouter models are turned off for your account.",
                     "href": "/sources",
                     "link_label": "Open Sources",
                 }

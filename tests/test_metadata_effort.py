@@ -34,7 +34,6 @@ def test_invoke_chat_replaces_effort_for_the_resolved_route(monkeypatch):
         monkeypatch.setattr(api, f"user_has_{name}", lambda _uid: True)
     monkeypatch.setattr(api, "_safe_record_usage", lambda *a, **k: True)
     monkeypatch.setattr(api, "session_id_from", lambda *a, **k: None)
-    monkeypatch.setattr(api, "openrouter_pool_fallback", lambda *a, **k: asyncio.sleep(0, (Src("openrouter", 200), "z/glm")))
 
     class Req:
         headers = {}
@@ -49,7 +48,7 @@ def test_invoke_chat_replaces_effort_for_the_resolved_route(monkeypatch):
 
     assert run("grok", cheap_reasoning=True) == [("grok", "low")]
     assert run("chatgpt", cheap_reasoning=True) == [("chatgpt", None)]
-    # The OpenRouter retry after a pool failure is re-resolved too.
-    assert run("zai", 503, cheap_reasoning=True) == [("zai", "none"), ("openrouter", None)]
+    # A failed pool attempt is not retried on another route.
+    assert run("zai", 503, cheap_reasoning=True) == [("zai", "none")]
     # Ordinary chat keeps the caller's effort.
     assert run("grok") == [("grok", "high")]

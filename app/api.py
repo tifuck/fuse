@@ -14,12 +14,10 @@ from .config import settings
 from .proxy import merge_usage, usage_from_obj
 from .security import client_ip, limiter
 from .sources import (
-    POOL_RETRYABLE,
     POOL_TYPES,
     catalog_unavailable_for,
     metadata_effort,
     models_union,
-    openrouter_pool_fallback,
     pick,
     user_has_chatgpt,
     user_has_devin,
@@ -34,9 +32,6 @@ from .sources.base import ChatResult
 from .sources import openrouter as openrouter_mod
 from .sources import explabs as explabs_mod
 from .sources import devin as devin_mod
-from .sources import kimi as kimi_mod
-from .sources import mimo as mimo_mod
-from .sources import claude as claude_mod
 from .sources.pool_session import session_id_from
 
 router = APIRouter()
@@ -440,19 +435,17 @@ async def opencode_provider(request: Request):
     }
 
 
-async def invoke_chat(request: Request, user, body: dict, *, prefer_openrouter: bool = False, cheap_reasoning: bool = False):
+async def invoke_chat(request: Request, user, body: dict, *, cheap_reasoning: bool = False):
     """Pick a source and run one completion.
 
     Returns (user, src, upstream, requested_model, result). Failed pool
     attempts are recorded. The caller records successful usage.
-    prefer_openrouter: after a mid-stream pool death, skip the pool and
-    map the same Fuse model onto the user's OpenRouter key when one exists.
     cheap_reasoning: replace any reasoning_effort with the cheapest one the
     resolved provider accepts (title/recap calls).
     """
     try:
         user = dict(user)
-        return await _invoke_chat(request, user, body, prefer_openrouter=prefer_openrouter, cheap_reasoning=cheap_reasoning)
+        return await _invoke_chat(request, user, body, cheap_reasoning=cheap_reasoning)
     except HTTPException as exc:
         model = body.get("model") if isinstance(body, dict) else ""
         messages = body.get("messages") if isinstance(body, dict) else None
@@ -475,7 +468,7 @@ def _set_cheap_reasoning(body: dict, type_id: str, model: str, user_id: int) -> 
         body["reasoning_effort"] = effort
 
 
-async def _invoke_chat(request: Request, user, body: dict, *, prefer_openrouter: bool = False, cheap_reasoning: bool = False):
+async def _invoke_chat(request: Request, user, body: dict, *, cheap_reasoning: bool = False):
     user = dict(user)
     if not isinstance(body, dict):
         raise HTTPException(400, "Invalid JSON")
@@ -507,33 +500,22 @@ async def _invoke_chat(request: Request, user, body: dict, *, prefer_openrouter:
     kimi_ok = user_has_kimi(user["id"])
     mimo_ok = user_has_mimo(user["id"])
     claude_ok = user_has_claude(user["id"])
-    picked = None
-    if (
-        prefer_openrouter
-        and not model.startswith("explabs/")
-        and not devin_mod.is_devin_model(model)
-        and not kimi_mod.is_kimi_model(model)
-        and not mimo_mod.is_mimo_model(model)
-        and not claude_mod.is_claude_model(model)
-    ):
-        picked = await openrouter_pool_fallback(model, user["id"])
     if model.startswith("explabs/") and not explabs_mod.user_has_explabs(user["id"]):
         raise HTTPException(403, "Connect an Experiential Labs API key to use its models")
-    if picked is None:
-        try:
-            picked = await pick(
-                model,
-                allow_grok=grok_ok,
-                allow_chatgpt=chatgpt_ok,
-                allow_zai=zai_ok,
-                allow_devin=devin_ok,
-                allow_kimi=kimi_ok,
-                allow_mimo=mimo_ok,
-                allow_claude=claude_ok,
-                user_id=user["id"],
-            )
-        except explabs_mod.CatalogError:
-            raise HTTPException(503, "Experiential Labs model catalog is temporarily unavailable") from None
+    try:
+        picked = await pick(
+            model,
+            allow_grok=grok_ok,
+            allow_chatgpt=chatgpt_ok,
+            allow_zai=zai_ok,
+            allow_devin=devin_ok,
+            allow_kimi=kimi_ok,
+            allow_mimo=mimo_ok,
+            allow_claude=claude_ok,
+            user_id=user["id"],
+        )
+    except explabs_mod.CatalogError:
+        raise HTTPException(503, "Experiential Labs model catalog is temporarily unavailable") from None
     if not picked:
         if model.startswith("explabs/") and not explabs_mod.user_has_explabs(user["id"]):
             raise HTTPException(403, "Reconnect your Experiential Labs API key to use its models")
@@ -565,8 +547,7 @@ async def _invoke_chat(request: Request, user, body: dict, *, prefer_openrouter:
     if cheap_reasoning:
         _set_cheap_reasoning(body, src.type_id, model, user["id"])
     body["model"] = upstream
-    original_messages = body["messages"]
-    body["messages"], omitted = model_caps.prepare(original_messages, src.type_id, upstream, user_id=user["id"])
+    body["messages"], omitted = model_caps.prepare(body["messages"], src.type_id, upstream, user_id=user["id"])
     session_id = None
     if src.type_id in POOL_TYPES or src.type_id in ("openai", "ollama", "openrouter"):
         session_id = session_id_from(request.headers, body, user_id=user["id"], model=upstream)
@@ -582,54 +563,6 @@ async def _invoke_chat(request: Request, user, body: dict, *, prefer_openrouter:
             model=upstream,
         )
     _record_attempts(result, user, src, upstream, requested)
-    if (
-        result.status != 200
-        and result.stream is None
-        and src.type_id in POOL_TYPES
-        and result.status in POOL_RETRYABLE
-    ):
-        fallback = None
-        requested_id = str(requested)
-        if not devin_mod.is_devin_model(requested_id) and not kimi_mod.is_kimi_model(requested_id) and not mimo_mod.is_mimo_model(requested_id) and not claude_mod.is_claude_model(requested_id):
-            fallback = await openrouter_pool_fallback(requested_id, user["id"])
-        if fallback:
-            # The pool attempt may still have burned quota, so its tokens/cost
-            # are recorded; but the fallback response carries the single
-            # request count so one client request is never counted twice.
-            _safe_record_usage(
-                user["id"],
-                src.source_id,
-                result.credential_id,
-                upstream,
-                result.usage,
-                key_id=user.get("key_id"),
-                provider=src.type_id,
-                requested_model=requested,
-                request_status="failed",
-                count_request=False,
-            )
-            or_src, or_upstream = fallback
-            retry_body = dict(body)
-            if cheap_reasoning:
-                _set_cheap_reasoning(retry_body, or_src.type_id, requested_id, user["id"])
-            retry_body["model"] = or_upstream
-            retry_body["messages"], omitted = model_caps.prepare(original_messages, or_src.type_id, or_upstream)
-            retry_session = session_id_from(
-                request.headers, retry_body, user_id=user["id"], model=or_upstream
-            )
-            try:
-                retry = await _run_chat(or_src, retry_body, user["id"], session_id=retry_session)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.exception("OpenRouter fallback failed provider=openrouter")
-                retry = ChatResult(
-                    status=502,
-                    body={"error": {"message": f"upstream request failed ({type(exc).__name__})"}},
-                    model=or_upstream,
-                )
-            _record_attempts(retry, user, or_src, or_upstream, requested)
-            src, upstream, result = or_src, or_upstream, retry
     if omitted:
         result.response_headers = {**result.response_headers, "X-Fuse-Images-Omitted": str(omitted)}
     return user, src, upstream, requested, result

@@ -798,18 +798,8 @@ async def user_sources(request: Request):
             }
         )
         _fuse_fill([or_card])
-    openrouter_paid_all = bool(or_access.get("paid_models_all"))
-    openrouter_paid_models: list[dict] = []
-    if or_card and not openrouter_paid_all:
-        pref = openrouter_mod.paid_models_pref(user["id"])
-        enabled = set(pref["enabled"])
-        catalog = openrouter_mod.cached_catalog() or {}
-        for mid in catalog.get("paid_ids") or []:
-            rec = (catalog.get("by_id") or {}).get(mid) or {}
-            openrouter_paid_models.append(
-                {"id": mid, "name": str(rec.get("name") or mid), "enabled": mid in enabled}
-            )
-        openrouter_paid_models.sort(key=lambda row: row["name"].lower())
+    openrouter_models = _openrouter_model_rows(user["id"]) if or_card else []
+    openrouter_privacy = openrouter_mod.provider_prefs(user["id"]) if or_card else {}
     explabs_sid = explabs_mod.ensure_explabs_source()
     explabs_access = explabs_mod.access_state(user["id"])
     explabs_owned = explabs_mod.user_credential(user["id"], explabs_sid)
@@ -904,9 +894,8 @@ async def user_sources(request: Request):
         openrouter_ok=or_access["ok"],
         openrouter_reason=or_access["reason"],
         openrouter_user_key=or_access["user_key"],
-        openrouter_free_models=or_access["free_models"],
-        openrouter_paid_all=openrouter_paid_all,
-        openrouter_paid_models=openrouter_paid_models,
+        openrouter_models=openrouter_models,
+        openrouter_privacy=openrouter_privacy,
         openrouter_account=or_card,
         openrouter_flash_kind=flash[0] if flash and flash[2] == "openrouter" else "",
         openrouter_flash_msg=flash[1] if flash and flash[2] == "openrouter" else "",
@@ -1756,7 +1745,7 @@ async def openrouter_free_models_toggle(request: Request, enabled: str = Form("0
         "ok",
         "Free OpenRouter models are on."
         if on
-        else "Free OpenRouter models are off. Pool models still fall back to your key automatically.",
+        else "Free OpenRouter models are off.",
         "openrouter",
     )
     return RedirectResponse("/sources", status_code=303)
@@ -1803,6 +1792,146 @@ async def openrouter_paid_models_select(request: Request):
         "openrouter",
     )
     return RedirectResponse("/sources", status_code=303)
+
+
+def _price_m(value) -> float | None:
+    try:
+        rate = float(value)
+    except (TypeError, ValueError):
+        return None
+    return round(rate * 1_000_000, 4) if rate >= 0 else None
+
+
+def _openrouter_model_rows(user_id: int) -> list[dict]:
+    """Every catalog model with this account's switch state, list price and
+    pinned-provider count. Reads only the shared in-memory catalog."""
+    catalog = openrouter_mod.cached_catalog() or {}
+    by_id = catalog.get("by_id") or {}
+    pref = openrouter_mod.paid_models_pref(user_id)
+    free_on = openrouter_mod.free_models_enabled(user_id)
+    allowed = set(pref["enabled"])
+    pinned = openrouter_mod.provider_prefs(user_id)["models"]
+    rows = []
+    for mid, rec in by_id.items():
+        free = bool(rec.get("free"))
+        pricing = rec.get("pricing") or {}
+        rows.append(
+            {
+                "id": mid,
+                "name": str(rec.get("name") or mid),
+                "author": str(rec.get("author") or ""),
+                "free": free,
+                "enabled": free_on if free else (pref["all"] or mid in allowed),
+                "input": None if free else _price_m(pricing.get("prompt")),
+                "output": None if free else _price_m(pricing.get("completion")),
+                "context": rec.get("context_length"),
+                "pinned": len(pinned.get(mid) or []),
+            }
+        )
+    rows.sort(key=lambda row: (not row["enabled"], row["name"].lower()))
+    return rows
+
+
+async def _openrouter_json(request: Request):
+    user, redir = require_user(request)
+    if redir:
+        return None, None, JSONResponse({"error": "auth"}, status_code=401)
+    if not openrouter_mod.user_has_openrouter(user["id"]):
+        return None, None, JSONResponse({"error": "Add your OpenRouter key first."}, status_code=400)
+    if request.method == "GET":
+        return user, {}, None
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        return None, None, JSONResponse({"error": "Invalid JSON"}, status_code=400)
+    return user, body, None
+
+
+@router.post("/sources/openrouter/settings")
+async def openrouter_settings(request: Request):
+    """Account switches: free models, every paid model, privacy routing."""
+    user, body, err = await _openrouter_json(request)
+    if err:
+        return err
+    uid = user["id"]
+    if isinstance(body.get("free_models"), bool):
+        openrouter_mod.set_free_models(uid, body["free_models"])
+    if isinstance(body.get("paid_all"), bool):
+        if body["paid_all"]:
+            openrouter_mod.set_paid_models_all(uid, True)
+        elif openrouter_mod.paid_models_pref(uid)["all"]:
+            openrouter_mod.set_paid_models_enabled(uid, [])
+    if isinstance(body.get("data_collection_deny"), bool) or isinstance(body.get("zdr"), bool):
+        prefs = openrouter_mod.provider_prefs(uid)
+        deny = body.get("data_collection_deny")
+        zdr = body.get("zdr")
+        openrouter_mod.set_privacy(
+            uid,
+            data_collection_deny=deny if isinstance(deny, bool) else prefs["data_collection"] == "deny",
+            zdr=zdr if isinstance(zdr, bool) else prefs["zdr"],
+        )
+    invalidate_model_cache("openrouter")
+    prefs = openrouter_mod.provider_prefs(uid)
+    return JSONResponse(
+        {
+            "free_models": openrouter_mod.free_models_enabled(uid),
+            "paid_all": openrouter_mod.paid_models_pref(uid)["all"],
+            "data_collection_deny": prefs["data_collection"] == "deny",
+            "zdr": prefs["zdr"],
+        }
+    )
+
+
+@router.post("/sources/openrouter/model")
+async def openrouter_model_toggle(request: Request):
+    user, body, err = await _openrouter_json(request)
+    if err:
+        return err
+    model = str(body.get("model") or "").strip()
+    rec = ((openrouter_mod.cached_catalog() or {}).get("by_id") or {}).get(model)
+    if not rec or rec.get("free"):
+        return JSONResponse({"error": "Unknown paid model."}, status_code=400)
+    if openrouter_mod.paid_models_pref(user["id"])["all"]:
+        return JSONResponse({"error": "Every paid model is already on."}, status_code=409)
+    if not openrouter_mod.set_paid_model(user["id"], model, bool(body.get("enabled"))):
+        return JSONResponse({"error": "You can enable up to 500 paid models."}, status_code=400)
+    invalidate_model_cache("openrouter")
+    return JSONResponse({"enabled": openrouter_mod.paid_model_allowed(user["id"], model)})
+
+
+@router.get("/sources/openrouter/providers")
+async def openrouter_model_providers(request: Request, model: str = ""):
+    user, _body, err = await _openrouter_json(request)
+    if err:
+        return err
+    model = model.strip()
+    if model not in ((openrouter_mod.cached_catalog() or {}).get("by_id") or {}):
+        return JSONResponse({"error": "Unknown model."}, status_code=404)
+    if not limiter.allow(f"openrouter-endpoints:{user['id']}", 60, 60):
+        return JSONResponse({"error": "Too many requests. Try again in a minute."}, status_code=429)
+    rows = await openrouter_mod.fetch_model_endpoints(model)
+    if rows is None:
+        return JSONResponse({"error": "OpenRouter is not reachable right now."}, status_code=503)
+    selected = openrouter_mod.provider_prefs(user["id"])["models"].get(model) or []
+    return JSONResponse({"providers": rows, "selected": selected})
+
+
+@router.post("/sources/openrouter/providers")
+async def openrouter_model_providers_save(request: Request):
+    user, body, err = await _openrouter_json(request)
+    if err:
+        return err
+    model = str(body.get("model") or "").strip()
+    slugs = body.get("providers")
+    if model not in ((openrouter_mod.cached_catalog() or {}).get("by_id") or {}) or not isinstance(slugs, list):
+        return JSONResponse({"error": "Invalid request."}, status_code=400)
+    if not openrouter_mod.set_model_providers(user["id"], model, [s for s in slugs if isinstance(s, str)]):
+        return JSONResponse(
+            {"error": f"You can pin providers on up to {openrouter_mod.MAX_PREF_MODELS} models."}, status_code=400
+        )
+    return JSONResponse({"selected": openrouter_mod.provider_prefs(user["id"])["models"].get(model) or []})
 
 
 @router.get("/admin/sources", response_class=HTMLResponse)

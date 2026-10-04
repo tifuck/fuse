@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import math
 import time
@@ -252,70 +251,6 @@ def looks_like_openrouter_id(model: str) -> bool:
     return bool(author) and bool(slug) and author != "openrouter"
 
 
-def pool_openrouter_id(model: str) -> str | None:
-    """OpenRouter upstream id for a Fuse pool model (glm-5.3-flash → z-ai/glm-5.3-flash)."""
-    mid = (model or "").strip()
-    if not mid or looks_like_openrouter_id(mid):
-        return None
-    if mid.startswith("glm-"):
-        return f"z-ai/{mid}"
-    if mid.startswith("grok"):
-        return f"x-ai/{mid}"
-    if mid.startswith("gpt-"):
-        from .chatgpt import base_slug
-
-        return f"openai/{base_slug(mid)}"
-    return None
-
-
-def pool_aliases_from_catalog(catalog: dict | None) -> dict[str, list[str]]:
-    """Fuse pool ids that exist as standard (non-:free) OpenRouter SKUs."""
-    from . import chatgpt, grok, zai
-
-    by_id = (catalog or {}).get("by_id") or {}
-    out: dict[str, list[str]] = {"zai": [], "grok": [], "chatgpt": []}
-    for type_id, author, seeded, cache in (
-        ("zai", "z-ai", zai.ZAI_MODELS, zai._models_cache),
-        ("grok", "x-ai", grok.GROK_MODELS, grok._models_cache),
-        ("chatgpt", "openai", chatgpt.CHATGPT_MODELS, chatgpt._models_cache),
-    ):
-        # Seeds plus whatever the pool's live catalog has added since.
-        for mid in dict.fromkeys(list(seeded) + list(cache[1] if cache else [])):
-            if f"{author}/{mid}" in by_id:
-                out[type_id].append(mid)
-    return out
-
-
-async def resolve_pool_alias(model: str, user_id: int | None, catalog: dict | None = None) -> str | None:
-    """Upstream OpenRouter id if this user can call this pool model via their key."""
-    if not user_id or not user_has_openrouter(user_id):
-        return None
-    candidate = pool_openrouter_id(model)
-    if not candidate:
-        return None
-    catalog = catalog or await fetch_catalog()
-    rec = (catalog.get("by_id") or {}).get(candidate)
-    if rec is None:
-        return None
-    return candidate
-
-
-def _first_party(model_id: str) -> str | None:
-    author = (model_id or "").split("/", 1)[0].lstrip("~")
-    return author or None
-
-
-def provider_prefs(model_id: str, *, free: bool) -> dict:
-    """Free traffic is capped at $0. Paid traffic keeps provider fallbacks but
-    sets no manual order: OpenRouter disables its cache sticky routing when an
-    explicit provider.order is present, and stickiness is what keeps provider
-    local prompt caches warm across turns.
-    """
-    if free:
-        return {"max_price": {"prompt": 0, "completion": 0}, "allow_fallbacks": True}
-    return {"allow_fallbacks": True}
-
-
 def global_credential(source_id: int | None = None):
     sid = source_id or ensure_openrouter_source()
     for row in db.fetchall(
@@ -353,8 +288,7 @@ def user_has_openrouter(user_id: int) -> bool:
 
 def free_models_enabled(user_id: int | None) -> bool:
     """Free OpenRouter SKUs are listed and directly callable only when the
-    user has a key and has not turned free models off. The toggle never
-    affects the automatic paid fallback for pooled models."""
+    user has a key and has not turned free models off."""
     if not user_id:
         return False
     owned = user_credential(user_id)
@@ -421,6 +355,199 @@ def set_paid_models_enabled(user_id: int, enabled: list) -> bool:
     extra["paid_models"] = {"all": False, "enabled": clean[:500]}
     accounts.update_extra(cred["id"], extra)
     return True
+
+
+def set_paid_model(user_id: int, upstream: str, on: bool) -> bool:
+    """Enable or disable one paid SKU on the explicit allowlist."""
+    pref = paid_models_pref(user_id)
+    if pref["all"]:
+        return False
+    enabled = [mid for mid in pref["enabled"] if mid != upstream]
+    if on:
+        if len(enabled) >= 500:
+            return False
+        enabled.append(upstream)
+    return set_paid_models_enabled(user_id, enabled)
+
+
+# --- Provider routing preferences ------------------------------------------
+#
+# OpenRouter account settings cannot be changed from here, so Fuse applies the
+# user's choices per request through the documented `provider` object:
+# `only` (per-model provider allowlist), `data_collection` and `zdr`.
+# Fallbacks stay on, so OpenRouter still moves between the allowed providers.
+
+ENDPOINTS_TTL = 3600.0
+PROVIDERS_TTL = 86400.0
+_ENDPOINTS_MAX = 512
+MAX_PREF_MODELS = 200
+MAX_PREF_SLUGS = 50
+_endpoints: dict[str, tuple[float, list[dict]]] = {}
+_providers: tuple[float, dict[str, dict]] | None = None
+
+
+def provider_prefs(user_id: int | None) -> dict:
+    """{"data_collection": "deny"|None, "zdr": bool, "models": {upstream: [slugs]}}"""
+    owned = user_credential(user_id) if user_id else None
+    raw = owned[1].get("provider_prefs") if owned else None
+    raw = raw if isinstance(raw, dict) else {}
+    models = raw.get("models") if isinstance(raw.get("models"), dict) else {}
+    clean = {
+        str(mid): [str(s) for s in slugs if isinstance(s, str) and s][:MAX_PREF_SLUGS]
+        for mid, slugs in models.items()
+        if isinstance(slugs, list) and slugs
+    }
+    return {
+        "data_collection": "deny" if raw.get("data_collection") == "deny" else None,
+        "zdr": raw.get("zdr") is True,
+        "models": clean,
+    }
+
+
+def _save_provider_prefs(user_id: int, prefs: dict) -> bool:
+    owned = user_credential(user_id)
+    if not owned:
+        return False
+    cred, extra = owned
+    extra["provider_prefs"] = prefs
+    accounts.update_extra(cred["id"], extra)
+    return True
+
+
+def set_privacy(user_id: int, *, data_collection_deny: bool, zdr: bool) -> bool:
+    prefs = provider_prefs(user_id)
+    prefs["data_collection"] = "deny" if data_collection_deny else None
+    prefs["zdr"] = bool(zdr)
+    return _save_provider_prefs(user_id, prefs)
+
+
+def set_model_providers(user_id: int, upstream: str, slugs: list[str]) -> bool:
+    """Empty slugs restores OpenRouter's default routing for that model."""
+    prefs = provider_prefs(user_id)
+    clean = list(dict.fromkeys(s.strip() for s in slugs if isinstance(s, str) and s.strip()))[:MAX_PREF_SLUGS]
+    if clean:
+        if upstream not in prefs["models"] and len(prefs["models"]) >= MAX_PREF_MODELS:
+            return False
+        prefs["models"][upstream] = clean
+    else:
+        prefs["models"].pop(upstream, None)
+    return _save_provider_prefs(user_id, prefs)
+
+
+def _provider_routing(prefs: dict | None, upstream: str) -> dict:
+    if not prefs:
+        return {}
+    out: dict = {}
+    only = (prefs.get("models") or {}).get(upstream)
+    if only:
+        out["only"] = list(only)
+    if prefs.get("data_collection") == "deny":
+        out["data_collection"] = "deny"
+    if prefs.get("zdr"):
+        out["zdr"] = True
+    return out
+
+
+async def fetch_providers() -> dict[str, dict]:
+    """Provider directory keyed by display name: slug, privacy policy, HQ."""
+    global _providers
+    now = time.time()
+    if _providers and now - _providers[0] < PROVIDERS_TTL:
+        return _providers[1]
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            r = await client.get(BASE_URL + "/providers")
+            r.raise_for_status()
+            data = r.json().get("data")
+    except Exception:
+        return _providers[1] if _providers else {}
+    out: dict[str, dict] = {}
+    for item in data if isinstance(data, list) else []:
+        if isinstance(item, dict) and item.get("slug") and item.get("name"):
+            out[str(item["name"])] = {
+                "slug": str(item["slug"]),
+                "privacy_url": str(item.get("privacy_policy_url") or ""),
+                "headquarters": str(item.get("headquarters") or ""),
+            }
+    if out:
+        _providers = (now, out)
+    return out
+
+
+def _per_million(value) -> float | None:
+    rate = _as_float(value)
+    if rate is None or rate < 0:  # "-1" marks variable router pricing
+        return None
+    return round(rate * 1_000_000, 4)
+
+
+def _parse_endpoints(items, directory: dict[str, dict]) -> list[dict]:
+    """One row per routable provider slug; the cheapest endpoint leads."""
+    by_slug: dict[str, dict] = {}
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("provider_name") or "")
+        tag = str(item.get("tag") or "")
+        known = directory.get(name) or {}
+        slug = known.get("slug") or tag.split("/", 1)[0]
+        if not slug:
+            continue
+        pricing = item.get("pricing") if isinstance(item.get("pricing"), dict) else {}
+        variant = {
+            "tag": tag,
+            "quantization": str(item.get("quantization") or "") if item.get("quantization") not in (None, "unknown") else "",
+            "context": _context_length(item.get("context_length")),
+            "input": _per_million(pricing.get("prompt")),
+            "output": _per_million(pricing.get("completion")),
+            "cache_read": _per_million(pricing.get("input_cache_read")),
+            "uptime": _as_float(item.get("uptime_last_30m")),
+            "up": item.get("status") in (0, None),
+        }
+        row = by_slug.setdefault(
+            slug,
+            {
+                "slug": slug,
+                "name": name or slug,
+                "privacy_url": known.get("privacy_url") or "",
+                "headquarters": known.get("headquarters") or "",
+                "variants": [],
+            },
+        )
+        row["variants"].append(variant)
+    rows = list(by_slug.values())
+    for row in rows:
+        row["variants"].sort(key=lambda v: (v["input"] is None, v["input"] or 0, v["output"] or 0))
+        lead = row["variants"][0]
+        row.update({k: lead[k] for k in ("input", "output", "cache_read", "context", "quantization")})
+        row["up"] = any(v["up"] for v in row["variants"])
+        uptimes = [v["uptime"] for v in row["variants"] if v["uptime"] is not None]
+        row["uptime"] = round(max(uptimes), 1) if uptimes else None
+    rows.sort(key=lambda r: (r["input"] is None, (r["input"] or 0) + (r["output"] or 0), r["name"].lower()))
+    return rows
+
+
+async def fetch_model_endpoints(upstream: str) -> list[dict] | None:
+    """Providers serving one model with their own prices. Shared in-process
+    cache, so a model is fetched at most once per ENDPOINTS_TTL for everyone.
+    None means OpenRouter could not be reached and nothing is cached."""
+    now = time.time()
+    hit = _endpoints.get(upstream)
+    if hit and now - hit[0] < ENDPOINTS_TTL:
+        return hit[1]
+    directory = await fetch_providers()
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            r = await client.get(f"{BASE_URL}/models/{upstream}/endpoints")
+            r.raise_for_status()
+            data = r.json().get("data")
+    except Exception:
+        return hit[1] if hit else None
+    rows = _parse_endpoints((data or {}).get("endpoints") if isinstance(data, dict) else None, directory)
+    if len(_endpoints) >= _ENDPOINTS_MAX and upstream not in _endpoints:
+        _endpoints.pop(min(_endpoints, key=lambda k: _endpoints[k][0]), None)
+    _endpoints[upstream] = (now, rows)
+    return rows
 
 
 def openrouter_access_state(user_id: int) -> dict:
@@ -543,14 +670,6 @@ async def refresh_key_info(cred, *, force: bool = False) -> dict | None:
     return _store_key_info(row["id"], parsed)
 
 
-async def refresh_pool_key_info(*, force: bool = False) -> None:
-    sid = ensure_openrouter_source()
-    rows = db.fetchall("SELECT * FROM credentials WHERE source_id=? AND disabled=0", (sid,))
-    if not rows:
-        return
-    await asyncio.gather(*(refresh_key_info(c, force=force) for c in rows), return_exceptions=True)
-
-
 def _find_key(source_id: int, key: str):
     for row in db.fetchall("SELECT * FROM credentials WHERE source_id=?", (source_id,)):
         try:
@@ -648,10 +767,17 @@ def models_for_user(user_id: int | None, catalog: dict | None = None) -> list[st
 
 def denied_reason(model: str, user_id: int | None, catalog: dict | None = None) -> str | None:
     """If this is a known OpenRouter model the user cannot call, say why."""
-    if not looks_like_openrouter_id(model):
-        return None
     catalog = catalog or (_catalog[1] if _catalog else None)
     if not catalog:
+        return None
+    if not looks_like_openrouter_id(model):
+        # Pool ids never run on a personal key; point at the explicit SKU.
+        for author in ("z-ai", "x-ai", "openai"):
+            if f"{author}/{model}" in (catalog.get("by_id") or {}):
+                return (
+                    f"{model} runs on its subscription pool, which is not connected for your account. "
+                    f"With an OpenRouter key, pick openrouter/{author}/{model} instead."
+                )
         return None
     rec = (catalog.get("by_id") or {}).get(upstream_id(model))
     if not rec:
@@ -666,7 +792,9 @@ def denied_reason(model: str, user_id: int | None, catalog: dict | None = None) 
     return None
 
 
-def _chat_payload(body: dict, upstream: str, *, free: bool, session_id: str | None = None) -> dict:
+def _chat_payload(
+    body: dict, upstream: str, *, free: bool, session_id: str | None = None, prefs: dict | None = None
+) -> dict:
     payload = dict(body)
     payload["model"] = upstream
     payload.pop("models", None)
@@ -682,6 +810,8 @@ def _chat_payload(body: dict, upstream: str, *, free: bool, session_id: str | No
         payload["session_id"] = session_id[:256]
     caller_provider = payload.get("provider")
     provider = dict(caller_provider) if isinstance(caller_provider, dict) else {}
+    for key, value in _provider_routing(prefs, upstream).items():
+        provider.setdefault(key, value)
     if free:
         max_price = dict(provider.get("max_price")) if isinstance(provider.get("max_price"), dict) else {}
         max_price["prompt"] = 0
@@ -723,7 +853,9 @@ class OpenRouterSource:
                 model=upstream,
             )
         cred, extra, key, _via = picked
-        payload = _chat_payload(body, upstream, free=free, session_id=session_id)
+        payload = _chat_payload(
+            body, upstream, free=free, session_id=session_id, prefs=provider_prefs(user_id)
+        )
         client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=15.0))
         status, obj, stream, usage, response_headers = await openai_chat(
             client,
