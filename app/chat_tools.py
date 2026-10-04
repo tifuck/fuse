@@ -990,24 +990,33 @@ async def execute_tool(
         hid = rec.pop("host_id", None)
         promote_path = rec.pop("promote_path", "")
         is_child = ((session or {}).get("requester") or {}).get("role") == "subagent"
+        written = str(rec.get("path") or "")
         if (
             thread_id
             and name in _FILE_PROMOTE_TOOLS
             and rec.get("status") in ("done", "running")
             and hid
-            and promote_path
-            and not is_child
+            and (promote_path or written)
         ):
             try:
-                promoted = chats.promote_working_session(
-                    user_id,
-                    thread_id,
-                    host_id=hid,
-                    cwd=str(rec.get("cwd") or bound_cwd or ""),
-                    path=promote_path,
-                    tool=name,
-                )
-                _remember_project_session(session, promoted, user_id)
+                if promote_path and not is_child:
+                    promoted = chats.promote_working_session(
+                        user_id,
+                        thread_id,
+                        host_id=hid,
+                        cwd=str(rec.get("cwd") or bound_cwd or ""),
+                        path=promote_path,
+                        tool=name,
+                    )
+                else:
+                    # Not promotable (an absolute path from a home root, an
+                    # approved write, a subagent): still join a project the
+                    # user already has at that path, but never create one.
+                    promoted = chats.promote_working_session(
+                        user_id, thread_id, host_id=hid, path=written, tool=name, existing_only=True,
+                    )
+                if not is_child:
+                    _remember_project_session(session, promoted, user_id)
             except Exception:
                 logger.exception("Failed to promote chat %s to a project", thread_id)
         return text, rec

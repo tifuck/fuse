@@ -5273,8 +5273,43 @@
     showPop(anchor, items);
   }
 
+  async function moveToProject(id) {
+    const thread = threadById(id);
+    if (!thread || !window.FuseProjects) return;
+    const picked = await window.FuseProjects.openChooser({
+      title: "Move to project",
+      pickLabel: "Move here",
+      current: thread.kind === "project" && thread.project_id != null
+        ? { host_id: thread.host_id, project_id: thread.project_id } : null,
+    });
+    if (!picked || !requireLive()) return;
+    if (thread.kind === "project" && Number(thread.host_id) === Number(picked.host_id)
+        && Number(thread.project_id) === Number(picked.id)) return;
+    const nav = navigation;
+    await flushPending();
+    const latest = threadById(id) || thread;
+    const updated = await api("/chat/threads/" + id + "/project", {
+      method: "POST",
+      body: JSON.stringify({
+        host_id: picked.host_id,
+        project_id: picked.id,
+        expected_revision: latest.revision,
+        command_id: newSession(),
+      }),
+    });
+    if (id === currentId) serverRevision = Math.max(serverRevision, updated.revision);
+    upsertLocal(updated);
+    renderHistory();
+    setHint(`Moved to ${picked.name || "the project"}. The next turn runs in ${picked.remote_path || "its folder"}.`);
+    await refreshThreads();
+    if (nav === navigation && id === currentId) {
+      syncTitle();
+      syncComposer();
+      reconcileThread().catch(syncFailure);
+    }
+  }
+
   function threadMenu(anchor, id) {
-    if (streaming) return;
     const thread = threadById(id);
     if (!thread) return;
     if (!requireLive()) return;
@@ -5318,6 +5353,7 @@
           if (!updated.archived && updated.kind === "project") refreshThreads().catch(() => {});
         },
       },
+      { label: thread.kind === "project" ? "Move to another project" : "Move to project", run: () => moveToProject(id) },
       ...(thread.kind === "project" && thread.project_id != null
         ? [{ label: "Project settings", run: () => editProject(thread.host_id, thread.project_id) }]
         : []),

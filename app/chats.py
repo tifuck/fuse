@@ -2596,8 +2596,13 @@ def _unique_project_name(conn, user_id: int, host_id: int, name: str) -> str:
     return candidate
 
 
-def promote_working_session(user_id: int, thread_id, *, host_id=None, cwd: str = "", path: str = "", tool: str = ""):
-    """Turn a regular chat into a project session. Messages and thread notes stay as they are."""
+def promote_working_session(user_id: int, thread_id, *, host_id=None, cwd: str = "", path: str = "", tool: str = "",
+                            existing_only: bool = False):
+    """Turn a regular chat into a project session. Messages and thread notes stay as they are.
+
+    existing_only binds only to a project the user already has at that path,
+    never creates one: used for writes the permission gate did not mark
+    promotable (absolute paths from a home root, approved writes, subagents)."""
     from . import chat_store as store
 
     if tool and tool not in _FILE_PROMOTE_TOOLS:
@@ -2638,7 +2643,7 @@ def promote_working_session(user_id: int, thread_id, *, host_id=None, cwd: str =
             return None
         proj = _match_project_row(conn, user_id, hid, root)
         if proj is None:
-            if tool not in _FILE_PROMOTE_TOOLS or _generic_remote_root(root):
+            if existing_only or tool not in _FILE_PROMOTE_TOOLS or _generic_remote_root(root):
                 return None
             name = _unique_project_name(conn, user_id, hid, root.rsplit("/", 1)[-1] or host["alias"] or "project")
             ts = db.now()
@@ -2675,3 +2680,48 @@ def promote_working_session(user_id: int, thread_id, *, host_id=None, cwd: str =
             conn.execute("UPDATE chat_runs SET request=? WHERE id=?", (store.dumps(req), run["id"]))
         store.thread_event(conn, user_id, pk)
         return store.thread_view(conn, user_id, pk)
+
+
+def move_thread_to_project(user_id: int, thread_id, host_id, project_id, *, expected_revision=None, command_id=None) -> dict | None:
+    """Make a chat (or another project's session) a session of this project.
+    Messages and notes stay; the next turn runs in the project's folder."""
+    from . import chat_store as store
+
+    try:
+        hid, pid = int(host_id), int(project_id)
+    except (TypeError, ValueError):
+        raise ChatValidationError("host_id and project_id must be integers", 422) from None
+    with store.transaction() as conn:
+        fingerprint, previous = store.command(conn, user_id, command_id, ["move_project", thread_id, hid, pid, expected_revision])
+        if previous is not None:
+            return previous
+        pk = resolve_thread_pk(user_id, thread_id, conn)
+        if pk is None:
+            return None
+        row = conn.execute("SELECT * FROM chat_threads WHERE id=? AND user_id=?", (pk, user_id)).fetchone()
+        if row is None:
+            return None
+        store.check_revision(row["revision"], expected_revision)
+        proj = conn.execute(
+            "SELECT id, archived FROM user_projects WHERE id=? AND user_id=? AND host_id=?",
+            (pid, user_id, hid),
+        ).fetchone()
+        if proj is None:
+            raise ChatValidationError("project not found", 404)
+        # A running turn keeps the folder it started with; moving it mid-run
+        # would change its permission scope under it.
+        if conn.execute("SELECT 1 FROM chat_runs WHERE thread_id=? AND status IN ('queued','running')", (pk,)).fetchone():
+            raise ChatValidationError("Wait for the running turn and its subagents to finish, or stop them, before moving this chat.", 409)
+        ts = db.now()
+        conn.execute(
+            """UPDATE chat_threads
+               SET kind='project', host_id=?, project_id=?, updated_at=?, revision=revision+1
+               WHERE id=? AND user_id=?""",
+            (hid, pid, ts, pk, user_id),
+        )
+        if int(proj["archived"] or 0):
+            conn.execute("UPDATE user_projects SET archived=0, archived_at='' WHERE id=? AND user_id=?", (pid, user_id))
+        store.thread_event(conn, user_id, pk)
+        result = store.thread_view(conn, user_id, pk)
+        store.remember(conn, user_id, command_id, fingerprint, result)
+    return result

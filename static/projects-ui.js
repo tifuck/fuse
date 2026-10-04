@@ -186,7 +186,7 @@
                 `<span class="fp-row-text"><span class="fp-row-name">${esc(p.name)}${
                   p.permission_mode === "read_only" ? '<span class="fp-badge">Read-only</span>' : ""
                 }</span><span class="fp-row-path">${esc(p.remote_path)}</span></span>` +
-                `<span class="fp-row-go" aria-hidden="true">${s.showArchived ? "Restore" : on ? "Current" : "Open"}</span></button></li>`
+                `<span class="fp-row-go" aria-hidden="true">${s.showArchived ? "Restore" : on ? "Current" : s.pickLabel || "Open"}</span></button></li>`
               );
             })
             .join("") +
@@ -255,7 +255,7 @@
   async function openChooser(opts) {
     const options = opts || {};
     return new Promise((resolve) => {
-      open({ resolve, view: "chooser", root: "chooser", hosts: [], query: "", showArchived: false, current: options.current || null, title: options.title, hostId: options.hostId });
+      open({ resolve, view: "chooser", root: "chooser", hosts: [], query: "", showArchived: false, current: options.current || null, title: options.title, pickLabel: options.pickLabel, hostId: options.hostId });
       state.back = () => {
         state.view = "chooser";
         renderChooser();

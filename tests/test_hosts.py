@@ -250,6 +250,60 @@ class HostsProjectsTest(unittest.TestCase):
         self.assertEqual(gated["thread"]["kind"], "chat")
         self.assertEqual(gated["thread"]["context"] or "", "")
 
+    def test_unpromotable_write_joins_only_an_existing_project(self):
+        h = hosts.add_host(
+            1,
+            {"alias": "box", "hostname": "box.example.com", "username": "u", "auth_type": "key", "secret": "k"},
+        )
+        p = hosts.add_project(1, h["id"], {"name": "api", "remote_path": "/srv/api"})
+        # Absolute paths written from a home root, approved writes and
+        # subagent writes join a project the user already has there...
+        thread = chats.create_thread(1, title="fix the api")
+        joined = chats.promote_working_session(
+            1, thread["id"], host_id=h["id"], path="/srv/api/app/main.py", tool="search_replace", existing_only=True
+        )
+        self.assertEqual(joined["kind"], "project")
+        self.assertEqual(joined["project_id"], p["id"])
+        # ...but never invent one.
+        other = chats.create_thread(1, title="touch elsewhere")
+        self.assertIsNone(chats.promote_working_session(
+            1, other["id"], host_id=h["id"], path="/srv/new-app/main.py", tool="write_file", existing_only=True
+        ))
+        self.assertEqual(chats.get_thread(1, other["id"])["kind"], "chat")
+        self.assertEqual({item["name"] for item in chats.list_sidebar_projects(1)}, {"api"})
+
+    def test_move_thread_to_project(self):
+        h = hosts.add_host(
+            1,
+            {"alias": "box", "hostname": "box.example.com", "username": "u", "auth_type": "key", "secret": "k"},
+        )
+        api = hosts.add_project(1, h["id"], {"name": "api", "remote_path": "/srv/api"})
+        web = hosts.add_project(1, h["id"], {"name": "web", "remote_path": "/srv/web"})
+        thread = chats.create_thread(
+            1, title="started as a chat", context="notes", messages=[{"role": "user", "content": "work on the api"}]
+        )
+        moved = chats.move_thread_to_project(1, thread["id"], h["id"], api["id"], expected_revision=thread["revision"])
+        self.assertEqual((moved["kind"], moved["host_id"], moved["project_id"]), ("project", h["id"], api["id"]))
+        self.assertEqual(moved["title"], "started as a chat")
+        self.assertEqual(moved["context"], "notes")
+        self.assertEqual(moved["messages"][0]["content"], "work on the api")
+        self.assertGreater(moved["revision"], thread["revision"])
+        # A session can move between projects; a stale revision is refused.
+        with self.assertRaises(chats.ChatValidationError):
+            chats.move_thread_to_project(1, thread["id"], h["id"], web["id"], expected_revision=thread["revision"])
+        again = chats.move_thread_to_project(1, thread["id"], h["id"], web["id"], expected_revision=moved["revision"])
+        self.assertEqual(again["project_id"], web["id"])
+        # The project must be this user's, on that host.
+        with self.assertRaises(chats.ChatValidationError) as missing:
+            chats.move_thread_to_project(1, thread["id"], h["id"], 9999)
+        self.assertEqual(missing.exception.status_code, 404)
+        # Moving into an archived project restores it.
+        hosts.patch_project(1, h["id"], api["id"], {"archived": True})
+        back = chats.move_thread_to_project(1, thread["id"], h["id"], api["id"])
+        self.assertEqual(back["project_id"], api["id"])
+        self.assertFalse(any(item["archived"] for item in chats.list_sidebar_projects(1) if item["id"] == api["id"]))
+        self.assertIsNone(chats.move_thread_to_project(1, "nope", h["id"], api["id"]))
+
     def test_fleet_shell_does_not_bind_a_project(self):
         h = hosts.add_host(
             1,
@@ -306,6 +360,38 @@ class HostsProjectsTest(unittest.TestCase):
 
 
 class PromotionBindingTest(unittest.TestCase):
+    def _write(self, rec, session):
+        from app import chat_tools
+
+        async def fake_execute(*_a, **_k):
+            return "ok", dict(rec)
+
+        with patch.object(workspace, "execute", fake_execute), patch.object(
+            chats, "promote_working_session", return_value=None
+        ) as promote:
+            asyncio.run(chat_tools.execute_tool(
+                "search_replace", json.dumps({"path": rec["path"]}), user_id=1, allowed_urls=set(),
+                thread_id=7, coding=True, session=session,
+            ))
+        return promote
+
+    def test_unpromotable_and_subagent_writes_join_existing_projects_only(self):
+        done = {"status": "done", "host_id": 4, "path": "/root/fuse-dev/static/chat.js", "cwd": ""}
+        # In-root write by the main agent: the normal promotion (may create a project).
+        promote = self._write({**done, "promote_path": "/root/fuse-dev/static/chat.js"}, {"run_id": "r1"})
+        self.assertFalse(promote.call_args.kwargs.get("existing_only"))
+        # Absolute path from a home root (gate said not promotable): existing projects only.
+        promote = self._write({**done, "promote_path": ""}, {"run_id": "r1"})
+        self.assertTrue(promote.call_args.kwargs["existing_only"])
+        self.assertEqual(promote.call_args.kwargs["path"], "/root/fuse-dev/static/chat.js")
+        # A subagent's write binds the chat too, but only to an existing project.
+        child = {"run_id": "r2", "requester": {"role": "subagent"}}
+        promote = self._write({**done, "promote_path": "/root/fuse-dev/static/chat.js"}, child)
+        self.assertTrue(promote.call_args.kwargs["existing_only"])
+        # Failed writes never bind.
+        promote = self._write({**done, "status": "error", "promote_path": ""}, {"run_id": "r1"})
+        promote.assert_not_called()
+
     def test_active_run_uses_selected_project_path(self):
         from app import chat_store as store
 
@@ -532,6 +618,37 @@ class HostsHttpTest(unittest.TestCase):
         self.assertEqual(again.status_code, 201, again.text)
         self.assertNotEqual(again.json()["id"], body["id"])
         self.assertEqual(again.json()["messages"], [])
+
+    def test_move_chat_to_project_route(self):
+        csrf = self._login()
+        host_id = self.client.post(
+            "/hosts", headers={"x-csrf-token": csrf},
+            json={"alias": "box", "hostname": "example.com", "username": "u", "auth_type": "key", "secret": "k"},
+        ).json()["id"]
+        project_id = self.client.post(
+            f"/hosts/{host_id}/projects", headers={"x-csrf-token": csrf},
+            json={"name": "api", "remote_path": "/srv/api"},
+        ).json()["id"]
+        chat = self.client.post(
+            "/chat/threads", headers={"x-csrf-token": csrf}, json={"title": "plain chat", "command_id": "mk-chat"}
+        ).json()
+        self.assertEqual(chat["kind"], "chat")
+        moved = self.client.post(
+            f"/chat/threads/{chat['id']}/project", headers={"x-csrf-token": csrf},
+            json={"host_id": host_id, "project_id": project_id, "expected_revision": chat["revision"], "command_id": "mv-1"},
+        )
+        self.assertEqual(moved.status_code, 200, moved.text)
+        self.assertEqual((moved.json()["kind"], moved.json()["project_id"]), ("project", project_id))
+        missing = self.client.post(
+            f"/chat/threads/{chat['id']}/project", headers={"x-csrf-token": csrf},
+            json={"host_id": host_id, "project_id": project_id + 99, "expected_revision": moved.json()["revision"], "command_id": "mv-2"},
+        )
+        self.assertEqual(missing.status_code, 404)
+        bad = self.client.post(
+            f"/chat/threads/{chat['id']}/project", headers={"x-csrf-token": csrf},
+            json={"host_id": "x", "project_id": project_id, "expected_revision": moved.json()["revision"], "command_id": "mv-3"},
+        )
+        self.assertEqual(bad.status_code, 422)
 
     def test_new_project_thread_without_existing_session(self):
         csrf = self._login()
