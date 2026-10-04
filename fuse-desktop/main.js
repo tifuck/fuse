@@ -1,4 +1,4 @@
-const { app, BaseWindow, clipboard, Menu, WebContentsView, ipcMain, shell } = require("electron");
+const { app, BaseWindow, WebContentsView, ipcMain, shell } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const { readFileSync, statSync, writeFileSync } = require("fs");
 const path = require("path");
@@ -202,17 +202,6 @@ function createWindow() {
       shell.openExternal(url);
     }
     return { action: "deny" };
-  });
-
-  // WebContentsView has no built-in menu, so a right-click on a rendered
-  // markdown link otherwise does nothing. Same open path as a normal click.
-  wc.on("context-menu", (_event, params) => {
-    const url = String(params.linkURL || "");
-    if (!/^https?:\/\//i.test(url)) return;
-    Menu.buildFromTemplate([
-      { label: "Open in browser", click: () => shell.openExternal(url) },
-      { label: "Copy link", click: () => clipboard.writeText(url) },
-    ]).popup({ window: win, x: params.x, y: params.y + TITLEBAR_HEIGHT });
   });
 
   wc.on("will-navigate", (event, url) => {

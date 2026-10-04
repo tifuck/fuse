@@ -4233,7 +4233,7 @@
     historyList && historyList.querySelectorAll(".is-menu").forEach((el) => el.classList.remove("is-menu"));
   }
 
-  function showPop(anchor, items) {
+  function showPop(anchor, items, at) {
     closePop();
     pop = document.createElement("div");
     pop.className = "chat-pop";
@@ -4258,11 +4258,11 @@
     });
     document.body.appendChild(pop);
     overlayPush("pop");
-    const rect = anchor.getBoundingClientRect();
+    const rect = anchor ? anchor.getBoundingClientRect() : null;
     const width = pop.offsetWidth;
     const height = pop.offsetHeight;
-    let left = rect.right - width;
-    let top = rect.bottom + 4;
+    let left = at ? at.x : rect.right - width;
+    let top = at ? at.y : rect.bottom + 4;
     if (left < 8) left = 8;
     if (left + width > window.innerWidth - 8) left = window.innerWidth - width - 8;
     if (top + height > window.innerHeight - 8) top = Math.max(8, rect.top - height - 4);
@@ -13147,8 +13147,21 @@
       const open = !turn.classList.contains("is-open");
       turn.classList.toggle("is-open", open);
       autoToggle.setAttribute("aria-expanded", String(open));
-      return;
     }
+  });
+  // Fuse Desktop's WebContentsView has no OS link menu, and a shipped binary
+  // does not pick this up until its next release. The page menu covers both.
+  log.addEventListener("contextmenu", (event) => {
+    const link = event.target.closest("a[href]");
+    if (!link || !log.contains(link)) return;
+    let url;
+    try { url = new URL(link.href, location.href); } catch (_) { return; }
+    if (url.protocol !== "http:" && url.protocol !== "https:") return;
+    event.preventDefault();
+    showPop(null, [
+      { label: "Open in browser", run: () => window.open(url.href, "_blank", "noopener") },
+      { label: "Copy link", run: () => navigator.clipboard.writeText(url.href).then(() => setHint("Copied link.")) },
+    ], { x: event.clientX, y: event.clientY });
   });
   // Code blocks are shared by the main transcript and the agent reader.
   root.addEventListener("click", async (event) => {
