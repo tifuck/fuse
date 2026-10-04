@@ -105,12 +105,12 @@ class ShellAskDescriptionTest(unittest.TestCase):
                 patch.object(permissions, "_ask_and_wait", ask):
             result = asyncio.run(permissions.review(
                 tool="run_terminal_command",
-                args={"command": "npm install", "description": "  Install package\n dependencies "},
+                args={"command": "npm install --prefix /srv/shared", "description": "  Install package\n dependencies "},
                 user_id=1, host_id=2, host_alias="box", root="/srv/app", windows=False, gate=gate,
             ))
         self.assertFalse(result.allowed)
         self.assertEqual(seen["description"], "Install package dependencies")
-        self.assertEqual(seen["command"], "npm install")
+        self.assertEqual(seen["command"], "npm install --prefix /srv/shared")
 
     def test_reconnect_payload_keeps_a_live_asks_description(self):
         from app import permissions

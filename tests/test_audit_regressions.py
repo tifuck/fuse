@@ -13,7 +13,7 @@ from app.sources import token_store
 @pytest.mark.parametrize("command", [
     "echo $HOME && cat /etc/shadow", "cat .env",
     "cat ./a ./b ./c ./d ./e ./f /etc/shadow", "find . -delete",
-    "python3 script.py", "cat .aws/credentials", "cat .*",
+    "cat .aws/credentials", "cat .*",
 ])
 def test_shell_requires_approval(command):
     gate = SimpleNamespace(thread_id=1, user_id=1, unattended=True, requester={})
@@ -23,6 +23,22 @@ def test_shell_requires_approval(command):
             host_id=1, host_alias="test", root="/srv/app", windows=False, gate=gate,
         ))
     assert not result.allowed
+
+
+@pytest.mark.parametrize("command", [
+    "python3 script.py", "git status && git diff", "npm run build",
+    "pytest -q", "echo done > out.txt", "make test",
+])
+def test_shell_in_scope_runs_without_asking(command):
+    # Ask mode asks only out of bounds: in the working root (subfolders
+    # included) an ordinary command runs silently, unattended included.
+    gate = SimpleNamespace(thread_id=1, user_id=1, unattended=True, requester={})
+    with patch.object(permissions, "bypass_enabled", return_value=False), patch.object(permissions, "grant_covers", return_value=False), patch.object(permissions, "auto_enabled", return_value=False):
+        result = asyncio.run(permissions.review(
+            tool="run_terminal_command", args={"command": command}, user_id=1,
+            host_id=1, host_alias="test", root="/srv/app", windows=False, gate=gate,
+        ))
+    assert result.allowed
 
 
 def test_secret_cannot_auto_approve():

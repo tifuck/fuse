@@ -64,6 +64,15 @@ _GATED_TOOLS = _DIR_TOOLS | _FILE_TOOLS | {"run_terminal_command", "monitor", "s
 
 _OPAQUE_SHELL = re.compile(r"[$`]|\$\{")
 _WIN_DRIVE = re.compile(r"^[A-Za-z]:")
+# A command whose real targets cannot be listed: globs expand on the host, so
+# the extracted paths do not bound what it touches ("cat .*" sweeps .env).
+_GLOB_SHELL = re.compile(r"[*?\[\]]")
+# Separators make operands non-exhaustive (cd X && anything), so a compound
+# command is never covered by a dir grant - but it still runs silently in scope.
+_COMPOUND_SHELL = re.compile(r"[;&|\n]")
+_FETCH_EXEC_SHELL = re.compile(
+    r"(?is)\b(?:curl|wget|fetch|aria2c)\b[^\n;]*\|\s*(?:sudo\s+)?(?:ba|z|k|fi|a|c|tc|da)?sh\b"
+)
 _DESTRUCTIVE_SHELL = re.compile(
     r"(?is)("
     r"\brm\s+(?:-[^\s]*[rf][^\s]*\s*)+"
@@ -959,6 +968,7 @@ async def review(*, tool: str, args: dict, user_id: int,
     target = _target_of(tool, args)
     grant_kind, grant_value = "", ""
     perm_kind = "path"
+    compound = False
     cwd = ""
     command = ""
     resolved = ""
@@ -985,10 +995,18 @@ async def review(*, tool: str, args: dict, user_id: int,
             grant_kind, grant_value = "dir", resolved_cwd
         base = resolved_cwd if resolved_cwd and not _is_home_marker(resolved_cwd) else "~"
         paths = extract_shell_paths(command, base, windows)
-        # Shell programs can access paths that never appear as operands. Only
-        # simple read-only commands can pass without explicit authorization.
-        simple = re.fullmatch(r"\s*(?:cat|head|tail|ls|pwd|wc|stat|file|echo)\b[^;&|<>\n*?\[\]{}]*", command)
-        restricted_shell = paths is None or not simple or _destructive_command(command) or bool(deny_reason)
+        # Ask mode is scope-based: a command that parses and whose extracted
+        # paths all sit inside the allowed roots runs silently. The wall is
+        # what asks: unknowable targets (opaque constructs, globs), destructive
+        # forms, fetch-and-execute, denylist hits, secrets, out-of-root paths.
+        restricted_shell = (
+            paths is None
+            or _GLOB_SHELL.search(command)
+            or _destructive_command(command)
+            or _FETCH_EXEC_SHELL.search(command)
+            or bool(deny_reason)
+        )
+        compound = _COMPOUND_SHELL.search(command) is not None
         if restricted_shell:
             reasons.append(_SHELL_APPROVAL)
         if deny_reason:
@@ -1040,14 +1058,14 @@ async def review(*, tool: str, args: dict, user_id: int,
         await asyncio.to_thread(
             grant_covers, gate.user_id, gate.thread_id, host_id, grant_kind, grant_value, windows
         )
-        if grant_value and not (perm_kind == "shell" and (restricted_shell or secret))
+        if grant_value and not (perm_kind == "shell" and (restricted_shell or secret or compound))
         else False
     )
     if covered:
         return ReviewResult(allowed=True, root_override=relax, resolved=resolved)
 
     label = display if perm_kind == "shell" else (display or cwd or command)
-    if perm_kind == "shell" and (restricted_shell or secret):
+    if perm_kind == "shell" and (restricted_shell or secret or compound):
         # No grant can ever cover this command (see `covered`), so the card
         # must not offer Allow-always.
         grant_kind, grant_value = "", ""

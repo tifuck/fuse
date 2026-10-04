@@ -187,17 +187,25 @@ class ReviewAutoTest(DbCase):
     def auto(self, on=True):
         permissions.set_auto(1, self.tid, on)
 
-    def test_auto_judges_shell_commands(self):
-        # The Sep 29 regression: every non-trivial command skipped Jev.
+    def test_auto_allows_in_scope_shell_without_jev(self):
+        # Scope now admits ordinary in-root commands silently; Jev sees only
+        # what would ask (the wall: out-of-root, destructive, secret, deny).
         self.auto()
-        for command in ("python3 -m pytest tests -q", "git status && git diff", "df -h / | tail -n +2", "npm run build"):
-            with patch.object(jev, "judge", new_callable=AsyncMock, return_value=True) as judge:
+        for command in ("python3 -m pytest tests -q", "git status && git diff", "npm run build"):
+            with patch.object(jev, "judge", new_callable=AsyncMock, side_effect=AssertionError(command)):
                 res = self.review("run_terminal_command", {"command": command})
             self.assertTrue(res.allowed, command)
-            judge.assert_awaited_once()
-            action = judge.call_args.args[2]
-            self.assertEqual(action["command"], command)
-            self.assertNotIn(permissions._SHELL_APPROVAL, action["reasons"])
+        self.assertEqual(self.pending(), 0)
+
+    def test_auto_judges_out_of_scope_shell(self):
+        self.auto()
+        with patch.object(jev, "judge", new_callable=AsyncMock, return_value=True) as judge:
+            res = self.review("run_terminal_command", {"command": "df -h / | tail -n +2"})
+        self.assertTrue(res.allowed)
+        judge.assert_awaited_once()
+        action = judge.call_args.args[2]
+        self.assertEqual(action["command"], "df -h / | tail -n +2")
+        self.assertNotIn(permissions._SHELL_APPROVAL, action["reasons"])
         self.assertEqual(self.pending(), 0)
 
     def test_auto_dangerous_shell_asks(self):
@@ -225,9 +233,13 @@ class ReviewAutoTest(DbCase):
             self.assertFalse(res.allowed, command)
 
     def test_auto_off_never_calls_jev(self):
+        # Auto off: an out-of-scope command asks; Jev is never involved.
         with patch.object(jev, "judge", new_callable=AsyncMock, side_effect=AssertionError("auto is off")):
-            res = self.review("run_terminal_command", {"command": "git status"}, self.gate(unattended=True))
+            res = self.review("run_terminal_command", {"command": "cat /srv/shared/env.list"}, self.gate(unattended=True))
         self.assertFalse(res.allowed)
+        with patch.object(jev, "judge", new_callable=AsyncMock, side_effect=AssertionError("auto is off")):
+            res = self.review("run_terminal_command", {"command": "git status"})
+        self.assertTrue(res.allowed)
 
     def test_auto_allows_listings_without_jev(self):
         self.auto()
@@ -278,9 +290,9 @@ class ReviewAutoTest(DbCase):
     def test_unattended_auto_follows_jev(self):
         self.auto()
         with patch.object(jev, "judge", new_callable=AsyncMock, return_value=True):
-            self.assertTrue(self.review("run_terminal_command", {"command": "make test"}, self.gate(unattended=True)).allowed)
+            self.assertTrue(self.review("run_terminal_command", {"command": "make -f /srv/shared/Makefile test"}, self.gate(unattended=True)).allowed)
         with patch.object(jev, "judge", new_callable=AsyncMock, return_value=False):
-            res = self.review("run_terminal_command", {"command": "make deploy"}, self.gate(unattended=True))
+            res = self.review("run_terminal_command", {"command": "make -f /srv/shared/Makefile deploy"}, self.gate(unattended=True))
         self.assertFalse(res.allowed)
         self.assertEqual(res.get("kind"), "permission_denied")
         self.assertEqual(self.pending(), 0)
@@ -291,7 +303,7 @@ class ReviewAutoTest(DbCase):
         async def flow():
             with patch.object(jev, "judge", new_callable=AsyncMock, return_value=True) as judge:
                 task = asyncio.create_task(self.areview(
-                    "run_terminal_command", {"command": "pip install -r requirements.txt"}, self.gate(notify=events.append)))
+                    "run_terminal_command", {"command": "pip install -r /srv/shared/requirements.txt"}, self.gate(notify=events.append)))
                 card = await self.wait_pending(events)
                 judge.assert_not_awaited()
                 self.auto()
@@ -312,7 +324,8 @@ class ReviewAutoTest(DbCase):
         async def flow():
             with patch.object(jev, "judge", new_callable=AsyncMock, return_value=False):
                 task = asyncio.create_task(self.areview(
-                    "run_terminal_command", {"command": "sudo systemctl stop nginx"}, self.gate(notify=events.append)))
+                    "run_terminal_command", {"command": "sudo systemctl stop nginx"},
+                    self.gate(notify=events.append), deny_reason="command blocked by denylist"))
                 card = await self.wait_pending(events)
                 self.auto()
                 await asyncio.sleep(0.6)
@@ -332,7 +345,7 @@ class ReviewAutoTest(DbCase):
 
             with patch.object(jev, "judge", new=slow_judge):
                 task = asyncio.create_task(self.areview(
-                    "run_terminal_command", {"command": "make"}, self.gate(notify=events.append)))
+                    "run_terminal_command", {"command": "make -C /srv/shared"}, self.gate(notify=events.append)))
                 card = await self.wait_pending(events)
                 self.auto()
                 return await task
@@ -446,8 +459,15 @@ class ShellGrantTest(DbCase):
         return asyncio.run(flow())
 
     def test_restricted_shell_offers_no_grant(self):
-        card = self.ask_payload("python3 /opt/tool/run.py")
+        # Compound commands reach beyond their operands, so no Allow-always.
+        card = self.ask_payload("cd /opt/tool && python3 run.py")
         self.assertEqual((card["grant_kind"], card["grant_value"]), ("", ""))
+
+    def test_single_shell_outside_root_offers_dir_grant(self):
+        # A single parsed command is bounded by its operands, so an out-of-root
+        # run can be allowed for the session like a read.
+        card = self.ask_payload("python3 /opt/tool/run.py")
+        self.assertEqual((card["grant_kind"], card["grant_value"]), ("dir", "/opt/tool"))
 
     def test_simple_read_outside_root_offers_dir_grant(self):
         card = self.ask_payload("cat /opt/tool/README")
