@@ -97,6 +97,8 @@ function handleShortcuts(event, input) {
   const wc = site.webContents;
   if (input.key === "F5" || (mod && key === "r")) {
     input.shift ? wc.reloadIgnoringCache() : wc.reload();
+  } else if (input.control && input.key === "\\") {
+    // Push-to-talk chord owned by an external listener; no view should act on it.
   } else if (input.key === "F12" || (mod && input.shift && key === "i")) {
     wc.toggleDevTools();
   } else if (mod && (key === "=" || key === "+")) {
@@ -113,6 +115,19 @@ function handleShortcuts(event, input) {
     return;
   }
   event.preventDefault();
+}
+
+// Window focus can return on the title bar or on the site with nothing
+// focused; webContents.focus() alone does not bring the composer caret back.
+function restoreFocus() {
+  if (!site || site.webContents.isDestroyed()) return;
+  site.webContents.focus();
+  site.webContents.executeJavaScript(`(() => {
+    const a = document.activeElement;
+    if (a && a !== document.body) return;
+    const e = window.__fuseLastEditable;
+    if (e && e.isConnected) e.focus();
+  })()`).catch(() => {});
 }
 
 function createWindow() {
@@ -171,7 +186,14 @@ function createWindow() {
 
   const wc = site.webContents;
   wc.on("before-input-event", handleShortcuts);
-  win.on("focus", () => wc.focus());
+  win.on("focus", restoreFocus);
+  if (bar) bar.webContents.on("focus", restoreFocus);
+  wc.on("dom-ready", () => {
+    wc.executeJavaScript(`document.addEventListener("focusin", (ev) => {
+      const t = ev.target;
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA)$/.test(t.tagName))) window.__fuseLastEditable = t;
+    }, true)`).catch(() => {});
+  });
 
   wc.setWindowOpenHandler(({ url }) => {
     if (new URL(url).origin === APP_ORIGIN) {
