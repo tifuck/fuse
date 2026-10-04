@@ -326,8 +326,6 @@ def window_for(
                 got = _positive_int(rec.get(key))
                 if got:
                     return _clamp_window(got, cfg.default_window)
-    if kind == "explabs":
-        return TYPE_WINDOWS[kind]
     if kind:
         cached = cached_window(kind, mid)
         if cached:
@@ -381,6 +379,11 @@ def window_for(
             got = _positive_int((rec or {}).get("context_length"))
             if got:
                 return _clamp_window(got, cfg.default_window)
+    if kind == "explabs":
+        # Never inherit a pool's window from the prefix heuristics below (an
+        # explabs model named glm-… or grok-… is not that pool's model); the
+        # remembered catalog window above already carried the real value.
+        return TYPE_WINDOWS[kind]
     for candidate in candidates:
         for prefix, tokens in PREFIX_WINDOWS:
             if candidate.startswith(prefix):

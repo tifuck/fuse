@@ -37,6 +37,20 @@ def public_id(model: str) -> str:
     return PUBLIC_PREFIX + model
 
 
+def _remember_windows(catalog: dict) -> None:
+    """Keep each model's real window so window_for() without a live catalog
+    (cold process, meter recompute) does not fall back to the type default."""
+    from .. import context as ctxmod
+
+    for mid, rec in (catalog.get("by_id") or {}).items():
+        window = rec.get("context_length")
+        if isinstance(window, int) and not isinstance(window, bool) and window > 0:
+            # Both the Fuse id and the bare upstream id: chat meters resolve
+            # either form depending on where the recompute happens.
+            ctxmod.remember_window("explabs", public_id(mid), window)
+            ctxmod.remember_window("explabs", mid, window)
+
+
 def upstream_id(model: str) -> str:
     return model[len(PUBLIC_PREFIX):] if model.startswith(PUBLIC_PREFIX) else model
 
@@ -182,6 +196,7 @@ async def fetch_catalog(user_id: int | None, *, force: bool = False) -> dict:
         if not current or _revision(current) != revision:
             return {"by_id": {}}
         _catalogs[user_id] = (revision, time.monotonic(), catalog)
+        _remember_windows(catalog)
         _errors.pop(user_id, None)
         return catalog
 
@@ -216,6 +231,7 @@ async def _add_user_key(source_id: int, raw: str, user_id: int, *, label: str = 
     current = user_credential(user_id, source_id)
     if current and current["id"] == cred_id:
         _catalogs[user_id] = (_revision(current), time.monotonic(), catalog)
+        _remember_windows(catalog)
     return int(cred_id), ""
 
 

@@ -476,13 +476,42 @@ def test_image_capabilities_and_context_windows_use_only_owner_catalog(backend, 
             context.remember_window("explabs", model, 999999)
             assert context.window_for(model, "explabs", catalog=explabs.cached_catalog(uid)) == 32768
             assert context.window_for(model, "explabs", catalog=explabs.cached_catalog(other)) == 65536
-            assert context.window_for(model, "explabs") == context.TYPE_WINDOWS["explabs"]
+            # Without a live catalog the remembered window beats the type default.
+            assert context.window_for(model, "explabs") == 999999
         assert context.window_for("explabs/" + MODEL, catalog=explabs.cached_catalog(uid)) == 32768
         explabs.disable_credential(cid)
         assert model_caps.image_input("explabs", MODEL, user_id=uid) is None
-        assert context.window_for("explabs/" + MODEL, catalog=explabs.cached_catalog(uid)) == context.TYPE_WINDOWS["explabs"]
+        # The remembered window outlives the catalog (display metadata only).
+        assert context.window_for("explabs/" + MODEL, catalog=explabs.cached_catalog(uid)) == 999999
         assert model_caps.image_input("explabs", MODEL, user_id=other) is False
         assert messages[0]["content"][1]["type"] == "image_url"
+
+    asyncio.run(run())
+
+
+def test_context_window_survives_cold_meter_recompute(backend, network, monkeypatch):
+    """The chat meter recomputes windows without a live catalog (cold process,
+    or the post-success recompute that uses the bare upstream id). Both id
+    forms must return the gateway's real window, never the 128k type default,
+    and an unknown slug must not inherit a pool's prefix window."""
+    src, uid, _ = backend
+
+    def handler(request):
+        if str(request.url) == explabs.CATALOG_URL:
+            return httpx.Response(200, json={"models": [{"model": {
+                "slug": MODEL, "display_name": "Synthetic model", "context_window": 131072,
+            }, "providers": []}]})
+        return catalog_response(request)
+
+    network(handler)
+    monkeypatch.setattr(context, "_WINDOW_CACHE", {})
+
+    async def run():
+        await connect(src, uid)
+        for model in (MODEL, "explabs/" + MODEL):
+            assert context.window_for(model, "explabs") == 131072
+            assert context.window_for(model, "explabs", catalog=None) == 131072
+        assert context.window_for("glm-9-synthetic", "explabs") == context.TYPE_WINDOWS["explabs"]
 
     asyncio.run(run())
 
