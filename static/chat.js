@@ -4757,20 +4757,14 @@
     }
     if (historyTab === "projects") {
       const sessions = projectSessionList();
-      const used = new Set(sessions.map((item) => projectKey(item.host_id, item.project_id)));
-      const unused = projects.filter((item) => {
-        if (item.archived) return false;
-        if (projectFilter && projectKey(item.host_id, item.id) !== projectFilter) return false;
-        return !used.has(projectKey(item.host_id, item.id));
-      });
-      if (!sessions.length && !unused.length) {
+      if (!sessions.length) {
         historyList.innerHTML =
           `<p class="chat-history-empty">No project sessions yet. Use New project to start one.</p>`;
         syncHistoryFooter();
         return;
       }
       let html = "";
-      if (projectSort === "project" && sessions.length) {
+      if (projectSort === "project") {
         groupedProjectSessions(sessions).forEach((group) => {
           html +=
             `<div class="chat-history-project-head">` +
@@ -4782,10 +4776,6 @@
         });
       } else {
         html += sessions.map((item) => historyRow(item)).join("");
-      }
-      if (unused.length) {
-        if (sessions.length) html += `<p class="chat-history-kicker">Projects</p>`;
-        html += unused.map(projectRow).join("");
       }
       historyList.innerHTML = html;
       syncHistoryFooter();
