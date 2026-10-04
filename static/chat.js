@@ -1500,6 +1500,98 @@
     el._mdCatalog = catalogKey;
   }
 
+  // —— Paced reveal of streamed text ——
+  // Tokens arrive in bursts (a sentence, a paragraph). Painting each burst whole
+  // makes the transcript jump by lines, so a live block shows its text from a
+  // cursor instead. A small backlog shows at once (a steady stream gains no
+  // lag); a burst is spread at a constant rate so that it clears within
+  // REVEAL_MS, and the cursor stops on a word end, never inside a word. Nothing
+  // is held back for long: the block always catches up to the full text, and a
+  // finished block, a hidden tab and reduced motion all show it immediately.
+  const REVEAL_MS = 200;
+  const REVEAL_CALM = 28;
+  const REVEAL_FIRST = 240;
+
+  function revealCut(text, from, to) {
+    if (to >= text.length) return text.length;
+    const tail = text.slice(to, to + 14);
+    const end = tail.search(/\s/);
+    return end >= 0 ? to + end + 1 : to;
+  }
+
+  function revealNow(md, text, writing, catalog) {
+    if (md._revealRaf) cancelAnimationFrame(md._revealRaf);
+    md._revealRaf = 0;
+    md._revealTarget = text;
+    md._revealShown = text.length;
+    md._revealRate = 0;
+    streamMarkdown(md, text, writing, catalog);
+  }
+
+  function revealTick(md) {
+    md._revealRaf = 0;
+    if (!md.isConnected) return;
+    const { _revealTarget: text, _revealCatalog: catalog } = md;
+    const now = performance.now();
+    const dt = now - (md._revealAt || now - 16);
+    md._revealAt = now;
+    // A throttled or hidden tab must not drip text out at the paced rate.
+    if (document.hidden || dt > 400 || reduceMotion.matches) {
+      md._src = md._revealSrc;
+      revealNow(md, text, md._revealWriting, catalog);
+      if (stickToBottom) snapThread();
+      return;
+    }
+    const backlog = text.length - md._revealShown;
+    if (backlog <= 0) return;
+    const step = backlog <= REVEAL_CALM ? backlog : Math.max(1, Math.round(md._revealRate * Math.min(dt, 64)));
+    md._revealShown = revealCut(text, md._revealShown, md._revealShown + step);
+    const done = md._revealShown >= text.length;
+    streamMarkdown(md, done ? text : text.slice(0, md._revealShown), done ? md._revealWriting : true, catalog);
+    if (done) md._src = md._revealSrc;
+    md.querySelectorAll("pre").forEach((el, i) => {
+      const saved = md._revealPre && md._revealPre[i];
+      if (saved) { el.scrollLeft = saved[0]; el.scrollTop = saved[1]; }
+    });
+    if (stickToBottom) snapThread();
+    if (!done) md._revealRaf = requestAnimationFrame(() => revealTick(md));
+  }
+
+  // Shows `text` in a content block: paced while its message is streaming
+  // (`writing`), whole otherwise.
+  function paintContentBlock(md, text, writing, catalog, srcKey) {
+    const paced = !reduceMotion.matches && !document.hidden && (writing || md._revealRaf);
+    if (!paced) {
+      md._src = srcKey;
+      revealNow(md, text, writing, catalog);
+      return;
+    }
+    const first = md._revealTarget === undefined;
+    const continues = !first && text.startsWith(md._revealTarget);
+    // Text that was already there (a thread opened mid-reply) is not streamed in.
+    if (first) md._revealShown = text.length > REVEAL_FIRST ? text.length : 0;
+    else if (!continues) md._revealShown = text.length;
+    const grew = md._revealTarget !== text;
+    md._revealTarget = text;
+    md._revealCatalog = catalog;
+    md._revealWriting = writing;
+    md._revealSrc = srcKey;
+    const backlog = text.length - md._revealShown;
+    if (grew) md._revealRate = backlog / REVEAL_MS;
+    // Nothing to pace: a short reply, a calm stream's next few characters.
+    // They show in this very paint, not a frame later.
+    if (backlog <= REVEAL_CALM) {
+      md._src = srcKey;
+      revealNow(md, text, writing, catalog);
+      return;
+    }
+    md._revealPre = [...md.querySelectorAll("pre")].map((el) => [el.scrollLeft, el.scrollTop]);
+    if (!md._revealRaf) {
+      md._revealAt = 0;
+      md._revealRaf = requestAnimationFrame(() => revealTick(md));
+    }
+  }
+
   function splitThink(text) {
     const re = /<\/?(?:think|thinking|thought|reasoning)>/gi;
     let reasoning = "";
@@ -3879,7 +3971,13 @@
     syncLatest();
   }
 
-  function scrollThread() {
+  // Following the bottom is pinning, not scrolling: the content grows and the
+  // viewport moves with it in the same frame, so the newest text and the status
+  // line hold one screen position while text fills in above them. An eased
+  // follow (the old behavior) let each chunk land below the view first and
+  // glide up a few frames later, which read as text popping in under the
+  // composer. Only the "Jump to latest" pill glides, from a real distance.
+  function scrollThread(glide = false) {
     const entering = threadFollowThread !== currentId;
     threadFollowThread = currentId;
     if (!stickToBottom) {
@@ -3888,7 +3986,7 @@
     }
     const target = threadFollowTarget();
     const gap = target - thread.scrollTop;
-    if (entering || reduceMotion.matches || !streaming || Math.abs(gap) <= 1) {
+    if (entering || !glide || reduceMotion.matches || !streaming || Math.abs(gap) <= 1) {
       if (threadFollowFrame) {
         cancelAnimationFrame(threadFollowFrame);
         threadFollowFrame = 0;
@@ -12290,8 +12388,7 @@
       md.classList.toggle("is-writing", writing);
       if (md._src === srcKey) return;
       const positions = [...md.querySelectorAll("pre")].map((el) => [el.scrollLeft, el.scrollTop]);
-      md._src = srcKey;
-      streamMarkdown(md, text, writing, catalog);
+      paintContentBlock(md, text, writing, catalog, srcKey);
       md.querySelectorAll("pre").forEach((el, i) => {
         if (positions[i]) { el.scrollLeft = positions[i][0]; el.scrollTop = positions[i][1]; }
       });
@@ -13002,7 +13099,7 @@
   root.querySelector("[data-chat-latest]")?.addEventListener("click", () => {
     stickToBottom = true;
     if (streaming || reduceMotion.matches) {
-      scrollThread();
+      scrollThread(true);
       return;
     }
     // Idle: glide the last stretch instead of teleporting. Far jumps first
@@ -14719,24 +14816,19 @@
       return;
     }
     agentStick = true;
-    if (agentFollowFrame) return;
-    let last = performance.now();
-    const step = now => {
-      if (!agentStick || !agentLogEl || !agentsOpen) { agentFollowFrame = 0; agentIgnoreScroll = false; return; }
-      agentIgnoreScroll = true;
-      const target = Math.max(0, agentLogEl.scrollHeight - agentLogEl.clientHeight);
-      const gap = target - agentLogEl.scrollTop;
-      if (!agentTailInitialized || reduceMotion.matches || !agentLive(agentRun?.status) || Math.abs(gap) <= 1) {
-        agentLogEl.scrollTop = target;
-        agentTailInitialized = true; agentFollowFrame = 0;
-        requestAnimationFrame(() => { if (!agentFollowFrame) agentIgnoreScroll = false; });
-        return;
-      }
-      const dt = Math.min(48, Math.max(8, now - last)); last = now;
-      agentLogEl.scrollTop += Math.sign(gap) * Math.max(1, Math.abs(gap) * (1 - Math.exp(-dt / 48)));
-      agentFollowFrame = requestAnimationFrame(step);
-    };
-    agentFollowFrame = requestAnimationFrame(step);
+    if (agentFollowFrame) cancelAnimationFrame(agentFollowFrame);
+    agentFollowFrame = 0;
+    pinAgentLog();
+  }
+
+  // A subagent's transcript follows its end the way the main one does: the
+  // view moves with the content in the same frame, never a few frames behind.
+  function pinAgentLog() {
+    if (!agentStick || !agentLogEl || !agentsOpen) { agentIgnoreScroll = false; return; }
+    agentIgnoreScroll = true;
+    agentLogEl.scrollTop = Math.max(0, agentLogEl.scrollHeight - agentLogEl.clientHeight);
+    agentTailInitialized = true;
+    requestAnimationFrame(() => { agentIgnoreScroll = false; });
   }
 
   function syncAgentLiveDock() {
@@ -16298,9 +16390,15 @@
         if (stickToBottom && !threadFollowFrame) snapThread();
       });
       threadResizeObserver.observe(thread);
+      // Anything that makes the transcript taller (a streamed line, a tool row,
+      // the status line or the todo section changing size) re-pins the bottom
+      // before the browser paints, so a following reader never sees a frame
+      // where the new content sits below the view.
+      [log, liveDock, todoSections.main.el].forEach((el) => el && threadResizeObserver.observe(el));
     }
     const chatBar = root.querySelector(".chat-bar");
     if (chatBar) new ResizeObserver(() => scheduleFitChatBar()).observe(chatBar);
+    if (agentBodyEl) new ResizeObserver(() => { if (agentStick) pinAgentLog(); }).observe(agentBodyEl);
   }
   if (document.fonts && document.fonts.ready) {
     document.fonts.ready.then(() => scheduleFitChatBar()).catch(() => {});

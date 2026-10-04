@@ -139,6 +139,16 @@ const DONE = OPEN.map(([text]) => [text, 'completed']);
       await mount(settle, { live: false });
       const lines = await page.evaluate(() => [...document.querySelectorAll('[data-todo-line]')].map((el) => el.textContent.trim()));
       check(lines.length === 1 && lines[0] === 'Todos · 3/3 done', tag(`one settled line where the list finished: ${JSON.stringify(lines)}`));
+      // The mark is drawn in Console (a typed glyph like ☒ prints as a broken box in many fonts) and a check elsewhere.
+      await mount(settle, { live: false });
+      const mark = await page.evaluate(() => { const style = getComputedStyle(document.querySelector('.chat-todo-line-mark'), '::before'); return { content: style.content, radius: style.borderTopLeftRadius, width: parseFloat(style.width) }; });
+      if (view === 'console') check(mark.content === '""' && mark.radius === '50%' && mark.width > 2 && mark.width < 10, tag(`the settled line's mark is a dot in Console: ${JSON.stringify(mark)}`));
+      else check(mark.content === '"✓"', tag(`the settled line's mark is a check: ${mark.content}`));
+      if (view === 'console') {
+        await mount([user, turn([todo('m', [['Done', 'completed'], ['Doing', 'in_progress'], ['Next', 'pending'], ['Dropped', 'cancelled']])])], { live: false });
+        const glyphs = await page.evaluate(() => [...document.querySelectorAll('[data-live-todos] .chat-todo-box')].map((el) => getComputedStyle(el, '::before').content));
+        check(glyphs.length === 4 && glyphs.every((content) => content === '""'), tag(`Console todo marks are drawn dots, not typed glyphs: ${JSON.stringify(glyphs)}`));
+      }
       await mount([user, turn([todo('a', OPEN)])], { live: false });
       check((await page.locator('[data-todo-line]').count()) === 0, tag('an unfinished list leaves no line'));
       await mount([user, turn([todo('a', [['One', 'completed'], ['Two', 'cancelled']])])], { live: false });

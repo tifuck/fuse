@@ -94,8 +94,10 @@ const out = process.env.THINKING_UI_ARTIFACTS || '/tmp/opencode/thinking-ui';
       assert.equal(await row.getAttribute('data-think-mode'), 'collapsed', 'explicit collapse is respected while streaming');
       await row.screenshot({ path: `${out}/collapsed-${view}-${width}.png` });
 
-      // Large normal-output chunks glide rather than triggering the old
-      // more-than-one-viewport jump. Reduced motion goes straight to the tail.
+      // Large normal-output chunks never jump the view by more than a viewport:
+      // the view stays pinned to the end (no frame where new text sits below it)
+      // and the text is revealed at a steady pace instead of landing as one
+      // block. Reduced motion goes straight to the tail.
       for (const motion of ['no-preference', 'reduce']) {
         await page.emulateMedia({ reducedMotion: motion });
         await page.evaluate(() => { fuseToolFixture.mount([{ content: 'Settled paragraph.\n\n'.repeat(60) }], true); fuseToolFixture.follow(); });
@@ -108,8 +110,11 @@ const out = process.env.THINKING_UI_ARTIFACTS || '/tmp/opencode/thinking-ui';
           return { before, ...fuseToolFixture.scrollState(), sameNode: first === document.querySelector('[data-content-block] > p') };
         });
         assert.equal(trajectory.sameNode, true);
-        if (motion === 'no-preference') assert.ok(trajectory.top > trajectory.before && trajectory.gap > 10, `large chunk has an intermediate scroll position: ${JSON.stringify(trajectory)}`);
+        assert.ok(trajectory.gap <= 1, `the view trails a large chunk instead of staying pinned: ${JSON.stringify(trajectory)}`);
+        const viewport = await page.evaluate(() => document.querySelector('[data-chat-thread]').clientHeight);
+        if (motion === 'no-preference') assert.ok(trajectory.top - trajectory.before < viewport, `a large chunk moved the view a whole viewport in one frame: ${JSON.stringify(trajectory)}`);
         await page.waitForFunction(() => fuseToolFixture.scrollState().gap <= 1);
+        await page.waitForFunction(() => document.querySelectorAll('[data-content-block] > p').length >= 120, null, { timeout: 3000 });
       }
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
       console.log(`PASS Markdown thinking, live join, full width, scroll preservation and streaming motion ${view} ${width}`);

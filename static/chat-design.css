@@ -4383,10 +4383,38 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat
   column-gap: 0.45rem;
   min-height: var(--console-row);
 }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .is-pending .chat-todo-box::before { content: "☐"; }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .is-in-progress .chat-todo-box::before { content: "◼"; }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) :is(.is-completed, .is-cancelled) .chat-todo-box::before { content: "☒"; }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .is-completed .chat-todo-box { color: var(--mute); }
+/* Marks are drawn, not typed: a glyph like ☒ is missing from many fonts and
+   prints as a broken box. They are the call rows' dots: a ring for open, solid
+   brass for the item in progress, a dim dot once done. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-box,
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-todo-line-mark {
+  display: grid;
+  place-items: center;
+  height: var(--console-row);
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-box::before,
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-todo-line-mark::before {
+  content: "";
+  box-sizing: border-box;
+  width: var(--console-dot);
+  height: var(--console-dot);
+  border-radius: 50%;
+  background: var(--mute);
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .is-pending .chat-todo-box::before { background: none; border: 1px solid var(--mute); }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .is-in-progress .chat-todo-box::before { background: var(--brass); }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .is-cancelled .chat-todo-box::before { opacity: 0.45; }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .is-more .chat-todo-box::before {
+  content: "…";
+  width: auto;
+  height: auto;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--mute);
+  line-height: 1;
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-todo-line-mark::before { background: var(--call-done); }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-todo-line {
   display: grid;
   grid-template-columns: var(--console-col) minmax(0, 1fr);
@@ -4394,5 +4422,3 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-tod
   min-height: var(--console-row);
   font: var(--console-type)/var(--console-leading) var(--mono);
 }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-todo-line-mark { text-align: center; }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-todo-line-mark::before { content: "☒"; color: var(--mute); }
