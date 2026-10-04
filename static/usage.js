@@ -715,7 +715,7 @@
     syncControls();
     syncUrl();
     if (controller) controller.abort();
-    controller = new AbortController();
+    const own = controller = new AbortController();
     const q = new URLSearchParams({ range: state.range });
     if (state.provider) q.set("provider", state.provider);
     if (state.scope === "all") q.set("scope", "all");
@@ -733,7 +733,7 @@
     } catch (err) {
       if (err.name !== "AbortError") fail();
     } finally {
-      plotEl.removeAttribute("aria-busy");
+      if (own === controller) plotEl.removeAttribute("aria-busy");
     }
   }
 

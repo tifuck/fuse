@@ -96,11 +96,17 @@
       });
     }
     const json = sub.toJSON();
-    await post("/notifications/subscribe", {
-      endpoint: json.endpoint,
-      keys: json.keys || {},
-      user_agent: String(navigator.userAgent || "").slice(0, 300),
-    });
+    try {
+      await post("/notifications/subscribe", {
+        endpoint: json.endpoint,
+        keys: json.keys || {},
+        user_agent: String(navigator.userAgent || "").slice(0, 300),
+      });
+    } catch (error) {
+      // Without the server row the bell would claim "on" for a dead subscription.
+      await sub.unsubscribe().catch(() => {});
+      throw error;
+    }
     localSub = sub;
     return "push";
   }

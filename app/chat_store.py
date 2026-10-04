@@ -2142,7 +2142,9 @@ def thread_view(conn, user_id, thread_id, *, queued=()):
     # subagents advance the user-global cursor. Falls back to the global
     # cursor until this thread has published at least one event.
     result["thread_cursor"] = thread_event_watermark(user_id, thread_id)
-    if result["thread_cursor"] is None:
+    if result["thread_cursor"] is None or result["thread_cursor"] > result["event_cursor"]:
+        # A watermark ahead of the clamped event cursor would let a reconcile
+        # report "unchanged" against a transcript older than the live run.
         result["thread_cursor"] = result["event_cursor"]
     from . import chat_recaps
 

@@ -262,7 +262,21 @@
   let partialTranscript = false;
   let healRunId = "";
   let stoppingRunId = "";
+  // Survives a reload (this tab only) so a send whose answer was lost is
+  // retried with its original command_id instead of being posted twice.
+  const STORE_PENDING_TURN = "fuse.chat.pendingTurn";
   let pendingTurn = null;
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(STORE_PENDING_TURN) || "null");
+    if (saved && saved.id && typeof saved.body?.text === "string" && saved.body.command_id) pendingTurn = saved;
+  } catch (_) {}
+  function setPendingTurn(value) {
+    pendingTurn = value;
+    try {
+      if (value) sessionStorage.setItem(STORE_PENDING_TURN, JSON.stringify(value));
+      else sessionStorage.removeItem(STORE_PENDING_TURN);
+    } catch (_) {}
+  }
   let pendingCreate = null;
   let pendingProject = null;
   let viewCursor = 0;
@@ -782,6 +796,9 @@
     syncState = navigator.onLine ? "reconnecting" : "offline";
     syncLabel = navigator.onLine ? "Reconnecting" : "Disconnected";
     syncStatus();
+    // An open socket never closes itself while the server keeps pinging, so
+    // nothing would flip syncState back to live. Closing runs the retry path.
+    if (socket && socket.readyState === WebSocket.OPEN) socket.close();
   }
 
   function isTransportError(error) {
@@ -3215,18 +3232,18 @@
         text = "Disconnected";
         state = "disconnected";
       }
-    } else if (pendingTurn) {
+    } else if (pendingTurn?.id === currentId) {
       text = "Send unconfirmed. Retry safely.";
     }
     if (el) el.textContent = text;
     if (bar) {
       bar.dataset.syncState = state;
       bar.classList.toggle("is-fault", fault);
-      const hideSync = !fault && !pendingTurn && state !== "disconnected" && state !== "session";
+      const hideSync = !fault && pendingTurn?.id !== currentId && state !== "disconnected" && state !== "session";
       bar.hidden = hideSync;
     }
     const retry = root.querySelector("[data-sync-retry]");
-    if (retry) retry.hidden = !(live && pendingTurn);
+    if (retry) retry.hidden = !(live && pendingTurn?.id === currentId);
     syncComposer();
   }
 
@@ -3383,8 +3400,12 @@
     acceptedQueueCommands = new Set(data.accepted_queue_ids || []);
     retireAcceptedQueue();
     if (editingIndex >= 0) {
-      editingIndex = -1;
-      editingFiles = [];
+      const editing = messages[editingIndex];
+      const next = data.messages[editingIndex];
+      if (!editing || !next || next.id !== editing.id || next.content !== editing.content) {
+        editingIndex = -1;
+        editingFiles = [];
+      }
     }
     const viewport = captureThreadViewport();
     const old = new Map(messages.map((msg) => [msg.id, msg]));
@@ -3577,6 +3598,9 @@
           _agentTickRenderAt = Date.now();
           renderAgentsList();
         }
+      } else if (payload.run_id && Date.now() - agentsRefreshAt > 1500) {
+        agentsRefreshAt = Date.now();
+        refreshAgents();
       }
     } else if (event.thread_id === currentId && event.type.startsWith("agent.")) {
       const cid = payload.child_id || payload.run_id;
@@ -3678,6 +3702,7 @@
         // current turn's display.
         const isTracked = !activeRun || activeRun.id === payload.run_id;
         if (isTracked) {
+          if (compacting) { compacting = false; syncContextMeter(); }
           stoppingRunId = "";
           activeRun = null;
           setRunning();
@@ -6247,6 +6272,7 @@
     return results;
   }
 
+  const SETTLED_TOOL_STATUS = new Set(["done", "error", "interrupted"]);
   function applyCommandResult(trace, result) {
     if (["get_command_output", "kill_command"].includes(trace.name)) return;
     // Legacy wake envelopes must not replace an authoritative retained-output
@@ -6254,7 +6280,7 @@
     // command ended still applies, or its row would say it runs forever.
     const legacy = typeof trace.output === "string" && result.output_mode == null && result.output_chars == null;
     if (["running", "cancelling"].includes(result.state)) {
-      if (trace.status !== "done") trace.status = "running";
+      if (!SETTLED_TOOL_STATUS.has(trace.status)) trace.status = "running";
     } else if (result.state === "completed") {
       trace.status = "done";
       if (result.exit_code !== null) trace.exit_code = result.exit_code;
@@ -6389,9 +6415,15 @@
     article.className = "chat-turn is-user is-auto-steps";
     article.setAttribute("aria-label", "Background command results");
     const steps = isConsoleOnly() ? consoleAutoStepsHtml(msg) : msg.autoSteps
-      .map((trace, i) => isConsoleView() && trace.backgroundResult && trace.status !== "running"
-        ? consoleWakeNoticeHtml(trace)
-        : toolStepHtml(trace, "wake-" + (msg.id || "") + "-" + i, false, false, null))
+      .map((trace, i) => {
+        const key = "wake-" + (msg.id || "") + "-" + i;
+        // A monitor event is a notice, not a call in flight: it must never render as Running.
+        const event = trace.name === "monitor" && trace.backgroundResult && trace.status === "running";
+        if (event && isConsoleView()) return consoleMonitorEventHtml(trace, key);
+        if (isConsoleView() && trace.backgroundResult && !event) return consoleWakeNoticeHtml(trace);
+        const shown = event ? { ...trace, status: "done", state: "completed", execution_status: "completed" } : trace;
+        return toolStepHtml(shown, key, false, false, null);
+      })
       .join("");
     article.innerHTML = '<div class="chat-auto-steps"><ol class="chat-timeline">' + steps + "</ol></div>";
     article.addEventListener("click", (event) => {
@@ -9737,6 +9769,22 @@
         activityEl.querySelectorAll(".is-live-think .chat-think-preview").forEach(body => followThinking(body, true));
       });
     });
+    function collapseConsoleGroup(group, target) {
+      group.classList.remove("is-console-expanded");
+      group.querySelectorAll(":scope > .chat-step-main > .chat-step-head [data-step-toggle]").forEach((el) => el.setAttribute("aria-expanded", "false"));
+      group.querySelector(":scope > .chat-step-main > .chat-console-bundle")?.removeAttribute("tabindex");
+      if (!target.stepOpen) target.stepOpen = {};
+      target.stepOpen[group.dataset.step] = false;
+      saveDisclosures(target);
+    }
+    // The expanded group hides its header, so the printed calls themselves take focus.
+    article.addEventListener("keydown", (event) => {
+      if ((event.key !== "Enter" && event.key !== " ") || !event.target.matches(".chat-console-bundle[tabindex]")) return;
+      const group = event.target.closest(".chat-step.is-console-group.is-console-expanded");
+      if (!group) return;
+      event.preventDefault();
+      collapseConsoleGroup(group, msg);
+    });
     article.addEventListener("click", (event) => {
       const thinkingSize = event.target.closest("[data-think-size]");
       if (thinkingSize) {
@@ -9794,11 +9842,7 @@
       const openGroup = chatView === "console" && event.target.closest(".chat-step.is-console-group.is-console-expanded");
       if (openGroup && !event.target.closest("a, button, input, textarea, [data-copy-tool]") && !String(window.getSelection() || "").trim()) {
         event.preventDefault();
-        openGroup.classList.remove("is-console-expanded");
-        openGroup.querySelectorAll(":scope > .chat-step-main > .chat-step-head [data-step-toggle]").forEach((el) => el.setAttribute("aria-expanded", "false"));
-        if (!msg.stepOpen) msg.stepOpen = {};
-        msg.stepOpen[openGroup.dataset.step] = false;
-        saveDisclosures(msg);
+        collapseConsoleGroup(openGroup, msg);
         return;
       }
       const btn = event.target.closest("[data-step-toggle]");
@@ -10690,6 +10734,7 @@
 
   // The run's live phase: "model" (a round started), "calling" (the model is
   // writing a tool call, so the thought before it has finished) or "tools".
+  const SETTLED_PHASES = new Set(["calling", "tools"]);
   function runPhase(msg) {
     return (msg?.id === activeRun?.message_id ? activeRun?.activity : msg?._activity)?.phase || "";
   }
@@ -10708,7 +10753,7 @@
     }
     const elapsed = (liveElapsedSeconds(msg, live) || 0) * 1000;
     const last = groups[groups.length - 1];
-    const liveKey = live && last && !segs.some((seg, index) => index > last.index) && runPhase(msg) !== "calling" ? last.key : "";
+    const liveKey = live && last && !segs.some((seg, index) => index > last.index) && !SETTLED_PHASES.has(runPhase(msg)) ? last.key : "";
     // The server times each thought as it streams (ms on the segment); the
     // estimates below only cover messages saved before it did.
     groups.forEach((group) => {
@@ -11908,7 +11953,7 @@
         : `<div class="chat-step-toggle"><span class="chat-step-label">${label}</span></div>`) + `</div>` +
       (interrupted ? hang(`<span class="chat-console-result-text">${escapeHtml(isConsoleOnly() ? ccInterruptedText(interruptedTrace) : "Interrupted")}</span>`, " is-group-note") : "") +
       (hintHtml ? hang(hintHtml, " is-group-hint") : "") +
-      `<div class="chat-console-bundle"><ol class="chat-timeline">${rows}</ol></div>` +
+      `<div class="chat-console-bundle"${open ? ' tabindex="0" role="group" aria-label="Summary details. Press Enter to collapse."' : ""}><ol class="chat-timeline">${rows}</ol></div>` +
       `</div></li>`
     );
   }
@@ -11922,7 +11967,7 @@
     const segs = assistantSegments(msg);
     let lastReasonIndex = -1;
     segs.forEach((seg, index) => { if (seg && seg.type === "reasoning") lastReasonIndex = index; });
-    const streamingLast = Boolean(live && lastReasonIndex >= 0 && !segs.some((seg, index) => index > lastReasonIndex) && runPhase(msg) !== "calling");
+    const streamingLast = Boolean(live && lastReasonIndex >= 0 && !segs.some((seg, index) => index > lastReasonIndex) && !SETTLED_PHASES.has(runPhase(msg)));
     const rows = [];
     const plain = isConsoleOnly();
     let group = null;
@@ -12427,14 +12472,15 @@
   }, { root: thread, rootMargin: "600px 0px" }) : null;
 
   function hydrateHistoricalMessage(shell) {
-    historyObserver?.unobserve(shell);
-    if (!shell.isConnected || !shell.hasAttribute("data-deferred-message")) return;
-    const index = messages.findIndex(msg => msg.id === shell.dataset.messageId);
+    if (!shell.isConnected || !shell.hasAttribute("data-deferred-message")) { historyObserver?.unobserve(shell); return; }
+    const shown = viewMessages();
+    const index = shown.findIndex(msg => msg.id === shell.dataset.messageId);
     if (index < 0) return;
+    historyObserver?.unobserve(shell);
     const viewport = captureThreadViewport();
     const previousHeight = shell.offsetHeight;
-    const article = renderAssistant(messages[index], false);
-    article.dataset.messageId = messages[index].id;
+    const article = renderAssistant(shown[index], false);
+    article.dataset.messageId = shown[index].id;
     shell.replaceWith(article);
     paintRecaps(article);
     if (viewport.following && stickToBottom) {
@@ -12450,7 +12496,7 @@
     // Keep stable, indexed shells so editing/rewinding and run updates still
     // address the complete server-owned transcript. Expensive markdown, tool
     // trees and syntax highlighting for old answers are created on demand.
-    if (historyObserver && msg.role === "assistant" && !live && index < messages.length - 8 &&
+    if (historyObserver && msg.role === "assistant" && !live && index < viewMessages().length - 8 &&
         (msg.content || msg.reasoning || msg.tools?.length || msg.permissions?.length || visibleAssistantError(msg))) {
       const shell = document.createElement("article");
       shell.className = "chat-turn is-assistant chat-deferred-message";
@@ -13527,9 +13573,9 @@
         setThreadUrl(currentId);
       }
       if (pendingTurn && (pendingTurn.id !== currentId || pendingTurn.body.text !== text)) {
-        throw new Error("A previous send is unconfirmed. Retry its original text before sending another message.");
+        throw Object.assign(new Error("A previous send is unconfirmed. Retry its original text before sending another message."), { local: true });
       }
-      pendingTurn ||= {
+      if (!pendingTurn) setPendingTurn({
         id: currentId,
         body: {
           text,
@@ -13542,11 +13588,11 @@
           command_id: (opts && opts.commandId) || newSession(),
           ...(opts && opts.invoke_skill ? { invoke_skill: opts.invoke_skill } : {}),
         },
-      };
+      });
       const data = await api("/chat/threads/" + pendingTurn.id + "/turns", { method: "POST", body: JSON.stringify(pendingTurn.body) });
       if (opts?.queueId) acknowledgeQueuedTurn(origin, opts.queueId);
       if (gen !== generation) return;
-      pendingTurn = null;
+      setPendingTurn(null);
       if (usedPending) {
         // Files pasted or dropped while this send was in flight stay queued.
         const sent = new Set(attachments);
@@ -13575,12 +13621,14 @@
       return true;
     } catch (error) {
       if (gen !== generation) return false;
-      if (error.status === 409) {
-        pendingTurn = null;
+      if (error.local) {
+        showFailure("Send not confirmed; your draft is retained", error);
+      } else if (error.status === 409) {
+        setPendingTurn(null);
         await reconcileThread().catch(() => {});
         showFailure("Send not confirmed; your draft is retained", error);
       } else if (error.status && error.status < 500) {
-        pendingTurn = null;
+        setPendingTurn(null);
         showFailure("Send not confirmed; your draft is retained", error);
       } else {
         markDisconnected();
@@ -13843,7 +13891,7 @@
     const byId = event.id ? msg.tools.findIndex((t) => t.id === event.id) : -1;
     if (event.status === "progress") {
       const rec = byId >= 0 ? msg.tools[byId] : null;
-      if (!rec) return;
+      if (!rec || SETTLED_TOOL_STATUS.has(rec.status)) return;
       rec.progressLabel = event.query ? `Searching “${event.query}” (${event.n ?? 0})` : rec.progressLabel;
       rec.progressN = event.n;
       rec.latency_ms = event.latency_ms;
@@ -13854,9 +13902,11 @@
       return;
     }
     if (event.status === "running") {
-      const activity = { phase: "tools", tool_id: event.id };
-      msg._activity = activity;
-      if (!child && activeRun && msg.id === activeRun.message_id) activeRun.activity = activity;
+      if (byId < 0 || !SETTLED_TOOL_STATUS.has(msg.tools[byId].status)) {
+        const activity = { phase: "tools", tool_id: event.id };
+        msg._activity = activity;
+        if (!child && activeRun && msg.id === activeRun.message_id) activeRun.activity = activity;
+      }
       if (mergeSubagentWait(msg, event, "running")) return;
       if (byId < 0) msg.tools.push(mergeToolEvent(null, event, "running"));
       else msg.tools[byId] = mergeToolEvent(msg.tools[byId], event, "running");
@@ -15119,6 +15169,7 @@
       const receivedAt = Date.now();
       agentsRows.forEach(row => { row._workAt = receivedAt; agentLifecycle.set(String(row.id), row); });
       reconcileAgentTraces(agentsRows, true);
+      settleOrphanTraces(["spawn_subagent"], agentsRows);
       syncAgentsUi();
     } catch {
       if (tid === currentId && gen === generation) agentsFailCount += 1;
@@ -15287,12 +15338,39 @@
       syncAgentsUi();
       (Array.isArray(data.recent) ? data.recent : []).forEach((job) => completedJobs.set(String(job.id), job));
       reconcileBgTraces([...jobsRows, ...completedJobs.values()]);
+      settleOrphanTraces(["run_terminal_command", "monitor"], [...jobsRows, ...completedJobs.values()]);
     } catch {} finally {
       if (jobsRequest === ticket) {
         jobsRequest = null;
         if (jobsRefreshAgain) { jobsRefreshAgain = false; refreshJobs(); }
       }
     }
+  }
+
+  // A background call whose job/agent row no longer exists can never report
+  // back; left alone it renders Running forever and keeps its poll alive.
+  // Only judged while no run is live (a fresh call's row is written first).
+  function settleOrphanTraces(names, rows) {
+    if (runIsActive(activeRun)) return;
+    const known = new Set(rows.map((row) => String(row.command_id || row.child_id || row.run_id || row.id)));
+    let changed = false;
+    messages.forEach((msg) => {
+      if (msg.role !== "assistant" || !Array.isArray(msg.tools)) return;
+      msg.tools.forEach((trace) => {
+        if (!trace || !names.includes(trace.name) || !executionIdentity(trace) || known.has(String(executionIdentity(trace)))) return;
+        if (!(executionPending(trace) || ["running", "progress", "queued"].includes(trace.status))) return;
+        trace.status = "interrupted";
+        trace.state = trace.execution_status = "interrupted";
+        trace.error = trace.error || "No longer tracked by the server.";
+        if (trace.preview === "still running") trace.preview = "";
+        changed = true;
+      });
+    });
+    if (!changed) return;
+    messages.forEach((msg) => {
+      const article = msg.id ? articleFor(msg) : null;
+      if (article && msg.role === "assistant") updateAssistant(article, msg, false);
+    });
   }
 
   function hasRunningBgTraces() {
@@ -15633,7 +15711,7 @@
     else document.documentElement.removeAttribute("data-chat-console");
     try { localStorage.setItem(STORE_VIEW, chatView); } catch (_) {}
     if (previous !== chatView) resizeInput();
-    if (previous !== chatView && messages.length) paint();
+    if (previous !== chatView && viewMessages().length) paint();
     if (previous !== chatView) syncRunSpinners();
     if (previous !== chatView && agentViewId && agentRun) renderAgentView();
   }
