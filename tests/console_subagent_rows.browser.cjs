@@ -186,18 +186,17 @@ const taskEnvelope = (id, body) => [
     await page.evaluate(() => fuseToolFixture.append({ id: 'kill-1', name: 'kill_subagent', status: 'running', child_id: 'stopped1', results: [] }, true));
     await waitRow('[data-step="tool-kill-1"]');
     let kill = await readRow('[data-step="tool-kill-1"]');
-    assert.equal(kill.head, 'Stop', `kill head | ${JSON.stringify(kill)}`);
+    // The stop names the child it targets (from its spawn row) and says what happened.
+    assert.equal(kill.head, 'Stop(Check the mail queue)', `kill head | ${JSON.stringify(kill)}`);
     assert.equal(kill.state, 'running', `kill running state | ${JSON.stringify(kill)}`);
-    // FINDING(kill-label): consoleResultLine has no kill_subagent branch, so
-    // Console prints the generic "Running…"/"done" under the bare "Stop"
-    // head; the intended "Stopping subagent"/"Stopped subagent" labels exist
-    // only in cliLine (static/chat.js:9043). Current behavior pinned.
-    assert.equal(kill.status, 'Running…', `FINDING(kill-label) while running | ${JSON.stringify(kill)}`);
-    assert.equal(kill.body, 'Running…', `FINDING(kill-label) running body | ${JSON.stringify(kill)}`);
+    assert.equal(kill.status, 'Running…', `kill running status | ${JSON.stringify(kill)}`);
     await page.evaluate(() => fuseToolFixture.update('kill-1', { status: 'done' }));
     kill = await readRow('[data-step="tool-kill-1"]');
     assert.equal(kill.state, 'done', `kill done state | ${JSON.stringify(kill)}`);
-    assert.equal(kill.body, 'done', `FINDING(kill-label) once done | ${JSON.stringify(kill)}`);
+    assert.equal(kill.body, 'Subagent stopped', `kill done body | ${JSON.stringify(kill)}`);
+    await page.evaluate(() => fuseToolFixture.update('kill-1', { preview: 'already completed' }));
+    kill = await readRow('[data-step="tool-kill-1"]');
+    assert.equal(kill.body, 'Already completed · nothing to stop', `kill of a finished child | ${JSON.stringify(kill)}`);
     assert.equal(kill.open, '', `a kill row opens no agent | ${JSON.stringify(kill)}`);
 
     // get_subagent_output: waits while the child runs, then returns its report.

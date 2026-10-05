@@ -654,6 +654,35 @@ def _trace_from_results(queries: list[str], results: list[QueryResult], packed: 
     return rec
 
 
+_SCRATCH_VERBS = {"put": "Write", "append": "Append to", "edit": "Edit", "clear": "Clear", "delete": "Clear"}
+
+
+def scratch_label(args: dict) -> str:
+    """What a scratch call does, for its row: "Write brief", "Read notes", "List slots"."""
+    ops = args.get("ops")
+    if isinstance(ops, str) and ops.strip():
+        try:
+            ops = json.loads(ops)
+        except (ValueError, RecursionError):
+            ops = None
+    if isinstance(ops, dict):
+        ops = [ops]
+    if isinstance(ops, list) and ops:
+        parts = []
+        for op in ops:
+            if not isinstance(op, dict):
+                continue
+            verb = _SCRATCH_VERBS.get(str(op.get("op") or "").strip().lower(), "Change")
+            parts.append(f"{verb} {str(op.get('name') or '?').strip()[:64]}")
+        if len(parts) > 2:
+            parts = parts[:2] + [f"+{len(parts) - 2} more"]
+        return ", ".join(parts)[:200] or "Change slots"
+    slot = args.get("name")
+    if isinstance(slot, str) and slot.strip():
+        return f"Read {slot.strip()[:64]}"
+    return "List slots"
+
+
 _TODO_STATUSES = frozenset({"pending", "in_progress", "completed", "cancelled"})
 
 

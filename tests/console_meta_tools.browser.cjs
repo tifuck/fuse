@@ -226,26 +226,28 @@ const turn = (trace, live) => ({
         { event: { status: 'interrupted', query: 'grok' }, head: /Models\(grok\)/, live: ['Interrupted · the run ended before it finished'], lacks: ['Running…', 'Grok 4'], dot: 'interrupted' },
       ]);
 
-      // scratch has no running arguments the server forwards; the result names
-      // the operation through its preview and lists the pad.
-      for (const [op, preview, output] of [
-        ['put', '1 slots', SLOTS],
-        ['read', 'brief (1200 chars)', 'the brief'],
-        ['clear', '0 slots', JSON.stringify({ slots: {} })],
+      // The running event carries what the call does ("Write brief"); the
+      // header shows it and the result line says what came back.
+      for (const [op, description, preview, output, result] of [
+        ['put', 'Write brief', '1 slots', SLOTS, 'Pad holds 1 slot'],
+        ['read', 'Read brief', 'brief (1200 chars)', 'the brief', 'Read 1,200 chars'],
+        ['clear', 'Clear brief', '0 slots', JSON.stringify({ slots: {} }), 'Pad holds 0 slots'],
       ]) {
-        await mount({ id: 'm-scratch', name: 'scratch', status: 'running' }, true);
+        await mount({ id: 'm-scratch', name: 'scratch', status: 'running', description }, true);
         let seen = await read('m-scratch');
-        assert.equal(seen.head, 'Scratch', `${tag} scratch running head: ${seen.head}`);
+        // Mainframe hides the parentheses and lays verb and value out as columns.
+        const head = view === 'mainframe' ? `Scratch${description}` : `Scratch(${description})`;
+        assert.equal(seen.head, head, `${tag} scratch running head: ${seen.head}`);
         expectDot(seen.dot, 'running', `${tag} scratch running`);
-        await send({ event: 'tool', id: 'm-scratch', name: 'scratch', status: 'done', preview, output });
+        await send({ event: 'tool', id: 'm-scratch', name: 'scratch', status: 'done', description, preview, output });
         await paint();
         seen = await read('m-scratch');
-        assert.equal(seen.head, 'Scratch', `${tag} scratch ${op} head: ${seen.head}`);
-        assert.equal(seen.body.includes(preview), true, `${tag} scratch ${op} missing ${preview}: ${seen.body}`);
-        await mount({ id: 'm-scratch', name: 'scratch', status: 'done', preview, output }, false);
+        assert.equal(seen.head, head, `${tag} scratch ${op} head: ${seen.head}`);
+        assert.equal(seen.body.includes(result), true, `${tag} scratch ${op} missing ${result}: ${seen.body}`);
+        await mount({ id: 'm-scratch', name: 'scratch', status: 'done', description, preview, output }, false);
         await open('m-scratch');
         seen = await read('m-scratch');
-        const shown = op === 'read' ? 'the brief' : op === 'put' ? 'brief' : '0 slots';
+        const shown = op === 'read' ? 'the brief' : op === 'put' ? 'brief' : 'Pad holds 0 slots';
         assert.equal(seen.body.includes(shown), true, `${tag} scratch ${op} snapshot: ${seen.body}`);
         assert.equal(seen.body.includes('Running…'), false, `${tag} scratch ${op} still running`);
         expectDot(seen.dot, 'done', `${tag} scratch ${op}`);

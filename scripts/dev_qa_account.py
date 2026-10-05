@@ -181,7 +181,13 @@ def _main_thread(now):
     for i, ((desc, _status), cid) in enumerate(zip(subs, child_ids)):
         tools.append(_tool(f"ts_3_{i}", "spawn_subagent", description=desc, preview=desc, child_id=cid,
                            model="qa/fixture-model", background=True, summary="", output=f"spawned {cid}"))
-    tools.append(_tool("ts_3_k", "kill_subagent", child_id=child_ids[2], output="cancelled"))
+    tools.append(_tool("ts_3_k", "kill_subagent", child_id=child_ids[2], description=subs[2][0], output="cancelled"))
+    tools.append(_tool("ts_3_s0", "scratch", description="Write brief, Append to notes", preview="2 slots",
+                       output='{"slots": {"brief": 1840, "notes": 212}}'))
+    tools.append(_tool("ts_3_s1", "scratch", description="Read brief", preview="brief (1840 chars)",
+                       output="Audit every chat view for alignment and padding.\nReport findings per pane."))
+    tools.append(_tool("ts_3_s2", "scratch", description="List slots", preview="2 slots",
+                       output='{"slots": {"brief": 1840, "notes": 212}}'))
     tools.append(_tool("ts_4_0", "get_subagent_output", child_id=child_ids[0], background=True,
                        execution_status="completed", preview="completed", output="Schema looks consistent."))
     segments = [

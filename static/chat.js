@@ -8333,7 +8333,7 @@
       return `<span class="chat-console-call is-live">${escapeHtml(presentation.statusLabel)}</span>${clock}${hostHtml}`;
     }
     const verb = consoleVerb(name, trace);
-    if (["kill_command", "kill_subagent", "todo_write", "list_subagents", "scratch"].includes(name)) {
+    if (["kill_command", "todo_write", "list_subagents"].includes(name) || (name === "scratch" && !scratchAction(trace))) {
       return `<span class="chat-console-call"><span class="chat-tool-action">${escapeHtml(verb)}</span></span>`;
     }
     if (name === "run_terminal_command" && running && !toolBackground(trace) && !full && !isConsoleOnly()) {
@@ -8370,6 +8370,10 @@
       inner = queries.length ? `"${consoleArgText(queries[0], 80)}"${queries.length > 1 ? ` +${queries.length - 1}` : ""}` : "";
     } else if (["spawn_subagent", "get_subagent_output"].includes(name)) {
       inner = consoleArgText(agentSubject(trace) || "subagent", 90);
+    } else if (name === "kill_subagent") {
+      inner = consoleArgText(agentDescriptionFor(trace) || trace.child_id || "subagent", 90);
+    } else if (name === "scratch") {
+      inner = consoleArgText(scratchAction(trace), 90);
     } else if (name === "create_artifact" || name === "update_artifact") {
       inner = consoleArgText(trace.title || "artifact", 80);
     } else if (name === "load_skill") {
@@ -8381,6 +8385,15 @@
       ? `<span class="chat-console-call"><span class="chat-tool-action">${escapeHtml(verb)}</span><span class="chat-console-paren">(</span><span class="chat-console-val">${path ? escapeHtml(inner).replace(/\//g, "/<wbr>") : escapeHtml(inner)}</span><span class="chat-console-paren">)</span></span>`
       : `<span class="chat-console-call"><span class="chat-tool-action">${escapeHtml(verb)}</span></span>`;
     return call + clock + hostHtml;
+  }
+
+  // What a scratch call did ("Write brief", "Read notes"). Older rows carry
+  // no description; a read is still recognisable from its preview.
+  function scratchAction(trace) {
+    const own = ccFlat(trace && trace.description);
+    if (own) return own;
+    const read = String((trace && trace.preview) || "").match(/^(\S+) \(\d+ chars\)$/);
+    return read ? `Read ${read[1]}` : "";
   }
 
   function consoleOutputText(trace, failed, running) {
@@ -8785,6 +8798,17 @@
       const cmd = commandFor(trace);
       return cmd ? `${cmd} · stopped` : "stopped";
     }
+    if (name === "kill_subagent") {
+      const already = preview.match(/^already (\w+)/);
+      return already ? `Already ${already[1]} · nothing to stop` : "Subagent stopped";
+    }
+    if (name === "scratch") {
+      const read = preview.match(/^\S+ \((\d+) chars\)$/);
+      if (read) return `Read ${Number(read[1]).toLocaleString()} chars`;
+      const slots = preview.match(/^(\d+) slots$/);
+      if (slots) return `Pad holds ${slots[1]} ${slots[1] === "1" ? "slot" : "slots"}`;
+      return preview || "done";
+    }
     if (name === "spawn_subagent") {
       const took = consoleDurationLabel(trace);
       if (took) return `finished · ${took}`;
@@ -8913,7 +8937,8 @@
       if (failed) return subject ? `${subject} failed` : "failed";
       return subject ? `result · ${subject}` : "result";
     }
-    if (name === "kill_subagent") return "stop subagent";
+    if (name === "kill_subagent") return agentSubject(trace) ? `stop ${agentSubject(trace)}` : "stop subagent";
+    if (name === "scratch") return scratchAction(trace) || toolText((trace && trace.preview) || "pad");
     if (name === "list_subagents") {
       const detail = agentListLine(trace);
       return detail && detail !== "agents" ? detail : "listed";
@@ -9040,7 +9065,11 @@
       }
       return subject ? `Subagent result: ${subject}` : "Received subagent result";
     }
-    if (name === "kill_subagent") return failed ? "Could not stop subagent" : running ? "Stopping subagent" : "Stopped subagent";
+    if (name === "kill_subagent") {
+      const subject = agentSubject(trace);
+      const tail = subject ? `: ${subject}` : "";
+      return failed ? `Could not stop subagent${tail}` : running ? `Stopping subagent${tail}` : `Stopped subagent${tail}`;
+    }
     if (name === "list_subagents") {
       const detail = agentListLine(trace);
       if (failed) return "Could not list agents";
@@ -14845,6 +14874,7 @@
     search_models: "models",
     load_skill: "skill",
     todo_write: "todo",
+    scratch: "scratch",
     create_artifact: "artifact",
     update_artifact: "artifact",
     search_tools: "tools",

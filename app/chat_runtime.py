@@ -1696,6 +1696,10 @@ def _running_event(job: ToolJob) -> dict:
             if skill_file:
                 event["path"] = skill_file[:400]
         desc = str(parsed.get("description") or "")
+        if job.name == "scratch":
+            from .chat_tools import scratch_label
+
+            desc = scratch_label(parsed)
         if desc:
             event["description"] = desc[:200]
         if job.name == "spawn_subagent":

@@ -829,19 +829,23 @@ async def kill(*, user_id: int, arguments: str, thread_id=None, scope_run_id: st
     if row is None:
         return "subagent not found", {"name": "kill_subagent", "status": "error", "error": "not found", "child_id": child_id}
     child_id = row["id"]
+    agent = (row.get("request") or {}).get("agent") if isinstance(row.get("request"), dict) else None
+    label = str((agent or {}).get("description") or "")[:200] if isinstance(agent, dict) else ""
+    named = {"description": label} if label else {}
     if row["status"] not in chat_store.ACTIVE:
         return "subagent already finished", {
             "name": "kill_subagent",
             "status": "done",
             "child_id": child_id,
             "preview": f"already {row['status']}",
+            **named,
         }
     ids = await durable_call(chat_store.request_cancel_self, user_id, child_id)
     if not ids:
         return "subagent not found", {"name": "kill_subagent", "status": "error", "error": "not found", "child_id": child_id}
     for ident in ids:
         chat_runs.cancel(ident)
-    return "cancelled", {"name": "kill_subagent", "status": "done", "child_id": child_id}
+    return "cancelled", {"name": "kill_subagent", "status": "done", "child_id": child_id, **named}
 
 
 async def list_agents(*, user_id: int, thread_id, scope_run_id: str | None = None) -> tuple[str, dict]:

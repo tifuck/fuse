@@ -298,6 +298,16 @@ class AgentCapsTest(unittest.TestCase):
         self.assertEqual(rec["status"], "done")
         self.assertEqual(json.loads(listed)["slots"]["review"], len("Inspect the auth module. Report findings only."))
 
+    def test_scratch_label_names_the_operation(self):
+        from app.chat_tools import scratch_label
+
+        self.assertEqual(scratch_label({}), "List slots")
+        self.assertEqual(scratch_label({"name": "brief"}), "Read brief")
+        self.assertEqual(scratch_label({"ops": [{"op": "put", "name": "brief"}]}), "Write brief")
+        self.assertEqual(scratch_label({"ops": json.dumps({"op": "delete", "name": "x"})}), "Clear x")
+        ops = [{"op": op, "name": f"s{i}"} for i, op in enumerate(("append", "edit", "put", "clear"))]
+        self.assertEqual(scratch_label({"ops": ops}), "Append to s0, Edit s1, +2 more")
+
     def test_scratch_slot_fits_one_read_and_ops_are_atomic(self):
         from app.chat_runtime import TOOL_RESULT_CHARS, _tool_result_clip
         from app.chat_tools import execute_tool
