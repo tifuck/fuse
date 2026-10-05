@@ -788,11 +788,13 @@ def child_display_messages(run: dict, *, include_current: bool = False) -> list[
                 "noActions": True,
             })
             continue
+        is_followup = text.lstrip().startswith(FOLLOWUP_FRAME_HEAD)
         out.append({
             "id": f"agent-hist-{n}",
             "role": "user",
-            "content": text[: chats_mod.CONTENT_MAX],
-            "auto": text.lstrip().startswith("[Fuse]"),
+            "content": (followup_display_text(text) if is_followup else text)[: chats_mod.CONTENT_MAX],
+            "auto": text.lstrip().startswith("[Fuse]") and not is_followup,
+            "fromParent": is_followup,
             "noActions": True,
         })
     if pending_calls:
@@ -845,6 +847,8 @@ def child_display_messages(run: dict, *, include_current: bool = False) -> list[
         }
         if bubble["content"] or bubble["reasoning"] or bubble["error"] or bubble["tools"] or bubble["notice"] or live:
             out.append(bubble)
+    pending_rows = _pending_followup_rows(run)
+    out.extend(pending_rows)
     for item in out:
         if run.get("id") and str(item.get("id", "")).startswith("agent-hist-"):
             item["id"] = str(run["id"]) + ":" + item["id"]
@@ -1239,8 +1243,15 @@ def queue_followup(run_id: str, text: str) -> bool:
     if not run_id or not str(text or "").strip():
         return False
     with transaction() as conn:
-        row = conn.execute("SELECT id,status,request FROM chat_runs WHERE id=?", (run_id,)).fetchone()
+        row = conn.execute(
+            "SELECT id,user_id,thread_id,status,cancel_requested,request FROM chat_runs WHERE id=?",
+            (run_id,),
+        ).fetchone()
         if row is None or row["status"] not in ACTIVE:
+            return False
+        if row["cancel_requested"]:
+            # Same contract as queue_steer: a stopping child never consumes a
+            # queued follow-up, so accepting one would lie to the parent.
             return False
         try:
             req = json.loads(row["request"] or "{}")
@@ -1267,6 +1278,15 @@ def queue_followup(run_id: str, text: str) -> bool:
             "UPDATE chat_runs SET request=?,updated_at=? WHERE id=?",
             (dumps(req), db.now(), run_id),
         )
+        # The subagent panel paints pending follow-ups from the run snapshot;
+        # this event makes an open panel refetch the moment the tool returns.
+        event(
+            conn,
+            row["user_id"],
+            "agent.followup",
+            row["thread_id"],
+            {"run_id": run_id, "child_id": run_id, "status": row["status"]},
+        )
         return True
 
 
@@ -1289,6 +1309,51 @@ def _followup_delivered(item, transcript: str) -> bool:
         return _json_needle(marker) in transcript
     # Legacy plain-string entry queued before ids existed.
     return _json_needle(str(item)) in transcript
+
+
+_FOLLOWUP_ID_RE = re.compile(r"\(followup:[0-9a-f]{1,32}\)\s*")
+
+
+def followup_display_text(text: str) -> str:
+    """Body of a follow-up envelope for display: no preamble, no receipt marker."""
+    body = str(text or "")
+    if body.lstrip().startswith(FOLLOWUP_FRAME_HEAD):
+        _head, sep, rest = body.partition("\n\n")
+        if sep:
+            body = rest
+    return _FOLLOWUP_ID_RE.sub("", body).strip()
+
+
+def _pending_followup_rows(run: dict) -> list[dict]:
+    """Rows for queued-but-undelivered follow-ups, so the panel shows the
+    steer the moment the parent's tool call returns instead of one round later."""
+    req = run.get("request") if isinstance(run.get("request"), dict) else {}
+    agent = req.get("agent") if isinstance(req.get("agent"), dict) else {}
+    pending = agent.get("pending_followups")
+    if not isinstance(pending, list) or not pending:
+        return []
+    from . import chats as chats_mod
+
+    raw_pm = run.get("provider_messages")
+    transcript = raw_pm if isinstance(raw_pm, str) else (dumps(raw_pm) if isinstance(raw_pm, list) else "")
+    rows: list[dict] = []
+    for index, item in enumerate(pending):
+        text = followup_text(item)
+        if not text or _followup_delivered(item, transcript):
+            continue
+        body = _FOLLOWUP_ID_RE.sub("", text).strip()
+        if not body:
+            continue
+        ident = item.get("id") if isinstance(item, dict) else None
+        rows.append({
+            "id": f"agent-followup-{ident or index}",
+            "role": "user",
+            "content": body[: chats_mod.CONTENT_MAX],
+            "fromParent": True,
+            "pending": True,
+            "noActions": True,
+        })
+    return rows
 
 
 def take_followups(run_id: str) -> list[str]:
@@ -1511,6 +1576,60 @@ def flag_unconsumed_followups(run_id: str, followups: list) -> None:
             row["thread_id"],
             {"run_id": row["id"], "message_id": row["message_id"], "message": message},
         )
+
+
+def settle_abandoned_followups(run_id: str) -> None:
+    """Report follow-ups an abandoned child never consumed.
+
+    Only the abandon paths call this (abort/reap/force-terminal): no live
+    finalizer will run for them, so the queue would otherwise sit unread
+    forever while the parent was told "delivered". child_writeup prints
+    agent.unconsumed_followups, and forcing background/wake_sent hands that
+    report to the wake sweep.
+    """
+    try:
+        with transaction() as conn:
+            _settle_child_followups(conn, run_id)
+    except Exception:
+        logger.exception("Failed to settle follow-ups for abandoned run %s", run_id)
+
+
+def _settle_child_followups(conn, run_id: str) -> None:
+    row = conn.execute(
+        "SELECT id,parent_run_id,status,provider_messages,request FROM chat_runs WHERE id=?",
+        (run_id,),
+    ).fetchone()
+    if row is None or not row["parent_run_id"] or row["status"] not in TERMINAL:
+        return
+    try:
+        req = json.loads(row["request"] or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return
+    if not isinstance(req, dict):
+        return
+    agent = req.get("agent") if isinstance(req.get("agent"), dict) else {}
+    pending = agent.get("pending_followups")
+    if not isinstance(pending, list) or not pending:
+        return
+    transcript = row["provider_messages"] or ""
+    texts = [
+        followup_text(item)
+        for item in pending
+        if followup_text(item) and not _followup_delivered(item, transcript)
+    ]
+    reported = [str(t) for t in (agent.get("unconsumed_followups") or []) if str(t).strip()]
+    for text in texts:
+        if text not in reported:
+            reported.append(text)
+    agent["unconsumed_followups"] = reported[:8]
+    agent["pending_followups"] = []
+    agent["background"] = True
+    agent["wake_sent"] = False
+    req["agent"] = agent
+    conn.execute(
+        "UPDATE chat_runs SET request=?,updated_at=? WHERE id=?",
+        (dumps(req), db.now(), run_id),
+    )
 
 
 STEER_FRAME_HEAD = "[Fuse] Message from the user, delivered while you were working"
@@ -5074,6 +5193,8 @@ def _finalize_abandoned(row, status, notice=None):
         finish_run(row["id"], message, status)
         current = db.fetchone("SELECT status FROM chat_runs WHERE id=?", (row["id"],))
         if current is None or current["status"] not in ACTIVE:
+            # Abandoned, not finalized: no worker will drain queued follow-ups.
+            settle_abandoned_followups(row["id"])
             return
     except Exception:
         logger.exception("finish_run failed for %s; forcing terminal status", row["id"])
@@ -5147,6 +5268,12 @@ def _force_terminal(run_id, status, message):
             except Exception:
                 logger.exception("Failed to unpin vault for run %s", run_id)
         if child:
+            # Same abandonment contract as _finalize_abandoned: queued parent
+            # follow-ups must be reported, not stranded in the request blob.
+            try:
+                _settle_child_followups(conn, run_id)
+            except Exception:
+                logger.exception("Failed to settle follow-ups for run %s", run_id)
             event(
                 conn,
                 row["user_id"],

@@ -22,8 +22,9 @@ BACKGROUND_STARTED = (
     "Continue with non-overlapping work, or briefly tell the user what you launched."
 )
 FOLLOWUP_DELIVERED = (
-    "Follow-up delivered to the live subagent. You will be notified when it finishes. "
-    "Do not sleep or poll."
+    "Follow-up queued for the live subagent. It becomes the subagent's next "
+    "user message when its current step ends, and is already visible in its "
+    "panel. You will be notified when it finishes. Do not sleep or poll."
 )
 # Foreground spawn wait before the child becomes a background task. Product-
 # tuned and pinned by a contract test; the wake path covers longer children.
@@ -551,8 +552,8 @@ async def spawn(
             if not chat_store.queue_followup(existing["id"], prompt):
                 msg = (
                     "Live subagent did not accept the follow-up (it may have just finished, "
-                    "or its follow-up queue is full). Wait for the completion notice, then "
-                    "continue it with spawn_subagent task_id."
+                    "be stopping, or its follow-up queue is full). Wait for the completion "
+                    "notice, then continue it with spawn_subagent task_id."
                 )
                 return msg, {
                     "name": "spawn_subagent",

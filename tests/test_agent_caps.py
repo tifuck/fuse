@@ -639,6 +639,56 @@ class AgentCapsTest(unittest.TestCase):
         store.save_turn_progress(parent["id"], [{"role": "user", "content": env}])
         self.assertEqual(store.take_child_results(parent["id"]), [])
 
+    def test_followup_rejected_on_stopping_child(self):
+        thread, parent = self._parent()
+        child = self._live_child(thread, parent)
+        db.execute("UPDATE chat_runs SET cancel_requested=1 WHERE id=?", (child["id"],))
+        self.assertFalse(store.queue_followup(child["id"], "too late, it is stopping"))
+
+    def test_abandoned_child_reports_unconsumed_followups(self):
+        thread, parent = self._parent()
+        child = self._live_child(thread, parent)
+        self.assertTrue(store.queue_followup(child["id"], "check the lexer too"))
+        self.assertTrue(store.abort_active(child["id"], "interrupted"))
+        view = store.get_run(1, child["id"])
+        agent = view["request"]["agent"]
+        self.assertEqual(agent["pending_followups"], [])
+        self.assertTrue(any("check the lexer too" in t for t in agent["unconsumed_followups"]))
+        self.assertTrue(agent["background"])
+        self.assertFalse(agent["wake_sent"])
+        self.assertIn("check the lexer too", store.child_writeup(view))
+        self.assertTrue(any(c["id"] == child["id"] for c in store.wake_candidates(1, child["thread_id"])))
+
+    def test_child_display_renders_followups_as_parent_messages(self):
+        envelope = (
+            "[Fuse] Follow-up from the parent — not written by the end user. "
+            "Stay in the assigned task and host/cwd unless this follow-up changes them:\n\n"
+            "(followup:111222333444) earlier steer"
+        )
+        view = {
+            "status": "running",
+            "message_id": "m",
+            "message": {"content": "", "tools": []},
+            "request": {"messages": [], "model": "t",
+                        "agent": {"pending_followups": [{"id": "abc123def456", "text": "also check Y"}]}},
+            "provider_messages": [
+                {"role": "user", "content": "initial task"},
+                {"role": "user", "content": envelope},
+                {"role": "assistant", "content": "ok"},
+            ],
+        }
+        rows = store.child_display_messages(view)
+        followups = [r for r in rows if r.get("fromParent")]
+        self.assertEqual(len(followups), 2)
+        delivered, pending = followups
+        self.assertEqual(delivered["role"], "user")
+        self.assertFalse(delivered.get("auto"))
+        self.assertFalse(delivered.get("pending"))
+        self.assertEqual(delivered["content"], "earlier steer")
+        self.assertTrue(pending.get("pending"))
+        self.assertEqual(pending["content"], "also check Y")
+        self.assertEqual(rows[-1], pending)  # queued rows land after history
+
     def test_followup_on_live_child(self):
         thread, parent = self._parent()
         child = store.start_child_run(
@@ -1170,7 +1220,12 @@ class AgentCapsTest(unittest.TestCase):
         # assertion required the duplicate historical copy that caused flicker.
         self.assertFalse(any(item.get("tools") for item in hist))
         self.assertEqual([tool["id"] for tool in view["message"]["tools"]], ["c1"])
-        self.assertTrue(any(item.get("auto") for item in hist if item["role"] == "user"))
+        # A delivered parent follow-up is a message from the main agent, not
+        # an automated-event chip: bubble text only, marker and preamble gone.
+        followup = next(item for item in hist if item.get("fromParent"))
+        self.assertFalse(followup.get("auto"))
+        self.assertEqual(followup["content"], "also tests")
+        self.assertNotIn("[Fuse]", followup["content"])
         self.assertNotEqual((hist[-1].get("content") or "").strip(), "tests look fine")
         meter = store.child_context_meter(view)
         self.assertIsNotNone(meter)

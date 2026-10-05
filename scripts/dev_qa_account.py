@@ -716,7 +716,10 @@ def _heavy_child_transcript(rng_seed, desc, rounds=80):
                          "content": "\n".join(f"{n}: " + _prose(rng, 12) for n in range(1, 70))})
         rows.append({"role": "assistant", "content": "## Leg summary\n\n" + _prose(rng, 200)})
         if leg == 0:
-            rows.append({"role": "user", "content": "Follow-up from the parent: " + _prose(rng, 30)})
+            rows.append({"role": "user", "content": (
+                "[Fuse] Follow-up from the parent — not written by the end user. "
+                "Stay in the assigned task and host/cwd unless this follow-up changes them:\n\n"
+                + f"(followup:{rng_seed:012x}) " + _prose(rng, 30))})
     return rows
 
 

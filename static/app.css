@@ -6103,6 +6103,24 @@ body.is-chat.is-keyboard .chat-dock {
 
 /* Wake-delivered command results render as native tool steps. */
 .chat-turn.is-user.is-auto-steps { align-items: stretch; }
+/* A parent follow-up in a subagent panel: a user bubble with a caption. */
+.chat-turn.is-from-agent .chat-agent-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: 100%;
+  font-size: 0.72rem;
+  letter-spacing: 0.01em;
+  color: var(--chat-secondary);
+}
+.chat-turn.is-from-agent .chat-agent-note::before {
+  content: "";
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: var(--brass);
+  flex-shrink: 0;
+}
 .chat-auto-steps {
   --node: calc(14px * var(--chat-text-scale, 1));
   --row: calc(1.7rem * var(--chat-text-scale, 1));

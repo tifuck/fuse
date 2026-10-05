@@ -6497,6 +6497,20 @@
     const article = document.createElement("article");
     article.className = "chat-turn is-user";
     article.setAttribute("aria-label", "Your message");
+    if (msg.fromParent) {
+      // A parent follow-up inside a subagent panel: a real message, not an
+      // automated-event chip. Queued ones say they are still being delivered.
+      article.classList.add("is-from-agent");
+      article.setAttribute("aria-label", msg.pending ? "Message from the main agent, awaiting delivery" : "Message from the main agent");
+      const tag = document.createElement("div");
+      tag.className = "chat-agent-note";
+      tag.textContent = msg.pending ? "From main agent · delivering at the next step" : "From main agent";
+      const bubble = document.createElement("div");
+      bubble.className = "chat-bubble";
+      bubble.textContent = msg.content;
+      article.append(tag, bubble);
+      return article;
+    }
     if (msg.auto) {
       if (Array.isArray(msg.autoSteps) && msg.autoSteps.length) {
         return renderAutoSteps(msg);
@@ -14893,6 +14907,8 @@
         auto: Boolean(item.auto),
         autoSteps: Array.isArray(item.autoSteps) ? item.autoSteps : null,
         attachments: Array.isArray(item.attachments) ? item.attachments : [],
+        fromParent: Boolean(item.fromParent),
+        pending: Boolean(item.pending),
       }, -2 - index, true);
     }
     return renderAssistant(
