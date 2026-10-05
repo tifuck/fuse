@@ -6266,8 +6266,10 @@
   function autoEventLabel(content) {
     const text = String(content || "");
     if (text.includes("SCHEDULED RUN")) return "Automated · scheduled run";
-    const commands = text.includes("<command_result");
-    const monitors = text.includes("<monitor_event") || text.includes("<monitor_result");
+    // Envelopes always carry an id attribute; the handoff boilerplate names
+    // the bare tags in prose and must not classify the message.
+    const commands = text.includes("<command_result id=");
+    const monitors = text.includes("<monitor_event id=") || text.includes("<monitor_result id=");
     const reports = text.includes("<task id=");
     if ((commands || monitors) && reports) return "Automated · background results";
     if (monitors && commands) return "Automated · background results";

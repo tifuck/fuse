@@ -15,6 +15,24 @@ function world() {
   for (const name of ['executionState', 'executionIdentity', 'executionPending', 'toolBackground', 'toolAwaitingCancellation', 'isShellExecTool', 'childBackedTool', 'toolIsCurrent', 'toolRunning', 'backgroundCommandLabel', 'applyCommandResult', 'shellExitOnly', 'shellExitCode', 'toolFailed', 'toolInterrupted', 'toolPresentation']) load(name, ctx);
   return ctx;
 }
+test('automated labels read envelope ids, not the handoff boilerplate', () => {
+  const c = vm.createContext({});
+  load('autoEventLabel', c);
+  const footer = "These are for you, not the user. A <monitor_event> means the watch fired — do not start another. "
+    + 'A <monitor_result state="timed_out"> means the watch ended.';
+  const commandOnly = '[Fuse] AUTOMATED EVENT — not written by the user. Background results:\n\n'
+    + '<command_result id="ab12cd34ef56" state="completed">\nexit 0\n</command_result>\n\n' + footer;
+  assert.equal(c.autoEventLabel(commandOnly), 'Automated · background command result');
+  assert.equal(c.autoEventLabel('<task id="c1" state="completed">report</task>'), 'Automated · background subagent report');
+  assert.equal(c.autoEventLabel('<monitor_event id="m1" seq="1">line</monitor_event>'), 'Automated · monitor event');
+  assert.equal(
+    c.autoEventLabel('<command_result id="ab12cd34ef56" state="completed"></command_result>\n<task id="c1" state="completed"></task>'),
+    'Automated · background results');
+  assert.equal(
+    c.autoEventLabel('<monitor_event id="m1" seq="1"></monitor_event>\n<command_result id="ab12cd34ef56" state="completed"></command_result>'),
+    'Automated · background results');
+});
+
 test('background execution stays live independently of the assistant turn', () => {
   const c = world();
   const trace = {name: 'run_terminal_command', background: true, status: 'running', child_id: 'job-1', command: 'sleep 10'};
