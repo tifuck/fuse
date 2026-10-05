@@ -254,18 +254,17 @@ function snap() {
       await drive({ reasoning: 'Secret plan.', segments: [think('Secret plan.')] });
       await page.waitForFunction(() => /^Thinking for/.test(window.__tt.snap().labels[0] || ''), null, { timeout: 3500 });
       await page.evaluate(() => fuseToolFixture.thinking(false));
+      const hidden = await snapNow();
+      check(!hidden.labels.some((l) => /Thinking for|Thought for|Secret plan/.test(l)), `the switch hides the live thought line at once: ${hidden.labels}`);
+      check(hidden.clocks.length === 0, `the hidden live thought keeps no ticking clock: ${hidden.clocks}`);
+      check(hidden.dock.meta.includes('thinking'), `the status line still says the model is thinking while hidden: ${hidden.dock.meta}`);
       await drive({ reasoning: 'Secret plan. More.', segments: [think('Secret plan. More.')] });
-      await page.waitForTimeout(250);
-      // FINDING(live-thought-hidden): toggling "Show thinking" off mid-thought
-      // leaves the live "Thinking for…" line (and its ticking clock) on screen:
-      // updateAssistant's shape signature does not include showThinking, so a
-      // hidden thought neither rebuilds the flow nor drops its live row. It
-      // clears only when a later tool changes the segment structure, or at the
-      // settle. Intended: the switch hides every thought at once (setShowThinking
-      // repaints; settled threads drop the rows — pinned by console_rows_audit).
-      const stuck = await snapNow();
-      check(stuck.labels.some((l) => /^Thinking for/.test(l)), `FINDING(live-thought-hidden): the live thought line outlives the switch: ${stuck.labels}`);
-      check(stuck.dock.meta.includes('thinking'), `the status line still says the model is thinking while hidden: ${stuck.dock.meta}`);
+      const stillHidden = await snapNow();
+      check(!stillHidden.labels.some((l) => /Thinking for|Secret plan/.test(l)), `streaming into a hidden thought still renders no row: ${stillHidden.labels}`);
+      await page.evaluate(() => fuseToolFixture.thinking(true));
+      await page.waitForFunction(() => /^Thinking for/.test((window.__tt.snap().labels[0] || '')), null, { timeout: 3500 });
+      await page.waitForFunction(() => /think:[2-9]s/.test(window.__tt.snap().clocks.join(',') || ''), null, { timeout: 4500 });
+      await page.evaluate(() => fuseToolFixture.thinking(false));
       await finish({ id: 'tt-hide', role: 'assistant', model: 'qa/model', elapsedMs: 12000, endedAt: '2026-10-05T09:42:00Z',
         content: 'Done anyway.', reasoning: 'Secret plan. More.', tools: [readH],
         segments: [think('Secret plan. More.', 5000), T(readH), say('Done anyway.')] });
@@ -301,11 +300,7 @@ function snap() {
       s = await snapNow();
       check(s.rows.some((l) => /Interrupted/.test(l)), `a stopped turn settles its running call as interrupted: ${s.rows}`);
       check(s.clocks.length === 0, `a stopped turn leaves no ticking clock: ${s.clocks}`);
-      // FINDING(stopped-turn-line): the closing ✻ line has no stopped or failed
-      // wording — a user-stopped turn still reads "✻ Cooked for 24s · done
-      // 9:44 AM", claiming the turn cooked and finished. Claude Code, whose
-      // transcript Console ports, words a stopped close "Interrupted".
-      check(/done \d/.test(s.foot), `FINDING(stopped-turn-line): a stopped turn's close claims done: ${s.foot}`);
+      check(s.foot === `✻ Interrupted · ${turnVerb('tt-stop')} for 24s`, `a stopped close says Interrupted, never done: ${s.foot}`);
 
       await start('console', 'tt-fail', 30000);
       await finish({ id: 'tt-fail', role: 'assistant', model: 'qa/model', elapsedMs: 30000, endedAt: '2026-10-05T09:50:00Z', error: 'Upstream returned 502', content: '', reasoning: '', tools: [], segments: [] });
@@ -313,7 +308,7 @@ function snap() {
       const failed = await snapNow();
       check(failed.dock.hidden, `a failed run hides the status line: ${JSON.stringify(failed.dock)}`);
       check((await page.evaluate(() => document.querySelector('.chat-log > article:last-child [data-err]')?.innerText || '')).includes('Upstream returned 502'), 'the failure text shows on the turn');
-      check(/done \d/.test(failed.foot), `FINDING(stopped-turn-line): a failed turn's close also claims done: ${failed.foot}`);
+      check(failed.foot === `✻ Failed · ${turnVerb('tt-fail')} for 30s`, `a failed close says Failed, never done: ${failed.foot}`);
     }
 
     // —— 5. The ✻ line's other values. ——

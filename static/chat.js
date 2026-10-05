@@ -11968,9 +11968,11 @@
     if (pendingAgents) {
       return `${head}<span>Waiting for <b>${pendingAgents}</b> background ${pendingAgents === 1 ? "agent" : "agents"} to finish</span>`;
     }
-    const done = ccDoneAt(msg.endedAt);
+    // A stopped or failed turn never finished, so it says so instead of "done".
+    const outcome = msg.stopped ? "Interrupted" : msg.error ? "Failed" : "";
+    const done = outcome ? "" : ccDoneAt(msg.endedAt);
     const still = latest ? ccStillRunningText() : "";
-    return `${head}<span>${escapeHtml(ccTurnVerb(msg))} for ${escapeHtml(ccDuration(Math.max(0, Number(msg.elapsedMs) || 0)))}` +
+    return `${head}<span>${outcome ? `${outcome} · ` : ""}${escapeHtml(ccTurnVerb(msg))} for ${escapeHtml(ccDuration(Math.max(0, Number(msg.elapsedMs) || 0)))}` +
       `${done ? ` · done ${escapeHtml(done)}` : ""}${still ? ` · ${escapeHtml(still)} still running` : ""}</span>`;
   }
 
@@ -12586,7 +12588,9 @@
       if (block.kind === "permission") return `p:${block.entries[0] && block.entries[0].perm && block.entries[0].perm.id}`;
       return `c:${blockIndex}`;
     };
-    const sig = `${Boolean(live)}|${chatView}|${liveKind}|${structure}|${permSig}|${[...settleLines.keys()].join(",")}`;
+    // showThinking changes which blocks exist without changing the segment
+    // structure, so it belongs to the shape: a toggle must reach the rebuild.
+    const sig = `${Boolean(live)}|${chatView}|${showThinking}|${liveKind}|${structure}|${permSig}|${[...settleLines.keys()].join(",")}`;
     let reasoningPositions = null;
     const sameShape = flow._sig === sig && flow.childElementCount === blocks.length;
     if (sameShape) {
