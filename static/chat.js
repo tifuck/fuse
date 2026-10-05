@@ -2659,7 +2659,7 @@
   function backgroundCommandLabel(trace) {
     if (!trace || !isShellExecTool(trace.name) || !trace.background || !trace.child_id) return "";
     const kind = trace.backgroundResult ? "background result" : "background";
-    return `${kind} · ${trace.child_id} · ${String(trace.command || "command").trim()}`;
+    return `${kind} · ${trace.child_id} · ${String(trace.command || "").trim() || "command"}`;
   }
 
   function shellExitOnly(trace) {
@@ -6303,7 +6303,8 @@
       const rawLine = meta.split("\n").find((l) => l.startsWith("host:")) || "";
       const hm = rawLine.match(/^host:\s*(.*?)\s*(?:command|source):\s*(.*)$/);
       const target = pick("target") || (hm ? hm[2].trim() : pick("command"));
-      const events = Number(pick("events") || attr("count"));
+      const events = Number(pick("events"));
+      const counted = Number.isFinite(events) ? events : Number(attr("count"));
       results.push({
         id: match[2],
         tag,
@@ -6312,7 +6313,7 @@
         command: target,
         url: pick("url"),
         source: pick("source"),
-        event_count: Number.isFinite(events) ? events : null,
+        event_count: Number.isFinite(counted) ? counted : null,
         exit_code: /^-?\d+$/.test(code) ? Number(code) : null,
         duration_ms: Number.isFinite(duration) ? duration : null,
         error: pick("error"),

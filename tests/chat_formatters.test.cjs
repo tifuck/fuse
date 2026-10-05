@@ -122,8 +122,7 @@ test('a background label needs a shell tool, the flag, and a child id', () => {
   assert.equal(c.backgroundCommandLabel({ name: 'grep', background: true, child_id: 'j', command: 'x' }), '');
   assert.equal(c.backgroundCommandLabel({ name: 'monitor', background: true, command: 'watch log' }), '', 'no child id');
   assert.equal(c.backgroundCommandLabel({ name: 'monitor', background: true, child_id: 'm1', command: '  watch log  ' }), 'background · m1 · watch log');
-  // FINDING(blank-command-label): a whitespace-only command is not replaced by "command".
-  assert.equal(c.backgroundCommandLabel({ name: 'run_terminal_command', background: true, child_id: 'j', command: '   ' }), 'background · j · ');
+  assert.equal(c.backgroundCommandLabel({ name: 'run_terminal_command', background: true, child_id: 'j', command: '   ' }), 'background · j · command');
 });
 
 test('auto labels ignore boilerplate and fall back when nothing is addressed', () => {
@@ -177,8 +176,7 @@ test('command envelopes parse monitors, signals, and keep output off the metadat
   assert.equal(cmd.monitor, false);
   assert.equal(event.tag, 'monitor_event');
   assert.equal(event.state, 'running', 'an event without a state is still live');
-  // FINDING(event-count): a non-numeric `events:` line blocks the count attribute, so the count is lost.
-  assert.equal(event.event_count, null);
+  assert.equal(event.event_count, 4, 'a non-numeric events: line falls through to the count attribute');
   assert.equal(event.url, 'https://example.test/feed');
   assert.equal(event.command, '', 'a url: line is not a command target');
   assert.equal(event.output, 'first event line');
