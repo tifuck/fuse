@@ -92,20 +92,16 @@ function scenarios() {
     const v = tool('write_file', { path: '/srv/qa/app/config.py', status: 'running', call_duration_ms: null, duration_ms: null });
     return { rows: [user('Go.'), turn([T(w)], [w])], live: true, phase: 'tools', steps: [
       { name: 'running', has: ['Write(app/new.py)', 'Running…'], lacks: ['Wrote'], running: [w.id] },
-      // FINDING(write-result-hidden): the server's write result ("created
-      // <path> (N bytes)", app/workspace.py _write) never renders and the
-      // "Wrote N lines to <path>" line (chat.js consoleResultLine) is keyed
-      // on trace.content, which no tool event or persisted trace carries —
-      // so Console shows only "Wrote <path>", and create is indistinguishable
-      // from overwrite. Intended, per the consoleFold comment: "Wrote 40 lines
-      // to x.py" plus the first lines of the file.
+      // The server's write receipt ("created/wrote <path> (N bytes)",
+      // app/workspace.py _write) is surfaced as the result line: create reads
+      // "Created <path> (N bytes)", overwrite "Wrote <path> (N bytes)".
       { name: 'created', event: { event: 'tool', id: w.id, status: 'done', output: 'From host qa-box:\ncreated /srv/qa/app/new.py (28 bytes)', call_duration_ms: 2600 },
-        has: ['Write(app/new.py) · 2s', 'Wrote app/new.py'], lacks: ['created /srv/qa/app/new.py', '(28 bytes)', 'Running…'], running: [] },
+        has: ['Write(app/new.py) · 2s', 'Created app/new.py (28 bytes)'], lacks: ['created /srv/qa/app/new.py', 'Running…'], running: [] },
       { name: 'second write running', event: { event: 'tool', id: v.id, name: 'write_file', status: 'running', path: '/srv/qa/app/config.py', host: 'qa-box', cwd: '/srv/qa', project_root: '/srv/qa', platform: 'posix' },
-        has: ['Wrote app/new.py', 'Write(app/config.py)'], running: [v.id] },
+        has: ['Created app/new.py (28 bytes)', 'Write(app/config.py)'], running: [v.id] },
       { name: 'overwritten', event: { event: 'tool', id: v.id, status: 'done', output: 'From host qa-box:\nwrote /srv/qa/app/config.py (512 bytes)', call_duration_ms: 1400 },
-        has: ['Wrote app/config.py'], lacks: ['wrote /srv/qa/app/config.py', '(512 bytes)'], running: [] },
-      { name: 'settled', remount: { live: false }, has: ['Write(app/new.py)', 'Wrote app/new.py', 'Wrote app/config.py'] },
+        has: ['Wrote app/config.py (512 bytes)'], lacks: ['wrote /srv/qa/app/config.py'], running: [] },
+      { name: 'settled', remount: { live: false }, has: ['Write(app/new.py)', 'Created app/new.py (28 bytes)', 'Wrote app/config.py (512 bytes)'] },
     ] };
   });
 
@@ -146,15 +142,12 @@ function scenarios() {
     const g = tool('grep', { pattern: 'missing', path: '/srv/qa', status: 'running', call_duration_ms: null, duration_ms: null });
     return { rows: [user('Go.'), turn([T(g)], [g])], live: true, phase: 'tools', steps: [
       { name: 'running', has: ['Searching for missing'], running: [g.id] },
-      // FINDING(grep-no-match): the server's no-match body is "(no matches)"
-      // (app/workspace.py _grep), but the fold's no-match test only accepts
-      // an unparenthesised "no matches", so the miss is counted as one file
-      // and reads "Found 1 file". Intended: a miss reads as no matches (the
-      // none branch exists for exactly this body), e.g. "Found 0 files".
+      // A miss reads as zero: the server's "(no matches)" body is a miss,
+      // not one found file.
       { name: 'done', event: { event: 'tool', id: g.id, status: 'done', output: '(no matches)' },
-        has: ['Found 1 file'], lacks: ['Searching for missing'], running: [] },
+        has: ['Found 0 files'], lacks: ['Found 1 file', 'Searching for missing'], running: [] },
       { name: 'settled', remount: { live: false }, has: ['Searched for 1 pattern'] },
-      { name: 'settled open', open: true, has: ['Found 1 file'] },
+      { name: 'settled open', open: true, has: ['Found 0 files'], lacks: ['Found 1 file'] },
     ] };
   });
 
@@ -166,7 +159,7 @@ function scenarios() {
     return { wide: true, rows: [user('Go.'), turn([say('Looking.\n\n'), T(g), T(l), T(empty)], [g, l, empty], ended)], steps: [
       { name: 'folded', has: ['Searched for 2 patterns, listed 1 directory'] },
       { name: 'open', open: true, has: ['Search(pattern: "workflow_dispatch.*retry_backoff.*max_attempts=[0-9]+"', 'Found 2 files', 'tests/a.browser.cjs',
-        'List(tests)', 'Listed 4 entries', 'a.py'] },
+        'List(tests)', 'Listed 4 entries', 'a.py', 'Search(pattern: "*.nomatch", path: ".")', 'Found 0 files'] },
     ] };
   });
 

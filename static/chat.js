@@ -8646,7 +8646,9 @@
     }
     if (name === "grep" || name === "glob" || name === "list_dir") {
       const body = String(trace.output || trace.preview || "").trim();
-      const none = !body || /^no (matches|files?|entries)( found)?\.?$/i.test(body);
+      // The server's empty results are parenthesised: "(no matches)"
+      // (grep, glob), "(no matching files)" (grep files_with_matches).
+      const none = !body || /^\(?no (matches|matching files?|files?|entries)( found)?\)?\.?$/i.test(body);
       const n = none ? 0 : name === "list_dir" ? consoleLineCount(trace) : consoleMatchCount(trace);
       const unit = name === "list_dir" ? (n === 1 ? "entry" : "entries")
         : name === "grep" && /:\d+:/.test(body) ? (n === 1 ? "line" : "lines") : (n === 1 ? "file" : "files");
@@ -8768,6 +8770,10 @@
       const path = compactPath(trace.path || ".", trace, 72);
       const n = typeof trace.content === "string" ? trace.content.replace(/\s+$/, "").split("\n").length : 0;
       if (n) return `Wrote ${n} line${n === 1 ? "" : "s"} to ${path}`;
+      // The write receipt says whether the file was created and its size.
+      const receipt = typeof trace.output === "string"
+        ? cleanToolOutput(trace, trace.output).trim().match(/^(created|wrote) \S+ \((\d+) bytes\)$/) : null;
+      if (receipt) return `${receipt[1] === "created" ? "Created" : "Wrote"} ${path} (${receipt[2]} bytes)`;
       return path ? `Wrote ${path}` : "Wrote file";
     }
     if (name === "search_replace") {
