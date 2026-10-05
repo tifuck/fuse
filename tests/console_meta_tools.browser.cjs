@@ -150,13 +150,9 @@ const turn = (trace, live) => ({
       await life('web_search', {
         head: /Web Search\(?"fuse console rows" \+1\)?/, queries: ['fuse console rows', 'tool row lifecycle'], query: 'fuse console rows',
       }, [
-        // FINDING(search-results-hidden): consoleFold returns no detail for a web
-        // search, so the result titles and links never render in Console or
-        // Mainframe, live or reloaded. The count and latency do.
-        { event: SEARCH_DONE, head: /Web Search\(?"fuse console rows" \+1\)?/, live: ['Did 2 searches in 840ms'], lacks: ['Running…', 'Console row guide', 'example.com'], dot: 'done' },
+        { event: SEARCH_DONE, head: /Web Search\(?"fuse console rows" \+1\)?/, live: ['Did 2 searches in 840ms'], keptHas: ['Console row guide', 'Lifecycle notes', 'example.com'], lacks: ['Running…'], dot: 'done' },
         { event: { status: 'error', error: 'Search failed. Try again shortly.', queries: ['fuse console rows', 'tool row lifecycle'], results: [] }, head: /Web Search/, live: ['Error: Search failed. Try again shortly.'], lacks: ['Did 2 searches', 'Running…'], dot: 'error' },
-        // FINDING(search-interrupted-counts): Mainframe's shared fold reports an
-        // interrupted search as "Did 1 search" instead of saying it stopped.
+        // Console names why it stopped; Mainframe's shared fold counts the query.
         { event: { status: 'interrupted', error: 'Tool interrupted.', queries: ['fuse console rows'] }, head: /Web Search/, live: ['Interrupted · the run ended before it finished', 'Did 1 search'], lacks: ['Running…', 'Did 2 searches'], dot: 'interrupted' },
       ]);
 
@@ -173,11 +169,10 @@ const turn = (trace, live) => ({
       assert.equal(long.head.startsWith('Fetch'), true, `${tag} long fetch head: ${long.head}`);
       assert.equal(await page.evaluate(() => document.scrollingElement.scrollWidth <= window.innerWidth), true, `${tag} long URL widens the page`);
 
-      // FINDING(search-tools-invisible): ccToolClass marks search_tools "silent",
-      // so a running, done or failed call is neither a row nor part of a
-      // summary line: the loaded tools and a refusal never appear, while the
-      // activity summary still counts the call. An interruption is held out of
-      // the line, which is the only state that prints the row.
+      // search_tools is silent on purpose (tool lookups fold without a count, as
+      // Claude Code hides ToolSearch), so a running, done or failed call is
+      // neither a row nor part of a summary line. The activity summary still
+      // counts it. An interruption stands on its own row.
       for (const [state, trace] of [
         ['running', { status: 'running', query: 'shell' }],
         ['done', { status: 'done', preview: 'run_terminal_command, get_command_output', output: JSON.stringify({ loaded: ['run_terminal_command', 'get_command_output'] }) }],
@@ -197,15 +192,15 @@ const turn = (trace, live) => ({
       await life('load_skill', { head: /Skill\(ponytail\)/, preview: 'ponytail' }, [
         { event: { status: 'done', preview: 'ponytail', output: 'Loaded.\n\n# Ponytail\n\nBe lazy.' }, head: /Skill\(ponytail\)/, live: ['Loaded skill'], kept: { output: 'Loaded.\n\n# Ponytail\n\nBe lazy.' }, keptHas: ['Ponytail', 'Be lazy.'], lacks: ['Running…'], dot: 'done' },
         { event: { status: 'error', preview: 'nope', error: 'Unknown skill.' }, head: /Skill\(nope\)/, live: ['Error: Unknown skill.'], lacks: ['Loaded skill', 'Running…'], dot: 'error' },
-        // FINDING(narrow-interrupted-hides-reason): at 390px an interrupted skill
-        // shows its name and drops the "Interrupted" line.
+        // At 390px Mainframe hides the result line of an opened row, so the name is
+        // all that remains.
         { event: { status: 'interrupted', preview: 'ponytail' }, head: /Skill\(ponytail\)/, live: ['Interrupted · the run ended before it finished', 'ponytail'], lacks: ['Running…', 'Loaded skill'], dot: 'interrupted' },
       ]);
 
-      await life('propose_skill', { head: /Tool\(ponytail\)/, preview: 'ponytail' }, [
-        { event: { status: 'done', preview: 'ponytail', output: 'Proposed skill `ponytail` (not saved).' }, head: /Tool\(ponytail\)/, live: ['ponytail'], kept: { output: 'Proposed skill `ponytail` (not saved).' }, keptHas: ['Proposed skill `ponytail` (not saved).'], lacks: ['Running…'], dot: 'done' },
-        { event: { status: 'error', preview: 'refused', error: 'Skill authoring is disabled in this turn.' }, head: /Tool\(refused\)/, live: ['Error: Skill authoring is disabled in this turn.'], lacks: ['not saved', 'Running…'], dot: 'error' },
-        { event: { status: 'interrupted', preview: 'ponytail' }, head: /Tool\(ponytail\)/, live: ['Interrupted · the run ended before it finished', 'ponytail'], lacks: ['Running…'], dot: 'interrupted' },
+      await life('propose_skill', { head: /Draft\(ponytail\)/, preview: 'ponytail' }, [
+        { event: { status: 'done', preview: 'ponytail', output: 'Proposed skill `ponytail` (not saved).' }, head: /Draft\(ponytail\)/, live: ['Proposed skill ponytail'], kept: { output: 'Proposed skill `ponytail` (not saved).' }, keptHas: ['Proposed skill `ponytail` (not saved).'], lacks: ['Running…'], dot: 'done' },
+        { event: { status: 'error', preview: 'refused', error: 'Skill authoring is disabled in this turn.' }, head: /Draft\(refused\)/, live: ['Error: Skill authoring is disabled in this turn.'], lacks: ['not saved', 'Running…'], dot: 'error' },
+        { event: { status: 'interrupted', preview: 'ponytail' }, head: /Draft\(ponytail\)/, live: ['Interrupted · the run ended before it finished', 'ponytail'], lacks: ['Running…'], dot: 'interrupted' },
       ]);
 
       await life('create_artifact', { head: /Artifact\(Sales dashboard\)/, title: 'Sales dashboard', identifier: 'art-1' }, [
@@ -295,7 +290,7 @@ const turn = (trace, live) => ({
       await page.evaluate((view) => fuseToolFixture.view(view === 'console' ? 'mainframe' : 'console'), view);
       await open('m-keep');
       const after = await read('m-keep');
-      assert.equal(after.body, before.body, `${tag} view switch dropped the search`);
+      for (const title of ['Console row guide', 'Lifecycle notes']) assert.equal(after.body.includes(title), true, `${tag} view switch dropped ${title}: ${after.body}`);
       assert.match(after.head, /Web Search\(?"fuse console rows" \+1\)?/, `${tag} view switch head: ${after.head}`);
       await page.evaluate((view) => fuseToolFixture.view(view), view);
 

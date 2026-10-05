@@ -8688,7 +8688,8 @@
       const n = searchCountFor(trace);
       const ms = Number(trace.latency_ms ?? trace.duration_ms ?? trace.call_duration_ms);
       const took = Number.isFinite(ms) && ms > 0 ? ` in ${ms >= 1000 ? `${Math.round(ms / 1000)}s` : `${Math.round(ms)}ms`}` : "";
-      return { status: `Did ${n} search${n === 1 ? "" : "es"}${took}`, preview: "", full: "" };
+      const hits = !failed && trace.results?.length ? detail() : "";
+      return { status: `Did ${n} search${n === 1 ? "" : "es"}${took}`, preview: "", full: hits };
     }
     return { status, preview: "", full: detail() };
   }
