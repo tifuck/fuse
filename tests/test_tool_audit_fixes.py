@@ -569,17 +569,22 @@ class SearchBudgetTest(unittest.IsolatedAsyncioTestCase):
 # --- permissions --------------------------------------------------------------------
 
 class SecretGrepGateTest(unittest.IsolatedAsyncioTestCase):
-    async def test_grep_of_secret_file_asks_like_read(self):
+    async def test_grep_secret_outside_root_asks_inside_is_silent(self):
         gate = permissions.Gate(user_id=1, thread_id=5, run_id="r", requester={"role": "main"},
                                 unattended=True, notify=lambda _e: None, cancel=asyncio.Event())
         with patch.object(permissions, "bypass_enabled", return_value=False), patch.object(
             permissions, "grant_covers", return_value=False
-        ):
-            verdict = await permissions.review(tool="grep", args={"pattern": "K", "path": ".env"}, user_id=1,
+        ), patch.object(permissions, "auto_enabled", return_value=False):
+            # Secret-named files inside an approved dir are ordinary in-scope
+            # reads; outside the roots they still gate (grep prints contents).
+            inside = await permissions.review(tool="grep", args={"pattern": "K", "path": ".env"}, user_id=1,
+                                              host_id=2, host_alias="h", root="/repo", windows=False, gate=gate)
+            outside = await permissions.review(tool="grep", args={"pattern": "K", "path": "/home/other/.env"}, user_id=1,
                                                host_id=2, host_alias="h", root="/repo", windows=False, gate=gate)
             plain = await permissions.review(tool="grep", args={"pattern": "K", "path": "src"}, user_id=1,
                                              host_id=2, host_alias="h", root="/repo", windows=False, gate=gate)
-        self.assertFalse(verdict.allowed)
+        self.assertTrue(inside.allowed)
+        self.assertFalse(outside.allowed)
         self.assertTrue(plain.allowed)
 
 

@@ -172,9 +172,14 @@ class JudgeTest(DbCase):
         ):
             self.assertFalse(asyncio.run(jev.judge(1, self.tid, {"command": "x" * (jev.ACTION_CLIP + 1)})))
 
-    def test_destructive_skips_network(self):
-        with patch.object(jev, "evaluate", side_effect=AssertionError("should not call")):
-            self.assertFalse(asyncio.run(jev.judge(1, self.tid, {"command": "rm -rf /"})))
+    def test_destructive_pattern_is_judged(self):
+        # The regex hit is an advisory, not a refusal: Jev sees the command.
+        payload = {"answers": _answers(0.9), "model": jev.MODEL}
+        with patch.object(jev, "evaluate", new_callable=AsyncMock, return_value=payload) as evaluate, patch.object(
+            jev, "user_can_auto", return_value=True
+        ):
+            self.assertFalse(asyncio.run(jev.judge(1, self.tid, {"command": "rm -rf /", "reasons": ["matches a destructive command pattern"]})))
+        self.assertIn("destructive", " ".join(evaluate.call_args.args[1]["action"]["reasons"]))
 
 
 class ReviewAutoTest(DbCase):
@@ -225,12 +230,21 @@ class ReviewAutoTest(DbCase):
         res = asyncio.run(flow())
         self.assertFalse(res.allowed)
 
-    def test_destructive_and_secret_shell_never_reach_jev(self):
+    def test_destructive_and_out_of_scope_secret_shell_reach_jev(self):
+        # Auto mode: Jev judges the wall, including destructive forms and
+        # secret targets outside the roots. In-root secrets never ask at all.
         self.auto()
-        for command in ("rm -rf build", "cat .env", "find . -delete", "cat ~/.ssh/config"):
-            with patch.object(jev, "judge", new_callable=AsyncMock, side_effect=AssertionError(command)):
-                res = self.review("run_terminal_command", {"command": command}, self.gate(unattended=True))
-            self.assertFalse(res.allowed, command)
+        with patch.object(jev, "judge", new_callable=AsyncMock, side_effect=AssertionError("in-root secret is silent")):
+            res = self.review("run_terminal_command", {"command": "cat .env"})
+        self.assertTrue(res.allowed)
+        for command in ("rm -rf build", "find . -delete", "cat ~/.ssh/config"):
+            with patch.object(jev, "judge", new_callable=AsyncMock, return_value=True) as judge:
+                res = self.review("run_terminal_command", {"command": command})
+            self.assertTrue(res.allowed, command)
+            self.assertTrue(judge.call_args.args[2]["reasons"], command)
+        with patch.object(jev, "judge", new_callable=AsyncMock, return_value=False):
+            res = self.review("run_terminal_command", {"command": "rm -rf build"}, self.gate(unattended=True))
+        self.assertFalse(res.allowed)
 
     def test_auto_off_never_calls_jev(self):
         # Auto off: an out-of-scope command asks; Jev is never involved.
@@ -267,11 +281,20 @@ class ReviewAutoTest(DbCase):
         judge.assert_awaited()
         self.assertEqual(self.pending(), 0)
 
-    def test_secret_read_never_calls_jev(self):
+    def test_in_root_secret_read_is_silent(self):
+        # A secret-named file inside an approved dir is an ordinary read.
         self.auto()
-        with patch.object(jev, "judge", new_callable=AsyncMock, side_effect=AssertionError("secret must not call Jev")):
-            res = self.review("read_file", {"path": ".env"}, self.gate(unattended=True))
+        with patch.object(jev, "judge", new_callable=AsyncMock, side_effect=AssertionError("in-root secret is silent")):
+            res = self.review("read_file", {"path": ".env"})
+        self.assertTrue(res.allowed)
+
+    def test_out_of_root_secret_read_goes_to_jev(self):
+        self.auto()
+        with patch.object(jev, "judge", new_callable=AsyncMock, return_value=False) as judge:
+            res = self.review("read_file", {"path": "/home/other/.env"}, self.gate(unattended=True))
         self.assertFalse(res.allowed)
+        judge.assert_awaited_once()
+        self.assertIn("secret", " ".join(judge.call_args.args[2]["reasons"]))
 
     def test_judge_exception_asks(self):
         self.auto()
@@ -298,12 +321,15 @@ class ReviewAutoTest(DbCase):
         self.assertEqual(self.pending(), 0)
 
     def test_enabling_auto_judges_waiting_card(self):
+        # Flipping Auto on mid-wait sends the pending ask to Jev once.
         events = []
 
         async def flow():
-            with patch.object(jev, "judge", new_callable=AsyncMock, return_value=True) as judge:
+            with patch.object(jev, "judge", new_callable=AsyncMock, return_value=True) as judge, patch.object(
+                jev, "user_can_auto", return_value=True
+            ):
                 task = asyncio.create_task(self.areview(
-                    "run_terminal_command", {"command": "pip install -r /srv/shared/requirements.txt"}, self.gate(notify=events.append)))
+                    "run_terminal_command", {"command": "bash < /srv/shared/setup.sh"}, self.gate(notify=events.append)))
                 card = await self.wait_pending(events)
                 judge.assert_not_awaited()
                 self.auto()
@@ -417,18 +443,27 @@ class DenyFormGateTest(DbCase):
 
         self.assertTrue(asyncio.run(flow()).allowed)
 
-    def test_auto_never_covers_a_deny_form(self):
-        events = []
+    def test_auto_deny_form_follows_jev(self):
+        # A denylist hit is Jev's call in auto mode: allowed when Jev says
+        # safe, the user's card when Jev says dangerous.
         self.auto()
+        with patch.object(jev, "judge", new_callable=AsyncMock, return_value=True) as judge:
+            res = self.review(
+                "run_terminal_command", {"command": "sudo systemctl restart fuse-dev"},
+                deny_reason="command blocked by denylist")
+        self.assertTrue(res.allowed)
+        self.assertIn("denylist", " ".join(judge.call_args.args[2]["reasons"]))
+
+        events = []
 
         async def flow():
-            with patch.object(jev, "judge", new_callable=AsyncMock, return_value=True) as judge:
+            with patch.object(jev, "judge", new_callable=AsyncMock, return_value=False) as judge:
                 task = asyncio.create_task(self.areview(
                     "run_terminal_command", {"command": "sudo reboot"},
                     self.gate(notify=events.append), deny_reason="command blocked by denylist"))
                 card = await self.wait_pending(events)
-                await asyncio.sleep(0.6)  # the waiting loop must not reach Jev
-                self.assertEqual(judge.await_count, 0)
+                await asyncio.sleep(0.6)  # Jev already ruled; the loop must not ask again
+                self.assertEqual(judge.await_count, 1)
                 self.assertEqual(self.pending(), 1)
                 permissions.resolve(1, self.tid, card["id"], "deny")
                 return await task

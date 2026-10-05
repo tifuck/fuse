@@ -211,9 +211,9 @@ async def judge(user_id: int, thread_id: int, action: dict, *, roots: list[str] 
         if len(str((action or {}).get("command") or "")) > ACTION_CLIP:
             logger.warning("Jev skip long command tool=%s", (action or {}).get("tool"))
             return False
-        if looks_destructive(str((action or {}).get("command") or "")):
-            logger.warning("Jev skip regex-destructive tool=%s", (action or {}).get("tool"))
-            return False
+        # Destructive-pattern hits are not a verdict: they ride along as an
+        # advisory reason and Jev decides. A regex refusal here would make
+        # auto mode card on every sudo/rm instead of judging it.
         if not user_can_auto(user_id):
             logger.warning("Jev skip no OpenRouter key user=%s", user_id)
             return False

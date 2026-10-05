@@ -11,7 +11,7 @@ from app.sources import token_store
 
 
 @pytest.mark.parametrize("command", [
-    "echo $HOME && cat /etc/shadow", "cat .env",
+    "echo $HOME && cat /etc/shadow",
     "cat ./a ./b ./c ./d ./e ./f /etc/shadow", "find . -delete",
     "cat .aws/credentials", "cat .*",
 ])
@@ -41,14 +41,21 @@ def test_shell_in_scope_runs_without_asking(command):
     assert result.allowed
 
 
-def test_secret_cannot_auto_approve():
+def test_out_of_scope_secret_reaches_auto_judge():
+    # Secret-named files inside the working root are silent; outside it, auto
+    # mode sends them to Jev (here refusing) and the card carries the flag.
     gate = SimpleNamespace(thread_id=1, user_id=1, unattended=False, requester={})
     ask = AsyncMock(return_value="deny")
-    with patch.object(permissions, "bypass_enabled", return_value=False), patch.object(permissions, "grant_covers", return_value=False), patch.object(permissions, "auto_enabled", return_value=True), patch.object(permissions, "_ask_and_wait", ask):
+    with patch.object(permissions, "bypass_enabled", return_value=False), patch.object(permissions, "grant_covers", return_value=False), patch.object(permissions, "auto_enabled", return_value=True), patch.object(permissions, "_auto_verdict", AsyncMock(return_value=False)), patch.object(permissions, "_ask_and_wait", ask):
+        inside = asyncio.run(permissions.review(
+            tool="read_file", args={"path": ".env"}, user_id=1,
+            host_id=1, host_alias="test", root="/srv/app", windows=False, gate=gate,
+        ))
         result = asyncio.run(permissions.review(
             tool="read_file", args={"path": "/etc/shadow"}, user_id=1,
             host_id=1, host_alias="test", root="/srv/app", windows=False, gate=gate,
         ))
+    assert inside.allowed
     assert not result.allowed
     assert ask.call_args.args[1]["secret"]
 

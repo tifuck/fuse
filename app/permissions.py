@@ -117,6 +117,15 @@ def is_secret_path(path: str) -> bool:
     return any(part in {".aws", ".docker", ".kube", ".ssh", ".gnupg"} for part in parts[:-1])
 
 
+def secret_dir_in_path(path: str) -> bool:
+    """A credential directory (.aws, .ssh, ...) is itself a path component.
+
+    A secret-named file inside an approved dir is an ordinary in-scope read,
+    but naming `.aws/credentials` reaches a store of secrets, so it still asks."""
+    parts = [part for part in str(path or "").replace("\\", "/").lower().split("/") if part not in ("", ".")]
+    return any(part in {".aws", ".docker", ".kube", ".ssh", ".gnupg"} for part in parts[:-1])
+
+
 def _norm(path: str, windows: bool) -> str:
     text = str(path or "")
     if windows:
@@ -1013,7 +1022,9 @@ async def review(*, tool: str, args: dict, user_id: int,
             reasons.append(deny_reason)
         if paths is not None:
             for cand, is_dir in paths:
-                if is_secret_path(cand):
+                # Secret-named targets inside an approved dir are in scope and
+                # silent; only ones outside the roots raise the card.
+                if is_secret_path(cand) and (secret_dir_in_path(cand) or not scope_allows(cand, base, roots, windows)[0]):
                     secret = True
                     reasons.append("secret-named file")
                 ok, resolved_cand = scope_allows(cand, base, roots, windows)
@@ -1021,9 +1032,12 @@ async def review(*, tool: str, args: dict, user_id: int,
                     continue
                 reasons.append(f"{resolved_cand} is outside the allowed roots")
                 out_of_root = True
-                if not grant_value:
-                    grant_kind, grant_value = "dir", (
-                        resolved_cand if is_dir else _grant_dir_for("read_file", resolved_cand, windows)
+                if not grant_value and not secret:
+                    # A secret-named target grants that exact file, never its
+                    # directory (which would silently cover siblings).
+                    grant_kind, grant_value = (
+                        ("file", resolved_cand) if is_secret_path(cand) else
+                        ("dir", resolved_cand if is_dir else _grant_dir_for("read_file", resolved_cand, windows))
                     )
         offending = [r.split(" is outside")[0] for r in reasons if "outside" in r]
         display = offending[0] if offending else cwd
@@ -1035,7 +1049,10 @@ async def review(*, tool: str, args: dict, user_id: int,
         # the same approval as reading it (directory searches withhold
         # secret-file matches in workspace._grep).
         if tool in ("read_file", "grep"):
-            if is_secret_path(resolved):
+            # Secret-named files inside an approved dir (working root or a
+            # grant) are ordinary in-scope reads. Only out-of-scope ones ask,
+            # and those grant the exact file, never its directory.
+            if is_secret_path(resolved) and (secret_dir_in_path(resolved) or not in_roots):
                 secret = True
                 reasons.append("secret-named file")
                 grant_kind, grant_value = "file", resolved
@@ -1092,28 +1109,34 @@ async def review(*, tool: str, args: dict, user_id: int,
         description = clean_description(args.get("description"))
         if description:
             payload["description"] = description
-    # Auto: every call that would ask goes to Jev, shell included; that is
-    # the whole point of the mode. Secret-named targets and regex-destructive
-    # shells never reach Jev and always wait for the user.
-    auto_judge = None
-    if not secret and not deny_reason and not _destructive_command(command):
-        jev_action = {
-            "tool": tool,
-            "host": host_alias,
-            "path": payload["path"],
-            "cwd": payload["cwd"],
-            "command": command,
-            # "requires approval" is the gate's policy, not a harm signal.
-            "reasons": [r for r in reasons if r != _SHELL_APPROVAL][:4],
-        }
+    # Auto: every call that would ask goes to Jev, destructive forms, denylist
+    # hits, and out-of-scope secret files included. Jev gets the regex hits as
+    # advisories and decides; the card appears only when Jev says dangerous
+    # (or is unavailable — judge() fails closed).
+    advisory = [r for r in reasons if r != _SHELL_APPROVAL]
+    if _destructive_command(command):
+        advisory.append("matches a destructive command pattern")
+    jev_action = {
+        "tool": tool,
+        "host": host_alias,
+        "path": payload["path"],
+        "cwd": payload["cwd"],
+        "command": command,
+        # "requires approval" is the gate's policy, not a harm signal. The
+        # advisory reasons (out of roots, secret file, denylist, destructive
+        # pattern) are what Jev weighs.
+        "reasons": advisory[:4],
+    }
 
-        async def auto_judge():
-            return await _auto_verdict(gate, tool, jev_action, roots)
+    async def auto_judge():
+        return await _auto_verdict(gate, tool, jev_action, roots)
 
-        if await asyncio.to_thread(auto_enabled, gate.user_id, gate.thread_id):
-            if await auto_judge():
-                return ReviewResult(allowed=True, root_override=relax, resolved=resolved)
-            auto_judge = None  # Jev ruled; the card is the user's call
+    if await asyncio.to_thread(auto_enabled, gate.user_id, gate.thread_id):
+        if await auto_judge():
+            return ReviewResult(allowed=True, root_override=relax, resolved=resolved)
+        auto_judge = None  # Jev ruled; the card is the user's call
+    # auto_judge stays live when Auto is off: _ask_and_wait re-reads the flag
+    # every poll, so flipping Auto on mid-wait sends the ask to Jev once.
     if gate.unattended:
         return ReviewResult(allowed=False, detail=_deny_detail(label, "unattended"), kind="permission_denied")
     action = await _ask_and_wait(gate, payload, auto_judge)

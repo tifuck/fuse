@@ -220,14 +220,21 @@ class ReviewTest(PermSchemaTest):
         self.assertIn("timed out", res.detail)
         self.assertIn("/etc/shadow", res.detail)
 
-    def test_secret_file_inside_root_asks(self):
-        res, events, payload = asyncio.run(self._ask_flow("allow_session", {"path": ".env"}))
+    def test_secret_file_inside_root_is_silent(self):
+        # A secret-named file inside an approved dir never asks.
+        res = asyncio.run(self._review(_gate(), args={"path": ".env"}))
+        self.assertTrue(res.allowed)
+        self.assertIsNone(res.root)
+        self.assertEqual(permissions.grants_for(1, 1), [])
+
+    def test_secret_file_outside_root_asks(self):
+        res, events, payload = asyncio.run(self._ask_flow("allow_session", {"path": "/home/other/.env"}))
         self.assertTrue(res.allowed)
         grants = permissions.grants_for(1, 1)
         self.assertEqual(grants[0]["kind"], "file")
-        self.assertEqual(grants[0]["value"], "/srv/app/.env")
+        self.assertEqual(grants[0]["value"], "/home/other/.env")
         self.assertEqual(events[0]["grant_kind"], "file")
-        self.assertEqual(events[0]["grant_value"], "/srv/app/.env")
+        self.assertEqual(events[0]["grant_value"], "/home/other/.env")
 
     def test_shell_cwd_and_paths_ask(self):
         # A simple read of an out-of-root path asks, and allowing it for the
@@ -325,6 +332,83 @@ class ReviewTest(PermSchemaTest):
         res = asyncio.run(win())
         self.assertTrue(res.allowed)
         self.assertEqual(res.root, "")
+
+
+class ModeMatrixTest(PermSchemaTest):
+    """The mode contract: ask is scope-based, auto lets Jev judge whatever
+    would ask, bypass never asks. `judge` records whether Jev was called."""
+
+    CASES = (
+        ("read_file", {"path": "src/main.py"}, "silent", "silent", "silent"),
+        ("grep", {"pattern": "x", "path": "src"}, "silent", "silent", "silent"),
+        ("write_file", {"path": "sub/dir/new.py", "content": "x"}, "silent", "silent", "silent"),
+        ("read_file", {"path": ".env"}, "silent", "silent", "silent"),
+        ("read_file", {"path": "/etc/hosts"}, "card", "jev", "silent"),
+        ("write_file", {"path": "/var/www/x", "content": "x"}, "card", "jev", "silent"),
+        ("run_terminal_command", {"command": "pytest -q"}, "silent", "silent", "silent"),
+        ("run_terminal_command", {"command": "git status && git diff"}, "silent", "silent", "silent"),
+        ("run_terminal_command", {"command": "cat /var/log/syslog"}, "card", "jev", "silent"),
+        ("run_terminal_command", {"command": "echo $HOME"}, "card", "jev", "silent"),
+        ("run_terminal_command", {"command": "rm -rf build"}, "card", "jev", "silent"),
+        ("run_terminal_command", {"command": "sudo reboot"}, "card", "jev", "silent"),
+    )
+
+    def setUp(self):
+        with db.tx() as conn:
+            conn.execute("DELETE FROM chat_permission_asks WHERE thread_id=1")
+            conn.execute("DELETE FROM chat_permission_grants WHERE thread_id=1")
+            conn.execute("UPDATE chat_threads SET bypass_permissions=0, auto_permissions=0 WHERE id=1")
+
+    def _expect(self, mode, tool, args):
+        """(result, jev_called, card_raised) for one case. A raised card is
+        answered with Allow so ask-mode cases return instead of timing out."""
+        from unittest.mock import AsyncMock, patch
+
+        # Each case starts from ask mode: a bypass or auto case must not leak
+        # its flag into the next one.
+        with db.tx() as conn:
+            conn.execute("UPDATE chat_threads SET bypass_permissions=0, auto_permissions=0 WHERE id=1")
+        if mode == "auto":
+            permissions.set_auto(1, 1, True)
+        elif mode == "bypass":
+            permissions.set_bypass(1, 1, True)
+        judge = AsyncMock(return_value=True)
+        events: list = []
+
+        async def flow():
+            async def wait_card():
+                for _ in range(250):
+                    await asyncio.sleep(0.02)
+                    for event in events:
+                        if event.get("event") == "permission" and event.get("status") == "pending":
+                            return event
+                return None
+
+            # _auto_verdict refuses without an OpenRouter key before it ever
+            # reaches jev.judge, so the verdict itself is the spy point.
+            with patch.object(permissions, "_auto_verdict", judge):
+                task = asyncio.create_task(permissions.review(
+                    tool=tool, args=args, user_id=1, host_id=7, host_alias="prod",
+                    root="/srv/app", windows=False,
+                    gate=_gate(notify=events.append),
+                    deny_reason="command blocked by denylist" if "sudo" in str(args.get("command") or "") else "",
+                ))
+                card = await wait_card()
+                if card is not None:
+                    permissions.resolve(1, 1, card["id"], "allow")
+                return await task, card is not None
+
+        res, card = asyncio.run(flow())
+        return res, judge.await_count > 0, card
+
+    def test_matrix(self):
+        for tool, args, ask, auto, bypass in self.CASES:
+            for mode, expect in (("ask", ask), ("auto", auto), ("bypass", bypass)):
+                with self.subTest(tool=tool, target=args.get("path") or args.get("command"), mode=mode):
+                    res, called, card = self._expect(mode, tool, args)
+                    self.assertTrue(res.allowed)
+                    self.assertEqual(called, expect == "jev")
+                    self.assertEqual(card, expect == "card")
 
 
 class ResolveTest(PermSchemaTest):
