@@ -52,7 +52,7 @@ window.fuseToolFixture = {
     messages.forEach((msg, i) => {
       const trace = (msg.tools || []).find(t => t.id === id);
       if (trace) Object.assign(trace, patch);
-      updateAssistant(log.children[i], msg, live);
+      if (msg.role === 'assistant') updateAssistant(log.children[i], msg, live);
     });
   },
   append(trace, live = false) {
