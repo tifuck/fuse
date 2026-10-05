@@ -3900,6 +3900,7 @@
       project_name: thread.project_name || "",
       project_color: thread.project_color ?? prior?.project_color ?? "",
       project_logo_url: thread.project_logo_url ?? prior?.project_logo_url ?? "",
+      schedule_id: thread.schedule_id ?? prior?.schedule_id ?? null,
       updated_at: thread.updated_at,
       running,
     };

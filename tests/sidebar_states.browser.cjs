@@ -258,14 +258,11 @@ const PREVIEW = 'Name this sidebar fixture chat from…';
     truth = await threads();
     const linked = truth.threads.find(entry => entry.id === id);
     assert.ok(linked.schedule_id, `server: the restored chat stays linked to its schedule ${JSON.stringify(linked)}`);
-    // FINDING(schedule-marker): the row's is-task class keys off schedule_id,
-    // but neither the thread.updated copy nor the /chat/threads list keeps it,
-    // so the marker never paints. Reload included.
-    assert.doesNotMatch(await row(id).getAttribute('class'), /is-task/);
+    assert.match(await row(id).getAttribute('class'), /is-task/, 'the restored row keeps its scheduled marker');
     await page.reload();
     await page.locator('[data-sync-label]').filter({ hasText: 'Live sync' }).waitFor({ state: 'attached' });
     await openHistory();
-    assert.doesNotMatch(await row(id).getAttribute('class'), /is-task/, 'a reload does not paint the scheduled marker either');
+    assert.match(await row(id).getAttribute('class'), /is-task/, 'a reload keeps the scheduled marker');
     await stopped();
     console.log('PASS a scheduled run restores an archived chat');
 
