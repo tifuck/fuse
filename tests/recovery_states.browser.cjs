@@ -160,27 +160,26 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
         await row.locator('button.more').click();
         await p.getByRole('button', { name: 'Delete', exact: true }).click();
         await p.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
+        await p.waitForFunction(gone => !document.querySelector(`[data-thread="${gone}"]`), id);
+        const order = await p.evaluate(async () => {
+          const data = await fuseToolFixture.api('/chat/sync');
+          return data.threads.filter(item => !item.archived && item.kind !== 'project')
+            .sort((a, b) => Number(Boolean(b.running)) - Number(Boolean(a.running)) || String(b.updated_at).localeCompare(String(a.updated_at)))
+            .map(item => item.id);
+        });
+        const ids = [id, ...order];
+        const next = ids[1] ?? null;
+        const landed = new URL(p.url()).searchParams.get('t');
+        assert.equal(landed, next, `opens the next thread in list order, else the previous: ${order.join(',')}`);
+        if (landed) assert.equal(await p.locator(`[data-thread="${landed}"].is-on`).count(), 1);
+        else assert.equal(await p.locator('[data-thread].is-on').count(), 0, 'the last thread leaves no selection');
       };
       await remove(newer.id);
-      await p.waitForFunction(id => !document.querySelector(`[data-thread="${id}"]`), newer.id);
-      const landed = await p.evaluate(older => JSON.stringify({
-        url: new URL(location.href).searchParams.get('t'),
-        older,
-        current: [...document.querySelectorAll('[data-thread].is-on')].map(el => el.dataset.thread),
-        rows: document.querySelectorAll('[data-thread]').length,
-      }), older.id);
-      const next = JSON.parse(landed);
-      assert.equal(next.url, null, 'the deleted thread is not left open');
-      // FINDING(thread-cursor-blank): deleting the open thread drops to an empty
-      // composer while the rest of the list is still there. Nothing is highlighted
-      // and the neighbor is not opened, so the list edge lands on no thread at all.
-      assert.equal(next.rows > 0, true, 'the remaining threads stay listed: ' + landed);
-      assert.deepEqual(next.current, [], 'no out-of-range row is marked current: ' + landed);
-      assert.equal(await p.locator('[data-chat-input]').isVisible(), true, 'the composer stays usable');
+      const opened = await p.evaluate(() => JSON.stringify({ url: new URL(location.href).searchParams.get('t'), text: fuseToolFixture.snapshot().map(m => m.content).slice(0, 2) }));
+      assert.match(opened, /Older thread/, 'the first delete opens the older thread: ' + opened);
       await remove(older.id);
-      await p.waitForFunction(id => !document.querySelector(`[data-thread="${id}"]`), older.id);
-      assert.equal(new URL(p.url()).searchParams.get('t'), null, 'deleting a background thread never changes the open one');
-      console.log('PASS deleting the open thread leaves no selection rather than a stale or out-of-range one');
+      assert.equal(await p.locator('[data-chat-input]').isVisible(), true, 'the composer stays usable');
+      console.log('PASS deleting the open thread lands on the next sibling');
       await p.context().close();
     }
 

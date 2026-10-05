@@ -3924,10 +3924,16 @@
   }
 
   function threadGone(id) {
+    const known = threads.some((item) => item.id === id) || archivedThreads.some((item) => item.id === id);
+    const ids = filteredHistory().map((item) => String(item.id));
+    const at = ids.indexOf(String(id));
+    const next = at < 0 ? "" : (ids[at + 1] ?? ids[at - 1] ?? "");
     dropHistoryStacks(id);
     dropThread(id);
-    if (currentId === id) clearChatState({ keepList: true });
-    else renderHistory();
+    if (currentId !== id) { if (known) renderHistory(); return; }
+    if (!known) return;
+    if (next) openThread(next).catch((error) => showFailure("Chat could not be opened", error));
+    else clearChatState({ keepList: true });
   }
 
   function nearBottom() {
