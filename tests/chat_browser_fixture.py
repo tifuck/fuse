@@ -16,7 +16,7 @@ if __name__ != "__main__" or os.environ.get("FUSE_CHAT_TEST_MODE") != "1":
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
@@ -119,6 +119,163 @@ async def finish_fixture(run_id: str):
     if gate:
         gate.set()
     return {"ok": bool(gate)}
+
+
+def _open_thread(conn):
+    row = conn.execute(
+        "SELECT id FROM chat_threads WHERE user_id=1 ORDER BY updated_at DESC, id DESC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        raise HTTPException(404, "no thread")
+    return row["id"]
+
+
+@app.post("/__fixture/sidebar/workspace")
+async def sidebar_workspace():
+    """One archived project plus a schedule, neither of which the page can create.
+
+    Host creation needs an unlocked vault, and schedules have no browser route,
+    so both rows are seeded here. The ciphertext is never a real secret.
+    """
+
+    def seed():
+        now = db.now()
+        with db.tx() as conn:
+            conn.execute(
+                """INSERT INTO user_hosts(user_id,alias,label,hostname,port,username,auth_type,secret,created_at,updated_at)
+                   VALUES(1,'box','','127.0.0.1',22,'root','password','unused',?,?)""",
+                (now, now),
+            )
+            host_id = conn.execute("SELECT id FROM user_hosts WHERE user_id=1 AND alias='box'").fetchone()["id"]
+            conn.execute(
+                """INSERT INTO user_projects(user_id,host_id,name,remote_path,notes,created_at,updated_at,archived,archived_at)
+                   VALUES(1,?,'Fixture project','/srv/fixture','',?,?,1,?)""",
+                (host_id, now, now, now),
+            )
+            project_id = conn.execute("SELECT id FROM user_projects WHERE user_id=1 AND name='Fixture project'").fetchone()["id"]
+            public = chats.new_public_id()
+            thread_id = _open_thread(conn)
+            conn.execute(
+                """INSERT INTO chat_schedules(public_id,user_id,name,target,thread_id,prompt,model,timezone,recur_kind,created_at,updated_at)
+                   VALUES(?,1,'Sidebar schedule','chat',?,'Scheduled sidebar check','offline','UTC','once',?,?)""",
+                (public, thread_id, now, now),
+            )
+            conn.execute("UPDATE chat_threads SET schedule_id=? WHERE id=?", (
+                conn.execute("SELECT id FROM chat_schedules WHERE public_id=?", (public,)).fetchone()["id"], thread_id))
+            schedule_id = conn.execute("SELECT id FROM chat_schedules WHERE public_id=?", (public,)).fetchone()["id"]
+        return {"host_id": host_id, "project_id": project_id, "schedule_id": schedule_id}
+
+    return await asyncio.to_thread(seed)
+
+
+@app.post("/__fixture/sidebar/scheduled/{thread_id}")
+async def sidebar_scheduled(thread_id: str):
+    """Fire one scheduled turn the way the scheduler does, without waiting for its clock."""
+
+    def fire():
+        pk = chats.resolve_thread_pk(1, thread_id)
+        if pk is None:
+            raise HTTPException(404, "no thread")
+        row = db.fetchone("SELECT revision FROM chat_threads WHERE id=? AND user_id=1", (pk,))
+        return chat_store.start_turn(
+            1, pk, "Scheduled sidebar check", row["revision"], "scheduled-sidebar",
+            auto_title=False, auto=True, scheduled=True,
+        )
+
+    result = await asyncio.to_thread(fire)
+    # The unarchive commits with the turn. Starting the run needs a request
+    # scope the scheduler builds itself; the sidebar only needs the committed row.
+    return {"archived": bool(result["thread"]["archived"]), "running": bool(result["thread"]["running"])}
+
+
+@app.post("/__fixture/sidebar/child")
+async def sidebar_child():
+    """Leave one subagent running after the newest thread's root turn ends."""
+    from uuid import uuid4
+
+    child = str(uuid4())
+
+    def insert():
+        with db.tx() as conn:
+            thread_id = _open_thread(conn)
+            root = conn.execute(
+                """SELECT id FROM chat_runs
+                   WHERE thread_id=? AND parent_run_id IS NULL ORDER BY created_at DESC LIMIT 1""",
+                (thread_id,),
+            ).fetchone()
+            if root is None:
+                raise HTTPException(409, "no root run")
+            now = db.now()
+            conn.execute(
+                """INSERT INTO chat_runs(id,thread_id,user_id,status,request,message_id,message,created_at,updated_at,
+                       parent_run_id,root_run_id,agent_depth)
+                   VALUES(?,? ,1,'running',?,?,?,?,?,?,?,1)""",
+                (child, thread_id, json.dumps({"agent": {"description": "sidebar fixture child"}}),
+                 "child-message", "{}", now, now, root["id"], root["id"]),
+            )
+            return child
+
+    return {"child_id": await asyncio.to_thread(insert)}
+
+
+@app.delete("/__fixture/sidebar/child/{child_id}")
+async def sidebar_child_done(child_id: str):
+    # The real finish path emits agent.completed and thread.updated, which is
+    # what lets the open sidebar drop the spinner. A bare status update would not.
+    def settle():
+        chat_store.finish_run(child_id, {"content": "sidebar fixture child done"}, "completed")
+        return {"ok": True}
+
+    return await asyncio.to_thread(settle)
+
+
+@app.post("/__fixture/sidebar/runs/{run_id}/transcript")
+async def sidebar_transcript(run_id: str):
+    """Give a stopped run the saved transcript resume_run requires."""
+
+    def stamp():
+        with db.tx() as conn:
+            row = conn.execute(
+                "SELECT id, status FROM chat_runs WHERE id=? AND user_id=1 AND parent_run_id IS NULL",
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                raise HTTPException(404, "no run")
+            conn.execute(
+                "UPDATE chat_runs SET provider_messages=? WHERE id=?",
+                (json.dumps([{"role": "user", "content": "resume me"}]), run_id),
+            )
+        return {"ok": True, "status": row["status"]}
+
+    return await asyncio.to_thread(stamp)
+
+
+@app.get("/__fixture/sidebar/runs/{thread_id}")
+async def sidebar_runs(thread_id: str):
+    """Root runs of one thread, so a test can resume the one the server allows."""
+
+    def load():
+        pk = chats.resolve_thread_pk(1, thread_id)
+        if pk is None:
+            raise HTTPException(404, "no thread")
+        rows = db.fetchall(
+            """SELECT id, status, resume_count, (provider_messages IS NOT NULL) AS has_transcript
+               FROM chat_runs WHERE thread_id=? AND user_id=1 AND parent_run_id IS NULL
+               ORDER BY created_at DESC""",
+            (pk,),
+        )
+        active = db.fetchone(
+            "SELECT 1 AS ok FROM chat_runs WHERE thread_id=? AND status IN ('queued','running') AND parent_run_id IS NULL",
+            (pk,),
+        )
+        return [
+            {"id": row["id"], "status": row["status"],
+             "resumable": row["status"] in ("interrupted", "cancelled") and bool(row["has_transcript"])
+             and int(row["resume_count"] or 0) < chat_store.MAX_RESUME_ATTEMPTS and active is None}
+            for row in rows
+        ]
+
+    return await asyncio.to_thread(load)
 
 
 @app.get("/")
