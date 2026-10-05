@@ -8366,7 +8366,9 @@
     }
     const verb = consoleVerb(name, trace);
     if (["kill_command", "todo_write", "list_subagents"].includes(name) || (name === "scratch" && !scratchAction(trace))) {
-      return `<span class="chat-console-call"><span class="chat-tool-action">${escapeHtml(verb)}</span></span>`;
+      // A bare call keeps the shared tail too: one clock and one host badge
+      // per call, like every other row.
+      return `<span class="chat-console-call"><span class="chat-tool-action">${escapeHtml(verb)}</span></span>${clock}${hostHtml}`;
     }
     if (name === "run_terminal_command" && running && !toolBackground(trace) && !full && !isConsoleOnly()) {
       const label = String((trace && trace.progressLabel) || "").trim() || "Running";
@@ -8594,7 +8596,9 @@
   //   Search  "Did 2 searches in 3s"
   function consoleFold(trace, presentation, verbose) {
     if (trace?.name === "read_file" && trace.image && !presentation.running && !presentation.failed) {
-      return { status: "Image preview", preview: toolImageHtml(trace), full: "" };
+      // An interrupted image read keeps its preview but says why, like every
+      // other family; a success still reads as the image preview.
+      return { status: presentation.interrupted ? ccInterruptedText(trace) : "Image preview", preview: toolImageHtml(trace), full: "" };
     }
     if (isConsoleOnly()) {
       const own = consoleOnlyFold(trace, presentation, verbose);
@@ -8660,7 +8664,10 @@
       const wait = name === "get_command_output";
       const origin = wait && executionState(trace) === "running" ? commandOrigin(trace) : null;
       const stillRunning = !origin || executionPending(origin) || toolPresentation(origin, true).running;
-      const head = nonzero ? `Exit code ${exit}` : failed ? status
+      // A failure prints red with its "Error: " mark, like every other family
+      // (ccErrorFold); an error that already carries a mark is kept verbatim.
+      const failedHead = failed && !/^(Error|Cancelled): /.test(status) ? `Error: ${status}` : status;
+      const head = nonzero ? `Exit code ${exit}` : failed ? failedHead
         : wait ? (executionState(trace) !== "running" ? "" : stillRunning ? "Still running" : "Returned while the command was still running")
         : toolBackground(trace) ? status : "";
       const note = typeof consoleTruncationNote === "function" ? consoleTruncationNote(trace) : "";
@@ -8899,7 +8906,7 @@
   }
 
   function consoleVerb(name, trace) {
-    if (name === "fuse-steer") return "notice";
+    if (name === "fuse-steer") return "Notice";
     if (isConsoleOnly()) {
       if (name === "grep" || name === "glob") return "Search";
       if (name === "spawn_subagent") return ccAgentType(trace);
@@ -11811,6 +11818,13 @@
     return "Interrupted · the run ended before it finished";
   }
 
+  // The summary line's note for a failing member: the same "Error: …" line
+  // the member's own row prints (ccErrorFold), flattened to one line.
+  function ccGroupErrorText(trace) {
+    const reason = ccFlat(trace && (trace.error || trace.summary) || "failed");
+    return ccClip(/^(Error|Cancelled): /.test(reason) ? reason : `Error: ${reason}`, 200);
+  }
+
   // Background results Claude Code merges: consecutive commands that ended
   // cleanly print as "3 background commands completed".
   function ccCleanBackgroundEnd(trace) {
@@ -12157,6 +12171,7 @@
     let errored = false;
     let interrupted = false;
     let interruptedTrace = null;
+    let errorTrace = null;
     let runningSince = 0;
     let shell = null;
     const readPaths = new Set();
@@ -12175,7 +12190,10 @@
       latestThought = undefined;
       const trace = item.entry.trace;
       const presentation = toolPresentation(trace, live);
-      if (presentation.failed) errored = true;
+      if (presentation.failed) {
+        errored = true;
+        errorTrace ||= trace;
+      }
       if (presentation.interrupted) {
         interrupted = true;
         interruptedTrace ||= trace;
@@ -12220,7 +12238,10 @@
       }
     });
     if (active && thinking && !group.items.length) thought = true;
-    const reads = readPaths.size || readOps;
+    // Path reads count distinct files (two reads of one path are one file);
+    // shell reads (cat, head, …) have no path to dedupe and count their calls.
+    // Both sides always count: a path read plus a shell read is two files.
+    const reads = readPaths.size + readOps;
     const shells = Math.max(0, bash - gitOpBash);
     if (!thought && !search && !reads && !list && !shells && !gitOpBash && !interrupted) return "";
 
@@ -12282,6 +12303,9 @@
         ? `<button type="button" class="chat-step-toggle" data-step-toggle aria-expanded="${open ? "true" : "false"}"><span class="chat-step-label">${label}</span></button>`
         : `<div class="chat-step-toggle"><span class="chat-step-label">${label}</span></div>`) + `</div>` +
       (interrupted ? hang(`<span class="chat-console-result-text">${escapeHtml(isConsoleOnly() ? ccInterruptedText(interruptedTrace) : "Interrupted")}</span>`, " is-group-note") : "") +
+      // A failing member surfaces on the line too, as its own row reads
+      // ("Error: …"), the way an interrupted member's note does above.
+      (errored ? hang(`<span class="chat-console-result-text">${escapeHtml(isConsoleOnly() ? ccGroupErrorText(errorTrace) : "Failed")}</span>`, " is-group-note") : "") +
       (hintHtml ? hang(hintHtml, " is-group-hint") : "") +
       `<div class="chat-console-bundle"${open ? ' tabindex="0" role="group" aria-label="Summary details. Press Enter to collapse."' : ""}><ol class="chat-timeline">${rows}</ol></div>` +
       `</div></li>`

@@ -59,13 +59,9 @@ const TOOLS = [
     trace: { status: 'done', state: 'completed', execution_status: 'completed', command: 'npm test', command_id: 'j1', child_id: 'j1', job_id: 'j1', exit_code: 0, output: 'one\ntwo\nthree\nfour\nfive\n', call_duration_ms: DUR, termination_confirmed: true } },
   { name: 'get_command_output', verb: 'Wait', subject: 'npm run build', clock: true, disclosure: true,
     trace: { status: 'done', command: 'npm run build', command_id: 'j2', child_id: 'j2', job_id: 'j2', output: 'one\ntwo\nthree\nfour\nfive\n', call_duration_ms: DUR } },
-  // `bare` rows print just their verb (chat.js consoleCallHtml:8367); the
-  // subject rides their result line.
-  // FINDING(bare-call-meta): intended one clock/host slot per call like every
-  // row, actually consoleCallHtml's bare-verb early return (chat.js:8367)
-  // drops both the header clock and the host badge, so these calls' durations
-  // are never shown.
-  { name: 'kill_command', verb: 'Stop Task', subject: 'npm run watch', clock: false, disclosure: false, bare: true,
+  // `bare` rows print just their verb (chat.js consoleCallHtml:8368); the
+  // subject rides their result line, and the shared clock/host tail applies.
+  { name: 'kill_command', verb: 'Stop Task', subject: 'npm run watch', clock: true, disclosure: false, bare: true,
     trace: { status: 'done', command_id: 'j3', child_id: 'j3', output: '', call_duration_ms: DUR },
     related: { id: 't-kill_command-src', name: 'run_terminal_command', status: 'done', background: true, command: 'npm run watch', command_id: 'j3', child_id: 'j3', ...ROOT } },
   { name: 'monitor', verb: 'Monitor', subject: 'errors in worker.log', clock: false, disclosure: true,
@@ -82,7 +78,7 @@ const TOOLS = [
     trace: { status: 'done', description: 'Audit retries', child_id: 'c1', summary: 'AWAIT_REPORT', agent_work_ms: 41000 } },
   { name: 'kill_subagent', verb: 'Stop', subject: 'Audit retries', clock: true, disclosure: false,
     trace: { status: 'done', description: 'Audit retries', child_id: 'c1', output: '', call_duration_ms: DUR } },
-  { name: 'list_subagents', verb: 'Agents', subject: '2 live, 1 finished', clock: false, disclosure: true, bare: true,
+  { name: 'list_subagents', verb: 'Agents', subject: '2 live, 1 finished', clock: true, disclosure: true, bare: true,
     trace: { status: 'done', preview: '2 live, 1 finished', output: '{"live":[{"id":"n1","description":"Rewrite auth","status":"running"}],"finished":[{"id":"old","description":"Prior audit","status":"completed"}]}', call_duration_ms: DUR } },
   { name: 'search_models', verb: 'Models', subject: 'grok', clock: true, disclosure: true,
     trace: { status: 'done', query: 'grok', preview: '2 models', output: MODELS, call_duration_ms: DUR } },
@@ -98,9 +94,7 @@ const TOOLS = [
     trace: { status: 'done', description: 'Write brief', preview: '1 slots', output: SLOTS, call_duration_ms: DUR } },
   { name: 'frobnicate', verb: 'Tool', subject: 'odd', clock: true, disclosure: false,
     trace: { status: 'done', preview: 'odd', call_duration_ms: DUR } },
-  // FINDING(verb-case): intended "Notice" (Title Case like every other
-  // Console verb), actually lowercase "notice" (chat.js consoleVerb:8901).
-  { name: 'fuse-steer', verb: 'notice', subject: 'New instruction', clock: true, disclosure: false,
+  { name: 'fuse-steer', verb: 'Notice', subject: 'New instruction', clock: true, disclosure: false,
     trace: { status: 'done', summary: 'New instruction', call_duration_ms: DUR } },
   // read_file image read: same family, different fold (no disclosure, figure inline).
   { name: 'read_file-image', verb: 'Read', subject: 'shots/before.png', clock: true, disclosure: false,
@@ -150,6 +144,9 @@ const COLLECT = () => {
       caretAria: caret ? caret.getAttribute('aria-expanded') : null,
       caretShown: Boolean(caret) && caret.getClientRects().length > 0,
       hangCls: hang ? hang.className : '',
+      // Every note hang the row itself owns (direct children of the head
+      // wrapper — a group's member hangs live deeper, inside the bundle).
+      notes: [...li.querySelectorAll(':scope > .chat-step-main > .chat-console-hang')].map(flat),
       expanded: li.classList.contains('is-console-expanded'),
       bodyText: flat(hang),
       bodyAll: all(hang),
@@ -373,27 +370,11 @@ const COLLECT = () => {
       if (v.key === 'error') {
         ok(v.state === 'error' && v.title === 'Failed', `${v.name}: a failure reads "${v.title}"/${v.state}`);
         // One failure vocabulary across families: the red "Error: " fold.
-        // FINDING(wait-fail-mark): intended "Error: …" like every other
-        // family, actually a failed Wait prints its raw error as the result
-        // line with no "Error: " mark (consoleFold shell head picks
-        // consoleResultLine's raw error; chat.js:8662).
-        if (v.name === 'get_command_output') {
-          ok(/^boom from the fixture/.test(say(v)), `${v.name}: failed wait result (current) "${say(v)}"`);
-        } else {
-          ok(say(v).startsWith('Error: boom from the fixture'), `${v.name}: failure reads "Error: …", got "${say(v)}"`);
-        }
+        ok(say(v).startsWith('Error: boom from the fixture'), `${v.name}: failure reads "Error: …", got "${say(v)}"`);
       }
       if (v.key === 'interrupted') {
         ok(v.state === 'interrupted' && v.title === 'Stopped', `${v.name}: confirmed stop reads "${v.title}"/${v.state}`);
-        // FINDING(image-interrupt-reason): intended "Interrupted · …" like
-        // every family, actually an interrupted image read keeps its image
-        // fold and never says why (consoleFold's image branch returns before
-        // consoleOnlyFold's interrupted fold; chat.js:8595).
-        if (v.name === 'read_file-image') {
-          ok(!/Interrupted/.test(say(v)), `${v.name}: interrupted image fold (current) "${say(v)}"`);
-        } else {
-          ok(say(v).startsWith('Interrupted · '), `${v.name}: interrupted reason prefix, got "${say(v)}"`);
-        }
+        ok(say(v).startsWith('Interrupted · '), `${v.name}: interrupted reason prefix, got "${say(v)}"`);
       }
       if (v.key === 'cancelled') {
         ok(v.state === 'interrupted' && v.title === 'Stopped', `${v.name}: cancelled (confirmed) reads "${v.title}"/${v.state}`);
@@ -401,11 +382,10 @@ const COLLECT = () => {
       if (v.key === 'lost') {
         const want = LOST_TITLE[v.name] || 'Lost';
         ok(v.state === 'interrupted' && v.title === want, `${v.name}: a lost result reads "${v.title}"/${v.state}, expected "${want}"`);
-        if (want === 'Lost' && v.name !== 'read_file-image') ok(say(v).includes('the result was lost'), `${v.name}: lost reason, got "${say(v)}"`);
+        if (want === 'Lost') ok(say(v).includes('the result was lost'), `${v.name}: lost reason, got "${say(v)}"`);
       }
     }
-    // The fuse-steer family fails exactly like the rest despite its lowercase
-    // verb (FINDING(verb-case) on its table row above).
+    // The fuse-steer family fails exactly like the rest, in the same casing.
     ok(byName('fuse-steer', 'error').body.includes('Error: boom'), 'fuse-steer failure folds like the rest');
 
     // —— 4. Running affordance and settle ——
@@ -559,18 +539,15 @@ const COLLECT = () => {
     await raf();
     g = await groupRows();
     const failGroup = g.find((r) => r.cls.includes('is-console-group'));
-    // The interrupted member surfaces on the summary line itself…
-    ok(failGroup.bodyText.includes('Interrupted · the run ended before it finished'), `an interrupted member surfaces on the summary: "${failGroup.bodyText}"`);
-    // …while a failing member stays inside the opened line.
-    // FINDING(group-fail-hidden): intended "a failing member surfaces in the
-    // summary header (as the interrupted note does)", actually the settled
-    // header shows plain counts and the group renders is-done, so a collapsed
-    // summary of 2 successes and 1 failure is indistinguishable from 3
-    // successes (chat.js ccGroupHtml: chat.js:12226 label, :12247 state —
-    // the comment at chat.js:11048 covers the failure staying INSIDE the open
-    // line, not its invisibility in the folded header).
-    ok(failGroup.headText === 'Read 2 files, ran 1 shell command', `a failing member is counted but not flagged: "${failGroup.headText}"`);
-    ok(failGroup.cls.includes('is-done') && !failGroup.cls.includes('is-errored'), `a settled summary with a failure renders ${failGroup.cls}`);
+    // Both members that ended badly surface on the summary line itself, each
+    // as the note its own row prints: "Interrupted · …" and "Error: …".
+    ok(failGroup.notes.some((n) => n.includes('Interrupted · the run ended before it finished')),
+      `an interrupted member surfaces on the summary: ${JSON.stringify(failGroup.notes)}`);
+    // …and a failing member too, mirroring the interrupted note: same
+    // "Error: …" line the member's own row prints.
+    ok(failGroup.headText === 'Read 2 files, ran 1 shell command', `the summary keeps its counts: "${failGroup.headText}"`);
+    ok(failGroup.notes.some((n) => n.replace(/^└\s*/, '').startsWith('Error: permission denied')),
+      `a failing member surfaces on the folded summary: ${JSON.stringify(failGroup.notes)}`);
     await page.evaluate(() => {
       const btn = document.querySelector('.is-console-group > .chat-step-main > .chat-step-head > .chat-step-toggle');
       if (btn) btn.click();
@@ -594,18 +571,15 @@ const COLLECT = () => {
     g = await groupRows();
     ok(JSON.stringify(summaryLabels(g)) === JSON.stringify(['Read 1 file']), `counts name files, not calls: ${JSON.stringify(summaryLabels(g))}`);
 
-    // 5e. A path read plus a shell read: two read-family members, one count.
-    // FINDING(shell-read-count): intended "Read 2 files" (two members read two
-    // files), actually "Read 1 file" — ccGroupHtml combines the two counters
-    // with `readPaths.size || readOps` (chat.js:12194), so a shell `cat` is
-    // dropped from the count whenever a path read is present.
+    // 5e. A path read plus a shell read: two read-family members, two files —
+    // both sides count (ccGroupHtml sums path reads and shell reads).
     await groupMount([
       T('m-read', { name: 'read_file', status: 'done', path: '/srv/qa/README.md', output: '1: readme' }),
       T('m-cat', { name: 'run_terminal_command', status: 'done', state: 'completed', execution_status: 'completed', command: 'cat log', command_id: 'mj', child_id: 'mj', job_id: 'mj', exit_code: 0, output: 'log body\n', termination_confirmed: true }),
     ]);
     await raf();
     g = await groupRows();
-    ok(JSON.stringify(summaryLabels(g)) === JSON.stringify(['Read 1 file']), `path read + shell read count (current): ${JSON.stringify(summaryLabels(g))}`);
+    ok(JSON.stringify(summaryLabels(g)) === JSON.stringify(['Read 2 files']), `path read + shell read both count: ${JSON.stringify(summaryLabels(g))}`);
 
     // 5f. Running calls never fold: the running affordance stays on its own row.
     await groupMount([
