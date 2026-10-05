@@ -1730,7 +1730,7 @@
 
   function formatTokens(value) {
     const n = Math.max(0, Math.round(Number(value) || 0));
-    if (n >= 1_000_000) return (n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1).replace(/\.0$/, "") + "M";
+    if (n >= 1_000_000 || Math.round(n / 1000) >= 1000) return (n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1).replace(/\.0$/, "") + "M";
     if (n >= 10_000) return Math.round(n / 1000) + "k";
     if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, "") + "k";
     return String(n);
@@ -2744,7 +2744,8 @@
   function countsLabel(counts) {
     const active = counts.phases ? Object.entries(counts.phases).map(([label, n]) => `${n} ${label}`) : counts.running ? [`${counts.running} running`] : [];
     return [...active, ...[["done", "done"], ["failed", "failed"], ["stopped", "stopped"], ["warning", "nonzero exit"]]
-      .filter(([key]) => counts[key]).map(([key, label]) => `${counts[key]} ${label}`)].join(" · ");
+      .filter(([key]) => counts[key])
+      .map(([key, label]) => `${counts[key]} ${label}${key === "warning" && counts[key] > 1 ? "s" : ""}`)].join(" · ");
   }
 
   function reconcileAgentTraces(rows, allowRestart = false) {
@@ -6914,6 +6915,8 @@
     if (names.size === 1 && names.has("read_url")) return "Page read";
     if (names.size === 1 && isSearchTool([...names][0])) return "Web search";
     if (names.size === 1 && [...names][0] === "read_file") return "File read";
+    if (names.size === 1 && [...names][0] === "write_file") return "File write";
+    if (names.size === 1 && [...names][0] === "search_replace") return "File edit";
     if (names.size === 1 && [...names][0] === "list_dir") return "Directory listing";
     if (names.size === 1 && [...names][0] === "run_terminal_command") return "Shell";
     if (names.size === 1 && WORKSPACE_VERBS[[...names][0]]) return WORKSPACE_VERBS[[...names][0]];
@@ -7564,7 +7567,7 @@
 
   function formatConsoleCount(n) {
     const tokens = Math.max(0, Math.round(Number(n) || 0));
-    if (tokens >= 1_000_000) return (tokens / 1_000_000).toFixed(tokens >= 10_000_000 ? 0 : 1).replace(/\.0$/, "") + "M";
+    if (tokens >= 1_000_000 || Math.round(tokens / 1000) >= 1000) return (tokens / 1_000_000).toFixed(tokens >= 10_000_000 ? 0 : 1).replace(/\.0$/, "") + "M";
     if (tokens >= 10_000) return Math.round(tokens / 1000) + "k";
     if (tokens >= 1000) return (tokens / 1000).toFixed(1).replace(/\.0$/, "") + "k";
     return String(tokens);
@@ -8094,9 +8097,10 @@
     const parts = value.replaceAll("\\", "/").split("/");
     const leaf = parts.pop() || "";
     const prefix = parts[0] === "" ? (parts[1] || "") ? "/" + parts[1] : "/" : parts[0];
+    const join = prefix ? prefix + (prefix === "/" ? "" : "/") + "…/" : "…/";
     let tail = leaf;
-    while (parts.length > 1 && (prefix + "/…/" + parts.at(-1) + "/" + tail).length <= cap) tail = parts.pop() + "/" + tail;
-    return (prefix ? prefix + "/…/" : "…/") + tail;
+    while (parts.length > 1 && (join + parts.at(-1) + "/" + tail).length <= cap) tail = parts.pop() + "/" + tail;
+    return join + tail;
   }
 
   function displayCommand(trace) {
@@ -8778,7 +8782,7 @@
 
   function consoleDurationLabel(trace) {
     const work = agentTraceWorkMs(trace);
-    const ms = work !== undefined ? Number(work ?? NaN) : Number(trace && (trace.execution_duration_ms ?? trace.duration_ms ?? trace.elapsed_ms));
+    const ms = work !== undefined ? Number(work ?? NaN) : Number(trace ? (trace.execution_duration_ms ?? trace.duration_ms ?? trace.elapsed_ms) : NaN);
     if (!Number.isFinite(ms) || ms < 0) return "";
     const s = Math.max(1, Math.round(ms / 1000));
     if (s < 60) return `${s}s`;
@@ -9478,8 +9482,9 @@
   function humanMs(ms) {
     const n = Number(ms);
     if (!Number.isFinite(n) || n < 0) return "";
-    if (n < 1000) return `${Math.round(n)}ms`;
-    const secs = n / 1000;
+    const rounded = Math.round(n);
+    if (rounded < 1000) return `${rounded}ms`;
+    const secs = rounded / 1000;
     if (secs < 60) return `${secs < 10 ? secs.toFixed(1) : Math.round(secs)}s`;
     return formatTurnDuration(n);
   }

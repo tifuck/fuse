@@ -154,11 +154,8 @@ test('summary counts name each state and never drop a category', () => {
   const stale = c.toolCounts([{ trace: { name: 'grep', status: 'running' } }], false);
   assert.equal(stale.stopped, 1);
   assert.equal(stale.running, 0);
-  // FINDING(counts-noun): intended "2 nonzero exits", actually "2 nonzero exit"
-  // (every other counted noun in these labels pluralizes). Counts source:
-  // countsLabel({ running: 0, failed: 0, stopped: 0, warning: 2, done: 0, phases: {} }).
   assert.equal(c.countsLabel({ running: 0, failed: 0, stopped: 0, warning: 2, done: 0, phases: {} }),
-    '2 nonzero exit');
+    '2 nonzero exits');
 });
 
 test('truncation notices say exactly what was kept', () => {
@@ -219,11 +216,9 @@ test('paths shorten against the project and fold with an honest ellipsis', () =>
     'C:/…/epsilon-long-name.txt');
   // A single long segment has no directories to hide; the leaf stays whole.
   assert.equal(c.compactPath('y'.repeat(70), {}), '…/' + 'y'.repeat(70));
-  // FINDING(compact-root): intended "/…/<leaf>", actually "//…/<leaf>" —
-  // prefix "/" + "/…/" produces a doubled slash for a long root-level file.
-  // Input: compactPath('/' + 'x'.repeat(60) + '.txt') (default cap 58).
+  // A long root-level file folds to '/…/<leaf>' with no doubled slash.
   const rootLeaf = 'x'.repeat(60) + '.txt';
-  assert.equal(c.compactPath('/' + rootLeaf), '//…/' + rootLeaf);
+  assert.equal(c.compactPath('/' + rootLeaf), '/…/' + rootLeaf);
 });
 
 test('tool rows keep their verb map and plain-word fallbacks', () => {
@@ -498,10 +493,7 @@ test('token counts abbreviate at thousand and million', () => {
     assert.equal(fmt(12000000), '12M');
     assert.equal(fmt(-7), '0');
     assert.equal(fmt(NaN), '0');
-    // FINDING(tokens-k-cap): intended "1M", actually "1000k" — the k branch
-    // rounds past its own unit before the M branch takes over.
-    // Input: formatTokens(999999) / formatConsoleCount(999999).
-    assert.equal(fmt(999999), '1000k');
+    assert.equal(fmt(999999), '1M', 'a rounded k count that reaches 1000 hands off to M');
   }
 });
 
@@ -522,9 +514,8 @@ test('sub-second durations stay in ms and hand off above a second', () => {
   assert.equal(c.humanMs(-5), '');
   assert.equal(c.humanMs(NaN), '');
   assert.equal(c.humanMs('x'), '');
-  // FINDING(human-ms-round): intended "1s", actually "1000ms" — the ms branch
-  // rounds up across its own boundary. Input: humanMs(999.6).
-  assert.equal(c.humanMs(999.6), '1000ms');
+  // A rounded value that reaches the unit boundary renders in the next unit.
+  assert.equal(c.humanMs(999.6), '1.0s');
 });
 
 test('console durations prefer tracked work time', () => {
@@ -548,10 +539,7 @@ test('console durations prefer tracked work time', () => {
   assert.equal(c.consoleDurationLabel({ name: 'run_terminal_command', duration_ms: 90000 }), '1m 30s');
   assert.equal(c.consoleDurationLabel({ name: 'run_terminal_command', duration_ms: -1 }), '');
   assert.equal(c.consoleDurationLabel({ name: 'run_terminal_command' }), '');
-  // FINDING(console-duration-null): intended "", actually "1s" — with no
-  // trace at all Number(null) lands on the one-second floor. Input:
-  // consoleDurationLabel(null).
-  assert.equal(c.consoleDurationLabel(null), '1s');
+  assert.equal(c.consoleDurationLabel(null), '', 'no trace, no duration to show');
 });
 
 test('activity elapsed text only appears once there is time to show', () => {
@@ -583,11 +571,9 @@ test('failed cluster kinds name the work', () => {
   assert.equal(kind('read_file', 'grep'), 'Steps', 'a mixed cluster has no single kind');
   assert.equal(c.failKind([{ trace: { name: 'read_file', error: 'x' } }, { trace: { name: 'read_file', error: 'y' } }]),
     'File read', 'repeats of one tool stay that kind');
-  // FINDING(fail-kind-verbs): intended "File write" / "File edit" (so the
-  // cluster reads "File write failed"), actually the past-tense action verbs
-  // "Wrote" / "Edited" (→ "Wrote failed"). Input: failKind([{trace:{name:'write_file'}}]).
-  assert.equal(kind('write_file'), 'Wrote');
-  assert.equal(kind('search_replace'), 'Edited');
+  // Write and edit kinds name the work so the cluster reads "File write failed".
+  assert.equal(kind('write_file'), 'File write');
+  assert.equal(kind('search_replace'), 'File edit');
 });
 
 test('repeated error lines collapse with a count', () => {
