@@ -279,6 +279,7 @@ body.is-auth .stage-inner {
 .nows { white-space: nowrap; }
 
 /* —— Controls —— */
+.btn[hidden] { display: none; }
 .btn {
   display: inline-flex;
   align-items: center;
@@ -7190,6 +7191,7 @@ label.check.hosts-check,
   gap: 0.9rem 1.1rem;
   align-items: start;
 }
+.hosts-field[hidden] { display: none; }
 .hosts-field {
   display: flex;
   flex-direction: column;

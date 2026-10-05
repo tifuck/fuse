@@ -98,28 +98,13 @@ const BUNDLE = { uid: 1, hosts: HOSTS, pending: [], base: origin, settings: { ag
     await page.locator('[data-empty] [data-wizard-start]').click();
     await connector.waitFor({ state: 'visible' });
     assert.equal(await empty.isHidden(), true, 'empty panel hides once an install code is showing');
-    // FINDING(header-add-stays): paint() sets hidden on the header Add while the
-    // install panel is open (static/hosts.js paint). .btn { display: inline-flex }
-    // (static/app.css) beats the UA [hidden] rule, and the .page-actions display:none
-    // rule never matches because the button lives in .settings-tools. Intended: one
-    // Add, hidden while installing. Current: the header button stays clickable.
-    assert.equal(await add.isVisible(), true, `header Add visibility while the install panel is open: ${await add.isVisible()}`);
+    assert.equal(await add.isHidden(), true, `header Add stays visible while installing: hidden=${await add.isHidden()}`);
     const lines = await page.locator('[data-install-line], [data-install-windows]').evaluateAll(nodes => nodes.map(node => node.textContent.trim()));
-    // FINDING(linux-install-blank): with no PUBLIC_BASE_URL both install strings
-    // come back empty (app/hosts.py install_line). showConnector writes the
-    // reveal-once fallback into both <code>s, then paint() copies
-    // activePairing.install — still '' — back over the Linux line only.
-    // Intended: both panes show the fallback. Current: Linux is blank.
     const fallback = 'Install code is shown only once. Cancel and create a new code.';
-    assert.deepEqual(lines, ['', fallback], `install lines: ${JSON.stringify(lines)}`);
+    assert.deepEqual(lines, [fallback, fallback], `install lines: ${JSON.stringify(lines)}`);
     const download = page.locator('[data-download-windows]');
-    // FINDING(download-link-stays): with no origin download_windows is '', so
-    // showConnector sets hidden and drops href. .btn { display: inline-flex }
-    // beats [hidden], same as the header Add, so "Download EXE" stays with no href.
     const downloadState = await download.evaluate(el => ({ hidden: el.hidden, href: el.getAttribute('href'), shown: !!(el.offsetWidth || el.offsetHeight) }));
-    assert.equal(downloadState.hidden, true, `download hidden attribute: ${JSON.stringify(downloadState)}`);
-    assert.equal(downloadState.href, null, `download href: ${JSON.stringify(downloadState)}`);
-    assert.equal(downloadState.shown, true, `download visibility: ${JSON.stringify(downloadState)}`);
+    assert.deepEqual(downloadState, { hidden: true, href: null, shown: false }, `download link: ${JSON.stringify(downloadState)}`);
     const waiting = await page.locator('[data-connector-wait]').innerText();
     assert.match(waiting, /Waiting for this machine/, `waiting copy: ${waiting}`);
     assert.match(waiting, /Code expires /, `install wait should name the expiry: ${waiting}`);
@@ -133,15 +118,10 @@ const BUNDLE = { uid: 1, hosts: HOSTS, pending: [], base: origin, settings: { ag
       error: document.querySelector('[data-page-error]').textContent,
     }));
     assert.equal(deleted.status(), 200, `cancel status ${deleted.status()} body ${afterCancel.error}`);
-    // FINDING(cancel-hides-empty): cancel deletes the code and closes the panel,
-    // but closeConnector() calls paint() while bundle.pending still holds that
-    // pairing (static/hosts.js). paint() hides the empty state whenever pending
-    // is non-empty, so a cancelled first machine leaves a blank page.
-    // Intended: the empty panel returns. Current: both panels stay hidden.
-    assert.deepEqual(afterCancel, { empty: true, connector: true, hosts: 0, error: '' }, `after cancel: ${JSON.stringify(afterCancel)}`);
+    assert.deepEqual(afterCancel, { empty: false, connector: true, hosts: 0, error: '' }, `after cancel: ${JSON.stringify(afterCancel)}`);
     console.log('PASS empty state and install panel');
 
-    await add.click();
+    await page.locator('[data-empty] [data-wizard-start]').click();
     await connector.waitFor({ state: 'visible' });
     await page.locator('[data-ssh-instead]').click();
     await page.locator('.fuse-vault').waitFor();
@@ -159,13 +139,11 @@ const BUNDLE = { uid: 1, hosts: HOSTS, pending: [], base: origin, settings: { ag
     await page.route('**/hosts/pairings', route => route.request().method() === 'POST'
       ? json(route, 500, { error: { message: 'Install code fixture failed' } })
       : route.continue(), { times: 1 });
-    await add.click();
+    await page.locator('[data-empty] [data-wizard-start]').click();
     await page.locator('[data-page-error]').waitFor({ state: 'visible' });
     assert.equal(await page.locator('[data-page-error]').innerText(), 'Install code fixture failed', 'page error quotes the pairing failure');
     assert.equal(await connector.isHidden(), true, 'a failed install code does not open the install panel');
-    // Same pending entry the cancel left behind: the error shows, the empty
-    // panel does not come back (FINDING cancel-hides-empty).
-    assert.equal(await empty.isHidden(), true, `empty panel after the failed code: hidden=${await empty.isHidden()}`);
+    assert.equal(await empty.isVisible(), true, `empty panel after the failed code: hidden=${await empty.isHidden()}`);
     console.log('PASS pairing 500');
 
     bundle = BUNDLE;
@@ -238,12 +216,8 @@ const BUNDLE = { uid: 1, hosts: HOSTS, pending: [], base: origin, settings: { ag
     await card(11).locator('[data-edit-host]').click();
     const dialog = page.locator('[data-edit-host-modal]');
     await dialog.waitFor({ state: 'visible' });
-    const portField = dialog.locator('[data-port-field]');
-    // FINDING(port-field-stays): openHostModal sets hidden on the port for a
-    // connector (static/hosts.js). .hosts-field is a flex container, which beats
-    // the UA [hidden] rule, so the SSH port still shows on a connector edit.
-    const portState = await portField.evaluate(el => ({ hidden: el.hidden, shown: !!(el.offsetWidth || el.offsetHeight) }));
-    assert.deepEqual(portState, { hidden: true, shown: true }, `connector port field: ${JSON.stringify(portState)}`);
+    const portState = await dialog.locator('[data-port-field]').evaluate(el => ({ hidden: el.hidden, shown: !!(el.offsetWidth || el.offsetHeight) }));
+    assert.deepEqual(portState, { hidden: true, shown: false }, `connector port field: ${JSON.stringify(portState)}`);
     assert.equal(await dialog.locator('[name="alias"]').inputValue(), 'online-box');
     assert.equal(await dialog.locator('[name="hostname"]').inputValue(), 'edge.example');
     assert.equal(await dialog.locator('[name="username"]').inputValue(), 'deploy');

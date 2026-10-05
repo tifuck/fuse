@@ -450,8 +450,8 @@
     });
     if (empty) empty.hidden = hosts.length > 0 || pending.length > 0 || wizardOpen || connectorOpen;
     list.innerHTML = hosts.map(hostRow).join("");
-    if (connectorOpen && activePairing && installLine) {
-      installLine.textContent = activePairing.install || "";
+    if (connectorOpen && activePairing && installLine && activePairing.install) {
+      installLine.textContent = activePairing.install;
     }
   }
 
@@ -810,6 +810,7 @@
         const id = activePairing && activePairing.id;
         if (id) {
           try { await api(`/hosts/pairings/${id}`, { method: "DELETE" }); } catch (_) {}
+          bundle.pending = (bundle.pending || []).filter((p) => p.id !== id);
         }
         closeConnector();
       });
