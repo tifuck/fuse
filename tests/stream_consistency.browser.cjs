@@ -63,7 +63,7 @@ async function checkGroup(page,scope,view){
         assert.equal(await page.locator('.chat-log .chat-console-thought').count(),0,`${view}: streamed thinking text alone repaints nothing`);
         await page.evaluate(()=>fuseToolFixture.mount([{id:'thinking-console',reasoning:'First thought and next thought',tools:[],segments:[{type:'reasoning',text:'First thought and next thought'}]}],false));
         const line=page.locator('.chat-log .is-console-group').first();
-        assert.match(await line.locator('.chat-step-label').textContent(),/^Thought for /,`${view}: landed thought reads as a summary line`);
+        assert.match(await line.locator(':scope > .chat-step-main > .chat-step-head .chat-step-label').textContent(),/^Thought for /,`${view}: landed thought reads as a summary line`);
         await line.locator('[data-step-toggle]').first().click();
         const thought=page.locator('.chat-log .chat-console-thought');
         assert.equal(await thought.isVisible(),true,`${view}: expanding the line shows the thought`);
