@@ -109,43 +109,66 @@ const hits = (n, prefix = 'Result') => Array.from({ length: n }, (_, i) => ({
     const eq = (actual, expected, where) => check(actual === expected, `${where}: ${JSON.stringify(actual)} !== ${JSON.stringify(expected)}`);
 
     // ————————————————————————————————————————————————
-    // load_skill: semantic content only (name, loaded indication, outcome).
-    // The row's line count/layout is being condensed on purpose — not pinned.
+    // load_skill: semantic content (name, loaded indication, outcomes) plus
+    // the condensed settled row — one line carrying call and outcome
+    // together, no second sub-line, with the loaded body opening on demand.
     // ————————————————————————————————————————————————
     console.log('edge: skill load');
     await view('console');
     await width(1440);
+    const singleLine = (id) => page.evaluate((id) => {
+      const li = document.querySelector(`[data-step="tool-${id}"]`);
+      const head = li.querySelector(':scope > .chat-step-main > .chat-step-head');
+      const label = li.querySelector('.chat-step-label');
+      return {
+        liH: li.getBoundingClientRect().height,
+        headH: head.getBoundingClientRect().height,
+        labelH: label.getBoundingClientRect().height,
+        result: (li.querySelector('.chat-console-result-text')?.innerText || '').trim(),
+        visible: li.innerText.replace(/\s+/g, ' ').trim(),
+      };
+    }, id);
     try {
       const sk = tool('load_skill', { preview: 'café-🚀-über', output: 'Loaded.\n\n# Café 🚀\n\nBe excellent.', call_duration_ms: 900 });
       await mount([turn([sk], [T(sk)])]);
       await frame();
       let row = await rowOf(sk.id);
-      eq(row.head, 'Skill(café-🚀-über)', 'skill done head');
-      eq(row.result, 'Loaded skill', 'skill done result');
+      eq(row.head, 'Loaded the café-🚀-über skill', 'skill done line is the outcome sentence');
+      eq(row.result, '', 'the settled skill row keeps no second sub-line');
       eq(row.state, 'done', 'skill done state');
       eq(row.stateTitle, 'Done', 'skill done dot title');
+      // The settled default row is a single line: the row is exactly as tall
+      // as its head.
+      const one = await singleLine(sk.id);
+      check(Math.abs(one.liH - one.headH) <= 1, `the settled skill row is a single line: row ${one.liH}px vs head ${one.headH}px`);
+      check(/loaded/i.test(one.visible) && one.visible.includes('café-🚀-über'), `the one line carries the name and the outcome: ${one.visible}`);
       await openRow(sk.id);
       row = await rowOf(sk.id);
       check(row.body.includes('Café') && row.body.includes('Be excellent'), `skill body keeps the loaded content: ${row.body}`);
       check(!row.body.includes('Loaded.'), `skill body drops the transport prelude: ${row.body}`);
 
-      // A missing preview falls back to a generic name, and the outcome stands.
+      // A missing preview falls back to the bare noun, and the outcome stands.
       const bare = tool('load_skill', { output: 'Loaded.\n\n# Bare\n\nFine.' });
       await mount([turn([bare], [T(bare)])]);
       await frame();
       row = await rowOf(bare.id);
-      eq(row.head, 'Skill(skill)', 'skill without preview');
-      eq(row.result, 'Loaded skill', 'skill without preview result');
+      eq(row.head, 'Loaded the skill', 'skill without preview');
+      eq(row.result, '', 'skill without preview keeps one line');
 
-      // Error outcome keeps the name and prints the failure.
+      // While it runs the line is progressive; the family's running mark
+      // hangs under it.
       const bad = tool('load_skill', { preview: 'nope', status: 'running', output: '' });
       await mount([turn([bad], [T(bad)])], true);
       await frame();
+      row = await rowOf(bad.id);
+      eq(row.head, 'Loading the nope skill', 'skill running line');
+      eq(row.result, 'Running…', 'skill running mark');
       await send({ event: 'tool', id: bad.id, name: 'load_skill', status: 'error', preview: 'nope', error: "Unknown skill 'nope'." });
       await frame();
       row = await rowOf(bad.id);
-      eq(row.head, 'Skill(nope)', 'skill failed head keeps the name');
-      check(row.body.includes("Unknown skill 'nope'."), `skill failure shows its error: ${row.body}`);
+      eq(row.head, 'Failed to load the nope skill', 'skill failed line keeps the name');
+      check(!row.head.includes('loaded'), `a failed skill never claims loaded: ${row.head}`);
+      check(row.body.includes('Error:') && row.body.includes("Unknown skill 'nope'."), `skill failure keeps the family Error: mark: ${row.body}`);
       eq(row.state, 'error', 'skill failed state');
       eq(row.stateTitle, 'Failed', 'skill failed dot title');
 
@@ -154,7 +177,9 @@ const hits = (n, prefix = 'Result') => Array.from({ length: n }, (_, i) => ({
       await mount([turn([lost], [T(lost)])]);
       await frame();
       row = await rowOf(lost.id);
+      eq(row.head, 'Loading the ponytail skill', 'an interrupted load keeps its in-flight line');
       eq(row.result, 'Interrupted · the result was lost', 'skill lost result');
+      check(!row.head.includes('loaded'), `a lost skill never claims loaded: ${row.head}`);
       eq(row.state, 'interrupted', 'skill lost state');
       eq(row.stateTitle, 'Lost', 'skill lost dot title');
 
@@ -166,12 +191,28 @@ const hits = (n, prefix = 'Result') => Array.from({ length: n }, (_, i) => ({
         await mount([turn([long], [T(long)])]);
         await frame();
         row = await rowOf(long.id);
-        check(row.head.startsWith('Skill(') && row.head.endsWith(')'), `skill long head wraps into its parens: ${row.head}`);
+        check(row.head.startsWith('Loaded the ') && row.head.endsWith(' skill'), `skill long head keeps the sentence: ${row.head}`);
         check(row.head.includes('…'), `skill long name truncates with an ellipsis: ${row.head}`);
         check(row.head.length < 120, `skill long name stays one row: ${row.head.length} chars`);
         check((await overflow()) <= 0, `skill long name overflows at ${w}px: ${await overflow()}`);
+        const line = await singleLine(long.id);
+        check(Math.abs(line.liH - line.headH) <= 1, `the long skill row stays a single line at ${w}px: row ${line.liH}px vs head ${line.headH}px`);
       }
       await width(1440);
+
+      // The same single line in the other retained reading mode: Mainframe's
+      // rows are one TUI line (the result column rides that line), so the
+      // condensed row keeps no result sub-line and stays under two lines.
+      await view('mainframe');
+      await mount([turn([sk], [T(sk)])]);
+      await frame();
+      row = await rowOf(sk.id);
+      eq(row.head, 'Loaded the café-🚀-über skill', 'mainframe skill line reads the same sentence');
+      eq(row.result, '', 'mainframe skill row keeps no second sub-line');
+      const mf = await singleLine(sk.id);
+      check(mf.liH < mf.labelH * 2, `the mainframe skill row is one line: row ${mf.liH}px vs line ${mf.labelH}px`);
+      check(/loaded/i.test(mf.visible) && mf.visible.includes('café-🚀-über'), `mainframe one line carries the name and the outcome: ${mf.visible}`);
+      await view('console');
     } catch (error) { failures.push(`block threw: ${error.message}`); }
 
     // ————————————————————————————————————————————————
@@ -287,15 +328,13 @@ const hits = (n, prefix = 'Result') => Array.from({ length: n }, (_, i) => ({
       eq((await rowOf(noBytes.id)).result, 'example.com', 'fetch without bytes falls back to the host');
       eq((await rowOf(noPreview.id)).result, 'example.com', 'fetch without bytes or preview falls back to the host');
 
-      // A non-2xx response should not be labelled OK.
-      // FINDING(fetch-status-ok): intended a non-2xx receipt names its status
-      // without claiming OK, actually the receipt reads "(404 OK)"
-      // (static/chat.js consoleResultLine).
+      // A non-2xx response is not labelled OK: the parenthetical carries the
+      // status alone. 2xx keeps its "(200 OK)" phrase, pinned above.
       const missing = tool('read_url', { url: 'https://example.com/gone', http_status: 404, bytes: 512, results: [] });
       await mount([turn([missing], [T(missing)])]);
       await frame();
       row = await rowOf(missing.id);
-      eq(row.result, 'Received 512 bytes (404 OK)', 'fetch 404 receipt names the status it got (current label)');
+      eq(row.result, 'Received 512 bytes (404)', 'a 404 receipt names its status without claiming OK');
 
       // Error, timed out and lost each keep their own words.
       const failed = tool('read_url', { url: 'https://example.com/flaky', status: 'error', error: 'DNS lookup failed.' });

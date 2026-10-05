@@ -8431,7 +8431,16 @@
     } else if (name === "create_artifact" || name === "update_artifact") {
       inner = consoleArgText(trace.title || "artifact", 80);
     } else if (name === "load_skill") {
-      inner = consoleArgText(trace.preview || "skill", 80);
+      // The skill row reads as its outcome sentence ("Loaded the ponytail
+      // skill"). The name keeps its cap and ellipsis; failures keep the
+      // family's Error: fold below, interruptions their established mark.
+      const skill = consoleArgText(trace.preview || "", 80);
+      const tail = skill ? `<span class="chat-console-val">${escapeHtml(skill)}</span> skill` : "skill";
+      const p = presentation || toolPresentation(trace, false);
+      const sentence = p && p.failed ? `Failed to load the ${tail}`
+        : p && (p.running || p.interrupted) ? `Loading the ${tail}`
+        : `Loaded the ${tail}`;
+      return `<span class="chat-console-call">${sentence}</span>` + clock + hostHtml;
     } else {
       inner = consoleArgText(toolSubject(trace), 90);
     }
@@ -8808,7 +8817,10 @@
     if (trace.wake_state === "dropped") return "Report not delivered";
     const preview = String(trace.preview || trace.summary || "").replace(/\s+/g, " ").trim();
     if (name === "read_url" && isConsoleOnly() && Number(trace.bytes) > 0) {
-      return `Received ${ccBytes(trace.bytes)} (${Number(trace.http_status) || 200} OK)`;
+      // The parenthetical is the HTTP status line: "OK" only where the
+      // status actually says so.
+      const code = Number(trace.http_status) || 200;
+      return `Received ${ccBytes(trace.bytes)} (${code}${code >= 200 && code < 300 ? " OK" : ""})`;
     }
     if (name === "read_url") {
       const host = pageHost(trace.url);
@@ -8882,7 +8894,9 @@
       if (took) return `finished · ${took}`;
       return preview && preview !== "still running" ? shortToolText(preview, 100) : "finished";
     }
-    if (name === "load_skill") return "Loaded skill";
+    // The settled skill load carries its outcome on the call line ("Loaded
+    // the ponytail skill"); there is no second sub-line left to print.
+    if (name === "load_skill") return "";
     if (name === "propose_skill") return preview ? `Proposed skill ${preview}` : "Proposed skill";
     if (name === "search_tools") {
       if (String(trace.query || "") === "hosts") return "Listed connected hosts";
@@ -9693,6 +9707,9 @@
       const hangOpen = verbose ? Boolean(inner) : revealed && expandable;
       const status = fold.status;
       const showHang = Boolean(status || preview || inner);
+      // A fold with only its hidden body (the settled skill load) prints one
+      // line: the branch glyph and the hang's margins wait for the open.
+      const bodyOnly = !status && !preview;
       // A non-zero exit Console prints as an error ("Error: Exit code 1")
       // gets the red dot too; exit 1 from grep and friends stays finished.
       const dotState = presentation.state === "warning" && isConsoleOnly() && trace.name === "run_terminal_command" &&
@@ -9704,7 +9721,7 @@
         (showHang
           ? `<div class="chat-step-reveal is-open">` +
             `<div class="chat-step-reveal-inner">` +
-            `<div class="chat-console-hang${running ? " is-running" : ""}${failed ? " is-error" : ""}${fold.keep ? " is-kept" : ""}${hangOpen ? " is-expanded" : ""}">` +
+            `<div class="chat-console-hang${running ? " is-running" : ""}${failed ? " is-error" : ""}${fold.keep ? " is-kept" : ""}${bodyOnly ? " is-body-only" : ""}${hangOpen ? " is-expanded" : ""}">` +
             `<span class="chat-console-branch" aria-hidden="true">└</span>` +
             `<div class="chat-console-hang-body">` +
             (status ? `<span class="chat-console-result-text">${consoleStatusHtml(status)}</span>` : "") +

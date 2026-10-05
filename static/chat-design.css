@@ -2692,6 +2692,14 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-ste
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-hang:not(.is-expanded) .chat-console-out {
   display: none;
 }
+/* A fold whose only content is its hidden body (the settled skill load)
+   prints one line: no branch glyph and no hang margins until it opens. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-hang.is-body-only:not(.is-expanded) {
+  margin: 0;
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-hang.is-body-only:not(.is-expanded) > .chat-console-branch {
+  display: none;
+}
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-hang.is-expanded .chat-console-result-text {
   display: none;
 }

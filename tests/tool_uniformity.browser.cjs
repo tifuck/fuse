@@ -17,8 +17,9 @@
 // (tests/console_ui.browser.cjs + tests/console_ui_lib.js), state words in
 // cli/compact and wait/exit precedence (tests/tool_ui.browser.cjs), widget
 // details (tests/tool_widgets.browser.cjs), cli/compact collapse transitions
-// (tests/collapse_states.browser.cjs). The skill row's layout is about to be
-// condensed by hand, so only its semantics are pinned below.
+// (tests/collapse_states.browser.cjs). The skill row's one-line
+// condensation is pinned by tests/tool_edge_cases.browser.cjs; only its
+// semantics are pinned below.
 const assert = require('node:assert/strict');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const origin = process.env.FUSE_BROWSER_ORIGIN || 'http://127.0.0.1:8099';
@@ -82,7 +83,7 @@ const TOOLS = [
     trace: { status: 'done', preview: '2 live, 1 finished', output: '{"live":[{"id":"n1","description":"Rewrite auth","status":"running"}],"finished":[{"id":"old","description":"Prior audit","status":"completed"}]}', call_duration_ms: DUR } },
   { name: 'search_models', verb: 'Models', subject: 'grok', clock: true, disclosure: true,
     trace: { status: 'done', query: 'grok', preview: '2 models', output: MODELS, call_duration_ms: DUR } },
-  { name: 'load_skill', verb: 'Skill', subject: 'ponytail', clock: true, disclosure: true,
+  { name: 'load_skill', verb: 'Loaded the', subject: 'ponytail', clock: true, disclosure: true,
     trace: { status: 'done', preview: 'ponytail', output: 'Loaded.\n\n# Ponytail\n\nBe lazy.', call_duration_ms: DUR } },
   { name: 'propose_skill', verb: 'Draft', subject: 'ponytail', clock: true, disclosure: true,
     trace: { status: 'done', preview: 'ponytail', output: 'Proposed skill `ponytail` (not saved).', call_duration_ms: DUR } },
@@ -314,9 +315,11 @@ const COLLECT = () => {
         ok(/\d/.test(note.text), `${t.name}: truncation note without sizes: "${note.text}"`);
       }
     }
-    // The skill row: semantics only (its layout is being condensed).
+    // The skill row: semantics only (its one-line condensation is pinned by
+    // tests/tool_edge_cases.browser.cjs). The loaded outcome now rides the
+    // call line, so both texts count.
     const skill = settled.load_skill;
-    ok(/ponytail/.test(skill.headText + skill.bodyAll) && /loaded/i.test(skill.bodyAll) && skill.title === 'Done',
+    ok(/ponytail/.test(skill.headText + skill.bodyAll) && /loaded/i.test(skill.headText + skill.bodyAll) && skill.title === 'Done',
       `load_skill semantics (name + loaded + outcome): "${skill.headText}" / "${skill.bodyAll}"`);
 
     // —— 3. Outcome vocabulary: done vs error vs interrupted vs cancelled/lost ——

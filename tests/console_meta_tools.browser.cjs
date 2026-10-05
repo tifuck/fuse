@@ -189,12 +189,12 @@ const turn = (trace, live) => ({
       assert.match(silent.body, /Interrupted/, `${tag} interrupted search_tools: ${silent.body}`);
       expectDot(silent.dot, 'interrupted', `${tag} search_tools interrupted`);
 
-      await life('load_skill', { head: /Skill\(ponytail\)/, preview: 'ponytail' }, [
-        { event: { status: 'done', preview: 'ponytail', output: 'Loaded.\n\n# Ponytail\n\nBe lazy.' }, head: /Skill\(ponytail\)/, live: ['Loaded skill'], kept: { output: 'Loaded.\n\n# Ponytail\n\nBe lazy.' }, keptHas: ['Ponytail', 'Be lazy.'], lacks: ['Running…'], dot: 'done' },
-        { event: { status: 'error', preview: 'nope', error: 'Unknown skill.' }, head: /Skill\(nope\)/, live: ['Error: Unknown skill.'], lacks: ['Loaded skill', 'Running…'], dot: 'error' },
+      await life('load_skill', { head: /Loading the ponytail skill/, preview: 'ponytail' }, [
+        { event: { status: 'done', preview: 'ponytail', output: 'Loaded.\n\n# Ponytail\n\nBe lazy.' }, head: /Loaded the ponytail skill/, live: ['Loaded the ponytail skill'], kept: { output: 'Loaded.\n\n# Ponytail\n\nBe lazy.' }, keptHas: ['Ponytail', 'Be lazy.'], lacks: ['Running…'], dot: 'done' },
+        { event: { status: 'error', preview: 'nope', error: 'Unknown skill.' }, head: /Failed to load the nope skill/, live: ['Error: Unknown skill.'], lacks: ['Loaded skill', 'Running…'], dot: 'error' },
         // At 390px Mainframe hides the result line of an opened row, so the name is
         // all that remains.
-        { event: { status: 'interrupted', preview: 'ponytail' }, head: /Skill\(ponytail\)/, live: ['Interrupted · the run ended before it finished', 'ponytail'], lacks: ['Running…', 'Loaded skill'], dot: 'interrupted' },
+        { event: { status: 'interrupted', preview: 'ponytail' }, head: /Loading the ponytail skill/, live: ['Interrupted · the run ended before it finished', 'ponytail'], lacks: ['Running…', 'Loaded skill'], dot: 'interrupted' },
       ]);
 
       await life('propose_skill', { head: /Draft\(ponytail\)/, preview: 'ponytail' }, [
