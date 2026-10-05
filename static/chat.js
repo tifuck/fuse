@@ -8505,6 +8505,19 @@
     return `<div class="chat-console-lines is-stdout">${lines.map((line) => `<div class="chat-console-stdout">${renderAnsi(line) || " "}</div>`).join("")}</div>`;
   }
 
+  // The same note the other views print when a result kept only part of its
+  // output (toolDetailHtml). Console folds before that path, so it asks here.
+  function consoleTruncationNote(trace) {
+    if (typeof trace?.output !== "string") return "";
+    const retained = Array.from(trace.output).length;
+    const total = Number.isFinite(trace.output_chars) ? trace.output_chars : retained;
+    let note = "";
+    if (trace.output_mode === "partial" && (trace.truncated || total > retained)) note = `Partial output · ${retained.toLocaleString()} characters retained · total ${trace.output_chars_exact === true ? total.toLocaleString() : `unknown (at least ${total.toLocaleString()})`}.`;
+    else if (trace.output_mode === "tail") note = `Retained tail · ${retained.toLocaleString()} of ${trace.output_chars_exact === false ? "at least " : ""}${total.toLocaleString()} characters${Number.isFinite(trace.output_start) ? ` · starts at offset ${trace.output_start.toLocaleString()}` : ""}.`;
+    else if (trace.truncated || total > retained) note = `Output truncated · ${retained.toLocaleString()} of ${trace.output_chars_exact === false ? "at least " : ""}${total.toLocaleString()} characters retained.`;
+    return note ? `<span class="chat-tool-truncated">${escapeHtml(note)}</span>` : "";
+  }
+
   function consoleSameText(html, text) {
     const plain = String(html || "").replace(/<[^>]*>/g, " ").replace(/&[a-z#0-9]+;/gi, " ").replace(/\s+/g, " ").trim();
     return !plain || plain === String(text || "").replace(/\s+/g, " ").trim();
@@ -8584,15 +8597,16 @@
       const head = nonzero ? `Exit code ${exit}` : failed ? status
         : wait ? (executionState(trace) !== "running" ? "" : stillRunning ? "Still running" : "Returned while the command was still running")
         : toolBackground(trace) ? status : "";
-      if (empty) return { status: head || "(No output)", preview: "", full: "", keep: nonzero };
+      const note = consoleTruncationNote(trace);
+      if (empty) return { status: head || (note ? "" : "(No output)"), preview: note, full: "", keep: nonzero || Boolean(note) };
       const show = lines.length === 4 ? 4 : 3;
       const cut = lines.slice(0, show).map((line) => line.length > 400 ? line.slice(0, 399) + "…" : line);
       const hidden = lines.length - cut.length;
       const clipped = hidden > 0 || cut.some((line, i) => line !== lines[i]);
       return {
         status: head,
-        keep: nonzero,
-        preview: consoleStdoutHtml(cut) + (hidden > 0 ? `<div class="chat-console-more">… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : ""),
+        keep: nonzero || Boolean(note),
+        preview: consoleStdoutHtml(cut) + (hidden > 0 ? `<div class="chat-console-more">… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : "") + note,
         full: clipped ? consoleDetailHtml(trace, false, running) : "",
       };
     }
@@ -11606,14 +11620,16 @@
       }
       const diff = trace.edit_diff ? consoleDiffHtml(String(trace.edit_diff).replace(/\s+$/, "")) : "";
       const change = consoleChangeText(Number(trace.lines_added) || 0, Number(trace.lines_removed) || 0);
-      if (empty) return { status: diff ? change || "Updated" : meaning.message || "(No output)", preview: diff, full: "" };
+      const note = consoleTruncationNote(trace);
+      if (empty) return { status: diff ? change || "Updated" : meaning.message || (note ? "" : "(No output)"), preview: diff + note, full: "", keep: Boolean(note) };
       const show = lines.length === 4 ? 4 : 3;
       const cut = lines.slice(0, show).map((line) => line.length > 400 ? line.slice(0, 399) + "…" : line);
       const hidden = lines.length - cut.length;
       const clipped = hidden > 0 || cut.some((line, i) => line !== lines[i]);
       return {
         status: "",
-        preview: consoleStdoutHtml(cut) + (hidden > 0 ? `<div class="chat-console-more">… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : "") + diff,
+        keep: Boolean(note),
+        preview: consoleStdoutHtml(cut) + (hidden > 0 ? `<div class="chat-console-more">… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : "") + diff + note,
         full: clipped ? consoleDetailHtml(trace, false, false) + diff : "",
       };
     }

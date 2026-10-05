@@ -2655,13 +2655,18 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-con
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] pre.chat-console-out.is-code {
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] pre.chat-console-out.is-code,
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-lines {
+  max-width: 100%;
+  min-width: 0;
   overflow-x: auto;
   overscroll-behavior-x: contain;
   scrollbar-width: thin;
   white-space: pre;
   overflow-wrap: normal;
 }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-lines { grid-template-columns: minmax(0, 1fr); }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-lines .chat-console-stdout { width: max-content; }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-more {
   margin-top: 0.12rem;
   color: var(--mute);

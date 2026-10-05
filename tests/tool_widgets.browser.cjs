@@ -50,6 +50,7 @@ const wrote = (extra = {}) => ({ id: 'wrote', name: 'write_file', status: 'done'
     });
     await page.goto(origin);
     await page.waitForFunction(() => window.fuseToolFixture);
+    if (await page.locator('[data-chat].is-history').count()) await page.locator('.chat-history [data-chat-new]').click();
     const frame = () => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 
     const colorOf = (value) => page.evaluate((text) => {
@@ -214,14 +215,16 @@ const wrote = (extra = {}) => ({ id: 'wrote', name: 'write_file', status: 'done'
           { id: 'page', name: 'read_url', status: 'done', url: 'https://example.com/doc', preview: 'A sentence about ' + 'layout '.repeat(40) + 'that should wrap.' },
         ]);
         await frame();
+        const summary = page.locator('.chat-log .chat-step.is-console-group > .chat-step-main > .chat-step-head > .chat-step-toggle');
+        if (await summary.count() && (await summary.first().getAttribute('aria-expanded')) !== 'true') await summary.first().click();
         for (const id of ['shell', 'page']) {
           const toggle = page.locator(`[data-step="tool-${id}"] .chat-step-toggle`);
           if (await toggle.count() && (await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click();
         }
-        await frame();
         const flow = await page.evaluate(() => {
           const box = (sel) => { const el = document.querySelector(sel); if (!el) return null; const style = getComputedStyle(el); return { white: style.whiteSpace, wrap: style.overflowWrap, scroll: el.scrollWidth - el.clientWidth, lines: el.querySelectorAll('.chat-console-stdout, .chat-tool-out').length }; };
-          const code = document.querySelector('[data-step="tool-shell"] .chat-console-stdout, [data-step="tool-shell"] .chat-tool-out');
+          const shown = (sel) => [...document.querySelectorAll(sel)].find((el) => el.getClientRects().length);
+          const code = shown('.chat-console-lines') || shown('[data-step="tool-shell"] .chat-tool-out');
           const prose = document.querySelector('[data-step="tool-page"] .chat-tool-out, [data-step="tool-page"] .chat-console-out');
           const codeStyle = code ? getComputedStyle(code) : null;
           const proseStyle = prose ? getComputedStyle(prose) : null;
@@ -232,11 +235,7 @@ const wrote = (extra = {}) => ({ id: 'wrote', name: 'write_file', status: 'done'
           };
         });
         check(flow.page === false, tag('long lines never widen the page'));
-        check(flow.code && flow.code.white === 'pre' && flow.code.wrap !== 'anywhere', tag(`code keeps its line: ${JSON.stringify(flow.code)}`));
-        // FINDING(code-scroll-width): the sideways-scroll rule targets
-        // pre.chat-console-out.is-code, but a folded command renders a div, so
-        // the long line is clipped instead of scrolled.
-        if (!console) check(flow.code.wide, tag(`the code block scrolls sideways: ${JSON.stringify(flow.code)}`));
+        check(flow.code && flow.code.white === 'pre' && flow.code.wrap !== 'anywhere' && flow.code.wide, tag(`code keeps its line and scrolls: ${JSON.stringify(flow.code)}`));
         check(flow.prose && flow.prose.tall, tag(`prose still wraps: ${JSON.stringify(flow.prose)}`));
 
         // 6. A kill receipt settles. The target's later state cannot revive it.
@@ -331,10 +330,7 @@ const wrote = (extra = {}) => ({ id: 'wrote', name: 'write_file', status: 'done'
           const text = [...row.querySelectorAll('.chat-console-stdout, .chat-tool-out')].map((el) => el.textContent).join('\n');
           return { note: note && note.textContent.trim(), text, lines: text.split('\n').filter(Boolean) };
         });
-        // FINDING(truncation-note): console drops the "Output truncated" note for
-        // an authoritative tail, so the cut is only visible as a short last line.
-        if (!console) check(Boolean(clipped.note) && /truncat/i.test(clipped.note), tag(`truncated output says so: ${clipped.note}`));
-        if (console) check(clipped.lines.length >= 1, tag(`console still shows the retained head: ${JSON.stringify(clipped.lines)}`));
+        check(Boolean(clipped.note) && /Output truncated/.test(clipped.note) && clipped.note.includes(String(kept.length)) && clipped.note.includes(whole.length.toLocaleString()), tag(`truncated output names what was kept: ${clipped.note}`));
         check(!clipped.lines.some((line) => line && !line.startsWith('line ') && !/^\$/.test(line)), tag(`no line is cut mid-token: ${JSON.stringify(clipped.lines)}`));
         const more = page.locator('[data-step="tool-out"] .chat-console-more, [data-step="tool-out"] .chat-tool-truncated');
         if (await more.count()) await more.first().click().catch(() => {});
