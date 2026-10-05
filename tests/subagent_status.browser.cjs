@@ -10,7 +10,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const origin = process.env.FUSE_BROWSER_ORIGIN || 'http://127.0.0.1:8099';
 assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
 
-const THREAD = 'status-thread';
+let THREAD = '';
 const now = new Date().toISOString();
 const runs = new Map();
 let agents = [];
@@ -49,8 +49,8 @@ function bump(id, patch) {
         ? route.fulfill({ json: row })
         : route.fulfill({ status: 404, json: { detail: 'missing ' + id } });
     });
-    await page.route('**/chat/threads/' + THREAD + '/agents', (route) => route.fulfill({ json: { agents } }));
-    await page.route('**/chat/threads/' + THREAD + '/jobs', (route) => route.fulfill({ json: { jobs, recent: [] } }));
+    await page.route('**/chat/threads/*/agents', (route) => route.fulfill({ json: { agents } }));
+    await page.route('**/chat/threads/*/jobs', (route) => route.fulfill({ json: { jobs, recent: [] } }));
     await page.goto(origin);
     await page.waitForFunction(() => Boolean(window.fuseToolFixture));
 
@@ -102,6 +102,14 @@ function bump(id, patch) {
     run('charlie', { status: 'interrupted', description: 'Charlie worker', resumable: true, has_transcript: true, resume_count: 0, message: { role: 'assistant', content: 'CHARLIE_PARTIAL' } });
     run('delta', { status: 'running', description: 'Delta worker', activity: { phase: 'tools' }, message: { role: 'assistant', content: '', tools: [{ id: 'd-read', name: 'read_file', status: 'running', path: 'README.md' }] } });
     run('echo', { status: 'queued', description: 'Echo worker', message: { role: 'assistant', content: '' } });
+    // The dock fills from refreshAgents, which only publishes a response while
+    // this thread is still current. A fixture-only id 404s on the live-sync
+    // reconcile (chat.js threadGone -> clearChatState), generation moves, and
+    // the in-flight agents response is discarded — so the list stays empty.
+    const created = await page.evaluate(async () => fuseToolFixture.api('/chat/threads', {
+      method: 'POST', body: JSON.stringify({ model: 'offline', tools: [], command_id: crypto.randomUUID(), title: 'Status fixture' }),
+    }));
+    THREAD = created.id;
     await page.evaluate((thread) => {
       fuseToolFixture.view('cli');
       fuseToolFixture.mount([{ tools: [
@@ -114,8 +122,23 @@ function bump(id, patch) {
       ] }], false, thread);
       fuseToolFixture.sidebar.mount({ id: thread, title: 'Status fixture', updated_at: new Date().toISOString(), running: false });
     }, THREAD);
-    await page.locator('.chat-agents-bar').click();
-    await page.waitForFunction(() => document.querySelectorAll('[data-agents-list] [data-agent-id]').length === 5);
+    const bar = page.locator('.chat-agents-bar');
+    await bar.waitFor({ state: 'visible' });
+    const agentsResponse = page.waitForResponse((res) => res.url().includes('/agents') && res.request().method() === 'GET');
+    await bar.click();
+    const agentsRes = await agentsResponse;
+    assert.equal(agentsRes.status(), 200, 'agents refresh must be served by the suite mock');
+    try {
+      await page.waitForFunction(() => document.querySelectorAll('[data-agents-list] [data-agent-id]').length === 5);
+    } catch (error) {
+      const dock = await page.evaluate(() => ({
+        expanded: document.querySelector('.chat-agents-bar')?.getAttribute('aria-expanded'),
+        list: document.querySelector('[data-agents-list]')?.innerText?.slice(0, 400) || '',
+        count: document.querySelectorAll('[data-agents-list] [data-agent-id]').length,
+      })).catch((dumpError) => String(dumpError));
+      error.message += `\nagents status ${agentsRes.status()} body ${(await agentsRes.text().catch(() => '')).slice(0, 300)}\ndock ${JSON.stringify(dock)}\npageerrors ${JSON.stringify(errors)}`;
+      throw error;
+    }
     let ui = await read();
     const byId = Object.fromEntries(ui.rows.map((row) => [row.id, row]));
     assert.deepEqual(ui.rows.map((row) => row.id).slice(0, 2), ['delta', 'echo'], 'live rows sort ahead of finished ones');
@@ -167,9 +190,9 @@ function bump(id, patch) {
       const f = fuseToolFixture;
       const row = (id, live) => f.state(f.snapshot()[0].tools.find((t) => t.id === id), live);
       // A join only reads as Waiting while its own turn is still live.
-      f.mount([{ tools }], true, 'status-thread');
+      f.mount([{ tools }], true, document.querySelector('.chat-history-item.is-on')?.getAttribute('data-thread') || '');
       const waiting = row('wait-a', true);
-      f.mount([{ tools }], false, 'status-thread');
+      f.mount([{ tools }], false, document.querySelector('.chat-history-item.is-on')?.getAttribute('data-thread') || '');
       f.toolEvent({ event: 'tool', id: 'wait-a', name: 'get_subagent_output', child_id: 'alpha', status: 'done', summary: 'ALPHA_REPORT_ONLY' });
       const done = row('wait-a', false);
       f.agents([{ id: 'bravo', status: 'failed', message: { content: 'BRAVO_PARTIAL_MUST_NOT_DELIVER', error: 'provider down' } }]);
