@@ -94,11 +94,7 @@ const taskEnvelope = (id, body) => [
       // Mainframe's stylesheet hides the call parens; both heads name the child.
       assert.equal(row.head, view === 'console' ? 'Agent(Audit the connection pool)' : 'AgentAudit the connection pool', `${view} head names the child | ${JSON.stringify(row)}`);
       assert.equal(row.open, 'fg1', `${view} Open agent targets the child | ${JSON.stringify(row)}`);
-      if (view === 'console') assert.equal(row.status, 'Initializing…', `console pre-recent status | ${JSON.stringify(row)}`);
-      // FINDING(fg-mainframe-label): a FOREGROUND running subagent says
-      // "Backgrounded agent" in Mainframe (Console shows Initializing…/the
-      // child's steps). Current behavior pinned.
-      else assert.equal(row.status, 'Backgrounded agent', `FINDING(fg-mainframe-label) | ${JSON.stringify(row)}`);
+      assert.equal(row.status, 'Initializing…', `${view} pre-recent status, foreground never says backgrounded | ${JSON.stringify(row)}`);
 
       // The row tracks the child's latest work as the agents feed updates it.
       await page.evaluate(() => fuseToolFixture.agents([{
@@ -117,6 +113,8 @@ const taskEnvelope = (id, body) => [
       if (view === 'console') {
         assert.deepEqual(row.steps, ['Bash(npm test)', 'Searching for 1 pattern, reading 2 files…'], `console live steps | ${JSON.stringify(row)}`);
         assert.equal(row.more, '… +5 tool uses', `console hidden count | ${JSON.stringify(row)}`);
+      } else {
+        assert.equal(row.status, 'Searching for 1 pattern, reading 2 files…', `mainframe status tracks the child's work | ${JSON.stringify(row)}`);
       }
 
       await page.evaluate(() => fuseToolFixture.agents([{
@@ -135,6 +133,8 @@ const taskEnvelope = (id, body) => [
         // Only the newest step reads as active ("Searching…"); older ones past tense.
         assert.deepEqual(row.steps, ['Bash(npm test)', 'Searched for 1 pattern, read 1 file', 'Bash(pytest -q tests/api)'], `console steps track the newest call | ${JSON.stringify(row)}`);
         assert.equal(row.more, '… +6 tool uses', `console count grows with tool_counts | ${JSON.stringify(row)}`);
+      } else {
+        assert.equal(row.status, 'Bash: pytest -q tests/api', `mainframe status names the newest call | ${JSON.stringify(row)}`);
       }
 
       // The child finishes: header, dot and counts settle and stop moving.

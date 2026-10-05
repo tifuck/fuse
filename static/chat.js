@@ -8760,7 +8760,7 @@
     const name = trace && trace.name;
     if (running && name === "run_terminal_command" && toolBackground(trace)) return "Running in the background";
     if (running && name === "run_terminal_command") return `$ ${displayCommand(trace) || "command"}`;
-    if (running && name === "spawn_subagent") return "Backgrounded agent";
+    if (running && name === "spawn_subagent") return toolBackground(trace) ? "Backgrounded agent" : ccAgentLastCall(trace.agent_recent) || "Initializing…";
     if (isConsoleOnly() && name === "monitor" && !failed) {
       // The call returns at once; events print as their own rows.
       const id = trace.command_id || trace.job_id || executionIdentity(trace) || "";
