@@ -107,7 +107,7 @@ test('agent lifecycle reconciliation never completes or restarts wait invocation
     { name: 'spawn_subagent', child_id: 'child', status: 'done', state: 'running', execution_status: 'running' },
     { name: 'get_subagent_output', child_id: 'child', status: 'running' },
     { name: 'get_subagent_output', child_id: 'child', status: 'done', execution_status: 'running' },
-  ] }], agentRun: null, log: { children: [] }, syncLiveDock() {} });
+  ] }], agentRun: null, log: { children: [] }, syncLiveDock() {}, workClocksLive: () => false, startLiveClock() {} });
   load('mapAgentToolStatus', c);
   load('articleFor', c);
   load('reconcileAgentTraces', c);
@@ -122,7 +122,7 @@ test('agent list previews do not truncate a delivered report', () => {
   const c = world();
   const report = 'Final report. '.repeat(100);
   Object.assign(c, { messages: [{ tools: [{ name: 'spawn_subagent', child_id: 'child', status: 'done', summary: report }] }],
-    agentRun: null, log: { children: [] }, syncLiveDock() {} });
+    agentRun: null, log: { children: [] }, syncLiveDock() {}, workClocksLive: () => false, startLiveClock() {} });
   load('mapAgentToolStatus', c);
   load('articleFor', c);
   load('reconcileAgentTraces', c);

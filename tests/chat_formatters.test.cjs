@@ -348,6 +348,7 @@ test('a child that died has no completed report; a partial one stays partial', (
   Object.assign(c, {
     messages: [{ tools: [trace] }], agentRun: null, agentsOpen: false,
     articleFor: () => null, syncLiveDock() {}, scheduleAgentView() {},
+    workClocksLive: () => false, startLiveClock() {},
   });
   load('mapAgentToolStatus', c);
   load('reconcileAgentTraces', c);
