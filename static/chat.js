@@ -2793,16 +2793,17 @@
         if (row.tool_counts) next.agent_tool_uses = uses;
         if (Number(row.context?.used) > 0) next.agent_tokens = Number(row.context.used);
         // The child's total active time; its spawn call returned long before.
-        // While it runs, the value is a base the row's clock ticks forward
-        // (work_live); the snap shifts with base jumps so the clock never
-        // stutters, and an unchanged base re-renders nothing.
+        // While the row runs, (agent_work_ms, _workSnap) is one pair captured
+        // at the same instant and its clock ticks forward from the base. Both
+        // halves move together: the snap shifts by the base's jump so the
+        // clock stays continuous and a repeated payload re-renders nothing,
+        // and a pair with no snap (rebuilt after reload) anchors at this poll
+        // instead of extrapolating into the future.
         const work = Number(row.work_ms);
         if (Number.isFinite(work) && work >= 0) {
           const prev = Number(trace.agent_work_ms);
-          if (["running", "queued"].includes(next.status) && row.work_live) {
-            if (Number.isFinite(prev)) next._workSnap = (trace._workSnap || Date.now()) + (work - prev);
-            else { next.agent_work_ms = work; next._workSnap = Date.now(); }
-          } else next.agent_work_ms = work;
+          next.agent_work_ms = work;
+          next._workSnap = Number.isFinite(prev) && trace._workSnap ? trace._workSnap + (work - prev) : Date.now();
         }
         if (row.wake_state) next.wake_state = row.wake_state;
         else delete next.wake_state;
@@ -11903,11 +11904,15 @@
       const base = Number(trace.agent_work_ms);
       const hasWork = Number.isFinite(base) && base >= 0;
       const liveClock = presentation.running && hasWork;
+      // A rebuilt trace (persisted base, no snap) must never freeze at
+      // data-since=0: render it ticking from this paint. The snap stays off
+      // the trace so the next poll anchors the pair at server work_ms.
+      const since = trace._workSnap || Date.now();
       const took = hasWork ? ` · ${ccDuration(Math.max(1000, base))}` : "";
       const stats = resolvedBackground
         ? ` · ${presentation.failed ? "failed" : presentation.interrupted ? "stopped" : "finished"}${presentation.failed || presentation.interrupted ? "" : took}`
         : liveClock
-          ? ` · <span data-cc-clock="work" data-base="${Math.round(base)}" data-since="${trace._workSnap || 0}">${ccDuration(Math.max(1000, base))}</span>`
+          ? ` · <span data-cc-clock="work" data-base="${Math.round(base)}" data-since="${since}">${ccDuration(Math.max(1000, base))}</span>`
           : ` · ${Number.isFinite(uses) ? uses : 0} ${uses === 1 ? "tool use" : "tool uses"}${Number.isFinite(tokens) && tokens > 0 ? ` · ${ccTokens(tokens)} tokens` : ""}${presentation.running ? "" : took}`;
       const status = presentation.running
         ? (background ? "Running in the background" : ccAgentLastCall(trace.agent_recent) || "Initializing…")
@@ -15499,10 +15504,19 @@
       if (tid !== currentId || gen !== generation) return;
       if (epoch !== agentLifecycleEpoch) { agentsRefreshAgain = true; return; }
       agentsFailCount = 0;
+      const priorWork = new Map(agentsRows.map((row) => [String(row.id), row]));
       agentsRows = Array.isArray(data.agents) ? data.agents : [];
       agentsLoadedFor = tid;
       const receivedAt = Date.now();
-      agentsRows.forEach(row => { row._workAt = receivedAt; agentLifecycle.set(String(row.id), row); });
+      agentsRows.forEach(row => {
+        // (work_ms, _workAt) is one pair: shift the stamp by the base's jump
+        // instead of re-stamping, so the dock clock never sawtooths back when
+        // work_ms accrues slower than wall time.
+        const prior = priorWork.get(String(row.id));
+        row._workAt = prior && Number.isFinite(prior._workAt) && Number.isFinite(Number(prior.work_ms)) && Number.isFinite(Number(row.work_ms))
+          ? prior._workAt + (Number(row.work_ms) - Number(prior.work_ms)) : receivedAt;
+        agentLifecycle.set(String(row.id), row);
+      });
       reconcileAgentTraces(agentsRows, true);
       settleOrphanTraces(["spawn_subagent"], agentsRows);
       syncAgentsUi();
