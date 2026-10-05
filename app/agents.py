@@ -802,6 +802,7 @@ async def get_output(*, user_id: int, arguments: str, thread_id=None, parent_run
                 "status": status,
                 "child_id": child_id,
                 "agent_work_ms": _work_ms(row),
+                "description": str(((row.get("request") or {}).get("agent") or {}).get("description") or "")[:200],
                 "summary": summary[:2000],
                 "preview": summary[:800],
             }
@@ -812,7 +813,14 @@ async def get_output(*, user_id: int, arguments: str, thread_id=None, parent_run
     if row is None:
         return "subagent not found", {"name": "get_subagent_output", "status": "error", "error": "not found", "child_id": child_id}
     text = _envelope(row, fallback_id=child_id, running=True)
-    return text, {"name": "get_subagent_output", "status": "running", "child_id": child_id, "preview": "still running", "background": True}
+    return text, {
+        "name": "get_subagent_output",
+        "status": "running",
+        "child_id": child_id,
+        "description": str(((row.get("request") or {}).get("agent") or {}).get("description") or "")[:200],
+        "preview": "still running",
+        "background": True,
+    }
 
 
 async def kill(*, user_id: int, arguments: str, thread_id=None, scope_run_id: str | None = None) -> tuple[str, dict]:

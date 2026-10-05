@@ -243,6 +243,17 @@ const taskEnvelope = (id, body) => [
     group = await readGroup('[data-step="agents-b1"]');
     assert.match(group.rows[0].name, /Index the docs · 3 tool uses/, `live child shows its counts | ${JSON.stringify(group)}`);
 
+    // Once the child reports active time, its running line trades the counts
+    // for a clock that ticks between polls (work_live).
+    await page.evaluate(() => fuseToolFixture.agents([
+      { id: 'b1', status: 'running', description: 'Index the docs', tool_counts: { read_file: 3 }, context: { used: 9100 }, work_ms: 72000, work_live: true },
+    ]));
+    group = await readGroup('[data-step="agents-b1"]');
+    assert.match(group.rows[0].name, /Index the docs · 1m 12s/, `live child shows its clock | ${JSON.stringify(group)}`);
+    await page.waitForTimeout(1200);
+    group = await readGroup('[data-step="agents-b1"]');
+    assert.match(group.rows[0].name, /Index the docs · 1m 13s/, `the clock ticks between polls | ${JSON.stringify(group)}`);
+
     // b2 finishes first; b1 keeps the group live.
     await page.evaluate(() => fuseToolFixture.agents([
       { id: 'b2', status: 'completed', description: 'Ship the docs', message: { role: 'assistant', content: 'REPORT_B2' }, work_ms: 41000 },
