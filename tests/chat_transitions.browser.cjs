@@ -66,10 +66,22 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       await page.evaluate(() => fuseToolFixture.follow());
       await page.waitForFunction(() => fuseToolFixture.scrollState().gap <= 1);
       assert.equal(await page.evaluate(() => beforeSteerNode.isConnected && beforeSteerNode.dataset.messageId !== fuseToolFixture.runInfo().message_id), true, 'the old reply node becomes the sealed prefix in place');
-      const frozen = await page.evaluate(() => {
+      // The prefix's duration/usage land with its delivery event, slightly after
+      // the DOM node is sealed; recording before that races the settle.
+      const frozen = await page.evaluate(async () => {
         const id = beforeSteerNode.dataset.messageId;
-        const message = fuseToolFixture.snapshot().find(m => m.id === id);
-        return { id, elapsed: message.elapsedMs, usage: message.usage };
+        const read = () => {
+          const message = fuseToolFixture.snapshot().find(m => m.id === id);
+          return message ? { id, elapsed: message.elapsedMs, usage: message.usage } : null;
+        };
+        let prev = read();
+        for (let i = 0; i < 40; i += 1) {
+          await new Promise(resolve => setTimeout(resolve, 250));
+          const now = read();
+          if (now && prev && Object.is(now.elapsed, prev.elapsed) && JSON.stringify(now.usage) === JSON.stringify(prev.usage)) return now;
+          prev = now;
+        }
+        return prev;
       });
       await page.waitForTimeout(700);
       const later = await page.evaluate(id => fuseToolFixture.snapshot().find(m => m.id === id), frozen.id);
