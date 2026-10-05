@@ -43,6 +43,10 @@ RUNNING_TAIL_CHARS = 1_200
 DEFAULT_TIMEOUT_MS = 1_800_000
 MAX_TIMEOUT_MS = 3_600_000
 FOREGROUND_WAIT_S = 15.0
+# Past the deadline, how long the supervisor still waits for the runner's
+# terminal result (connectors return their buffered output right after their
+# deadline kill; the agent-call itself allows timeout_ms + 10s).
+_RUNNER_GRACE_S = 12.0
 
 _live: dict[str, dict] = {}
 _schema_ready = False
@@ -523,7 +527,13 @@ async def _supervise(rec: dict, runner) -> None:
         rec["_writer"] = writer
 
     try:
-        async with asyncio.timeout(rec["timeout_ms"] / 1000):
+        # Command runners enforce the deadline themselves — the connector kills
+        # at the deadline and returns its buffered output — so the supervisor
+        # waits a grace window for that terminal result instead of cancelling
+        # at the exact deadline and losing the output already captured.
+        # Monitors are cut at their deadline: their events stream live.
+        grace = 0.0 if _is_monitor(rec) else _RUNNER_GRACE_S
+        async with asyncio.timeout(rec["timeout_ms"] / 1000 + grace):
             result = await runner(sink)
         if batcher is not None:
             await batcher.close()

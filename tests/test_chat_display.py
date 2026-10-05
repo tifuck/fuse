@@ -48,10 +48,23 @@ class TodoTraceTest(unittest.TestCase):
 
 
 class ReplacePreviewTest(unittest.TestCase):
-    def test_unified_diff_preview(self):
-        preview = _replace_preview("src/main.py", "old = 1", "new = 2", 1)
+    def test_unified_diff_preview_with_start_line(self):
+        preview = _replace_preview("src/main.py", "old = 1", "new = 2", 1, start=48)
         self.assertIn("--- a/src/main.py", preview)
         self.assertIn("+++ b/src/main.py", preview)
+        self.assertIn("@@ -48 +48 @@", preview)
+        self.assertIn("-old = 1", preview)
+        self.assertIn("+new = 2", preview)
+
+    def test_preview_absolute_path_is_its_own_label(self):
+        preview = _replace_preview("/srv/app/main.py", "old = 1", "new = 2", 1, start=3)
+        self.assertIn("--- /srv/app/main.py", preview)
+        self.assertNotIn("a//", preview)
+
+    def test_preview_without_start_omits_hunk_header(self):
+        preview = _replace_preview("src/main.py", "old = 1", "new = 2", 1)
+        self.assertNotIn("@@", preview)
+        self.assertNotIn("---", preview)
         self.assertIn("-old = 1", preview)
         self.assertIn("+new = 2", preview)
 

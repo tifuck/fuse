@@ -861,22 +861,47 @@ def _pipe_ok_exit(code, detail: str = "", *, no_match_ok: bool = True) -> bool:
     return val == 2 and "broken pipe" in (detail or "").lower()
 
 
-def _replace_preview(path: str, old: str, new: str, count: int) -> str:
+def _diff_sides(path: str) -> tuple[str, str]:
+    """a/ b/ labels for relative paths; absolute paths are their own labels."""
+    if path.startswith(("/", "\\", "~")) or re.match(r"^[A-Za-z]:[\\/]", path):
+        return path, path
+    return "a/" + path, "b/" + path
+
+
+_HUNK_LINE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@$")
+
+
+def _replace_preview(path: str, old: str, new: str, count: int, start: int | None = None) -> str:
+    """Diff of one edit. With `start` (1-based file line of old_string) the
+    hunk headers carry real file line numbers; without it there is no honest
+    header, so only the +/- body is shown — never a fabricated @@ -1."""
     old_lines = str(old or "").splitlines()
     new_lines = str(new or "").splitlines()
+    a_side, b_side = _diff_sides(path)
     diff = list(
         difflib.unified_diff(
             old_lines,
             new_lines,
-            fromfile="a/" + path,
-            tofile="b/" + path,
+            fromfile=a_side,
+            tofile=b_side,
             lineterm="",
             n=2,
         )
     )
     if not diff:
         return f"{count} replacement(s)"
-    body = "\n".join(diff)
+    if start is None:
+        body = "\n".join(ln for ln in diff if not ln.startswith(("---", "+++", "@@")))
+    else:
+        rows = []
+        for ln in diff:
+            m = _HUNK_LINE.match(ln)
+            if m:
+                o = f"{int(m.group(1)) + start - 1}" + (f",{m.group(2)}" if m.group(2) else "")
+                n = f"{int(m.group(3)) + start - 1}" + (f",{m.group(4)}" if m.group(4) else "")
+                ln = f"@@ -{o} +{n} @@"
+            rows.append(ln)
+        body = "\n".join(rows)
     if len(body) > 800:
         body = body[:797] + "…"
     return body
@@ -1447,11 +1472,11 @@ class _AgentExec:
         self.exit_status = int(code) if isinstance(code, int) else (0 if data.get("ok") else 1)
 
 
-async def _agent_call(user_id, host_id, op: str, args: dict, seconds: int = 30) -> dict:
+async def _agent_call(user_id, host_id, op: str, args: dict, seconds: int = 30, on_chunk=None) -> dict:
     from . import agent_hub
 
     try:
-        data = await agent_hub.call(user_id, host_id, op, args, timeout=seconds)
+        data = await agent_hub.call(user_id, host_id, op, args, timeout=seconds, on_chunk=on_chunk)
     except agent_hub.AgentError as exc:
         raise WorkspaceError(exc.detail) from exc
     return _enrich_agent_data(data, op=op)
@@ -1511,22 +1536,41 @@ class _ExecResult:
 
 
 def _make_agent_runner(user_id, host_id, command: str, cwd: str, timeout_ms: int):
-    from . import command_jobs
+    from . import agent_hub, command_jobs
 
     async def runner(sink) -> _ExecResult:
         _rate_ok(user_id, host_id)
         incomplete = getattr(sink, "incomplete", lambda value=True: None)
-        incomplete()  # connectors buffer output remotely until their final result
+        incomplete()  # completeness is re-checked against the final result
+        payload = {"cwd": _agent_cwd(cwd), "cmd": command, "timeout_ms": int(timeout_ms)}
+        err_parts: list[str] = []
+        streamed = {"out": False, "nl": True}
+
+        def on_chunk(stream: str, data: str) -> None:
+            # exec_stream: stdout is sunk live so a running job can be peeked
+            # and a deadline kill keeps the output already delivered. stderr is
+            # buffered locally; the final result merges it like the plain path.
+            if not data:
+                return
+            if stream == "err":
+                err_parts.append(data)
+            else:
+                streamed["out"] = True
+                streamed["nl"] = data.endswith("\n")
+                sink(data)
+
         data = await _agent_call(
-            user_id,
-            host_id,
-            "exec",
-            {"cwd": _agent_cwd(cwd), "cmd": command, "timeout_ms": int(timeout_ms)},
-            timeout_ms / 1000 + 10,
+            user_id, host_id, "exec_stream", payload, timeout_ms / 1000 + 10, on_chunk=on_chunk,
         )
+        if not data.get("ok") and str(data.get("error") or "").strip() == "unknown op":
+            # Pre-exec_stream connector: buffered result only, no live chunks.
+            data = await _agent_call(user_id, host_id, "exec", payload, timeout_ms / 1000 + 10)
         res = _AgentExec(data)
-        combined = _agent_job_output(res.stdout or "", res.stderr or "")
-        sink(combined)
+        if res.stdout or not streamed["out"]:
+            # Buffered result (or a stream that produced nothing): merge as before.
+            sink(_agent_job_output(res.stdout or "", res.stderr or "".join(err_parts)))
+        elif err_parts:
+            sink(("" if streamed["nl"] else "\n") + "[stderr]\n" + "".join(err_parts))
         incomplete(not _agent_output_complete(data))
         if _agent_timed_out(data):
             # Connectors flag deadline kills so a killed command is not
@@ -2503,8 +2547,18 @@ async def _image_read_bounded(user_id, host_id, alias, path, args, *, probe=Fals
                 if _sftp_transport_error(exc):
                     raise
                 raise _sftp_error(exc, path, "read") from exc
+    blob = bytes(payload)
+    if not file_images.image_magic(blob):
+        if probe:
+            return None
+        # Routed here by a NUL-byte read, not by an image extension: the file
+        # is binary, not a broken image.
+        raise WorkspaceError(
+            "file is binary (not UTF-8 text; contains NUL bytes) and not a supported image; "
+            "use grep to search it or run_terminal_command (e.g. xxd, file) to inspect it"
+        )
     try:
-        image = await file_images.decode_image(bytes(payload), args.get("frame", 0))
+        image = await file_images.decode_image(blob, args.get("frame", 0))
     except asyncio.TimeoutError:
         raise WorkspaceError("image decoding exceeded the time limit") from None
     except ValueError as exc:
@@ -3450,6 +3504,37 @@ def _edit_snippet(text: str, updated: str, old: str, new: str) -> str:
     return _numbered(lines[lo - 1:hi], lo)
 
 
+def _edit_first_line(text: str, old: str, new: str) -> int | None:
+    """1-based file line of old_string, or None when it cannot be located."""
+    used_old, used_new = old, new
+    if text.find(old) < 0:
+        normalized = _crlf_normalize(text, old, new)
+        if normalized is not None:
+            used_old, used_new = normalized
+    at = text.find(used_old)
+    return None if at < 0 else text.count("\n", 0, at) + 1
+
+
+def _post_edit_snippet(text: str, new: str) -> tuple[str, int | None]:
+    """Numbered edited region from post-edit file text (the connector path
+    never sees the pre-edit bytes). Returns (snippet, first line of the edit)."""
+    if not new:
+        return "", None  # a deletion leaves no anchor in the edited file
+    used = new
+    at = text.find(used)
+    if at < 0 and "\r\n" in text and "\r" not in used:
+        used = used.replace("\n", "\r\n")
+        at = text.find(used)
+    if at < 0:
+        return "", None
+    first = text.count("\n", 0, at) + 1
+    lines = text.replace("\r\n", "\n").split("\n")
+    span = used.replace("\r\n", "\n").count("\n") + 1
+    lo = max(1, first - 3)
+    hi = min(len(lines), first + span - 1 + 3)
+    return _numbered(lines[lo - 1:hi], lo), first
+
+
 _EDITS_MAX = 100
 
 
@@ -3504,10 +3589,11 @@ def _parse_edits(args: dict) -> list[tuple[str, str, bool]]:
 
 def _multi_diff(path: str, before: str, after: str, limit: int = 4000) -> str:
     """Unified diff of the whole change set with real line numbers."""
+    a_side, b_side = _diff_sides(path)
     diff = difflib.unified_diff(
         before.replace("\r\n", "\n").split("\n"),
         after.replace("\r\n", "\n").split("\n"),
-        fromfile="a/" + path, tofile="b/" + path, lineterm="", n=2,
+        fromfile=a_side, tofile=b_side, lineterm="", n=2,
     )
     body = "\n".join(list(diff)[2:])
     return body if len(body) <= limit else body[:limit] + "\n… (diff clipped)"
@@ -3569,10 +3655,27 @@ async def _replace(user_id, host_id, alias, args, root, *, windows: bool = False
             match = re.search(r"(\d+)\s+replacement", out)
             if match:
                 count = int(match.group(1))
-            preview = "\n".join(_replace_preview(path, o, n, 1) for o, n, _a in edits)[:800]
+            # The connector applies the edit remotely; fetch the first page of
+            # the edited file so the result carries real line numbers, like the
+            # SSH path. A missing sample (large file, legacy connector) just
+            # drops the numbered snippet and the @@ headers.
+            fresh = await _agent_read_sample(user_id, host_id, path)
+            starts: list[int | None] = []
+            snippet = ""
+            for _o, n, _a in edits:
+                snip, start = _post_edit_snippet(fresh, n) if fresh else ("", None)
+                starts.append(start)
+                if snip and not snippet:
+                    snippet = snip
+            preview = "\n".join(
+                _replace_preview(path, o, n, 1, start=s)
+                for (o, n, _a), s in zip(edits, starts)
+            )[:800]
             ledger_note(run_id, host_id, ledger_path, None, windows=windows)
             head = f"updated {path} ({count} replacement{'s' if count != 1 else ''}"
             head += f" from {len(edits)} edits)" if multi and len(edits) > 1 else ")"
+            if snippet:
+                head += ("; first edit:" if count > 1 else ":") + "\n" + snippet
             return _label(alias, f"{head}\n{preview}"), {
                 "name": "search_replace",
                 "status": "done",
@@ -3646,7 +3749,7 @@ async def _replace(user_id, host_id, alias, args, root, *, windows: bool = False
     if len(edits) == 1:
         old, new, _a = edits[0]
         snippet = _edit_snippet(text, updated, old, new)
-        preview = _replace_preview(path, old, new, count)
+        preview = _replace_preview(path, old, new, count, start=_edit_first_line(text, old, new))
     else:
         snippet = _multi_diff(path, text, updated)
         preview = snippet[:800]

@@ -202,6 +202,49 @@ class LifecycleContract(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(view["exit_code"])
         self.assertIn("1500ms", view["error"])
 
+    async def test_deadline_kill_keeps_the_output_already_delivered(self):
+        # The connector returns its buffered output right after its deadline
+        # kill; the supervisor must still be listening then.
+        async def runner(sink):
+            await asyncio.sleep(0.8)
+            sink("tick 1\ntick 2\n")
+            raise jobs.CommandTimedOut(termination_confirmed=True)
+        rec = self.launch(runner, timeout=400)
+        await rec["task"]
+        _, view = jobs.render(rec)
+        self.assertEqual(view["state"], "timed_out")
+        self.assertIn("tick 1", view["output"])
+        self.assertIn("tick 2", view["output"])
+
+    async def test_connector_runner_streams_stdout_and_merges_stderr(self):
+        async def fake_call(_u, _h, op, _args, seconds=30, on_chunk=None):
+            if op == "exec_stream":
+                on_chunk("out", "tick 1\n")
+                on_chunk("err", "warn\n")
+                return {"ok": True, "exit": 0, "out": "", "err": "", "truncated": False}
+            raise AssertionError(op)
+        with patch.object(ws, "_rate_ok"), patch.object(ws, "_agent_call", AsyncMock(side_effect=fake_call)):
+            rec = self.launch(ws._make_agent_runner(1, 2, "mock", "/repo", 1000))
+            await rec["task"]
+        _, view = jobs.render(rec)
+        self.assertEqual(view["output"], "tick 1\n[stderr]\nwarn\n")
+        self.assertTrue(view["output_chars_exact"])
+
+    async def test_connector_runner_falls_back_without_exec_stream(self):
+        ops = []
+
+        async def fake_call(_u, _h, op, _args, seconds=30, on_chunk=None):
+            ops.append(op)
+            if op == "exec_stream":
+                return {"ok": False, "exit": 1, "out": "", "err": "", "error": "unknown op"}
+            return {"ok": True, "exit": 0, "out": "tick 1\n", "err": "", "truncated": False}
+        with patch.object(ws, "_rate_ok"), patch.object(ws, "_agent_call", AsyncMock(side_effect=fake_call)):
+            rec = self.launch(ws._make_agent_runner(1, 2, "mock", "/repo", 1000))
+            await rec["task"]
+        self.assertEqual(ops, ["exec_stream", "exec"])
+        _, view = jobs.render(rec)
+        self.assertEqual(view["output"], "tick 1\n")
+
     async def test_connector_stderr_is_labeled(self):
         with patch.object(ws, "_rate_ok"), patch.object(ws, "_agent_call", AsyncMock(return_value={
                 "ok": True, "exit": 0, "out": "hello\n", "err": "warn\n", "truncated": False})):

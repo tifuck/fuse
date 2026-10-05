@@ -796,6 +796,55 @@ class AgentPathTest(unittest.TestCase):
         self.assertEqual(retry_args["old"], "alpha\r\nbeta")
         self.assertEqual(retry_args["new"], "one\r\ntwo")
 
+    def test_replace_returns_real_line_numbers(self):
+        def replace_op(args):
+            return {"ok": True, "exit": 0, "out": "1 replacement(s)", "err": "", "error": ""}
+
+        fake = FakeAgent(
+            [
+                ("replace", replace_op),
+                ("read", {"ok": True, "exit": 0, "out": "one\ntwo\nthree\nretries = 5\nsix\n", "err": "", "error": ""}),
+            ]
+        )
+        with patch.object(workspace, "_is_agent", return_value=True), patch.object(
+            workspace, "_agent_call", fake
+        ):
+            text, rec = self._run(
+                workspace._replace(
+                    1, 2, "box",
+                    {"path": "/tmp/x.py", "old_string": "retries = 3", "new_string": "retries = 5"},
+                    "/tmp",
+                )
+            )
+        self.assertEqual([op for op, _ in fake.calls], ["replace", "read"])
+        self.assertIn("4: retries = 5", text)
+        self.assertIn("@@ -4 +4 @@", rec["preview"])
+        self.assertNotIn("a//", rec["preview"])
+
+    def test_replace_without_sample_omits_hunk_header(self):
+        def replace_op(args):
+            return {"ok": True, "exit": 0, "out": "1 replacement(s)", "err": "", "error": ""}
+
+        fake = FakeAgent(
+            [
+                ("replace", replace_op),
+                ("read", {"ok": False, "exit": 1, "out": "", "err": "", "error": "file does not exist"}),
+            ]
+        )
+        with patch.object(workspace, "_is_agent", return_value=True), patch.object(
+            workspace, "_agent_call", fake
+        ):
+            text, rec = self._run(
+                workspace._replace(
+                    1, 2, "box",
+                    {"path": "/tmp/x.py", "old_string": "retries = 3", "new_string": "retries = 5"},
+                    "/tmp",
+                )
+            )
+        self.assertIn("updated /tmp/x.py (1 replacement)", text)
+        self.assertNotIn("@@", rec["preview"])
+        self.assertIn("-retries = 3", rec["preview"])
+
     def test_replace_not_found_mentions_crlf(self):
         def replace_op(args):
             return {"ok": False, "exit": 1, "out": "", "err": "", "error": "old_string not found"}

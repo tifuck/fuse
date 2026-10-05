@@ -212,8 +212,11 @@ class JobAudit(unittest.IsolatedAsyncioTestCase):
     async def test_supervisor_deadline_includes_connection_setup(self):
         async def runner(sink):
             await asyncio.Event().wait()
-        rec = self.launch(runner, timeout=10)
-        await asyncio.wait_for(rec["task"], 1)
+        # A runner that never delivers a terminal result is still cut by the
+        # supervisor — at the deadline plus the bounded result-grace window.
+        with patch.object(jobs, "_RUNNER_GRACE_S", 0.5):
+            rec = self.launch(runner, timeout=10)
+            await asyncio.wait_for(rec["task"], 5)
         self.assertEqual(rec["status"], "timed_out")
 
     async def test_poll_timeout_does_not_cancel_job_and_user_isolation(self):

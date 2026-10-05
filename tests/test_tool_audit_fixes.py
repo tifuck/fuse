@@ -178,8 +178,8 @@ class SftpReadTest(unittest.IsolatedAsyncioTestCase):
     async def test_binary_file_refused(self):
         sftp = FakeSFTP({"/repo/a.bin": b"\x7fELF\x00\x01\x02"})
         with patch.object(ws, "_is_agent", return_value=False), sftp_patch(sftp):
-            # Non-image binaries are refused by the bounded image decoder.
-            with self.assertRaisesRegex(ws.WorkspaceError, "unsupported image format"):
+            # Non-image binaries are named as binary, not as broken images.
+            with self.assertRaisesRegex(ws.WorkspaceError, "file is binary"):
                 await ws._read(1, 2, "h", {"path": "a.bin"}, "/repo")
 
     async def test_directory_read_points_at_list_dir(self):
