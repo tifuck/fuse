@@ -189,13 +189,11 @@ function bump(id, patch) {
     assert.equal(ui.steps.filter((row) => row.tool === 'read_file').length, 1, 'a settled call does not duplicate its row');
     const clock = ui.clocks.find((text) => text.trim());
     assert.ok(clock, `the running shell shows a clock: ${JSON.stringify(ui.clocks)}`);
-    // FINDING(pane-clock-frozen): a running call's clock is stamped once and never
-    // moves. syncConsoleClocks only walks the main transcript's article, and the
-    // pane dock redraws on poll, not on a timer. Intended: the clock counts up
-    // while the child works, the way the main transcript's does.
-    await page.waitForTimeout(1200);
-    ui = await pane();
-    assert.equal(ui.clocks.find((text) => text.trim()), clock, `pane clock stays ${JSON.stringify(clock)}`);
+    // The pane has no parent turn streaming, so its own timer must move the clock.
+    await page.waitForFunction((seen) => {
+      const next = [...document.querySelectorAll('[data-agent-log-body] [data-cc-clock]')].map((el) => el.textContent).find((text) => text.trim());
+      return next && next !== seen;
+    }, clock, { timeout: 5000 });
 
     // --- 2. Finishing clears every running mark; the report stays ---
     bump('nova', {

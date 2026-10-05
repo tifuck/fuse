@@ -2793,7 +2793,17 @@
         if (row.tool_counts) next.agent_tool_uses = uses;
         if (Number(row.context?.used) > 0) next.agent_tokens = Number(row.context.used);
         // The child's total active time; its spawn call returned long before.
-        if (!["running", "queued"].includes(next.status) && Number.isFinite(Number(row.work_ms))) next.agent_work_ms = Number(row.work_ms);
+        // While it runs, the value is a base the row's clock ticks forward
+        // (work_live); the snap shifts with base jumps so the clock never
+        // stutters, and an unchanged base re-renders nothing.
+        const work = Number(row.work_ms);
+        if (Number.isFinite(work) && work >= 0) {
+          const prev = Number(trace.agent_work_ms);
+          if (["running", "queued"].includes(next.status) && row.work_live) {
+            if (Number.isFinite(prev)) next._workSnap = (trace._workSnap || Date.now()) + (work - prev);
+            else { next.agent_work_ms = work; next._workSnap = Date.now(); }
+          } else next.agent_work_ms = work;
+        }
         if (row.wake_state) next.wake_state = row.wake_state;
         else delete next.wake_state;
         const terminalFailure = ["failed", "error", "cancelled", "interrupted", "lost", "timed_out"].includes(row.status);
@@ -2827,6 +2837,7 @@
     });
     if (childChanged && agentsOpen) scheduleAgentView();
     syncLiveDock();
+    if (workClocksLive()) startLiveClock();
   }
 
   function persistToolTrace(trace) {
@@ -3301,7 +3312,7 @@
     const prior = streaming;
     streaming = Boolean(activeRun && ["queued", "running"].includes(activeRun.status) && !runIsStopping(activeRun));
     document.body.classList.toggle("is-streaming", streaming);
-    if (streaming) startLiveClock();
+    if (streaming || agentClockLive()) startLiveClock();
     else stopLiveClock();
     const current = threadById(currentId);
     if (current) current.running = currentThreadBusy();
@@ -7703,20 +7714,35 @@
     }
   }
 
+  // The open subagent pane keeps its own clocks; they tick only while it shows
+  // a live child, and the timer stops once neither transcript needs it.
+  function agentClockLive() {
+    return Boolean(agentsOpen && agentViewId && agentRun && agentLive(agentRun.status) && agentBodyEl);
+  }
+
   function startLiveClock() {
     if (liveClockTimer) return;
     liveClockTimer = window.setInterval(() => {
-      if (!streaming) {
+      const child = agentClockLive();
+      if (!streaming && !child && !workClocksLive()) {
         stopLiveClock();
         return;
       }
-      const msg = activeAssistant();
-      const article = articleFor(msg);
-      if (!msg || msg.role !== "assistant" || !article || !article.classList.contains("is-assistant")) return;
-      syncActivityElapsed(article, msg, true);
-      syncActivitySpin(article, msg, true);
-      if (isConsoleView()) syncConsoleClocks(article);
-      syncLiveDock();
+      if (streaming) {
+        const msg = activeAssistant();
+        const article = articleFor(msg);
+        if (msg && msg.role === "assistant" && article && article.classList.contains("is-assistant")) {
+          syncActivityElapsed(article, msg, true);
+          syncActivitySpin(article, msg, true);
+          if (isConsoleView()) syncConsoleClocks(article);
+          syncLiveDock();
+        }
+      }
+      if (child && isConsoleView()) {
+        syncConsoleClocks(agentBodyEl);
+        syncAgentLiveDock();
+      }
+      if (!streaming) syncWorkClocks();
     }, 250);
   }
 
@@ -8802,7 +8828,9 @@
     }
     if (name === "kill_command") {
       const cmd = commandFor(trace);
-      return cmd ? `${cmd} · stopped` : "stopped";
+      if (cmd) return `${cmd} · stopped`;
+      const id = trace.command_id || trace.child_id || trace.job_id;
+      return id ? `job ${id} · stopped` : "Stopped";
     }
     if (name === "kill_subagent") {
       const already = preview.match(/^already (\w+)/);
@@ -8821,9 +8849,12 @@
       return preview && preview !== "still running" ? shortToolText(preview, 100) : "finished";
     }
     if (name === "load_skill") return "Loaded skill";
+    if (name === "propose_skill") return preview ? `Proposed skill ${preview}` : "Proposed skill";
     if (name === "search_tools") {
+      if (String(trace.query || "") === "hosts") return "Listed connected hosts";
+      if (String(trace.query || "") === "skills") return "Listed installed skills";
       const loaded = String(trace.preview || "").split(",").map((v) => v.trim()).filter(Boolean).length;
-      return loaded ? `${loaded} tool${loaded === 1 ? "" : "s"} loaded` : "done";
+      return loaded ? `${loaded} tool${loaded === 1 ? "" : "s"} loaded` : "Checked available tools";
     }
     if (name === "get_command_output") {
       const text = preview && preview !== "still running" ? preview : "";
@@ -8883,6 +8914,7 @@
     if (name === "list_subagents") return "Agents";
     if (name === "search_models") return "Models";
     if (name === "load_skill") return "Skill";
+    if (name === "propose_skill") return "Draft";
     if (name === "grep") return "Grep";
     if (name === "glob") return "Glob";
     if (name === "todo_write") return "Update Todos";
@@ -9009,6 +9041,7 @@
     if (name === "list_subagents") return "agents";
     if (name === "search_models") return "models";
     if (name === "load_skill") return "skill";
+    if (name === "propose_skill") return "draft";
     if (name === "grep") return "grep";
     if (name === "glob") return "glob";
     if (name === "todo_write") return "todo";
@@ -11853,8 +11886,15 @@
       const resolvedBackground = background && !presentation.running;
       const uses = Number(trace.agent_tool_uses);
       const tokens = Number(trace.agent_tokens);
-      const stats = resolvedBackground ? "" :
-        ` · ${Number.isFinite(uses) ? uses : 0} ${uses === 1 ? "tool use" : "tool uses"}${Number.isFinite(tokens) && tokens > 0 ? ` · ${ccTokens(tokens)} tokens` : ""}`;
+      // A running child shows its clock — its counts are still moving; a
+      // finished one summarizes, like its own row's "Done (…)" line.
+      const base = Number(trace.agent_work_ms);
+      const hasWork = Number.isFinite(base) && base >= 0;
+      const liveClock = presentation.running && hasWork;
+      const settled = !presentation.running && hasWork ? ` · ${ccDuration(Math.max(1000, base))}` : "";
+      const stats = resolvedBackground ? "" : liveClock
+        ? ` · <span data-cc-clock="work" data-base="${Math.round(base)}" data-since="${trace._workSnap || 0}">${ccDuration(Math.max(1000, base))}</span>`
+        : ` · ${Number.isFinite(uses) ? uses : 0} ${uses === 1 ? "tool use" : "tool uses"}${Number.isFinite(tokens) && tokens > 0 ? ` · ${ccTokens(tokens)} tokens` : ""}${settled}`;
       const status = presentation.running
         ? (background ? "Running in the background" : ccAgentLastCall(trace.agent_recent) || "Initializing…")
         : presentation.failed ? "Failed" : presentation.interrupted ? "Interrupted" : "Done";
@@ -11863,7 +11903,7 @@
       return (
         `<li class="chat-console-agent${presentation.running ? " is-running" : ""}${presentation.failed ? " is-error" : ""}" data-open-agent="${escapeHtml(trace.child_id || "")}">` +
         `<div class="chat-console-agent-line"><span class="chat-console-branch" aria-hidden="true">${last ? "└─" : "├─"}</span>` +
-        `<span class="chat-console-agent-name${presentation.running ? " is-dim" : ""}">${label}${escapeHtml(stats)}</span></div>${sub}</li>`
+        `<span class="chat-console-agent-name${presentation.running ? " is-dim" : ""}">${label}${stats}</span></div>${sub}</li>`
       );
     }).join("");
     const state = unresolved ? `is-running${errored ? " is-errored" : ""}` : errored ? "is-error" : "is-done";
@@ -12022,8 +12062,24 @@
       const since = Number(el.dataset.since) || 0;
       const kind = el.dataset.ccClock;
       const text = kind === "think" ? ccThinkClock(Number(el.dataset.base) || 0, since)
+        : kind === "work" ? ccDuration(Math.max(1000, (Number(el.dataset.base) || 0) + (since ? Date.now() - since : 0)))
         : kind === "suffix" ? ccShellSuffix(since, Number(el.dataset.lines) || 0)
         : ccElapsedText(since);
+      if (el.textContent !== text) el.textContent = text;
+    });
+  }
+
+  // A background agent's clock keeps ticking after its turn ends, with no
+  // stream and no open pane to drive the interval.
+  function workClocksLive() {
+    return Boolean(document.querySelector('[data-cc-clock="work"]'));
+  }
+
+  function syncWorkClocks() {
+    document.querySelectorAll('[data-cc-clock="work"]').forEach((el) => {
+      const base = Number(el.dataset.base) || 0;
+      const since = Number(el.dataset.since) || 0;
+      const text = ccDuration(Math.max(1000, base + (since ? Date.now() - since : 0)));
       if (el.textContent !== text) el.textContent = text;
     });
   }
@@ -15292,6 +15348,7 @@
     });
     restoreAgentScroll(wasAtBottom, savedTop);
     syncAgentLiveDock();
+    if (agentClockLive()) startLiveClock();
   }
 
   async function showAgent(id) {
