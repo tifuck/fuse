@@ -293,17 +293,30 @@ const NOW = '2026-10-05T00:00:00Z';
       const upper = boxA.y > boxB.y ? b : a;
       await rowMenu(page, lower.id);
       assert.deepEqual(await page.locator('.chat-pop button').allTextContents(), ['Rename', 'Fork', 'Archive', 'Move to project', 'Delete'], 'the chat menu labels match the row state');
-      // FINDING(row-menu-state): intended the open row keeps .is-menu while its
-      // menu is up, actually threadMenu() adds it (static/chat.js:5354) and
-      // showPop() immediately runs closePop() (static/chat.js:4261) which
-      // strips it, so the flag is never observable — the row is held active
-      // only by :hover/:focus-within.
-      assert.equal(await page.locator('.chat-history-item.is-menu').count(), 0, 'FINDING(row-menu-state): .is-menu is cleared in the tick the menu opens');
+      assert.equal(await page.locator('.chat-history-item.is-menu').count(), 1, 'the open menu flags its row');
+      assert.equal(await page.locator(`[data-thread="${lower.id}"].is-menu`).count(), 1);
+      // The flag alone must hold the row's ⋯ button once the pointer leaves
+      // and focus is gone (:hover and :focus-within no longer apply).
+      await page.evaluate(() => document.activeElement?.blur());
+      await page.mouse.move(900, 500);
+      // The hover fade that opened the menu may still be settling on 1.
+      await page.waitForFunction(id => {
+        const row = document.querySelector(`[data-thread="${id}"]`);
+        return row?.classList.contains('is-menu') && getComputedStyle(row.querySelector('button.more')).opacity === '1';
+      }, lower.id);
+      assert.equal(await page.locator(`[data-thread="${lower.id}"] button.more`).evaluate(el => getComputedStyle(el).opacity), '1', "the ⋯ button stays while the row's menu is open");
+      // A repaint replaces the row nodes; the flag must follow the menu.
+      await page.evaluate(fresh => fuseToolFixture.sidebar.update({ ...fresh, revision: fresh.revision + 1 }), freshB);
+      assert.equal(await page.locator('.chat-history-item.is-menu').count(), 1, 'the flag survives a list repaint');
+      assert.equal(await page.locator(`[data-thread="${lower.id}"].is-menu`).count(), 1);
       await rowMenu(page, upper.id);
       assert.equal(await page.locator('.chat-pop').count(), 1, 'opening another row replaces the menu: only one is open');
+      assert.equal(await page.locator('.chat-history-item.is-menu').count(), 1, 'the flag follows the replaced menu');
+      assert.equal(await page.locator(`[data-thread="${upper.id}"].is-menu`).count(), 1);
       await page.keyboard.press('Escape');
       await page.locator('.chat-pop').waitFor({ state: 'detached' });
       assert.equal(await page.locator('.chat-pop').count(), 0, 'escape closes the row menu');
+      assert.equal(await page.locator('.chat-history-item.is-menu').count(), 0, 'closing the menu clears the row flag');
 
       await rowMenu(page, a.id);
       await page.getByRole('button', { name: 'Rename', exact: true }).click();

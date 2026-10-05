@@ -534,6 +534,7 @@
   let editingFiles = [];
   let lightbox = null;
   let pop = null;
+  let popRowKey = null;
   let searchOn = true;
   let instructions = (config.context && config.context.instructions) || "";
   let profile = (config.context && config.context.profile) || "";
@@ -4255,11 +4256,21 @@
       overlayDrop("pop");
     }
     pop = null;
+    popRowKey = null;
     historyList && historyList.querySelectorAll(".is-menu").forEach((el) => el.classList.remove("is-menu"));
   }
 
   function showPop(anchor, items, at) {
     closePop();
+    // The row whose menu is open keeps .is-menu while the pop is up. closePop()
+    // just stripped every flag, so stamp the owner here and remember its key:
+    // a repaint replaces the row nodes, and syncHistoryFooter re-stamps them.
+    const menuRow = anchor && anchor.closest ? anchor.closest(".chat-history-item") : null;
+    if (menuRow) {
+      const attr = menuRow.hasAttribute("data-thread") ? "data-thread" : "data-project";
+      popRowKey = [attr, menuRow.getAttribute(attr)];
+      menuRow.classList.add("is-menu");
+    }
     pop = document.createElement("div");
     pop.className = "chat-pop";
     items.forEach((item) => {
@@ -4730,6 +4741,13 @@
   }
 
   function syncHistoryFooter() {
+    // A repaint replaced the row nodes; put the open menu's flag back.
+    if (popRowKey && historyList) {
+      const [attr, key] = popRowKey;
+      for (const el of historyList.querySelectorAll(".chat-history-item")) {
+        if (el.getAttribute(attr) === key) { el.classList.add("is-menu"); break; }
+      }
+    }
     const footer = root.querySelector(".chat-history-footer");
     if (!footer) return;
     footer.hidden = false;
@@ -5270,7 +5288,6 @@
     const [hostId, projectId] = String(key || "").split(":");
     const item = sidebarProject(hostId, projectId);
     if (!item || !requireLive()) return;
-    anchor.closest(".chat-history-item")?.classList.add("is-menu");
     const items = [
       {
         label: "New session",
@@ -5352,7 +5369,6 @@
     const thread = threadById(id);
     if (!thread) return;
     if (!requireLive()) return;
-    anchor.closest(".chat-history-item")?.classList.add("is-menu");
     const items = [
       { label: "Rename", run: () => startRename(anchor.closest(".chat-history-item"), thread) },
       {
