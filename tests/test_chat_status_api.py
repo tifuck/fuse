@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from starlette.middleware.sessions import SessionMiddleware
 
 from app import accounts, chat_store, chats, command_jobs, db, permissions
+from app.security import limiter
 from app.config import settings
 from tests.mariadb_fixture import isolated_database
 
@@ -60,6 +61,8 @@ def client():
 
 
 def _login(client, email="status@test.invalid"):
+    # The auth limiter is process-global (10/min) and every test logs in twice.
+    limiter._hits.clear()
     page = client.get("/login").text
     token = re.search(r'name="csrf_token" value="([^"]+)"', page).group(1)
     posted = client.post(
@@ -471,11 +474,7 @@ def test_snapshot_spawn_traces_follow_child_status(client):
     settled = {tool["child_id"]: tool for tool in _tools_of(_snapshot(client, thread["id"]))
                if tool["name"] == "spawn_subagent"}
     assert settled["spawn-run"]["status"] == "running" and settled["spawn-run"]["execution_status"] == "running"
-    # FINDING(live-spawn-keeps-stale-summary): a child that is still running keeps the
-    # handoff text ("Background task started" / "still running") when the trace was
-    # already marked running. settle_spawn_traces only clears it when the trace looked settled.
-    assert settled["spawn-run"]["summary"] == "Background task started"
-    assert settled["spawn-run"]["preview"] == "still running"
+    assert "summary" not in settled["spawn-run"] and "preview" not in settled["spawn-run"]
     done = settled["spawn-ok"]
     assert done["status"] == "done" and done["execution_status"] == "completed"
     assert "error" not in done  # a completed child drops the error instead of blanking it

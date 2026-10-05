@@ -2439,9 +2439,11 @@ def settle_spawn_traces(conn, user_id, messages):
         if row is None:
             continue
         if row["status"] in ACTIVE:
-            if tool.get("execution_status") not in ACTIVE and tool.get("status") not in ("running", "progress", "queued"):
-                for key in ("summary", "preview", "error"):
-                    tool.pop(key, None)
+            # A running child has no settlement yet. Drop one left by an earlier
+            # pass (or the "Background task started" handoff) so a reload cannot
+            # show a finished summary for work that is still running.
+            for key in ("summary", "preview", "error"):
+                tool.pop(key, None)
             tool["status"] = "running"
             tool["execution_status"] = row["status"]
             if "state" in tool:
