@@ -11896,15 +11896,19 @@
       const resolvedBackground = background && !presentation.running;
       const uses = Number(trace.agent_tool_uses);
       const tokens = Number(trace.agent_tokens);
-      // A running child shows its clock — its counts are still moving; a
-      // finished one summarizes, like its own row's "Done (…)" line.
+      // A running child shows its clock — its counts are still moving. A
+      // settled one says so, so its bare name is never confused with a live
+      // row: a background child's report comes with its wake, so its line
+      // keeps just the state and how long it took.
       const base = Number(trace.agent_work_ms);
       const hasWork = Number.isFinite(base) && base >= 0;
       const liveClock = presentation.running && hasWork;
-      const settled = !presentation.running && hasWork ? ` · ${ccDuration(Math.max(1000, base))}` : "";
-      const stats = resolvedBackground ? "" : liveClock
-        ? ` · <span data-cc-clock="work" data-base="${Math.round(base)}" data-since="${trace._workSnap || 0}">${ccDuration(Math.max(1000, base))}</span>`
-        : ` · ${Number.isFinite(uses) ? uses : 0} ${uses === 1 ? "tool use" : "tool uses"}${Number.isFinite(tokens) && tokens > 0 ? ` · ${ccTokens(tokens)} tokens` : ""}${settled}`;
+      const took = hasWork ? ` · ${ccDuration(Math.max(1000, base))}` : "";
+      const stats = resolvedBackground
+        ? ` · ${presentation.failed ? "failed" : presentation.interrupted ? "stopped" : "finished"}${presentation.failed || presentation.interrupted ? "" : took}`
+        : liveClock
+          ? ` · <span data-cc-clock="work" data-base="${Math.round(base)}" data-since="${trace._workSnap || 0}">${ccDuration(Math.max(1000, base))}</span>`
+          : ` · ${Number.isFinite(uses) ? uses : 0} ${uses === 1 ? "tool use" : "tool uses"}${Number.isFinite(tokens) && tokens > 0 ? ` · ${ccTokens(tokens)} tokens` : ""}${presentation.running ? "" : took}`;
       const status = presentation.running
         ? (background ? "Running in the background" : ccAgentLastCall(trace.agent_recent) || "Initializing…")
         : presentation.failed ? "Failed" : presentation.interrupted ? "Interrupted" : "Done";

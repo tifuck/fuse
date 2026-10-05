@@ -244,12 +244,15 @@ const taskEnvelope = (id, body) => [
     assert.match(group.rows[0].name, /Index the docs · 3 tool uses/, `live child shows its counts | ${JSON.stringify(group)}`);
 
     // Once the child reports active time, its running line trades the counts
-    // for a clock that ticks between polls (work_live).
+    // for a clock that ticks between polls (work_live). Each row carries its
+    // own clock: two children at different work never share a reading.
     await page.evaluate(() => fuseToolFixture.agents([
       { id: 'b1', status: 'running', description: 'Index the docs', tool_counts: { read_file: 3 }, context: { used: 9100 }, work_ms: 72000, work_live: true },
+      { id: 'b2', status: 'running', description: 'Ship the docs', tool_counts: { read_file: 1 }, work_ms: 30000, work_live: true },
     ]));
     group = await readGroup('[data-step="agents-b1"]');
     assert.match(group.rows[0].name, /Index the docs · 1m 12s/, `live child shows its clock | ${JSON.stringify(group)}`);
+    assert.match(group.rows[1].name, /Ship the docs · 30s/, `each row shows its own clock | ${JSON.stringify(group)}`);
     await page.waitForTimeout(1200);
     group = await readGroup('[data-step="agents-b1"]');
     assert.match(group.rows[0].name, /Index the docs · 1m 13s/, `the clock ticks between polls | ${JSON.stringify(group)}`);
@@ -261,6 +264,7 @@ const taskEnvelope = (id, body) => [
     group = await readGroup('[data-step="agents-b1"]');
     assert.match(group.head, /Running 2 agents…/, `head stays live until the last child ends | ${JSON.stringify(group)}`);
     assert.equal(group.rows[1].sub, '', `finished background child drops its sub line | ${JSON.stringify(group)}`);
+    assert.match(group.rows[1].name, /Ship the docs · finished · 41s/, `a settled child says finished | ${JSON.stringify(group)}`);
     assert.ok(!group.rows[1].cls.includes('is-running'), `finished child row is not running | ${JSON.stringify(group)}`);
     assert.ok(group.rows[0].cls.includes('is-running'), `the other child still runs | ${JSON.stringify(group)}`);
     assert.ok(!group.text.includes('REPORT_B2'), `the group shows no report body | ${JSON.stringify(group)}`);
@@ -270,6 +274,7 @@ const taskEnvelope = (id, body) => [
     ]));
     group = await readGroup('[data-step="agents-b1"]');
     assert.match(group.head, /2 background agents launched/, `all-done background head | ${JSON.stringify(group)}`);
+    assert.match(group.rows[0].name, /Index the docs · finished · 1m 36s/, `every settled row says finished | ${JSON.stringify(group)}`);
     assert.ok(!group.cls.includes('is-running'), `group settles | ${JSON.stringify(group)}`);
     assert.ok(group.rows.every((r) => r.sub === ''), `no sub lines remain | ${JSON.stringify(group)}`);
     // Re-reconciling the same children changes nothing.
