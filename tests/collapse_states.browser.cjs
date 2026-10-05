@@ -188,14 +188,12 @@ const check = (value, message) => { assert.ok(value, message); checks++; };
         ]) {
           await mount({ ...make(), status: 'done' }, false);
           await openSummary();
+          // Two reads fold into one group; the child's disclosure only exists
+          // once that group is open.
+          const group = page.locator('.is-stack > .chat-step-main > .chat-step-head > [data-step-toggle]').locator('visible=true').first();
+          if (await group.count() && await group.getAttribute('aria-expanded') !== 'true') await group.click();
           const expandable = await headToggles().count();
           if (!expandable) continue;
-          if (name === 'image' && !await toggle().count()) {
-            // FINDING(image-caret): both disclosure buttons of an image read
-            // render with no box, so the preview cannot be opened.
-            check(true, `${tag} image row has no operable disclosure`);
-            continue;
-          }
           await toggle().click();
           check(await aria() === 'true', `${tag} ${name} expands`);
           const text = (await bodyText()).toLowerCase();
