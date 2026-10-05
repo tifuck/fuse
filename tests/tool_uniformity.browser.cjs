@@ -241,8 +241,12 @@ const COLLECT = () => {
         const open = rowFor(await rows(), t);
         ok(open.expanded && open.toggles.every((a) => a === 'true'), `${t.name}: expand sets every head toggle and the row (${JSON.stringify(open.toggles)})`);
         ok(open.hangCls.includes('is-expanded'), `${t.name}: expand opens the hang`);
-        ok(open.bodyText.length >= r0.bodyText.length, `${t.name}: expansion loses content`);
-        ok(open.bodyText.length > r0.bodyText.length, `${t.name}: expansion shows nothing new (${open.bodyText.length} vs ${r0.bodyText.length})`);
+        // The folded body carries its "… +N lines" fold counter — a visible
+        // disclosure label, not withheld content; expanding swaps it for the
+        // hidden lines themselves. Compare body content, not the counter.
+        const foldedBody = r0.bodyText.replace(/… \+[\d,]+ (lines?|more|tool uses?)\s*/g, '');
+        ok(open.bodyText.length >= foldedBody.length, `${t.name}: expansion loses content`);
+        ok(open.bodyText.length > foldedBody.length, `${t.name}: expansion shows nothing new (${open.bodyText.length} vs ${foldedBody.length})`);
         // Disclosure direction is uniform because Console shows no chevron on
         // any call row (chat-design.css:3150); the caret button is kept in
         // sync with the label toggle either way.

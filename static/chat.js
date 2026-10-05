@@ -8672,7 +8672,7 @@
       return {
         status: head,
         keep: nonzero || Boolean(note),
-        preview: consoleStdoutHtml(cut) + (hidden > 0 ? `<div class="chat-console-more">… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : "") + note,
+        preview: consoleStdoutHtml(cut) + (hidden > 0 ? `<div class="chat-console-more" data-step-toggle>… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : "") + note,
         full: clipped ? consoleDetailHtml(trace, false, running) : "",
       };
     }
@@ -9970,6 +9970,30 @@
     }
   });
 
+  // A summary line's membership shifts while it streams: the newest call (or
+  // a running one) prints on its own row until something newer arrives, then
+  // folds back into the line. A fold or open must therefore stamp the flag on
+  // every call that can still join the line — the members the line holds now
+  // plus the foldable rows beside it in the same block — or the returning
+  // call's stale flag would re-open (or re-close) the line behind the user's
+  // back. Foldability is asked of the same classifier the grouper uses.
+  function consoleGroupOpenKeys(group, msg) {
+    const keys = new Set();
+    group.querySelectorAll(".chat-timeline > [data-step], .chat-timeline > [data-thought]").forEach((row) => {
+      keys.add("cgroup-" + (row.dataset.step || `think-${row.dataset.thought}`));
+    });
+    const foldable = (row) => {
+      if (!row || !row.matches("li.chat-step.is-console-call[data-step]")) return false;
+      const id = row.dataset.step.replace(/^tool-/, "");
+      const trace = (msg?.tools || []).find((item) => item.id === id);
+      return Boolean(trace && ccToolClass(trace));
+    };
+    for (const dir of ["previousElementSibling", "nextElementSibling"]) {
+      for (let row = group[dir]; foldable(row); row = row[dir]) keys.add("cgroup-" + row.dataset.step);
+    }
+    return keys;
+  }
+
   function renderAssistant(msg, live) {
     restoreDisclosures(msg);
     const article = document.createElement("article");
@@ -10006,7 +10030,7 @@
       group.querySelector(":scope > .chat-step-main > .chat-console-bundle")?.removeAttribute("tabindex");
       if (!target.stepOpen) target.stepOpen = {};
       target.stepOpen[group.dataset.step] = false;
-      group.querySelectorAll(".chat-timeline > [data-step]").forEach((row) => { target.stepOpen["cgroup-" + row.dataset.step] = false; });
+      consoleGroupOpenKeys(group, target).forEach((key) => { target.stepOpen[key] = false; });
       saveDisclosures(target);
     }
     // The expanded group hides its header, so the printed calls themselves take focus.
@@ -10111,7 +10135,7 @@
       if (!msg.stepOpen) msg.stepOpen = {};
       msg.stepOpen[li.dataset.step] = open;
       if (isConsoleGroup) {
-        li.querySelectorAll(".chat-timeline > [data-step]").forEach((row) => { msg.stepOpen["cgroup-" + row.dataset.step] = open; });
+        consoleGroupOpenKeys(li, msg).forEach((key) => { msg.stepOpen[key] = open; });
       }
       if (isThink) {
         syncThinkingMode(li, msg, true);
@@ -11515,7 +11539,7 @@
     const html = (rows) => `<div class="chat-console-lines is-error">${rows.map((line) => `<div class="chat-console-stdout">${renderAnsi(line) || " "}</div>`).join("")}</div>`;
     return {
       status: "",
-      preview: html(show) + (hidden > 0 ? `<div class="chat-console-more">… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : ""),
+      preview: html(show) + (hidden > 0 ? `<div class="chat-console-more" data-step-toggle>… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : ""),
       full: hidden > 0 ? html(all) : "",
       keep: true,
     };
@@ -11677,7 +11701,7 @@
       const hidden = lines.length - cut.length;
       return {
         status: ccInterruptedText(trace),
-        preview: kept ? consoleStdoutHtml(cut) + (hidden > 0 ? `<div class="chat-console-more">… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : "") : "",
+        preview: kept ? consoleStdoutHtml(cut) + (hidden > 0 ? `<div class="chat-console-more" data-step-toggle>… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : "") : "",
         full: hidden > 0 ? consoleDetailHtml(trace, false, false) : "",
         keep: Boolean(kept),
       };
@@ -11719,7 +11743,7 @@
           const show = lines.length === 4 ? 4 : 3;
           const cut = lines.slice(0, show);
           const hidden = lines.length - cut.length;
-          return { status: ccInterruptedText(trace), preview: kept ? consoleStdoutHtml(cut) + (hidden > 0 ? `<div class="chat-console-more">… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : "") : "", full: hidden > 0 ? consoleDetailHtml(trace, false, false) : "", keep: true };
+          return { status: ccInterruptedText(trace), preview: kept ? consoleStdoutHtml(cut) + (hidden > 0 ? `<div class="chat-console-more" data-step-toggle>… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : "") : "", full: hidden > 0 ? consoleDetailHtml(trace, false, false) : "", keep: true };
         }
         // Ended: say how, not what the launch said. (Interrupted is above.)
         const out = consoleDetailHtml(trace, false, false);
@@ -11751,7 +11775,7 @@
       return {
         status: "",
         keep: Boolean(note),
-        preview: consoleStdoutHtml(cut) + (hidden > 0 ? `<div class="chat-console-more">… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : "") + diff + note,
+        preview: consoleStdoutHtml(cut) + (hidden > 0 ? `<div class="chat-console-more" data-step-toggle>… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : "") + diff + note,
         full: clipped ? consoleDetailHtml(trace, false, false) + diff : "",
       };
     }

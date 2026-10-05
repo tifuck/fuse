@@ -344,14 +344,12 @@ const groupGrid = () => {
       });
       s = await snap();
       check(s.groups[0].members.join() === 'tool-f1,tool-f2', `the held-out call rejoins the line: ${s.groups[0].members.join()}`);
-      // FINDING(group-reopen): intended the user's fold survives the member's
-      // return (the group must stay collapsed), actually the group silently
-      // re-opens: collapseConsoleGroup clears stepOpen only for the members
-      // currently in the bundle (static/chat.js:10008), and ccGroupHtml reads
-      // "open" as any member key being true (static/chat.js:12118), so the
-      // held-out member's stale true re-opens the summary when it rejoins.
-      check(s.groups[0].expanded === true, `FINDING group-reopen: a member held out at fold time re-opens the group (got expanded=${s.groups[0].expanded})`);
-      pass('FINDING group-reopen: held-out member re-opens a folded summary', from);
+      // The user's fold survives the member's return: folding stamped every
+      // call that could still join the line, so the rejoining call carries no
+      // stale open flag.
+      check(s.groups[0].expanded === false && (await groupState()).aria === 'false',
+        `a folded summary stays folded when a held-out member returns (got expanded=${s.groups[0].expanded})`);
+      pass('a folded summary stays folded when a held-out member returns', from);
     }
 
     // —— 6. Folded command output says it was cut; expanding loses no end ——
@@ -369,14 +367,9 @@ const groupGrid = () => {
       const more = row.locator('.chat-console-more');
       check(await more.count() === 1, 'the fold carries a "… +N lines" marker');
       check(((await more.textContent()) || '').trim() === '… +7 lines', `the marker counts the hidden lines, saw "${await more.textContent()}"`);
-      // FINDING(fold-marker-hidden): intended the folded row says how much
-      // output it hides ("… +7 lines" visible on the hang, as the monitor
-      // event's sibling marker is), actually the marker is CSS-hidden while
-      // the fold is closed (static/chat-design.css:2690) and the expanded
-      // state hides the whole preview (static/chat-design.css:3183), so the
-      // hidden-line count is never visible. The caret is the only affordance.
-      check(await more.isVisible() === false, 'FINDING fold-marker-hidden: the hidden-line count never shows on the folded row');
-      await row.locator(':scope > .chat-step-main > .chat-step-head > .chat-step-toggle').click();
+      check(await more.isVisible(), 'a folded command says how much output it hides');
+      // The marker is the expander: clicking it opens the fold.
+      await more.click();
       await frame();
       const openText = await row.innerText();
       check(openText.includes('FIRST_LINE') && openText.includes('LAST_LINE'), 'expanding keeps both ends of the output');

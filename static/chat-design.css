@@ -2686,8 +2686,10 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-ste
   border: 0;
   background: none;
 }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-hang:not(.is-expanded) .chat-console-out,
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-hang:not(.is-expanded) .chat-console-more {
+/* The fold's "… +N lines" marker stays visible while the row is folded: it
+   is the disclosure that says how much output is hidden, and the row's
+   expander. The expanded state hides the whole preview instead. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-hang:not(.is-expanded) .chat-console-out {
   display: none;
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-hang.is-expanded .chat-console-result-text {
