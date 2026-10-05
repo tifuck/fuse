@@ -167,16 +167,13 @@ const FAMILIES = [
       await page.waitForFunction(() => document.querySelector('[data-perm-chip-label]').textContent === 'Bypass');
       assert.equal(await chip.getAttribute('aria-pressed'), 'false', 'a new thread asks');
 
-      // FINDING(perm-chip-reopen): GET /chat/threads/{id} returns
-      // bypass_permissions:true, but opening or reloading that thread paints
-      // the Ask chip ("Bypass", aria-pressed=false). Intended: "Bypass on".
       await page.goto(origin + '/chat?t=' + first);
       await live();
-      await page.waitForFunction(() => document.querySelector('[data-perm-chip-label]').textContent === 'Bypass');
-      assert.equal(await chip.getAttribute('aria-pressed'), 'false', 'reopening a bypass thread currently shows Ask');
+      await page.waitForFunction(() => document.querySelector('[data-perm-chip-label]').textContent === 'Bypass on');
+      assert.equal(await chip.getAttribute('aria-pressed'), 'true', 'reopening a bypass thread keeps Bypass on');
       await page.reload();
       await live();
-      await page.waitForFunction(() => document.querySelector('[data-perm-chip-label]').textContent === 'Bypass');
+      await page.waitForFunction(() => document.querySelector('[data-perm-chip-label]').textContent === 'Bypass on');
       await page.goto(origin + '/chat?t=' + second);
       await live();
       await page.waitForFunction(() => document.querySelector('[data-perm-chip-label]').textContent === 'Bypass');

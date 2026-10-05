@@ -5100,6 +5100,7 @@
       auto: Boolean(msg.auto),
     }));
     serverRevision = data.revision;
+    acceptPermThread(data);
     viewCursor = Number(data.event_cursor || 0);
     threadWatermark = Number.isSafeInteger(data.thread_cursor) ? Number(data.thread_cursor) : viewCursor;
     activeRun = data.run;
