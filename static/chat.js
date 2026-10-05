@@ -3488,7 +3488,7 @@
     else dirty = false;
     syncMemoryUi();
     if (same) {
-      foldAutoCommandResults();
+      foldAutoCommandResults(messages);
       reconcileBgTraces([...completedJobs.values()], false);
       messages.forEach((msg, i) => {
         if (i >= oldLength) {
@@ -6393,8 +6393,8 @@
     return trace;
   }
 
-  function foldAutoCommandResults() {
-    messages.forEach((msg, index) => {
+  function foldAutoCommandResults(rows) {
+    rows.forEach((msg, index) => {
       if (msg.role !== "user" || !msg.auto) return;
       const text = String(msg.content || "");
       if ((!text.includes("<command_result") && !text.includes("<monitor_")) || text.includes("<task id=")) {
@@ -6406,7 +6406,7 @@
       const findTrace = (id) => {
         for (const name of ["run_terminal_command", "get_command_output", "monitor"]) {
           for (let i = 0; i < index; i++) {
-            const prev = messages[i];
+            const prev = rows[i];
             if (prev.role !== "assistant" || !Array.isArray(prev.tools)) continue;
             const hit = prev.tools.find((t) => t && t.name === name && String(executionIdentity(t)) === id);
             if (hit) return hit;
@@ -12678,7 +12678,7 @@
 
   function paint() {
     if (toolGestureOwner && log.contains(toolGestureOwner)) { pendingFullPaint = true; return; }
-    foldAutoCommandResults();
+    foldAutoCommandResults(messages);
     reconcileBgTraces([...completedJobs.values()], false);
     const viewport = captureThreadViewport();
     const existing = new Map(log._threadId === currentId ? [...log.children].map(el => [el.dataset.messageId, el]) : []);
@@ -14891,6 +14891,7 @@
         role: "user",
         content: String(item.content || ""),
         auto: Boolean(item.auto),
+        autoSteps: Array.isArray(item.autoSteps) ? item.autoSteps : null,
         attachments: Array.isArray(item.attachments) ? item.attachments : [],
       }, -2 - index, true);
     }
@@ -15091,6 +15092,9 @@
     // Before compaction prunes the traces: the list the child works from.
     latestTodoState(agentMsgState);
     const seed = Array.isArray(agentRun.messages) ? agentRun.messages : [];
+    // A subagent's own background-command handoffs fold into step rows here
+    // exactly as the thread's auto wake rows do, instead of a raw report blob.
+    foldAutoCommandResults(seed);
     const compacted = seed.some((item) => item && (item.compaction || item.kind === "compaction"));
     if (compacted) {
       // The seed is the post-handoff provider transcript. A live bubble that

@@ -33,6 +33,25 @@ test('automated labels read envelope ids, not the handoff boilerplate', () => {
     'Automated · background results');
 });
 
+test('a subagent auto row folds into background-command steps like the thread', () => {
+  const c = world();
+  for (const name of ['parseCommandResults', 'wakeStepTrace', 'foldAutoCommandResults']) load(name, c);
+  const rows = [
+    { role: "assistant", content: "", tools: [] },
+    { role: "user", auto: true, content: '[Fuse] AUTOMATED EVENT — not written by the user. Background results:\n\n'
+      + '<command_result id="ab12cd34ef56" state="completed">\nhost: box command: nohup strings -a lib.so > out.txt\nexit_code: 0\nduration_ms: 3\n\nstrings started 560656\n</command_result>\n\n'
+      + 'These are for you, not the user. A <monitor_event> means the watch fired.' },
+  ];
+  c.foldAutoCommandResults(rows);
+  assert.equal(rows[1].autoSteps.length, 1);
+  const step = rows[1].autoSteps[0];
+  assert.equal(step.name, 'run_terminal_command');
+  assert.equal(step.child_id, 'ab12cd34ef56');
+  assert.equal(step.backgroundResult, true);
+  assert.equal(step.status, 'done');
+  assert.equal(step.exit_code, 0);
+});
+
 test('background execution stays live independently of the assistant turn', () => {
   const c = world();
   const trace = {name: 'run_terminal_command', background: true, status: 'running', child_id: 'job-1', command: 'sleep 10'};
