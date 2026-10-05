@@ -81,9 +81,10 @@ window.ConsoleAudit = (() => {
 
       // Notices report how a command ended; they must agree with it.
       if (isNotice && execId && execState) {
-        if (/ completed\b/.test(text) && execState !== "completed") add("notice-mismatch", li, `command is ${execState}`);
-        if (/ failed\b/.test(text) && execState !== "failed") add("notice-mismatch", li, `command is ${execState}`);
-        if (/ was stopped\b|" stopped\b/.test(text) && execState !== "interrupted") add("notice-mismatch", li, `command is ${execState}`);
+        const notice = head || text;
+        if (/ completed\b/.test(notice) && execState !== "completed") add("notice-mismatch", li, `command is ${execState}`);
+        if (/ failed\b/.test(notice) && execState !== "failed") add("notice-mismatch", li, `command is ${execState}`);
+        if (/ was stopped\b|" stopped\b/.test(notice) && execState !== "interrupted") add("notice-mismatch", li, `command is ${execState}`);
       }
       if (isNotice && /^Monitor event:/.test(head)) {
         const description = monitors[execId];

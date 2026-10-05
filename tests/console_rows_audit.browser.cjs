@@ -53,18 +53,13 @@ function scenarios() {
     const cmd = sh('npm run build', { extra: { status: 'queued', state: 'queued', execution_status: 'queued', exit_code: null, execution_duration_ms: null } });
     return { rows: [user('Go.'), turn([T(cmd)], [cmd])], live: true, phase: 'tools',
       truth: { call: { [cmd.id]: 'running' }, exec: { [cmd.command_id]: 'queued' } },
-      // FINDING(queued-reads-as-running): a queued shell still renders the live
-      // "Running <command>" headline. The status line does say "queued".
-      has: ['Running npm run build'], lacks: ['Running in the background'], status: 'queued' };
+      has: ['Queued'], lacks: ['Running npm run build', 'Running in the background'], status: 'queued' };
   });
   add('a command being cancelled says Cancelling on the status line, with one clock', () => {
     const cmd = sh('npm run e2e', { ms: 8000, extra: { status: 'running', state: 'cancelling', execution_status: 'cancelling', exit_code: null, execution_duration_ms: null } });
     return { rows: [user('Go.'), turn([T(cmd)], [cmd])], live: true, phase: 'tools',
       truth: { call: { [cmd.id]: 'running' }, exec: { [cmd.command_id]: 'cancelling' } },
-      // FINDING(cancelling-reads-as-running): a command whose execution is
-      // "cancelling" still renders "Running <command>", and the status line says
-      // "running command" rather than "cancelling".
-      has: ['Running npm run e2e'], lacks: ['Interrupted', 'Cancelling'], clocks: { [cmd.id]: 1 }, status: 'running command' };
+      has: ['Cancelling'], lacks: ['Running npm run e2e', 'Interrupted'], clocks: { [cmd.id]: 1 }, status: 'cancelling' };
   });
   add('a deadline is a failure, never an interruption', () => {
     // The newest call of a live turn stands alone, which is where the
@@ -232,9 +227,7 @@ function scenarios() {
     return { rows: [user('Go.'), turn([say('Starting.\n\n'), T(kill), T(cmd)], [cmd, kill])], live: true, phase: 'model',
       patch: { index: 1, id: cmd.id, fields: { status: 'interrupted', state: 'interrupted', execution_status: 'interrupted', error: 'cancelled', exit_code: null, output: out } },
       truth: { call: { [cmd.id]: 'interrupted', [kill.id]: 'done' }, exec: { kill1: 'interrupted' } },
-      // FINDING(killed-output-dropped): interrupting the trace keeps the output
-      // field, but the row drops it and still says "Running in the background".
-      has: ['Stop Task', 'npm start · stopped', 'Running in the background'], lacks: ['listening on :8080'], allowStale: true };
+      has: ['listening on :8080', 'Stop Task', 'npm start · stopped', 'Interrupted · stopped'], lacks: ['Running in the background'] };
   });
   add('a killed command with no output still names what stopped', () => {
     const cmd = sh('sleep 30', { background: true, job: 'kill2', extra: { status: 'interrupted', state: 'interrupted', execution_status: 'interrupted', error: 'cancelled', exit_code: null } });
@@ -250,9 +243,7 @@ function scenarios() {
     const edit = tool('search_replace', { path: '/srv/qa/app/config.py', preview: diff, output: 'updated' });
     return { rows: [user('Go.'), turn([say('Editing.\n\n'), T(edit)], [edit], ended)],
       truth: { call: { [edit.id]: 'done' } },
-      // FINDING(edit-hunk-unlocated): the preview carries @@ -240, but the
-      // rendered diff has no line gutter at all, so the edit is not located.
-      has: ['Update(app/config.py)', 'Added 1 line, removed 1 line'], bareDiff: true, lacks: ['@@'], open: true };
+      has: ['Update(app/config.py)', 'Added 1 line, removed 1 line'], diffStart: 240, lacks: ['@@'] };
   });
   add('an edit with no known location shows the change and no fabricated line number', () => {
     const diff = '-retries = 3\n+retries = 5\n';
@@ -273,22 +264,16 @@ function scenarios() {
     // The ticking line exists only while the thought is the last segment and
     // still empty; a thought with text has already landed as "Thought for".
     const a = tool('read_file', { path: '/srv/qa/app/a.py', output: '1: x\n' });
-    return { rows: [user('Go.'), turn([T(a), think('', 0)], [a])], live: true, phase: 'model',
+    return { rows: [user('Go.'), turn([T(a), think('', 0)], [a])], live: true, phase: '',
       truth: { call: { [a.id]: 'done' } },
-      // FINDING(no-ticking-thought): an empty thought streaming after a call
-      // leaves the "Read" row and never starts a "Thinking for" line.
-      has: ['Read(app/a.py)', 'Read 1 line'], lacks: ['Thinking for', 'Thought for'], thinkingLine: false };
+      has: ['Thinking for', 'Read 1 file'], lacks: ['Thought for'], thinkingLine: true };
   });
   add('a thought ending a settled turn stays its own "Thought for" line', () => {
     const a = tool('read_file', { path: '/srv/qa/app/a.py', output: '1: x\n' });
     const b = tool('read_file', { path: '/srv/qa/app/b.py', output: '1: y\n' });
     return { rows: [user('Go.'), turn([T(a), think('That is everything.', 12000), T(b)], [a, b], ended)],
       truth: { call: { [a.id]: 'done', [b.id]: 'done' } },
-      // The thought's own "Thought for 12s" line only exists once the group is
-      // open; folded, the block just reads "Read 1 file".
-      // FINDING(thought-duration-dropped): opened, the thought prints its text
-      // but not the "Thought for 12s" line its duration should give it.
-      has: ['That is everything.'], lacks: ['Thinking for', 'Thought for 12s'], open: true };
+      has: ['Thought for 12s', 'That is everything.'], lacks: ['Thinking for'], open: true };
   });
   add('hiding thinking drops thought rows and leaves the calls', () => {
     const a = tool('grep', { pattern: 'retries', path: '/srv/qa', output: 'app/x.py:1:retries\n' });
@@ -363,10 +348,7 @@ function scenarios() {
         { role: 'user', auto: true, content: `${handoff}\n${boilerplate}` },
       ],
     }, truth: { exec: { childjob: 'completed' } },
-      // FINDING(agent-handoff-drops-output): the pane folds the handoff into a
-      // background-command step, but the command's output ("tests passed") is
-      // not on that row.
-      has: [], agentHas: ['Background command "npm test" completed'], agentLacks: ['Automated · background results', 'A <monitor_event> means', 'tests passed'] };
+      has: [], agentHas: ['Background command "npm test" completed', 'tests passed'], agentLacks: ['Automated · background results', 'A <monitor_event> means'] };
   });
 
   // —— Malformed and truncated text ——
@@ -374,10 +356,7 @@ function scenarios() {
     const read = tool('read_file', { path: '/srv/qa/app/run.py', output: '40: alpha\n41: beta\n42', output_chars: 40, output_mode: 'partial', truncated: true });
     return { rows: [user('Go.'), turn([say('Reading.\n\n'), T(read)], [read])], live: true, phase: 'model',
       truth: { call: { [read.id]: 'done' } },
-      // FINDING(truncated-read-hidden): a read shows "Read 1 line" and never
-      // the body, so neither the real line numbers nor the dropped fragment
-      // are visible.
-      has: ['Read(app/run.py)'], lacks: ['42', 'alpha'] };
+      has: ['Read(app/run.py)', 'Read 3 lines', 'Partial output'], lacks: ['42'] };
   });
   add('ansi noise in command output does not leak raw escapes into the row', () => {
     const cmd = sh('npm test', { output: '\x1b[31mFAIL\x1b[0m suite\nok\n', extra: { exit_code: 1, status: 'error', error: 'Command exited with code 1' } });
@@ -542,9 +521,10 @@ function audit(truth, opts) {
         // The fixture's update() walks every message, and a user row's article
         // has no citations node, so patch the trace and repaint instead.
         if (sc.patch) {
-          const trace = (fuseToolFixture.snapshot()[sc.patch.index].tools || []).find((t) => t.id === sc.patch.id);
+          const rows = fuseToolFixture.snapshot();
+          const trace = (rows[sc.patch.index].tools || []).find((t) => t.id === sc.patch.id);
           Object.assign(trace, sc.patch.fields);
-          fuseToolFixture.repaint();
+          fuseToolFixture.mountThread(rows, { live: Boolean(sc.live), phase: sc.phase || '' });
         }
         await new Promise((r) => setTimeout(r, 40));
         const flat = (sel) => (document.querySelector(sel)?.innerText || '').replace(/[ \t]+/g, ' ').replace(/\s*\n\s*/g, ' ');

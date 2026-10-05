@@ -175,7 +175,7 @@ const wrote = (extra = {}) => ({ id: 'wrote', name: 'write_file', status: 'done'
         check(diffs.edit.lines.some((line) => line.text.trim() === 'def load():'), tag(`the diff keeps its context line: ${JSON.stringify(diffs.edit.lines)}`));
         const changed = diffs.multi.lines.map((line) => line.text.trim());
         check(changed.includes('retries = 3') && changed.includes('retries = 5') && changed.includes('timeout = 5') && changed.includes('timeout = 8'), tag(`a multi-edit shows both hunks: ${JSON.stringify(diffs.multi.lines)}`));
-        check(diffs.multi.lines.every((line) => line.n.trim() === ''), tag('a multi-edit does not number snippet hunks'));
+        if (console) check(diffs.multi.lines.some((line) => line.text.trim() === 'retries = 5' && line.n.trim() === '4'), tag(`a hunk header locates the edit: ${JSON.stringify(diffs.multi.lines)}`));
         check(diffs.noloc.lines.every((line) => line.n.trim() === ''), tag(`an unlocated edit has no fabricated line numbers: ${JSON.stringify(diffs.noloc.lines)}`));
         check(!/@@ -1\b/.test(JSON.stringify(diffs.noloc)), tag('an unlocated edit never prints @@ -1'));
         check(diffs.wrong.file.includes('other.py') && diffs.wrong.lines.some((line) => line.text === '    return attempts'), tag(`the row names the file that was edited, not the diff label: ${diffs.wrong.file}`));

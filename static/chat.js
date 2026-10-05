@@ -2637,7 +2637,12 @@
     if (/^get_(command|subagent)_output$/.test(trace?.name) && ["done", "error", "failed", "interrupted", "cancelled"].includes(trace.status)) return false;
     if (/^get_(command|subagent)_output$/.test(trace?.name) && !live && !toolAwaitingCancellation(trace)) return false;
     if (["completed", "done", "failed", "error", "timed_out", "cancelled", "interrupted", "lost"].includes(executionState(trace))) return false;
-    if (["running", "queued", "cancelling"].includes(executionState(trace))) return true;
+    if (["running", "queued", "cancelling"].includes(executionState(trace))) {
+      // The call already ended: the row is terminal, whatever the saved
+      // execution still says.
+      if (trace && trace.name === "run_terminal_command" && ["interrupted", "cancelled"].includes(trace.status)) return false;
+      return true;
+    }
     if (trace && childBackedTool(trace.name) && executionIdentity(trace) && ["running", "progress", "queued"].includes(trace.status)) return true;
     return Boolean((live || toolAwaitingCancellation(trace)) && toolIsCurrent(trace));
   }
@@ -2702,7 +2707,8 @@
     const execution = executionState(trace);
     const returnedWait = /^get_(command|subagent)_output$/.test(trace.name) && ["done", "error", "failed", "interrupted", "cancelled"].includes(trace.status);
     const abandonedWait = /^get_(command|subagent)_output$/.test(trace.name) && !returnedWait && !live && !toolAwaitingCancellation(trace);
-    const executing = !returnedWait && !abandonedWait && ["running", "queued", "cancelling"].includes(execution);
+    const endedCommand = trace && trace.name === "run_terminal_command" && ["interrupted", "cancelled"].includes(trace.status);
+    const executing = !endedCommand && !returnedWait && !abandonedWait && ["running", "queued", "cancelling"].includes(execution);
     const failed = !executing && ((!returnedWait && ["timed_out", "failed", "error"].includes(execution)) || toolFailed(trace));
     const interrupted = !executing && ((!returnedWait && ["cancelled", "interrupted", "lost"].includes(execution)) || toolInterrupted(trace, live));
     const running = !failed && !interrupted && toolRunning(trace, live);
@@ -6356,6 +6362,7 @@
       trace.execution_status = result.state;
     }
     if (legacy) return;
+    if (!trace.output && result.output) trace.output = result.output;
     if (result.output_mode != null || result.output_chars != null) {
       EXECUTION_FIELDS.forEach(key => { if (Object.prototype.hasOwnProperty.call(result, key)) trace[key] = result[key]; });
       for (const key of ["host", "cwd", "command", "duration_ms", "execution_duration_ms", "timeout_ms", "elapsed_ms", "background", "event_count", "source", "url"]) {
@@ -6461,11 +6468,13 @@
     }
     const took = Number(trace.latency_ms ?? trace.duration_ms);
     const detail = Number.isFinite(took) && took > 0 ? ` · ${ccDuration(Math.max(1000, took))}` : "";
+    const body = !monitor && typeof trace.output === "string" ? cleanToolOutput(trace, trace.output).replace(/\s+$/, "") : "";
+    const output = body ? `<div class="chat-console-hang is-expanded"><span class="chat-console-branch" aria-hidden="true">└</span><div class="chat-console-hang-body">${consoleStdoutHtml(body.split("\n").slice(0, 4))}</div></div>` : "";
     return (
       `<li class="chat-step is-console-notice is-${tone}" data-execution="${escapeHtml(executionIdentity(trace))}">` +
       `<span class="chat-step-node" aria-hidden="true"></span>` +
       `<div class="chat-step-main"><span class="chat-console-notice-text">${escapeHtml(text)}` +
-      (detail ? `<span class="chat-console-dim">${escapeHtml(detail)}</span>` : "") + `</span></div></li>`
+      (detail ? `<span class="chat-console-dim">${escapeHtml(detail)}</span>` : "") + `</span>${output}</div></li>`
     );
   }
 
@@ -7620,7 +7629,8 @@
     let state = "";
     if (status.phase === "queued") state = "queued";
     else if (status.phase === "stopping") state = "stopping";
-    else if (status.current) state = isSearchTool(status.current.name) ? "searching the web" : CC_SPINNER_STATES[status.current.name] || "running tool";
+    else if (status.current) state = executionState(status.current) === "cancelling" ? "cancelling"
+      : isSearchTool(status.current.name) ? "searching the web" : CC_SPINNER_STATES[status.current.name] || "running tool";
     else if (status.phase === "waiting" || status.phase === "starting") state = "waiting";
     else if (status.phase === "working") state = "working";
     return [state, ...extra].filter(Boolean).join(" · ");
@@ -8315,8 +8325,12 @@
     const clock = isConsoleOnly() && presentation ? ccCallClockHtml(trace, presentation) : "";
     // Console: a running call reads as Claude Code's live line, one row
     // counting up ("Running npm test · 12s"); it prints as Bash(…) once done.
-    const live = isConsoleOnly() && running && !full && !toolBackground(trace) ? ccLiveText(trace, 1000) : "";
+    const pending = /^(queued|cancelling)$/i.test(presentation && presentation.statusLabel);
+    const live = isConsoleOnly() && running && !full && !toolBackground(trace) && !pending ? ccLiveText(trace, 1000) : "";
     if (live) return `<span class="chat-console-call is-live">${escapeHtml(live)}</span>${clock}${hostHtml}`;
+    if (isConsoleOnly() && running && name === "run_terminal_command" && pending) {
+      return `<span class="chat-console-call is-live">${escapeHtml(presentation.statusLabel)}</span>${clock}${hostHtml}`;
+    }
     const verb = consoleVerb(name, trace);
     if (["kill_command", "kill_subagent", "todo_write", "list_subagents", "scratch"].includes(name)) {
       return `<span class="chat-console-call"><span class="chat-tool-action">${escapeHtml(verb)}</span></span>`;
@@ -8394,7 +8408,7 @@
 
   function consoleLineCount(trace) {
     const preview = String((trace && (trace.preview || trace.summary)) || "");
-    const named = preview.match(/(\d+)\s+lines?\b/i);
+    const named = typeof trace?.output === "string" && trace.output ? null : preview.match(/(\d+)\s+lines?\b/i);
     if (named) return Number(named[1]);
     const body = typeof trace.output === "string" && trace.output
       ? cleanToolOutput(trace, trace.output)
@@ -8560,7 +8574,13 @@
       }
       return { status, preview: "", full: detail() };
     }
-    if (name === "read_file" || name === "kill_command" || name === "kill_subagent") return { status, preview: "", full: "" };
+    if (name === "read_file") {
+      const body = consoleFileBody(trace);
+      if (!body) return { status, preview: "", full: "" };
+      const note = consoleTruncationNote(trace);
+      return { status, preview: `<div class="chat-console-out is-file">${fileBodyHtml(trace, body, 10)}</div>${note}`, full: "", keep: Boolean(note) };
+    }
+    if (name === "kill_command" || name === "kill_subagent") return { status, preview: "", full: "" };
     if (name === "search_replace" || name === "write_file") {
       const diff = [trace.preview, trace.output].find((value) => looksLikeDiff(value));
       if (diff) {
@@ -8568,7 +8588,7 @@
         const added = Number(trace.added ?? trace.lines_added);
         const removed = Number(trace.removed ?? trace.lines_removed);
         const text = consoleChangeText(Number.isFinite(added) ? added : counted.added, Number.isFinite(removed) ? removed : counted.removed);
-        return { status: text || (name === "write_file" ? status : "Updated"), preview: consoleDiffHtml(diff, { numbers: name !== "search_replace" }), full: "" };
+        return { status: text || (name === "write_file" ? status : "Updated"), preview: consoleDiffHtml(diff, { numbers: name !== "search_replace" || /^@@\s+-\d+/.test(diff) }), full: "" };
       }
       if (name === "search_replace") return { status, preview: "", full: "" };
       const body = typeof trace.content === "string" ? trace.content.replace(/\s+$/, "") : "";
@@ -8597,7 +8617,7 @@
       const head = nonzero ? `Exit code ${exit}` : failed ? status
         : wait ? (executionState(trace) !== "running" ? "" : stillRunning ? "Still running" : "Returned while the command was still running")
         : toolBackground(trace) ? status : "";
-      const note = consoleTruncationNote(trace);
+      const note = typeof consoleTruncationNote === "function" ? consoleTruncationNote(trace) : "";
       if (empty) return { status: head || (note ? "" : "(No output)"), preview: note, full: "", keep: nonzero || Boolean(note) };
       const show = lines.length === 4 ? 4 : 3;
       const cut = lines.slice(0, show).map((line) => line.length > 400 ? line.slice(0, 399) + "…" : line);
@@ -8646,7 +8666,7 @@
     if (trace && ["read_file", "write_file"].includes(trace.name) && !failed) {
       const body = trace.name === "write_file" ? (typeof trace.content === "string" ? trace.content : "") : consoleFileBody(trace);
       if (!body) return "";
-      return `<div class="chat-console-out is-file">${fileBodyHtml(trace, body)}</div>`;
+      return `<div class="chat-console-out is-file">${fileBodyHtml(trace, body)}</div>${trace.name === "read_file" ? consoleTruncationNote(trace) : ""}`;
     }
     if (trace && isSearchTool(trace.name) && !failed && trace.results?.length) {
       return `<div class="chat-console-out is-web">${webResultsHtml(trace.results)}</div>`;
@@ -8658,7 +8678,7 @@
     }
     if (trace && trace.name === "search_replace") {
       const diff = [trace.preview, trace.output].find((value) => looksLikeDiff(value));
-      if (diff) return `<div class="chat-console-out is-diff">${consoleDiffHtml(diff, { numbers: trace.name !== "search_replace" })}</div>`;
+      if (diff) return `<div class="chat-console-out is-diff">${consoleDiffHtml(diff, { numbers: trace.name !== "search_replace" || /^@@\s+-\d+/.test(diff) })}</div>`;
     }
     let body = consoleOutputText(trace, failed, running);
     if (!body) return "";
@@ -11569,7 +11589,19 @@
   function consoleOnlyFold(trace, presentation, verbose) {
     const { running, failed, interrupted } = presentation;
     const name = trace && trace.name;
-    if (interrupted && !running) return { status: ccInterruptedText(trace), preview: "", full: "" };
+    if (interrupted && !running) {
+      const kept = name === "run_terminal_command" && typeof trace.output === "string" ? cleanToolOutput(trace, trace.output).replace(/\s+$/, "") : "";
+      const lines = kept ? kept.split("\n") : [];
+      const show = lines.length === 4 ? 4 : 3;
+      const cut = lines.slice(0, show);
+      const hidden = lines.length - cut.length;
+      return {
+        status: ccInterruptedText(trace),
+        preview: kept ? consoleStdoutHtml(cut) + (hidden > 0 ? `<div class="chat-console-more">… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : "") : "",
+        full: hidden > 0 ? consoleDetailHtml(trace, false, false) : "",
+        keep: Boolean(kept),
+      };
+    }
     // Wait (Fuse's get_command_output) blocks on a background command; Claude
     // Code has no such call, so it reads as what it does.
     if (name === "get_command_output" && running) return { status: "Waiting for output…", preview: "", full: "" };
@@ -11600,13 +11632,23 @@
     }
     if (name === "run_terminal_command") {
       if (toolBackground(trace)) {
-        if (running) return { status: "Running in the background", preview: "", full: "", keep: true };
+        if (running && !["interrupted", "cancelled"].includes(trace.status)) return { status: "Running in the background", preview: "", full: "", keep: true };
+        if (["interrupted", "cancelled"].includes(trace.status)) {
+          const kept = typeof trace.output === "string" ? cleanToolOutput(trace, trace.output).replace(/\s+$/, "") : "";
+          const lines = kept ? kept.split("\n") : [];
+          const show = lines.length === 4 ? 4 : 3;
+          const cut = lines.slice(0, show);
+          const hidden = lines.length - cut.length;
+          return { status: ccInterruptedText(trace), preview: kept ? consoleStdoutHtml(cut) + (hidden > 0 ? `<div class="chat-console-more">… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : "") : "", full: hidden > 0 ? consoleDetailHtml(trace, false, false) : "", keep: true };
+        }
         // Ended: say how, not what the launch said. (Interrupted is above.)
         const out = consoleDetailHtml(trace, false, false);
         const exit = shellExitCode(trace);
         const status = failed ? (executionState(trace) === "timed_out" ? "Timed out in the background" : "Failed in the background")
           : `Ran in the background${exit !== null && exit !== 0 ? ` · exit code ${exit}` : ""}`;
-        return { status, preview: "", full: consoleSameText(out, "") ? "" : out, keep: true };
+        const body = typeof trace.output === "string" ? cleanToolOutput(trace, trace.output).replace(/\s+$/, "") : "";
+        const shown = body ? consoleStdoutHtml(body.split("\n").slice(0, 4)) : "";
+        return { status, preview: shown, full: consoleSameText(out, "") ? "" : out, keep: true };
       }
       const raw = typeof trace.output === "string" ? cleanToolOutput(trace, trace.output)
         : [trace.preview, trace.summary].find((value) => { const text = String(value || "").trim(); return text && text !== "still running" && text !== "background task started"; }) || "";
@@ -11632,6 +11674,14 @@
         preview: consoleStdoutHtml(cut) + (hidden > 0 ? `<div class="chat-console-more">… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : "") + diff + note,
         full: clipped ? consoleDetailHtml(trace, false, false) + diff : "",
       };
+    }
+    if (name === "read_file" && !running && !failed && !interrupted) {
+      const body = consoleFileBody(trace);
+      if (body) { const note = consoleTruncationNote(trace); return { status: consoleResultLine(trace, presentation), preview: "", full: `<div class="chat-console-out is-file">${fileBodyHtml(trace, body, 10)}</div>${note}`, keep: Boolean(note) }; }
+    }
+    if (name === "run_terminal_command" && trace.backgroundResult && !running) {
+      const body = typeof trace.output === "string" ? cleanToolOutput(trace, trace.output).replace(/\s+$/, "") : "";
+      if (body) return { status: consoleResultLine(trace, presentation), preview: consoleStdoutHtml(body.split("\n").slice(0, 4)), full: "", keep: true };
     }
     if (failed && name !== "run_terminal_command" && name !== "get_command_output") {
       return ccErrorFold(String(trace.error || trace.summary || "failed").split("\n"));
@@ -12078,7 +12128,10 @@
     }
     const hang = (body, cls = "") => `<div class="chat-console-hang${cls}"><span class="chat-console-branch" aria-hidden="true">└</span><div class="chat-console-hang-body">${body}</div></div>`;
     const rows = group.items.map((item) => item.type === "think"
-      ? ccThoughtRowHtml(item)
+      ? `<li class="chat-step is-console-thought" data-thought="${item.segmentIndex}">` +
+        `<span class="chat-step-node" aria-hidden="true"></span>` +
+        `<div class="chat-step-main"><div class="chat-step-head"><span class="chat-step-label">Thought for ${escapeHtml(ccThinkClock(item.ms, 0))}</span></div>` +
+        `<div class="chat-console-thought chat-think-markdown">${renderMarkdown(item.text, false)}</div></div></li>`
       : toolStepHtml(item.entry.trace, item.key, live, true, openMap, { verbose: true })).join("");
     const state = active ? `is-running${errored ? " is-errored" : ""}` : "is-done";
     return (
@@ -12104,7 +12157,8 @@
     const segs = assistantSegments(msg);
     let lastReasonIndex = -1;
     segs.forEach((seg, index) => { if (seg && seg.type === "reasoning") lastReasonIndex = index; });
-    const streamingLast = Boolean(live && lastReasonIndex >= 0 && !segs.some((seg, index) => index > lastReasonIndex) && !SETTLED_PHASES.has(runPhase(msg)));
+    const phase = runPhase(msg);
+    const streamingLast = Boolean(live && lastReasonIndex >= 0 && !segs.some((seg, index) => index > lastReasonIndex) && phase !== "calling" && phase !== "tools");
     const rows = [];
     const plain = isConsoleOnly();
     let group = null;
@@ -12157,7 +12211,7 @@
           // clock runs on a line of its own (Claude Code runs it on the
           // live line, which a thought does not end there).
           // Also after a call on its own row (running, or the newest one).
-          if (endsLine || (plain && !group && rows.length)) rows.push({ items: [], liveThought: last.segmentIndex });
+          if (endsLine || (plain && !group)) rows.push({ items: [], liveThought: last.segmentIndex });
           continue;
         }
         const text = run.map((item) => String(item.text || "").trim()).filter(Boolean).join("\n\n");
@@ -12380,6 +12434,7 @@
       }
       // Thinking hidden (Show thinking, /thinking): no view prints thoughts.
       if (part.type === "reasoning" && !showThinking) return [];
+      if (part.type === "reasoning" && live && segmentIndex === segments.length - 1) return [{ type: part.type, text: part.text || "", segmentIndex }];
       return typeof part.text === "string" && part.text ? [{ type: part.type, text: part.text, segmentIndex }] : [];
     });
     const blocks = [];
