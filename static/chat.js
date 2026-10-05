@@ -9999,6 +9999,7 @@
       group.querySelector(":scope > .chat-step-main > .chat-console-bundle")?.removeAttribute("tabindex");
       if (!target.stepOpen) target.stepOpen = {};
       target.stepOpen[group.dataset.step] = false;
+      group.querySelectorAll(".chat-timeline > [data-step]").forEach((row) => { target.stepOpen["cgroup-" + row.dataset.step] = false; });
       saveDisclosures(target);
     }
     // The expanded group hides its header, so the printed calls themselves take focus.
@@ -10102,6 +10103,9 @@
       li.querySelectorAll(":scope > .chat-step-main > .chat-step-head [data-step-toggle]").forEach((el) => el.setAttribute("aria-expanded", String(open)));
       if (!msg.stepOpen) msg.stepOpen = {};
       msg.stepOpen[li.dataset.step] = open;
+      if (isConsoleGroup) {
+        li.querySelectorAll(".chat-timeline > [data-step]").forEach((row) => { msg.stepOpen["cgroup-" + row.dataset.step] = open; });
+      }
       if (isThink) {
         syncThinkingMode(li, msg, true);
         const peek = li.querySelector("[data-reason-preview]");
@@ -12096,7 +12100,10 @@
   function ccGroupHtml(group, msg, live, active, openMap, thinking) {
     // A live thought's line keeps the key it will have once the thought lands.
     const key = "cgroup-" + (group.items[0]?.key || `think-${group.liveThought}`);
-    const open = group.items.length > 0 && stepOpenAt(openMap, key);
+
+    // Membership shifts between views (a running call stands alone in Console
+    // and folds in elsewhere), so the open state rides on every member key.
+    const open = group.items.length > 0 && group.items.some((item) => stepOpenAt(openMap, "cgroup-" + item.key));
     let search = 0;
     let readOps = 0;
     let list = 0;

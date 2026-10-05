@@ -200,14 +200,10 @@ function readDom() {
           const group = document.querySelector('.is-console-group');
           return { map: msg && msg.stepOpen || {}, key: group?.dataset.step || '', expanded: Boolean(group?.classList.contains('is-console-expanded')) };
         });
-        if (view === 'mainframe') {
-          // FINDING(view-switch-folds): the summary opened in Console keeps its
-          // stepOpen flag, but Mainframe rebuilds the group under a different
-          // key, so the row paints collapsed.
-          check(openNow.map[opened.open[0]] === true, `${tag} mainframe keeps the open flag for ${opened.open[0]}: ${JSON.stringify(openNow.map)}`);
-          check(!openNow.expanded && openNow.key !== opened.open[0], `${tag} mainframe paints it collapsed under ${openNow.key}`);
-        } else if (view === 'console') {
-          check(switched.open.includes(opened.open[0]), `${tag} console keeps the opened summary (${switched.open.join(',')})`);
+        if (view === 'cli') {
+          check(openNow.map[opened.open[0]] === true, `${tag} cli keeps the open flag for ${opened.open[0]}: ${JSON.stringify(openNow.map)}`);
+        } else {
+          check(openNow.expanded, `${tag} ${view} keeps the summary open (key ${openNow.key}, flag ${JSON.stringify(openNow.map)})`);
         }
         check(switched.overflow <= 0, `${tag} ${view} does not overflow sideways by ${switched.overflow}px`);
       }
