@@ -3950,7 +3950,7 @@
     dropThread(id);
     if (currentId !== id) { if (known) renderHistory(); return; }
     if (!known) return;
-    if (next) openThread(next).catch((error) => showFailure("Chat could not be opened", error));
+    if (next) openThread(next, { gone: true }).catch((error) => showFailure("Chat could not be opened", error));
     else clearChatState({ keepList: true });
   }
 
@@ -5023,14 +5023,18 @@
     }
   }
 
-  async function openThread(id) {
-    if (sending) return;
+  async function openThread(id, opts) {
+    const gone = Boolean(opts && opts.gone);
+    if (sending && !gone) return;
     const nav = ++navigation;
     loading = true;
     syncComposer();
     try {
-    drafts.set(currentId, input.value);
-    await flushPending();
+    if (!gone) {
+      // A deleted thread keeps nothing: no draft to stash and no save to wait for.
+      drafts.set(currentId, input.value);
+      await flushPending();
+    }
     if (nav !== navigation) return;
     const expectedGeneration = ++generation;
     const current = () => expectedGeneration === generation && nav === navigation;

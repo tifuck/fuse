@@ -10,7 +10,8 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
   try {
     for (const width of [1440, 390]) for (const view of ['cli', 'compact', 'console', 'mainframe']) {
       const context = await browser.newContext({ viewport: { width, height: 950 }, reducedMotion: 'reduce' });
-      await context.route('**/*', route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
+      // A request dropped during context.close() is auto-handled; don't crash on it.
+      await context.route('**/*', route => (new URL(route.request().url()).origin === origin ? route.continue() : route.abort()).catch(() => {}));
       const page = await context.newPage();
       page.on('pageerror', error => errors.push(error.message));
       await page.goto(origin);
@@ -44,7 +45,7 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
         const seen = new Promise(resolve => { arrived = resolve; });
         await page.route('**/chat/threads/*', async route => {
           if (route.request().method() !== 'PATCH') return route.fallback();
-          arrived(); await gate; await route.continue();
+          arrived(); await gate; await route.continue().catch(() => {});
         }, { times: 1 });
         return { release, seen };
       };
@@ -153,7 +154,9 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
         await page.evaluate(async ({ id, revision }) => fuseToolFixture.api('/chat/threads/' + id, {
           method: 'DELETE', body: JSON.stringify({ expected_revision: revision, command_id: crypto.randomUUID() }),
         }), gone);
-        await page.waitForFunction(() => !new URL(location.href).searchParams.get('t'));
+        // The open thread lands on its neighbor (chat.js threadGone), so the URL
+        // keeps a ?t= — it just must not be the deleted thread's.
+        await page.waitForFunction(id => new URL(location.href).searchParams.get('t') !== id, gone.id);
         await input.fill('New chat draft'); goneGate.release(); await idle();
         assert.equal(await input.inputValue(), 'New chat draft', 'deleted origin cannot populate a new chat');
       }
@@ -164,7 +167,11 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       await slash('/undo');
       assert.equal(await input.inputValue(), '/undo', 'blocked undo retains command');
       assert.equal(await page.locator('.chat-queue-item').count(), 0, 'undo must not reach model queue');
-      await page.evaluate(async () => fuseToolFixture.api('/__fixture/finish/' + fuseToolFixture.runInfo().id, { method: 'POST' }));
+      // The fixture's finish gate registers when the mocked model stream starts;
+      // finishing earlier is a no-op and idle() would then time out.
+      await page.waitForFunction(() => (document.querySelector('.chat-log')?.innerText || '').includes('Working before the queued instruction'));
+      const finished = await page.evaluate(async () => fuseToolFixture.api('/__fixture/finish/' + fuseToolFixture.runInfo().id, { method: 'POST' }));
+      assert.equal(finished.ok, true, 'the run must reach the fixture gate before it is finished');
       await idle();
       assert.equal(await page.evaluate(() => fuseToolFixture.snapshot().some(msg => msg.content === '/undo')), false);
       await context.close();
