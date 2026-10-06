@@ -398,6 +398,19 @@ class LifecycleContract(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(view["termination_confirmed"])
         self.assertEqual(view["output"], "last known output")
 
+    async def test_connector_nonzero_exit_is_a_completed_command(self):
+        # A command that ran and exited nonzero must come back as its exit
+        # code. Regresses the undefined `combined` that interrupted every one.
+        with patch.object(ws, "_rate_ok"), patch.object(ws, "_agent_call", AsyncMock(return_value={
+                "ok": False, "exit": 2, "out": "", "err": "no such file\n", "error": "no such file",
+                "truncated": False})):
+            rec = self.launch(ws._make_agent_runner(1, 2, "mock", "/repo", 1000))
+            await rec["task"]
+        _, view = jobs.render(rec)
+        self.assertEqual(view["state"], "completed")
+        self.assertEqual(view["exit_code"], 2)
+        self.assertIn("no such file", view["output"])
+
     async def test_connector_busy_is_not_a_completed_shell_exit(self):
         with patch.object(ws, "_rate_ok"), patch.object(ws, "_agent_call", AsyncMock(return_value={
                 "ok": False, "exit": 1, "error": "agent is busy"})):

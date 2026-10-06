@@ -1602,7 +1602,7 @@ def _make_agent_runner(user_id, host_id, command: str, cwd: str, timeout_ms: int
             # Connectors flag deadline kills so a killed command is not
             # misreported as a completed exit-1 run (parity with SSH).
             raise command_jobs.CommandTimedOut(termination_confirmed=data.get("termination_confirmed") is True)
-        if not data.get("ok") and not combined and data.get("error") in ("agent is busy", "exec failed", "cancelled"):
+        if not data.get("ok") and not (res.stdout or res.stderr or err_parts) and data.get("error") in ("agent is busy", "exec failed", "cancelled"):
             raise WorkspaceError("connector could not execute command: " + data["error"])
         return _ExecResult(res.exit_status, "")
 

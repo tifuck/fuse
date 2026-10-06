@@ -134,6 +134,53 @@ int main(void) {
         assert(b64(bin, 3, b64ok, sizeof(b64ok)) == 0);
         assert(b64(bin, 3, b64small, sizeof(b64small)) == -1);
     }
+    /* Truncation tracks output clipping, not file content: a file that
+     * mentions the marker text must still read back as complete. */
+    f = fopen(path, "wb");
+    assert(f);
+    assert(fputs("int clipped = (out && strstr(out, \"[fuse-agent: output truncated]\")) ||\n", f) >= 0);
+    assert(fclose(f) == 0);
+    {
+        cJSON *rd = cJSON_CreateObject();
+        cJSON_AddStringToObject(rd, "id", "rdjob");
+        cJSON_AddStringToObject(rd, "op", "read");
+        cJSON_AddStringToObject(rd, "path", path);
+        cJSON_AddNumberToObject(rd, "offset", 1);
+        cJSON_AddNumberToObject(rd, "limit", 10);
+        int before = g_out_n;
+        handle_job(NULL, rd);
+        cJSON_Delete(rd);
+        assert(g_out_n == before + 1);
+        int last = (g_out_tail + OUT_QMAX - 1) % OUT_QMAX;
+        char frame[4096];
+        assert(g_outq[last].n < sizeof(frame));
+        memcpy(frame, g_outq[last].data, g_outq[last].n);
+        frame[g_outq[last].n] = 0;
+        cJSON *res = cJSON_Parse(frame);
+        assert(res);
+        assert(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(res, "ok")));
+        assert(cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(res, "truncated")));
+        cJSON_Delete(res);
+    }
+    /* A lone control frame must be handed back to the session loop. Reading
+     * on for a next frame blocks for the I/O timeout and drops the session. */
+    {
+        struct tls t;
+        memset(&t, 0, sizeof(t));
+        t.fd = -1;
+        unsigned char frame[] = {0x89, 0x03, 'a', 'b', 'c'};
+        memcpy(t.pb, frame, sizeof(frame));
+        t.pb_len = sizeof(frame);
+        t.pb_off = 0;
+        int op = 0;
+        size_t n = 0;
+        char *msg = ws_read_text(&t, &op, &n);
+        assert(msg);
+        assert(op == 9);
+        assert(n == 3);
+        assert(memcmp(msg, "abc", 3) == 0);
+        free(msg);
+    }
     assert(unlink(link) == 0);
     assert(unlink(path) == 0);
     assert(rmdir(dir) == 0);

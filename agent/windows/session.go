@@ -22,6 +22,10 @@ import (
 
 const wsMax = 1024 * 1024
 
+// Overridable so tests can trust httptest's certificate. Production keeps
+// the default verification.
+var tlsConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+
 // activeSession exposes the in-process session to other goroutines (tray
 // update admission). Atomic publication: the tray menu goroutine must read a
 // fully constructed session. nil in CLI/headless processes.
@@ -113,7 +117,7 @@ func dialAgent(raw string) (*websocket.Conn, error) {
 	}
 	d := websocket.Dialer{
 		HandshakeTimeout: connectTimeout * time.Millisecond,
-		TLSClientConfig:  &tls.Config{MinVersion: tls.VersionTLS12},
+		TLSClientConfig:  tlsConfig,
 	}
 	hdr := http.Header{}
 	hdr.Set("User-Agent", "fuse-agent/"+version)
@@ -122,6 +126,12 @@ func dialAgent(raw string) (*websocket.Conn, error) {
 		return nil, err
 	}
 	conn.SetReadLimit(wsMax)
+	// Default handler answers pings from the reader, so a full inbound queue
+	// stalls the pong past the server's ping budget and the socket is closed.
+	conn.SetPingHandler(func(data string) error {
+		return conn.WriteControl(websocket.PongMessage, []byte(data), time.Now().Add(ioTimeoutMS*time.Millisecond))
+	})
+	conn.SetPongHandler(func(string) error { return nil })
 	return conn, nil
 }
 

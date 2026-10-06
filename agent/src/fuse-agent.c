@@ -627,7 +627,6 @@ static int out_flush(struct tls *t) {
 
 static int ssl_read_n(struct tls *t, unsigned char *buf, size_t n) {
     size_t got = 0;
-    int64_t deadline = now_mono_ms() + IO_TIMEOUT_MS;
     while (got < n) {
         if (t->pb_off < t->pb_len) {
             size_t take = t->pb_len - t->pb_off;
@@ -645,9 +644,9 @@ static int ssl_read_n(struct tls *t, unsigned char *buf, size_t n) {
         }
         int err = SSL_get_error(t->ssl, k);
         if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
-            int64_t left = deadline - now_mono_ms();
-            if (left <= 0) return -1;
-            if (wait_ssl(t, err, (int)left) <= 0) return -1;
+            /* Fresh budget per attempt. One deadline for the whole frame let
+             * a slow but progressing read of a large frame expire. */
+            if (wait_ssl(t, err, IO_TIMEOUT_MS) <= 0) return -1;
             continue;
         }
         return -1;
@@ -727,19 +726,23 @@ static char *ws_read_text(struct tls *t, int *opcode_out, size_t *n_out) {
             for (uint64_t i = 0; i < n; i++) payload[i] ^= mask[i & 3];
         }
         payload[n] = 0;
-        if (opcode == 9) {
-            /* Answer pings inline so a fragmented message can survive an
-             * interleaved control frame (RFC 6455 5.5.1 allows this). */
-            int prc = ws_send(t, 10, payload, (size_t)n);
+        if (opcode == 9 || opcode == 10) {
+            if (!acc && opcode_out) {
+                /* Nothing in progress: hand the control frame back so the
+                 * session loop polls again. Reading on here would wait for a
+                 * next frame that may never come and then drop the session. */
+                if (n_out) *n_out = (size_t)n;
+                *opcode_out = opcode;
+                return (char *)payload;
+            }
+            /* Mid-fragment (or the hello read): answer inline so a partial
+             * message survives an interleaved control frame (RFC 6455 5.5.1). */
+            int prc = (opcode == 9) ? ws_send(t, 10, payload, (size_t)n) : 0;
             free(payload);
             if (prc != 0) {
                 free(acc);
                 return NULL;
             }
-            continue;
-        }
-        if (opcode == 10) {
-            free(payload);
             continue;
         }
         if (opcode == 1 || opcode == 2) {
@@ -826,7 +829,7 @@ static int send_chunk(const char *id, const char *stream, const char *data, size
     return rc;
 }
 
-static void send_res_tmo(struct tls *t, const char *id, int ok, int exit_code, const char *out, const char *err, const char *error, int timed_out) {
+static void send_res_tmo(struct tls *t, const char *id, int ok, int exit_code, const char *out, const char *err, const char *error, int timed_out, int clipped) {
     cJSON *o = cJSON_CreateObject();
     cJSON_AddNumberToObject(o, "v", 1);
     cJSON_AddStringToObject(o, "t", "res");
@@ -838,8 +841,8 @@ static void send_res_tmo(struct tls *t, const char *id, int ok, int exit_code, c
     if (error && error[0]) cJSON_AddStringToObject(o, "error", error);
     if (timed_out) cJSON_AddBoolToObject(o, "timeout", 1);
     cJSON_AddBoolToObject(o, "termination_confirmed", exit_code >= 0);
-    int clipped = (out && strstr(out, "[fuse-agent: output truncated]")) ||
-                  (err && strstr(err, "[fuse-agent: output truncated]"));
+    /* Reported from the operation that produced the output. Matching the
+     * marker text instead would flag any file that mentions it. */
     cJSON_AddBoolToObject(o, "truncated", clipped);
      char *s = cJSON_PrintUnformatted(o);
      cJSON_Delete(o);
@@ -854,7 +857,7 @@ static void send_res_tmo(struct tls *t, const char *id, int ok, int exit_code, c
 }
 
 static void send_res(struct tls *t, const char *id, int ok, int exit_code, const char *out, const char *err, const char *error) {
-    send_res_tmo(t, id, ok, exit_code, out, err, error, 0);
+    send_res_tmo(t, id, ok, exit_code, out, err, error, 0, 0);
 }
 
 static struct job *job_reserve(const char *id) {
@@ -892,7 +895,7 @@ static int job_cancelled(struct job *j) {
     return cancelled;
 }
 
-static int run_exec(const char *cwd, const char *cmd, int timeout_ms, char *out, size_t ocap, char *errb, size_t ecap, int *code, struct job *job, int *timed_out, int stream, const char *job_id) {
+static int run_exec(const char *cwd, const char *cmd, int timeout_ms, char *out, size_t ocap, char *errb, size_t ecap, int *code, struct job *job, int *timed_out, int stream, const char *job_id, int *clipped) {
     int outp[2], errp[2];
     /* O_CLOEXEC: exec'd commands (and daemons they spawn) must not inherit
      * job pipe fds. dup2() in the child clears CLOEXEC on stdout/stderr. */
@@ -976,6 +979,7 @@ static int run_exec(const char *cwd, const char *cmd, int timeout_ms, char *out,
             close(errp[0]);
             if (code) *code = -1; /* no reap: remote outcome remains unconfirmed */
             if (timed_out) *timed_out = by_timeout;
+            if (clipped) *clipped = out_clipped || err_clipped;
             return 0;
         }
         struct pollfd pfd[2] = {{outp[0], POLLIN, 0}, {errp[0], POLLIN, 0}};
@@ -1016,6 +1020,7 @@ static int run_exec(const char *cwd, const char *cmd, int timeout_ms, char *out,
         if (elapsed >= timeout_ms) by_timeout = 1;
     }
     const char *mark = "\n[fuse-agent: output truncated]\n";
+    if (clipped) *clipped = out_clipped || err_clipped;
     if (stream) {
         if (out_clipped) snprintf(out, ocap, "%s", mark);
         if (err_clipped) snprintf(errb, ecap, "%s", mark);
@@ -1719,8 +1724,8 @@ static void handle_job_impl(struct tls *t, cJSON *msg) {
             send_res(t, id, 0, 1, "", "", "cancelled");
             return;
         }
-        int timed_out = 0;
-        if (run_exec(cwd, cmd, timeout, out, EXEC_CAP, err, EXEC_CAP, &code, job, &timed_out, stream, id) != 0) {
+        int timed_out = 0, clipped = 0;
+        if (run_exec(cwd, cmd, timeout, out, EXEC_CAP, err, EXEC_CAP, &code, job, &timed_out, stream, id, &clipped) != 0) {
             send_res(t, id, 0, 1, "", "", "exec failed");
             return;
         }
@@ -1742,7 +1747,7 @@ static void handle_job_impl(struct tls *t, cJSON *msg) {
                 }
             }
             if (timed_out) emsg = "timed out";
-            send_res_tmo(t, id, code == 0, code, out, err, emsg, timed_out);
+            send_res_tmo(t, id, code == 0, code, out, err, emsg, timed_out, clipped);
         }
         return;
     }

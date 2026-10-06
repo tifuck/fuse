@@ -1,6 +1,63 @@
 package main
 
-import "testing"
+import (
+	"crypto/tls"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
+)
+
+func TestDialAnswersServerPing(t *testing.T) {
+	got := make(chan struct{}, 1)
+	reading := make(chan struct{})
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		select {
+		case <-reading:
+		case <-time.After(2 * time.Second):
+			return
+		}
+		c.SetPongHandler(func(string) error {
+			select {
+			case got <- struct{}{}:
+			default:
+			}
+			return nil
+		})
+		if err := c.WriteControl(websocket.PingMessage, []byte("x"), time.Now().Add(time.Second)); err != nil {
+			t.Errorf("ping: %v", err)
+			return
+		}
+		// Reading is what processes control frames; a pong never surfaces
+		// from NextReader itself.
+		c.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, _, _ = c.NextReader()
+	}))
+	defer srv.Close()
+	saved := tlsConfig
+	tlsConfig = &tls.Config{InsecureSkipVerify: true}
+	defer func() { tlsConfig = saved }()
+	conn, err := dialAgent(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	go func() { _, _, _ = conn.ReadMessage() }()
+	close(reading)
+	select {
+	case <-got:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server ping was not answered")
+	}
+}
 
 func TestPingTimeout(t *testing.T) {
 	var w connWatch
