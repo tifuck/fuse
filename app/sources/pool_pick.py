@@ -316,11 +316,16 @@ def pick_account(
     exclude = exclude or set()
     week = db.iso_week_start()
     ready = []
+    pinned = []
     for cred in creds:
         cid = int(cred["id"])
         if cid in exclude or cred["disabled"]:
             continue
-        if _cooling_down(cid):
+        # A 429 or a failed stream cools an account for seconds. Skipping the
+        # pinned one during that window sends the next turn to a cold cache.
+        # Current-request failover still works: the caller excludes what it tried.
+        cooling = _cooling_down(cid)
+        if cooling and cid != prefer_id:
             continue
         try:
             extra = accounts.cred_extra(cred)
@@ -354,15 +359,19 @@ def pick_account(
         busy = pct is not None and pct >= USAGE_BUSY
         week_tok = int(cred["week_tokens"] or 0) if cred["week_start"] == week else 0
         score = pct if pct is not None else 0.0
-        ready.append((rank, busy, score, week_tok, cid, cred, extra))
-    if not ready:
-        return None
+        row = (rank, busy, score, week_tok, cid, cred, extra)
+        if cooling:
+            pinned.append(row)
+        else:
+            ready.append(row)
     if prefer_id is not None:
         want = int(prefer_id)
-        preferred = [row for row in ready if row[4] == want]
+        preferred = [row for row in ready if row[4] == want] or pinned
         preferred = [row for row in preferred if in_flight(row[4]) < MAX_IN_FLIGHT] or preferred
         if preferred:
             return preferred[0][5], preferred[0][6]
+    if not ready:
+        return None
     primary = [row for row in ready if not row[1]] or ready
     available = [row for row in primary if in_flight(row[4]) < MAX_IN_FLIGHT] or primary
     available.sort(key=lambda row: (row[0], row[2], row[3], row[4]))

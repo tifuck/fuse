@@ -63,7 +63,11 @@ def for_model(messages, model):
                 ident = str(call.get("id") or "")
                 replacement = ident
                 if not replacement or replacement in seen:
-                    replacement = "fuse_" + hashlib.sha256(f"{index}:{call_index}:{ident}".encode()).hexdigest()[:32]
+                    # Hash the original id, not this row's position. An insert
+                    # above a collision must not rename every later call.
+                    replacement = "fuse_" + hashlib.sha256(f"{call_index}:{ident}".encode()).hexdigest()[:32]
+                    while replacement in seen:
+                        replacement = "fuse_" + hashlib.sha256(replacement.encode()).hexdigest()[:32]
                 seen.add(replacement)
                 pending[ident] = replacement
                 calls.append({**call, "id": replacement})

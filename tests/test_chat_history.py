@@ -266,6 +266,11 @@ class OutputAndModelTest(unittest.TestCase):
         ids = [wire[i]["tool_calls"][0]["id"] for i in (0, 2, 4)]
         self.assertEqual(len(set(ids)), 3)
         self.assertEqual([wire[i]["tool_call_id"] for i in (1, 3, 5)], ids)
+        shifted = [{"role": "user", "content": "inserted"}, *rows]
+        self.assertEqual(
+            [m["tool_calls"][0]["id"] for m in memory.for_model(shifted, "glm-5.3") if m.get("tool_calls")],
+            ids,
+        )
         self.assertEqual(rows[2]["tool_calls"][0]["id"], "same")
 
     def test_full_replay_has_separate_internal_transport_budget(self):

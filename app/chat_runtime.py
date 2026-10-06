@@ -2527,9 +2527,11 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
     if coding and not loaded_tools and not is_child:
         from .agent_catalog import default_loaded_for_child
 
-        if project_session or bound_host_id:
-            loaded_tools.extend(default_loaded_for_child(kind or "general-purpose"))
-        else:
+        # The workspace pack is part of the cached prefix. Loading it on the
+        # first search_tools would change the tools array (and, next turn, the
+        # system prompt) and discard the cache. Children already preload it.
+        loaded_tools.extend(default_loaded_for_child(kind or "general-purpose"))
+        if not project_session and not bound_host_id:
             loaded_tools.extend(ARTIFACT_TOOL_IDS)
     if kind == "explore":
         from .agent_catalog import EXPLORE_TOOLS
@@ -2613,6 +2615,11 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
     work = [{"role": "system", "content": system}, *model_messages]
     work = _inject_session_tail(work, _session_tail_block(_artifact_lines(artifacts.list_for_prompt(user["id"], thread_id))))
     payload = {"model": model.strip(), "messages": work, "stream": True}
+    if thread_id is not None and "prompt_cache_key" not in payload:
+        # One cache identity for the life of the chat. The fallback hashes the
+        # system prompt and tool names, so a tool load or an edit would hop
+        # accounts and miss the prefix cache on every provider.
+        payload["prompt_cache_key"] = f"thread:{thread_id}"
     effort = raw.get("reasoning_effort")
     if effort is not None:
         if not isinstance(effort, str) or effort not in api._REASONING_EFFORTS:
@@ -2667,6 +2674,8 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
         start_i = _completion_start_index(agent, messages, completion_limit)
 
         async def persist_jobs(jobs=None):
+            # Always the stored transcript, never a pruned or clipped copy.
+            current_messages[:] = transcript
             if not run_id:
                 return
             try:
@@ -2690,9 +2699,14 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             except Exception:
                 logger.exception("Chat transcript checkpoint failed for %s", run_id)
 
+        # Canonical transcript. Prune, clip, and the one-shot no-tools fallback
+        # rewrite a copy for the provider only; persisting that copy would make
+        # the next turn's prefix differ from what was cached.
+        transcript = current_messages
+
         invoke = agent.get("invoke_skill") if isinstance(agent.get("invoke_skill"), dict) else None
         if coding and invoke:
-            current_messages, preload_event = apply_skill_preload(
+            transcript, preload_event = apply_skill_preload(
                 current_messages,
                 user_id=user["id"],
                 run_id=str(run_id or ""),
@@ -2851,7 +2865,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             boot["used"], boot["limit"], estimated=False, prior_used=prior_used
         ):
             yield _sse(ctxmod.context_event({**boot, "compacting": True}, phase="compacting"))
-            current_messages, boot, kind = await _compact_current(
+            transcript, boot, kind = await _compact_current(
                 current_messages,
                 request=request,
                 user=user,
@@ -2875,7 +2889,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             boot["standing"] = True
             if real:
                 last_round_usage = {}
-                current["messages"] = current_messages
+                current["messages"] = transcript
                 yield _sse(ctxmod.context_event({**boot, "compacting": False}, phase="compacted"))
                 yield _sse(ctxmod.compact_handoff_event(ctxmod.prior_handoff(current_messages)))
             else:
@@ -2884,17 +2898,17 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 yield _sse(ctxmod.context_event(boot, phase="update"))
             _persist_meter(boot)
         clipped_rows, clipped_n = ctxmod.clip_to_fit(
-            current_messages, limit=boot["limit"], tools=current.get("tools"), calibration=calibration
+            transcript, limit=boot["limit"], tools=current.get("tools"), calibration=calibration
         )
         if clipped_n:
             # Compaction cannot shrink a single oversized message; a hard
-            # clip beats a terminal context-overflow failure.
+            # clip beats a terminal context-overflow failure. The clip is the
+            # outgoing copy only — the stored transcript keeps the full text.
             current_messages = clipped_rows
             boot = _live_meter(estimated=True)
             yield _sse({"fuse": {"event": "notice", "message": "A very large message was truncated to fit the context window."}})
             yield _sse(ctxmod.context_event(boot, phase="update"))
             _persist_meter(boot)
-            await persist_jobs()
 
         await persist_jobs()
         completion_i = start_i
@@ -2967,7 +2981,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     # No thread bubble or notice is emitted: the hand-off is
                     # provider-side only (the wake banner exists solely for the
                     # idle-thread path) and the UI stays as-is by design.
-                    current_messages.append({"role": "user", "content": block})
+                    transcript.append({"role": "user", "content": block})
                     await persist_jobs()
                     command_delivery_ids = []
                 steered = store.take_steers(str(run_id)) if not is_child else []
@@ -2982,7 +2996,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     # User steers are real chat messages (already visible in
                     # the thread); they land here at the next tool boundary.
                     for item in steered:
-                        current_messages.append(store.steer_message(item))
+                        transcript.append(store.steer_message(item))
                     await persist_jobs()
                     # A new user instruction gets a real response budget, not
                     # the exhausted turn's text-only wrap-up round.
@@ -3002,7 +3016,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     followups = [t for t in followups if t not in delivered_local]
                     delivered_local.update(followups)
                 if followups:
-                    current_messages.append(
+                    transcript.append(
                         {
                             "role": "user",
                             "content": (
@@ -3029,8 +3043,8 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     and last_compact_used is None):
                 yield _sse(ctxmod.context_event({**preflight, "compacting": True}, phase="compacting"))
                 before_compact_used = preflight["used"]
-                current_messages, preflight, kind = await _compact_current(
-                    current_messages, request=request, user=user, model=model,
+                transcript, preflight, kind = await _compact_current(
+                    transcript, request=request, user=user, model=model,
                     type_id=src_type or src_type_guess, trigger="auto", thread_id=thread_id,
                     tools=current.get("tools"), override=preflight["limit"], is_child=is_child,
                     calibration=calibration, run_id=run_id, agent=agent)
@@ -3042,11 +3056,11 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 yield _sse(ctxmod.context_event(preflight, phase="compacted" if kind in ("summarize", "truncate") else "update"))
                 _persist_meter(preflight)
                 await persist_jobs()
-            current_messages, clipped_n = ctxmod.clip_to_fit(
-                current_messages, limit=preflight["limit"], tools=current.get("tools"), calibration=calibration)
+            clipped_rows, clipped_n = ctxmod.clip_to_fit(
+                transcript, limit=preflight["limit"], tools=current.get("tools"), calibration=calibration)
             if clipped_n:
+                current_messages = clipped_rows
                 yield _sse({"fuse": {"event": "notice", "message": "A very large message was truncated to fit the context window."}})
-                await persist_jobs()
             _user = user
             src = None
             upstream = ""
@@ -3193,6 +3207,8 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     and schemas
                 )
                 if first_tools_request and _TOOLS_UNSUPPORTED.search(msg or ""):
+                    # One-shot compatibility path. Folding tools into text changes
+                    # the prefix, so it stays on this request's copy only.
                     api._safe_record_usage(
                         _user["id"], src.source_id, result.credential_id, upstream,
                         result.usage, key_id=_user.get("key_id"), provider=src.type_id,
@@ -3433,7 +3449,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 extra_wrap = False
                 if run_id and not is_child and not store.close_steer_window(str(run_id)):
                     if summary.get("content"):
-                        current_messages.append({"role": "assistant", "content": str(summary["content"]), **_native_reasoning(summary.get("reasoning"), model, summary.get("thinking"))})
+                        transcript.append({"role": "assistant", "content": str(summary["content"]), **_native_reasoning(summary.get("reasoning"), model, summary.get("thinking"))})
                     dropped_tools = True
                     extra_wrap = True
                     completion_i += 1
@@ -3448,16 +3464,16 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 length_salvages += 1
                 partial = str(summary.get("content") or "")
                 if partial:
-                    current_messages.append({"role": "assistant", "content": partial, **_native_reasoning(summary.get("reasoning"), model, summary.get("thinking"))})
+                    transcript.append({"role": "assistant", "content": partial, **_native_reasoning(summary.get("reasoning"), model, summary.get("thinking"))})
                 if incomplete_calls:
                     # A response cut off mid-arguments must not be continued
                     # mid-string: the model would emit only the JSON tail and
                     # the executed fragments poison the transcript. Demand a
                     # full re-issue of the call instead.
-                    current_messages.append({"role": "user", "content": _TOOL_CONTINUE})
+                    transcript.append({"role": "user", "content": _TOOL_CONTINUE})
                     notice = "A tool call came back truncated — asking the model to re-issue it in full."
                 else:
-                    current_messages.append({"role": "user", "content": _LENGTH_CONTINUE})
+                    transcript.append({"role": "user", "content": _LENGTH_CONTINUE})
                     notice = "Output hit the token limit — continuing from where it stopped."
                 await persist_jobs()
                 yield _sse(
@@ -3493,7 +3509,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                         )
                     if not note.startswith("[Fuse]"):
                         note = "[Fuse] " + note + " Server-added notice, not user input."
-                    current_messages.append({"role": "user", "content": note})
+                    transcript.append({"role": "user", "content": note})
                     completion_i += 1
                     extra_wrap = False
                     continue
@@ -3501,7 +3517,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     # A queued instruction may arrive during a text-only reply.
                     # Give it a real next round rather than finishing silently.
                     if summary.get("content"):
-                        current_messages.append({"role": "assistant", "content": str(summary["content"]), **_native_reasoning(summary.get("reasoning"), model, summary.get("thinking"))})
+                        transcript.append({"role": "assistant", "content": str(summary["content"]), **_native_reasoning(summary.get("reasoning"), model, summary.get("thinking"))})
                     await persist_jobs()
                     completion_i += 1
                     extra_wrap = True
@@ -3520,7 +3536,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     )
                 if run_id and not is_child and not store.close_steer_window(str(run_id)):
                     if summary.get("content"):
-                        current_messages.append({"role": "assistant", "content": str(summary["content"]), **_native_reasoning(summary.get("reasoning"), model, summary.get("thinking"))})
+                        transcript.append({"role": "assistant", "content": str(summary["content"]), **_native_reasoning(summary.get("reasoning"), model, summary.get("thinking"))})
                     dropped_tools = True
                     extra_wrap = True
                     completion_i += 1
@@ -3555,7 +3571,8 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             if jobs:
                 tool_msgs = _tool_messages(jobs, content=str(summary.get("content") or ""))
                 tool_msgs[0].update(_native_reasoning(summary.get("reasoning"), model, summary.get("thinking")))
-                current_messages = current_messages + tool_msgs
+                transcript = transcript + tool_msgs
+                current_messages = transcript
                 agent["allowed_urls"] = list(allowed_urls)
                 agent["search_queries"] = budgets.get("search_queries", 0)
                 agent["fetches"] = budgets.get("fetches", 0)
@@ -3581,8 +3598,8 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 if do_compact:
                     yield _sse(ctxmod.context_event({**tool_meter, "compacting": True}, phase="compacting"))
                     before_compact_used = tool_meter["used"]
-                    current_messages, tool_meter, kind = await _compact_current(
-                        current_messages,
+                    transcript, tool_meter, kind = await _compact_current(
+                        transcript,
                         request=request,
                         user=user,
                         model=model,
@@ -3613,11 +3630,12 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     yield _sse(ctxmod.context_event(tool_meter, phase="compacted" if real else "update"))
                     _persist_meter(tool_meter)
                 clipped_rows, clipped_n = ctxmod.clip_to_fit(
-                    current_messages, limit=tool_meter["limit"], tools=current.get("tools"), calibration=calibration
+                    transcript, limit=tool_meter["limit"], tools=current.get("tools"), calibration=calibration
                 )
                 if clipped_n:
                     # Prune/compact could not get under the window (e.g. one
-                    # giant result on a non-compactable short turn).
+                    # giant result on a non-compactable short turn). Outgoing
+                    # only: the stored transcript keeps the full tool bodies.
                     current_messages = clipped_rows
                     tool_meter = _live_meter()
                     yield _sse({"fuse": {"event": "notice", "message": "A very large message was truncated to fit the context window."}})
@@ -3640,7 +3658,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 if (
                     session.pop("project_promoted", None)
                     and current_messages
-                    and current_messages[0].get("role") == "system"
+                    and transcript[0].get("role") == "system"
                 ):
                     # The chat just became a project session mid-turn: reload AGENTS.md
                     # and re-render the system prompt so the project framing (and its
@@ -3673,8 +3691,8 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                         bound_cwd=session.get("bound_cwd") or "",
                         only_bound=is_child,
                     )
-                    current_messages[0] = {
-                        **current_messages[0],
+                    transcript[0] = {
+                        **transcript[0],
                         "content": build_system_prompt(
                             instructions=prefs["instructions"],
                             profile=prefs["profile"],
@@ -3733,7 +3751,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     )
                     extra_wrap = True
                     dropped_tools = True
-                    current_messages.append({"role": "user", "content": _STALL_WRAP})
+                    transcript.append({"role": "user", "content": _STALL_WRAP})
                     await persist_jobs()
                     completion_i += 1
                     continue
@@ -3754,19 +3772,14 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     )
                     extra_wrap = True
                     dropped_tools = True
-                    if current_messages and current_messages[0].get("role") == "system":
-                        current_messages = [
-                            {
-                                **current_messages[0],
-                                "content": (current_messages[0].get("content") or "") + "\n\n" + _STALL_WRAP,
-                            },
-                            *current_messages[1:],
-                        ]
+                    # A user row, not a system edit: rewriting messages[0] would
+                    # change the cached prefix of every later turn.
+                    transcript.append({"role": "user", "content": _STALL_WRAP})
                     await persist_jobs()
                     completion_i += 1
                     continue
                 if same_calls == STATIONARITY_NUDGE:
-                    current_messages.append({"role": "user", "content": _STATIONARITY_NUDGE})
+                    transcript.append({"role": "user", "content": _STATIONARITY_NUDGE})
             completion_i += 1
         if final_text:
             last = current_messages[-1] if current_messages else None
@@ -3776,7 +3789,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 and not last.get("tool_calls")
                 and str(last.get("content") or "").strip() == str(final_text).strip()
             ):
-                current_messages.append({"role": "assistant", "content": final_text,
+                transcript.append({"role": "assistant", "content": final_text,
                     **(_native_reasoning((summary or {}).get("reasoning"), model, (summary or {}).get("thinking"))
                        if (summary or {}).get("content") == final_text else {})})
         await persist_jobs()

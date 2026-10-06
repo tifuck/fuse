@@ -901,6 +901,10 @@ def _requested_effort(body: dict, model: str) -> str | None:
     return key
 
 
+def _mark_cache_breakpoint(block: dict) -> None:
+    block["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
+
+
 def build_messages_payload(body: dict, model: str) -> dict:
     system: list[dict] = []
     messages: list[dict] = []
@@ -976,7 +980,6 @@ def build_messages_payload(body: dict, model: str) -> dict:
     identity = {
         "type": "text",
         "text": "You are Claude Code, Anthropic's official CLI for Claude.",
-        "cache_control": {"type": "ephemeral"},
     }
     payload["system"] = [identity, *system]
     tools = []
@@ -997,6 +1000,23 @@ def build_messages_payload(body: dict, model: str) -> dict:
         )
     if tools:
         payload["tools"] = tools
+    # One TTL everywhere: a 1h breakpoint after a 5m one is rejected. The
+    # identity line alone cached nothing; the real prefix is the system prompt
+    # and the tool schemas. The third breakpoint covers history up to the last
+    # completed turn, so a new turn appends instead of re-billing it.
+    _mark_cache_breakpoint(payload["system"][-1])
+    if tools:
+        _mark_cache_breakpoint(tools[-1])
+    # The final user turn is the new suffix. Cache through the assistant turn
+    # before it, which the next request replays unchanged.
+    cached = messages
+    if len(messages) >= 2 and messages[-1].get("role") == "user":
+        cached = messages[:-1]
+    for block in reversed(cached):
+        content = block.get("content")
+        if isinstance(content, list) and content and isinstance(content[-1], dict):
+            _mark_cache_breakpoint(content[-1])
+            break
     choice = _tool_choice(body.get("tool_choice"), body.get("parallel_tool_calls"))
     effort = _requested_effort(body, model)
     # A forced tool choice is illegal while thinking is on. Claude Code demotes it.

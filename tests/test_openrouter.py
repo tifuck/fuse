@@ -216,6 +216,10 @@ class ProviderRoutingTest(unittest.TestCase):
             payload["provider"],
             {"only": ["relace", "morph"], "data_collection": "deny", "zdr": True, "allow_fallbacks": True},
         )
+        pinned = or_mod._chat_payload(
+            {"messages": []}, "z-ai/glm-5.3", free=False, session_id="thread-1", prefs=self.PREFS
+        )
+        self.assertFalse(pinned["provider"]["allow_fallbacks"])
 
     def test_other_models_get_privacy_only(self):
         payload = or_mod._chat_payload({"messages": []}, "x-ai/grok-4.6", free=False, prefs=self.PREFS)

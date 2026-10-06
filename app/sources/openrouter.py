@@ -818,6 +818,10 @@ def _chat_payload(
         max_price["completion"] = 0
         provider["max_price"] = max_price
         provider["allow_fallbacks"] = True
+    elif session_id:
+        # A fallback provider has a cold cache. OpenRouter's own sticky routing
+        # still moves off this provider if it is down.
+        provider["allow_fallbacks"] = False
     else:
         provider.setdefault("allow_fallbacks", True)
     payload["provider"] = provider

@@ -17,6 +17,7 @@ from app.sources import grok as grok_mod
 from app.sources import ollama as ollama_mod
 from app.sources import pool_session
 from app.sources import zai as zai_mod
+from app.sources import pool_pick
 from app.sources.pool_pick import USAGE_BUSY, chatgpt_plan_type, pick_account, reset_health
 from app.sources.pool_session import (
     TTL_SECONDS,
@@ -202,6 +203,15 @@ class PoolSessionTest(unittest.TestCase):
         ok = _cred(105, pct=40.0)
         picked, _ = pick_account([busy, ok], kind="grok", prefer_id=104)
         self.assertEqual(picked["id"], 104)
+
+        pool_pick.note_failure(104, cooldown_seconds=60)
+        self.addCleanup(pool_pick.reset_health)
+        picked, _ = pick_account([busy, ok], kind="grok", prefer_id=104)
+        self.assertEqual(picked["id"], 104)
+        picked, _ = pick_account([busy, ok], kind="grok")
+        self.assertEqual(picked["id"], 105)
+        picked, _ = pick_account([busy, ok], kind="grok", prefer_id=104, exclude={104})
+        self.assertEqual(picked["id"], 105)
         picked, _ = pick_account([busy, ok], kind="grok")
         self.assertEqual(picked["id"], 105)
 
