@@ -56,7 +56,13 @@ async def fake_model(request, user, raw, **kwargs):
                         # Deliberately flush leftover tokens after HTTP acceptance
                         # but before the next model request consumes the steer.
                         yield b'data: {"choices":[{"delta":{"content":"PREVIOUS_TAIL"}}]}\n\n'
-                        await asyncio.sleep(1.0 if "slow-steer" in text else 0.2)
+                        # A held steer models a long-running command: the run is
+                        # quiet but still heartbeats (and so checkpoints), like
+                        # the tool-wait loop in production.
+                        hold = 6.0 if "hold-steer" in text else 1.0 if "slow-steer" in text else 0.2
+                        for _ in range(int(hold / 0.5)):
+                            await asyncio.sleep(0.5)
+                            yield b'data: {"fuse":{"event":"heartbeat"}}\n\n'
                         for item in pending:
                             transcript.append({"role": "user", "content": chat_store.steer_envelope(item["id"], item["text"])})
                         chat_store.save_turn_progress(run_id, transcript)

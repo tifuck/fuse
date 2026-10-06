@@ -168,6 +168,32 @@ class ChatQueueTest(unittest.TestCase):
             store.steer_turn(2, self.thread["id"], "Intruder", "other-user")
         self.assertEqual(self.view()["messages"], before)
 
+    def test_undelivered_steer_continuation_clock_advances(self):
+        def beat(elapsed):
+            message = {"content": "Old work", "reasoning": "", "elapsedMs": elapsed, "tools": [],
+                       "segments": [{"type": "content", "text": "Old work"}]}
+            store.checkpoint(self.run["id"], message)
+
+        self.checkpoint("Old work")
+        store.steer_turn(1, self.thread["id"], "Change direction", "clock-1")
+        # Heartbeats during the undelivered window (e.g. a long command still
+        # running) keep checkpointing the run; the served continuation clock
+        # must advance at the same rate a live client ticks, or every reload
+        # restarts the dock clock from zero.
+        beat(4000)
+        self.assertEqual(self.view()["messages"][-1]["elapsedMs"], 3000)
+        beat(5000)
+        self.assertEqual(self.view()["messages"][-1]["elapsedMs"], 4000)
+        pending = store.take_steers(self.run["id"])
+        store.save_turn_progress(self.run["id"], [{"role": "user", "content": store.steer_envelope(p["id"], p["text"])} for p in pending])
+        store.seal_steer_display(self.run["id"], [p["id"] for p in pending])
+        beat(6000)
+        msgs = self.view()["messages"]
+        # No snap-down at delivery: the clock keeps the same origin, and the
+        # frozen prefix keeps exactly its acceptance-time work.
+        self.assertEqual(msgs[-1]["elapsedMs"], 5000)
+        self.assertEqual(msgs[1]["elapsedMs"], 1000)
+
     def test_steer_fragments_have_own_duration_and_usage_not_run_totals(self):
         def checkpoint(text, ms, output):
             message = {"content": text, "reasoning": "", "elapsedMs": ms,

@@ -1765,7 +1765,13 @@ def _advance_steer_display(request, message):
     for part in parts:
         if part.get("awaiting_delivery"):
             part["end"] = _display_mark(message)
-            part["elapsedMs"] = message.get("elapsedMs")
+            # The boundary's clock stays at acceptance time. Re-pinning it to
+            # the growing total would hold the continuation's sliced elapsedMs
+            # at 0 for the whole undelivered window (e.g. a long command still
+            # running), so the live dock clock and every reloaded snapshot
+            # would disagree and each refresh restarts the clock from zero.
+            if "elapsedMs" not in part:
+                part["elapsedMs"] = message.get("elapsedMs")
             prefix = _display_slice(message, start, part["end"])
             part["hidden"] = not any(prefix.get(key) for key in ("content", "reasoning", "tools", "permissions"))
         start = part["end"]

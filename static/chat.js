@@ -3456,11 +3456,27 @@
     const old = new Map(messages.map((msg) => [msg.id, msg]));
     const previousReply = old.get(activeRun?.message_id);
     if (previousReply && activeRun?.id === data.run?.id) {
+      // The steer response freezes the run's *durable* row, which can lag the
+      // streamed patches by up to a flush interval — the snapshot's frozen
+      // text may be shorter or longer than what this client holds. Accept a
+      // prefix in either direction (one side is always a prefix of the other
+      // at a steer); otherwise the in-place re-key below never runs and the
+      // relocated node visibly jumps the transcript.
+      const prefixEither = (a, b) => !b || a.startsWith(b) || b.startsWith(a);
+      const prevTools = previousReply.tools || [];
       const frozen = data.messages.find(msg => msg.role === "assistant" && msg.tools_live && !old.has(msg.id) &&
         (previousReply.content || previousReply.reasoning || previousReply.tools?.length) &&
-        String(msg.content || "").startsWith(previousReply.content || "") && String(msg.reasoning || "").startsWith(previousReply.reasoning || "") &&
-        (previousReply.tools || []).every(tool => (msg.tools || []).some(next => next.id === tool.id)));
+        prefixEither(String(msg.content || ""), previousReply.content || "") && prefixEither(String(msg.reasoning || ""), previousReply.reasoning || "") &&
+        (!(msg.tools || []).length || !prevTools.length ||
+          (msg.tools || []).every(tool => prevTools.some(p => p.id === tool.id)) ||
+          prevTools.every(tool => (msg.tools || []).some(next => next.id === tool.id))));
       if (frozen) {
+        // A stale snapshot would drop the streamed tail until the next
+        // checkpoint update arrives; keep the client's longer text.
+        if (String(frozen.content || "").length < String(previousReply.content || "").length ||
+            String(frozen.reasoning || "").length < String(previousReply.reasoning || "").length) {
+          for (const key of ["content", "reasoning", "segments"]) if (previousReply[key] != null) frozen[key] = previousReply[key];
+        }
         for (const key of ["stepOpen", "activityOpenMap"]) if (previousReply[key]) frozen[key] = { ...previousReply[key] };
         const node = [...log.children].find(el => el.dataset.messageId === previousReply.id);
         if (node) { node.dataset.messageId = frozen.id; node._rebind?.(frozen); }
@@ -3713,6 +3729,10 @@
             agentTraceRenderAt = Date.now();
             reconcileAgentTraces([...agentLifecycle.values()]);
           }
+          // Updates only exist once a steer split the reply (display_parts);
+          // they resize frozen-prefix articles above the reading position, so
+          // hold the viewport across the synchronous repaint.
+          const updateViewport = captureThreadViewport();
           for (const update of payload.updates || []) {
             const index = messages.findIndex((item) => item.id === update.id);
             if (index < 0) { await reconcileThread(); break; }
@@ -3720,6 +3740,7 @@
             const article = articleFor(messages[index]);
             if (article) updateAssistant(article, messages[index], false);
           }
+          restoreThreadViewport(updateViewport);
           viewCursor = event.id;
           threadWatermark = event.id;
           schedulePaintLast();
@@ -4033,7 +4054,10 @@
   function snapThread() {
     if (!thread || !stickToBottom) return;
     const target = threadFollowTarget();
-    if (Math.abs(target - thread.scrollTop) > 0.5) thread.scrollTop = target;
+    // Tolerate a rounding pixel: fractional console geometry can flip the
+    // integer scrollHeight by 1px, and correcting that flip makes the whole
+    // viewport oscillate a pixel; real growth is a line or more.
+    if (Math.abs(target - thread.scrollTop) > 1) thread.scrollTop = target;
     lastThreadScrollTop = thread.scrollTop;
     syncLatest();
   }
@@ -7192,7 +7216,10 @@
     }
     const nextMeta = meta || "";
     if (tail.textContent !== nextMeta) tail.textContent = nextMeta;
-    tail.hidden = !nextMeta;
+    const hideTail = !nextMeta;
+    // Toggling hidden on every tick reflows the in-flow dock and can flip the
+    // transcript extent by a rounding pixel; only touch it on a real change.
+    if (tail.hidden !== hideTail) tail.hidden = hideTail;
     if (verb.textContent === text) return;
     const first = !verb.textContent;
     verb.textContent = text;
@@ -7709,10 +7736,11 @@
     const text = formatActivityElapsed(liveElapsedSeconds(msg, live), live);
     elapsedEls.forEach((el) => {
       if (el.closest("[data-live-status]")) {
-        el.textContent = text;
+        if (el.textContent !== text) el.textContent = text;
         return;
       }
-      el.textContent = el.closest("[data-activity]")?.classList.contains("is-waiting") ? "" : text;
+      const next = el.closest("[data-activity]")?.classList.contains("is-waiting") ? "" : text;
+      if (el.textContent !== next) el.textContent = next;
     });
   }
 
