@@ -54,8 +54,8 @@ function scenarios() {
     const cmd = sh('python -m pytest -q tests/', { running: true, ms: 12000, output: TESTOUT, description: 'Run the test suite' });
     return { rows: [user('Go.'), turn([think('Look.', 4000), T(read), T(cmd)], [read, cmd])], live: true, phase: 'tools',
       truth: { call: { [read.id]: 'done', [cmd.id]: 'running' }, exec: { [cmd.command_id]: 'running' } },
-      has: ['Thought for 4s, read 1 file', 'Running the test suite · 1', '$ python -m pytest -q tests/ (3 lines)'],
-      lacks: ['Running the test suite · 12s…', 'timeout'] };
+      has: ['Thought for 4s, read 1 file', 'Running the test suite · 1', '(timeout: 2m)', '$ python -m pytest -q tests/ (3 lines)'],
+      lacks: ['Running the test suite · 12s…', '· timeout'] };
   });
   add('a running search stays its own row; the line above stays settled', () => {
     const a = tool('grep', { pattern: 'retries', path: '/srv/qa/app', output: 'app/x.py:1:retries\n' });
@@ -108,7 +108,7 @@ function scenarios() {
     const b = tool('grep', { pattern: 'maxPlayers', path: '/srv/qa', output: 'serverGS.cfg:3:maxPlayers = 60\n' });
     return { rows: [user('Go.'), turn([think('Start.', 2000), T(cmd), T(a), think('Check.', 3000), T(b), say('Starting.')], [cmd, a, b])], live: true, phase: 'model',
       truth: { call: { [cmd.id]: 'done', [a.id]: 'done', [b.id]: 'done' }, exec: { bg1: 'running' } },
-      has: ['Bash(./GameServer -config=serverGS.cfg) · 1m 3', 'Running in the background'], lacks: ['ran 1 shell command'] };
+      has: ['Bash(./GameServer -config=serverGS.cfg) · 1m 3', 'Running in the background', '(timeout: 2m)'], lacks: ['ran 1 shell command'] };
   });
   add('a monitor event leads with its description; "+N lines" opens the rest', () => {
     const mon = tool('monitor', { description: 'Game startup milestones in new log', command: 'tail -F x.log', background: true, child_id: 'mon1', command_id: 'mon1', execution_status: 'running', state: 'running', timeout_ms: 300000 });
@@ -116,7 +116,7 @@ function scenarios() {
       '19:54:15 SUCCESS: SteamGameServer_Init(0,8766)\n19:54:16 SUCCESS: Mission read\n19:54:17 SUCCESS: Server ready\n19:54:18 SUCCESS: Steam OK\n19:54:19 SUCCESS: Players 0/60\n</monitor_event>';
     return { rows: [user('Go.'), turn([say('Watching.\n\n'), T(mon)], [mon], ended), user(event, { auto: true })],
       truth: { call: { [mon.id]: 'done' }, exec: { mon1: 'running' }, monitor: { mon1: 'Game startup milestones in new log' } },
-      has: ['Monitor event: Game startup milestones in new log', '19:54:15 SUCCESS', '… +2 lines', 'Monitor started · task mon1 · timeout 300s'],
+      has: ['Monitor event: Game startup milestones in new log', '19:54:15 SUCCESS', '… +2 lines', 'Monitor started · task mon1', '(timeout: 5m)'],
       lacks: ['19:54:19'], expand: { click: '.is-event [data-step-toggle].is-event-more', has: ['19:54:19 SUCCESS: Players 0/60'] } };
   });
   // A settled command folds into its summary line; as the newest call of a

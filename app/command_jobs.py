@@ -1020,6 +1020,22 @@ def arm_background(rec: dict, limit_ms: int = BACKGROUND_DEFAULT_MS) -> None:
     mark_background(rec)
 
 
+def call_timeout_ms(rec: dict) -> int | None:
+    """The deadline the row should name, not the kill budget stored on the job.
+
+    A foreground command's stored timeout is its wait plus the 30 minutes it is
+    handed when it moves to the background; the row shows the wait, which is
+    what expires next. Once it has moved, or it started in the background, the
+    stored timeout is the deadline. A monitor's stored timeout is its watch.
+    """
+    timeout = int(rec.get("timeout_ms") or 0)
+    if not timeout:
+        return None
+    if rec.get("background") or _is_monitor(rec):
+        return timeout
+    return max(1_000, timeout - BACKGROUND_DEFAULT_MS)
+
+
 def output_fields(rec: dict) -> dict:
     """Authoritative retained output, independent of model/preview clipping.
 
@@ -1192,7 +1208,7 @@ def render(rec: dict, *, tool: str = "run_terminal_command", host_label: bool = 
         "cwd": str(rec.get("cwd") or "")[:400],
         "child_id": str(rec.get("id") or ""),
         "elapsed_ms": elapsed,
-        "timeout_ms": timeout_ms or None,
+        "timeout_ms": call_timeout_ms(rec),
         "background": bool(rec.get("background")),
         "preview": tail[:800],
         "error": "",
@@ -1249,6 +1265,10 @@ async def join(job_id: str, user_id: int, wait_s: float, *, thread_id=None) -> t
     text, trace = render(rec, tool="get_command_output")
     if inspect_only and wait_s > 0:
         text += "\nEvents are injected automatically; waiting does not apply to a live monitor."
+    # A join's running trace otherwise names the command's own deadline. The
+    # row shows how long this wait itself will sit before it gives up.
+    if not inspect_only and wait_for > 0:
+        trace["timeout_ms"] = int(wait_for * 1000)
     return text, trace
 
 

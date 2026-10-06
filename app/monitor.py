@@ -250,6 +250,8 @@ def result_envelope(rec: dict) -> str:
     ]
     if rec.get("max_events"):
         lines.append(f"max_events: {int(rec['max_events'])}")
+    if rec.get("timeout_ms"):
+        lines.append(f"timeout_ms: {int(rec['timeout_ms'])}")
     if status == "completed" and rec.get("exit_code") is not None:
         lines.append(f"exit_code: {rec.get('exit_code')}")
     if rec.get("duration_ms") is not None:

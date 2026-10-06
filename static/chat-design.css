@@ -3470,6 +3470,11 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-con
   overflow: visible;
   text-overflow: unset;
 }
+/* A pending call's deadline, on the line under the call. It is dimmer than
+   the line it sits on and gone once the call settles. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-timeout {
+  color: color-mix(in srgb, var(--mist) 58%, var(--ink));
+}
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-hang:not(.is-expanded) .chat-console-out,
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-hang:not(.is-expanded) .chat-console-preview + .chat-console-out {
   display: none;

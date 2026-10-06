@@ -290,6 +290,8 @@ class MonitorDescription(unittest.TestCase):
         rec = {"id": "m1", "status": "completed", "host": "box", "command": "tail -f x", "source": "command",
                "event_count": 2, "out": "ERROR one", "description": "errors in deploy.log"}
         self.assertIn("\ndescription: errors in deploy.log\n", monitor.result_envelope(rec))
+        self.assertIn("\ntimeout_ms: 300000\n", monitor.result_envelope({**rec, "timeout_ms": 300_000}))
+        self.assertNotIn("timeout_ms:", monitor.result_envelope(rec))
         self.assertIn("\ndescription: errors in deploy.log\n", monitor.event_envelope(rec, ["ERROR one"], 1))
         self.assertNotIn("description:", monitor.result_envelope({**rec, "description": ""}))
 

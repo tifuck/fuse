@@ -32,6 +32,16 @@ class LifecycleContract(unittest.IsolatedAsyncioTestCase):
         command = "cd /repo && python -c '" + "x" * 7400 + "'"
         job = chat_runtime.ToolJob(0, "call", "run_terminal_command", json.dumps({"command": command}), "tool-call")
         self.assertEqual(chat_runtime._running_event(job)["command"], command)
+        # The row's deadline is known before the job exists: a foreground shell
+        # names its wait, a background shell its kill budget, a join its own wait.
+        self.assertEqual(chat_runtime._running_event(job)["timeout_ms"], 120_000)
+        background = chat_runtime.ToolJob(0, "call", "run_terminal_command",
+                                          json.dumps({"command": "mock", "background": True, "timeout": 600_000}), "tool-call")
+        self.assertEqual(chat_runtime._running_event(background)["timeout_ms"], 600_000)
+        waiting = chat_runtime.ToolJob(0, "call", "get_command_output", json.dumps({"id": "job"}), "tool-call")
+        self.assertEqual(chat_runtime._running_event(waiting)["timeout_ms"], 600_000)
+        short = chat_runtime.ToolJob(0, "call", "get_subagent_output", json.dumps({"id": "child", "timeout_ms": 30_000}), "tool-call")
+        self.assertEqual(chat_runtime._running_event(short)["timeout_ms"], 30_000)
         async def runner(sink):
             sink("result")
             return SimpleNamespace(exit_status=2)
@@ -50,6 +60,31 @@ class LifecycleContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(history["status"], "done")
         self.assertEqual(history["exit_code"], 2)
         self.assertFalse(history["background"])
+
+    async def test_a_running_row_names_its_own_deadline(self):
+        async def runner(sink):
+            await asyncio.sleep(5)
+            return SimpleNamespace(exit_status=0)
+        # Foreground: the job stores the wait plus the background handoff, but
+        # the row names the wait — the thing that expires next.
+        rec = jobs.launch(user_id=1, host_id=2, host="host", thread_id=3, run_id=None, command="mock",
+                          cwd="/repo", background=False, timeout_ms=120_000 + 1_800_000, runner=runner)
+        self.assertEqual(jobs.render(rec)[1]["timeout_ms"], 120_000)
+        self.assertEqual(chat_store.command_trace(rec)["timeout_ms"], 120_000)
+        # A Wait on it names how long the wait itself sits, not the command.
+        waiting = (await jobs.join(rec["id"], 1, 0.01))[1]
+        self.assertEqual(waiting["status"], "running")
+        self.assertEqual(waiting["timeout_ms"], 10)
+        # Background, and a command that has been moved there: the stored
+        # timeout is the deadline, so the row names it as it is.
+        back = jobs.launch(user_id=1, host_id=2, host="host", thread_id=3, run_id=None, command="mock",
+                           cwd="/repo", background=True, timeout_ms=1_800_000, runner=runner)
+        self.assertEqual(jobs.render(back)[1]["timeout_ms"], 1_800_000)
+        jobs.arm_background(rec)
+        self.assertEqual(jobs.render(rec)[1]["timeout_ms"], 120_000 + 1_800_000)
+        for item in (rec, back):
+            item["task"].cancel()
+        await asyncio.gather(rec["task"], back["task"], return_exceptions=True)
 
     async def test_description_is_stored_shown_and_reported(self):
         async def runner(sink):

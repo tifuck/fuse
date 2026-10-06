@@ -1695,6 +1695,20 @@ def _running_event(job: ToolJob) -> dict:
             event["include"] = include[:200]
         if isinstance(parsed.get("background"), bool):
             event["background"] = parsed["background"]
+        # The deadline the row names, known before the job exists. A foreground
+        # shell's stored timeout is its wait plus the background handoff, so the
+        # row shows the wait — the thing that expires next.
+        if job.name == "run_terminal_command":
+            from .workspace import _command_timeouts
+
+            kill_ms, wait_ms = _command_timeouts(parsed, bool(event.get("background")))
+            event["timeout_ms"] = wait_ms or kill_ms
+        elif job.name in ("get_command_output", "get_subagent_output"):
+            raw = parsed.get("timeout_ms")
+            try:
+                event["timeout_ms"] = min(max(int(raw), 0), 600_000) if raw is not None else 600_000
+            except (TypeError, ValueError, OverflowError):
+                event["timeout_ms"] = 600_000
         if job.name == "monitor":
             event["background"] = True
             src = str(parsed.get("url") or parsed.get("command") or "")

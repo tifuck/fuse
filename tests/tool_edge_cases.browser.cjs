@@ -644,7 +644,7 @@ const hits = (n, prefix = 'Result') => Array.from({ length: n }, (_, i) => ({
       await frame();
       let row = await rowOf(watch.id);
       eq(row.head, 'Monitor(boot log)', 'monitor head names what it watches');
-      eq(row.result, 'Monitor started · task m1 · timeout 300s', 'running monitor receipt');
+      eq(row.result, 'Monitor started · task m1 (timeout: 5m)', 'running monitor names its deadline');
       // Events arrive as updates; the count label tracks the delivered count.
       for (const n of [1, 3]) {
         await upd(watch.id, { event_count: n }, true);

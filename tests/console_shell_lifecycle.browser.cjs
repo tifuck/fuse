@@ -75,6 +75,7 @@ const seen = (snap) => snap.rows.map((r) => r.text).join('\n');
       assert.ok(launched, `${view}: no row for the background launch: ${JSON.stringify(snap.rows)}`);
       assert.equal(launched.state, 'running', `${view}: launch should pulse while the process runs, saw ${launched.cls}`);
       assert.match(launched.text, /Running in the background/, `${view}: launch text: ${launched.text}`);
+      if (view === 'console') assert.match(launched.text, /\(timeout: 2m\)/, `${view}: a running command names its deadline: ${launched.text}`);
       assert.equal(snap.dock, true, `${view}: the live dock is up during the turn`);
 
       await page.evaluate(() => fuseToolFixture.toolEvent({
@@ -88,6 +89,9 @@ const seen = (snap) => snap.rows.map((r) => r.text).join('\n');
       assert.match(waiting.head, /Wait.*Build the bundle/, `${view}: Wait header: ${waiting.head}`);
       // Console names the wait; Mainframe keeps the shared views' "Running…".
       assert.match(waiting.text, view === 'console' ? /Waiting for output…/ : /Running…/, `${view}: open Wait text: ${waiting.text}`);
+      // A Wait that arrives without its own timeout falls back to the deadline of
+      // the command it waits on, which is the only deadline the row can name.
+      if (view === 'console') assert.match(waiting.text, /\(timeout: 2m\)/, `${view}: an open Wait names how long it waits: ${waiting.text}`);
       assert.doesNotMatch(seen(snap), /Still running/, `${view}: "Still running" belongs to a Wait that already returned`);
       assert.equal(snap.rows.filter((r) => r.exec === 'bg-wait').length, 2, `${view}: the launch and its Wait are two rows`);
 
@@ -243,7 +247,8 @@ const seen = (snap) => snap.rows.map((r) => r.text).join('\n');
         [{ role: 'user', content: 'Watch.' }, { role: 'assistant', elapsedMs: 3000, content: '', tools: [mon], segments: [{ type: 'tool', id: mon.id }] }],
         { live: true, phase: 'model' }), mon);
       let snap = await read(page);
-      assert.match(row(snap, 'mon-1').text, /Monitor started · task mon-1 · timeout 300s/, `monitor start: ${row(snap, 'mon-1').text}`);
+      assert.match(row(snap, 'mon-1').text, /Monitor started · task mon-1/, `monitor start: ${row(snap, 'mon-1').text}`);
+      assert.match(row(snap, 'mon-1').text, /\(timeout: 5m\)/, `a running monitor names its deadline: ${row(snap, 'mon-1').text}`);
       assert.equal(row(snap, 'mon-1').state, 'running', `a live monitor does not pulse: ${row(snap, 'mon-1').cls}`);
       const event = (n, line) => `<monitor_event id="mon-1" seq="${n}">\nhost: qa-box command: tail -F /var/log/app.log\ndescription: errors in worker.log\n\n${line}\n</monitor_event>`;
       for (let n = 1; n <= 3; n += 1) {

@@ -820,6 +820,9 @@ async def get_output(*, user_id: int, arguments: str, thread_id=None, parent_run
         "description": str(((row.get("request") or {}).get("agent") or {}).get("description") or "")[:200],
         "preview": "still running",
         "background": True,
+        # How long this join waits before it gives up and reports the child
+        # still running. The child itself has no deadline.
+        "timeout_ms": int(wait * 1000),
     }
 
 

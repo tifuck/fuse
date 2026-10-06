@@ -2327,7 +2327,10 @@ def command_trace(row, name="run_terminal_command"):
         "execution_status": state, "background": bool(row.get("background")),
         "host": row.get("host") or "", "command": str(row.get("command") or "")[:8000],
         "cwd": str(row.get("cwd") or "")[:400], "exit_code": row.get("exit_code"),
-        "duration_ms": row.get("duration_ms"), "timeout_ms": row.get("timeout_ms"),
+        "duration_ms": row.get("duration_ms"),
+        # A live row names the deadline it is counting toward, not the kill
+        # budget a foreground job stores (its wait plus the background handoff).
+        "timeout_ms": command_jobs.call_timeout_ms(row) if live else row.get("timeout_ms"),
         "execution_duration_ms": row.get("duration_ms"),
         "preview": preview, **fields,
         "output_bytes": int(row.get("out_bytes") or len(output.encode("utf-8"))),

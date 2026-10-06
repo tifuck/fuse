@@ -6348,6 +6348,7 @@
       };
       const code = pick("exit_code");
       const duration = Number(pick("duration_ms"));
+    const timeout = Number(pick("timeout_ms"));
       const rawLine = meta.split("\n").find((l) => l.startsWith("host:")) || "";
       const hm = rawLine.match(/^host:\s*(.*?)\s*(?:command|source):\s*(.*)$/);
       const target = pick("target") || (hm ? hm[2].trim() : pick("command"));
@@ -6364,6 +6365,7 @@
         event_count: Number.isFinite(counted) ? counted : null,
         exit_code: /^-?\d+$/.test(code) ? Number(code) : null,
         duration_ms: Number.isFinite(duration) ? duration : null,
+        timeout_ms: Number.isFinite(timeout) && timeout > 0 ? timeout : null,
         error: pick("error"),
         description: pick("description"),
         output: output.trim(),
@@ -8610,6 +8612,20 @@
     return note ? `<span class="chat-tool-truncated">${escapeHtml(note)}</span>` : "";
   }
 
+  // The deadline a pending call is counting toward, as Claude Code prints it
+  // on the line under the call ("(timeout: 5m)"). Only while it is pending:
+  // once the call settles the deadline is gone. A Wait and a subagent join
+  // name their own wait; one that arrived without it falls back to the
+  // deadline of the command it waits on, the only one the row can name.
+  function ccTimeoutNote(trace) {
+    let ms = Number(trace && trace.timeout_ms);
+    if (!(Number.isFinite(ms) && ms > 0) && trace && trace.name === "get_command_output") {
+      ms = Number(commandOrigin(trace)?.timeout_ms);
+    }
+    if (!Number.isFinite(ms) || ms <= 0) return "";
+    return `(timeout: ${ccTimeoutText(ms)})`;
+  }
+
   function consoleSameText(html, text) {
     const plain = String(html || "").replace(/<[^>]*>/g, " ").replace(/&[a-z#0-9]+;/gi, " ").replace(/\s+/g, " ").trim();
     return !plain || plain === String(text || "").replace(/\s+/g, " ").trim();
@@ -8806,10 +8822,10 @@
     if (running && name === "run_terminal_command") return `$ ${displayCommand(trace) || "command"}`;
     if (running && name === "spawn_subagent") return toolBackground(trace) ? "Backgrounded agent" : ccAgentLastCall(trace.agent_recent) || "Initializing…";
     if (isConsoleOnly() && name === "monitor" && !failed) {
-      // The call returns at once; events print as their own rows.
+      // The call returns at once; events print as their own rows. The watch's
+      // deadline sits on the line under it, like every other pending call.
       const id = trace.command_id || trace.job_id || executionIdentity(trace) || "";
-      const timeout = Number(trace.timeout_ms);
-      return `Monitor started${id ? ` · task ${id}` : ""}${Number.isFinite(timeout) && timeout > 0 ? ` · timeout ${Math.round(timeout / 1000)}s` : ""}`;
+      return `Monitor started${id ? ` · task ${id}` : ""}`;
     }
     if (running && isConsoleOnly() && name === "read_url") return "Fetching…";
     if (running) return presentation.statusLabel === "Cancelling" ? "Cancelling…" : "Running…";
@@ -9707,7 +9723,12 @@
       });
       const hangOpen = verbose ? Boolean(inner) : revealed && expandable;
       const status = fold.status;
-      const showHang = Boolean(status || preview || inner);
+      // A pending call names its deadline at the end of the line under it
+      // ("Waiting for output… (timeout: 2m)"), and that line exists even when
+      // the call has nothing else to say yet. A fold that already printed the
+      // deadline (the command line under a described shell) is left as it is.
+      const timeout = isConsoleOnly() && running && !verbose && !/\(timeout: [^)]*\)/.test(`${status} ${preview}`) ? ccTimeoutNote(trace) : "";
+      const showHang = Boolean(status || preview || inner || timeout);
       // A fold with only its hidden body (the settled skill load) prints one
       // line: the branch glyph and the hang's margins wait for the open.
       const bodyOnly = !status && !preview;
@@ -9725,7 +9746,7 @@
             `<div class="chat-console-hang${running ? " is-running" : ""}${failed ? " is-error" : ""}${fold.keep ? " is-kept" : ""}${bodyOnly ? " is-body-only" : ""}${hangOpen ? " is-expanded" : ""}">` +
             `<span class="chat-console-branch" aria-hidden="true">└</span>` +
             `<div class="chat-console-hang-body">` +
-            (status ? `<span class="chat-console-result-text">${consoleStatusHtml(status)}</span>` : "") +
+            (status || timeout ? `<span class="chat-console-result-text">${consoleStatusHtml(status)}${status && timeout ? " " : ""}${timeout ? `<span class="chat-console-timeout">${escapeHtml(timeout)}</span>` : ""}</span>` : "") +
             (preview ? `<div class="chat-console-preview">${preview}</div>` : "") +
             (inner ? inner : "") +
             `</div></div></div></div>`
@@ -11260,6 +11281,12 @@
   }
 
   // Claude Code's duration format: "4s", "1m 5s", "2h 0m 7s".
+  // A deadline as Claude Code prints it: trailing zero units dropped, so
+  // "5m" and "2h" rather than "5m 0s" and "2h 0m 0s".
+  function ccTimeoutText(ms) {
+    return ccDuration(ms).replace(/(?: 0[smh])+$/, "");
+  }
+
   function ccDuration(ms) {
     if (ms < 60000) return ms <= 0 ? "0s" : `${Math.floor(ms / 1000)}s`;
     let d = Math.floor(ms / 86400000);
