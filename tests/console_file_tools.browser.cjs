@@ -96,7 +96,7 @@ function scenarios() {
       // app/workspace.py _write) is surfaced as the result line: create reads
       // "Created <path> (N bytes)", overwrite "Wrote <path> (N bytes)".
       { name: 'created', event: { event: 'tool', id: w.id, status: 'done', output: 'From host qa-box:\ncreated /srv/qa/app/new.py (28 bytes)', call_duration_ms: 2600 },
-        has: ['Write(app/new.py) · 2s', 'Created app/new.py (28 bytes)'], lacks: ['created /srv/qa/app/new.py', 'Running…'], running: [] },
+        has: ['Write(app/new.py)', 'qa-box', '· 2s', 'Created app/new.py (28 bytes)'], lacks: ['created /srv/qa/app/new.py', 'Running…'], running: [] },
       { name: 'second write running', event: { event: 'tool', id: v.id, name: 'write_file', status: 'running', path: '/srv/qa/app/config.py', host: 'qa-box', cwd: '/srv/qa', project_root: '/srv/qa', platform: 'posix' },
         has: ['Created app/new.py (28 bytes)', 'Write(app/config.py)'], running: [v.id] },
       { name: 'overwritten', event: { event: 'tool', id: v.id, status: 'done', output: 'From host qa-box:\nwrote /srv/qa/app/config.py (512 bytes)', call_duration_ms: 1400 },

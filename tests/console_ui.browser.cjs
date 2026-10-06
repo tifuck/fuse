@@ -54,7 +54,7 @@ function scenarios() {
     const cmd = sh('python -m pytest -q tests/', { running: true, ms: 12000, output: TESTOUT, description: 'Run the test suite' });
     return { rows: [user('Go.'), turn([think('Look.', 4000), T(read), T(cmd)], [read, cmd])], live: true, phase: 'tools',
       truth: { call: { [read.id]: 'done', [cmd.id]: 'running' }, exec: { [cmd.command_id]: 'running' } },
-      has: ['Thought for 4s, read 1 file', 'Running the test suite · 1', '$ python -m pytest -q tests/', 'tests/test_c.py .. (timeout: 2m)'],
+      has: ['Thought for 4s, read 1 file', 'Running the test suite', 'qa-box', '· 1', '$ python -m pytest -q tests/', 'tests/test_c.py .. (timeout: 2m)'],
       lacks: ['(3 lines', 'Running the test suite · 12s…'] };
   });
   add('a running search stays its own row; the line above stays settled', () => {
@@ -87,7 +87,7 @@ function scenarios() {
     const w2 = { id: `c${++seq}`, name: 'get_command_output', child_id: 'stale1', status: 'interrupted', preview: 'still running', results: [], error: '' };
     return { rows: [user('Go.'), turn([say('Promoting.\n\n'), T(cmd), T(w1), T(w2), say('Done.')], [cmd, w1, w2], ended)],
       truth: { call: { [cmd.id]: 'interrupted', [w1.id]: 'done', [w2.id]: 'interrupted' }, exec: { stale1: 'interrupted' } },
-      has: ['Wait(cd /root/fuse && ./scripts/promote-dev.sh) · 30s', 'Returned while the command was still running', 'Interrupted · the run ended before it finished'],
+      has: ['Wait(cd /root/fuse && ./scripts/promote-dev.sh)', 'qa-box', '· 30s', 'Returned while the command was still running', 'Interrupted · the run ended before it finished'],
       lacks: ['Still running', 'Wait(command)'] };
   });
   add('a Wait says "Still running" while its command runs', () => {
@@ -95,7 +95,7 @@ function scenarios() {
     const w = tool('get_command_output', { status: 'done', state: 'running', execution_status: 'running', background: true, child_id: 'live1', command_id: 'live1', call_duration_ms: 30006, output: 'building...\n' });
     return { rows: [user('Go.'), turn([say('Building.\n\n'), T(cmd), T(w), say('Still going.')], [cmd, w], ended)],
       truth: { call: { [cmd.id]: 'done', [w.id]: 'done' }, exec: { live1: 'running' } },
-      has: ['Still running', 'Running in the background', 'Wait(npm run build) · 30s'] };
+      has: ['Still running', 'Running in the background', 'Wait(npm run build)', 'qa-box', '· 30s'] };
   });
   add('a Wait without a command names its job', () => {
     const w = { id: `c${++seq}`, name: 'get_command_output', child_id: 'deadbeef0001', status: 'interrupted', preview: 'still running', results: [], error: '' };
@@ -108,7 +108,7 @@ function scenarios() {
     const b = tool('grep', { pattern: 'maxPlayers', path: '/srv/qa', output: 'serverGS.cfg:3:maxPlayers = 60\n' });
     return { rows: [user('Go.'), turn([think('Start.', 2000), T(cmd), T(a), think('Check.', 3000), T(b), say('Starting.')], [cmd, a, b])], live: true, phase: 'model',
       truth: { call: { [cmd.id]: 'done', [a.id]: 'done', [b.id]: 'done' }, exec: { bg1: 'running' } },
-      has: ['Bash(./GameServer -config=serverGS.cfg) · 1m 3', 'Running in the background', '(timeout: 2m)'], lacks: ['ran 1 shell command'] };
+      has: ['Bash(./GameServer -config=serverGS.cfg)', 'qa-box', '· 1m 3', 'Running in the background', '(timeout: 2m)'], lacks: ['ran 1 shell command'] };
   });
   add('a monitor event leads with its description; "+N lines" opens the rest', () => {
     const mon = tool('monitor', { description: 'Game startup milestones in new log', command: 'tail -F x.log', background: true, child_id: 'mon1', command_id: 'mon1', execution_status: 'running', state: 'running', timeout_ms: 300000 });

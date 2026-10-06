@@ -133,10 +133,10 @@ function snap() {
     // tools: the call stands alone, ticking; dock flips to up tokens.
     await drive({ tools: [read], segments: [think('Plan the retry audit.', 6505), T(read)] }, { phase: 'tools', tool_id: read.id });
     s = await snapNow();
-    check(s.labels.length === 2 && /^Reading app\/config\.py · 3s/.test(s.labels[1]), `a running call is its own row with its clock: ${s.labels}`);
+    check(s.labels.length === 2 && /^Reading app\/config\.py(?: \S+)? · 3s/.test(s.labels[1]), `a running call is its own row with its clock: ${s.labels}`);
     check(s.dock.phase === 'working' && s.dock.meta.includes('↑ '), `tools phase flips the dock to up tokens: ${s.dock.meta}`);
     await page.waitForFunction(() => /reading/.test(window.__tt.snap().dock.meta), null, { timeout: 5000 });
-    await page.waitForFunction(() => /^Reading app\/config\.py · [4-9]s/.test(window.__tt.snap().labels[1] || ''), null, { timeout: 5000 });
+    await page.waitForFunction(() => /^Reading app\/config\.py(?: \S+)? · [4-9]s/.test(window.__tt.snap().labels[1] || ''), null, { timeout: 5000 });
 
     // model again: the call folds behind its thought, prose follows.
     await drive({ content: 'Read it.\n\n', tools: [readDone], segments: [think('Plan the retry audit.', 6505), T(readDone), say('Read it.\n\n')] }, { phase: 'model' });
@@ -167,7 +167,13 @@ function snap() {
     await finish(persisted);
     await page.waitForFunction(() => window.__tt.snap().dock.hidden, null, { timeout: 4000 });
     s = await snapNow();
-    const doneAt = await page.evaluate(() => new Date('2026-10-05T09:42:00Z').toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }));
+    const doneAt = await page.evaluate(() => {
+      const when = new Date('2026-10-05T09:42:00Z');
+      const time = when.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      const startOf = (date) => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+      const days = Math.round((startOf(new Date()) - startOf(when)) / 86400000);
+      return days > 0 && days < 7 ? `${when.toLocaleDateString([], { weekday: 'long' })} ${time}` : time;
+    });
     check(s.foot === `✻ ${turnVerb('tt-turn-a')} for 2m 13s · done ${doneAt}`, `the closing line reports the persisted duration and end time: ${s.foot}`);
     check(s.dock.verb === verb, `the spinner's word holds for the whole turn: ${s.dock.verb} then ${verb}`);
     check(JSON.stringify(s.blocks) === JSON.stringify(live.blocks), `the reconcile keeps the live render's blocks exactly: ${JSON.stringify(s.blocks)} vs ${JSON.stringify(live.blocks)}`);
@@ -351,8 +357,8 @@ function snap() {
       // Mainframe folds the running call into its live summary line (its own
       // rendering; Console's standalone row chrome is isConsoleOnly) — the
       // call becomes that line's headline, with a ticking clock of its own.
-      check(/Reading app\/config\.py · 3s/.test(s.labels.join('|')), `mainframe's live line carries the running call and its clock: ${s.labels}`);
-      await page.waitForFunction(() => /Reading app\/config\.py · [4-9]s/.test(window.__tt.snap().labels.join('|')), null, { timeout: 5000 });
+      check(/Reading app\/config\.py(?: \S+)? · 3s/.test(s.labels.join('|')), `mainframe's live line carries the running call and its clock: ${s.labels}`);
+      await page.waitForFunction(() => /Reading app\/config\.py(?: \S+)? · [4-9]s/.test(window.__tt.snap().labels.join('|')), null, { timeout: 5000 });
       await drive({ content: 'Read it.', tools: [readMDone], segments: [think('Plan.', 6505), T(readMDone), say('Read it.')] }, { phase: 'model' });
       const mfLive = await snapNow();
       check(mfLive.labels.some((l) => /^Thought for 6s, read 1 file/.test(l)), `the settled line folds the call behind its thought: ${mfLive.labels}`);

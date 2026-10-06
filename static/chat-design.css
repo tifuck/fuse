@@ -3440,7 +3440,8 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-ste
   align-items: baseline;
   gap: 0;
 }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-took + .chat-tool-host { margin-inline-start: 0.75ch; }
+/* The box a call runs on sits just before the dot that leads its time. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-tool-host:has(+ .chat-console-took) { margin-inline-start: 0.75ch; }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-call:not(.is-console-expanded) .chat-step-label:has(> .chat-console-took) > .chat-console-call {
   flex: 0 1 auto;
   min-width: 0;

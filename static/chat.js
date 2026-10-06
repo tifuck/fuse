@@ -8376,22 +8376,22 @@
   function consoleCallHtml(trace, presentation, full = false) {
     const name = trace && trace.name;
     const running = Boolean(presentation && presentation.running);
-    const host = trace.host && trace.host !== sessionProject()?.host_alias ? trace.host : "";
+    const host = trace.host || "";
     const hostHtml = host ? `<span class="chat-tool-host" title="Host ${escapeHtml(host)}">${escapeHtml(host)}</span>` : "";
     const clock = isConsoleOnly() && presentation ? ccCallClockHtml(trace, presentation) : "";
     // Console: a running call reads as Claude Code's live line, one row
     // counting up ("Running npm test · 12s"); it prints as Bash(…) once done.
     const pending = /^(queued|cancelling)$/i.test(presentation && presentation.statusLabel);
     const live = isConsoleOnly() && running && !full && !toolBackground(trace) && !pending ? ccLiveText(trace, 1000) : "";
-    if (live) return `<span class="chat-console-call is-live">${escapeHtml(live)}</span>${clock}${hostHtml}`;
+    if (live) return `<span class="chat-console-call is-live">${escapeHtml(live)}</span>${hostHtml}${clock}`;
     if (isConsoleOnly() && running && name === "run_terminal_command" && pending) {
-      return `<span class="chat-console-call is-live">${escapeHtml(presentation.statusLabel)}</span>${clock}${hostHtml}`;
+      return `<span class="chat-console-call is-live">${escapeHtml(presentation.statusLabel)}</span>${hostHtml}${clock}`;
     }
     const verb = consoleVerb(name, trace);
     if (["kill_command", "todo_write", "list_subagents"].includes(name) || (name === "scratch" && !scratchAction(trace))) {
       // A bare call keeps the shared tail too: one clock and one host badge
       // per call, like every other row.
-      return `<span class="chat-console-call"><span class="chat-tool-action">${escapeHtml(verb)}</span></span>${clock}${hostHtml}`;
+      return `<span class="chat-console-call"><span class="chat-tool-action">${escapeHtml(verb)}</span></span>${hostHtml}${clock}`;
     }
     if (name === "run_terminal_command" && running && !toolBackground(trace) && !full && !isConsoleOnly()) {
       const label = String((trace && trace.progressLabel) || "").trim() || "Running";
@@ -8443,14 +8443,14 @@
       const sentence = p && p.failed ? `Failed to load the ${tail}`
         : p && (p.running || p.interrupted) ? `Loading the ${tail}`
         : `Loaded the ${tail}`;
-      return `<span class="chat-console-call">${sentence}</span>` + clock + hostHtml;
+      return `<span class="chat-console-call">${sentence}</span>` + hostHtml + clock;
     } else {
       inner = consoleArgText(toolSubject(trace), 90);
     }
     const call = inner
       ? `<span class="chat-console-call"><span class="chat-tool-action">${escapeHtml(verb)}</span><span class="chat-console-paren">(</span><span class="chat-console-val">${path ? escapeHtml(inner).replace(/\//g, "/<wbr>") : escapeHtml(inner)}</span><span class="chat-console-paren">)</span></span>`
       : `<span class="chat-console-call"><span class="chat-tool-action">${escapeHtml(verb)}</span></span>`;
-    return call + clock + hostHtml;
+    return call + hostHtml + clock;
   }
 
   // What a scratch call did ("Write brief", "Read notes"). Older rows carry
