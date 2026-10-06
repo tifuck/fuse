@@ -11855,14 +11855,15 @@
       const cut = lines.slice(0, show).map((line) => line.length > 400 ? line.slice(0, 399) + "…" : line);
       const hidden = lines.length - cut.length;
       const clipped = hidden > 0 || cut.some((line, i) => line !== lines[i]);
-      // The command's own output is already this diff (a `git diff`): the
-      // expanded body renders it, so appending edit_diff would print it twice.
-      const again = diff && looksLikeDiff(raw) ? "" : diff;
+      // The diff rides the preview while the row is folded. Opening it hides
+      // the preview and shows the body, so the diff moves there. A body that
+      // already is this diff (a `git diff`) needs nothing added.
+      const body = clipped ? consoleDetailHtml(trace, false, false) : "";
       return {
         status: "",
         keep: Boolean(note),
-        preview: consoleStdoutHtml(cut) + (hidden > 0 ? `<div class="chat-console-more" data-step-toggle>… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : "") + diff + note,
-        full: clipped ? consoleDetailHtml(trace, false, false) + again : "",
+        preview: consoleStdoutHtml(cut) + (hidden > 0 ? `<div class="chat-console-more" data-step-toggle>… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : "") + (body ? "" : diff) + note,
+        full: body + (body && !looksLikeDiff(raw) ? diff : ""),
       };
     }
     if (name === "read_file" && !running && !failed && !interrupted) {

@@ -324,23 +324,26 @@ test('a shell whose output is a diff prints that diff once', () => {
     isSearchTool: () => false, structuredToolHtml: () => null, isCodeOutputTool: () => false,
     displayCommand: (trace) => String(trace.command || ''),
   });
-  for (const name of ['isConsoleOnly', 'executionState', 'toolBackground', 'isShellExecTool', 'shellExitCode', 'cleanToolOutput', 'ccShellSegments', 'ccExitMeaning', 'ccFlat', 'ccClip', 'ccErrorFold', 'looksLikeDiff', 'consoleChangeText', 'consoleTruncationNote', 'consoleStdoutHtml', 'consoleOutputText', 'consoleDetailHtml', 'consoleOnlyFold']) load(name, c);
+  for (const name of ['isConsoleOnly', 'executionState', 'toolBackground', 'isShellExecTool', 'shellExitCode', 'cleanToolOutput', 'ccShellSegments', 'ccExitMeaning', 'ccFlat', 'ccClip', 'ccErrorFold', 'looksLikeDiff', 'consoleChangeText', 'consoleTruncationNote', 'consoleStdoutHtml', 'consoleOutputText', 'consoleDetailHtml']) load(name, c);
+  // load() ends a function at its first `}`, and consoleOnlyFold has braces
+  // of its own. It runs through the next top-level function.
+  const foldStart = source.indexOf('  function consoleOnlyFold(');
+  vm.runInContext(source.slice(foldStart, source.indexOf('\n  function ', foldStart + 1)), c);
   const diffStart = source.indexOf('  function consoleDiffHtml(');
   vm.runInContext(source.slice(diffStart, source.indexOf('\n  function ', diffStart + 1)), c);
   const diff = 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -1,3 +1,4 @@\n context\n-old\n+new one\n+new two\n';
   const pres = { running: false, failed: false, interrupted: false };
   const diffs = (html) => (String(html).match(/chat-console-lines is-diff/g) || []).length;
-  const shown = (output) => {
-    const fold = c.consoleOnlyFold({
-      name: 'run_terminal_command', status: 'done', state: 'completed', exit_code: 0, command: 'git diff',
-      output, preview: output.slice(0, 800), edited_files: ['a.js'], lines_added: 2, lines_removed: 1, edit_diff: diff,
-    }, pres, false);
-    // Expanded hides the preview and shows the body; collapsed is the preview.
-    return diffs(fold.full || fold.preview);
-  };
-  assert.equal(shown(diff), 1, 'the command output is the diff, so edit_diff is not appended');
-  assert.equal(shown('a\nb\nc\nd\ne\n'), 1, 'ordinary stdout still gets the one edit diff');
-  assert.equal(shown(''), 1, 'no output still shows the edit diff');
+  const foldOf = (output) => c.consoleOnlyFold({
+    name: 'run_terminal_command', status: 'done', state: 'completed', exit_code: 0, command: 'git diff',
+    output, preview: output.slice(0, 800), edited_files: ['a.js'], lines_added: 2, lines_removed: 1, edit_diff: diff,
+  }, pres, false);
+  // Collapsed shows the preview; opened hides it and shows the body.
+  const counts = (output) => { const fold = foldOf(output); return [diffs(fold.preview), diffs(fold.full)]; };
+  assert.deepEqual(counts('a\nb\nc\nd\ne\n'), [0, 1], 'stdout plus a file diff: the diff shows once, in the opened body');
+  assert.deepEqual(counts(diff), [0, 1], 'a git diff is its own output, shown once in the opened body');
+  assert.deepEqual(counts('ok\n'), [1, 0], 'short output keeps the diff in the preview');
+  assert.deepEqual(counts(''), [1, 0], 'no output still shows the diff');
 });
 
 test('output caps cut on character boundaries and say which slice survived', () => {
