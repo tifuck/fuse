@@ -8,6 +8,8 @@ switch back to an image model sees them again.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 
 OMITTED = "[Image omitted: this model cannot view images. It stays in the chat for image-capable models.]"
@@ -79,15 +81,24 @@ def _image_part(part) -> bool:
     return isinstance(part, dict) and part.get("type") in ("image_url", "input_image")
 
 
-def prepare(messages, type_id: str, model: str, *, user_id: int | None = None) -> tuple[list, int]:
+def prepare(messages, type_id: str, model: str, *, user_id: int | None = None, snapshot: dict | None = None) -> tuple[list, int]:
     """Outgoing copy: Responses `input_image` becomes `image_url` (what every
-    adapter reads); text-only or over-budget images become explicit notes."""
+    adapter reads); text-only or over-budget images become explicit notes.
+
+    A server-owned snapshot freezes each image's admission per resolved route.
+    Persist it with the original transcript; discard it at compaction. It must
+    never come from a client request or be forwarded to a provider.
+    """
     if not isinstance(messages, list):
         return messages, 0
     strip = image_input(type_id, model, user_id=user_id) is False
     # Admit images in transcript order so appending new evidence cannot evict
     # pixels that were already part of a cached prefix.
-    allowed = set()
+    decisions = {}
+    if snapshot is not None:
+        route = json.dumps([type_id, model], separators=(",", ":"))
+        decisions = snapshot.setdefault(route, {})
+    admitted = {}
     count = size = 0
     for mi in range(len(messages)):
         content = messages[mi].get("content") if isinstance(messages[mi], dict) else None
@@ -100,8 +111,15 @@ def prepare(messages, type_id: str, model: str, *, user_id: int | None = None) -
             image = part.get("image_url")
             url = image.get("url") if isinstance(image, dict) else image
             chars = len(url) if isinstance(url, str) and url.startswith("data:") else 0
-            if count < MAX_REQUEST_IMAGES and size + chars <= MAX_REQUEST_IMAGE_CHARS:
-                allowed.add((mi, pi))
+            digest = hashlib.sha256(json.dumps(part, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            key = f"{mi}:{pi}:{digest}"
+            decision = decisions.get(key)
+            if decision is None:
+                decision = ("capability" if strip else "budget" if
+                            count >= MAX_REQUEST_IMAGES or size + chars > MAX_REQUEST_IMAGE_CHARS else "admit")
+                decisions[key] = decision
+            admitted[mi, pi] = decision
+            if decision == "admit":
                 count += 1
                 size += chars
     out, omitted = [], 0
@@ -114,9 +132,9 @@ def prepare(messages, type_id: str, model: str, *, user_id: int | None = None) -
         for pi, part in enumerate(content):
             if not _image_part(part):
                 parts.append(part)
-            elif strip or (mi, pi) not in allowed:
+            elif admitted[mi, pi] != "admit":
                 omitted += 1
-                parts.append({"type": "text", "text": OMITTED if strip else BUDGET_OMITTED})
+                parts.append({"type": "text", "text": OMITTED if admitted[mi, pi] == "capability" else BUDGET_OMITTED})
             elif part["type"] == "input_image":
                 image = part.get("image_url")
                 image = image if isinstance(image, dict) else {"url": image}

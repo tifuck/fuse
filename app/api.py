@@ -435,17 +435,21 @@ async def opencode_provider(request: Request):
     }
 
 
-async def invoke_chat(request: Request, user, body: dict, *, cheap_reasoning: bool = False):
+async def invoke_chat(request: Request, user, body: dict, *, cheap_reasoning: bool = False,
+                      image_snapshot: dict | None = None, prepared=None):
     """Pick a source and run one completion.
 
     Returns (user, src, upstream, requested_model, result). Failed pool
     attempts are recorded. The caller records successful usage.
     cheap_reasoning: replace any reasoning_effort with the cheapest one the
     resolved provider accepts (title/recap calls).
+    image_snapshot/prepared are server-only replay state and its durable
+    checkpoint hook, run after admission and before dispatch.
     """
     try:
         user = dict(user)
-        return await _invoke_chat(request, user, body, cheap_reasoning=cheap_reasoning)
+        return await _invoke_chat(request, user, body, cheap_reasoning=cheap_reasoning,
+                                  image_snapshot=image_snapshot, prepared=prepared)
     except HTTPException as exc:
         model = body.get("model") if isinstance(body, dict) else ""
         messages = body.get("messages") if isinstance(body, dict) else None
@@ -468,7 +472,8 @@ def _set_cheap_reasoning(body: dict, type_id: str, model: str, user_id: int) -> 
         body["reasoning_effort"] = effort
 
 
-async def _invoke_chat(request: Request, user, body: dict, *, cheap_reasoning: bool = False):
+async def _invoke_chat(request: Request, user, body: dict, *, cheap_reasoning: bool = False,
+                       image_snapshot: dict | None = None, prepared=None):
     user = dict(user)
     if not isinstance(body, dict):
         raise HTTPException(400, "Invalid JSON")
@@ -477,6 +482,8 @@ async def _invoke_chat(request: Request, user, body: dict, *, cheap_reasoning: b
         raise HTTPException(400, "Invalid model")
     _validate_messages(body.get("messages"), retained=bool(request.scope.get("fuse_retained_history")))
     body = dict(body)
+    body.pop("prompt_snapshot", None)
+    body.pop("image_snapshot", None)
     if "reasoning_effort" not in body and "reasoningEffort" in body:
         body["reasoning_effort"] = body.pop("reasoningEffort")
     _validate_reasoning(body)
@@ -547,7 +554,10 @@ async def _invoke_chat(request: Request, user, body: dict, *, cheap_reasoning: b
     if cheap_reasoning:
         _set_cheap_reasoning(body, src.type_id, model, user["id"])
     body["model"] = upstream
-    body["messages"], omitted = model_caps.prepare(body["messages"], src.type_id, upstream, user_id=user["id"])
+    body["messages"], omitted = model_caps.prepare(body["messages"], src.type_id, upstream,
+                                                   user_id=user["id"], snapshot=image_snapshot)
+    if prepared is not None:
+        await prepared()
     session_id = None
     if src.type_id in POOL_TYPES or src.type_id in ("openai", "ollama", "openrouter"):
         session_id = session_id_from(request.headers, body, user_id=user["id"], model=upstream)

@@ -4288,7 +4288,8 @@ def prepare_compact(user_id, thread_id, expected_revision, command_id):
             raise chats.ChatValidationError("chat already has an active run", 409)
         view = thread_view(conn, user_id, pk)
         from . import chat_history, context as ctxmod
-        history, history_info = chat_history.build(conn, user_id, pk, view["messages"], ctxmod.parse_state(row["compaction"]))
+        messages = chats.parse_messages(row["messages"])
+        history, history_info = chat_history.build(conn, user_id, pk, messages, ctxmod.parse_state(row["compaction"]))
         return {"thread": view, "fingerprint": fingerprint, "idempotent": False,
                 "history": history, "history_info": history_info}
 

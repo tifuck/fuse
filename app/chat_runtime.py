@@ -3138,7 +3138,10 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     _user = src = upstream = requested = result = None
                     # `invoked`, not `payload`: the loop variable must not
                     # shadow the request payload gen() was built from.
-                    async for kind, invoked in _with_beats(api.invoke_chat(request, user, send)):
+                    async for kind, invoked in _with_beats(api.invoke_chat(
+                        request, user, send, image_snapshot=prompt_snapshot.setdefault("images", {}),
+                        prepared=persist_jobs,
+                    )):
                         if kind == "beat":
                             yield _sse({"fuse": {"event": "heartbeat"}})
                             continue

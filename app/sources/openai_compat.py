@@ -98,7 +98,7 @@ class OpenAICompatSource:
         return names
 
     def _stream_result(self, stream, collected: dict, cred, session_id: str | None, model: str, attempts: list[dict]) -> ChatResult:
-        if self.rotation != "sticky" or not session_id:
+        if not session_id:
             result = ChatResult(status=200, stream=stream, credential_id=cred["id"], model=model)
             result.attempts = attempts
             return result
@@ -126,7 +126,7 @@ class OpenAICompatSource:
         tried: set[int] = set()
         attempts: list[dict] = []
         last = ChatResult(status=503, body={"error": "All keys failed"})
-        prefer_id = lookup(self.pin_kind, session_id) if self.rotation == "sticky" and session_id else None
+        prefer_id = lookup(self.pin_kind, session_id) if session_id else None
         model = body.get("model", "")
         for cred in self._next_creds(tried, prefer_id=prefer_id)[:1]:
             tried.add(cred["id"])
@@ -146,7 +146,7 @@ class OpenAICompatSource:
             )
             if stream is not None:
                 return self._stream_result(stream, usage, cred, session_id, model, attempts)
-            if status == 200 and self.rotation == "sticky" and session_id:
+            if status == 200 and session_id:
                 bind(self.pin_kind, session_id, cred["id"])
             result = ChatResult(
                 status=status,
