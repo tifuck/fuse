@@ -1135,7 +1135,7 @@ class _Translator:
             "total_tokens": prompt + self.output_tokens,
             "cached_tokens": self.cache_read,
             "cache_write_tokens": self.cache_write,
-            "reasoning_tokens": self._reasoning_tokens(),
+            "reasoning_tokens": 0,
         }
 
     def _openai_usage(self) -> dict:
@@ -1148,16 +1148,8 @@ class _Translator:
                 "cached_tokens": u.get("cached_tokens") or 0,
                 "cache_write_tokens": u.get("cache_write_tokens") or 0,
             },
-            "completion_tokens_details": {"reasoning_tokens": u.get("reasoning_tokens") or 0},
+            "completion_tokens_details": {"reasoning_tokens": 0},
         }
-
-    def _reasoning_tokens(self) -> int:
-        # Anthropic bills thinking inside output_tokens and reports no separate
-        # count. The text is already in hand, so the same 4-chars estimate the
-        # context meter uses everywhere else is the count the breakdown can pin.
-        texts = [str(rec.get("thinking") or "") for rec in self.blocks.values() if rec.get("type") == "thinking"]
-        chars = sum(len(text) for text in texts)
-        return min(self.output_tokens, max(1, (chars + 3) // 4)) if chars else 0
 
     def _handle(self, event: dict) -> bytes | None:
         etype = str(event.get("type") or "")

@@ -2726,7 +2726,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
 
         # Last provider prompt_tokens, and the projected messages that prompt covered.
         # Later readings add only the suffix. A rebuilt transcript clears this.
-        anchor = {"prompt": 0, "sent": None, "usage": None}
+        anchor = {"prompt": 0, "sent": None}
 
         def _note_anchor(usage, sent_messages):
             prompt = ctxmod.prompt_token_count(usage)
@@ -2746,7 +2746,6 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 sent = sent[:-1]
             anchor["prompt"] = prompt
             anchor["sent"] = sent
-            anchor["usage"] = dict(usage)
 
         def _anchored(projected):
             sent = anchor["sent"]
@@ -2755,7 +2754,6 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             if len(projected) < len(sent) or projected[:len(sent)] != sent:
                 anchor["prompt"] = 0
                 anchor["sent"] = None
-                anchor["usage"] = None
                 return None
             return projected[len(sent):]
 
@@ -2777,14 +2775,13 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     tools=current.get("tools"),
                     override=window_override or resolved_window,
                     anchor_prompt=anchor["prompt"],
-                    anchor_usage=anchor["usage"],
                     added=added,
                     calibration=calibration,
                 )
                 if extra_tokens:
                     snap["used"] = snap["used"] + max(0, extra_tokens)
                     snap["estimated"] = True
-                    snap["parts"] = ctxmod._fit_parts(snap.get("parts"), snap["used"], pin=ctxmod.reasoning_pin(anchor["usage"]))
+                    snap["parts"] = ctxmod._fit_parts(snap.get("parts"), snap["used"])
             else:
                 snap = ctxmod.meter_from_messages(
                     projected,
@@ -3069,8 +3066,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     request_meter = ctxmod.next_request_meter(
                         send["messages"], model=model, type_id=src_type or src_type_guess,
                         tools=send.get("tools"), override=window_override or resolved_window,
-                        anchor_prompt=anchor["prompt"], anchor_usage=anchor["usage"],
-                        added=added, calibration=calibration,
+                        anchor_prompt=anchor["prompt"], added=added, calibration=calibration,
                     )
                 else:
                     request_meter = ctxmod.calibrate_meter(request_meter, calibration)

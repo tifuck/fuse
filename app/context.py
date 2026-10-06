@@ -447,6 +447,18 @@ def estimate_content(content) -> int:
     return estimate_text(str(content))
 
 
+def _reasoning_text(msg: dict) -> str:
+    """Replayed reasoning: text fields, or Claude's signed thinking blocks."""
+    reasoning = msg.get("reasoning_content") or msg.get("reasoning")
+    if isinstance(reasoning, str) and reasoning:
+        return reasoning
+    blocks = msg.get("claude_thinking")
+    if not isinstance(blocks, list):
+        return ""
+    return "\n".join(str(block.get("thinking") or block.get("text") or "")
+                     for block in blocks if isinstance(block, dict))
+
+
 def estimate_messages(messages: list | None) -> int:
     total = 0
     for msg in messages or []:
@@ -454,16 +466,7 @@ def estimate_messages(messages: list | None) -> int:
             continue
         total += ROLE_OVERHEAD
         total += estimate_content(msg.get("content"))
-        reasoning = msg.get("reasoning_content") or msg.get("reasoning")
-        if not isinstance(reasoning, str) or not reasoning:
-            blocks = msg.get("claude_thinking")
-            if isinstance(blocks, list):
-                reasoning = "\n".join(
-                    str(block.get("thinking") or block.get("text") or "")
-                    for block in blocks if isinstance(block, dict)
-                )
-        if isinstance(reasoning, str) and reasoning:
-            total += estimate_text(reasoning)
+        total += estimate_text(_reasoning_text(msg))
         for call in msg.get("tool_calls") or []:
             if not isinstance(call, dict):
                 continue
@@ -555,15 +558,7 @@ def occupancy_parts(messages: list | None, *, tools=None) -> dict:
         body = dict(msg)
         traces = list(body.pop("tools", None) or [])
         calls = list(body.pop("tool_calls", None) or [])
-        reasoning = body.get("reasoning_content") or body.get("reasoning") or ""
-        if not reasoning:
-            # Claude replays thinking as signed blocks, never as text.
-            blocks = body.get("claude_thinking")
-            if isinstance(blocks, list):
-                reasoning = "\n".join(
-                    str(block.get("thinking") or block.get("text") or "")
-                    for block in blocks if isinstance(block, dict)
-                )
+        reasoning = _reasoning_text(body)
         if reasoning:
             thinking += estimate_text(reasoning)
             body = {**body, "reasoning": "", "reasoning_content": "", "claude_thinking": []}
@@ -816,30 +811,20 @@ def prompt_calibration(usage: dict | None, request_estimate: int, *, model: str,
             "estimated_prompt_tokens": request_estimate}
 
 
-def _fit_parts(parts: dict | None, target: int, *, pin: dict | None = None) -> dict:
+def _fit_parts(parts: dict | None, target: int) -> dict:
     keys = ("system", "messages", "thinking", "tool_calls", "tools", "draft")
     raw = parts if isinstance(parts, dict) else {}
-    total = max(0, int(target or 0))
-    # Provider-reported counts (reasoning tokens) the char estimate cannot see:
-    # reasoning that is billed into the prompt but not echoed back as text.
-    # Pin them and scale only the remaining rows into what is left.
-    pinned = {}
-    for key, value in (pin or {}).items():
-        if key in keys:
-            pinned[key] = min(total, _nonneg(value))
-    pinned_total = min(total, sum(pinned.values()))
-    weights = {key: _nonneg(raw.get(key)) for key in keys if key not in pinned}
+    weights = {key: _nonneg(raw.get(key)) for key in keys}
     weight = sum(weights.values())
-    rest = total - pinned_total
+    total = max(0, int(target or 0))
     if not weight:
         fitted = {key: 0 for key in keys}
-        fitted["messages"] = rest
+        fitted["messages"] = total
     else:
-        fitted = {key: value * rest // weight for key, value in weights.items()}
-        order = sorted(weights, key=lambda key: weights[key] * rest % weight, reverse=True)
-        for key in order[: rest - sum(fitted.values())]:
+        fitted = {key: value * total // weight for key, value in weights.items()}
+        order = sorted(weights, key=lambda key: weights[key] * total % weight, reverse=True)
+        for key in order[: total - sum(fitted.values())]:
             fitted[key] += 1
-    fitted.update(pinned)
     raw_families = raw.get("tool_families") if isinstance(raw.get("tool_families"), dict) else {}
     fam_weights = {str(key): _nonneg(value) for key, value in raw_families.items() if str(key)}
     fam_weight = sum(fam_weights.values())
@@ -857,28 +842,6 @@ def _fit_parts(parts: dict | None, target: int, *, pin: dict | None = None) -> d
     return fitted
 
 
-def reasoning_pin(usage: dict | None) -> dict | None:
-    """Reasoning tokens to pin into the Thinking row of a fitted breakdown.
-
-    Distribution only: the meter total stays the anchored provider prompt, so
-    a pinned count never inflates occupancy or moves the compaction trigger.
-    A disjoint reasoning count (xAI/Kimi: total = prompt + completion +
-    reasoning) was never sent back, so it is not pinned — that would attribute
-    tokens to a window the provider says it did not receive.
-    """
-    if not isinstance(usage, dict):
-        return None
-    reasoning = _nonneg(usage.get("reasoning_tokens"))
-    if not reasoning:
-        return None
-    prompt = _nonneg(usage.get("prompt_tokens") or usage.get("input_tokens"))
-    completion = _nonneg(usage.get("completion_tokens") or usage.get("output_tokens"))
-    total = _nonneg(usage.get("total_tokens"))
-    if total and prompt and total == prompt + completion + reasoning:
-        return None
-    return {"thinking": reasoning}
-
-
 def next_request_meter(
     messages: list | None,
     *,
@@ -888,7 +851,6 @@ def next_request_meter(
     override: int | None = None,
     catalog: dict | None = None,
     anchor_prompt: int,
-    anchor_usage: dict | None = None,
     added: list | None = None,
     calibration: dict | None = None,
 ) -> dict:
@@ -900,7 +862,7 @@ def next_request_meter(
     limit = window_for(model, type_id, catalog=catalog, override=override)
     extra = estimate_messages(added or [])
     target = max(0, int(anchor_prompt or 0)) + extra
-    parts = _fit_parts(occupancy_parts(messages, tools=tools), target, pin=reasoning_pin(anchor_usage))
+    parts = _fit_parts(occupancy_parts(messages, tools=tools), target)
     snap = meter(
         used=target,
         limit=limit,
