@@ -585,9 +585,9 @@ async def _summarize_once(request: Request, user, model: str, head: list[dict], 
         "model": (model or "").strip(),
         "messages": ctxmod.summarize_payload(head, instructions=instructions, limit=limit, tools=tools),
         "stream": False,
-        # Summaries may run to the full MAX_SUMMARY_CHARS budget; reply caps
-        # are about chat answers, not internal handoffs.
-        "max_tokens": max(4_096, min(8_000, settings.max_tokens)),
+        # The handoff replaces the whole conversation, so it needs room to carry
+        # the work. Reply caps are about chat answers, not internal handoffs.
+        "max_tokens": max(16_000, min(32_000, settings.max_tokens)),
     }
     if tools:
         payload["tools"] = tools
