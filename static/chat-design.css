@@ -2318,7 +2318,7 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-step-open { colo
   .chat .chat-group-preview::before { content: ""; }
   html[data-chat-terminal] .chat:is([data-view="cli"], [data-view="compact"]) .chat-step:not(.is-think) > .chat-step-main > .chat-step-head > .chat-step-state { max-width: none; overflow: visible; }
   html[data-chat-terminal] .chat[data-view="compact"] .chat-step.is-think .chat-step-copy > .chat-step-kind { flex-basis: 3.5rem; }
-  .chat .chat-tool-host { display: none; }
+  .chat:not([data-view="console"]) .chat-tool-host { display: none; }
   .chat .chat-open-target { display: none; }
   .chat .chat-step-host { display: none; }
   .chat .chat-tool-action { flex-basis: 3.5rem; }
@@ -2913,10 +2913,10 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat
   display: none;
 }
 @media (max-width: 600px) {
-  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-dock, .chat-agent-live-dock) .chat-status-meta { display: none; }
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-dock, .chat-agent-live-dock) .chat-status-meta { display: inline; }
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-dock, .chat-agent-live-dock) :is([data-live-dock-label], [data-agent-live-label]) { display: block; }
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-dock, .chat-agent-live-dock) .chat-status-verb {
-    display: block;
+    display: inline;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

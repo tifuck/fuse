@@ -252,7 +252,7 @@ function scenarios() {
         }
         if (view === 'console') {
           if (result.label.startsWith('Audit chat text scaling')) failures.push('Console status must never show the in-progress todo; it has its own section');
-          if (width <= 600 && (!result.metaHidden || !result.fits || !result.ellipsis)) failures.push('mobile Console status must hide counters and ellipsize the task');
+          if (width <= 600 && (result.metaHidden || !result.fits || !result.ellipsis)) failures.push('mobile Console status keeps its duration and status, and ellipsizes the task');
           if (width === 1280 && result.metaHidden) failures.push('desktop Console keeps status counters');
         }
       }
