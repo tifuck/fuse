@@ -11626,17 +11626,23 @@
   // its notice says how long it took.
   function ccCallClockHtml(trace, presentation) {
     const name = trace && trace.name;
-    if (!name || isSearchTool(name) || ["spawn_subagent", "get_subagent_output", "monitor"].includes(name)) return "";
+    if (!name || isSearchTool(name) || name === "spawn_subagent") return "";
     // A background launch returns at once; its clock runs only while its
     // process does. (A Wait on it is flagged background too and keeps its own.)
     if (name === "run_terminal_command" && toolBackground(trace) && !presentation.running) return "";
-    // A Wait's elapsed_ms and duration_ms belong to the command it waits on;
-    // its own time is the call's.
-    const wait = name === "get_command_output";
-    if (presentation.running) {
-      const since = wait ? (trace._since ||= Date.now()) : ccSince(trace);
+    // A Wait's elapsed_ms and duration_ms belong to the command it waits on,
+    // and a monitor's to the watch; their own time is the call's. A monitor's
+    // call returns at once and then keeps watching, so it ticks while it does.
+    const wait = name === "get_command_output" || name === "get_subagent_output";
+    const watching = name === "monitor" && executionPending(trace);
+    if (presentation.running || watching) {
+      const since = wait || watching ? (trace._since ||= Date.now()) : ccSince(trace);
       return `<span class="chat-console-took" data-cc-clock="elapsed" data-since="${since}">${ccElapsedText(since)}</span>`;
     }
+    // A settled Await's line already says how long the agent worked
+    // ("Agent "…" finished · 41s"); a header clock beside it would be a
+    // second, different number.
+    if (name === "get_subagent_output") return "";
     const ms = Number(name === "run_terminal_command"
       ? trace.execution_duration_ms ?? trace.call_duration_ms ?? trace.duration_ms
       : wait ? trace.call_duration_ms : trace.call_duration_ms ?? trace.duration_ms);

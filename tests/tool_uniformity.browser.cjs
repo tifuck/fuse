@@ -65,7 +65,7 @@ const TOOLS = [
   { name: 'kill_command', verb: 'Stop Task', subject: 'npm run watch', clock: true, disclosure: false, bare: true,
     trace: { status: 'done', command_id: 'j3', child_id: 'j3', output: '', call_duration_ms: DUR },
     related: { id: 't-kill_command-src', name: 'run_terminal_command', status: 'done', background: true, command: 'npm run watch', command_id: 'j3', child_id: 'j3', ...ROOT } },
-  { name: 'monitor', verb: 'Monitor', subject: 'errors in worker.log', clock: false, disclosure: true,
+  { name: 'monitor', verb: 'Monitor', subject: 'errors in worker.log', clock: true, disclosure: true,
     trace: { status: 'done', description: 'errors in worker.log', command: 'tail -F app.log', command_id: 'm1', child_id: 'm1', job_id: 'm1', event_count: 3, timeout_ms: 300000, call_duration_ms: DUR } },
   { name: 'web_search', verb: 'Web Search', subject: 'fuse rows', clock: false, disclosure: true,
     trace: { status: 'done', query: 'fuse rows', queries: ['fuse rows', 'tool lifecycle'], latency_ms: 840, results: HITS } },
@@ -75,7 +75,7 @@ const TOOLS = [
     trace: { status: 'done', url: 'https://example.com/doc', http_status: 200, bytes: 12600, call_duration_ms: DUR, results: [{ title: 'Doc', url: 'https://example.com/doc', snippet: 'Augusta wrote notes.' }] } },
   { name: 'spawn_subagent', verb: 'Agent', subject: 'Audit retries', clock: false, disclosure: false,
     trace: { status: 'done', description: 'Audit retries', child_id: 'c1', agent_tool_uses: 3, agent_tokens: 32100, agent_work_ms: 65000 } },
-  { name: 'get_subagent_output', verb: 'Await', subject: 'Audit retries', clock: false, disclosure: false,
+  { name: 'get_subagent_output', verb: 'Await', subject: 'Audit retries', clock: false, ticking: true, disclosure: false,
     trace: { status: 'done', description: 'Audit retries', child_id: 'c1', summary: 'AWAIT_REPORT', agent_work_ms: 41000 } },
   { name: 'kill_subagent', verb: 'Stop', subject: 'Audit retries', clock: true, disclosure: false,
     trace: { status: 'done', description: 'Audit retries', child_id: 'c1', output: '', call_duration_ms: DUR } },
@@ -442,7 +442,7 @@ const COLLECT = () => {
       ok(r.title === 'Running' || r.title === 'Waiting' || r.title === 'Queued' || r.title === 'Background',
         `${r.name}: running vocabulary "${r.title}"`);
       ok(r.staticTook === 0, `${r.name}: a ticking clock must not freeze into a duration while running`);
-      ok(r.tick === (t && t.clock ? 1 : 0), `${r.name}: one ticking clock iff the family carries one (got ${r.tick})`);
+      ok(r.tick === (t && (t.clock || t.ticking) ? 1 : 0), `${r.name}: one ticking clock iff the family carries one (got ${r.tick})`);
       ok(r.after.cls.includes('is-done') && !r.after.cls.includes('is-running') && !r.after.hangCls.includes('is-running'),
         `${r.name}: settle leaves no running affordance (${r.after.cls})`);
       ok(r.after.title === 'Done' && r.after.state === 'done', `${r.name}: settle rewrites the label to Done (${r.after.title})`);
