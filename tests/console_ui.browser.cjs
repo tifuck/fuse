@@ -54,8 +54,8 @@ function scenarios() {
     const cmd = sh('python -m pytest -q tests/', { running: true, ms: 12000, output: TESTOUT, description: 'Run the test suite' });
     return { rows: [user('Go.'), turn([think('Look.', 4000), T(read), T(cmd)], [read, cmd])], live: true, phase: 'tools',
       truth: { call: { [read.id]: 'done', [cmd.id]: 'running' }, exec: { [cmd.command_id]: 'running' } },
-      has: ['Thought for 4s, read 1 file', 'Running the test suite · 1', '$ python -m pytest -q tests/ (3 lines · timeout: 2m)'],
-      lacks: ['Running the test suite · 12s…'] };
+      has: ['Thought for 4s, read 1 file', 'Running the test suite · 1', '$ python -m pytest -q tests/', 'tests/test_c.py .. (timeout: 2m)'],
+      lacks: ['(3 lines', 'Running the test suite · 12s…'] };
   });
   add('a running search stays its own row; the line above stays settled', () => {
     const a = tool('grep', { pattern: 'retries', path: '/srv/qa/app', output: 'app/x.py:1:retries\n' });

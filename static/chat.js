@@ -11793,14 +11793,14 @@
       // when a description took its place, with no clock of its own.
       const hint = name === "run_terminal_command" && ccFlat(trace.description) ? ccShellHint(trace) : "";
       if (!hint) return { status: "", preview: "", full: "" };
+      // The command's own output, not a count of it: the last few lines, the
+      // newest last, with the deadline at the end of the last one. A long last
+      // line is cut short so the deadline stays on it.
       const out = typeof trace.output === "string" ? cleanToolOutput(trace, trace.output).replace(/\s+$/, "") : "";
-      const n = out ? out.split("\n").length : 0;
-      const lines = hint.split("\n");
-      // The deadline rides the end of the command, after its line count, so a
-      // running command stays one line instead of growing a row for it.
-      const note = ccTimeoutNote(trace).replace(/^\(|\)$/g, "");
-      const tail = [n ? `${n} ${n === 1 ? "line" : "lines"}` : "", note].filter(Boolean).join(" · ");
-      const html = lines.map((line, i) => `<div class="chat-console-dim">${escapeHtml(line)}${i === lines.length - 1 && tail ? ` (${tail})` : ""}</div>`).join("");
+      const tail = out ? out.split("\n").slice(-4).map((line) => ccClip(ccFlat(line), 200)) : [];
+      const note = ccTimeoutNote(trace);
+      const rows = [...hint.split("\n"), ...tail];
+      const html = rows.map((line, i) => `<div class="chat-console-dim">${escapeHtml(line)}${i === rows.length - 1 && note ? ` ${escapeHtml(note)}` : ""}</div>`).join("");
       return { status: "", preview: `<div class="chat-console-progress">${html}</div>`, full: "" };
     }
     if (name === "spawn_subagent") {
