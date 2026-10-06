@@ -9727,7 +9727,7 @@
       // ("Waiting for output… (timeout: 2m)"), and that line exists even when
       // the call has nothing else to say yet. A fold that already printed the
       // deadline (the command line under a described shell) is left as it is.
-      const timeout = isConsoleOnly() && running && !verbose && !/\(timeout: [^)]*\)/.test(`${status} ${preview}`) ? ccTimeoutNote(trace) : "";
+      const timeout = isConsoleOnly() && running && !verbose && !/\btimeout: [^)]*/.test(`${status} ${preview}`) ? ccTimeoutNote(trace) : "";
       const showHang = Boolean(status || preview || inner || timeout);
       // A fold with only its hidden body (the settled skill load) prints one
       // line: the branch glyph and the hang's margins wait for the open.
@@ -11796,7 +11796,11 @@
       const out = typeof trace.output === "string" ? cleanToolOutput(trace, trace.output).replace(/\s+$/, "") : "";
       const n = out ? out.split("\n").length : 0;
       const lines = hint.split("\n");
-      const html = lines.map((line, i) => `<div class="chat-console-dim">${escapeHtml(line)}${i === lines.length - 1 && n ? ` (${n} ${n === 1 ? "line" : "lines"})` : ""}</div>`).join("");
+      // The deadline rides the end of the command, after its line count, so a
+      // running command stays one line instead of growing a row for it.
+      const note = ccTimeoutNote(trace).replace(/^\(|\)$/g, "");
+      const tail = [n ? `${n} ${n === 1 ? "line" : "lines"}` : "", note].filter(Boolean).join(" · ");
+      const html = lines.map((line, i) => `<div class="chat-console-dim">${escapeHtml(line)}${i === lines.length - 1 && tail ? ` (${tail})` : ""}</div>`).join("");
       return { status: "", preview: `<div class="chat-console-progress">${html}</div>`, full: "" };
     }
     if (name === "spawn_subagent") {
