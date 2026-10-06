@@ -3472,9 +3472,11 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-con
   text-overflow: unset;
 }
 /* A pending call's deadline, on the line under the call. It is dimmer than
-   the line it sits on and gone once the call settles. */
+   the line it sits on and gone once the call settles. Never breaks inside
+   itself: too-long lines move the whole note, not "(timeout:" alone. */
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-timeout {
   color: color-mix(in srgb, var(--mist) 58%, var(--ink));
+  white-space: nowrap;
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-hang:not(.is-expanded) .chat-console-out,
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-hang:not(.is-expanded) .chat-console-preview + .chat-console-out {

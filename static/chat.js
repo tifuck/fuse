@@ -11848,7 +11848,7 @@
       const tail = out ? out.split("\n").slice(-4).map((line) => ccClip(ccFlat(line), 200)) : [];
       const note = ccTimeoutNote(trace);
       const rows = [...hint.split("\n"), ...tail];
-      const html = rows.map((line, i) => `<div class="chat-console-dim">${escapeHtml(line)}${i === rows.length - 1 && note ? ` ${escapeHtml(note)}` : ""}</div>`).join("");
+      const html = rows.map((line, i) => `<div class="chat-console-dim">${escapeHtml(line)}${i === rows.length - 1 && note ? ` <span class="chat-console-timeout">${escapeHtml(note)}</span>` : ""}</div>`).join("");
       return { status: "", preview: `<div class="chat-console-progress">${html}</div>`, full: "" };
     }
     if (name === "spawn_subagent") {
@@ -13758,7 +13758,7 @@
           `<span class="chat-queue-text" title="${escapeHtml(item.text)}">${escapeHtml(item.text || "Attached files")}</span>` +
           `<span class="chat-queue-state" role="status">${item.sending ? "Sending…" : item.immediate ? "Next" : "Queued"}${item.attachments?.length ? ` · ${item.attachments.length} attached` : ""}</span>` +
           '<span class="chat-queue-actions">' +
-          `<button type="button" class="chat-queue-action" data-queue-send="${index}" title="Deliver this message and any files at the agent's next step"${!streaming ? " hidden" : ""}${item.sending || item.immediate || !streaming ? " disabled" : ""}>Send now</button>` +
+          `<button type="button" class="chat-queue-action" data-queue-send="${index}" title="Stop the current reply and send this message now"${!streaming ? " hidden" : ""}${item.sending || item.immediate || !streaming ? " disabled" : ""}>Send now</button>` +
           `<button type="button" class="chat-queue-action" data-queue-edit="${index}"${item.sending ? " disabled" : ""}>Edit</button>` +
           `<button type="button" class="chat-queue-action" data-queue-cancel="${index}"${item.sending ? " disabled" : ""}>Cancel</button>` +
           "</span></li>",
@@ -13811,7 +13811,7 @@
     renderQueue();
   }
 
-  async function drainQueue() {
+  async function drainQueue(opts) {
     if (queueDraining || runIsActive(activeRun) || streaming || sending || loading) return;
     if (!queuedTurns.length) return;
     const item = queuedTurns[0];
@@ -13821,7 +13821,7 @@
     queueDraining = true;
     const origin = currentId;
     try {
-      const ok = await completeTurn(item.text, item.attachments || [], { queueId: item.id, commandId: item.id + ":turn" });
+      const ok = await completeTurn(item.text, item.attachments || [], { queueId: item.id, commandId: item.id + ":turn", follow: opts?.follow !== false });
       if (ok) {
         acknowledgeQueuedTurn(origin, item.id);
         scheduleFitChatBar();
@@ -13896,55 +13896,25 @@
 
   async function sendQueuedNow(item) {
     if (!item || item.sending) return;
-    if (streaming && activeRun && activeRun.id) {
-      // The server atomically inserts a user message and stages it for the
-      // next model boundary. The existing run and remaining queue continue.
-      item.sending = true;
-      renderQueue();
-      setHint("Sending now…");
-      const origin = currentId;
-      const body = JSON.stringify({ text: item.text, command_id: item.id, attachments: item.attachments || [] });
-      try {
-        const data = await api("/chat/threads/" + encodeURIComponent(origin) + "/steer", { method: "POST", body });
-        acknowledgeQueuedTurn(origin, item.id);
-        if (origin !== currentId) return;
-        if (data.thread) acceptThread(data.thread);
-        scheduleFitChatBar();
-        setHint("Sent — the agent receives your message at its next step.");
-        await reconcileThread().catch(() => {});
-      } catch (error) {
-        if (origin !== currentId) return;
-        if (acceptedQueueCommands.has(item.id)) {
-          acknowledgeQueuedTurn(origin, item.id);
-          setHint("Sent — confirmed by the conversation.");
-          return;
-        }
-        item.sending = false;
-        renderQueue();
-        if (error && error.status === 409) {
-          item.immediate = true;
-          queuedTurns = [item, ...queuedTurns.filter((entry) => entry.id !== item.id)];
-          persistQueue();
-          renderQueue();
-          setHint("Run finished — sending as a new turn.");
-          await reconcileThread().catch(() => {});
-          if (origin === currentId) drainQueue();
-        } else if (error && error.status === 429) {
-          setHint("Still delivering earlier messages — try Send now again shortly.");
-        } else {
-          if (!error.status || error.status >= 500) markDisconnected();
-          setHint(error.status && error.status < 500 ? "Message was not accepted — still queued." : "Connection interrupted — retry Send now safely.", true);
-        }
-      }
-      return;
-    }
-    // A finishing run may no longer accept steers. Preserve selected priority
-    // and drain after its natural terminal transition; never cancel for files.
+    // Send now interrupts: the running reply is stopped outright (Stop kills
+    // its tree and force-finishes a wedged worker after the grace window),
+    // then this message starts a new turn. Steering kept the old request
+    // streaming until its next tool boundary, so the session the user just
+    // replaced went on producing tokens and late tool calls.
     item.immediate = true;
     queuedTurns = [item, ...queuedTurns.filter((entry) => entry.id !== item.id)];
     persistQueue();
     renderQueue();
-    drainQueue();
+    if (runIsActive(activeRun) || streaming) {
+      const origin = currentId;
+      item.sending = true;
+      renderQueue();
+      await stopActiveRun();
+      item.sending = false;
+      if (origin !== currentId) return;
+      renderQueue();
+    }
+    drainQueue({ follow: false });
   }
 
   async function stopActiveRun() {
@@ -14060,8 +14030,12 @@
     pending.append(pendingArticle, status);
     log.after(pending);
     setActive(true);
-    stickToBottom = true;
-    scrollThread();
+    // Send now from the queue keeps a paused reader's position: the interrupt
+    // transition must not yank the viewport to the bottom.
+    if (!opts || opts.follow !== false) {
+      stickToBottom = true;
+      scrollThread();
+    }
     syncComposer();
     try {
       await new Promise(resolve => {

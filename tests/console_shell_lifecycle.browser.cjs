@@ -172,6 +172,30 @@ const seen = (snap) => snap.rows.map((r) => r.text).join('\n');
       console.log('PASS Wait open while its command fails');
     }
 
+    // —— A long command keeps its deadline whole: the note wraps as a unit ——
+    await page.evaluate(() => fuseToolFixture.view('console'));
+    {
+      const long = 'docker run --rm -v /srv/qa:/workspace -w /workspace ghcr.io/qa/builder:latest cargo build --release --all-features --target-dir /workspace/target';
+      const cmd = shell('long-1', long, { background: false, description: 'Build the bundle' });
+      await page.evaluate((cmd) => fuseToolFixture.mountThread(
+        [{ role: 'user', content: 'Build it.' }, { role: 'assistant', model: 'qa/model', elapsedMs: 20000, content: '', tools: [cmd], segments: [{ type: 'tool', id: cmd.id }] }],
+        { live: true, phase: 'tools' }), cmd);
+      const snap = await read(page);
+      assert.match(row(snap, 'long-1').text, /\(timeout: 2m\)/, `a described command names its deadline: ${row(snap, 'long-1').text}`);
+      const note = await page.evaluate(() => {
+        const el = document.querySelector('[data-step="tool-long-1"] .chat-console-timeout');
+        if (!el) return null;
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        return { text: el.textContent, rects: range.getClientRects().length, whiteSpace: getComputedStyle(el).whiteSpace };
+      });
+      assert.ok(note, `the deadline note is its own span: ${row(snap, 'long-1').text}`);
+      assert.equal(note.whiteSpace, 'nowrap', `the note never breaks inside itself: ${note.whiteSpace}`);
+      assert.equal(note.rects, 1, `the note stays on one line: ${JSON.stringify(note)}`);
+      assert.ok(snap.overflow <= 0, `390px overflow ${snap.overflow}px on a long command`);
+      console.log('PASS deadline note never splits mid-note');
+    }
+
     // —— A kill mid-output keeps what was already printed, and stops the clock ——
     await page.setViewportSize({ width: 1440, height: 1000 });
     for (const view of ['console', 'mainframe']) {
