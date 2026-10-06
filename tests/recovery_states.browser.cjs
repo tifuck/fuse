@@ -204,7 +204,7 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       await p.context().close();
     }
 
-    // Retry resends the last prompt; steer inserts into the live run.
+    // Retry resends the last prompt; Send now interrupts the live run.
     {
       const p = await page();
       const created = await seed(p, turn('Retry me', 'First try'));
@@ -223,13 +223,15 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       await p.locator('[data-chat-send]').click();
       await p.locator('[data-chat-queue]').filter({ hasText: 'Steer this in' }).waitFor();
       await p.locator('[data-queue-send]').click();
-      await p.waitForFunction(() => [...document.querySelectorAll('.is-user')].some(el => el.textContent.includes('Steer this in')));
-      assert.equal(await p.evaluate(() => fuseToolFixture.runInfo().id), run, 'steer keeps the same run');
-      assert.equal(await p.locator('[data-chat-queue]').isVisible(), false, 'the steered item leaves the queue');
-      await p.request.post(`${origin}/__fixture/finish/${run}`);
+      await p.waitForFunction(run => {
+        const r = fuseToolFixture.runInfo();
+        return r && r.id && r.id !== run && document.querySelector('[data-chat-log]').textContent.includes('Steer this in');
+      }, run);
+      assert.notEqual(await p.evaluate(() => fuseToolFixture.runInfo().id), run, 'Send now interrupts and starts a new run');
+      assert.equal(await p.locator('[data-chat-queue]').isVisible(), false, 'the sent item leaves the queue');
       await p.waitForFunction(() => !document.body.classList.contains('is-streaming'), null, { timeout: 30000 });
-      assert.equal((await composer(p)).label, 'Send', 'the composer settles after the steered run');
-      console.log('PASS retry replaces the turn and steer stays on the live run');
+      assert.equal((await composer(p)).label, 'Send', 'the composer settles after the interrupted run');
+      console.log('PASS retry replaces the turn and Send now interrupts onto a fresh run');
       await p.context().close();
     }
 

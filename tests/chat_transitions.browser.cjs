@@ -48,7 +48,8 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       await check('new send');
       await page.evaluate(() => {
         const id = fuseToolFixture.runInfo().message_id;
-        window.beforeSteerNode = [...document.querySelectorAll('[data-message-id]')].find(el => el.dataset.messageId === id);
+        window.interruptedNode = [...document.querySelectorAll('[data-message-id]')].find(el => el.dataset.messageId === id);
+        window.interruptedId = id;
         fuseToolFixture.follow(false);
         window.readingAnchor = [...document.querySelectorAll('.chat-turn.is-user')].at(-3);
         readingAnchor.scrollIntoView({ block: 'center' });
@@ -56,20 +57,21 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       await page.waitForTimeout(400);
       const readingTop = await page.evaluate(() => readingAnchor.getBoundingClientRect().top);
       await watch();
-      await send('Priority instruction');
+      await send('Queue fixture send now priority');
       await send('Remaining queued instruction');
       await page.locator('[data-queue-send]').first().click();
-      await page.waitForFunction(() => document.querySelector('[data-chat-log]').textContent.includes('Acknowledged: Priority instruction'));
+      await page.waitForFunction(() => document.querySelector('[data-chat-log]').textContent.includes('Queue fixture send now priority'));
       await check('send now');
-      assert.equal(await page.evaluate(() => fuseToolFixture.scrollState().following), false, 'steering does not override a manually paused reader');
-      assert.ok(Math.abs(await page.evaluate(() => readingAnchor.getBoundingClientRect().top) - readingTop) < 2, 'queued controls and steer insertion preserve the reading anchor');
+      assert.equal(await page.evaluate(() => fuseToolFixture.scrollState().following), false, 'Send now does not override a manually paused reader');
+      assert.ok(Math.abs(await page.evaluate(() => readingAnchor.getBoundingClientRect().top) - readingTop) < 2, 'queued controls and the interrupt transition preserve the reading anchor');
       await page.evaluate(() => fuseToolFixture.follow());
       await page.waitForFunction(() => fuseToolFixture.scrollState().gap <= 1);
-      assert.equal(await page.evaluate(() => beforeSteerNode.isConnected && beforeSteerNode.dataset.messageId !== fuseToolFixture.runInfo().message_id), true, 'the old reply node becomes the sealed prefix in place');
-      // The prefix's duration/usage land with its delivery event, slightly after
-      // the DOM node is sealed; recording before that races the settle.
+      assert.equal(await page.evaluate(() => interruptedNode.isConnected && interruptedNode.dataset.messageId === interruptedId), true, 'the interrupted reply stays mounted in place under its original id');
+      assert.equal(await page.evaluate(() => fuseToolFixture.runInfo().message_id !== interruptedId), true, 'Send now starts a fresh reply node');
+      // The interrupted reply's duration/usage freeze at the stop; recording
+      // before the settle races the final checkpoint.
       const frozen = await page.evaluate(async () => {
-        const id = beforeSteerNode.dataset.messageId;
+        const id = window.interruptedId;
         const read = () => {
           const message = fuseToolFixture.snapshot().find(m => m.id === id);
           return message ? { id, elapsed: message.elapsedMs, usage: message.usage } : null;
@@ -85,24 +87,30 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       });
       await page.waitForTimeout(700);
       const later = await page.evaluate(id => fuseToolFixture.snapshot().find(m => m.id === id), frozen.id);
-      assert.equal(later.elapsedMs, frozen.elapsed, 'prefix duration freezes at delivery');
-      assert.deepEqual(later.usage, frozen.usage, 'prefix usage cannot borrow continuation tokens');
+      assert.equal(later.elapsedMs, frozen.elapsed, 'interrupted duration freezes at the stop');
+      assert.deepEqual(later.usage, frozen.usage, 'interrupted usage cannot borrow the new session tokens');
       await watch();
-      await page.locator('[data-chat-send]').click(); // empty composer = Stop
+      await page.evaluate(async () => {
+        await fuseToolFixture.api('/__fixture/finish/' + fuseToolFixture.runInfo().id, { method: 'POST' });
+      });
       await page.waitForFunction(() => document.querySelector('[data-chat-log]').textContent.includes('Synchronized answer: Remaining queued instruction'));
-      await check('stop and queue drain');
+      await check('interrupt and queue drain');
       await page.waitForFunction(() => !fuseToolFixture.runInfo());
 
-      // Stop after acceptance but before delivery: the empty continuation must
-      // not leave a standalone token/duration footer, nor block the next turn.
+      // Stop after an API steer was accepted but before its delivery: the empty
+      // continuation must not leave a standalone token/duration footer, nor
+      // block the next turn. Send now no longer steers, but the /steer API can,
+      // and the UI must still render that split cleanly.
       await send('Queue fixture thinking-step slow-steer');
       await page.locator('.is-live-think').waitFor();
-      await send('Accepted immediately before stop');
       const accepted = page.waitForResponse(r => r.url().endsWith('/steer') && r.request().method() === 'POST');
-      await page.locator('[data-queue-send]').click();
+      await page.evaluate(() => {
+        const id = new URL(location.href).searchParams.get('t');
+        return fuseToolFixture.api('/chat/threads/' + id + '/steer', { method: 'POST', body: JSON.stringify({ text: 'Accepted immediately before stop', command_id: crypto.randomUUID() }) });
+      });
       assert.equal((await accepted).status(), 200);
       await watch();
-      await page.locator('[data-chat-send]').click();
+      await page.locator('[data-chat-send]').click(); // empty composer = Stop
       await page.waitForFunction(() => !fuseToolFixture.runInfo());
       await check('stop before steer delivery');
       assert.equal(await page.evaluate(() => [...document.querySelectorAll('.chat-turn.is-assistant:not([data-deferred-message])')].some(el => !el.hidden && !el.querySelector('[data-flow]')?.textContent.trim() && !el.querySelector('[data-err]')?.textContent.trim())), false, 'no empty assistant artifact/footer');
@@ -143,7 +151,7 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       assert.ok(idle <= 1, `no idle vertical jitter: ${idle}px`);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
       await context.close();
-      console.log(`PASS long-history send/steer/stop/drain/cancel-race, fragment metadata and settled scroll ${view} ${width}`);
+      console.log(`PASS long-history send/interrupt/stop/drain/cancel-race, fragment metadata and settled scroll ${view} ${width}`);
     }
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }

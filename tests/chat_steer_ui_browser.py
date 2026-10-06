@@ -1,17 +1,19 @@
-"""Browser regression: Send-now steer artifacts in Console view.
+"""Browser regression: steer-split rendering and dock clock in Console view.
 
 Run against the isolated fixture (tests/chat_browser_fixture.py, port 8099):
 
     FUSE_CHAT_TEST_MODE=1 ./venv/bin/python tests/chat_browser_fixture.py &
     /root/fuse/venv/bin/python tests/chat_steer_ui_browser.py
 
-Covers the three reported artifacts:
+Send now interrupts the running reply (it no longer steers), but the /steer API
+still splits a live reply, and the UI must render that split cleanly. Covers the
+three reported artifacts:
 1. dock clock resets on reload while a force-sent steer is still undelivered
    (a long command keeps the run busy): the served continuation elapsedMs must
    advance, so the reloaded clock continues instead of restarting at 0s.
-2. reading-position jump on Send now when the steer response's frozen prefix
-   is behind the streamed client (durable row lags the patch stream): the
-   in-place re-key must still run and the viewport must hold.
+2. reading-position jump when a steer response's frozen prefix is behind the
+   streamed client (durable row lags the patch stream): the in-place re-key
+   must still run and the viewport must hold.
 3. no +/-1px scroll oscillation while a message sits queued in the in-flow
    Console dock.
 """
@@ -79,6 +81,20 @@ async def main():
             if rid:
                 await page.request.post(f"{ORIGIN}/__fixture/finish/{rid}")
 
+        async def api_steer(text):
+            # Send now interrupts instead of steering; the /steer API still
+            # splits a live reply and the UI must render that split.
+            await page.evaluate(
+                """async text => {
+                  const id = new URL(location.href).searchParams.get('t');
+                  await fuseToolFixture.api('/chat/threads/' + id + '/steer', {
+                    method: 'POST',
+                    body: JSON.stringify({ text, command_id: crypto.randomUUID() }),
+                  });
+                }""",
+                text,
+            )
+
         # A scrollable transcript first.
         for i in range(10):
             await send(f"Seed history {i} please")
@@ -86,7 +102,8 @@ async def main():
             await idle()
         await settle()
 
-        # ---- 1+3: queued message, Send now, hold the steer undelivered ----
+        # ---- 3: queued message, viewport pixel-stable in the in-flow dock ----
+        # ---- 1: dock clock continues across reload with an undelivered steer ----
         await send("Queue fixture hold-steer clock")
         await page.wait_for_function(
             "document.body.classList.contains('is-streaming') && !document.querySelector('[data-live-dock]').hidden",
@@ -119,9 +136,9 @@ async def main():
         if max(tops) - min(tops) > 1:
             failures.append(f"queued-state viewport drifted {max(tops) - min(tops):.2f}px: {tops}")
 
-        await page.locator("[data-queue-send]").first.click()
+        await api_steer("Clock probe instruction")
         await page.wait_for_function(
-            "![...document.querySelectorAll('.chat-queue-item .chat-queue-text')].some(el => el.textContent.includes('Queued instruction one'))",
+            "[...document.querySelectorAll('.chat-turn.is-user')].some(el => el.textContent.includes('Clock probe instruction'))",
             timeout=8000,
         )
         # The hold keeps the steer undelivered; sample the dock clock mid-window.
@@ -146,20 +163,20 @@ async def main():
         await idle()
         await settle()
 
-        # ---- 2: Send now whose steer response freezes a STALE prefix ----
-        # The response's frozen message is truncated relative to the streamed
-        # client, exactly like a durable row that lags the patch stream.
+        # ---- 2: a steer whose frozen prefix is STALE behind the streamed client ----
+        # The served projection can lag the patch stream (state writes are
+        # throttled); truncate it to a far-behind durable row. The in-place
+        # re-key must still run and the viewport must hold.
         await send("Queue fixture hold-steer console")
         await page.wait_for_function(
             "document.body.classList.contains('is-streaming') && document.querySelector('[data-chat-log]').textContent.includes('Working before')",
             timeout=15000,
         )
         await page.wait_for_timeout(3500)
-        await send("Stale snapshot steer")
-        await page.wait_for_function(
-            "[...document.querySelectorAll('.chat-queue-item .chat-queue-text')].some(el => el.textContent.includes('Stale snapshot steer'))",
-            timeout=5000,
-        )
+        # The property is about a paused reader: hold the position explicitly
+        # instead of relying on bottom-following to compensate for growth.
+        await page.evaluate("fuseToolFixture.follow(false)")
+        assert await page.evaluate("fuseToolFixture.scrollState().following") is False
         # Anchor the reading position on the live reply itself.
         anchored = await page.evaluate(
             """() => {
@@ -168,21 +185,37 @@ async def main():
               live.setAttribute('data-probe', 'orig');
               const edge = thread.getBoundingClientRect().top;
               thread.scrollTop += live.getBoundingClientRect().top - edge - 12;
-              return { top: thread.scrollTop, len: live.textContent.length, mid: live.dataset.messageId };
+              return { top: thread.scrollTop, len: live.textContent.length, mid: live.dataset.messageId,
+                       rects: [...document.querySelector('[data-chat-log]').children].map(el => ({ id: el.dataset.messageId, top: Math.round(el.getBoundingClientRect().top), h: Math.round(el.getBoundingClientRect().height), hidden: Boolean(el.hidden) })) };
             }"""
         )
-        async def truncate_steer(route):
+        tid = await page.evaluate("new URL(location.href).searchParams.get('t')")
+
+        async def truncate_snapshot(route):
             response = await route.fetch()
-            data = await response.json()
-            run = (data.get("run") or {}).get("message_id")
-            for msg in (data.get("thread") or {}).get("messages") or []:
-                if msg.get("role") == "assistant" and msg.get("tools_live") and msg.get("id") != run:
-                    # Simulate a durable row far behind the patch stream.
-                    msg["content"] = (msg.get("content") or "")[:20]
-                    msg["segments"] = []
-            await route.fulfill(response=response, body=json.dumps(data))
-        await page.route("**/steer", truncate_steer, times=1)
-        await page.locator("[data-queue-send]").first.click()
+            body = await response.text()
+            run = ""
+            out = []
+            for line in body.splitlines():
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    out.append(line)
+                    continue
+                if data.get("partial"):
+                    out.append(line)
+                    continue
+                run = (data.get("run") or {}).get("message_id") or run
+                for msg in data.get("messages") or []:
+                    if msg.get("role") == "assistant" and msg.get("tools_live") and msg.get("id") != run:
+                        # Simulate a durable row far behind the patch stream.
+                        msg["content"] = (msg.get("content") or "")[:20]
+                        msg["segments"] = []
+                out.append(json.dumps(data))
+            await route.fulfill(response=response, body="\n".join(out) + "\n")
+
+        await page.route(re.compile(rf"/chat/threads/{re.escape(tid)}(\?|$)"), truncate_snapshot, times=1)
+        await api_steer("Stale snapshot steer")
         await page.wait_for_function(
             "[...document.querySelectorAll('.chat-turn.is-user')].some(el => el.textContent.includes('Stale snapshot steer'))",
             timeout=8000,
@@ -197,6 +230,7 @@ async def main():
               const cont = user ? user.nextElementSibling : null;
               return {
                 top: thread.scrollTop,
+                rects: [...document.querySelector('[data-chat-log]').children].map(el => ({ id: el.dataset.messageId, top: Math.round(el.getBoundingClientRect().top), h: Math.round(el.getBoundingClientRect().height), hidden: Boolean(el.hidden) })),
                 probeRekeyedBeforeUser: Boolean(probe && user && frozen === probe && probe.dataset.messageId !== mid && probe.compareDocumentPosition(user) & Node.DOCUMENT_POSITION_FOLLOWING),
                 probeKeptText: Boolean(probe && probe.textContent.includes('Working before')),
                 contHasOld: cont ? cont.textContent.includes('Working before') : false,
@@ -214,7 +248,10 @@ async def main():
         if after["contHasOld"]:
             failures.append("old tokens leaked below the new user message")
         if abs(after["top"] - anchored["top"]) > 12:
-            failures.append(f"viewport jumped on stale-prefix steer: {anchored['top']:.1f} -> {after['top']:.1f}")
+            failures.append(
+                f"viewport jumped on stale-prefix steer: {anchored['top']:.1f} -> {after['top']:.1f}\n"
+                f"before: {anchored['rects']}\nafter:  {after['rects']}"
+            )
         else:
             print(f"PASS stale-prefix steer holds the reading anchor ({anchored['top']:.1f} -> {after['top']:.1f})")
         await finish_run()

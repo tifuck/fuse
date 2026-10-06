@@ -29,6 +29,7 @@ const out = process.env.QUEUE_UI_ARTIFACTS || '/tmp/opencode/queue-ui-artifacts'
       await page.waitForFunction(() => document.querySelector('[data-chat-log]').textContent.includes('Working before'));
       const id = new URL(page.url()).searchParams.get('t');
       const read = () => page.evaluate(async id => (await fetch('/chat/threads/' + id)).json(), id);
+      const runSnapshot = runId => page.evaluate(async runId => (await fetch('/chat/runs/' + runId)).json(), runId);
       const initial = await read();
       const runId = initial.run.id;
       await send('Edit this queued instruction');
@@ -39,7 +40,7 @@ const out = process.env.QUEUE_UI_ARTIFACTS || '/tmp/opencode/queue-ui-artifacts'
       await page.locator('[data-chat-send]').click();
       await page.locator('[data-queue-cancel]').click();
       assert.equal(await queue.isVisible(), false);
-      await send('Send this now');
+      await send('Queue fixture send now target');
       await send('Keep this queued for later');
       await input.fill('An unsent draft must survive');
       await page.screenshot({ path: `${out}/${view}-${width}-queued.png` });
@@ -49,109 +50,144 @@ const out = process.env.QUEUE_UI_ARTIFACTS || '/tmp/opencode/queue-ui-artifacts'
       await observer.goto(origin);
       await observer.goto(`${origin}/chat?t=${id}`);
       await observer.waitForFunction(() => document.body.classList.contains('is-streaming'));
-      const response = page.waitForResponse(response => response.url().endsWith('/steer') && response.request().method() === 'POST');
-      await page.evaluate(() => {
-        window.__tailLeaked = false;
-        window.__tailObserver = new MutationObserver(() => {
-          const user = [...document.querySelectorAll('.chat-turn.is-user')].find(el => el.textContent.includes('Send this now'));
-          if (user?.nextElementSibling?.textContent.includes('PREVIOUS_TAIL')) window.__tailLeaked = true;
-        });
-        window.__tailObserver.observe(document.querySelector('[data-chat-log]'), { subtree: true, childList: true, characterData: true });
+      const requests = [];
+      page.on('request', request => {
+        if (request.method() !== 'POST') return;
+        const path = new URL(request.url()).pathname;
+        if (/\/(steer|cancel|turns)$/.test(path)) requests.push({ path, body: request.postDataJSON() });
       });
-      let releaseSteer;
-      const steerGate = new Promise(resolve => { releaseSteer = resolve; });
-      await page.route('**/steer', async route => { await steerGate; await route.continue(); }, { times: 1 });
+      // Gate the stop so the sending state can be observed mid-flight.
+      let releaseStop;
+      const stopGate = new Promise(resolve => { releaseStop = resolve; });
+      await page.route('**/cancel', async route => { await stopGate; await route.continue(); }, { times: 1 });
       await page.locator('[data-queue-send]').first().click();
       const sendingItem = page.locator('.chat-queue-item').first();
       assert.equal(await sendingItem.getAttribute('aria-busy'), 'true');
       assert.match(await sendingItem.locator('.chat-queue-state').textContent(), /Sending/);
       assert.equal(await sendingItem.locator('button:disabled').count(), 3, 'all actions are disabled during submission');
       assert.equal(await input.inputValue(), 'An unsent draft must survive');
-      releaseSteer();
-      const accepted = await response;
-      assert.equal(accepted.status(), 200, await accepted.text());
-      await page.waitForFunction(() => document.querySelector('[data-chat-log]').textContent.includes('Acknowledged: Send this now'));
-      await observer.waitForFunction(() => document.querySelector('[data-chat-log]').textContent.includes('Acknowledged: Send this now'));
-      assert.equal(await page.evaluate(() => { window.__tailObserver.disconnect(); return window.__tailLeaked; }), false, 'old tokens must never render below the new user message');
+      releaseStop();
+      await page.waitForFunction(() => document.querySelector('[data-chat-log]').textContent.includes('Queue fixture send now target'));
+      await observer.waitForFunction(() => document.querySelector('[data-chat-log]').textContent.includes('Queue fixture send now target'));
+      assert.equal(requests.filter(r => r.path.endsWith('/steer')).length, 0, 'Send now no longer steers the live run');
+      assert.equal(requests.filter(r => r.path.endsWith('/cancel')).length, 1, 'Send now stops the running reply');
+      const sentTurn = requests.filter(r => r.path.endsWith('/turns') && r.body.text === 'Queue fixture send now target');
+      assert.equal(sentTurn.length, 1, 'the queued message goes out as a new turn');
+      assert.equal(sentTurn[0].body.attachments.length, 0);
+      const after = await read();
+      assert.notEqual(after.run.id, runId, 'Send now starts a new run');
+      assert.ok(['queued', 'running'].includes(after.run.status), 'the new turn is live');
+      const stopped = await runSnapshot(runId);
+      assert.ok(!['queued', 'running'].includes(stopped.status), 'the interrupted run is terminal');
+      assert.ok(stopped.cancel_requested, 'the interrupted run was stopped on request');
+      const userMessages = after.messages.filter(m => m.role === 'user' && m.content === 'Queue fixture send now target');
+      assert.equal(userMessages.length, 1);
+      const oldIndex = after.messages.findIndex(m => m.id === initial.run.message_id);
+      const userIndex = after.messages.findIndex(m => m.id === userMessages[0].id);
+      const newIndex = after.messages.findIndex(m => m.id === after.run.message_id);
+      assert.ok(oldIndex >= 0 && oldIndex < userIndex, 'the interrupted reply stays above the new user message');
+      assert.ok(newIndex > userIndex, 'the new reply is a separate node below the new user message');
+      // The interrupted reply must freeze the moment Send now is pressed: no
+      // tokens or tool calls from the killed session may land afterwards.
+      await page.waitForTimeout(800);
+      const frozen = await page.evaluate(oldId => {
+        const node = [...document.querySelectorAll('[data-message-id]')].find(el => el.dataset.messageId === oldId);
+        return node ? node.textContent.length : -1;
+      }, initial.run.message_id);
+      const grew = await page.evaluate(newId => {
+        const node = [...document.querySelectorAll('[data-message-id]')].find(el => el.dataset.messageId === newId);
+        return node ? node.textContent.length : -1;
+      }, after.run.message_id);
+      await page.waitForTimeout(800);
+      assert.equal(await page.evaluate(oldId => {
+        const node = [...document.querySelectorAll('[data-message-id]')].find(el => el.dataset.messageId === oldId);
+        return node ? node.textContent.length : -1;
+      }, initial.run.message_id), frozen, 'the interrupted reply never grows after Send now');
+      assert.ok(await page.evaluate(newId => {
+        const node = [...document.querySelectorAll('[data-message-id]')].find(el => el.dataset.messageId === newId);
+        return node ? node.textContent.length : -1;
+      }, after.run.message_id) > grew, 'the new session streams into its own reply');
       assert.equal(await page.locator('.chat-queue-item').count(), 1);
       assert.ok((await queue.innerText()).includes('Keep this queued for later'));
-      assert.equal((await queue.innerText()).includes('Send this now'), false);
+      assert.equal((await queue.innerText()).includes('Queue fixture send now target'), false);
       assert.equal(await input.inputValue(), 'An unsent draft must survive');
-      const after = await read();
-      assert.equal(after.run.id, runId, 'Send now continues the same run');
-      const steerIndex = after.messages.findIndex(m => m.role === 'user' && m.content === 'Send this now');
-      assert.ok(steerIndex > 0);
-      assert.equal(after.messages[steerIndex + 1].id, after.run.message_id);
-      assert.ok(after.messages[steerIndex - 1].content.includes('Working before'));
-      assert.equal(after.messages[steerIndex - 1].content.includes('Acknowledged:'), false);
-      assert.ok(after.messages[steerIndex - 1].content.includes('PREVIOUS_TAIL'));
-      assert.equal(after.messages[steerIndex + 1].content.includes('PREVIOUS_TAIL'), false);
       for (const p of [page, observer]) {
         assert.equal(await p.locator('[data-live-dock]').isVisible(), true, 'spinner must remain visible');
         assert.equal(await p.evaluate(() => document.body.classList.contains('is-streaming')), true);
       }
       await page.screenshot({ path: `${out}/${view}-${width}-sent-now.png` });
+      await page.reload();
+      await page.waitForFunction(() => document.body.classList.contains('is-streaming'));
+      assert.equal(await page.locator('.chat-queue-item').count(), 1);
+      assert.equal(await page.locator('[data-live-dock]').isVisible(), true);
+      await page.request.post(`${origin}/__fixture/finish/${after.run.id}`);
+      await page.waitForFunction(() => [...document.querySelectorAll('.is-user')].some(el => el.textContent.includes('Keep this queued for later')));
+      await page.waitForFunction(() => !document.body.classList.contains('is-streaming') && !document.querySelector('.chat-queue-item'));
+      assert.equal(await queue.isVisible(), false);
+      const final = await read();
+      assert.equal(final.messages.filter(m => m.role === 'user' && m.content === 'Queue fixture send now target').length, 1);
+      assert.equal(final.messages.filter(m => m.role === 'user' && m.content === 'Keep this queued for later').length, 1);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+      await observer.close();
       if (view === 'compact' && width === 1440) {
+        await send('Queue fixture lost acknowledgment');
+        await page.waitForFunction(() => document.body.classList.contains('is-streaming'));
         await send('Survive a lost acknowledgment');
-        await page.route('**/steer', async route => {
+        await page.route('**/turns', async route => {
           await route.fetch();
           await route.abort('failed');
         }, { times: 1 });
         await page.locator('[data-queue-send]').last().click();
         await page.waitForFunction(() => [...document.querySelectorAll('.is-user')].some(el => el.textContent.includes('Survive a lost acknowledgment')));
-        await page.waitForFunction(() => document.querySelectorAll('.chat-queue-item').length === 1);
+        await page.waitForFunction(() => document.querySelectorAll('.chat-queue-item').length === 0);
         assert.equal((await read()).messages.filter(m => m.role === 'user' && m.content === 'Survive a lost acknowledgment').length, 1);
+        await page.waitForFunction(() => !document.body.classList.contains('is-streaming'));
+        console.log('PASS lost turn acknowledgment still lands exactly once and retires the queue item');
       }
-      await page.reload();
-      await page.waitForFunction(() => document.body.classList.contains('is-streaming'));
-      assert.equal(await page.locator('.chat-queue-item').count(), 1);
-      assert.equal(await page.locator('[data-live-dock]').isVisible(), true);
-      await page.request.post(`${origin}/__fixture/finish/${runId}`);
-      await page.waitForFunction(() => [...document.querySelectorAll('.is-user')].some(el => el.textContent.includes('Keep this queued for later')));
-      await page.waitForFunction(() => !document.body.classList.contains('is-streaming') && !document.querySelector('.chat-queue-item'));
-      assert.equal(await queue.isVisible(), false);
-      const final = await read();
-      assert.equal(final.messages.filter(m => m.role === 'user' && m.content === 'Send this now').length, 1);
-      assert.equal(final.messages.filter(m => m.role === 'user' && m.content === 'Keep this queued for later').length, 1);
-      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
-      await observer.close();
       if (view === 'compact' && width === 390) {
         await send('Queue fixture attachment priority');
         await page.waitForFunction(() => document.body.classList.contains('is-streaming'));
         const attachmentRun = (await read()).run.id;
         const attachmentRequests = [];
         const recordRequest = request => {
-          if (request.method() === 'POST' && /\/(steer|cancel)$/.test(request.url())) attachmentRequests.push({ url: request.url(), body: request.postDataJSON() });
+          if (request.method() === 'POST' && /\/(steer|cancel|turns)$/.test(request.url())) attachmentRequests.push({ url: request.url(), body: request.postDataJSON() });
         };
         page.on('request', recordRequest);
         await send('Earlier queued message');
         await page.locator('[data-chat-file]').setInputFiles({ name: 'note.txt', mimeType: 'text/plain', buffer: Buffer.from('Offline attachment contents') });
         await page.locator('.chat-attach-chip').waitFor();
         await send('Attached priority');
+        const priorityTurn = page.waitForResponse(r => r.url().endsWith('/turns') && r.request().method() === 'POST' && r.request().postDataJSON().text === 'Attached priority');
         await page.locator('[data-queue-send]').last().click();
+        await priorityTurn;
         await page.waitForFunction(() => [...document.querySelectorAll('.is-user')].some(el => el.textContent.includes('Attached priority')));
-        assert.equal((await read()).run.id, attachmentRun, 'attachments steer the existing run');
-        assert.equal(attachmentRequests.filter(r => r.url.endsWith('/cancel')).length, 0, 'attachment Send now never cancels');
-        assert.equal(attachmentRequests.find(r => r.url.endsWith('/steer')).body.attachments.length, 1);
-        await page.locator('[data-chat-file]').setInputFiles({ name: 'only.txt', mimeType: 'text/plain', buffer: Buffer.from('Attachment-only steer') });
+        assert.ok(attachmentRequests.filter(r => r.url.endsWith('/cancel')).length >= 1, 'Send now stops the running reply even with attachments');
+        assert.equal(attachmentRequests.filter(r => r.url.endsWith('/steer')).length, 0);
+        const attachmentTurn = attachmentRequests.filter(r => r.url.endsWith('/turns') && r.body.text === 'Attached priority').at(-1);
+        assert.equal(attachmentTurn.body.attachments.length, 1);
+        assert.ok(!['queued', 'running'].includes((await runSnapshot(attachmentRun)).status), 'the interrupted attachment run is terminal');
+        await page.waitForFunction(() => !document.body.classList.contains('is-streaming') && !document.querySelector('.chat-queue-item'));
+        await send('Queue fixture attachment only');
+        await page.waitForFunction(() => document.body.classList.contains('is-streaming'));
+        await page.locator('[data-chat-file]').setInputFiles({ name: 'only.txt', mimeType: 'text/plain', buffer: Buffer.from('Attachment-only send') });
         await page.locator('.chat-attach-chip').waitFor();
         await send('');
-        await page.locator('[data-queue-send]').last().click();
-        await page.waitForFunction(() => document.querySelectorAll('.chat-queue-item').length === 1);
-        assert.equal((await read()).run.id, attachmentRun, 'attachment-only Send now also continues the same run');
-        const attachmentOnly = attachmentRequests.filter(r => r.url.endsWith('/steer')).at(-1).body;
+        const attachmentOnlyTurn = page.waitForResponse(r => r.url().endsWith('/turns') && r.request().method() === 'POST' && r.request().postDataJSON().text === '');
+        await page.locator('[data-queue-send]').first().click();
+        await attachmentOnlyTurn;
+        await page.waitForFunction(() => document.querySelectorAll('.chat-queue-item').length === 0);
+        await page.waitForFunction(() => !document.body.classList.contains('is-streaming'));
+        const attachmentOnly = attachmentRequests.filter(r => r.url.endsWith('/turns')).at(-1).body;
         assert.equal(attachmentOnly.text, '');
         assert.equal(attachmentOnly.attachments.length, 1);
-        assert.equal(attachmentRequests.filter(r => r.url.endsWith('/cancel')).length, 0);
+        assert.ok((await read()).messages.some(m => m.role === 'user' && !(m.content || '').trim() && (m.attachments || []).length === 1), 'the attachment-only message lands as a real user message');
         page.off('request', recordRequest);
-        await page.request.post(`${origin}/__fixture/finish/${attachmentRun}`);
-        await page.waitForFunction(() => !document.body.classList.contains('is-streaming') && !document.querySelector('.chat-queue-item'));
         const priority = (await read()).messages.filter(m => m.role === 'user').map(m => m.content);
         assert.ok(priority.indexOf('Attached priority') < priority.indexOf('Earlier queued message'), 'selected attachment goes first');
-        console.log('PASS attachment and attachment-only Send now steer without cancelling; remaining queue drains afterward');
+        console.log('PASS attachment Send now interrupts and sends files as a new turn; remaining queue drains afterward');
       }
       await context.close();
-      console.log(`PASS queue edit/cancel/send-now/continuation/reload/drain/observer ${view} ${width}`);
+      console.log(`PASS queue edit/cancel/send-now-interrupt/reload/drain/observer ${view} ${width}`);
     }
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }

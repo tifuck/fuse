@@ -14602,7 +14602,7 @@
 
     if (streaming && event.key === "Enter" && !event.shiftKey) {
       // Enter never stops a running turn: it queues the message. Send now on
-      // a queued row injects that message at the next tool boundary instead.
+      // a queued row stops the running reply and sends it as a new turn instead.
       event.preventDefault();
       queueIncomingTurn();
       return;
