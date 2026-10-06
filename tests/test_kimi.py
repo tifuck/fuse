@@ -184,6 +184,94 @@ class KimiPoolTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(url.endswith("/coding/v1/chat/completions"))
         self.assertIn("api.kimi.ai", url)
 
+    @staticmethod
+    def _entitled_extra():
+        return {
+            "access_token": "tok",
+            "refresh_token": "rt",
+            "region": "global",
+            "billing": {"plan_type": "Plus", "fetched_at": "2026-01-01T00:00:00Z"},
+        }
+
+    @patch("app.sources.kimi.note_pool_invoke")
+    @patch("app.sources.kimi.refresh_one", new_callable=AsyncMock)
+    @patch("app.sources.kimi.openai_chat", new_callable=AsyncMock)
+    @patch("app.sources.kimi.refresh_pool_quota", new_callable=AsyncMock)
+    @patch("app.sources.kimi.refresh_due", new_callable=AsyncMock)
+    async def test_capability_401_fails_over_without_auth_strike_or_refresh(
+        self, _due, _quota, chat, refresh, _invoke
+    ):
+        denial = (
+            401,
+            {"error": {"message": "Your membership does not include the K3 capability"}},
+            None,
+            {},
+            {},
+        )
+        ok = (
+            200,
+            {"id": "c", "usage": {"prompt_tokens": 3, "completion_tokens": 1}},
+            None,
+            {"prompt_tokens": 3, "completion_tokens": 1, "cached_tokens": 0},
+            {},
+        )
+        chat.side_effect = [denial, ok]
+        first = accounts.add_credential(
+            self.sid, "a", "tok", extra=self._entitled_extra(), donated_by=self.alice["id"]
+        )
+        second = accounts.add_credential(
+            self.sid, "b", "tok2", extra=self._entitled_extra(), donated_by=self.alice["id"]
+        )
+        src = kimi_mod.KimiSource({"id": self.sid, "name": "Kimi"}, {}, [])
+        result = await src.chat(
+            {"model": "k3", "messages": [{"role": "user", "content": "hi"}]},
+            user_id=self.alice["id"],
+        )
+        self.assertEqual(result.status, 200)
+        self.assertEqual(result.credential_id, second)
+        # No wasted OAuth round trip for a tier denial, and no auth strike on
+        # the valid first credential.
+        refresh.assert_not_awaited()
+        row = db.fetchone("SELECT disabled FROM credentials WHERE id=?", (first,))
+        self.assertEqual(row["disabled"], 0)
+
+    @patch("app.sources.kimi.note_pool_invoke")
+    @patch("app.sources.kimi.refresh_one", new_callable=AsyncMock)
+    @patch("app.sources.kimi.openai_chat", new_callable=AsyncMock)
+    @patch("app.sources.kimi.refresh_pool_quota", new_callable=AsyncMock)
+    @patch("app.sources.kimi.refresh_due", new_callable=AsyncMock)
+    async def test_repeated_capability_401_never_disables_credentials(
+        self, _due, _quota, chat, refresh, _invoke
+    ):
+        # Two 401s inside the auth-confirm window would disable the first
+        # credential if they were treated as auth failures.
+        denial = (
+            401,
+            {"error": {"message": "requested context length exceeds your plan entitlements"}},
+            None,
+            {},
+            {},
+        )
+        chat.side_effect = [denial, denial, denial, denial]
+        first = accounts.add_credential(
+            self.sid, "a", "tok", extra=self._entitled_extra(), donated_by=self.alice["id"]
+        )
+        second = accounts.add_credential(
+            self.sid, "b", "tok2", extra=self._entitled_extra(), donated_by=self.alice["id"]
+        )
+        src = kimi_mod.KimiSource({"id": self.sid, "name": "Kimi"}, {}, [])
+        result = await src.chat(
+            {"model": "k3", "messages": [{"role": "user", "content": "hi"}]},
+            user_id=self.alice["id"],
+        )
+        # The entitlement denial surfaces as-is (401 + upstream message);
+        # what must NOT happen is disabling either valid credential.
+        self.assertEqual(result.status, 401)
+        for cid in (first, second):
+            row = db.fetchone("SELECT disabled FROM credentials WHERE id=?", (cid,))
+            self.assertEqual(row["disabled"], 0, cid)
+        refresh.assert_not_awaited()
+
 
 class KimiPricingTest(unittest.TestCase):
     def test_k3_api_equivalent_uses_official_rates(self):

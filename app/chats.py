@@ -987,6 +987,10 @@ def parse_messages(raw, *, strict: bool = False) -> list[dict]:
                         "total_tokens",
                         "reasoning_tokens",
                         "completion_tokens_details",
+                        "prompt_tokens_details",
+                        "cached_tokens",
+                        "cache_write_tokens",
+                        "cache_usage_status",
                     )
                     if k in usage
                 }

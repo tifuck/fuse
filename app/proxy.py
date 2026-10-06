@@ -70,6 +70,10 @@ def usage_from_obj(obj: dict, *, reasoning_separate: bool = False) -> dict:
 
     prompt/input tokens include cache reads and writes. output_tokens is Fuse's
     canonical generated-token count and always includes reasoning_tokens.
+    cache_usage_status records whether the upstream reported the cached /
+    cache-write split at all: "known" (a reported zero is a real zero) versus
+    "unknown" (no cache fields, so the zeros are placeholders). usage_status
+    stays a total-token completeness signal.
     """
     if not isinstance(obj, dict) or not isinstance(obj.get("usage"), dict):
         return {
@@ -85,6 +89,7 @@ def usage_from_obj(obj: dict, *, reasoning_separate: bool = False) -> dict:
             "total_tokens": 0,
             "cost_micros": None,
             "usage_status": "unknown",
+            "cache_usage_status": "unknown",
         }
     u = obj["usage"]
     details_c = u.get("completion_tokens_details") if isinstance(u.get("completion_tokens_details"), dict) else {}
@@ -96,8 +101,16 @@ def usage_from_obj(obj: dict, *, reasoning_separate: bool = False) -> dict:
     prompt = max(0, _int(u.get("prompt_tokens") if u.get("prompt_tokens") is not None else u.get("input_tokens")))
     completion = max(0, _int(u.get("completion_tokens") if u.get("completion_tokens") is not None else u.get("output_tokens")))
     reasoning = max(0, _int(details_c.get("reasoning_tokens") or u.get("reasoning_tokens")))
-    cached = max(0, _int(details_p.get("cached_tokens") or u.get("cached_tokens")))
-    cache_write = max(0, _int(details_p.get("cache_write_tokens") or u.get("cache_write_tokens")))
+    # Presence, not truthiness: a reported 0 is a known zero, a missing field
+    # is an absent metric that must not be read as "no cache used".
+    cache_status = u.get("cache_usage_status")
+    if cache_status not in ("known", "unknown", "partial"):
+        cache_status = "known" if any(
+            details_p.get(key) is not None or u.get(key) is not None
+            for key in ("cached_tokens", "cache_write_tokens")
+        ) else "unknown"
+    cached = max(0, _int(details_p.get("cached_tokens") if "cached_tokens" in details_p else u.get("cached_tokens")))
+    cache_write = max(0, _int(details_p.get("cache_write_tokens") if "cache_write_tokens" in details_p else u.get("cache_write_tokens")))
     cached = min(cached, prompt)
     cache_write = min(cache_write, max(prompt - cached, 0))
     audio = min(
@@ -148,6 +161,7 @@ def usage_from_obj(obj: dict, *, reasoning_separate: bool = False) -> dict:
         "total_tokens": total,
         "cost_micros": reported_cost,
         "usage_status": "complete" if u else "unknown",
+        "cache_usage_status": cache_status,
     }
 
 
@@ -209,6 +223,12 @@ def merge_usage(parsed: dict, extra: dict | None) -> dict:
             continue
         if key == "usage_status":
             if value == "complete" or not merged.get(key):
+                merged[key] = value
+            continue
+        if key == "cache_usage_status":
+            # Once one frame reported the cache split, later frames without
+            # it must not downgrade the request back to unknown.
+            if value == "known" or not merged.get(key):
                 merged[key] = value
             continue
         if value and not merged.get(key):

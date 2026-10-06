@@ -1469,8 +1469,11 @@ class DevinSource:
                 if result.stream is not None:
                     stream_reserved = True
                     failover.served()
+                    # result.usage is the dict the stream mutates; `or {}`
+                    # would hand the wrapper a different dict and the
+                    # completion status (and pin bind) would never be seen.
                     return self._stream_result_wrap(
-                        result.stream, result.usage or {}, cred, session_id, model, attempts
+                        result.stream, result.usage if isinstance(result.usage, dict) else {}, cred, session_id, model, attempts
                     )
                 last = result
                 if result.status == 401:
@@ -1647,7 +1650,11 @@ class DevinSource:
                     # window; cool it well past the generic failure blip so
                     # the pool stops hammering it turn after turn.
                     quota_hit = "quota" in str((collected or {}).get("trailer_error") or "").lower()
-                    note_failure(cid, cooldown_seconds=900 if quota_hit else 5)
+                    note_failure(
+                        cid,
+                        cooldown_seconds=900 if quota_hit else 5,
+                        affinity_safe=not quota_hit,
+                    )
 
         wrapped = UsageStream(_bind_on_finish(), collected, on_close=lambda: release(cid))
         result = ChatResult(status=200, stream=wrapped, credential_id=cid, model=model)
@@ -1770,6 +1777,10 @@ class DevinSource:
                 "completion_tokens": collected.get("completion_tokens") or 0,
                 "total_tokens": collected.get("total_tokens")
                 or (collected.get("prompt_tokens") or 0) + (collected.get("completion_tokens") or 0),
+                "prompt_tokens_details": {
+                    "cached_tokens": collected.get("cached_tokens") or 0,
+                    "cache_write_tokens": collected.get("cache_write_tokens") or 0,
+                },
             }
             collected.setdefault("usage_status", "complete")
             collected["stream_status"] = "complete"

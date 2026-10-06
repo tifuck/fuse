@@ -308,5 +308,36 @@ class TxRollbackTest(unittest.TestCase):
         self.assertEqual(events, ["rollback", "close", "release"])
 
 
+class KimiCapabilityDenialTest(unittest.TestCase):
+    def test_entitlement_401_is_recognized_and_auth_401_is_not(self):
+        from app.sources import kimi as kimi_mod
+
+        self.assertTrue(
+            kimi_mod._capability_denial(
+                {"error": {"message": "Your membership does not include the K3 capability"}}
+            )
+        )
+        self.assertTrue(
+            kimi_mod._capability_denial(
+                {"error": "requested context length exceeds your plan entitlements"}
+            )
+        )
+        # A structured code is authoritative: only entitlement-shaped codes
+        # count, and an explicit auth code wins over message wording.
+        self.assertTrue(
+            kimi_mod._capability_denial({"error": {"code": "capability_required", "message": "no"}})
+        )
+        self.assertFalse(
+            kimi_mod._capability_denial(
+                {"error": {"code": "invalid_api_key", "message": "your membership does not include this"}}
+            )
+        )
+        self.assertFalse(kimi_mod._capability_denial({"error": {"message": "Invalid API key"}}))
+        self.assertFalse(kimi_mod._capability_denial({"error": {"message": "unauthorized"}}))
+        self.assertFalse(kimi_mod._capability_denial("unauthorized"))
+        self.assertFalse(kimi_mod._capability_denial(None))
+        self.assertFalse(kimi_mod._capability_denial({}))
+
+
 if __name__ == "__main__":
     unittest.main()

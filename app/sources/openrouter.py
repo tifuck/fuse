@@ -808,6 +808,16 @@ def _chat_payload(
     payload.pop("session_id", None)
     if session_id:
         payload["session_id"] = session_id[:256]
+        # Overwrite any raw client prompt_cache_key with the scoped id too:
+        # OpenRouter falls back to it as the routing key and it must not leak
+        # or collide on a raw thread identifier.
+        payload["prompt_cache_key"] = session_id[:256]
+    if upstream.startswith("anthropic/"):
+        # Anthropic prompt caching is opt-in via cache_control; a sticky
+        # session alone routes but never caches. The top-level directive lets
+        # OpenRouter place and advance the breakpoint on the last cacheable
+        # block. Other providers get no such global field.
+        payload.setdefault("cache_control", {"type": "ephemeral", "ttl": "1h"})
     caller_provider = payload.get("provider")
     provider = dict(caller_provider) if isinstance(caller_provider, dict) else {}
     for key, value in _provider_routing(prefs, upstream).items():
@@ -818,11 +828,10 @@ def _chat_payload(
         max_price["completion"] = 0
         provider["max_price"] = max_price
         provider["allow_fallbacks"] = True
-    elif session_id:
-        # A fallback provider has a cold cache. OpenRouter's own sticky routing
-        # still moves off this provider if it is down.
-        provider["allow_fallbacks"] = False
     else:
+        # session_id already gives OpenRouter sticky routing toward the
+        # provider that holds this conversation's cache; disabling fallbacks
+        # here would turn a provider outage into a hard failure.
         provider.setdefault("allow_fallbacks", True)
     payload["provider"] = provider
     return payload

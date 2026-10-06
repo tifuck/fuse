@@ -26,6 +26,9 @@ pytestmark = pytest.mark.usefixtures("isolated_db")
 class AgentsFileTest(unittest.TestCase):
     def setUp(self):
         workspace._agents_cache.clear()
+        workspace._agents_last_good.clear()
+        self.addCleanup(workspace._agents_cache.clear)
+        self.addCleanup(workspace._agents_last_good.clear)
 
     def test_prefers_agents_md_over_claude(self):
         names = {"README.md", "CLAUDE.md", "AGENTS.md", "src"}
@@ -72,7 +75,9 @@ class AgentsFileTest(unittest.TestCase):
 class AgentsLoadingTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         workspace._agents_cache.clear()
+        workspace._agents_last_good.clear()
         self.addCleanup(workspace._agents_cache.clear)
+        self.addCleanup(workspace._agents_last_good.clear)
         self.row = {"id": 4, "alias": "prod", "default_cwd": "/srv/api"}
 
     async def test_full_budget_and_paging_on_both_transports(self):
@@ -119,6 +124,7 @@ class AgentsLoadingTest(unittest.IsolatedAsyncioTestCase):
             for error, reason in ((workspace.VaultLocked(), "locked"), (workspace.WorkspaceError("offline"), "host")):
                 with self.subTest(stage=stage, reason=reason):
                     workspace._agents_cache.clear()
+                    workspace._agents_last_good.clear()
                     with patch.object(workspace, "resolve_host_row", return_value=self.row) as resolve, patch.object(
                         workspace, "_list", AsyncMock(return_value=("AGENTS.md", {"status": "done"}))
                     ) as listing, patch.object(workspace, "_read", AsyncMock()) as reading:
@@ -129,6 +135,141 @@ class AgentsLoadingTest(unittest.IsolatedAsyncioTestCase):
                             self.assertEqual(await workspace.load_project_agents(1, 4, "/srv/api", report), ("", ""))
                             self.assertEqual(report, {"reason": reason})
                         self.assertEqual(failing.call_count, 1)
+
+    async def test_transient_failure_serves_last_good_body(self):
+        def ok_list(names="AGENTS.md"):
+            async def list_(*_a, **_k):
+                return f"From host prod:\n{names}\n", {"status": "done", "preview": names}
+
+            return list_
+
+        def ok_read(body="RULES\n"):
+            async def read(*_a, **_k):
+                return f"From host prod:\n{body}", {"status": "done"}
+
+            return read
+
+        with patch.object(workspace, "resolve_host_row", return_value=self.row), patch.object(
+            workspace, "_list", AsyncMock(side_effect=ok_list())
+        ), patch.object(workspace, "_read", AsyncMock(side_effect=ok_read())):
+            self.assertEqual(
+                await workspace.load_project_agents(1, 4, "/srv/api"), ("AGENTS.md", "RULES")
+            )
+        self.assertEqual(workspace.last_project_agents(1, 4, "/srv/api"), ("AGENTS.md", "RULES"))
+
+        # Resolve, list and read failures each serve the sticky body instead of
+        # blanking the system-prompt block for a turn.
+        for stage in ("resolve_host_row", "_list", "_read"):
+            with self.subTest(stage=stage):
+                workspace._agents_cache.clear()
+                with patch.object(workspace, "resolve_host_row", return_value=self.row) as resolve, patch.object(
+                    workspace, "_list", AsyncMock(side_effect=ok_list())
+                ) as listing, patch.object(
+                    workspace, "_read", AsyncMock(side_effect=ok_read())
+                ) as reading:
+                    {"resolve_host_row": resolve, "_list": listing, "_read": reading}[stage].side_effect = (
+                        workspace.WorkspaceError("offline")
+                    )
+                    report = {}
+                    self.assertEqual(
+                        await workspace.load_project_agents(1, 4, "/srv/api", report),
+                        ("AGENTS.md", "RULES"),
+                    )
+                    self.assertEqual(report, {"reason": "host"})
+
+        # A listing rec that reports an error is a transient failure too, not
+        # a confirmed deletion.
+        workspace._agents_cache.clear()
+        with patch.object(workspace, "resolve_host_row", return_value=self.row), patch.object(
+            workspace, "_list",
+            AsyncMock(return_value=("From host prod:\n", {"status": "error", "error": "host down"})),
+        ):
+            report = {}
+            self.assertEqual(
+                await workspace.load_project_agents(1, 4, "/srv/api", report), ("AGENTS.md", "RULES")
+            )
+            self.assertEqual(report, {"reason": "host"})
+        self.assertEqual(workspace.last_project_agents(1, 4, "/srv/api"), ("AGENTS.md", "RULES"))
+
+        # A runtime-side timeout (wait_for) falls back to the same body.
+        workspace._agents_cache.clear()
+
+        async def slow_list(*_a, **_k):
+            await asyncio.sleep(0.5)
+            return "From host prod:\nAGENTS.md\n", {"status": "done", "preview": "AGENTS.md"}
+
+        with patch.object(workspace, "resolve_host_row", return_value=self.row), patch.object(
+            workspace, "_list", AsyncMock(side_effect=slow_list)
+        ):
+            with self.assertRaises(asyncio.TimeoutError):
+                await asyncio.wait_for(workspace.load_project_agents(1, 4, "/srv/api"), timeout=0.05)
+        self.assertEqual(workspace.last_project_agents(1, 4, "/srv/api"), ("AGENTS.md", "RULES"))
+
+        # A successful changed read replaces the sticky body.
+        workspace._agents_cache.clear()
+        with patch.object(workspace, "resolve_host_row", return_value=self.row), patch.object(
+            workspace, "_list", AsyncMock(side_effect=ok_list())
+        ), patch.object(workspace, "_read", AsyncMock(side_effect=ok_read("RULES-V2\n"))):
+            self.assertEqual(
+                await workspace.load_project_agents(1, 4, "/srv/api"), ("AGENTS.md", "RULES-V2")
+            )
+        self.assertEqual(workspace.last_project_agents(1, 4, "/srv/api"), ("AGENTS.md", "RULES-V2"))
+
+        # A listing that succeeds with no instruction file is a confirmed
+        # absence: the sticky body is dropped, not resurrected.
+        workspace._agents_cache.clear()
+        with patch.object(workspace, "resolve_host_row", return_value=self.row), patch.object(
+            workspace, "_list", AsyncMock(side_effect=ok_list("README.md"))
+        ):
+            report = {}
+            self.assertEqual(await workspace.load_project_agents(1, 4, "/srv/api", report), ("", ""))
+            self.assertEqual(report, {"reason": "missing"})
+        self.assertEqual(workspace.last_project_agents(1, 4, "/srv/api"), ("", ""))
+
+    async def test_write_invalidates_cache_but_keeps_fallback(self):
+        async def ok_list(*_a, **_k):
+            return "From host prod:\nAGENTS.md\n", {"status": "done", "preview": "AGENTS.md"}
+
+        async def ok_read(*_a, **_k):
+            return "From host prod:\nRULES\n", {"status": "done"}
+
+        with patch.object(workspace, "resolve_host_row", return_value=self.row), patch.object(
+            workspace, "_list", AsyncMock(side_effect=ok_list)
+        ), patch.object(workspace, "_read", AsyncMock(side_effect=ok_read)):
+            self.assertEqual(
+                await workspace.load_project_agents(1, 4, "/srv/api"), ("AGENTS.md", "RULES")
+            )
+        workspace.invalidate_agents_cache(1, 4, "/srv/api/AGENTS.md")
+        self.assertFalse(any(key[0] == 1 and key[1] == 4 for key in workspace._agents_cache))
+        # The pre-write body stays as the transient fallback: a read failure
+        # right after the write must not blank the instructions block.
+        self.assertEqual(workspace.last_project_agents(1, 4, "/srv/api"), ("AGENTS.md", "RULES"))
+        with patch.object(workspace, "resolve_host_row", return_value=self.row), patch.object(
+            workspace, "_list", AsyncMock(side_effect=workspace.WorkspaceError("offline"))
+        ):
+            self.assertEqual(
+                await workspace.load_project_agents(1, 4, "/srv/api"), ("AGENTS.md", "RULES")
+            )
+
+    async def test_last_good_is_tenant_keyed_and_bounded(self):
+        for i in range(300):
+            workspace._agents_last_good[(i, 4, f"/p{i}")] = ("AGENTS.md", f"body{i}")
+
+        async def ok_list(*_a, **_k):
+            return "From host prod:\nAGENTS.md\n", {"status": "done", "preview": "AGENTS.md"}
+
+        async def ok_read(*_a, **_k):
+            return "From host prod:\nRULES\n", {"status": "done"}
+
+        with patch.object(workspace, "resolve_host_row", return_value=self.row), patch.object(
+            workspace, "_list", AsyncMock(side_effect=ok_list)
+        ), patch.object(workspace, "_read", AsyncMock(side_effect=ok_read)):
+            await workspace.load_project_agents(2, 4, "/srv/api")
+        self.assertLessEqual(len(workspace._agents_last_good), 2)
+        self.assertEqual(workspace.last_project_agents(2, 4, "/srv/api"), ("AGENTS.md", "RULES"))
+        # Another user's or cwd's entry never answers for this project.
+        self.assertEqual(workspace.last_project_agents(1, 4, "/srv/api"), ("", ""))
+        self.assertEqual(workspace.last_project_agents(2, 4, "/srv/other"), ("", ""))
 
     async def test_generic_read_character_limit(self):
         with patch.object(workspace, "_is_agent", return_value=True), patch.object(

@@ -723,6 +723,29 @@ class ClipToFitTest(unittest.TestCase):
         self.assertEqual(clipped, 0)
         self.assertIs(out, rows)
 
+    def test_frozen_prefix_is_never_reclipped(self):
+        old = "O" * 50_000
+        rows = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "go"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "c1", "function": {"name": "t", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": old},
+        ]
+        grown = [*rows, {"role": "user", "content": "N" * 40_000}]
+        out, clipped = ctx.clip_to_fit(grown, limit=20_000, reserve=4_000, frozen=len(rows))
+        self.assertGreater(clipped, 0)
+        # The already-sent tool body replays byte-identical; only the new row shrank.
+        self.assertEqual(out[3]["content"], old)
+        self.assertLess(len(out[4]["content"]), 40_000)
+        # Nothing clippable left: over-budget frozen history is compaction's job.
+        out2, clipped2 = ctx.clip_to_fit(rows, limit=8_000, reserve=1_000, frozen=len(rows))
+        self.assertEqual(clipped2, 0)
+        self.assertIs(out2, rows)
+
 
 class DurableCheckpointTest(unittest.TestCase):
     def _durable(self, n=12):

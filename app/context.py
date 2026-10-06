@@ -1202,8 +1202,8 @@ def compactable_transcript(messages: list | None, *, keep_tail: int | None = Non
         return True
     if not provider:
         return False
-    # A child (or live parent) can overflow on tool results with only a few
-    # user/assistant turns. Count tool-bearing rounds so prune/summarize can run.
+    # A single completed tool exchange can fill a small window. It must be
+    # compacted as a whole rather than rewriting the already-sent result.
     tool_rounds = sum(
         1 for msg in (messages or [])
         if isinstance(msg, dict) and (
@@ -1211,7 +1211,7 @@ def compactable_transcript(messages: list | None, *, keep_tail: int | None = Non
             or msg.get("role") == "tool"
         )
     )
-    return tool_rounds >= 3
+    return tool_rounds >= 2
 
 
 def split_transcript(messages: list | None, *, keep_tail: int | None = None) -> tuple[list[dict], list[dict]]:
@@ -1862,16 +1862,22 @@ def clip_to_fit(
     reserve: int | None = None,
     tools=None,
     calibration: dict | None = None,
+    frozen: int = 0,
 ) -> tuple[list[dict], int]:
     """Last-resort trim of plain-text bodies so a request can fit the window.
 
-    Compaction and prune handle history growth; this guards the case they
-    cannot fix: a single message (or a short, non-compactable burst) larger
-    than the window would otherwise fail terminally on context overflow.
-    Only plain user/assistant/tool text is trimmed, head-kept with a visible
-    marker inside the content. System rows, tool_calls structure, and images
-    are never touched, and no rows are added or dropped, so tool pairing
-    survives. Returns (rows, clipped count); the input is never mutated.
+    Compaction handles history growth; this guards the case it cannot fix:
+    a message larger than the window would otherwise fail terminally on
+    context overflow. Only plain user/assistant/tool text is trimmed,
+    head-kept with a visible marker inside the content. System rows,
+    tool_calls structure, and images are never touched, and no rows are added
+    or dropped, so tool pairing survives. Returns (rows, clipped count); the
+    input is never mutated.
+
+    Rows before `frozen` were already sent to the provider in an earlier
+    request and are never modified: re-trimming them as the budget shrinks
+    would rewrite the cached prefix. Over-budget history is compaction's
+    job, not clipping's.
     """
     cfg = config()
     window = _clamp_window(limit, cfg.default_window)
@@ -1889,7 +1895,8 @@ def clip_to_fit(
     clip_idx = [
         i
         for i, msg in enumerate(rows)
-        if isinstance(msg, dict)
+        if i >= max(0, frozen)
+        and isinstance(msg, dict)
         and msg.get("role") in ("user", "assistant", "tool")
         and isinstance(msg.get("content"), str)
         and msg["content"].strip()

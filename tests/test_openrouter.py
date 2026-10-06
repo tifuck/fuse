@@ -219,7 +219,44 @@ class ProviderRoutingTest(unittest.TestCase):
         pinned = or_mod._chat_payload(
             {"messages": []}, "z-ai/glm-5.3", free=False, session_id="thread-1", prefs=self.PREFS
         )
-        self.assertFalse(pinned["provider"]["allow_fallbacks"])
+        # Stickiness comes from session_id; fallbacks stay enabled so a
+        # provider outage is still survivable.
+        self.assertTrue(pinned["provider"]["allow_fallbacks"])
+        self.assertEqual(pinned["session_id"], "thread-1")
+        # A caller may still opt out of fallbacks; the default never does.
+        opted_out = or_mod._chat_payload(
+            {"messages": [], "provider": {"allow_fallbacks": False}},
+            "z-ai/glm-5.3",
+            free=False,
+            session_id="thread-1",
+            prefs=self.PREFS,
+        )
+        self.assertFalse(opted_out["provider"]["allow_fallbacks"])
+
+    def test_anthropic_models_get_caching_and_scoped_keys(self):
+        payload = or_mod._chat_payload(
+            {"messages": [], "prompt_cache_key": "raw-thread-7"},
+            "anthropic/claude-sonnet-4-6",
+            free=False,
+            session_id="fx:scoped-1",
+        )
+        # Anthropic caching is opt-in via cache_control; a sticky session
+        # alone only routes. Other providers must not see the global field.
+        self.assertEqual(payload["cache_control"], {"type": "ephemeral", "ttl": "1h"})
+        self.assertEqual(payload["session_id"], "fx:scoped-1")
+        # The raw client key is overwritten with the scoped id, not forwarded.
+        self.assertEqual(payload["prompt_cache_key"], "fx:scoped-1")
+
+    def test_non_anthropic_models_get_no_global_cache_field(self):
+        payload = or_mod._chat_payload(
+            {"messages": [], "prompt_cache_key": "raw-thread-7"},
+            "z-ai/glm-5.3", free=False, session_id="fx:scoped-1"
+        )
+        self.assertNotIn("cache_control", payload)
+        self.assertEqual(payload["prompt_cache_key"], "fx:scoped-1")
+        bare = or_mod._chat_payload({"messages": []}, "x-ai/grok-4.6", free=False, session_id=None)
+        self.assertNotIn("cache_control", bare)
+        self.assertNotIn("session_id", bare)
 
     def test_other_models_get_privacy_only(self):
         payload = or_mod._chat_payload({"messages": []}, "x-ai/grok-4.6", free=False, prefs=self.PREFS)

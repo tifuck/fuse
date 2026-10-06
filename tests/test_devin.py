@@ -778,5 +778,91 @@ class CatalogMetadataTest(unittest.TestCase):
         self.assertNotIn("devin/swe-2", devin_mod._model_promo_until)
 
 
+class StreamBindTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        _clear_catalog()
+        unittest.mock.patch("app.sources.pool_pick.accounts.cred_extra", lambda c: c.get("_extra") or {}).start()
+        self.addCleanup(unittest.mock.patch.stopall)
+
+    async def test_completion_binds_pin_through_the_chat_path(self):
+        # The producer mutates the same empty dict _chat_one hands back; a
+        # fresh dict at wrap time (`usage or {}`) would hide completion from
+        # the bind hook. Drive chat(), not the wrapper.
+        collected: dict = {}
+
+        async def stream():
+            collected["stream_status"] = "complete"
+            yield b'data: {"choices": [{"delta": {}}]}\n\n'
+
+        async def fake_chat_one(_self, token, body, model, cred, session_id, attempts):
+            from app.sources.base import ChatResult
+
+            return ChatResult(
+                status=200,
+                stream=stream(),
+                usage=collected,
+                credential_id=cred["id"],
+                model=model,
+            )
+
+        cred = {"id": 9, "disabled": 0, "week_tokens": 0, "week_start": db.iso_week_start(), "last_usage_percent": 0, "_extra": {"api_key": "tok"}}
+        source = object.__new__(DevinSource)
+        source.source_id = 5
+        source.name = "t"
+        source.cfg = {}
+        source.creds = [cred]
+        with (
+            unittest.mock.patch.object(devin_mod, "refresh_pool_status", new_callable=unittest.mock.AsyncMock),
+            unittest.mock.patch.object(devin_mod.pool_policy, "filter_credentials", return_value=[cred]),
+            unittest.mock.patch.object(devin_mod, "note_pool_invoke"),
+            unittest.mock.patch.object(devin_mod, "reserve"),
+            unittest.mock.patch.object(devin_mod, "release"),
+            unittest.mock.patch.object(devin_mod, "bind") as bind,
+            unittest.mock.patch.object(DevinSource, "_chat_one", fake_chat_one),
+        ):
+            result = await source.chat(
+                {"model": "devin/swe-2", "stream": True, "messages": [{"role": "user", "content": "hi"}]},
+                session_id="sess-9",
+            )
+            self.assertEqual(result.status, 200)
+            async for _chunk in result.stream:
+                pass
+        bind.assert_called_once_with("devin", "sess-9", 9)
+
+
+class _FrameResp:
+    def __init__(self, frames):
+        self._frames = frames
+
+    async def aiter_bytes(self):
+        for frame in self._frames:
+            yield frame
+
+    async def aclose(self):
+        return None
+
+
+class StreamUsageDetailsTest(unittest.IsolatedAsyncioTestCase):
+    async def test_final_sse_reports_cached_and_write_tokens(self):
+        usage_msg = proto.ProtoEncoder()
+        usage_msg.message(
+            7,
+            lambda e: (e.uint32(2, 10), e.uint32(3, 2), e.uint32(4, 6), e.uint32(5, 4)),
+        )
+        stop_msg = proto.ProtoEncoder()
+        stop_msg.uint32(5, proto.STOP_MAX_TOKENS)
+        frames = [proto.connect_frame(usage_msg.finish()), proto.connect_frame(stop_msg.finish())]
+        collected: dict = {}
+        source = object.__new__(DevinSource)
+        client = unittest.mock.AsyncMock()
+        chunks = []
+        async for chunk in source._stream_sse(_FrameResp(frames), client, collected, "swe-2", "uid-1"):
+            chunks.append(chunk.decode())
+        joined = "".join(chunks)
+        self.assertIn('"prompt_tokens_details":{"cached_tokens":4,"cache_write_tokens":6}', joined)
+        self.assertEqual(collected["cached_tokens"], 4)
+        self.assertEqual(collected["cache_write_tokens"], 6)
+
+
 if __name__ == "__main__":
     unittest.main()

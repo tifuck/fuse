@@ -506,7 +506,7 @@ class LoopTest(unittest.IsolatedAsyncioTestCase):
             persist = k.get("persist")
             job = ToolJob(0, "c1", "web_search", '{"query":"x"}', "ts_0_0", text="hits", done=True)
             if persist:
-                persist([job])
+                await persist([job])
             yield {"event": "tool", "id": "ts_0_0", "name": "web_search", "status": "done"}
             yield [job]
 

@@ -1862,6 +1862,8 @@ def display_messages(request, message, message_id, live=False):
                  if type(value) is int and type(before.get(key, 0)) is int}
         if usage.get("usage_status"):
             delta["usage_status"] = usage["usage_status"]
+        if usage.get("cache_usage_status"):
+            delta["cache_usage_status"] = usage["cache_usage_status"]
         return delta or None
 
     for part in parts:
@@ -2645,6 +2647,7 @@ def start_turn(user_id, thread_id, text, expected_revision, command_id, model=No
         send_type_id = ctxmod.source_type_for_model(send_model, prior_meter)
         from . import chat_history
         request_messages, history_info = chat_history.build(conn, user_id, thread_id, messages, state)
+        prompt_snapshot = history_info.pop("prompt_snapshot", None)
         state["meter"] = ctxmod.standing_meter(chat_history.for_model(request_messages, send_model), model=send_model, type_id=send_type_id,
             override=state.get("window_override") or ((prior_meter or {}).get("limit") if send_type_id is None and (prior_meter or {}).get("model") == send_model else None),
             prior=prior_meter if (prior_meter or {}).get("model") == send_model else None)
@@ -2662,6 +2665,8 @@ def start_turn(user_id, thread_id, text, expected_revision, command_id, model=No
             "history_input_hashes": chat_history.input_hashes(request_messages),
             "history_start_anchor": chat_history.anchors(messages[:-1]),
         }
+        if prompt_snapshot:
+            request["prompt_snapshot"] = prompt_snapshot
         if reasoning_effort is not None:
             request["reasoning_effort"] = reasoning_effort
         project_name = ""
@@ -4453,6 +4458,8 @@ def save_turn_progress(run_id, messages, loaded_tools=None, extra=None):
         agent = req.get("agent") if isinstance(req.get("agent"), dict) else {}
         extra = extra if isinstance(extra, dict) else {}
         receipt_ids = extra.get("command_delivery_ids") or []
+        if isinstance(extra.get("prompt_snapshot"), dict):
+            req["prompt_snapshot"] = extra["prompt_snapshot"]
         from . import command_jobs as command_jobs_mod
         from . import monitor as monitor_mod
 
@@ -4910,6 +4917,7 @@ def _start_child_run(
                 "thread_context": req.get("thread_context") or "",
                 "instructions": req.get("instructions") or "",
                 "profile": req.get("profile") or "",
+                "prompt_snapshot": src_req.get("prompt_snapshot") if not retype else None,
                 "agent": {
                     "coding": True,
                     "project_session": True,

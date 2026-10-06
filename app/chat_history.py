@@ -207,6 +207,8 @@ def build(conn, user_id, thread_id, messages, state, *, retained=None, model="")
         prefix = _clean(memory.get("messages") or [])
         rows = rows[len(anchor):]
         info.update(memory.get("info") or {})
+        if isinstance(memory.get("prompt_snapshot"), dict):
+            info["prompt_snapshot"] = memory["prompt_snapshot"]
     elif memory.get("version") == 1 and memory.get("checkpoint", "") == checkpoint_id(state):
         # A retry can remove the last steered user/reply pair without changing
         # the preceding tool-rich prefix. Only reuse an explicitly saved exact
@@ -221,6 +223,8 @@ def build(conn, user_id, thread_id, messages, state, *, retained=None, model="")
             prefix = _clean((memory.get("messages") or [])[:cut["provider"]])
             rows = rows[cut["display"]:]
             info.update(memory.get("info") or {})
+            if isinstance(memory.get("prompt_snapshot"), dict):
+                info["prompt_snapshot"] = memory["prompt_snapshot"]
         else:
             prefix = []
             rows = context.project_transcript(rows, state)
@@ -260,10 +264,10 @@ def build(conn, user_id, thread_id, messages, state, *, retained=None, model="")
     return prefix, info
 
 
-def envelope(messages, provider, state, *, info=None, cutoffs=None):
+def envelope(messages, provider, state, *, info=None, cutoffs=None, prompt_snapshot=None):
     return _json({"version": 1, "anchor": anchors(_retained_display(messages)), "messages": _clean(provider),
                   "checkpoint": checkpoint_id(state), "info": info or {"mode": "full", "recovered_turns": 0, "trace_fallbacks": 0},
-                  "cutoffs": cutoffs or []})
+                  "cutoffs": cutoffs or [], "prompt_snapshot": prompt_snapshot})
 
 
 def finalize(conn, run, request, display, message):
@@ -336,7 +340,8 @@ def finalize(conn, run, request, display, message):
     if row:
         state = context.parse_state(row[0])
         conn.execute("UPDATE chat_threads SET retained_history=? WHERE id=? AND user_id=?",
-            (envelope(display, source, state, info=request.get("history_info"), cutoffs=cutoffs), run["thread_id"], run["user_id"]))
+            (envelope(display, source, state, info=request.get("history_info"), cutoffs=cutoffs,
+                      prompt_snapshot=request.get("prompt_snapshot")), run["thread_id"], run["user_id"]))
 
 
 def input_hashes(messages):

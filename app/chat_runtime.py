@@ -4,6 +4,7 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import copy
 import json
 import logging
 import math
@@ -563,7 +564,7 @@ def _model_type_guess(model: str) -> str | None:
     return None
 
 
-async def summarize_conversation(request: Request, user, model: str, head: list[dict], instructions: str = "", *, tools=None, limit: int | None = None) -> str:
+async def summarize_conversation(request: Request, user, model: str, head: list[dict], instructions: str = "", *, tools=None, limit: int | None = None, cache_key: str | None = None) -> str:
     """Summarize with the configured cheap model, then the chat model.
 
     Either attempt failing degrades to the truncate strategy at the caller;
@@ -574,13 +575,13 @@ async def summarize_conversation(request: Request, user, model: str, head: list[
     primary = (model or "").strip()
     cheap = (settings.context_summarizer_model or "").strip()
     for attempt in ([cheap, primary] if cheap and cheap != primary else [primary]):
-        text = await _summarize_once(request, user, attempt, head, instructions, tools=tools, limit=limit)
+        text = await _summarize_once(request, user, attempt, head, instructions, tools=tools, limit=limit, cache_key=cache_key)
         if text:
             return text
     return ""
 
 
-async def _summarize_once(request: Request, user, model: str, head: list[dict], instructions: str = "", *, tools=None, limit: int | None = None) -> str:
+async def _summarize_once(request: Request, user, model: str, head: list[dict], instructions: str = "", *, tools=None, limit: int | None = None, cache_key: str | None = None) -> str:
     payload = {
         "model": (model or "").strip(),
         "messages": ctxmod.summarize_payload(head, instructions=instructions, limit=limit, tools=tools),
@@ -591,6 +592,8 @@ async def _summarize_once(request: Request, user, model: str, head: list[dict], 
     }
     if tools:
         payload["tools"] = tools
+    if cache_key:
+        payload["prompt_cache_key"] = cache_key
     if not payload["model"] or len(payload["messages"]) < 2:
         return ""
     try:
@@ -714,7 +717,8 @@ async def _compact_current(
     if can_summarize:
         async def _sum(messages, instructions=""):
             return await summarize_conversation(
-                request, user, model, [*system, *messages], instructions or focus, tools=tools, limit=snap["limit"]
+                request, user, model, [*system, *messages], instructions or focus, tools=tools, limit=snap["limit"],
+                cache_key=f"run:{run_id}" if is_child and run_id else (f"thread:{thread_id}" if thread_id else None),
             )
 
         checkpoint = await _touch_run_while(
@@ -738,9 +742,6 @@ async def _compact_current(
         pinned = ctxmod.pinned_assignment(dropped, kept) if is_child else ""
         rebuilt = [*system, *ctxmod.continuation(checkpoint["summary"], kept, pinned=pinned)]
         after = ctxmod.meter_from_messages(rebuilt, model=model, type_id=type_id, tools=tools, override=override, calibration=calibration)
-        if ctxmod.should_compact(after["used"], after["limit"]):
-            rebuilt, _ids, _freed = ctxmod.prune_tool_outputs(rebuilt)
-            after = ctxmod.meter_from_messages(rebuilt, model=model, type_id=type_id, tools=tools, override=override, calibration=calibration)
         after["estimated"] = True
         after["standing"] = True
         after["scope"] = "transcript"
@@ -759,18 +760,14 @@ async def _compact_current(
                 logger.exception("Could not persist compaction checkpoint")
         return rebuilt, after, checkpoint.get("strategy") or cfg.strategy
 
-    pruned, ids, _freed = ctxmod.prune_tool_outputs(current_messages)
+    # Not compactable. Never stub tool results that were already sent: that
+    # rewrites the cached prefix and loses the evidence, and the next request
+    # would re-send the full bodies anyway. Shrinking history is compaction's
+    # job; a non-compactable transcript is returned untouched.
     snap = ctxmod.meter_from_messages(
-        pruned, model=model, type_id=type_id, tools=tools, override=override, calibration=calibration
+        current_messages, model=model, type_id=type_id, tools=tools, override=override, calibration=calibration
     )
-    if ids and persist_id:
-        try:
-            state = store.load_compaction(user["id"], persist_id) or {}
-            state["meter"] = snap
-            store.save_compaction(user["id"], persist_id, state, bump=False, event_name="compaction.pruned")
-        except Exception:
-            logger.exception("Could not persist pruned tool outputs")
-    return pruned, snap, "prune" if ids else None
+    return current_messages, snap, None
 
 
 def _add_usage(total: dict, extra: dict | None) -> dict:
@@ -779,6 +776,10 @@ def _add_usage(total: dict, extra: dict | None) -> dict:
         return dict(extra)
     merged = dict(total)
     for key, value in extra.items():
+        if key == "cache_usage_status":
+            prior = merged.get(key)
+            merged[key] = value if prior is None else (prior if prior == value else "partial")
+            continue
         if key in ("usage_status",):
             if value == "complete" or not merged.get(key):
                 merged[key] = value
@@ -1482,22 +1483,27 @@ def _take_thinking(bucket: list, raw) -> None:
     for block in raw:
         if not isinstance(block, dict):
             continue
+        redacted = str(block.get("redacted_thinking") or "")
+        if redacted:
+            bucket.append({"redacted_thinking": redacted})
+            continue
         text = str(block.get("thinking") or block.get("text") or "")
         signature = str(block.get("signature") or "")
-        if text and signature:
+        # Signed-empty is a valid omitted-display block and must replay.
+        if signature:
             bucket.append({"thinking": text, "signature": signature})
 
 
 def _native_reasoning(reasoning, model, thinking=None):
     """Keep only the reasoning the serving provider will be sent again.
 
-    GLM and OpenRouter's z.ai models require `reasoning_content` echoed back.
-    Claude and Devin require their own earlier thinking (signed blocks, or the
-    thinking text plus signature). Everything else discards prior reasoning, so
-    storing it would inflate the context meter with tokens never transmitted.
+    Preserve native reasoning for backends whose message adapters replay it.
+    Claude and Devin retain their signed thinking blocks separately; OpenAI and
+    Grok do not replay their visible reasoning text as conversation messages.
     """
     out = {}
-    if model.startswith("glm-") or model.startswith("openrouter/z-ai/"):
+    if (model.startswith(("glm-", "openrouter/z-ai/", "kimi-", "k3-", "mimo-", "openrouter/moonshotai/", "openrouter/xiaomi/"))
+            or model == "k3"):
         if reasoning:
             out["reasoning_content"] = str(reasoning)
             out["_fuse_reasoning_model"] = model
@@ -1510,9 +1516,13 @@ def _native_reasoning(reasoning, model, thinking=None):
     for block in thinking or []:
         if not isinstance(block, dict):
             continue
+        redacted = str(block.get("redacted_thinking") or "")
+        if redacted:
+            blocks.append({"redacted_thinking": redacted})
+            continue
         text = str(block.get("thinking") or block.get("text") or "")
         signature = str(block.get("signature") or "")
-        if text and (signature or keeps_text):
+        if (text or signature) and (signature or keeps_text):
             blocks.append({"thinking": text, "signature": signature})
     if blocks:
         out["claude_thinking"] = blocks
@@ -1593,16 +1603,21 @@ def _artifact_lines(items: list[dict]) -> list[str]:
     return lines
 
 
-def _session_tail_block(artifact_bits: list[str]) -> str:
-    """Per-turn volatile context (time, artifacts) appended at the request tail.
+def _session_tail_block(artifact_bits: list[str], vault_locked: bool = False) -> str:
+    """Per-turn volatile context (time, artifacts, vault state) appended at the
+    request tail.
 
     The system prompt must stay byte-stable across turns for provider prefix
-    caching; anything that changes per turn lives here instead.
+    caching; anything that changes per turn lives here instead. A fact that
+    moves mid-chat (vault lock state) rides here too, so it never rewrites
+    bytes the provider already cached.
     """
     from datetime import datetime, timezone
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     bits = [f"Current date: {now} UTC."]
+    if vault_locked:
+        bits.append("Vault is locked — chat and search still work; host tools fail until the user unlocks on Hosts.")
     if artifact_bits:
         bits.append(
             "Artifacts attached to this chat (update with identifier; do not recreate them):\n" + "\n".join(artifact_bits)
@@ -2538,15 +2553,11 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
     from .agent_catalog import sanitize_loaded
 
     loaded_tools: list[str] = sanitize_loaded(agent.get("loaded_tools") if isinstance(agent.get("loaded_tools"), list) else [])
-    if coding and not loaded_tools and not is_child:
-        from .agent_catalog import default_loaded_for_child
+    if coding:
+        from .agent_catalog import ARTIFACT_NAMES, WORKSPACE_NAMES
 
-        # The workspace pack is part of the cached prefix. Loading it on the
-        # first search_tools would change the tools array (and, next turn, the
-        # system prompt) and discard the cache. Children already preload it.
-        loaded_tools.extend(default_loaded_for_child(kind or "general-purpose"))
-        if not project_session and not bound_host_id:
-            loaded_tools.extend(ARTIFACT_TOOL_IDS)
+        loaded_tools = sanitize_loaded([*WORKSPACE_NAMES, *ARTIFACT_NAMES, *loaded_tools,
+                                        *(["propose_skill"] if not is_child and not agent.get("auto") and not agent.get("scheduled") else [])])
     if kind == "explore":
         from .agent_catalog import EXPLORE_TOOLS
 
@@ -2599,15 +2610,18 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 timeout=4.0,
             )
         except Exception:
-            project_agents = ""
-            project_agents_name = ""
+            # A slow host must not blank a block the provider already cached:
+            # serve the last good body until a read confirms otherwise.
+            project_agents_name, project_agents = workspace_mod.last_project_agents(
+                user["id"], bound_host_id, bound_cwd
+            )
     ssh_any = False
     if coding:
         ssh_any = any(
             (h.get("auth_type") or "") != "agent" and not h.get("disabled")
             for h in hosts_mod.list_bundle(user["id"])["hosts"]
         )
-    system = build_system_prompt(
+    candidate_system = build_system_prompt(
         instructions=prefs["instructions"],
         profile=prefs["profile"],
         thread_context=thread_context,
@@ -2617,7 +2631,6 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
         coding=coding,
         project_session=project_session,
         bound_label=bound_label,
-        vault_unlocked=vault_ok or not ssh_any,
         project_agents=project_agents,
         project_agents_name=project_agents_name,
         loaded_tools=loaded_tools,
@@ -2625,15 +2638,29 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
         subagent=is_child,
         subagent_type=kind,
     )
-    model_messages = expand_slash_messages(messages, project_session=project_session, bound_cwd=bound_cwd)
+    snapshot = raw.get("prompt_snapshot") if frozen_context is not None else None
+    prompt_snapshot = copy.deepcopy(snapshot) if isinstance(snapshot, dict) and isinstance(snapshot.get("system"), str) else {}
+    system = prompt_snapshot.get("system", candidate_system)
+    model_messages = messages if agent.get("resumed") or agent.get("followup_continuation") else expand_slash_messages(
+        messages, project_session=project_session, bound_cwd=bound_cwd)
     work = [{"role": "system", "content": system}, *model_messages]
-    work = _inject_session_tail(work, _session_tail_block(_artifact_lines(artifacts.list_for_prompt(user["id"], thread_id))))
+    if not agent.get("resumed") and not agent.get("followup_continuation"):
+        work = _inject_session_tail(
+            work,
+            _session_tail_block(
+                _artifact_lines(artifacts.list_for_prompt(user["id"], thread_id)),
+                vault_locked=bool(coding and ssh_any and not vault_ok),
+            ),
+        )
     payload = {"model": model.strip(), "messages": work, "stream": True}
-    if thread_id is not None and "prompt_cache_key" not in payload:
-        # One cache identity for the life of the chat. The fallback hashes the
-        # system prompt and tool names, so a tool load or an edit would hop
-        # accounts and miss the prefix cache on every provider.
-        payload["prompt_cache_key"] = f"thread:{thread_id}"
+    if "prompt_cache_key" not in payload:
+        # One cache identity for the life of the conversation: the thread for
+        # parents, the child's own run for subagents (their history differs,
+        # and siblings sharing the thread key would evict each other's pin).
+        if is_child and (run_id or parent_run_id):
+            payload["prompt_cache_key"] = f"run:{run_id or parent_run_id}"
+        elif thread_id is not None:
+            payload["prompt_cache_key"] = f"thread:{thread_id}"
     effort = raw.get("reasoning_effort")
     if effort is not None:
         if not isinstance(effort, str) or effort not in api._REASONING_EFFORTS:
@@ -2650,13 +2677,16 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             payload["max_tokens"] = max(1, min(int(number), settings.max_tokens))
         except (TypeError, ValueError, OverflowError):
             raise HTTPException(400, "Invalid max_tokens") from None
-    schemas = openai_tools(
+    candidate_schemas = openai_tools(
         tools,
         coding=coding,
         extra=loaded_tools,
         allow_spawn=allow_spawn,
         project_session=project_session,
     )
+    schemas = copy.deepcopy(prompt_snapshot.get("tools", candidate_schemas))
+    if "system" not in prompt_snapshot:
+        prompt_snapshot = {"system": system, "tools": copy.deepcopy(schemas)}
     if schemas:
         payload["tools"] = schemas
         payload["tool_choice"] = "auto"
@@ -2667,6 +2697,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
         allowed_urls: set[str] = set(agent.get("allowed_urls") or []) | _user_public_urls(messages)
         total_usage: dict = _add_usage({}, agent.get("usage_before"))
         dropped_tools = False
+        tools_ran = any(m.get("role") == "tool" and not _is_preload_tool(m) for m in work)
         current = dict(payload)
         current_messages = list(work)
         budgets = {
@@ -2676,9 +2707,6 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
         }
         command_delivery_ids = []
         src_type = None
-        restore_tools = None
-        restore_loaded: list[str] | None = None
-        catalog_retried = False
         # take_child_results/take_followups/take_steers are non-destructive
         # peeks; they only clear once the transcript persists. A failed
         # checkpoint would otherwise re-inject the same envelope next round.
@@ -2687,9 +2715,23 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
         delivered_local: set[str] = set()
         start_i = _completion_start_index(agent, messages, completion_limit)
 
+        def refresh_prompt():
+            nonlocal current_messages, prompt_snapshot
+            if transcript and transcript[0].get("role") == "system":
+                transcript[0] = {"role": "system", "content": candidate_system}
+            else:
+                transcript.insert(0, {"role": "system", "content": candidate_system})
+            current_messages = transcript
+            prompt_snapshot = {"system": candidate_system, "tools": copy.deepcopy(candidate_schemas)}
+            if candidate_schemas:
+                current["tools"] = copy.deepcopy(candidate_schemas)
+            else:
+                current.pop("tools", None)
+            anchor.update(prompt=0, sent=None)
+
         async def persist_jobs(jobs=None):
-            # Always the stored transcript, never a pruned or clipped copy.
-            current_messages[:] = transcript
+            nonlocal current_messages
+            current_messages = transcript
             if not run_id:
                 return
             try:
@@ -2702,20 +2744,22 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     "fetches": budgets.get("fetches", 0),
                     "fetch_attempts": budgets.get("fetch_attempts", 0),
                     "command_delivery_ids": list(command_delivery_ids),
+                    "prompt_snapshot": prompt_snapshot,
                 }
                 await durable_call(store.save_turn_progress,
                     run_id,
                     _provider_snapshot(current_messages, jobs,
-                        reasoning=(summary or {}).get("reasoning") if jobs else "", model=model),
+                        reasoning=(summary or {}).get("reasoning") if jobs else "", model=model,
+                        thinking=(summary or {}).get("thinking") if jobs else None),
                     loaded_tools=list(loaded_tools),
                     extra=extra,
                 )
             except Exception:
                 logger.exception("Chat transcript checkpoint failed for %s", run_id)
+                raise
 
-        # Canonical transcript. Prune, clip, and the one-shot no-tools fallback
-        # rewrite a copy for the provider only; persisting that copy would make
-        # the next turn's prefix differ from what was cached.
+        # One replayable transcript, extended only by new exchanges or replaced
+        # wholesale by an explicit compaction checkpoint.
         transcript = current_messages
 
         invoke = agent.get("invoke_skill") if isinstance(agent.get("invoke_skill"), dict) else None
@@ -2902,28 +2946,14 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             compacted_this_turn = real
             boot["standing"] = True
             if real:
+                refresh_prompt()
                 last_round_usage = {}
                 current["messages"] = transcript
                 yield _sse(ctxmod.context_event({**boot, "compacting": False}, phase="compacted"))
                 yield _sse(ctxmod.compact_handoff_event(ctxmod.prior_handoff(current_messages)))
             else:
-                if kind == "prune":
-                    yield _sse({"fuse": {"event": "notice", "message": "Context pruning: older tool outputs were replaced with marked placeholders to free space."}})
                 yield _sse(ctxmod.context_event(boot, phase="update"))
             _persist_meter(boot)
-        clipped_rows, clipped_n = ctxmod.clip_to_fit(
-            transcript, limit=boot["limit"], tools=current.get("tools"), calibration=calibration
-        )
-        if clipped_n:
-            # Compaction cannot shrink a single oversized message; a hard
-            # clip beats a terminal context-overflow failure. The clip is the
-            # outgoing copy only — the stored transcript keeps the full text.
-            current_messages = clipped_rows
-            boot = _live_meter(estimated=True)
-            yield _sse({"fuse": {"event": "notice", "message": "A very large message was truncated to fit the context window."}})
-            yield _sse(ctxmod.context_event(boot, phase="update"))
-            _persist_meter(boot)
-
         await persist_jobs()
         completion_i = start_i
         resumes_left = MAX_RESUME_RETRIES
@@ -2937,6 +2967,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
         last_compact_used = None
         while True:
             from . import chat_store as store
+            current_messages = transcript
 
             if not (is_child or completion_i < completion_limit or extra_wrap):
                 if run_id and not store.close_steer_window(str(run_id)):
@@ -3063,34 +3094,23 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     tools=current.get("tools"), override=preflight["limit"], is_child=is_child,
                     calibration=calibration, run_id=run_id, agent=agent)
                 if kind in ("summarize", "truncate"):
+                    refresh_prompt()
                     last_compact_used = preflight["used"] if preflight["used"] >= int(before_compact_used * 0.95) else None
                     yield _sse(ctxmod.compact_handoff_event(ctxmod.prior_handoff(current_messages)))
-                elif kind == "prune":
-                    yield _sse({"fuse": {"event": "notice", "message": "Context pruning: older tool outputs were replaced with marked placeholders to free space."}})
                 yield _sse(ctxmod.context_event(preflight, phase="compacted" if kind in ("summarize", "truncate") else "update"))
                 _persist_meter(preflight)
                 await persist_jobs()
-            clipped_rows, clipped_n = ctxmod.clip_to_fit(
-                transcript, limit=preflight["limit"], tools=current.get("tools"), calibration=calibration)
-            if clipped_n:
-                current_messages = clipped_rows
-                yield _sse({"fuse": {"event": "notice", "message": "A very large message was truncated to fit the context window."}})
             _user = user
             src = None
             upstream = ""
             requested = ""
-            loaded_before_round = list(loaded_tools)
             while True:
                 send = dict(current)
                 send["messages"] = current_messages
                 send["model"] = model.strip()
                 if force:
                     send["messages"] = [*current_messages, {"role": "user", "content": _NUDGE}]
-                    if dropped_tools:
-                        send.pop("tools", None)
-                        send.pop("tool_choice", None)
-                        send.pop("parallel_tool_calls", None)
-                    elif src_type != "ollama" and not retried_none:
+                    if send.get("tools") and src_type != "ollama" and not retried_none:
                         send["tool_choice"] = "none"
                     else:
                         send.pop("tool_choice", None)
@@ -3174,29 +3194,6 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 if result.status != 400:
                     break
                 if (
-                    coding
-                    and restore_tools is not None
-                    and not catalog_retried
-                    and current.get("tools") != restore_tools
-                ):
-                    current["tools"] = restore_tools
-                    if restore_loaded is not None:
-                        loaded_tools[:] = restore_loaded
-                    catalog_retried = True
-                    restore_tools = None
-                    note = "Catalog load not accepted by this model. Those tools are not loaded."
-                    if current_messages and current_messages[-1].get("role") == "tool":
-                        current_messages[-1] = {**current_messages[-1], "content": note}
-                    yield _sse(
-                        {
-                            "fuse": {
-                                "event": "notice",
-                                "message": note,
-                            }
-                        }
-                    )
-                    continue
-                if (
                     not retried_parallel
                     and send.get("parallel_tool_calls") is not None
                     and re.search(r"parallel_tool", msg or "", re.I)
@@ -3252,6 +3249,9 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                                 }
                             }
                         )
+                    transcript = current_messages
+                    prompt_snapshot["tools"] = []
+                    await persist_jobs()
                     force = True
                     continue
                 if force:
@@ -3361,7 +3361,8 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     )
                     async for frame in _heartbeat_sleep(delay):
                         yield frame
-                    _apply_resume_state(current_messages, "")
+                    _apply_resume_state(transcript, "")
+                    current_messages = transcript
                     await persist_jobs()
                     continue
                 yield _sse(_exhausted_provider_error(is_child, {"error": {"message": err_msg, "code": 502}}))
@@ -3419,7 +3420,11 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     partial = str(summary.get("content") or "")
                     if _provider_error_content(partial):
                         partial = ""
-                    _apply_resume_state(current_messages, partial)
+                    # The stored transcript owns the conversation; a clipped
+                    # outgoing copy must not swallow the partial the client
+                    # already saw.
+                    _apply_resume_state(transcript, partial)
+                    current_messages = transcript
                     await persist_jobs()
                     continue
                 yield _sse(_exhausted_provider_error(is_child, raw_err))
@@ -3506,7 +3511,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 # then take one extra text-only wrap-up round.
                 extra_wrap = True
             elif not (is_child and calls) and (force or (finish != "tool_calls" and not calls)):
-                joined = any(m.get("role") == "tool" and not _is_preload_tool(m) for m in current_messages)
+                joined = tools_ran
                 empty = not (summary.get("content") or summary.get("reasoning") or summary.get("error"))
                 can_retry_empty = empty and joined and empty_retries < MAX_EMPTY_RETRIES and (
                     is_child or coding or extra_wrap or completion_i < completion_limit - 1
@@ -3583,6 +3588,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     else:
                         yield _sse({"fuse": item})
             if jobs:
+                tools_ran = True
                 tool_msgs = _tool_messages(jobs, content=str(summary.get("content") or ""))
                 tool_msgs[0].update(_native_reasoning(summary.get("reasoning"), model, summary.get("thinking")))
                 transcript = transcript + tool_msgs
@@ -3630,6 +3636,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     real = kind in ("summarize", "truncate")
                     compacted_this_turn = real
                     if real:
+                        refresh_prompt()
                         last_round_usage = {}
                         # Only suppress a retry when compaction failed to free
                         # space. A successful compact must allow later growth
@@ -3639,44 +3646,15 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                         tool_meter["standing"] = True
                         stored_meter = tool_meter
                         yield _sse(ctxmod.compact_handoff_event(ctxmod.prior_handoff(current_messages)))
-                    elif kind == "prune":
-                        yield _sse({"fuse": {"event": "notice", "message": "Context pruning: older tool outputs were replaced with marked placeholders to free space."}})
                     yield _sse(ctxmod.context_event(tool_meter, phase="compacted" if real else "update"))
                     _persist_meter(tool_meter)
-                clipped_rows, clipped_n = ctxmod.clip_to_fit(
-                    transcript, limit=tool_meter["limit"], tools=current.get("tools"), calibration=calibration
-                )
-                if clipped_n:
-                    # Prune/compact could not get under the window (e.g. one
-                    # giant result on a non-compactable short turn). Outgoing
-                    # only: the stored transcript keeps the full tool bodies.
-                    current_messages = clipped_rows
-                    tool_meter = _live_meter()
-                    yield _sse({"fuse": {"event": "notice", "message": "A very large message was truncated to fit the context window."}})
-                    yield _sse(ctxmod.context_event(tool_meter, phase="update"))
-                    _persist_meter(tool_meter)
-                    await persist_jobs()
-                if session.get("coding"):
-                    grown = openai_tools(
-                        tools,
-                        coding=True,
-                        extra=loaded_tools,
-                        allow_spawn=bool(session.get("coding")) and depth < max_depth and kind not in ("explore", "plan"),
-                        project_session=bool(session.get("project_session")),
-                    )
-                    if grown != current.get("tools"):
-                        restore_tools = current.get("tools")
-                        restore_loaded = loaded_before_round
-                        catalog_retried = False
-                    current["tools"] = grown
                 if (
                     session.pop("project_promoted", None)
                     and current_messages
                     and transcript[0].get("role") == "system"
                 ):
-                    # The chat just became a project session mid-turn: reload AGENTS.md
-                    # and re-render the system prompt so the project framing (and its
-                    # instructions) apply to the rest of this turn. Cache burst accepted.
+                    # New project context is an appended notice, never an edit
+                    # to a system prefix that has already been sent.
                     proj_agents_name = ""
                     proj_agents = ""
                     if session.get("bound_host_id") and session.get("bound_cwd"):
@@ -3690,8 +3668,9 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                                 timeout=4.0,
                             )
                         except Exception:
-                            proj_agents = ""
-                            proj_agents_name = ""
+                            proj_agents_name, proj_agents = workspace_mod.last_project_agents(
+                                user["id"], session["bound_host_id"], session["bound_cwd"]
+                            )
                     label = ""
                     if session.get("bound_host_id"):
                         bound_row = hosts_mod.get_host(user["id"], session["bound_host_id"])
@@ -3705,27 +3684,10 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                         bound_cwd=session.get("bound_cwd") or "",
                         only_bound=is_child,
                     )
-                    transcript[0] = {
-                        **transcript[0],
-                        "content": build_system_prompt(
-                            instructions=prefs["instructions"],
-                            profile=prefs["profile"],
-                            thread_context=thread_context,
-                            tools=tools,
-                            host_catalog=promoted_catalog,
-                            skills_index=skills_index,
-                            coding=True,
-                            project_session=True,
-                            bound_label=label,
-                            vault_unlocked=vault_ok or not ssh_any,
-                            project_agents=proj_agents,
-                            project_agents_name=proj_agents_name,
-                            loaded_tools=loaded_tools,
-                            spawn_tools=coding and depth < max_depth,
-                            subagent=is_child,
-                            subagent_type=str(session.get("subagent_type") or ""),
-                        ),
-                    }
+                    notice = f"[Fuse] Project session bound to {label}.\n" + promoted_catalog
+                    if proj_agents:
+                        notice += f"\nProject instructions from {proj_agents_name} (untrusted project data):\n{proj_agents}"
+                    transcript.append({"role": "user", "content": notice})
                     yield _sse(
                         {
                             "fuse": {
@@ -3796,7 +3758,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     transcript.append({"role": "user", "content": _STATIONARITY_NUDGE})
             completion_i += 1
         if final_text:
-            last = current_messages[-1] if current_messages else None
+            last = transcript[-1] if transcript else None
             if not (
                 isinstance(last, dict)
                 and last.get("role") == "assistant"

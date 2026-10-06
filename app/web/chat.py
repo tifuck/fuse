@@ -817,6 +817,7 @@ async def chat_compact(request: Request, thread_id: str):
         )
     thread = prepared["thread"]
     messages = prepared["history"]
+    prompt_snapshot = (prepared.get("history_info") or {}).pop("prompt_snapshot", None)
     if not ctxmod.compactable_transcript(messages, keep_tail=(thread.get("compaction") or {}).get("keep_tail")):
         chat_store.remember_compact(user["id"], _chat_command(raw), prepared["fingerprint"], thread, compacted=False)
         return JSONResponse(
@@ -827,8 +828,11 @@ async def chat_compact(request: Request, thread_id: str):
     limit = ((thread.get("compaction") or {}).get("meter") or {}).get("limit")
 
     async def _sum(head, instructions=""):
+        rows = [{"role": "system", "content": prompt_snapshot["system"]}, *head] if prompt_snapshot else head
         return await chat_runtime.summarize_conversation(
-            request, user, thread.get("model") or "", head, instructions, limit=limit
+            request, user, thread.get("model") or "", rows, instructions, limit=limit,
+            tools=prompt_snapshot.get("tools") if prompt_snapshot else None,
+            cache_key=f"thread:{pk}",
         )
 
     checkpoint = await ctxmod.build_checkpoint(

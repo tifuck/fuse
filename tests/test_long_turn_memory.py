@@ -373,16 +373,22 @@ class LongRunLoopTest(unittest.IsolatedAsyncioTestCase):
 
         async def invoke(request, user, payload, **_kwargs):
             payloads.append(dict(payload))
-            if payload.get("tools"):
+            if payload.get("stream") is False:
+                return user, FakeSrc("llama"), "m", "m", FakeResult(
+                    200, {"choices": [{"message": {"content": "compact handoff"}, "finish_reason": "stop"}]})
+            if payload.get("tools") and payload.get("tool_choice") != "none":
                 return user, FakeSrc("llama"), "m", "m", _tool_result()
             return user, FakeSrc("llama"), "m", "m", FakeResult(
                 200, {"choices": [{"message": {"content": "wrapped up summary"}, "finish_reason": "stop"}]}
             )
 
         body = await self._run(invoke)
-        tool_rounds = [p for p in payloads if p.get("tools")]
+        summaries = [p for p in payloads if p.get("stream") is False]
+        self.assertTrue(all(isinstance(p.get("max_tokens"), int) and p["max_tokens"] > 0 for p in summaries))
+        tool_rounds = [p for p in payloads if p.get("stream") is not False and p.get("tool_choice") != "none"]
         self.assertEqual(len(tool_rounds), STATIONARITY_HALT)
-        self.assertTrue(any("tools" not in p for p in payloads[STATIONARITY_HALT:]))
+        self.assertEqual(payloads[-1]["tool_choice"], "none")
+        self.assertEqual(payloads[-1]["tools"], tool_rounds[-1]["tools"])
         self.assertIn(b"repeating the same tool calls", body)
         self.assertIn(b"wrapped up summary", body)
         self.assertTrue(body.endswith(b"data: [DONE]\n\n"))
@@ -391,6 +397,9 @@ class LongRunLoopTest(unittest.IsolatedAsyncioTestCase):
         counts = {"n": 0}
 
         async def invoke(request, user, payload, **_kwargs):
+            if payload.get("stream") is False:
+                return user, FakeSrc("llama"), "m", "m", FakeResult(
+                    200, {"choices": [{"message": {"content": "tool work handoff"}, "finish_reason": "stop"}]})
             counts["n"] += 1
             if counts["n"] == 1:
                 return user, FakeSrc("llama"), "m", "m", _tool_result()

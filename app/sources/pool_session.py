@@ -5,8 +5,11 @@ per-server KV; Z.AI: implicit cache on the calling key). Fuse therefore:
 
 1. Derives a stable session id from the documented client cache keys, or from
    the conversation prefix if the client sent none.
-2. Pins that session to one pool credential for TTL_SECONDS (OpenAI GPT-5.6
-   default cache lifetime is 30 minutes; reuse refreshes it).
+2. Pins that session to one pool credential. A healthy pin is durable: it is
+   replaced only by failover (bind) or vacuumed after RETENTION_DAYS idle,
+   never expired on a timer. OpenAI GPT-5.6 refreshes its cache for ~30
+   minutes per use and the other pools publish no TTL, so a 30-minute pin
+   would rotate a warm conversation onto a cold account for no reason.
 3. Forwards x-grok-conv-id (Grok Chat Completions) and prompt_cache_key
    (ChatGPT Responses). Z.AI has no documented cache-routing field.
 """
@@ -23,9 +26,9 @@ from typing import Mapping
 from .. import db
 from ..config import settings
 
-# Cache affinity TTL. OpenAI documents >=30m sliding for GPT-5.6; xAI and
-# Z.AI publish no TTL, so this is Fuse's pin policy, not a provider contract.
-TTL_SECONDS = 30 * 60
+# Pin retention: days, not minutes. This is Fuse's pin policy, not a provider
+# contract; rows are forgotten only after this long without a lookup or bind.
+RETENTION_DAYS = 7
 SESSION_ID_MAX = 256
 
 # Fields that belong to cache routing, not to Grok/Z.AI chat/completions JSON.
@@ -45,7 +48,7 @@ def _ts(now: datetime | None = None) -> str:
 
 def _cutoff(now: datetime | None = None) -> str:
     now = now or datetime.now(timezone.utc)
-    return (now - timedelta(seconds=TTL_SECONDS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return (now - timedelta(days=RETENTION_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def reset_store() -> None:
@@ -195,8 +198,13 @@ def bind(kind: str, session_id: str | None, credential_id: int | None, *, now: d
     session_id = str(session_id)[:SESSION_ID_MAX]
     cid = int(credential_id)
     stamp = _ts(now)
+    cutoff = _cutoff(now)
     with _lock:
         _mem[(kind, session_id)] = (cid, stamp)
+        # Bounded: pins idle past retention are dropped so the map can't grow
+        # forever. A healthy active pin is refreshed by every lookup.
+        for key in [k for k, (_, updated) in _mem.items() if updated < cutoff]:
+            _mem.pop(key, None)
     if persist:
         db.execute(
             """INSERT INTO pool_sessions (kind, session_id, credential_id, updated_at)
@@ -206,7 +214,6 @@ def bind(kind: str, session_id: str | None, credential_id: int | None, *, now: d
                  updated_at=excluded.updated_at""",
             (kind, session_id, cid, stamp),
         )
-        cutoff = _cutoff(now)
         db.execute("DELETE FROM pool_sessions WHERE updated_at < ?", (cutoff,))
 
 
@@ -215,29 +222,32 @@ def lookup(kind: str, session_id: str | None, *, now: datetime | None = None) ->
         return None
     kind = str(kind)
     session_id = str(session_id)[:SESSION_ID_MAX]
-    cutoff = _cutoff(now)
+    stamp = _ts(now)
+    cid: int | None = None
     with _lock:
         hit = _mem.get((kind, session_id))
         if hit:
-            cid, updated = hit
-            if updated >= cutoff:
-                return int(cid)
-            _mem.pop((kind, session_id), None)
+            cid = int(hit[0])
+            _mem[(kind, session_id)] = (cid, stamp)
     if persist:
+        if cid is not None:
+            # Keep the durable row as fresh as the memory pin, or the retention
+            # vacuum would forget an active conversation after a restart.
+            db.execute(
+                "UPDATE pool_sessions SET updated_at=? WHERE kind=? AND session_id=?",
+                (stamp, kind, session_id),
+            )
+            return cid
         row = db.fetchone(
-            """SELECT credential_id, updated_at FROM pool_sessions
-               WHERE kind=? AND session_id=?""",
+            "SELECT credential_id FROM pool_sessions WHERE kind=? AND session_id=?",
             (kind, session_id),
         )
         if row:
-            updated = str(row["updated_at"] or "")
-            if updated >= cutoff:
-                cid = int(row["credential_id"])
-                with _lock:
-                    _mem[(kind, session_id)] = (cid, updated)
-                return cid
+            cid = int(row["credential_id"])
             db.execute(
-                "DELETE FROM pool_sessions WHERE kind=? AND session_id=?",
-                (kind, session_id),
+                "UPDATE pool_sessions SET updated_at=? WHERE kind=? AND session_id=?",
+                (stamp, kind, session_id),
             )
-    return None
+            with _lock:
+                _mem[(kind, session_id)] = (cid, stamp)
+    return cid

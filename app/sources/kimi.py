@@ -477,6 +477,29 @@ def _oauth_revoked(status: int, data) -> bool:
     return "invalid_grant" in text or "revoked" in text or "unauthorized" in text
 
 
+def _capability_denial(data) -> bool:
+    """A 401 body that denies a model/context beyond the membership tier.
+
+    Kimi Code documents 401 for entitlement shortfalls (K3 access,
+    HighSpeed, 1M context), which is not an authentication failure and must
+    never strike the credential. Structured error codes are trusted when
+    present; otherwise only distinctive entitlement wording rescues the
+    credential, so plain "invalid key" stays an auth failure.
+    """
+    if not isinstance(data, dict):
+        return False
+    err = data.get("error")
+    words = ("capability", "entitlement", "membership", "not included", "does not include", "plan does not")
+    if isinstance(err, dict):
+        code = str(err.get("code") or err.get("type") or "").strip().lower()
+        if code:
+            return any(word in code for word in words)
+        text = str(err.get("message") or "").lower()
+    else:
+        text = str(err or "").lower()
+    return any(word in text for word in words)
+
+
 def _map_effort(value) -> str | None:
     if not isinstance(value, str):
         return None
@@ -1033,7 +1056,10 @@ class KimiSource:
                     close_client=True,
                     reasoning_separate=True,
                 )
-                if status == 401 and extra.get("refresh_token"):
+                if status == 401 and extra.get("refresh_token") and not _capability_denial(obj):
+                    # A capability denial is about the membership tier, not the
+                    # token: refreshing OAuth would be wasted work and a second
+                    # doomed request.
                     ok = await refresh_one(cred)
                     if ok:
                         attempts.append({"credential_id": cred["id"], "status": status, "usage": usage or {}})
@@ -1054,6 +1080,16 @@ class KimiSource:
                     return self._stream_result(stream, usage, cred, session_id, model, attempts)
                 last = ChatResult(status=status, body=obj, usage=usage, credential_id=cred["id"], model=model)
                 if status == 401:
+                    if _capability_denial(obj):
+                        # The coding endpoint answers a model/context beyond
+                        # this membership's entitlements with 401. That is not
+                        # an auth failure: fail over with a cooldown, never an
+                        # auth strike that would disable a valid credential.
+                        note_failure(cred["id"], cooldown_seconds=60)
+                        last.response_headers = response_headers
+                        attempts.append({"credential_id": cred["id"], "status": status, "usage": usage or {}})
+                        last.attempts = attempts
+                        continue
                     if auth_failure_confirmed(cred["id"]):
                         disable_credential(cred["id"])
                     last.status = 502
@@ -1102,7 +1138,7 @@ class KimiSource:
                 if status == "complete":
                     bind("kimi", session_id, cid)
                 elif status == "failed":
-                    note_failure(cid, cooldown_seconds=5)
+                    note_failure(cid, cooldown_seconds=5, affinity_safe=True)
 
         wrapped = UsageStream(_bind_on_finish(), collected, on_close=lambda: release(cid))
         result = ChatResult(status=200, stream=wrapped, credential_id=cid, model=model)

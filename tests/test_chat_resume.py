@@ -373,6 +373,129 @@ class ResumeTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(isinstance(o, dict) and o.get("error") for o in objects))
         self.assertEqual(objects[-1], "[DONE]")
 
+    async def test_large_tool_result_keeps_prefix_and_resume_note(self):
+        calls = []
+
+        async def fake_invoke(request, user, body, **_kwargs):
+            calls.append(body)
+            if len(calls) == 1:
+                return user, src(), "m", "m", stream_result([
+                    frame({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "web_search", "arguments": "{}"}}]}, "finish_reason": "tool_calls"}]}),
+                    b"data: [DONE]\n\n",
+                ])
+            if len(calls) == 2:
+                return user, src(), "m", "m", stream_result([
+                    frame({"error": {"message": "upstream overloaded", "code": 503}}),
+                    b"data: [DONE]\n\n",
+                ])
+            return user, src(), "m", "m", ok_result("done")
+
+        async def fake_run_tools(*args, **kwargs):
+            yield [SimpleNamespace(
+                orig_index=0, call_id="c1", name="web_search", arguments="{}",
+                event_id="ts_0_0", text="x" * 600_000, trace={"id": "ts_0_0", "status": "done"}, done=True,
+            )]
+
+        with patch.object(runtime, "TOOL_RESULT_CHARS", 600_000), patch.object(runtime, "_run_tools", fake_run_tools), patch.object(
+            runtime.ctxmod, "should_auto_compact", return_value=False
+        ), patch.object(runtime.ctxmod, "clip_to_fit", side_effect=AssertionError("history must not be clipped")):
+            objects = await self.stream_turn(fake_invoke)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(next(m["content"] for m in calls[1]["messages"] if m["role"] == "tool"), "x" * 600_000)
+        retry = calls[2]["messages"]
+        self.assertEqual(retry[-1], {"role": "user", "content": runtime._RESUME_TOOLS_NOTE})
+        # Every row already sent replays byte-identical; the retry only appends.
+        self.assertEqual(retry[: len(calls[1]["messages"])], calls[1]["messages"])
+        self.assertEqual(objects[-1], "[DONE]")
+
+    async def test_prompt_snapshot_survives_turns_restart_and_live_instruction_edits(self):
+        thread = chats.create_thread(1, model="offline", tools=["web_search"])
+        sent = []
+
+        async def invoke(request, user, body, **_kwargs):
+            sent.append(json.loads(json.dumps(body)))
+            return user, src(), "offline", "offline", ok_result()
+
+        run = store.start_turn(1, thread["id"], "first", thread["revision"], None)["run"]
+        with patch.object(runtime, "build_system_prompt", return_value="original system"):
+            await self.stream_turn(invoke, run["request"], frozen_context=chats.get_user_context(1))
+        store.finish_run(run["id"], {"content": "final answer", "reasoning": ""}, "completed")
+        view = chats.get_thread(1, thread["id"])
+        second = store.start_turn(1, thread["id"], "next", view["revision"], None)["run"]
+        self.assertEqual(second["request"]["prompt_snapshot"]["system"], "original system")
+        with patch.object(runtime, "build_system_prompt", return_value="edited system"):
+            await self.stream_turn(invoke, second["request"], frozen_context=chats.get_user_context(1))
+        self.assertEqual(sent[1]["messages"][:len(sent[0]["messages"])], sent[0]["messages"])
+        self.assertEqual(sent[1]["tools"], sent[0]["tools"])
+
+        saved = store.get_run(1, second["id"])
+        resumed = {**saved["request"], "messages": json.loads(db.fetchone(
+            "SELECT provider_messages FROM chat_runs WHERE id=?", (second["id"],))[0])}
+        resumed["agent"] = {**resumed.get("agent", {}), "resumed": True, "skip_sanitize": True}
+        with patch.object(runtime, "build_system_prompt", return_value="after restart"):
+            await self.stream_turn(invoke, resumed, frozen_context=chats.get_user_context(1))
+        self.assertEqual(sent[2]["messages"][:len(sent[1]["messages"])], sent[1]["messages"])
+        self.assertEqual(sent[2]["tools"], sent[1]["tools"])
+
+    async def test_compaction_is_the_only_automatic_prompt_refresh(self):
+        sent = []
+        calls = 0
+        old = {"system": "old system", "tools": []}
+
+        async def invoke(request, user, body, **_kwargs):
+            nonlocal calls
+            calls += 1
+            sent.append(json.loads(json.dumps(body)))
+            if calls == 1:
+                return user, src(), "offline", "offline", stream_result([
+                    frame({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1",
+                        "function": {"name": "web_search", "arguments": "{}"}}]}, "finish_reason": "tool_calls"}]}),
+                    b"data: [DONE]\n\n",
+                ])
+            return user, src(), "offline", "offline", ok_result()
+
+        async def fake_tools(*args, **kwargs):
+            yield [SimpleNamespace(orig_index=0, call_id="c1", name="web_search", arguments="{}",
+                event_id="ts_0_0", text="large result", trace={"status": "done"}, done=True)]
+
+        async def compact(rows, **kwargs):
+            rebuilt = [rows[0], {"role": "user", "content": "new handoff"},
+                       {"role": "assistant", "content": runtime.ctxmod.COMPACT_ACK}]
+            return rebuilt, runtime.ctxmod.meter(used=100, limit=128000), "summarize"
+
+        raw = {"model": "offline", "messages": [{"role": "user", "content": "go"}],
+               "tools": ["web_search"], "prompt_snapshot": old}
+        with patch.object(runtime, "build_system_prompt", return_value="new system"), patch.object(
+            runtime, "_run_tools", fake_tools
+        ), patch.object(runtime, "_compact_current", side_effect=compact), patch.object(
+            runtime.ctxmod, "should_auto_compact", side_effect=[False, False, True, False]
+        ):
+            # A pinned schema can still contain the search tools; its bytes
+            # remain fixed until compaction.
+            old["tools"] = runtime.openai_tools(["web_search"])
+            await self.stream_turn(invoke, raw, frozen_context=chats.get_user_context(1))
+        self.assertEqual(sent[0]["messages"][0]["content"], "old system")
+        self.assertEqual(sent[1]["messages"][0]["content"], "new system")
+        self.assertFalse(any(m.get("role") == "tool" for m in sent[1]["messages"]))
+        self.assertIn("new handoff", json.dumps(sent[1]))
+
+    async def test_cache_key_is_thread_for_parent_and_run_for_child(self):
+        seen = []
+
+        async def invoke(request, user, body, **_kwargs):
+            seen.append(body)
+            return user, src(), "m", "m", ok_result()
+
+        await self.stream_turn(invoke, {"model": "offline", "messages": [{"role": "user", "content": "hi"}], "tools": [], "thread_id": 77})
+        await self.stream_turn(invoke, {
+            "model": "offline", "messages": [{"role": "user", "content": "hi"}], "tools": [],
+            "agent": {"parent_run_id": "parent-1", "run_id": "child-1", "depth": 1, "coding": True},
+        })
+        self.assertEqual(seen[0]["prompt_cache_key"], "thread:77")
+        # Siblings must not share the parent's pin: each child conversation
+        # keeps its own cache identity.
+        self.assertEqual(seen[1]["prompt_cache_key"], "run:child-1")
+
     async def test_after_tools_resume_note_without_partial(self):
         calls = []
 

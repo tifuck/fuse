@@ -42,13 +42,15 @@ def test_batch_order_and_switching_from_text_only():
     assert DATA not in json.dumps(rows[:-1])
 
 
-def test_request_image_budgets_keep_newest_without_mutating_history(monkeypatch):
+def test_request_image_budgets_preserve_sent_prefix_without_mutating_history(monkeypatch):
     rows = runtime._tool_messages([job(i) for i in range(3)])
     original = copy.deepcopy(rows)
     monkeypatch.setattr(model_caps, "MAX_REQUEST_IMAGES", 2)
     outgoing, omitted = model_caps.prepare(rows, "claude", "claude-sonnet-5")
     assert omitted == 1 and len(pixels(outgoing)) == 2
-    assert outgoing[-1]["content"][1]["text"] == model_caps.BUDGET_OMITTED
+    assert outgoing[-1]["content"][5]["text"] == model_caps.BUDGET_OMITTED
+    prefix, _ = model_caps.prepare(runtime._tool_messages([job(i) for i in range(2)]), "claude", "claude-sonnet-5")
+    assert outgoing[-1]["content"][:4] == prefix[-1]["content"]
     monkeypatch.setattr(model_caps, "MAX_REQUEST_IMAGE_CHARS", len(f"data:image/png;base64,{DATA}"))
     outgoing, omitted = model_caps.prepare(rows, "claude", "claude-sonnet-5")
     assert omitted == 2 and len(pixels(outgoing)) == 1

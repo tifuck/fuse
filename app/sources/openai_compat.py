@@ -44,6 +44,9 @@ class OpenAICompatSource:
     def __init__(self, row, cfg: dict, creds):
         self.source_id = row["id"]
         self.name = row["name"]
+        # Pin kind is per source: two OpenAI-compat sources with the same
+        # scoped session id must not share a pin and swap each other's key.
+        self.pin_kind = f"openai:{self.source_id}"
         self.cfg = cfg
         self.creds = list(creds)
         rotation = cfg.get("rotation")
@@ -110,7 +113,7 @@ class OpenAICompatSource:
                 if close is not None:
                     await close()
                 if (collected or {}).get("stream_status") == "complete":
-                    bind("openai", session_id, cid)
+                    bind(self.pin_kind, session_id, cid)
 
         wrapped = UsageStream(_bind_on_finish(), collected)
         result = ChatResult(status=200, stream=wrapped, credential_id=cid, model=model)
@@ -123,12 +126,17 @@ class OpenAICompatSource:
         tried: set[int] = set()
         attempts: list[dict] = []
         last = ChatResult(status=503, body={"error": "All keys failed"})
-        prefer_id = lookup("openai", session_id) if self.rotation == "sticky" and session_id else None
+        prefer_id = lookup(self.pin_kind, session_id) if self.rotation == "sticky" and session_id else None
         model = body.get("model", "")
         for cred in self._next_creds(tried, prefer_id=prefer_id)[:1]:
             tried.add(cred["id"])
             key = accounts.cred_secret(cred)
             client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=15.0))
+            if session_id:
+                # Always send the tenant-scoped id, never the raw client/thread
+                # key: two users picking the same string must not share an
+                # upstream cache-routing group on a shared credential.
+                body = {**body, "prompt_cache_key": str(session_id)[:256]}
             status, obj, stream, usage, response_headers = await openai_chat(
                 client,
                 self._url() + "/chat/completions",
@@ -139,7 +147,7 @@ class OpenAICompatSource:
             if stream is not None:
                 return self._stream_result(stream, usage, cred, session_id, model, attempts)
             if status == 200 and self.rotation == "sticky" and session_id:
-                bind("openai", session_id, cred["id"])
+                bind(self.pin_kind, session_id, cred["id"])
             result = ChatResult(
                 status=status,
                 body=obj,

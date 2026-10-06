@@ -77,6 +77,85 @@ class ClaudeParseTest(unittest.TestCase):
         self.assertFalse(claude_mod.is_claude_model("claude-sonnet-4-6"))
         self.assertEqual(claude_mod.upstream_id("claude/claude-opus-4-6"), "claude-opus-4-6")
 
+    def test_moving_breakpoint_skips_ineligible_blocks(self):
+        payload = claude_mod.build_messages_payload(
+            {
+                "messages": [
+                    {"role": "user", "content": "hi"},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "claude_thinking": [{"thinking": "hmm", "signature": "sig"}],
+                    },
+                    {"role": "user", "content": "and now?"},
+                ]
+            },
+            "claude-sonnet-4-6",
+        )
+        thinking = payload["messages"][1]["content"][0]
+        self.assertEqual(thinking["type"], "thinking")
+        self.assertNotIn("cache_control", thinking)
+        # The rolling marker rides on the newest eligible block — here the
+        # new final user text — skipping the thinking-only assistant turn, so
+        # the next turn reads this request's cache entry instead of lagging
+        # one round behind.
+        self.assertEqual(
+            payload["messages"][2]["content"][-1]["cache_control"],
+            {"type": "ephemeral", "ttl": "1h"},
+        )
+        self.assertNotIn("cache_control", payload["messages"][0]["content"][-1])
+
+    def test_breakpoint_walks_back_inside_a_block_array(self):
+        payload = claude_mod.build_messages_payload(
+            {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "claude_thinking": [{"thinking": "hmm", "signature": "sig"}],
+                        "tool_calls": [
+                            {
+                                "id": "toolu_1",
+                                "type": "function",
+                                "function": {"name": "lookup", "arguments": "{}"},
+                            }
+                        ],
+                    },
+                    {"role": "tool", "tool_call_id": "toolu_1", "content": ""},
+                ]
+            },
+            "claude-sonnet-4-6",
+        )
+        # The final user turn is a tool result array whose only block carries
+        # an empty string payload; it is still an eligible breakpoint.
+        self.assertEqual(
+            payload["messages"][1]["content"][-1]["cache_control"],
+            {"type": "ephemeral", "ttl": "1h"},
+        )
+
+    def test_redacted_and_signed_empty_thinking_replay(self):
+        payload = claude_mod.build_messages_payload(
+            {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": "answer",
+                        "claude_thinking": [
+                            {"redacted_thinking": "enc-blob"},
+                            {"thinking": "", "signature": "sig"},
+                        ],
+                    },
+                    {"role": "user", "content": "next"},
+                ]
+            },
+            "claude-sonnet-4-6",
+        )
+        blocks = payload["messages"][0]["content"]
+        self.assertEqual(blocks[0], {"type": "redacted_thinking", "data": "enc-blob"})
+        self.assertEqual(blocks[1]["type"], "thinking")
+        self.assertEqual(blocks[1]["thinking"], "")
+        self.assertEqual(blocks[1]["signature"], "sig")
+
     def test_payload_maps_tools_and_results(self):
         payload = claude_mod.build_messages_payload(
             {
@@ -107,8 +186,8 @@ class ClaudeParseTest(unittest.TestCase):
         self.assertEqual(payload["system"][1]["text"], "be brief")
         self.assertEqual(payload["system"][1]["cache_control"], {"type": "ephemeral", "ttl": "1h"})
         self.assertEqual(payload["tools"][-1]["cache_control"], {"type": "ephemeral", "ttl": "1h"})
-        self.assertNotIn("cache_control", payload["messages"][-1]["content"][-1])
-        self.assertEqual(payload["messages"][-2]["content"][-1]["cache_control"], {"type": "ephemeral", "ttl": "1h"})
+        self.assertEqual(payload["messages"][-1]["content"][-1]["cache_control"], {"type": "ephemeral", "ttl": "1h"})
+        self.assertNotIn("cache_control", payload["messages"][-2]["content"][-1])
         self.assertEqual(payload["output_config"], {"effort": "high"})
         self.assertNotIn("thinking", payload)
         self.assertNotIn("temperature", payload)
@@ -228,6 +307,33 @@ class ClaudeStreamTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(collected["claude_thinking"], [{"thinking": "plan", "signature": "SIG"}])
         self.assertEqual(collected["prompt_tokens"], 16)
         self.assertEqual(collected["completion_tokens"], 6)
+
+    async def test_redacted_and_signed_empty_thinking_survive_translation(self):
+        events = [
+            {"type": "message_start", "message": {"id": "msg_r", "usage": {"input_tokens": 5}}},
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "redacted_thinking", "data": "enc-blob"}},
+            {"type": "content_block_stop", "index": 0},
+            {"type": "content_block_start", "index": 1, "content_block": {"type": "thinking", "thinking": ""}},
+            {"type": "content_block_delta", "index": 1, "delta": {"type": "signature_delta", "signature": "SIG2"}},
+            {"type": "content_block_stop", "index": 1},
+            {"type": "content_block_delta", "index": 2, "delta": {"type": "text_delta", "text": "answer"}},
+            {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 1}},
+            {"type": "message_stop"},
+        ]
+        resp = _FakeResp(events)
+        collected = {}
+        chunks = []
+        async for piece in claude_mod._translated_stream(resp, AsyncMock(), "claude-sonnet-4-6", collected):
+            chunks.append(piece.decode())
+        joined = "".join(chunks)
+        # Both replayable forms must come through untouched: the redacted
+        # blob and the signed-empty (omitted-display) block.
+        self.assertEqual(
+            collected["claude_thinking"],
+            [{"redacted_thinking": "enc-blob"}, {"thinking": "", "signature": "SIG2"}],
+        )
+        self.assertIn("redacted_thinking", joined)
+        self.assertEqual(collected["stream_status"], "complete")
 
     async def test_empty_tool_arguments_become_object(self):
         events = [
@@ -354,6 +460,64 @@ class ClaudePoolTest(unittest.IsolatedAsyncioTestCase):
         text = raw.decode()
         self.assertIn('"content":"yo"', text)
         self.assertIn("data: [DONE]", text)
+
+    @patch("app.sources.claude.note_pool_invoke")
+    @patch("app.sources.claude.refresh_due", new_callable=AsyncMock)
+    async def test_signature_400_returns_actionable_error_without_rewriting_history(
+        self, _due, _invoke
+    ):
+        err_body = json.dumps(
+            {
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "Expected thinking but signature verification failed for this conversation",
+                }
+            }
+        ).encode()
+        posts: list = []
+
+        class Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def post(self, url, headers=None, json=None):
+                posts.append(json)
+                resp = AsyncMock()
+                resp.status_code = 400
+                resp.aread.return_value = err_body
+                return resp
+
+            async def aclose(self):
+                return None
+
+        extra = {"access_token": "tok", "refresh_token": "rt"}
+        accounts.add_credential(self.sid, "mine", "tok", extra=extra, donated_by=self.alice["id"])
+        src = claude_mod.ClaudeSource({"id": self.sid, "name": "Claude"}, {}, [])
+        with patch("app.sources.claude.httpx.AsyncClient", Client):
+            result = await src.chat(
+                {
+                    "model": "claude/claude-sonnet-4-6",
+                    "stream": True,
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": "old",
+                            "claude_thinking": [{"thinking": "hmm", "signature": "stale"}],
+                        },
+                        {"role": "user", "content": "continue"},
+                    ],
+                },
+                user_id=self.alice["id"],
+            )
+        self.assertEqual(result.status, 400)
+        self.assertIn("thinking signatures", result.body["error"]["message"])
+        self.assertIn("new conversation", result.body["error"]["message"])
+        # History is never silently rewritten: exactly one post, with the
+        # replayed thinking blocks intact.
+        self.assertEqual(len(posts), 1)
+        first_block = posts[0]["messages"][0]["content"][0]
+        self.assertEqual(first_block["type"], "thinking")
+        self.assertEqual(first_block["signature"], "stale")
 
 
 if __name__ == "__main__":

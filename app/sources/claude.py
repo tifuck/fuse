@@ -832,9 +832,14 @@ def _thinking_blocks(msg: dict) -> list[dict]:
     for block in raw:
         if not isinstance(block, dict):
             continue
-        text = str(block.get("thinking") or block.get("text") or "")
+        if block.get("redacted_thinking"):
+            out.append({"type": "redacted_thinking", "data": str(block["redacted_thinking"])})
+            continue
+        text = str(block.get("thinking") or "")
         signature = str(block.get("signature") or "")
-        if text and signature:
+        # A signed block with empty text is a valid omitted-display block;
+        # unsigned text can never be replayed.
+        if signature:
             out.append({"type": "thinking", "thinking": text, "signature": signature})
     return out
 
@@ -1000,23 +1005,35 @@ def build_messages_payload(body: dict, model: str) -> dict:
         )
     if tools:
         payload["tools"] = tools
-    # One TTL everywhere: a 1h breakpoint after a 5m one is rejected. The
-    # identity line alone cached nothing; the real prefix is the system prompt
-    # and the tool schemas. The third breakpoint covers history up to the last
-    # completed turn, so a new turn appends instead of re-billing it.
+    # Three breakpoints: the system prefix (the identity line when the client
+    # sent no system prompt), the tool schemas, and the newest history block.
+    # Breakpoint TTLs are allowed to differ per breakpoint (Anthropic only
+    # requires longer TTLs to come first); Fuse uses 1h everywhere.
     _mark_cache_breakpoint(payload["system"][-1])
     if tools:
         _mark_cache_breakpoint(tools[-1])
-    # The final user turn is the new suffix. Cache through the assistant turn
-    # before it, which the next request replays unchanged.
-    cached = messages
-    if len(messages) >= 2 and messages[-1].get("role") == "user":
-        cached = messages[:-1]
-    for block in reversed(cached):
+    # The rolling marker sits on the newest block Anthropic accepts as a
+    # breakpoint (never a thinking block, never empty text), including the
+    # final tool results or the new user turn: each request then reads the
+    # previous request's cache entry as a prefix instead of lagging one
+    # round behind and re-billing the last turn as fresh input.
+    for block in reversed(messages):
         content = block.get("content")
-        if isinstance(content, list) and content and isinstance(content[-1], dict):
-            _mark_cache_breakpoint(content[-1])
+        if not (isinstance(content, list) and content):
+            continue
+        for part in reversed(content):
+            if not isinstance(part, dict):
+                continue
+            kind = str(part.get("type") or "")
+            if kind in ("thinking", "redacted_thinking"):
+                continue
+            if kind == "text" and not str(part.get("text") or "").strip():
+                continue
+            _mark_cache_breakpoint(part)
             break
+        else:
+            continue
+        break
     choice = _tool_choice(body.get("tool_choice"), body.get("parallel_tool_calls"))
     effort = _requested_effort(body, model)
     # A forced tool choice is illegal while thinking is on. Claude Code demotes it.
@@ -1186,7 +1203,7 @@ class _Translator:
                 index = 0
             block = event.get("content_block") if isinstance(event.get("content_block"), dict) else {}
             kind = str(block.get("type") or "")
-            self.blocks[index] = {"type": kind, "id": str(block.get("id") or ""), "name": str(block.get("name") or ""), "arguments": "", "thinking": "", "signature": ""}
+            self.blocks[index] = {"type": kind, "id": str(block.get("id") or ""), "name": str(block.get("name") or ""), "arguments": "", "thinking": "", "signature": "", "data": str(block.get("data") or "")}
             if kind == "tool_use":
                 self.tool_order.append(index)
                 return self._chunk(
@@ -1237,8 +1254,12 @@ class _Translator:
             except (TypeError, ValueError):
                 index = 0
             rec = self.blocks.get(index)
-            if rec and rec.get("type") == "thinking" and rec.get("thinking") and rec.get("signature"):
-                self.thinking.append({"thinking": rec["thinking"], "signature": rec["signature"]})
+            if rec and rec.get("type") == "redacted_thinking" and rec.get("data"):
+                self.thinking.append({"redacted_thinking": rec["data"]})
+            if rec and rec.get("type") == "thinking" and rec.get("signature"):
+                # Empty thinking text with a signature is a valid
+                # omitted-display block and must replay like any other.
+                self.thinking.append({"thinking": rec.get("thinking") or "", "signature": rec["signature"]})
             if rec and rec.get("type") == "tool_use" and not rec.get("arguments"):
                 rec["arguments"] = "{}"
                 tool_index = self.tool_order.index(index) if index in self.tool_order else 0
@@ -1483,7 +1504,6 @@ class ClaudeSource:
         want_stream = body.get("stream") is not False
         payload = build_messages_payload(body, upstream)
         prefer_id = lookup("claude", session_id)
-        signature_stripped = False
         failover = Failover()
         while True:
             picked = self._pick(exclude=tried, prefer_id=prefer_id)
@@ -1513,20 +1533,23 @@ class ClaudeSource:
                         client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=15.0))
                         resp = await self._post(client, token, payload)
                         status = resp.status_code
-                if status == 400 and not signature_stripped:
+                if status == 400:
                     raw = (await resp.aread()).decode("utf-8", errors="replace")
                     await resp.aclose()
                     await client.aclose()
+                    message = _error_message(raw) or "Claude rejected the request"
                     if _signature_retryable(raw):
-                        signature_stripped = True
-                        payload = _drop_thinking(payload)
-                        tried.discard(int(cred["id"]))
-                        release(cred["id"])
-                        stream_reserved = True
-                        continue
+                        # Rewriting the client's history behind its back is
+                        # forbidden: surface the signature rejection so the
+                        # caller can start a fresh conversation instead.
+                        message = (
+                            "Claude rejected the thinking signatures saved in this conversation's history "
+                            "(they expire and cannot be replayed). Start a new conversation, or resend the "
+                            "turn without the stored thinking blocks."
+                        )
                     last = ChatResult(
                         status=400,
-                        body={"error": {"message": _error_message(raw) or "Claude rejected the request"}},
+                        body={"error": {"message": message}},
                         credential_id=cred["id"],
                         model=fuse_id(upstream),
                     )
@@ -1609,30 +1632,12 @@ class ClaudeSource:
                 if status == "complete":
                     bind("claude", session_id, cid)
                 elif status == "failed":
-                    note_failure(cid, cooldown_seconds=5)
+                    note_failure(cid, cooldown_seconds=5, affinity_safe=True)
 
         wrapped = UsageStream(_bind_on_finish(), collected, on_close=lambda: release(cid))
         result = ChatResult(status=200, stream=wrapped, credential_id=cid, model=model)
         result.attempts = attempts
         return result
-
-
-def _drop_thinking(payload: dict) -> dict:
-    out = dict(payload)
-    out.pop("thinking", None)
-    messages = []
-    for msg in payload.get("messages") or []:
-        if not isinstance(msg, dict):
-            messages.append(msg)
-            continue
-        content = msg.get("content")
-        if msg.get("role") == "assistant" and isinstance(content, list):
-            kept = [block for block in content if not (isinstance(block, dict) and block.get("type") == "thinking")]
-            messages.append({**msg, "content": kept or [{"type": "text", "text": ""}]})
-        else:
-            messages.append(msg)
-    out["messages"] = messages
-    return out
 
 
 def _error_message(raw: str) -> str:

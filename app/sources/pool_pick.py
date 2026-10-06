@@ -23,18 +23,28 @@ USAGE_BUSY = 98.0
 MAX_IN_FLIGHT = 8
 
 _failure_lock = threading.Lock()
-_cooldown_until: dict[int, float] = {}
+# (until, affinity_safe): an affinity_safe cooldown (dead-stream blip,
+# provider outage) may be bypassed to keep a pinned conversation on the
+# account that holds its warm cache; a hard one (auth, quota, 429) must
+# never be bypassed by affinity.
+_cooldown_until: dict[int, tuple[float, bool]] = {}
 _in_flight: dict[int, int] = {}
 
 
-def note_failure(cred_id: int, *, cooldown_seconds: float = 30.0) -> None:
-    """Short-lived soft cooldown so a failing account isn't re-picked first."""
+def note_failure(cred_id: int, *, cooldown_seconds: float = 30.0, affinity_safe: bool = False) -> None:
+    """Short-lived cooldown so a failing account isn't re-picked first.
+
+    Hard (default) cooldowns also displace a session's pinned affinity;
+    affinity_safe ones only deprioritize the account for unpinned picks.
+    """
     if cooldown_seconds <= 0:
         return
     until = time.time() + cooldown_seconds
     with _failure_lock:
-        prev = _cooldown_until.get(int(cred_id), 0.0)
-        _cooldown_until[int(cred_id)] = max(prev, until)
+        prev_until, prev_safe = _cooldown_until.get(int(cred_id), (0.0, True))
+        if prev_until <= time.time():
+            prev_safe = True
+        _cooldown_until[int(cred_id)] = (max(prev_until, until), prev_safe and affinity_safe)
 
 
 # A 401 disables a credential only when it repeats within this window, after
@@ -90,7 +100,9 @@ class Failover:
     def served(self) -> None:
         """Another account served the request: the earlier 5xx were the accounts'."""
         for cid, seconds in self._suspect:
-            note_failure(cid, cooldown_seconds=seconds)
+            # A provider-side 5xx says nothing about the account's cache;
+            # keep pinned conversations sticky through the cooldown.
+            note_failure(cid, cooldown_seconds=seconds, affinity_safe=True)
         self._suspect.clear()
 
 
@@ -104,8 +116,14 @@ def reset_health() -> None:
 
 def _cooling_down(cid: int) -> bool:
     with _failure_lock:
-        until = _cooldown_until.get(cid, 0.0)
+        until = _cooldown_until.get(cid, (0.0, True))[0]
     return until > time.time()
+
+
+def _hard_cooldown(cid: int) -> bool:
+    with _failure_lock:
+        until, safe = _cooldown_until.get(cid, (0.0, True))
+    return until > time.time() and not safe
 
 
 def reserve(cid: int) -> None:
@@ -321,11 +339,12 @@ def pick_account(
         cid = int(cred["id"])
         if cid in exclude or cred["disabled"]:
             continue
-        # A 429 or a failed stream cools an account for seconds. Skipping the
-        # pinned one during that window sends the next turn to a cold cache.
-        # Current-request failover still works: the caller excludes what it tried.
+        # A short blip (dead stream, provider 5xx) on the pinned account must
+        # not move the conversation to a cold cache, so those cooldowns are
+        # bypassable for the pin. A hard cooldown (auth, quota, 429) always
+        # wins: affinity never overrides the pool's health signals.
         cooling = _cooling_down(cid)
-        if cooling and cid != prefer_id:
+        if cooling and (cid != prefer_id or _hard_cooldown(cid)):
             continue
         try:
             extra = accounts.cred_extra(cred)

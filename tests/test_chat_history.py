@@ -81,6 +81,16 @@ class HistoryTest(unittest.TestCase):
         for i in range(3):
             self.assertEqual(sum(f"RESULT_{i}_" in str(m.get("content")) for m in run["request"]["messages"]), 1)
 
+    def test_cache_observation_status_survives_saved_message_reload(self):
+        run = self.start()
+        self.complete(run)
+        view = chats.get_thread(1, self.thread["id"])
+        rows = view["messages"]
+        rows[-1]["usage"] = {"prompt_tokens": 10, "cached_tokens": 0, "cache_usage_status": "unknown"}
+        chats.update_thread(1, self.thread["id"], messages=rows, expected_revision=view["revision"])
+        reloaded = chats.get_thread(1, self.thread["id"])
+        self.assertEqual(reloaded["messages"][-1]["usage"]["cache_usage_status"], "unknown")
+
     def test_progress_storage_does_not_slice_large_transcripts(self):
         run = self.start()
         rows = [{"role": "user", "content": str(i) + "x" * 4000} for i in range(250)]
@@ -300,13 +310,16 @@ class OutputAndModelTest(unittest.TestCase):
             "openrouter/z-ai/glm-5": "reasoning_content",
             "claude-sonnet-4-6": "claude_thinking",
             "devin/glm-5-2": "claude_thinking",
+            "kimi-for-coding": "reasoning_content",
+            "k3": "reasoning_content",
+            "mimo-v2.6-pro": "reasoning_content",
         }
         for model, field in keeps.items():
             kept = chat_runtime._native_reasoning(text, model, blocks)
             self.assertIn(field, kept, model)
             projected = memory.for_model([{"role": "assistant", "content": "a", **kept}], model)
             self.assertEqual(context.occupancy_parts(projected)["thinking"], 100, model)
-        for model in ("gpt-5.5", "grok-4.6", "kimi-k2", "mimo-v2-pro", "qwen3:32b",
+        for model in ("gpt-5.5", "grok-4.6", "qwen3:32b",
                       "openrouter/openai/gpt-5"):
             self.assertEqual(chat_runtime._native_reasoning(text, model, blocks), {}, model)
         # Unsigned thinking cannot be replayed to Claude, so it is not stored.

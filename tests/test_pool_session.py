@@ -20,7 +20,7 @@ from app.sources import zai as zai_mod
 from app.sources import pool_pick
 from app.sources.pool_pick import USAGE_BUSY, chatgpt_plan_type, pick_account, reset_health
 from app.sources.pool_session import (
-    TTL_SECONDS,
+    RETENTION_DAYS,
     bind,
     drop_cache_routing_fields,
     fallback_session_id,
@@ -130,15 +130,28 @@ class PoolSessionTest(unittest.TestCase):
         self.assertNotIn("prompt_cache_retention", out)
         self.assertEqual(out["n"], 1)
 
-    def test_bind_lookup_and_ttl_expiry(self):
+    def test_bind_lookup_keeps_a_healthy_pin_durable(self):
         t0 = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
         bind("grok", "sess-1", 105, now=t0)
         self.assertEqual(lookup("grok", "sess-1", now=t0), 105)
         self.assertIsNone(lookup("chatgpt", "sess-1", now=t0))
-        still = t0 + timedelta(seconds=TTL_SECONDS - 1)
+        still = t0 + timedelta(seconds=30 * 60 - 1)
         self.assertEqual(lookup("grok", "sess-1", now=still), 105)
-        expired = t0 + timedelta(seconds=TTL_SECONDS + 1)
-        self.assertIsNone(lookup("grok", "sess-1", now=expired))
+        # Long tool gaps must not rotate a warm conversation onto a colder
+        # account: the pin survives past any provider cache TTL and is only
+        # forgotten by the retention vacuum, not by a timer.
+        days_later = t0 + timedelta(days=RETENTION_DAYS - 1)
+        self.assertEqual(lookup("grok", "sess-1", now=days_later), 105)
+        self.assertEqual(lookup("grok", "no-such-session", now=days_later), None)
+
+    def test_idle_pins_are_vacuumed_after_retention(self):
+        t0 = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+        bind("grok", "sess-1", 105, now=t0)
+        # A bind for another session runs the vacuum: a pin idle past
+        # retention is dropped, a refreshed one survives.
+        bind("grok", "sess-2", 106, now=t0 + timedelta(days=RETENTION_DAYS + 1))
+        self.assertIsNone(lookup("grok", "sess-1", now=t0 + timedelta(days=RETENTION_DAYS + 2)))
+        self.assertEqual(lookup("grok", "sess-2", now=t0 + timedelta(days=RETENTION_DAYS + 2)), 106)
 
     def test_bind_replaces_credential_on_failover(self):
         t0 = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
@@ -206,10 +219,30 @@ class PoolSessionTest(unittest.TestCase):
 
         pool_pick.note_failure(104, cooldown_seconds=60)
         self.addCleanup(pool_pick.reset_health)
+        # A hard cooldown (auth/quota/429) overrides affinity: the pinned
+        # account is skipped even for its own conversation.
+        picked, _ = pick_account([busy, ok], kind="grok", prefer_id=104)
+        self.assertEqual(picked["id"], 105)
+        picked, _ = pick_account([busy, ok], kind="grok")
+        self.assertEqual(picked["id"], 105)
+        # An affinity-safe blip keeps the pin warm for its own conversation
+        # while other conversations move on.
+        pool_pick.reset_health()
+        pool_pick.note_failure(104, cooldown_seconds=60, affinity_safe=True)
         picked, _ = pick_account([busy, ok], kind="grok", prefer_id=104)
         self.assertEqual(picked["id"], 104)
         picked, _ = pick_account([busy, ok], kind="grok")
         self.assertEqual(picked["id"], 105)
+        with patch("app.sources.pool_pick.time.time", return_value=1000):
+            pool_pick.note_failure(111, cooldown_seconds=1)
+        with patch("app.sources.pool_pick.time.time", return_value=1002):
+            pool_pick.note_failure(111, cooldown_seconds=5, affinity_safe=True)
+            self.assertFalse(pool_pick._hard_cooldown(111))
+        # A later hard failure on top of a soft cooldown wins again.
+        pool_pick.note_failure(104, cooldown_seconds=1)
+        picked, _ = pick_account([busy, ok], kind="grok", prefer_id=104)
+        self.assertEqual(picked["id"], 105)
+        pool_pick.reset_health()
         picked, _ = pick_account([busy, ok], kind="grok", prefer_id=104, exclude={104})
         self.assertEqual(picked["id"], 105)
         picked, _ = pick_account([busy, ok], kind="grok")

@@ -113,6 +113,9 @@ class OllamaSource:
     def __init__(self, row, cfg: dict, creds):
         self.source_id = row["id"]
         self.name = row["name"]
+        # Pin kind is per source: two Ollama sources with the same scoped
+        # session id must not share a pin and swap each other's sticky key.
+        self.pin_kind = f"ollama:{self.source_id}"
         self.cfg = cfg
         self.creds = list(creds)
         self.base = (cfg.get("base_url") or "https://ollama.com/api").rstrip("/")
@@ -319,8 +322,8 @@ class OllamaSource:
         client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=15.0))
         prefer_key = None
         pinned_cid = None
-        if self.cfg.get("sticky_sessions") and session_id:
-            pinned_cid = lookup("ollama", session_id)
+        if self.cfg.get("sticky_sessions", True) and session_id:
+            pinned_cid = lookup(self.pin_kind, session_id)
             if pinned_cid:
                 for c in self.creds:
                     if c["id"] == pinned_cid:
@@ -388,7 +391,7 @@ class OllamaSource:
                 result.attempts = retry_attempts
                 return result
             ollama_access.note(self.source_id, model, ollama_access.FREE, status=200)
-            sticky = bool(self.cfg.get("sticky_sessions") and session_id)
+            sticky = bool(self.cfg.get("sticky_sessions", True) and session_id)
             if stream:
                 stream_returned = True
                 collected: dict = {}
@@ -403,7 +406,7 @@ class OllamaSource:
                         if close is not None:
                             await close()
                         if sticky and collected.get("stream_status") == "complete":
-                            bind("ollama", session_id, cid)
+                            bind(self.pin_kind, session_id, cid)
 
                 gen = UsageStream(_bind_on_finish(), collected)
                 return ChatResult(
@@ -456,11 +459,11 @@ class OllamaSource:
                 },
             }
             usage = usage_from_obj(obj)
-            # Ollama's native API exposes no cached-token breakdown, so cache
-            # usage is genuinely unknown here rather than zero.
-            usage["cached_tokens"], usage["cache_write_tokens"] = 0, 0
+            # Ollama's native API exposes no cached-token breakdown: the
+            # zeros are placeholders and cache_usage_status stays "unknown"
+            # rather than a reported zero.
             if sticky:
-                bind("ollama", session_id, cid)
+                bind(self.pin_kind, session_id, cid)
             return ChatResult(status=200, body=obj, usage=usage, credential_id=cid, model=model)
         finally:
             if not stream_returned:

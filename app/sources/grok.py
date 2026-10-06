@@ -620,7 +620,7 @@ class GrokSource:
                 if status == "complete":
                     bind("grok", session_id, cid)
                 elif status == "failed":
-                    note_failure(cid, cooldown_seconds=5)
+                    note_failure(cid, cooldown_seconds=5, affinity_safe=True)
 
         wrapped = UsageStream(_bind_on_finish(), collected, on_close=lambda: release(cid))
         result = ChatResult(status=200, stream=wrapped, credential_id=cid, model=model)

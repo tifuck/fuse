@@ -61,6 +61,11 @@ AGENTS_FILENAMES = (
 )
 _AGENTS_BASENAMES = frozenset(name.lower() for name in AGENTS_FILENAMES)
 _agents_cache: dict[tuple, tuple] = {}
+# Last successful read per (user, host, cwd). A transient host/vault failure
+# serves this instead of blanking the system-prompt block. Only a confirmed
+# different read (missing name or empty body) drops it; a write does not,
+# because the pre-write body beats no instructions until the next read lands.
+_agents_last_good: dict[tuple, tuple[str, str]] = {}
 # Glob patterns are shell-quoted, so the only characters refused are those
 # that signal a shell pipeline or a regex/comma list rather than a glob.
 # Real names such as +page.svelte, @scope, "My File.md" are allowed.
@@ -3850,10 +3855,22 @@ def _agents_cache_put(key, expires, name, body, reason) -> None:
     _agents_cache[key] = (expires, name, body, reason)
 
 
+def _agents_fail(key, now, reason) -> tuple[str, str]:
+    """Record a failed load, serving the last good body when one exists."""
+    last = _agents_last_good.get(key)
+    if last:
+        name, body = str(last[0] or ""), str(last[1] or "")
+        _agents_cache_put(key, now + 15, name, body, reason)
+        return name, body
+    _agents_cache_put(key, now + 15, "", "", reason)
+    return "", ""
+
+
 async def load_project_agents(user_id, bound_host_id, bound_cwd: str = "", report: dict | None = None) -> tuple[str, str]:
     """Read AGENTS.md (or agent.md / CLAUDE.md) from a bound project root. Never raises.
 
-    report, when given, receives a UI-facing reason: loaded / missing / locked / host.
+    A transient failure serves the last confirmed body. report, when given,
+    receives a UI-facing reason: loaded / missing / locked / host.
     """
     if not bound_host_id:
         return "", ""
@@ -3868,10 +3885,9 @@ async def load_project_agents(user_id, bound_host_id, bound_cwd: str = "", repor
         row = resolve_host_row(user_id, None, bound_host_id)
     except (WorkspaceError, VaultLocked) as exc:
         reason = "locked" if isinstance(exc, VaultLocked) or "vault" in str(exc).lower() else "host"
-        _agents_cache_put(key, now + 15, "", "", reason)
         if report is not None:
             report["reason"] = reason
-        return "", ""
+        return _agents_fail(key, now, reason)
     alias = _row_alias(row)
     host_id = _row_id(row)
     root = host_root(row, bound_host_id, bound_cwd)
@@ -3879,18 +3895,26 @@ async def load_project_agents(user_id, bound_host_id, bound_cwd: str = "", repor
     try:
         listing, rec = await _list(user_id, host_id, alias, {"path": "."}, root, windows=windows)
     except VaultLocked:
-        _agents_cache_put(key, now + 15, "", "", "locked")
         if report is not None:
             report["reason"] = "locked"
-        return "", ""
+        return _agents_fail(key, now, "locked")
     except (WorkspaceError, Exception) as exc:
         reason = "locked" if "vault" in str(exc).lower() else "host"
-        _agents_cache_put(key, now + 15, "", "", reason)
         if report is not None:
             report["reason"] = reason
-        return "", ""
-    chosen = pick_agents_name(listing_names(listing, rec if isinstance(rec, dict) else None))
+        return _agents_fail(key, now, reason)
+    listing_rec = rec if isinstance(rec, dict) else {}
+    if listing_rec.get("status") == "error":
+        # A failed listing is not evidence the file is gone.
+        if report is not None:
+            report["reason"] = "host"
+        return _agents_fail(key, now, "host")
+    chosen = pick_agents_name(listing_names(listing, listing_rec))
     if not chosen:
+        # A successful listing with no instruction file is a confirmed
+        # absence, not a failure: drop any sticky body instead of resurrecting
+        # deleted instructions.
+        _agents_last_good.pop(key, None)
         _agents_cache_put(key, now + 45, "", "", "missing")
         if report is not None:
             report["reason"] = "missing"
@@ -3915,21 +3939,37 @@ async def load_project_agents(user_id, bound_host_id, bound_cwd: str = "", repor
             offset += _READ_MAX_LINES
     except Exception as exc:
         reason = "locked" if isinstance(exc, VaultLocked) or "vault" in str(exc).lower() else "host"
-        _agents_cache_put(key, now + 15, "", "", reason)
         if report is not None:
             report["reason"] = reason
-        return "", ""
+        return _agents_fail(key, now, reason)
     if len(body) > AGENTS_MAX:
         marker = "\n[Project instructions truncated]"
         body = body[:AGENTS_MAX - len(marker)] + marker
     else:
         body = body.strip()
     if not body:
+        _agents_last_good.pop(key, None)
         _agents_cache_put(key, now + 45, "", "", "missing")
         if report is not None:
             report["reason"] = "missing"
         return "", ""
     _agents_cache_put(key, now + 90, chosen, body, "loaded")
+    if len(_agents_last_good) > 256:
+        _agents_last_good.clear()
+    _agents_last_good[key] = (chosen, body)
     if report is not None:
         report["reason"] = "loaded"
     return chosen, body
+
+
+def last_project_agents(user_id, bound_host_id, bound_cwd: str = "") -> tuple[str, str]:
+    """Last confirmed (name, body) for a bound project, or ("", ""): the
+    fallback for a load_project_agents call that timed out or raised at the
+    caller. A confirmed missing/empty read drops the entry, so deleted
+    instructions are never served."""
+    if not bound_host_id:
+        return "", ""
+    last = _agents_last_good.get((int(user_id), int(bound_host_id), posixpath.normpath(bound_cwd or "")))
+    if last:
+        return str(last[0] or ""), str(last[1] or "")
+    return "", ""

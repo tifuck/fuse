@@ -15,7 +15,7 @@ os.environ.setdefault("DATABASE_PATH", str(Path(_TMP) / "defer.db"))
 os.environ.setdefault("APP_SECRET", "x" * 32)
 
 from app import agent_catalog
-from app.chat_runtime import build_system_prompt
+from app.chat_runtime import _session_tail_block, build_system_prompt
 from app.chat_tools import execute_tool, openai_tools
 
 
@@ -357,7 +357,6 @@ class CodingPromptTest(unittest.TestCase):
             project_session=True,
             host_catalog="- prod  deploy@a.example:22\n- laptop  me@b.example:22",
             bound_label="",
-            vault_unlocked=True,
         )
         self.assertIn("prod", text)
         self.assertIn("once per alias", text)
@@ -374,10 +373,13 @@ class CodingPromptTest(unittest.TestCase):
             project_session=True,
             host_catalog="- prod  deploy@a.example:22",
             bound_label="prod cwd=/srv/api",
-            vault_unlocked=False,
         )
         self.assertIn("bound to prod", text)
-        self.assertIn("Vault is locked", text)
+        # Lock state is per-turn volatile: it rides the session tail so a vault
+        # flip never rewrites the cached system prompt.
+        self.assertNotIn("Vault is locked", text)
+        self.assertIn("Vault is locked", _session_tail_block([], vault_locked=True))
+        self.assertNotIn("Vault is locked", _session_tail_block([], vault_locked=False))
 
     def test_flag_off_schemas_carry_artifact_policy_without_coding_prompt(self):
         text = build_system_prompt(instructions="", profile="", thread_context="", tools=[])

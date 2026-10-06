@@ -455,6 +455,87 @@ class RotationCursorTest(unittest.TestCase):
             pool_session.persist = True
 
 
+class CacheUsageStatusTest(unittest.TestCase):
+    def test_reported_zero_is_known_and_missing_is_unknown(self):
+        zero = usage_from_obj(
+            {"usage": {"prompt_tokens": 10, "completion_tokens": 1, "prompt_tokens_details": {"cached_tokens": 0}}}
+        )
+        self.assertEqual(zero["cached_tokens"], 0)
+        self.assertEqual(zero["cache_usage_status"], "known")
+
+        missing = usage_from_obj(
+            {"usage": {"prompt_tokens": 10, "completion_tokens": 1}}
+        )
+        self.assertEqual(missing["cached_tokens"], 0)
+        self.assertEqual(missing["cache_usage_status"], "unknown")
+        self.assertEqual(usage_from_obj({"usage": missing})["cache_usage_status"], "unknown")
+        null = usage_from_obj({"usage": {"prompt_tokens": 10, "prompt_tokens_details": {"cached_tokens": None}}})
+        self.assertEqual(null["cache_usage_status"], "unknown")
+
+        details = usage_from_obj(
+            {"usage": {"prompt_tokens": 10, "input_tokens_details": {"cache_write_tokens": 3}}}
+        )
+        self.assertEqual(details["cache_write_tokens"], 3)
+        self.assertEqual(details["cache_usage_status"], "known")
+
+        empty = usage_from_obj({})
+        self.assertEqual(empty["cache_usage_status"], "unknown")
+        self.assertEqual(empty["usage_status"], "unknown")
+
+    def test_merge_usage_preserves_known_once_observed(self):
+        known_zero = usage_from_obj(
+            {"usage": {"prompt_tokens": 5, "prompt_tokens_details": {"cached_tokens": 0}}}
+        )
+        unknown = usage_from_obj({"usage": {"prompt_tokens": 9, "completion_tokens": 2}})
+        merged = merge_usage(known_zero, unknown)
+        self.assertEqual(merged["prompt_tokens"], 9)
+        self.assertEqual(merged["cache_usage_status"], "known")
+        self.assertEqual(merge_usage(unknown, known_zero)["cache_usage_status"], "known")
+        self.assertEqual(
+            merge_usage(unknown, usage_from_obj({"usage": {"prompt_tokens": 2}}))["cache_usage_status"],
+            "unknown",
+        )
+
+
+class OpenAICompatScopedKeyTest(unittest.IsolatedAsyncioTestCase):
+    @mock.patch("app.sources.openai_compat.accounts.cred_secret", return_value="k")
+    @mock.patch("app.sources.openai_compat.openai_chat", new_callable=mock.AsyncMock)
+    async def test_session_id_always_scopes_the_upstream_cache_key(self, chat, _secret):
+        chat.return_value = (200, {"id": "c"}, None, {}, {})
+        src = openai_compat.OpenAICompatSource(
+            {"id": 6, "name": "t"}, {"rotation": "sticky"}, [{"id": 1, "disabled": 0}]
+        )
+        await src.chat({"messages": [{"role": "user", "content": "hi"}]}, session_id="fx:scoped-1")
+        self.assertEqual(chat.await_args.args[3]["prompt_cache_key"], "fx:scoped-1")
+        # A raw client key is overwritten, not forwarded.
+        await src.chat(
+            {"messages": [{"role": "user", "content": "hi"}], "prompt_cache_key": "raw-thread"},
+            session_id="fx:scoped-2",
+        )
+        self.assertEqual(chat.await_args.args[3]["prompt_cache_key"], "fx:scoped-2")
+        # Without a session id the body is left alone.
+        await src.chat({"messages": [{"role": "user", "content": "hi"}]})
+        self.assertNotIn("prompt_cache_key", chat.await_args.args[3])
+
+    def test_pin_kind_is_scoped_per_source(self):
+        pool_session.persist = False
+        pool_session.reset_store()
+        try:
+            a = openai_compat.OpenAICompatSource(
+                {"id": 6, "name": "a"}, {"rotation": "sticky"}, [{"id": 1, "disabled": 0}]
+            )
+            b = openai_compat.OpenAICompatSource(
+                {"id": 7, "name": "b"}, {"rotation": "sticky"}, [{"id": 2, "disabled": 0}]
+            )
+            self.assertNotEqual(a.pin_kind, b.pin_kind)
+            pool_session.bind(a.pin_kind, "fx:same-session", 1)
+            self.assertEqual(pool_session.lookup(a.pin_kind, "fx:same-session"), 1)
+            self.assertIsNone(pool_session.lookup(b.pin_kind, "fx:same-session"))
+        finally:
+            pool_session.reset_store()
+            pool_session.persist = True
+
+
 def _sse(obj) -> bytes:
     import json
     return f"data: {json.dumps(obj)}\n\n".encode()

@@ -1345,10 +1345,7 @@ class ChatGPTSource:
         if status == "complete":
             bind("chatgpt", session_id, cred_id)
         elif status == "failed":
-            # Short cooldown so an immediate retry of a dead stream skips the
-            # sick account. Long enough to fail over, short enough that a
-            # user stop-then-retry keeps cache affinity once it expires.
-            note_failure(cred_id, cooldown_seconds=5)
+            note_failure(cred_id, cooldown_seconds=5, affinity_safe=True)
 
     async def chat(self, body: dict, *, session_id: str | None = None, user_id: int | None = None) -> ChatResult:
         await refresh_due()

@@ -223,7 +223,10 @@ class PromptTest(unittest.TestCase):
             project_session=True,
             bound_cwd="/srv/api",
         )
-        self.assertIn("Create or update `AGENTS.md`", later[0]["content"])
+        self.assertEqual(later[0]["content"], "/init")
+        promoted = expand_slash_messages(
+            [*later, {"role": "user", "content": "continue"}], project_session=True, bound_cwd="/srv/api")
+        self.assertEqual(promoted[:2], later)
         self.assertEqual(later[1]["content"], "wrote it")
 
     def test_init_keeps_image_parts(self):

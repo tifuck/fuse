@@ -85,14 +85,15 @@ def prepare(messages, type_id: str, model: str, *, user_id: int | None = None) -
     if not isinstance(messages, list):
         return messages, 0
     strip = image_input(type_id, model, user_id=user_id) is False
-    # Newest evidence wins; never rewrite the canonical saved transcript.
+    # Admit images in transcript order so appending new evidence cannot evict
+    # pixels that were already part of a cached prefix.
     allowed = set()
     count = size = 0
-    for mi in range(len(messages) - 1, -1, -1):
+    for mi in range(len(messages)):
         content = messages[mi].get("content") if isinstance(messages[mi], dict) else None
         if not isinstance(content, list):
             continue
-        for pi in range(len(content) - 1, -1, -1):
+        for pi in range(len(content)):
             part = content[pi]
             if not _image_part(part):
                 continue

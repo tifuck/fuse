@@ -397,14 +397,19 @@ def _replace_user_text(content, replacement: str):
 
 
 def expand_slash_messages(messages: list[dict], *, project_session: bool, bound_cwd: str = "") -> list[dict]:
-    """Expand native `/init` into the OpenCode-style AGENTS.md prompt for the model only."""
+    """Expand native `/init` into the OpenCode-style AGENTS.md prompt for the model only.
+
+    Only the newest user row: expanding an older one after a mid-chat project
+    promotion would rewrite bytes the provider already cached.
+    """
     if not messages or not project_session:
         return messages
     out = []
     changed = False
     root = bound_cwd or "the project root"
-    for msg in messages:
-        if not isinstance(msg, dict) or msg.get("role") != "user":
+    last_user = len(messages) - 1 if isinstance(messages[-1], dict) and messages[-1].get("role") == "user" else -1
+    for i, msg in enumerate(messages):
+        if not isinstance(msg, dict) or msg.get("role") != "user" or i != last_user:
             out.append(msg)
             continue
         content = msg.get("content")
@@ -466,7 +471,6 @@ def build_system_prompt(
     coding: bool = False,
     project_session: bool = False,
     bound_label: str = "",
-    vault_unlocked: bool = True,
     project_agents: str = "",
     project_agents_name: str = "",
     skills_index: str = "",
@@ -569,14 +573,8 @@ def build_system_prompt(
             )
         parts.append(_loaded_line(_loaded))
         if host_catalog:
-            vault_line = (
-                ""
-                if vault_unlocked
-                else " Vault is locked — chat and search still work; host tools fail until the user unlocks on Hosts."
-            )
             parts.append(
                 "Connected machines (alias, user@host, auth type, allowed roots, project paths; never secrets)."
-                + vault_line
                 + "\n"
                 + host_catalog
             )
@@ -603,14 +601,8 @@ def build_system_prompt(
             "folder binds this chat to that project. Do not invent file contents, host state, or tool names."
         )
         if host_catalog:
-            vault_line = (
-                ""
-                if vault_unlocked
-                else " Vault is locked — chat and search still work; host tools fail until the user unlocks on Hosts."
-            )
             parts.append(
                 "Connected machines (alias, user@host, auth type, allowed roots, project paths; never secrets)."
-                + vault_line
                 + "\n"
                 + host_catalog
             )
