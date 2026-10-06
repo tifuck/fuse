@@ -15153,7 +15153,7 @@
 
   function compactionMarkerText(line) {
     const text = String(line || "").trim().toLowerCase();
-    if (text.startsWith("context compacted")) return "Context compacted. Earlier turns were replaced with a handoff. Recent messages are unchanged.";
+    if (text.startsWith("context compacted")) return "Context compacted. The conversation was replaced with a handoff. Nothing else was kept.";
     if (text.startsWith("context pruning")) return "Context pruned. Older tool outputs were shortened; recent results are unchanged.";
     return "";
   }

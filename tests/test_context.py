@@ -878,6 +878,13 @@ class SubagentHandoffTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Compaction is not completion", ctx.COMPACT_PREAMBLE)
         self.assertNotIn("\n\n", ctx.COMPACT_PREAMBLE.strip())
 
+    def test_handoff_is_described_as_the_entire_conversation(self):
+        self.assertIn("This handoff is the entire conversation.", ctx.COMPACT_PREAMBLE)
+        self.assertIn("nothing was kept verbatim", ctx.COMPACT_PREAMBLE)
+        self.assertIn("handoff alone", ctx.COMPACT_ACK)
+        self.assertIn("receives this handoff and nothing else", ctx.SUMMARIZE_PROMPT)
+        self.assertNotIn("remaining messages", ctx.COMPACT_PREAMBLE + ctx.COMPACT_ACK + ctx.SUMMARIZE_PROMPT)
+
     async def test_truncate_fallback_describes_the_actual_dropped_span(self):
         head = [{"role": "user", "content": "first ask"}]
         head += [{"role": "assistant", "content": f"step {i}"} for i in range(60)]

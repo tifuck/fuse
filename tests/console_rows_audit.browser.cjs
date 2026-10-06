@@ -301,7 +301,7 @@ function scenarios() {
 
   // —— Compaction rows ——
   add('a compaction marker names the handoff and is not a call row', () => {
-    const marker = { type: 'marker', kind: 'compaction', text: 'Context compacted. Earlier turns were replaced with a handoff. Recent messages are unchanged.', summary: '## Handoff\n\nRetries are now 5.' };
+    const marker = { type: 'marker', kind: 'compaction', text: 'Context compacted. The conversation was replaced with a handoff. Nothing else was kept.', summary: '## Handoff\n\nRetries are now 5.' };
     const read = tool('read_file', { path: '/srv/qa/app/config.py', output: '1: retries = 5\n' });
     return { rows: [user('Go on.'), turn([marker, say('Continuing.'), T(read)], [read])], live: true, phase: 'model',
       truth: { call: { [read.id]: 'done' } },
