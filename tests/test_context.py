@@ -93,6 +93,35 @@ class EstimateTest(unittest.TestCase):
         self.assertEqual(ctx.used_from_usage({"total_tokens": 99, "prompt_tokens": 10, "completion_tokens": 5}), 15)
         self.assertEqual(ctx.used_from_usage({"total_tokens": 99}), 99)
 
+    def test_claude_thinking_blocks_count_as_thinking(self):
+        text = "think " * 20
+        messages = [{"role": "assistant", "content": "ok",
+                     "claude_thinking": [{"thinking": text, "signature": "sig"}]}]
+        parts = ctx.occupancy_parts(messages)
+        self.assertEqual(parts["thinking"], ctx.estimate_text(text))
+        self.assertEqual(ctx.estimate_messages(messages), ctx.estimate_messages(
+            [{"role": "assistant", "content": "ok", "reasoning_content": text}]))
+        # Counted once: blocks must not also land in the messages row.
+        self.assertEqual(parts["messages"], ctx.occupancy_parts(
+            [{"role": "assistant", "content": "ok"}])["messages"])
+
+    def test_reasoning_pin_keeps_unreplayed_thinking(self):
+        # Prompt includes 700 reasoning tokens the transcript does not echo.
+        parts = ctx._fit_parts(
+            {"system": 100, "messages": 200, "thinking": 0, "tool_calls": 50, "tools": 50, "draft": 0},
+            1000, pin={"thinking": 700})
+        self.assertEqual(parts["thinking"], 700)
+        self.assertEqual(parts["total"], 1000)
+        self.assertEqual(sum(parts[k] for k in ("system", "messages", "thinking", "tool_calls", "tools")), 1000)
+
+    def test_reasoning_pin_skips_disjoint_reasoning(self):
+        # xAI reports reasoning outside the prompt; pinning it would invent context.
+        self.assertIsNone(ctx.reasoning_pin({
+            "prompt_tokens": 1000, "completion_tokens": 5, "reasoning_tokens": 700, "total_tokens": 1705}))
+        self.assertEqual(ctx.reasoning_pin({
+            "prompt_tokens": 1000, "completion_tokens": 705, "reasoning_tokens": 700, "total_tokens": 1705}),
+            {"thinking": 700})
+
     def test_grok_reasoning_is_not_occupancy(self):
         self.assertEqual(
             ctx.used_from_usage({

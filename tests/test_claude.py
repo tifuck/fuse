@@ -224,6 +224,8 @@ class ClaudeStreamTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(collected["claude_thinking"], [{"thinking": "plan", "signature": "SIG"}])
         self.assertEqual(collected["prompt_tokens"], 16)
         self.assertEqual(collected["completion_tokens"], 6)
+        self.assertEqual(collected["reasoning_tokens"], 1)
+        self.assertIn('"reasoning_tokens":1', joined)
 
     async def test_empty_tool_arguments_become_object(self):
         events = [
