@@ -316,6 +316,33 @@ test('"Still running" tracks the command, and a stopped one says it already retu
   assert.match(finished.preview, /so far/);
 });
 
+test('a shell whose output is a diff prints that diff once', () => {
+  const c = vm.createContext({
+    chatView: 'console', messages: [],
+    escapeHtml: (v) => String(v ?? '').replace(/[&<>]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch])),
+    renderAnsi: (v) => String(v ?? ''), highlightCode: (_lang, text) => String(text ?? ''),
+    isSearchTool: () => false, structuredToolHtml: () => null, isCodeOutputTool: () => false,
+    displayCommand: (trace) => String(trace.command || ''),
+  });
+  for (const name of ['isConsoleOnly', 'executionState', 'toolBackground', 'isShellExecTool', 'shellExitCode', 'cleanToolOutput', 'ccShellSegments', 'ccExitMeaning', 'ccFlat', 'ccClip', 'ccErrorFold', 'looksLikeDiff', 'consoleChangeText', 'consoleTruncationNote', 'consoleStdoutHtml', 'consoleOutputText', 'consoleDetailHtml', 'consoleOnlyFold']) load(name, c);
+  const diffStart = source.indexOf('  function consoleDiffHtml(');
+  vm.runInContext(source.slice(diffStart, source.indexOf('\n  function ', diffStart + 1)), c);
+  const diff = 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -1,3 +1,4 @@\n context\n-old\n+new one\n+new two\n';
+  const pres = { running: false, failed: false, interrupted: false };
+  const diffs = (html) => (String(html).match(/chat-console-lines is-diff/g) || []).length;
+  const shown = (output) => {
+    const fold = c.consoleOnlyFold({
+      name: 'run_terminal_command', status: 'done', state: 'completed', exit_code: 0, command: 'git diff',
+      output, preview: output.slice(0, 800), edited_files: ['a.js'], lines_added: 2, lines_removed: 1, edit_diff: diff,
+    }, pres, false);
+    // Expanded hides the preview and shows the body; collapsed is the preview.
+    return diffs(fold.full || fold.preview);
+  };
+  assert.equal(shown(diff), 1, 'the command output is the diff, so edit_diff is not appended');
+  assert.equal(shown('a\nb\nc\nd\ne\n'), 1, 'ordinary stdout still gets the one edit diff');
+  assert.equal(shown(''), 1, 'no output still shows the edit diff');
+});
+
 test('output caps cut on character boundaries and say which slice survived', () => {
   const c = vm.createContext({});
   c.escapeHtml = (v) => String(v ?? '');

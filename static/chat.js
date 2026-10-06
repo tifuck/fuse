@@ -11855,11 +11855,14 @@
       const cut = lines.slice(0, show).map((line) => line.length > 400 ? line.slice(0, 399) + "…" : line);
       const hidden = lines.length - cut.length;
       const clipped = hidden > 0 || cut.some((line, i) => line !== lines[i]);
+      // The command's own output is already this diff (a `git diff`): the
+      // expanded body renders it, so appending edit_diff would print it twice.
+      const again = diff && looksLikeDiff(raw) ? "" : diff;
       return {
         status: "",
         keep: Boolean(note),
         preview: consoleStdoutHtml(cut) + (hidden > 0 ? `<div class="chat-console-more" data-step-toggle>… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : "") + diff + note,
-        full: clipped ? consoleDetailHtml(trace, false, false) + diff : "",
+        full: clipped ? consoleDetailHtml(trace, false, false) + again : "",
       };
     }
     if (name === "read_file" && !running && !failed && !interrupted) {
