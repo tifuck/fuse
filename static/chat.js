@@ -12893,6 +12893,7 @@
     // Keep stable, indexed shells so editing/rewinding and run updates still
     // address the complete server-owned transcript. Expensive markdown, tool
     // trees and syntax highlighting for old answers are created on demand.
+    if (msg.role === "marker" || msg.kind === "compaction" || msg.compaction) return agentSeedArticle(msg, index);
     if (historyObserver && msg.role === "assistant" && !live && index < viewMessages().length - 8 &&
         (msg.content || msg.reasoning || msg.tools?.length || msg.permissions?.length || visibleAssistantError(msg))) {
       const shell = document.createElement("article");
@@ -15179,7 +15180,7 @@
     if (item.role === "marker" || item.kind === "compaction" || item.compaction) {
       const article = document.createElement("article");
       article.className = "chat-turn is-marker";
-      article.innerHTML = compactionMarkHtml(item.content || "Context compacted", item.summary || item.content || "");
+      article.innerHTML = compactionMarkHtml("Context compacted", item.summary || item.content || "");
       return article;
     }
     if (item.role === "user") {
