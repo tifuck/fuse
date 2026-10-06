@@ -263,8 +263,11 @@ _SHELL = (
     "separate calls in the same step."
 )
 _WAIT_VS_HOOK = (
-    "- Waiting: never sleep or poll. A one-shot long job (build, test, deploy) uses "
-    "`run_terminal_command` with background:true — you get `<command_result>` when it exits. "
+    "- Waiting: never sleep or poll. A command runs in the foreground (2 min unless you pass "
+    "`timeout`, up to 10 min) and moves to the background on its own if it is still going — "
+    "you get `<command_result>` when it exits, so do not re-run it and do not poll it. "
+    "Set `timeout` up front when you expect longer than 2 minutes. Use `background: true` only "
+    "when you do not need the result to continue. "
     "A later condition (log line, ERROR/Traceback, READY, WS frame) uses `monitor` — matching "
     "stdout/WS lines arrive as `<monitor_event>` while you keep working; do not start another watch. "
     "`<monitor_result>` means that watch ended (timeout, max events, kill). Load via `search_tools` "

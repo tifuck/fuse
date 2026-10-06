@@ -15,7 +15,7 @@ class ExecutionAudit(unittest.IsolatedAsyncioTestCase):
         props = lambda name: agent_catalog.SCHEMAS[name]["function"]["parameters"]["properties"]
         self.assertEqual(props("read_file")["limit"]["maximum"], 2000)
         self.assertEqual(props("grep")["max_matches"]["maximum"], ws._GREP_MAX_MATCHES)
-        self.assertEqual(props("get_command_output")["timeout_ms"]["maximum"], 120000)
+        self.assertEqual(props("get_command_output")["timeout_ms"]["maximum"], 600000)
         body = ws._read_render(["a" * 100] * 400, 1, total=None, more=True, max_chars=ws._READ_MAX_CHARS)
         self.assertLessEqual(len(body.encode()), ws._READ_MAX_CHARS + 200)
         self.assertIn("Use offset=", body)

@@ -346,8 +346,11 @@ class LifecycleContract(unittest.IsolatedAsyncioTestCase):
                     await gate.wait()
                 sink("done")
                 return SimpleNamespace(exit_status=0)
-            with patch.object(ws, "_is_agent", return_value=False), patch.object(ws, "_make_ssh_runner", return_value=runner), patch.object(jobs, "FOREGROUND_WAIT_S", 0.01):
-                _, trace = await ws._shell(1, 2, "host", {"command": "mock", "background": background}, "/repo", thread_id=3)
+            args = {"command": "mock", "background": background}
+            if handoff:
+                args["timeout"] = 1  # 1s foreground wait, then the move
+            with patch.object(ws, "_is_agent", return_value=False), patch.object(ws, "_make_ssh_runner", return_value=runner):
+                _, trace = await ws._shell(1, 2, "host", args, "/repo", thread_id=3)
             ident = trace["command_id"]
             rec = jobs._live[ident]
             self.assertEqual(trace["state"], "running" if background or handoff else "completed")

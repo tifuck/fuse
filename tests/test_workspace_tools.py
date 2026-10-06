@@ -35,22 +35,36 @@ class AgentOutputHelpersTest(unittest.TestCase):
 
 
 class TimeoutTest(unittest.TestCase):
-    def test_default(self):
-        self.assertEqual(workspace._deadline_ms({}), 1_800_000)
-        self.assertEqual(workspace._deadline_ms({"timeout": ""}), 1_800_000)
-        self.assertEqual(workspace._deadline_ms({"timeout": "junk"}), 1_800_000)
+    def test_foreground_default_is_two_minutes(self):
+        for raw in ({}, {"timeout": ""}, {"timeout": "junk"}, {"timeout": 0}):
+            kill, wait = workspace._command_timeouts(raw, False)
+            self.assertEqual(wait, 120_000)
+            self.assertEqual(kill, 120_000 + 1_800_000)
 
-    def test_seconds_passthrough(self):
-        self.assertEqual(workspace._deadline_ms({"timeout": 10}), 10_000)
-        self.assertEqual(workspace._deadline_ms({"timeout": "45"}), 45_000)
-        self.assertEqual(workspace._deadline_ms({"timeout": 1}), 1_000)
+    def test_foreground_ceiling_is_ten_minutes(self):
+        kill, wait = workspace._command_timeouts({"timeout": 45}, False)
+        self.assertEqual(wait, 45_000)
+        self.assertEqual(kill, 45_000 + 1_800_000)
+        _, capped = workspace._command_timeouts({"timeout": 3_600_000}, False)
+        self.assertEqual(capped, 600_000)
+        _, smallest = workspace._command_timeouts({"timeout": 1}, False)
+        self.assertEqual(smallest, 1_000)
 
-    def test_millisecond_coexistence(self):
-        self.assertEqual(workspace._deadline_ms({"timeout": 30000}), 30_000)
-        self.assertEqual(workspace._deadline_ms({"timeout": 60000}), 60_000)
-        self.assertEqual(workspace._deadline_ms({"timeout": 5000}), 5_000)
-        self.assertEqual(workspace._deadline_ms({"timeout": 3_600_000}), 3_600_000)
-        self.assertEqual(workspace._deadline_ms({"timeout": 9_999_999}), 3_600_000)
+    def test_background_default_and_ceiling(self):
+        kill, wait = workspace._command_timeouts({}, True)
+        self.assertEqual((kill, wait), (1_800_000, 0))
+        kill, wait = workspace._command_timeouts({"timeout": "junk"}, True)
+        self.assertEqual(kill, 1_800_000)
+        kill, _ = workspace._command_timeouts({"timeout": 9_999_999}, True)
+        self.assertEqual(kill, 7_200_000)
+        kill, _ = workspace._command_timeouts({"timeout": 600}, True)
+        self.assertEqual(kill, 600_000)
+
+    def test_only_sleep_is_not_moved(self):
+        self.assertTrue(workspace._is_sleep_command("sleep 5"))
+        self.assertTrue(workspace._is_sleep_command("  setsid sleep 1.5"))
+        self.assertFalse(workspace._is_sleep_command("sleep 5 && echo hi"))
+        self.assertFalse(workspace._is_sleep_command("pytest -q"))
 
 
 class ReadRenderTest(unittest.TestCase):

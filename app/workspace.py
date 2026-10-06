@@ -170,27 +170,40 @@ def _int_arg(args: dict, key: str, default: int, lo: int, hi: int) -> int:
     return max(lo, min(val, hi))
 
 
-def _deadline_ms(args: dict) -> int:
-    """Execution deadline in milliseconds.
-
-    Contract: values >= 1000 are milliseconds (the documented unit); smaller
-    positive ints are legacy seconds from the old schema. Default 30 min,
-    ceiling 1 h (zombie guard, not a protocol limit).
-    """
-    from .command_jobs import DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS
-
-    raw = args.get("timeout")
+def _parse_timeout_ms(raw, default: int) -> int:
+    """Milliseconds. Values under 1000 are legacy seconds; blank or junk is default."""
     if raw is None or raw == "":
-        return DEFAULT_TIMEOUT_MS
+        return default
     try:
         val = int(float(raw))
     except (TypeError, ValueError, OverflowError):
-        return DEFAULT_TIMEOUT_MS
+        return default
     if val <= 0:
-        return DEFAULT_TIMEOUT_MS
+        return default
     if val < 1000:
         val = val * 1000
-    return max(1_000, min(val, MAX_TIMEOUT_MS))
+    return val
+
+
+def _command_timeouts(args: dict, background: bool) -> tuple[int, int]:
+    """(kill_after_ms, foreground_wait_ms) for one shell call.
+
+    Foreground waits its own timeout (default 2 min, ceiling 10) and then moves
+    to the background, which gets 30 minutes from the move. A command started
+    in the background gets 30 minutes, or the requested timeout up to 2 hours,
+    and no foreground wait.
+    """
+    from .command_jobs import (
+        BACKGROUND_DEFAULT_MS, BACKGROUND_MAX_MS, FOREGROUND_DEFAULT_MS, FOREGROUND_MAX_MS,
+    )
+
+    raw = args.get("timeout")
+    if background:
+        requested = _parse_timeout_ms(raw, BACKGROUND_DEFAULT_MS)
+        return max(1_000, min(requested, BACKGROUND_MAX_MS)), 0
+    requested = _parse_timeout_ms(raw, FOREGROUND_DEFAULT_MS)
+    wait = max(1_000, min(requested, FOREGROUND_MAX_MS))
+    return wait + BACKGROUND_DEFAULT_MS, wait
 
 
 def _clip_read_line(line: str) -> str:
@@ -1302,6 +1315,15 @@ def _agent_cwd(cwd: str) -> str:
     return cwd
 
 
+_SLEEP_CMD = re.compile(r"^\s*(?:setsid\s+)?sleep\s+\d+(?:\.\d+)?\s*$")
+
+
+def _is_sleep_command(command: str) -> bool:
+    """A command that is only `sleep` stops at its foreground timeout instead of
+    moving to the background (a wait must not outlive the wait)."""
+    return bool(_SLEEP_CMD.match(command or ""))
+
+
 def _shell_cwd(args: dict, root: str, *, windows: bool = False) -> str:
     from .permissions import expand_temp
 
@@ -1542,7 +1564,11 @@ def _make_agent_runner(user_id, host_id, command: str, cwd: str, timeout_ms: int
         _rate_ok(user_id, host_id)
         incomplete = getattr(sink, "incomplete", lambda value=True: None)
         incomplete()  # completeness is re-checked against the final result
-        payload = {"cwd": _agent_cwd(cwd), "cmd": command, "timeout_ms": int(timeout_ms)}
+        # The runner owns the kill. A moved command is killed at the foreground
+        # timeout plus the 30 minutes it is given from the move; the supervisor
+        # cuts that short if the move happens late.
+        kill_ms = int(timeout_ms)
+        payload = {"cwd": _agent_cwd(cwd), "cmd": command, "timeout_ms": kill_ms}
         err_parts: list[str] = []
         streamed = {"out": False, "nl": True}
 
@@ -1560,11 +1586,11 @@ def _make_agent_runner(user_id, host_id, command: str, cwd: str, timeout_ms: int
                 sink(data)
 
         data = await _agent_call(
-            user_id, host_id, "exec_stream", payload, timeout_ms / 1000 + 10, on_chunk=on_chunk,
+            user_id, host_id, "exec_stream", payload, kill_ms / 1000 + 10, on_chunk=on_chunk,
         )
         if not data.get("ok") and str(data.get("error") or "").strip() == "unknown op":
             # Pre-exec_stream connector: buffered result only, no live chunks.
-            data = await _agent_call(user_id, host_id, "exec", payload, timeout_ms / 1000 + 10)
+            data = await _agent_call(user_id, host_id, "exec", payload, kill_ms / 1000 + 10)
         res = _AgentExec(data)
         if res.stdout or not streamed["out"]:
             # Buffered result (or a stream that produced nothing): merge as before.
@@ -1748,8 +1774,8 @@ async def _shell(user_id, host_id, alias, args, root, *, windows: bool = False, 
     if not command.strip() or len(command) > 8000:
         raise WorkspaceError("invalid command")
     cwd = _shell_cwd(args, root, windows=windows)
-    timeout_ms = _deadline_ms(args)
     background = _as_bool(args.get("background"))
+    timeout_ms, wait_ms = _command_timeouts(args, background)
     # Only a foreground call is tracked, as in Claude Code: a background
     # command finishes long after its row was printed.
     edit_base = "" if background or windows else await _edit_baseline(user_id, host_id, cwd)
@@ -1781,18 +1807,25 @@ async def _shell(user_id, host_id, alias, args, root, *, windows: bool = False, 
     if background:
         await asyncio.to_thread(command_jobs.mark_notified, rec)
         return command_jobs.render(rec)
-    wait_s = min(command_jobs.FOREGROUND_WAIT_S, timeout_ms / 1000)
     try:
-        text, trace = await command_jobs.join(rec["id"], user_id, wait_s)
+        text, trace = await command_jobs.join(rec["id"], user_id, wait_ms / 1000)
     except asyncio.CancelledError:
         command_jobs.kill(rec["id"], user_id)
         raise
     if trace.get("status") == "running":
-        # Hand off: the process keeps running under its execution deadline and
-        # its terminal result will be delivered automatically.
+        # Moved, not killed: the background limit is 30 minutes from now, and
+        # the result arrives on its own. A bare `sleep` stops instead.
+        if _is_sleep_command(command):
+            command_jobs.kill(rec["id"], user_id)
+            return command_jobs.render(rec)
+        command_jobs.arm_background(rec)
         await asyncio.to_thread(command_jobs.mark_notified, rec)
-        await asyncio.to_thread(command_jobs.mark_background, rec)
-        return command_jobs.render(rec)
+        text, trace = command_jobs.render(rec)
+        moved = (
+            f"Command did not complete within its {wait_ms // 1000}s timeout "
+            "and was moved to the background."
+        )
+        return f"{moved}\n{text}", trace
     # Completed inside the foreground wait: report it as the shell call itself
     # (join() renders both paths as get_command_output, which the dashboard
     # would display as a joined background job).
@@ -1994,9 +2027,10 @@ async def _job_output(user_id: int, args: dict, *, thread_id: int | None = None)
     job_id = str(args.get("id") or args.get("child_id") or "")
     timeout_ms = args.get("timeout_ms")
     try:
-        wait = min(max(int(timeout_ms), 0), 120_000) / 1000 if timeout_ms is not None else 30
+        # One wait covers a build. The old 30s/120s cap made the model re-poll.
+        wait = min(max(int(timeout_ms), 0), 600_000) / 1000 if timeout_ms is not None else 600
     except (TypeError, ValueError, OverflowError):
-        wait = 30
+        wait = 600
     return await command_jobs.join(job_id, user_id, wait, thread_id=thread_id)
 
 

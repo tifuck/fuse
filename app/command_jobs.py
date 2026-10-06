@@ -40,9 +40,17 @@ OUT_HEAD_CHARS = 4_000
 MODEL_TAIL_CHARS = 12_000
 RESULT_CHARS = 6_000
 RUNNING_TAIL_CHARS = 1_200
-DEFAULT_TIMEOUT_MS = 1_800_000
-MAX_TIMEOUT_MS = 3_600_000
-FOREGROUND_WAIT_S = 15.0
+# Foreground: a command with no timeout gets 2 minutes and may ask for up to
+# 10. Reaching it moves the command to the background instead of killing it
+# (a command that is only `sleep` is killed). Background: 30 minutes from the
+# moment it enters the background, or the requested timeout, up to 2 hours.
+FOREGROUND_DEFAULT_MS = 120_000
+FOREGROUND_MAX_MS = 600_000
+BACKGROUND_DEFAULT_MS = 1_800_000
+BACKGROUND_MAX_MS = 7_200_000
+# Kept for callers that still ask for "the" command deadline.
+DEFAULT_TIMEOUT_MS = FOREGROUND_DEFAULT_MS
+MAX_TIMEOUT_MS = BACKGROUND_MAX_MS
 # Past the deadline, how long the supervisor still waits for the runner's
 # terminal result (connectors return their buffered output right after their
 # deadline kill; the agent-call itself allows timeout_ms + 10s).
@@ -527,13 +535,21 @@ async def _supervise(rec: dict, runner) -> None:
         rec["_writer"] = writer
 
     try:
-        # Command runners enforce the deadline themselves — the connector kills
-        # at the deadline and returns its buffered output — so the supervisor
-        # waits a grace window for that terminal result instead of cancelling
-        # at the exact deadline and losing the output already captured.
+        # Command runners enforce their own kill — the connector kills at the
+        # deadline it was given and returns its buffered output — so this waits
+        # a grace window for that result instead of cancelling at the exact
+        # deadline and losing the output already captured. A command moved to
+        # the background gets a second, shorter limit counted from the move.
         # Monitors are cut at their deadline: their events stream live.
         grace = 0.0 if _is_monitor(rec) else _RUNNER_GRACE_S
-        async with asyncio.timeout(rec["timeout_ms"] / 1000 + grace):
+        # The runner enforces its own kill and needs the grace window to return
+        # the output it captured. A moved command's background limit, armed
+        # before this wait, ends it sooner.
+        limit = rec.get("background_deadline")
+        outer = rec["timeout_ms"] / 1000 + grace
+        if limit is not None:
+            outer = min(outer, max(0.0, limit - time.monotonic()))
+        async with asyncio.timeout(outer):
             result = await runner(sink)
         if batcher is not None:
             await batcher.close()
@@ -598,12 +614,12 @@ async def _supervise(rec: dict, runner) -> None:
         if _is_monitor(rec):
             extra = f"; {int(rec.get('event_count') or 0)} events"
         label = "monitor" if _is_monitor(rec) else "command"
-        await _finish(
-            rec,
-            status="timed_out",
-            exit_code=None,
-            error=f"{label} exceeded its {int(rec['timeout_ms'])}ms execution deadline; termination requested{extra}",
-        )
+        if rec.get("background_deadline") is not None and not _is_monitor(rec):
+            description = rec.get("description") or str(rec.get("command") or "")[:80]
+            error = f'Background command "{description}" was stopped after reaching its background time limit'
+        else:
+            error = f"{label} exceeded its {int(rec['timeout_ms'])}ms execution deadline; termination requested{extra}"
+        await _finish(rec, status="timed_out", exit_code=None, error=error)
     except Exception as exc:
         if batcher is not None:
             await batcher.close()
@@ -994,6 +1010,14 @@ def mark_background(rec: dict) -> None:
     ensure_schema()
     with db.tx() as conn:
         conn.execute("UPDATE command_jobs SET background=1 WHERE id=?", (str(rec["id"]),))
+
+
+def arm_background(rec: dict, limit_ms: int = BACKGROUND_DEFAULT_MS) -> None:
+    """Start the background limit now. A moved command's 30 minutes count from
+    the move, not from when it was launched."""
+    rec["background"] = True
+    rec["background_deadline"] = time.monotonic() + max(1, int(limit_ms)) / 1000
+    mark_background(rec)
 
 
 def output_fields(rec: dict) -> dict:
