@@ -2196,6 +2196,7 @@
     compactingRequest = true;
     syncContextMeter();
     closeContextPop();
+    setHint("Compacting context · summarizing " + formatTokens(contextSnapshot().used) + " tokens, this can take a few minutes…", false, 0);
     try {
       const data = await api("/chat/threads/" + currentId + "/compact", {
         method: "POST",
@@ -2212,10 +2213,10 @@
         syncContextMeter();
       }
       if (data && data.compacted === false) {
-        setHint("Not enough history to compact yet.");
+        setHint("Not enough history to compact yet.", false, 6000);
       } else {
         const meter = (data && data.thread && data.thread.compaction && data.thread.compaction.meter) || contextSnapshot();
-        setHint("Context compacted · " + formatTokens(meter.used) + " / " + formatTokens(meter.limit) + " tokens.");
+        setHint("Context compacted · " + formatTokens(meter.used) + " / " + formatTokens(meter.limit) + " tokens.", false, 8000);
         contextWarned = false;
         contextAlertHidden = false;
         hideContextAlert();
