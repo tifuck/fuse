@@ -191,7 +191,7 @@ class HistoryTest(unittest.TestCase):
             expected_revision=view["revision"], replay=prepared["history"], history_info=prepared["history_info"])
         replay = self.start()["request"]["messages"]
         self.assertIn("saved handoff", json.dumps(replay))
-        self.assertLess(sum(m["role"] == "tool" for m in replay), 20)
+        self.assertEqual(sum(m["role"] == "tool" for m in replay), 0)
         self.assertLess(view["compaction"]["meter"]["used"], 15000)
 
     def test_auto_compaction_snapshot_survives_next_turn(self):

@@ -705,8 +705,7 @@ async def _compact_current(
     snap = ctxmod.meter_from_messages(
         current_messages, model=model, type_id=type_id, tools=tools, override=override, calibration=calibration
     )
-    budget = ctxmod.preserve_budget(snap["limit"])
-    dropped, kept = ctxmod.split_recent(source, budget)
+    dropped, kept = source, []
     can_summarize = bool(dropped) and ctxmod.compactable_transcript(source, provider=True) and (
         trigger != "auto" or ctxmod.should_compact(snap["used"], snap["limit"])
     )

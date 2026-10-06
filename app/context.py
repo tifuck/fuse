@@ -1528,12 +1528,11 @@ def preserve_budget(limit: int | None) -> int:
     return min(MAX_PRESERVE_RECENT, max(MIN_PRESERVE_RECENT, usable // 4))
 
 
-def continuation(summary: str, tail: list[dict], *, pinned: str = "") -> list[dict]:
-    """Handoff plus the verbatim recent tail. The compact instruction is not included."""
+def continuation(summary: str, tail: list[dict] | None = None, *, pinned: str = "") -> list[dict]:
+    """The handoff alone. `tail` is ignored: compaction replaces every earlier turn."""
     return [
         {"role": "user", "content": COMPACT_PREAMBLE + (summary or "").strip() + (pinned or "")},
         {"role": "assistant", "content": COMPACT_ACK},
-        *_repair_tool_pairs(tail),
     ]
 
 
@@ -1724,7 +1723,8 @@ def durable_checkpoint(
         return None
     if not compactable_transcript(durable_messages, keep_tail=keep_tail):
         return None
-    head, tail = split_transcript(durable_messages, keep_tail=keep_tail)
+    head = [msg for msg in durable_messages if isinstance(msg, dict)]
+    tail: list[dict] = []
     if not head:
         return None
     through = None

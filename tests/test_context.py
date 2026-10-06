@@ -429,10 +429,8 @@ class LiveCompactTest(unittest.IsolatedAsyncioTestCase):
                 thread_id=None,
             )
         self.assertIn(kind, ("summarize", "truncate"))
-        tools = [m for m in rebuilt if m.get("role") == "tool"]
-        self.assertTrue(tools)
-        self.assertTrue(tools[-1]["content"].startswith("SECRET_LIVE_7_"))
-        self.assertFalse(any(str(m.get("content") or "").startswith("SECRET_LIVE_0_") for m in tools))
+        self.assertFalse([m for m in rebuilt if m.get("role") == "tool"])
+        self.assertFalse(any(m.get("role") != "user" and "SECRET_LIVE_" in str(m.get("content") or "") for m in rebuilt))
         self.assertFalse(any("persisted no tools" in str(m.get("content") or "") for m in rebuilt))
 
     async def test_compact_current_child_never_writes_thread_state(self):
@@ -727,7 +725,7 @@ class DurableCheckpointTest(unittest.TestCase):
         self.assertFalse(cp["provider"])
         self.assertTrue(cp["through_message_id"].startswith(("u", "a")))
         projected = ctx.project_transcript(self._durable(), ctx.append_checkpoint({}, cp))
-        self.assertEqual(len(projected), 2 + ctx.config().keep_tail)
+        self.assertEqual(len(projected), 2)
         self.assertIn("the handoff", projected[0]["content"])
         self.assertLess(ctx.estimate_messages(projected), ctx.estimate_messages(self._durable()))
 
