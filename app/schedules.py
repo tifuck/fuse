@@ -27,7 +27,6 @@ MAX_CONCURRENT_USER = 2
 MAX_CONCURRENT_GLOBAL = 4
 FRESH_CAP = 20
 CONTINUITY_KEEP = 5
-THREAD_BUDGET_LEAVE = 8
 GRACE_CAP = 6 * 3600
 _INFLIGHT: set[int] = set()
 _BANNED_EXACT = frozenset({"secret", "password", "token", "key", "dek", "cookie", "auth"})
@@ -690,28 +689,6 @@ def reconcile() -> None:
             )
 
 
-def ensure_thread_budget(user_id: int, *, keep_thread_id: int | None = None) -> None:
-    if chats.count_threads(user_id) < chats.MAX_THREADS - THREAD_BUDGET_LEAVE:
-        return
-    rows = db.fetchall(
-        """SELECT t.id FROM chat_threads t
-           WHERE t.user_id=? AND t.schedule_id IS NOT NULL
-             AND (? IS NULL OR t.id != ?)
-             AND NOT EXISTS (
-                SELECT 1 FROM chat_runs r WHERE r.thread_id=t.id AND r.status IN ('queued','running')
-                AND r.parent_run_id IS NULL
-             )
-           ORDER BY t.updated_at ASC""",
-        (user_id, keep_thread_id, keep_thread_id),
-    )
-    for row in rows:
-        if chats.count_threads(user_id) < chats.MAX_THREADS - THREAD_BUDGET_LEAVE:
-            break
-        chats.delete_schedule_owned_thread(user_id, row["id"], keep_thread_id=keep_thread_id)
-    if chats.count_threads(user_id) >= chats.MAX_THREADS:
-        raise chats.ChatValidationError(f"chat limit of {chats.MAX_THREADS} reached", 413)
-
-
 def _trim_schedule_threads(user_id: int, schedule_id: int, *, keep_id: int, cap: int) -> None:
     rows = db.fetchall(
         """SELECT t.id FROM chat_threads t
@@ -843,7 +820,6 @@ async def _fire(schedule: dict, fire: dict, *, consume_slot: bool) -> None:
         kind = "project" if schedule["target"] == "project" else "chat"
         hid = (project or {}).get("host_id") if project else None
         pid = schedule.get("project_id") if project else None
-        ensure_thread_budget(user_id, keep_thread_id=schedule.get("thread_id"))
         thread = None
         if schedule["fresh_each_fire"]:
             n = db.fetchone(
@@ -869,7 +845,6 @@ async def _fire(schedule: dict, fire: dict, *, consume_slot: bool) -> None:
                 if row:
                     msgs = chats.parse_messages(row["messages"])
                     if len(msgs) + 2 > chats.MSG_MAX - 8:
-                        ensure_thread_budget(user_id, keep_thread_id=thread_pk)
                         title = f"Scheduled: {schedule['name']}"[: chats.TITLE_MAX]
                         thread = chats.create_thread(
                             user_id, model=schedule["model"], title=title, tools=schedule["tools"],

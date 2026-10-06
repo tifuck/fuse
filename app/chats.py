@@ -11,7 +11,6 @@ from .chat_tools import AVAILABLE, DEFAULT_TOOLS, parse_tool_names
 from .config import settings
 from .search.providers.base import source_id
 
-MAX_THREADS = 200
 TITLE_MAX = 80
 MSG_MAX = 2000
 TOOL_TRACE_MAX = 4096
@@ -1901,11 +1900,6 @@ def get_thread(user_id: int, thread_id, *, observed_cursor: int | None = None, o
         return chat_store.thread_view(conn, user_id, pk, queued=queued)
 
 
-def count_threads(user_id: int) -> int:
-    row = db.fetchone("SELECT COUNT(*) AS n FROM chat_threads WHERE user_id=?", (user_id,))
-    return int(row["n"] if row else 0)
-
-
 def create_thread(
     user_id: int,
     *,
@@ -1936,9 +1930,6 @@ def create_thread(
         if previous is not None:
             return previous
         store.check_revision(0, expected_revision)
-        count = conn.execute("SELECT COUNT(*) AS n FROM chat_threads WHERE user_id=?", (user_id,)).fetchone()
-        if int(count["n"] if count else 0) >= MAX_THREADS:
-            raise ChatValidationError(f"chat limit of {MAX_THREADS} reached", 413)
         thread_kind = "chat"
         hid = None
         pid = None
@@ -2301,9 +2292,6 @@ def fork_thread(user_id: int, thread_id, *, expected_revision=None, command_id=N
         jobs = conn.execute("SELECT * FROM command_jobs WHERE user_id=? AND thread_id=?", (user_id, pk)).fetchall() if has_jobs else []
         if any(job["status"] in ("queued", "running", "cancelling") for job in jobs):
             raise ChatValidationError("A background command in this chat is still running. Wait for it or stop it before forking.", 409)
-        count = conn.execute("SELECT COUNT(*) AS n FROM chat_threads WHERE user_id=?", (user_id,)).fetchone()
-        if int(count["n"] if count else 0) >= MAX_THREADS:
-            raise ChatValidationError(f"chat limit of {MAX_THREADS} reached", 413)
         runs = conn.execute("SELECT * FROM chat_runs WHERE thread_id=? AND user_id=? ORDER BY created_at, id", (pk, user_id)).fetchall()
         messages = parse_messages(src["messages"])
         id_map: dict[str, str] = {}
