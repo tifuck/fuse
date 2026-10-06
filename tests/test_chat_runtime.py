@@ -634,6 +634,7 @@ class RunningEventTest(unittest.TestCase):
             event_id="ts_0_0",
         )
         event = _running_event(job)
+        self.assertGreater(event["started_ms"], 1_000_000_000_000)
         self.assertEqual(event["name"], "run_terminal_command")
         self.assertEqual(event["command"], "python3 build.py")
         self.assertEqual(event["cwd"], "/srv/app")

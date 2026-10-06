@@ -208,6 +208,21 @@ const taskEnvelope = (id, body) => [
     assert.equal(wait.state, 'running', `await running state | ${JSON.stringify(wait)}`);
     assert.equal(wait.title, 'Waiting', `await dot says Waiting | ${JSON.stringify(wait)}`);
     assert.equal(wait.head, 'Await(Audit the connection pool)', `await names its child | ${JSON.stringify(wait)}`);
+    assert.ok(!/· \d/.test(wait.head), `an await under 2s shows no clock yet | ${JSON.stringify(wait)}`);
+
+    // The server stamps the call. A reload 40s later resumes the clock
+    // instead of starting it over.
+    const persistedWait = await page.evaluate(() => {
+      const tools = fuseToolFixture.snapshot()[0].tools;
+      const trace = tools.find((t) => t.id === 'wait-aw1');
+      trace.started_ms = Date.now() - 40000;
+      return tools.map((t) => fuseToolFixture.serializeTrace(t));
+    });
+    await page.evaluate((tools) => fuseToolFixture.mount([{ tools }], true), persistedWait);
+    await waitRow('[data-step="tool-wait-aw1"]');
+    wait = await readRow('[data-step="tool-wait-aw1"]');
+    assert.match(wait.head, /· 40s$/, `a reloaded await resumes its clock | ${JSON.stringify(wait)}`);
+    assert.equal(wait.clocks, 1, `a running await keeps one clock | ${JSON.stringify(wait)}`);
     await page.evaluate(() => fuseToolFixture.toolEvent({
       event: 'tool', id: 'wait-aw1', name: 'get_subagent_output', child_id: 'aw1',
       status: 'done', summary: 'AWAIT_REPORT', agent_work_ms: 41000,

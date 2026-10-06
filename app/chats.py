@@ -1352,6 +1352,7 @@ def _parse_tool_traces(raw, *, strict: bool = False, field: str = "tools") -> li
             "latency_ms",
             "duration_ms",
             "elapsed_ms",
+            "started_ms",
             "timeout_ms",
             "title",
             "identifier",
@@ -1498,7 +1499,7 @@ def _parse_tool_traces(raw, *, strict: bool = False, field: str = "tools") -> li
             except (TypeError, ValueError):
                 if strict:
                     raise ChatValidationError(f"{field}[{index}].latency_ms must be an integer")
-        for ms_key in ("duration_ms", "elapsed_ms", "timeout_ms", "call_duration_ms", "execution_duration_ms", "agent_work_ms", "offset", "limit", "max_matches"):
+        for ms_key in ("duration_ms", "elapsed_ms", "started_ms", "timeout_ms", "call_duration_ms", "execution_duration_ms", "agent_work_ms", "offset", "limit", "max_matches"):
             if item.get(ms_key) is not None:
                 try:
                     rec[ms_key] = int(item[ms_key])

@@ -2862,7 +2862,7 @@
     if (trace.url) rec.url = String(trace.url).slice(0, 2000);
     if (trace.error) rec.error = String(trace.error).slice(0, 400);
     if (trace.latency_ms != null && Number.isFinite(Number(trace.latency_ms))) rec.latency_ms = Number(trace.latency_ms);
-    for (const key of ["duration_ms", "elapsed_ms", "timeout_ms", "call_duration_ms", "execution_duration_ms", "agent_work_ms", "offset", "limit", "max_matches"]) {
+    for (const key of ["duration_ms", "elapsed_ms", "started_ms", "timeout_ms", "call_duration_ms", "execution_duration_ms", "agent_work_ms", "offset", "limit", "max_matches"]) {
       if (trace[key] != null && Number.isFinite(Number(trace[key]))) rec[key] = Number(trace[key]);
     }
     if (trace.title) rec.title = String(trace.title).slice(0, 80);
@@ -2966,7 +2966,7 @@
     if (Array.isArray(event.todos)) rec.todos = normalizeTodos(event.todos);
     if (event.version != null) rec.version = event.version;
     if (event.latency_ms != null) rec.latency_ms = event.latency_ms;
-    for (const key of ["duration_ms", "elapsed_ms", "timeout_ms", "call_duration_ms", "execution_duration_ms", "agent_work_ms", "offset", "limit", "max_matches"]) {
+    for (const key of ["duration_ms", "elapsed_ms", "started_ms", "timeout_ms", "call_duration_ms", "execution_duration_ms", "agent_work_ms", "offset", "limit", "max_matches"]) {
       if (event[key] != null) rec[key] = event[key];
     }
     if (event.exit_code != null) rec.exit_code = event.exit_code;
@@ -11672,22 +11672,21 @@
     // A background launch returns at once; its clock runs only while its
     // process does. (A Wait on it is flagged background too and keeps its own.)
     if (name === "run_terminal_command" && toolBackground(trace) && !presentation.running) return "";
-    // A Wait's elapsed_ms and duration_ms belong to the command it waits on,
-    // and a monitor's to the watch; their own time is the call's. A monitor's
-    // call returns at once and then keeps watching, so it ticks while it does.
-    const wait = name === "get_command_output" || name === "get_subagent_output";
-    const watching = name === "monitor" && executionPending(trace);
-    if (presentation.running || watching) {
-      const since = wait || watching ? (trace._since ||= Date.now()) : ccSince(trace);
+    // A monitor's call returns at once and then keeps watching, so it ticks
+    // while it does. Every running clock anchors on the server's started_ms.
+    if (presentation.running || (name === "monitor" && executionPending(trace))) {
+      const since = ccSince(trace);
       return `<span class="chat-console-took" data-cc-clock="elapsed" data-since="${since}">${ccElapsedText(since)}</span>`;
     }
     // A settled Await's line already says how long ("Agent "…" finished ·
     // 41s", or "still running"); a header clock beside it would be a second,
     // different number.
     if (name === "get_subagent_output") return "";
+    // A Wait's elapsed_ms and duration_ms belong to the command it waited on;
+    // its own time is the call's.
     const ms = Number(name === "run_terminal_command"
       ? trace.execution_duration_ms ?? trace.call_duration_ms ?? trace.duration_ms
-      : wait ? trace.call_duration_ms : trace.call_duration_ms ?? trace.duration_ms);
+      : name === "get_command_output" ? trace.call_duration_ms : trace.call_duration_ms ?? trace.duration_ms);
     return Number.isFinite(ms) && ms >= 2000 ? `<span class="chat-console-took"> · ${escapeHtml(ccDuration(ms))}</span>` : "";
   }
 
@@ -12193,9 +12192,18 @@
     return toolPresentation(trace, true).running && !toolBackground(trace);
   }
 
-  // Start of a running call, stamped when this page first sees it running.
+  // Start of a running call. started_ms is the server's wall clock, saved
+  // with the running trace, so a reload or a return to the chat resumes it.
+  // elapsed_ms covers a command whose process outlived its call. A trace
+  // with neither (a call started before started_ms existed) anchors at the
+  // moment this page first saw it.
   function ccSince(trace) {
-    if (!trace._since) trace._since = Date.now() - Math.max(0, Number(trace.elapsed_ms) || 0);
+    if (!trace._since) {
+      const started = Number(trace.started_ms);
+      trace._since = Number.isFinite(started) && started > 0
+        ? started
+        : Date.now() - Math.max(0, Number(trace.elapsed_ms) || 0);
+    }
     return trace._since;
   }
 

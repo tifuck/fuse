@@ -1660,6 +1660,10 @@ def _running_event(job: ToolJob) -> dict:
         "id": job.event_id,
         "name": job.name or "unknown",
         "status": "running",
+        # Wall clock of this call, persisted with the running trace so a
+        # reload or a return to the chat resumes the ticking clock instead
+        # of starting it over. Epoch ms: db.now() is whole seconds.
+        "started_ms": int(time.time() * 1000),
     }
     try:
         parsed = json.loads(job.arguments or "{}")
