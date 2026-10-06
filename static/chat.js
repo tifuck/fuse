@@ -2952,6 +2952,13 @@
     fields.forEach((key) => {
       if (event[key] != null && event[key] !== "") rec[key] = event[key];
     });
+    // A settled join carries no preview of its own, and the "still running"
+    // it was born with is a placeholder, not a result. Left in place it
+    // outlives the child and the row keeps saying the child is running.
+    if (/^get_(command|subagent)_output$/.test(rec.name) && !["running", "progress", "queued"].includes(rec.status)
+        && rec.preview === "still running" && event.preview == null) {
+      rec.preview = "";
+    }
     EXECUTION_FIELDS.forEach(key => { if (Object.prototype.hasOwnProperty.call(event, key)) rec[key] = event[key]; });
     if (Object.prototype.hasOwnProperty.call(event, "exit_code")) rec.exit_code = event.exit_code;
     if (Array.isArray(event.queries)) rec.queries = event.queries;
@@ -8959,8 +8966,15 @@
     }
     if (name === "get_subagent_output") {
       const subject = agentSubject(trace) || "subagent";
+      // A join that returned while its child was still going is stored done
+      // with execution_status running (chat_runtime rewrites the call, not
+      // the child). Same signal the bash Wait reads; "finished" here is a lie.
+      if (executionState(trace) === "running" || String(trace.preview || "") === "still running") {
+        return `Agent "${subject}" still running`;
+      }
       const took = consoleDurationLabel(trace);
-      return took ? `Agent "${subject}" finished · ${took}` : `Agent "${subject}" finished`;
+      const verb = presentation.failed ? "failed" : presentation.interrupted ? "stopped" : "finished";
+      return took ? `Agent "${subject}" ${verb} · ${took}` : `Agent "${subject}" ${verb}`;
     }
     if (name === "monitor") {
       const n = Number(trace.event_count);
@@ -11667,9 +11681,9 @@
       const since = wait || watching ? (trace._since ||= Date.now()) : ccSince(trace);
       return `<span class="chat-console-took" data-cc-clock="elapsed" data-since="${since}">${ccElapsedText(since)}</span>`;
     }
-    // A settled Await's line already says how long the agent worked
-    // ("Agent "…" finished · 41s"); a header clock beside it would be a
-    // second, different number.
+    // A settled Await's line already says how long ("Agent "…" finished ·
+    // 41s", or "still running"); a header clock beside it would be a second,
+    // different number.
     if (name === "get_subagent_output") return "";
     const ms = Number(name === "run_terminal_command"
       ? trace.execution_duration_ms ?? trace.call_duration_ms ?? trace.duration_ms

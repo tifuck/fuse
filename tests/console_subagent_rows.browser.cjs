@@ -216,10 +216,36 @@ const taskEnvelope = (id, body) => [
     assert.equal(wait.state, 'done', `await done state | ${JSON.stringify(wait)}`);
     assert.equal(wait.title, 'Done', `await done dot | ${JSON.stringify(wait)}`);
     assert.equal(wait.status, 'Agent "Audit the connection pool" finished · 41s', `await finished line | ${JSON.stringify(wait)}`);
-    assert.equal(wait.open, 'aw1', `await keeps Open agent | ${JSON.stringify(wait)}`);
     // The report rides the row (for Open agent); Console never prints it inline.
     assert.ok(wait.dom.includes('AWAIT_REPORT'), `await keeps the report it joined for | ${JSON.stringify(wait)}`);
     assert.equal(await domCount('AWAIT_REPORT'), 1, 'await report appears once in the transcript DOM');
+
+    // The join's own wait expired first. The server keeps the call done but
+    // the child running (execution_status); the row must not say finished.
+    await page.evaluate(() => fuseToolFixture.toolEvent({
+      event: 'tool', id: 'wait-aw1', name: 'get_subagent_output', child_id: 'aw1',
+      status: 'done', execution_status: 'running', state: 'running', preview: 'still running', background: true,
+    }));
+    wait = await readRow('[data-step="tool-wait-aw1"]');
+    assert.equal(wait.state, 'done', `an expired await settles | ${JSON.stringify(wait)}`);
+    assert.equal(wait.status, 'Agent "Audit the connection pool" still running', `an expired await does not say finished | ${JSON.stringify(wait)}`);
+    assert.equal(wait.clocks, 0, `a settled await keeps no header clock | ${JSON.stringify(wait)}`);
+
+    // The child then fails on its own. The row is historical and stays put.
+    await page.evaluate(() => fuseToolFixture.agents([{ id: 'aw1', status: 'failed', error: 'provider 502' }]));
+    wait = await readRow('[data-step="tool-wait-aw1"]');
+    assert.equal(wait.status, 'Agent "Audit the connection pool" still running', `a settled await is not rewritten | ${JSON.stringify(wait)}`);
+
+    // A join that returns the child's own failure says failed, not finished.
+    await page.evaluate(() => fuseToolFixture.toolEvent({
+      event: 'tool', id: 'wait-aw1', name: 'get_subagent_output', child_id: 'aw1',
+      status: 'error', error: 'provider 502', agent_work_ms: 41000,
+    }));
+    wait = await readRow('[data-step="tool-wait-aw1"]');
+    assert.equal(wait.state, 'error', `a failed child fails the row | ${JSON.stringify(wait)}`);
+    assert.match(wait.body, /Error: provider 502/, `a failed child names its error, not finished | ${JSON.stringify(wait)}`);
+    assert.ok(!/finished/.test(wait.text), `a failed child is not finished | ${JSON.stringify(wait)}`);
+    assert.equal(wait.open, 'aw1', `await keeps Open agent | ${JSON.stringify(wait)}`);
     console.log('PASS failure, interruption, kill and await rows');
 
     // —— 3. Background spawns group; children finish out of order (console) ——

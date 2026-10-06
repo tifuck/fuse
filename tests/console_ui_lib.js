@@ -66,7 +66,7 @@ window.ConsoleAudit = (() => {
       if (!head && !text) add("empty-row", li);
 
       // Stale state: a row may say a command or call is running only while it is.
-      if (/\bStill running\b/.test(text) && execState && !RUNNING.has(execState)) add("stale-still-running", li, `command ${execId} is ${execState}`);
+      if (/\b[Ss]till running\b/.test(text) && !/Returned while /.test(text) && execState && !RUNNING.has(execState)) add("stale-still-running", li, `command ${execId} is ${execState}`);
       if (/Running in the background/.test(text) && execState && !RUNNING.has(execState)) add("stale-background", li, `command ${execId} is ${execState}`);
       if (/Waiting for output…/.test(text) && callState && callState !== "running") add("stale-waiting", li, `wait is ${callState}`);
       if (isCall && li.classList.contains("is-running")) {
