@@ -4010,9 +4010,11 @@ def finish_run(run_id, message, status):
                 and agent.get("pending_steers") and int(agent.get("steer_continuations") or 0) < 3):
             # An accepted Send now can race a provider error or finalizer. It
             # owns a continuation; never strand it on a terminal run.
+            # followup_continuation freezes the sealed transcript: no session
+            # tail re-injection onto its last, already-sent user row.
             source = json.loads(row["provider_messages"] or "null") or request.get("messages") or []
             request["messages"] = seal_provider_messages(source)
-            agent.update(skip_sanitize=True, steer_closed=False,
+            agent.update(skip_sanitize=True, steer_closed=False, followup_continuation=True,
                          steer_continuations=int(agent.get("steer_continuations") or 0) + 1)
             agent["activity"] = {"phase": "queued"}
             agent["usage_before"] = message.get("usage") or {}

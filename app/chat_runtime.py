@@ -119,10 +119,11 @@ _ARG_LIMIT_FILE = 400_000
 _ARG_LIMIT_ARTIFACT = 400_000
 _ARG_OVERFLOW = "[Fuse: tool arguments exceeded the 400000-character limit; call not executed]"
 _NUDGE = (
-    "[Fuse] CRITICAL — the tool-round budget for this reply is exhausted. Tools are disabled. "
-    "Reply with text only. Say that the step budget was reached, summarize what was done, "
+    "[Fuse] Wrap-up notice for the reply in progress — it applies to that reply only; "
+    "tools stay available for later replies. The tool-round budget for this reply is exhausted. "
+    "Reply with text only: say that the step budget was reached, summarize what was done, "
     "list anything not finished, and recommend what should happen next. "
-    "Do not claim the task is complete if work remains. Do not call tools. "
+    "Do not claim the task is complete if work remains. Do not call tools for this reply. "
     "Server-added notice, not user input."
 )
 _STALL_WRAP = (
@@ -2825,10 +2826,6 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             # strips reasoning_content (the _fuse_reasoning_model marker is
             # gone after pass one) and the anchor never prefix-matches.
             sent = list(sent_messages)
-            # A forced wrap-up round appends a one-off nudge that is not part
-            # of the retained transcript; anchor on the replayable prefix.
-            if sent and sent[-1].get("role") == "user" and sent[-1].get("content") == _NUDGE:
-                sent = sent[:-1]
             anchor["prompt"] = prompt
             anchor["sent"] = sent
 
@@ -3105,11 +3102,16 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             upstream = ""
             requested = ""
             while True:
+                if force and (not transcript or transcript[-1] != {"role": "user", "content": _NUDGE}):
+                    # Durable nudge row: the sent request and the retained
+                    # history stay the same bytes; retries dedupe the tail.
+                    transcript.append({"role": "user", "content": _NUDGE})
+                    current_messages = transcript
+                    await persist_jobs()
                 send = dict(current)
                 send["messages"] = current_messages
                 send["model"] = model.strip()
                 if force:
-                    send["messages"] = [*current_messages, {"role": "user", "content": _NUDGE}]
                     if send.get("tools") and src_type != "ollama" and not retried_none:
                         send["tool_choice"] = "none"
                     else:
