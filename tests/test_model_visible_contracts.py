@@ -75,7 +75,8 @@ class ModelVisibleContractsTest(unittest.TestCase):
         self.assertIn("file ownership", instruction)
         self.assertIn("Omit secret values", instruction)
         self.assertIn("selection emphasis only", instruction)
-        self.assertIn("Write the handoff now.", instruction)
+        self.assertIn("## Compact Instructions", instruction)
+        self.assertIn("Do NOT call any tools", instruction)
         self.assertIn("not a new user request", context.COMPACT_PREAMBLE)
 
     def test_search_single_query_contract_matches_merge(self):

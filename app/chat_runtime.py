@@ -625,7 +625,7 @@ async def _summarize_once(request: Request, user, model: str, head: list[dict], 
         return ""
     if not summary or summary.get("error"):
         return ""
-    return (summary.get("content") or "").strip()[: ctxmod.MAX_SUMMARY_CHARS]
+    return ctxmod.compact_result_body(summary.get("content") or "")[: ctxmod.MAX_SUMMARY_CHARS]
 
 
 async def _touch_run_while(run_id, awaitable):

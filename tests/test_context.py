@@ -588,7 +588,7 @@ class StrategyTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tool["content"], body)
         self.assertGreater(len(tool["content"]), 2_000)
         self.assertIn("app/auth.py", payload[2]["tool_calls"][0]["function"]["arguments"])
-        self.assertIn("Write the handoff now.", payload[-1]["content"])
+        self.assertIn("Do NOT call any tools", payload[-1]["content"])
         self.assertIn("re-read", ctx.SUMMARIZE_PROMPT)
         self.assertIn("lossy", ctx.COMPACT_PREAMBLE)
         self.assertEqual(payload[0]["role"], "system")
@@ -891,11 +891,25 @@ class SubagentHandoffTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("\n\n", ctx.COMPACT_PREAMBLE.strip())
 
     def test_handoff_is_described_as_the_entire_conversation(self):
-        self.assertIn("This handoff is the entire conversation.", ctx.COMPACT_PREAMBLE)
-        self.assertIn("nothing was kept verbatim", ctx.COMPACT_PREAMBLE)
+        self.assertIn("covers the entire earlier conversation", ctx.COMPACT_PREAMBLE)
+        self.assertIn("was kept verbatim", ctx.COMPACT_PREAMBLE)
         self.assertIn("handoff alone", ctx.COMPACT_ACK)
         self.assertIn("receives this handoff and nothing else", ctx.SUMMARIZE_PROMPT)
         self.assertNotIn("remaining messages", ctx.COMPACT_PREAMBLE + ctx.COMPACT_ACK + ctx.SUMMARIZE_PROMPT)
+
+    def test_summary_prompt_follows_the_claude_code_structure(self):
+        for heading in ("1. Primary Request and Intent", "6. All user messages", "9. Optional Next Step"):
+            self.assertIn(heading, ctx.SUMMARIZE_PROMPT)
+        self.assertIn("<analysis>", ctx.SUMMARIZE_PROMPT)
+        self.assertIn("<summary>", ctx.SUMMARIZE_PROMPT)
+        self.assertIn("preserved verbatim in the summary", ctx.SUMMARIZE_PROMPT)
+
+    def test_compact_result_body_keeps_only_the_summary_block(self):
+        reply = "<analysis>\nthinking out loud\n</analysis>\n\n<summary>\n## Objective\n- ship it\n</summary>"
+        self.assertEqual(ctx.compact_result_body(reply), "## Objective\n- ship it")
+        self.assertNotIn("thinking out loud", ctx.compact_result_body(reply))
+        self.assertEqual(ctx.compact_result_body("plain fallback"), "plain fallback")
+        self.assertEqual(ctx.compact_result_body("<analysis>\nplan\n</analysis>\nbody only"), "body only")
 
     async def test_truncate_fallback_describes_the_actual_dropped_span(self):
         head = [{"role": "user", "content": "first ask"}]
