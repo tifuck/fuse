@@ -35,7 +35,7 @@ pytestmark = pytest.mark.skipif(
 _SIDEBAR_FIELDS = ("id", "title", "model", "archived", "created_at", "updated_at", "revision",
                    "kind", "host_id", "project_id", "host_alias", "project_name", "running",
                    "schedule_id", "schedule_name", "bypass_permissions", "auto_permissions",
-                   "archived_at")
+                   "archived_at", "pinned", "pin_order", "unread")
 # _chat_public_run: the run receipt embedded in thread payloads (acceptThread).
 _RUN_RECEIPT_KEYS = {"id", "thread_id", "message_id", "status", "created_at", "updated_at",
                      "cancel_requested", "resume_count", "activity"}
@@ -143,6 +143,8 @@ def _assert_sidebar_row(row):
     assert isinstance(row["archived_at"], str)
     assert isinstance(row["bypass_permissions"], bool)
     assert isinstance(row["auto_permissions"], bool)
+    assert isinstance(row["pinned"], bool) and isinstance(row["unread"], bool)
+    assert isinstance(row["pin_order"], int)
     for heavy in ("messages", "context", "tools"):
         assert heavy not in row  # the sidebar poll must not carry transcripts
 
@@ -263,6 +265,56 @@ def test_sidebar_order_is_recency_desc_with_a_stable_id_tiebreak(client):
     revision = chats.get_thread(_uid(), ids[1])["revision"]
     chat_store.start_turn(_uid(), pks[1], "hello", revision, "order-turn")
     assert order() == [ids[1], ids[3], ids[2]]
+
+
+def test_sidebar_pins_and_unread_round_trip(client):
+    """The pinned section's wire contract: PATCH pins, pin-order reorders,
+    a finished root run badges the row, and the thread GET clears it."""
+    _login(client)
+    first, _ = _create(client, "pin-1", title="Pin one")
+    second, second_pk = _create(client, "pin-2", title="Pin two")
+
+    def pin(public_id, revision, command, want):
+        response = client.patch(
+            f"/chat/threads/{public_id}",
+            json={"pinned": want, "expected_revision": revision, "command_id": command},
+        )
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    pinned_first = pin(first["id"], first["revision"], "pin-a", True)
+    assert pinned_first["pinned"] is True and pinned_first["pin_order"] == 0
+    pinned_second = pin(second["id"], second["revision"], "pin-b", True)
+    assert pinned_second["pin_order"] < pinned_first["pin_order"]  # newest pin takes the top
+    # pinned must be a bool, not truthy.
+    bad = client.patch(
+        f"/chat/threads/{first['id']}",
+        json={"pinned": "yes", "expected_revision": first["revision"], "command_id": "pin-a-bad"},
+    )
+    assert bad.status_code == 422
+
+    reordered = client.post(
+        "/chat/threads/pin-order",
+        json={"ids": [first["id"], second["id"]], "command_id": "pin-drag"},
+    )
+    assert reordered.status_code == 200, reordered.text
+    rows = {row["id"]: row for row in client.get("/chat/threads").json()["threads"]}
+    assert rows[first["id"]]["pin_order"] < rows[second["id"]]["pin_order"]
+    # Unknown fields and empty lists are rejected.
+    assert client.post("/chat/threads/pin-order", json={"ids": [], "command_id": "x"}).status_code == 422
+    assert client.post("/chat/threads/pin-order", json={"ids": [first["id"]], "command_id": "x", "order": 1}).status_code == 422
+
+    # A finished conversation badges the row until the thread is viewed.
+    revision = chats.get_thread(_uid(), second["id"])["revision"]
+    run = chat_store.start_turn(_uid(), second_pk, "hello", revision, "pin-turn")["run"]
+    chat_store.finish_run(run["id"], {"content": "done"}, "completed")
+    assert _listed(client, second["id"])["unread"] is True
+    viewed = client.get(f"/chat/threads/{second['id']}")
+    assert viewed.status_code == 200 and viewed.json()["unread"] is False
+    assert _listed(client, second["id"])["unread"] is False  # cleared for every sidebar
+    # Unpinning takes the row back out of the section without losing its slot.
+    unpinned = pin(second["id"], pinned_second["revision"] + 2, "pin-c", False)
+    assert unpinned["pinned"] is False
 
 
 def test_sidebar_running_flag_settles_once_and_stays_settled(client):

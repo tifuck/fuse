@@ -908,5 +908,74 @@ class ChatStoreTest(unittest.TestCase):
         self.assertEqual(store.get_run(1, child["id"])["status"], "interrupted")
 
 
+class SidebarPinsUnreadTest(unittest.TestCase):
+    """The pinned section's order and the finished-run unread badge."""
+
+    def setUp(self):
+        store.invalidate_committed_cursors()
+        self.tmp = tempfile.TemporaryDirectory(prefix="fuse-chat-pins-")
+        self.addCleanup(self.tmp.cleanup)
+        self.conn = sqlite3.connect(str(Path(self.tmp.name) / "test.db"), check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA foreign_keys=ON")
+        db._init(self.conn)
+        self.addCleanup(self.conn.close)
+        self.connection_patch = patch.object(db, "connect", return_value=self.conn)
+        self.connection_patch.start()
+        self.addCleanup(self.connection_patch.stop)
+        db.execute("INSERT INTO users(id,email,password_hash,created_at) VALUES(1,'1@test.invalid','unused',?)", (db.now(),))
+        store.init_schema()
+
+    def _row(self, user, public_id):
+        return next(row for row in chats.list_threads(user) if row["id"] == public_id)
+
+    def test_pin_lands_on_top_and_drag_order_persists(self):
+        first = chats.create_thread(1, model="offline")
+        second = chats.create_thread(1, model="offline")
+        pinned_first = chats.update_thread(1, first["id"], pinned=True, expected_revision=first["revision"])
+        self.assertTrue(pinned_first["pinned"])
+        self.assertEqual(pinned_first["pin_order"], 0)
+        # A later pin takes the top slot, so the section reads newest-pin-first.
+        pinned_second = chats.update_thread(1, second["id"], pinned=True, expected_revision=second["revision"])
+        self.assertLess(pinned_second["pin_order"], pinned_first["pin_order"])
+        # A drop writes the whole section's order, top first; a literal retry
+        # replays the remembered receipt, while reusing the command id for a
+        # different drop is rejected.
+        reordered = chats.set_pin_order(1, [first["id"], second["id"]], command_id="drag-1")
+        self.assertEqual([row["id"] for row in reordered["threads"]], [first["id"], second["id"]])
+        rows = {row["id"]: row for row in chats.list_threads(1)}
+        self.assertLess(rows[first["id"]]["pin_order"], rows[second["id"]]["pin_order"])
+        retry = chats.set_pin_order(1, [first["id"], second["id"]], command_id="drag-1")
+        self.assertEqual(retry, reordered)
+        with self.assertRaises(chats.ChatValidationError):
+            chats.set_pin_order(1, [second["id"], first["id"]], command_id="drag-1")
+        # Unpin keeps the slot so a re-pin restores the row's place, and an
+        # unpinned id inside a drag list is ignored, not written.
+        unpinned = chats.update_thread(1, second["id"], pinned=False, expected_revision=rows[second["id"]]["revision"])
+        self.assertFalse(unpinned["pinned"])
+        self.assertEqual(unpinned["pin_order"], rows[second["id"]]["pin_order"])
+        chats.set_pin_order(1, [second["id"], first["id"]], command_id="drag-2")
+        rows = {row["id"]: row for row in chats.list_threads(1)}
+        self.assertEqual(rows[first["id"]]["pin_order"], 1)  # first moved under the unpinned entry
+        self.assertEqual(rows[second["id"]]["pin_order"], unpinned["pin_order"])
+        self.assertFalse(rows[second["id"]]["pinned"])
+
+    def test_root_finish_badges_but_child_finish_does_not(self):
+        thread = chats.create_thread(1, model="offline")
+        run = store.start_turn(1, thread["id"], "Hello", thread["revision"], "turn-1")["run"]
+        child = store.start_child_run(
+            user_id=1, thread_id=thread["id"], parent_run_id=run["id"],
+            prompt="look around", description="explore",
+        )
+        store.finish_run(child["id"], {"content": "report", "tools": []}, "completed")
+        self.assertFalse(self._row(1, thread["id"])["unread"], "a subagent report is not a finished conversation")
+        store.finish_run(run["id"], {"content": "done", "tools": []}, "completed")
+        self.assertTrue(self._row(1, thread["id"])["unread"], "the root turn finishing badges the row")
+        # Viewing clears it exactly once; a second view is a no-op.
+        self.assertTrue(chats.mark_thread_read(1, thread["id"]))
+        self.assertFalse(self._row(1, thread["id"])["unread"])
+        self.assertFalse(chats.mark_thread_read(1, thread["id"]))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -4078,7 +4078,7 @@ def finish_run(run_id, message, status):
             revision = thread["revision"] + 1
             merged_tools = _merge_thread_loaded(thread, row)
             conn.execute(
-                "UPDATE chat_threads SET messages=?,loaded_tools=?,revision=?,updated_at=? WHERE id=?",
+                "UPDATE chat_threads SET messages=?,loaded_tools=?,revision=?,updated_at=?,unread=1 WHERE id=?",
                 (dumps(messages), dumps(merged_tools), revision, db.now(), row["thread_id"]),
             )
             from . import chat_history

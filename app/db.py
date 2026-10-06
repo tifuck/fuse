@@ -558,6 +558,9 @@ def _ensure_chat_columns(conn: sqlite3.Connection) -> None:
     _ensure_skill_tables(conn)
     _ensure_schedule_tables(conn)
     _ensure_column(conn, "chat_threads", "schedule_id", "INTEGER")
+    _ensure_column(conn, "chat_threads", "pinned", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "chat_threads", "pin_order", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "chat_threads", "unread", "INTEGER NOT NULL DEFAULT 0")
 
 
 def _ensure_host_tables(conn: sqlite3.Connection) -> None:

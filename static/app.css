@@ -10169,6 +10169,39 @@ dialog[data-sched-modal] input[type="checkbox"] {
 }
 .chat-history-item .chat-run-spin { width: 1.6rem; justify-items: start; }
 .chat-history-item .chat-run-spin .cas-face { width: 0.82rem; height: 0.82rem; }
+.chat-history-unread-dot {
+  flex: 0 0 auto;
+  width: 0.4rem;
+  height: 0.4rem;
+  /* !important: something in the sidebar cascade zeroed the computed radius
+     on the rendered row even though this block matched (probe: bg applied,
+     radius 0px). Own display-only element; keep it round. */
+  border-radius: 50% !important;
+  background: var(--ok);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 18%, transparent);
+}
+.chat-history-item.is-unread .chat-history-name { color: var(--mist); }
+.chat-history-tab-unread {
+  min-width: 1rem;
+  padding: 0 0.28rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ok) 22%, var(--panel));
+  color: var(--ok);
+  font: 0.6rem/1rem var(--mono);
+  text-align: center;
+}
+.chat-history-tab-unread[hidden] { display: none; }
+body.is-pin-dragging { cursor: grabbing; user-select: none; }
+body.is-pin-dragging .chat-history-item:hover { background: none; }
+.chat-history-item.is-dragging {
+  z-index: 3;
+  background: color-mix(in srgb, var(--mist) 12%, var(--panel));
+  box-shadow: 0 6px 18px rgb(0 0 0 / 35%);
+  opacity: 0.92;
+  pointer-events: none;
+  scale: 1.02;
+}
+.chat-history-list.is-reordering .chat-history-item.is-pinned:not(.is-dragging) { transition: none; }
 .chat-history-tab .chat-run-spin { width: 0.7rem; height: 0.7rem; }
 .chat-history-item > button.more {
   position: absolute;

@@ -520,6 +520,10 @@
   let showArchived = false;
   let historyQuery = "";
   let historyTab = "chats";
+  // Press-hold drag inside the Pinned section; see the pointer handlers by the
+  // history list click wiring.
+  let pinDrag = null;
+  let pinDragClickBlock = 0;
   let projectSort = "recent";
   let projectFilter = "";
   try {
@@ -3442,6 +3446,13 @@
   function acceptThread(data) {
     if (data && !Number.isSafeInteger(data.event_cursor)) throw new Error("Thread snapshot is missing event_cursor; live sync requires a consistent snapshot.");
     if (!data || data.id !== currentId) return;
+    // Viewing the thread is what dismisses its finished-run badge; the server
+    // snapshot arrives with unread already cleared by the GET.
+    const sidebarRow = threadById(currentId);
+    if (sidebarRow && sidebarRow.unread) {
+      sidebarRow.unread = false;
+      renderHistory();
+    }
     setPartialTranscript(false);
     // A snapshot may carry an older durable replay cursor than the patches
     // already applied (server state writes are throttled). Accept it and let
@@ -3646,7 +3657,10 @@
         // only clear here when no thread row (and so no such event) exists.
         const next = started || (payload.revision != null ? item.running : false);
         if (started || payload.revision == null) serverRunning.set(item.id, next);
-        if (item.running !== next) {
+        // A finished conversation the user is not reading gets the sidebar
+        // badge; opening the thread clears it (the snapshot GET marks read).
+        if (!started && !item.unread) item.unread = true;
+        if (item.running !== next || item.unread) {
           item.running = next;
           renderHistory();
         }
@@ -3945,6 +3959,9 @@
       project_logo_url: thread.project_logo_url ?? prior?.project_logo_url ?? "",
       schedule_id: thread.schedule_id ?? prior?.schedule_id ?? null,
       updated_at: thread.updated_at,
+      pinned: thread.pinned ?? prior?.pinned ?? false,
+      pin_order: thread.pin_order ?? prior?.pin_order ?? 0,
+      unread: thread.unread ?? prior?.unread ?? false,
       running,
     };
     if (idx >= 0) bucket[idx] = lite;
@@ -4358,6 +4375,7 @@
       btn.setAttribute("aria-selected", String(on));
       btn.classList.toggle("is-on", on);
     });
+    syncHistoryUnread();
     const heading = root.querySelector("[data-history-heading]");
     if (heading) heading.textContent = historyTab === "projects" ? "Projects" : "Chats";
     const newLabel = root.querySelector("[data-chat-new-label]");
@@ -4376,6 +4394,24 @@
     }
     fillProjectFilterOptions();
     syncComposer();
+  }
+
+  // Unread counts for the tab switch: a finished conversation badges its
+  // tab so the other tab's results are visible before switching.
+  function syncHistoryUnread() {
+    const counts = { chats: 0, projects: 0 };
+    threads.forEach((item) => {
+      if (!item.unread || item.id === currentId) return;
+      counts[item.kind === "project" ? "projects" : "chats"] += 1;
+    });
+    root.querySelectorAll("[data-history-tab]").forEach((btn) => {
+      const tab = btn.getAttribute("data-history-tab");
+      const badge = btn.querySelector("[data-history-unread]");
+      if (!badge) return;
+      const count = counts[tab] || 0;
+      badge.hidden = count === 0 || tab === historyTab;
+      badge.textContent = count > 9 ? "9+" : String(count);
+    });
   }
 
   // Archived threads belong to the tab of their kind: project sessions under
@@ -4608,6 +4644,19 @@
     return String(b.updated_at).localeCompare(String(a.updated_at));
   }
 
+  function pinnedFirst(a, b) {
+    return (Number(a.pin_order) || 0) - (Number(b.pin_order) || 0);
+  }
+
+  // Pinned rows leave the timeline for their own section at the top, in the
+  // order drag-and-drop wrote. Everything else keeps the running-first order.
+  function splitPinned(items) {
+    return {
+      pinned: items.filter((item) => item.pinned).sort(pinnedFirst),
+      rest: items.filter((item) => !item.pinned),
+    };
+  }
+
   function historyIcons() {
     return {
       folder:
@@ -4635,6 +4684,7 @@
     const on = item.id === currentId ? " is-on" : "";
     const project = item.kind === "project";
     const running = threadIsRunning(item);
+    const unread = Boolean(item.unread) && item.id !== currentId;
     let sessionTitle = item.title || "New chat";
     if (project && item.project_name && sessionTitle === item.project_name) sessionTitle = "New chat";
     const title = escapeHtml(sessionTitle);
@@ -4651,7 +4701,10 @@
     const working = running ? '<span class="visually-hidden">Working</span>' : "";
     const twoLine = Boolean(item.snippet || meta);
     const scheduledClass = item.schedule_id ? " is-task" : "";
-    return `<div class="chat-history-item${on}${twoLine ? " has-snip" : ""}${project ? " is-project" : ""}${groupedClass}${runningClass}${scheduledClass}" data-thread="${escapeHtml(String(item.id))}"${busy}><button type="button" class="open" title="${title}">${working}<span class="chat-history-title">${lead}<span class="chat-history-copy"><span class="chat-history-name">${title}</span>${meta}${snip}</span></span>${chip}</button><button type="button" class="more" aria-label="Chat actions">⋯</button></div>`;
+    const pinClass = item.pinned ? " is-pinned" : "";
+    const unreadClass = unread ? " is-unread" : "";
+    const dot = unread ? '<span class="chat-history-unread-dot" title="New activity"></span>' : "";
+    return `<div class="chat-history-item${on}${twoLine ? " has-snip" : ""}${project ? " is-project" : ""}${groupedClass}${runningClass}${scheduledClass}${pinClass}${unreadClass}" data-thread="${escapeHtml(String(item.id))}"${busy}><button type="button" class="open" title="${title}">${working}<span class="chat-history-title">${dot}${lead}<span class="chat-history-copy"><span class="chat-history-name">${title}</span>${meta}${snip}</span></span>${chip}</button><button type="button" class="more" aria-label="Chat actions">⋯</button></div>`;
   }
 
   function projectRow(item) {
@@ -4688,6 +4741,7 @@
     const searching = Boolean(historyQuery.trim());
     if (!searching) return "";
     if (item.archived) return '<span class="chat-history-chip">Archived</span>';
+    if (item.pinned) return '<span class="chat-history-chip">Pinned</span>';
     if (item.kind === "project") return '<span class="chat-history-chip">Project</span>';
     return "";
   }
@@ -4790,6 +4844,9 @@
   function renderHistory() {
     if (!historyList) return;
     if (renaming) return;
+    // A repaint would rebuild the nodes under an active pin drag; the drop
+    // handler re-renders from the saved order.
+    if (pinDrag && pinDrag.dragging) return;
     const searching = Boolean(historyQuery.trim());
     syncHistoryChrome();
     if (historyKicker) {
@@ -4852,6 +4909,7 @@
     }
     if (historyTab === "projects") {
       const sessions = projectSessionList();
+      const { pinned, rest } = splitPinned(sessions);
       if (!sessions.length) {
         historyList.innerHTML =
           `<p class="chat-history-empty">No project sessions yet. Use New project to start one.</p>`;
@@ -4859,8 +4917,9 @@
         return;
       }
       let html = "";
+      if (pinned.length) html += `<p class="chat-history-kicker">Pinned</p>` + pinned.map((item) => historyRow(item)).join("");
       if (projectSort === "project") {
-        groupedProjectSessions(sessions).forEach((group) => {
+        groupedProjectSessions(rest).forEach((group) => {
           html +=
             `<div class="chat-history-project-head">` +
             projectIcon(group.icon) +
@@ -4870,7 +4929,7 @@
           html += group.items.map((item) => historyRow(item, true)).join("");
         });
       } else {
-        html += sessions.map((item) => historyRow(item)).join("");
+        html += rest.map((item) => historyRow(item)).join("");
       }
       historyList.innerHTML = html;
       syncHistoryFooter();
@@ -4882,7 +4941,10 @@
     } else if (!items.length) {
       historyList.innerHTML = `<p class="chat-history-empty">No chats yet.</p>`;
     } else {
-      historyList.innerHTML = items.map((item) => historyRow(item)).join("");
+      const { pinned, rest } = splitPinned(items);
+      historyList.innerHTML =
+        (pinned.length ? `<p class="chat-history-kicker">Pinned</p>` + pinned.map((item) => historyRow(item)).join("") : "") +
+        rest.map((item) => historyRow(item)).join("");
     }
     syncHistoryFooter();
   }
@@ -5317,7 +5379,7 @@
     await refreshThreads();
   }
 
-  function projectMenu(anchor, key) {
+  function projectMenu(anchor, key, at) {
     const [hostId, projectId] = String(key || "").split(":");
     const item = sidebarProject(hostId, projectId);
     if (!item || !requireLive()) return;
@@ -5359,7 +5421,7 @@
         },
       },
     ];
-    showPop(anchor, items);
+    showPop(anchor, items, at);
   }
 
   async function moveToProject(id) {
@@ -5398,11 +5460,28 @@
     }
   }
 
-  function threadMenu(anchor, id) {
+  function threadMenu(anchor, id, at) {
     const thread = threadById(id);
     if (!thread) return;
     if (!requireLive()) return;
     const items = [
+      {
+        label: thread.pinned ? "Unpin" : "Pin to top",
+        run: async () => {
+          if (!requireLive()) return;
+          const latest = threadById(id) || thread;
+          const updated = await api("/chat/threads/" + id, {
+            method: "PATCH",
+            body: JSON.stringify({
+              pinned: !latest.pinned,
+              expected_revision: latest.revision,
+              command_id: newSession(),
+            }),
+          });
+          upsertLocal(updated);
+          renderHistory();
+        },
+      },
       { label: "Rename", run: () => startRename(anchor.closest(".chat-history-item"), thread) },
       {
         label: "Fork",
@@ -5484,7 +5563,7 @@
         },
       },
     ];
-    showPop(anchor, items);
+    showPop(anchor, items, at);
   }
 
   async function copyText(text) {
@@ -16844,7 +16923,137 @@
     });
   }
   if (historyList) {
+    historyList.addEventListener("contextmenu", (event) => {
+      const row = event.target.closest(".chat-history-item");
+      if (!row || !historyList.contains(row)) return;
+      event.preventDefault();
+      const at = { x: event.clientX, y: event.clientY };
+      if (row.dataset.project) {
+        projectMenu(row, row.dataset.project, at);
+        return;
+      }
+      if (row.dataset.thread) threadMenu(row, row.dataset.thread, at);
+    });
+
+    const pinnedRowEls = () => [...historyList.querySelectorAll(".chat-history-item.is-pinned")];
+
+    function endPinDrag(commit) {
+      const drag = pinDrag;
+      pinDrag = null;
+      if (!drag) return;
+      window.clearTimeout(drag.holdTimer);
+      if (!drag.dragging) return;
+      drag.row.classList.remove("is-dragging");
+      historyList.classList.remove("is-reordering");
+      document.body.classList.remove("is-pin-dragging");
+      // The pointerup that ends a drag also clicks the row it started on.
+      pinDragClickBlock = Date.now() + 400;
+      if (!commit) {
+        renderHistory();
+        return;
+      }
+      const ids = pinnedRowEls().map((el) => el.getAttribute("data-thread")).filter(Boolean);
+      ids.forEach((id, index) => {
+        const item = threadById(id);
+        if (item) item.pin_order = index;
+      });
+      renderHistory();
+      api("/chat/threads/pin-order", {
+        method: "POST",
+        body: JSON.stringify({ ids, command_id: newSession() }),
+      })
+        .then((data) => {
+          (data.threads || []).forEach(upsertLocal);
+          renderHistory();
+        })
+        .catch((error) => {
+          showFailure("Could not save pinned order", error);
+          refreshThreads().catch(() => {});
+        });
+    }
+
+    function cancelPinDrag() {
+      if (!pinDrag) return;
+      if (pinDrag.dragging) endPinDrag(false);
+      else {
+        window.clearTimeout(pinDrag.holdTimer);
+        pinDrag = null;
+      }
+    }
+
+    function movePinnedDrag(event) {
+      const row = pinDrag.row;
+      const rows = pinnedRowEls().filter((el) => el !== row);
+      let target = null;
+      for (const el of rows) {
+        const box = el.getBoundingClientRect();
+        if (event.clientY < box.top + box.height / 2) {
+          target = el;
+          break;
+        }
+      }
+      if (target) historyList.insertBefore(row, target);
+      else if (rows.length) rows[rows.length - 1].after(row);
+    }
+
+    // Mouse drags a pinned row straight away; a finger must hold still first,
+    // so a plain swipe keeps scrolling the list. Once the hold arms the drag,
+    // the touchmove veto below keeps the browser from claiming the gesture.
+    historyList.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || pinDrag) return;
+      // Reordering needs the whole pinned section visible: search, the archive
+      // view and a project filter each hide rows, so a drop there would write
+      // an order the hidden rows never voted on.
+      if (historyQuery.trim() || showArchived || (historyTab === "projects" && projectFilter)) return;
+      const row = event.target.closest(".chat-history-item.is-pinned");
+      if (!row || event.target.closest("button.more")) return;
+      const touch = event.pointerType !== "mouse";
+      pinDrag = {
+        row,
+        id: event.pointerId,
+        start: { x: event.clientX, y: event.clientY },
+        armed: !touch,
+        dragging: false,
+        holdTimer: 0,
+      };
+      if (!touch) return;
+      pinDrag.holdTimer = window.setTimeout(() => {
+        if (!pinDrag || pinDrag.dragging) return;
+        pinDrag.armed = true;
+        if (navigator.vibrate) navigator.vibrate(10);
+      }, 260);
+    });
+    window.addEventListener("pointermove", (event) => {
+      if (!pinDrag || event.pointerId !== pinDrag.id) return;
+      const dist = Math.hypot(event.clientX - pinDrag.start.x, event.clientY - pinDrag.start.y);
+      if (!pinDrag.dragging) {
+        if (!pinDrag.armed) {
+          if (dist > 8) cancelPinDrag();
+          return;
+        }
+        if (dist < 3) return;
+        pinDrag.dragging = true;
+        pinDrag.row.classList.add("is-dragging");
+        historyList.classList.add("is-reordering");
+        document.body.classList.add("is-pin-dragging");
+      }
+      movePinnedDrag(event);
+    }, { passive: true });
+    historyList.addEventListener("touchmove", (event) => {
+      if (pinDrag && pinDrag.dragging) event.preventDefault();
+    }, { passive: false });
+    window.addEventListener("pointerup", (event) => {
+      if (!pinDrag || (pinDrag.dragging && event.pointerId !== pinDrag.id)) return;
+      endPinDrag(pinDrag.dragging);
+    });
+    window.addEventListener("pointercancel", () => cancelPinDrag());
+
     historyList.addEventListener("click", (event) => {
+      if (Date.now() < pinDragClickBlock) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
       const more = event.target.closest("button.more");
       if (more) {
         event.preventDefault();

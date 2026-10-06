@@ -129,6 +129,7 @@ _THREAD_RUNNING_SQL = (
 _THREAD_LIST_COLS = (
     "t.id, t.public_id, t.title, t.model, t.archived, t.created_at, t.updated_at, t.revision, "
     "t.kind, t.host_id, t.project_id, t.schedule_id, t.bypass_permissions, t.auto_permissions, "
+    "t.pinned, t.pin_order, t.unread, "
     "h.alias AS host_alias, p.name AS project_name, "
     "p.color AS project_color, p.logo_rev AS project_logo_rev, p.archived AS project_archived, t.archived_at, "
     "s.name AS schedule_name, "
@@ -1723,6 +1724,9 @@ def _view(row, *, include_messages: bool = False, coding: bool = False, conn=Non
         "schedule_name": _legacy_text(row["schedule_name"], TITLE_MAX) if "schedule_name" in keys and row["schedule_name"] else "",
         "bypass_permissions": bool(row["bypass_permissions"]) if "bypass_permissions" in keys else False,
         "auto_permissions": bool(row["auto_permissions"]) if "auto_permissions" in keys else False,
+        "pinned": bool(row["pinned"]) if "pinned" in keys else False,
+        "pin_order": int(row["pin_order"]) if "pin_order" in keys and row["pin_order"] is not None else 0,
+        "unread": bool(row["unread"]) if "unread" in keys else False,
     }
     if kind == "project" and data["project_id"] is not None and "project_name" in keys and row["project_name"] is not None:
         from . import hosts
@@ -1986,6 +1990,7 @@ def update_thread(
     title: str | None = None,
     model: str | None = None,
     archived: bool | None = None,
+    pinned: bool | None = None,
     messages: list | None = None,
     context: str | None = None,
     tools=None,
@@ -2004,7 +2009,7 @@ def update_thread(
 
     with store.transaction() as conn:
         fingerprint, previous = store.command(conn, user_id, command_id,
-            ["update", thread_id, title, model, archived, messages, context, tools, expected_revision, bypass_permissions, auto_permissions])
+            ["update", thread_id, title, model, archived, pinned, messages, context, tools, expected_revision, bypass_permissions, auto_permissions])
         if previous is not None:
             return previous
         pk = resolve_thread_pk(user_id, thread_id, conn)
@@ -2016,7 +2021,7 @@ def update_thread(
         store.check_revision(row["revision"], expected_revision)
         if messages is not None and conn.execute("SELECT 1 FROM chat_runs WHERE thread_id=? AND status IN ('queued','running')", (pk,)).fetchone():
             raise ChatValidationError("cannot replace messages during an active run", 409)
-        _update_thread(conn, row, title=title, model=model, archived=archived, messages=messages, context=context, tools=tools)
+        _update_thread(conn, row, title=title, model=model, archived=archived, pinned=pinned, messages=messages, context=context, tools=tools)
         if bypass_permissions is not None and bool(bypass_permissions) != bool(row["bypass_permissions"] if "bypass_permissions" in row.keys() else 0):
             from . import permissions as permissions_mod
 
@@ -2037,6 +2042,61 @@ def update_thread(
     return result
 
 
+def _sidebar_view(conn, user_id: int, pk: int):
+    row = conn.execute(
+        f"""SELECT {_THREAD_LIST_COLS}
+           FROM chat_threads t
+           LEFT JOIN user_hosts h ON h.id=t.host_id
+           LEFT JOIN user_projects p ON p.id=t.project_id
+           LEFT JOIN chat_schedules s ON s.id=t.schedule_id
+           WHERE t.id=? AND t.user_id=?""",
+        (pk, user_id),
+    ).fetchone()
+    return _view(row) if row else None
+
+
+def set_pin_order(user_id: int, ids, *, command_id=None) -> dict:
+    """Write the pinned section's order. `ids` is the full pinned list, top first."""
+    from . import chat_store as store
+
+    order = [str(item).strip() for item in (ids or []) if str(item).strip()]
+    with store.transaction() as conn:
+        fingerprint, previous = store.command(conn, user_id, command_id, ["pin_order", order])
+        if previous is not None:
+            return previous
+        pks: list[int] = []
+        for token in order:
+            pk = resolve_thread_pk(user_id, token, conn)
+            if pk is not None and pk not in pks:
+                pks.append(pk)
+        for index, pk in enumerate(pks):
+            conn.execute(
+                "UPDATE chat_threads SET pin_order=? WHERE id=? AND user_id=? AND pinned=1",
+                (index, pk, user_id),
+            )
+            store.thread_event(conn, user_id, pk)
+        result = {"threads": [_sidebar_view(conn, user_id, pk) for pk in pks]}
+        store.remember(conn, user_id, command_id, fingerprint, result)
+        return result
+
+
+def mark_thread_read(user_id: int, thread_id) -> bool:
+    """Viewing a thread clears its finished-run badge. No revision bump: the
+    flag is display metadata, and the thread event carries the new state."""
+    from . import chat_store as store
+
+    pk = resolve_thread_pk(user_id, thread_id)
+    if pk is None:
+        return False
+    with store.transaction() as conn:
+        row = conn.execute("SELECT unread FROM chat_threads WHERE id=? AND user_id=?", (pk, user_id)).fetchone()
+        if row is None or not row["unread"]:
+            return False
+        conn.execute("UPDATE chat_threads SET unread=0 WHERE id=? AND user_id=?", (pk, user_id))
+        store.thread_event(conn, user_id, pk)
+    return True
+
+
 def unarchive_on_activity(conn, row, ts):
     """A new message or transcript edit brings an archived chat (and its project) back."""
     if not int(row["archived"] or 0):
@@ -2047,15 +2107,28 @@ def unarchive_on_activity(conn, row, ts):
                      (row["project_id"], row["user_id"]))
 
 
-def _update_thread(conn, row, *, title, model, archived, messages, context, tools):
+def _update_thread(conn, row, *, title, model, archived, pinned, messages, context, tools):
     if not row:
         return None
     if archived is not None and not isinstance(archived, bool):
         raise ChatValidationError("archived must be true or false")
+    if pinned is not None and not isinstance(pinned, bool):
+        raise ChatValidationError("pinned must be true or false")
     new_title = _clean_title(_text(title, "title", TITLE_MAX), strict=True) if title is not None else row["title"]
     new_state = "user" if title is not None else (row["title_state"] if "title_state" in row.keys() else "")
     new_model = _text(model, "model", 200) if model is not None else row["model"]
     new_archived = 1 if archived else 0 if archived is not None else int(row["archived"] or 0)
+    # A newly pinned thread lands at the top of the pinned section; unpinning
+    # keeps the old order so a re-pin restores the row's place.
+    was_pinned = int(row["pinned"] if "pinned" in row.keys() and row["pinned"] else 0)
+    pin_bits = ""
+    pin_args: list = []
+    if pinned is not None and bool(pinned) != bool(was_pinned):
+        if pinned:
+            pin_bits = ", pinned=1, pin_order=(SELECT COALESCE(MIN(s.pin_order), 1) - 1 FROM chat_threads s WHERE s.user_id=? AND s.pinned=1)"
+            pin_args = [row["user_id"]]
+        else:
+            pin_bits = ", pinned=0"
     edited = False
     if messages is not None:
         msgs = parse_messages(messages, strict=True)
@@ -2096,11 +2169,11 @@ def _update_thread(conn, row, *, title, model, archived, messages, context, tool
         compaction_json = ctxmod.dump_state(state)
     conn.execute(
         "UPDATE chat_threads SET title=?, title_state=?, model=?, archived=?, messages=?, context=?, tools=?, updated_at=?, revision=revision+1"
+        + pin_bits
         + (", compaction=?" if compaction_json is not None else "")
         + " WHERE id=? AND user_id=?",
-        (new_title, new_state, new_model, new_archived, payload, new_context, tool_json, ts, row["id"], row["user_id"])
-        if compaction_json is None
-        else (new_title, new_state, new_model, new_archived, payload, new_context, tool_json, ts, compaction_json, row["id"], row["user_id"]),
+        ([new_title, new_state, new_model, new_archived, payload, new_context, tool_json, ts] + pin_args
+         + ([compaction_json] if compaction_json is not None else []) + [row["id"], row["user_id"]]),
     )
     old_archived = int(row["archived"] or 0)
     if new_archived != old_archived:

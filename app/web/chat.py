@@ -446,6 +446,21 @@ async def chat_thread_create(request: Request):
     return JSONResponse(_chat_public_thread(thread), status_code=201)
 
 
+@router.post("/chat/threads/pin-order")
+async def chat_threads_pin_order(request: Request):
+    user, err = _chat_auth(request)
+    if err:
+        return err
+    raw = await _json_object(request)
+    if set(raw) - {"ids", "command_id"}:
+        raise HTTPException(422, "Unsupported pin-order fields")
+    ids = raw.get("ids")
+    if not isinstance(ids, list) or not ids or len(ids) > 500 or not all(isinstance(item, str) for item in ids):
+        raise HTTPException(422, "ids must be a non-empty list of chat ids")
+    data = await asyncio.to_thread(chats.set_pin_order, user["id"], ids, command_id=_chat_command(raw))
+    return JSONResponse(data, headers={"Cache-Control": "no-store"})
+
+
 @router.get("/chat/threads/{thread_id}")
 async def chat_thread_get(request: Request, thread_id: str):
     user, err = _chat_auth(request)
@@ -474,6 +489,12 @@ async def chat_thread_get(request: Request, thread_id: str):
         raise HTTPException(404, "Chat not found")
     if thread.get("unchanged"):
         return JSONResponse(thread, headers={"Cache-Control": "no-store"})
+    # Opening a thread is what clears its finished-run badge. Only full views
+    # reach here: an unchanged short-circuit means the finishing revision was
+    # already delivered, so the flag was cleared by that earlier view.
+    if thread.get("unread"):
+        await asyncio.to_thread(chats.mark_thread_read, user["id"], thread_id)
+        thread["unread"] = False
     public = _chat_public_thread(thread)
     if request.query_params.get("pack") == "1":
         public["messages"] = chats.pack_segment_text(public.get("messages"))
@@ -669,7 +690,7 @@ async def chat_thread_patch(request: Request, thread_id: str):
     if err:
         return err
     raw = await _json_object(request)
-    if set(raw) - {"title", "model", "archived", "messages", "context", "tools", "expected_revision", "command_id", "bypass_permissions", "auto_permissions"}:
+    if set(raw) - {"title", "model", "archived", "pinned", "messages", "context", "tools", "expected_revision", "command_id", "bypass_permissions", "auto_permissions"}:
         raise HTTPException(422, "Unsupported chat fields")
     kwargs = {"expected_revision": _chat_revision(raw), "command_id": raw.get("command_id")}
     if "bypass_permissions" in raw:
@@ -692,6 +713,10 @@ async def chat_thread_patch(request: Request, thread_id: str):
         if not isinstance(raw["archived"], bool):
             raise HTTPException(422, "archived must be true or false")
         kwargs["archived"] = raw["archived"]
+    if "pinned" in raw:
+        if not isinstance(raw["pinned"], bool):
+            raise HTTPException(422, "pinned must be true or false")
+        kwargs["pinned"] = raw["pinned"]
     if "messages" in raw:
         if not isinstance(raw["messages"], list):
             raise HTTPException(400, "Invalid messages")

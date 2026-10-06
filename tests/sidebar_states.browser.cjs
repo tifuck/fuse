@@ -306,6 +306,115 @@ const PREVIEW = 'Name this sidebar fixture chat from…';
     assert.deepEqual(projectOrder, truth.threads.filter(entry => entry.kind === 'project').map(entry => entry.id), 'project sessions follow the server order');
     console.log('PASS a mid-turn move is offered, refused, then restores the project');
 
+    // Pinned rows: a right-click opens the same actions as the ⋯ button, the
+    // menu's Pin moves the row under a Pinned section, a mouse drag reorders
+    // it, and a finished turn on an unopened chat badges the row until viewed.
+    await page.locator('[data-history-tab="chats"]').click();
+    const chatIds = [];
+    for (const text of ['First chat to pin', 'Second chat to pin']) {
+      await page.goto(origin + '/chat');
+      await page.locator('[data-sync-label]').filter({ hasText: 'Live sync' }).waitFor({ state: 'attached' });
+      await page.locator('[data-chat-input]').fill(text);
+      await page.locator('[data-chat-send]').click();
+      await page.waitForFunction(() => document.body.classList.contains('is-streaming'));
+      chatIds.push(new URL(page.url()).searchParams.get('t'));
+      await stopped();
+    }
+    await openHistory();
+    const [firstPin, secondPin] = chatIds;
+
+    await row(secondPin).click({ button: 'right' });
+    let pop = page.locator('.chat-pop');
+    await pop.waitFor();
+    let actions = await pop.innerText();
+    assert.match(actions, /Pin to top/, 'the right-click menu offers the pin action');
+    assert.match(actions, /Rename/, 'the right-click menu carries the ⋯ actions');
+    await page.keyboard.press('Escape');
+    await pop.waitFor({ state: 'detached' });
+
+    await row(secondPin).hover();
+    await row(secondPin).locator('button.more').click();
+    await page.getByRole('button', { name: 'Pin to top', exact: true }).click();
+    await page.waitForFunction(thread => document.querySelector(`[data-thread="${thread}"]`)?.classList.contains('is-pinned'), secondPin, { timeout: 10000 });
+    assert.equal(await page.locator('[data-history-list] .chat-history-kicker', { hasText: 'Pinned' }).count(), 1, 'a Pinned section exists');
+    truth = await threads();
+    assert.equal(truth.threads.find(entry => entry.id === secondPin).pinned, true, 'server: the pin round-trips');
+
+    // A later pin takes the top of the section.
+    await row(firstPin).hover();
+    await row(firstPin).locator('button.more').click();
+    await page.getByRole('button', { name: 'Pin to top', exact: true }).click();
+    await page.waitForFunction(
+      thread => document.querySelector('[data-history-list] .chat-history-item')?.getAttribute('data-thread') === thread,
+      firstPin,
+      { timeout: 10000 },
+    );
+
+    // Drag the second pin back on top; the drop writes pin_order both ways.
+    const from = await row(secondPin).boundingBox();
+    const to = await row(firstPin).boundingBox();
+    await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(to.x + to.width / 2, to.y + 4, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForFunction(ids => {
+      const rows = [...document.querySelectorAll('[data-history-list] .chat-history-item.is-pinned')];
+      return rows.length === 2 && rows[0].getAttribute('data-thread') === ids[1] && rows[1].getAttribute('data-thread') === ids[0];
+    }, chatIds, { timeout: 10000 });
+    for (let i = 0; i < 40; i++) {
+      truth = await threads();
+      const orders = chatIds.map(tid => truth.threads.find(entry => entry.id === tid));
+      if (orders.every(entry => entry?.pinned) && orders[1].pin_order < orders[0].pin_order) break;
+      await page.waitForTimeout(250);
+      if (i === 39) assert.fail('server: the drag order never landed');
+    }
+    console.log('PASS right-click menu, pin section and drag reorder');
+
+    // A turn that finishes on an unopened chat badges its row and the tab.
+    // The drag's 400ms ghost-click guard is still armed here; a real user is
+    // never this fast, so settle before clicking the pinned row open.
+    await page.waitForTimeout(500);
+    await row(firstPin).locator('.open').click();
+    await page.waitForFunction(thread => new URL(location.href).searchParams.get('t') === thread, firstPin);
+    const rawApi = (path, opts) => page.evaluate(async ({ path, opts }) => {
+      try { return { status: 200, data: await fuseToolFixture.api(path, opts) }; }
+      catch (error) { return { status: error.status || 0, data: null }; }
+    }, { path, opts });
+    let started = await rawApi('/chat/threads/' + secondPin + '/turns', {
+      method: 'POST',
+      body: JSON.stringify({ text: 'Finish without me watching', model: 'offline', expected_revision: (await current(secondPin)).revision, command_id: crypto.randomUUID() }),
+    });
+    if (started.status === 409) {
+      // A recap/title job may bump the revision between the read and the send.
+      started = await rawApi('/chat/threads/' + secondPin + '/turns', {
+        method: 'POST',
+        body: JSON.stringify({ text: 'Finish without me watching', model: 'offline', expected_revision: (await current(secondPin)).revision, command_id: crypto.randomUUID() }),
+      });
+    }
+    assert.equal(started.status, 200, 'the background turn started: ' + JSON.stringify(started).slice(0, 200));
+    // Server truth first: finish_run must set the flag; then the live event
+    // must badge the row without any reload.
+    let serverUnread = false;
+    for (let i = 0; i < 60 && !serverUnread; i++) {
+      await page.waitForTimeout(500);
+      serverUnread = (await threads()).threads.find(entry => entry.id === secondPin)?.unread === true;
+    }
+    assert.equal(serverUnread, true, 'server: the finished turn flagged the row unread');
+    await page.waitForFunction(thread => document.querySelector(`[data-thread="${thread}"]`)?.classList.contains('is-unread'), secondPin, { timeout: 10000 });
+    const badge = page.locator('[data-history-tab="projects"] [data-history-unread]');
+    assert.equal(await badge.isHidden(), true, 'no badge for a chat on the projects tab');
+    await page.locator('[data-history-tab="projects"]').click();
+    assert.equal(await page.locator('[data-history-tab="chats"] [data-history-unread]').innerText(), '1', 'the inactive chats tab carries the unread count');
+    await page.locator('[data-history-tab="chats"]').click();
+    await row(secondPin).locator('.open').click();
+    await page.waitForFunction(thread => {
+      const el = document.querySelector(`[data-thread="${thread}"]`);
+      return el && !el.classList.contains('is-unread');
+    }, secondPin, { timeout: 10000 });
+    truth = await threads();
+    assert.equal(truth.threads.find(entry => entry.id === secondPin).unread, false, 'server: viewing clears the badge');
+    console.log('PASS a finished turn badges the row, and viewing clears it');
+
     assert.deepEqual(errors, []);
     await context.close();
   } finally {
