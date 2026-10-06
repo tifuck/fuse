@@ -1338,6 +1338,11 @@ def _messages_to_prompts(messages: list, cascade_id: str) -> tuple[str, list[dic
             thinking = msg["reasoning_content"]
         elif isinstance(msg.get("thinking"), str):
             thinking = msg["thinking"]
+        elif isinstance(msg.get("claude_thinking"), list):
+            # Retained turns store Devin's thinking as signed blocks, the same
+            # shape Claude uses, so one transcript field serves both.
+            thinking = "\n".join(str(block.get("thinking") or "")
+                                 for block in msg["claude_thinking"] if isinstance(block, dict))
         prompts.append(
             {
                 "message_id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"{cascade_id}:{index}:{role}")),

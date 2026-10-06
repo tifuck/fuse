@@ -286,6 +286,36 @@ class OutputAndModelTest(unittest.TestCase):
         with self.assertRaises(chats.ChatValidationError):
             chats.parse_messages([{"role": "user", "content": text}], strict=True)
 
+    def test_reasoning_is_retained_only_when_the_provider_will_be_sent_it(self):
+        from app import chat_runtime
+
+        text, blocks = "r" * 400, [{"thinking": "r" * 400, "signature": "sig"}]
+        keeps = {
+            "glm-5.3": "reasoning_content",
+            "openrouter/z-ai/glm-5": "reasoning_content",
+            "claude-sonnet-4-6": "claude_thinking",
+            "devin/glm-5-2": "claude_thinking",
+        }
+        for model, field in keeps.items():
+            kept = chat_runtime._native_reasoning(text, model, blocks)
+            self.assertIn(field, kept, model)
+            projected = memory.for_model([{"role": "assistant", "content": "a", **kept}], model)
+            self.assertEqual(context.occupancy_parts(projected)["thinking"], 100, model)
+        for model in ("gpt-5.5", "grok-4.6", "kimi-k2", "mimo-v2-pro", "qwen3:32b",
+                      "openrouter/openai/gpt-5"):
+            self.assertEqual(chat_runtime._native_reasoning(text, model, blocks), {}, model)
+        # Unsigned thinking cannot be replayed to Claude, so it is not stored.
+        self.assertEqual(
+            chat_runtime._native_reasoning(text, "claude-sonnet-4-6", [{"thinking": text}]), {})
+
+    def test_devin_replays_retained_thinking_blocks(self):
+        from app.sources.devin import _messages_to_prompts
+
+        rows = [{"role": "assistant", "content": "a",
+                 "claude_thinking": [{"thinking": "plan", "signature": ""}]}]
+        _system, prompts = _messages_to_prompts(rows, "cascade")
+        self.assertEqual(prompts[0]["thinking"], "plan")
+
     def test_native_reasoning_is_model_scoped_and_counted_once(self):
         row = {"role": "assistant", "content": "answer", "reasoning_content": "r" * 400,
                "_fuse_reasoning_model": "glm-5.3"}

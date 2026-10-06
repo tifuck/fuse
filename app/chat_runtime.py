@@ -1489,19 +1489,32 @@ def _take_thinking(bucket: list, raw) -> None:
 
 
 def _native_reasoning(reasoning, model, thinking=None):
+    """Keep only the reasoning the serving provider will be sent again.
+
+    GLM and OpenRouter's z.ai models require `reasoning_content` echoed back.
+    Claude and Devin require their own earlier thinking (signed blocks, or the
+    thinking text plus signature). Everything else discards prior reasoning, so
+    storing it would inflate the context meter with tokens never transmitted.
+    """
     out = {}
-    if reasoning and (model.startswith("glm-") or model.startswith("openrouter/z-ai/")):
-        out["reasoning_content"] = str(reasoning)
-        out["_fuse_reasoning_model"] = model
+    if model.startswith("glm-") or model.startswith("openrouter/z-ai/"):
+        if reasoning:
+            out["reasoning_content"] = str(reasoning)
+            out["_fuse_reasoning_model"] = model
+        return out
+    keeps_blocks = model.startswith("claude/") or model.startswith("claude-")
+    keeps_text = model.startswith("devin/")
+    if not keeps_blocks and not keeps_text:
+        return out
     blocks = []
     for block in thinking or []:
         if not isinstance(block, dict):
             continue
         text = str(block.get("thinking") or block.get("text") or "")
         signature = str(block.get("signature") or "")
-        if text and signature:
+        if text and (signature or keeps_text):
             blocks.append({"thinking": text, "signature": signature})
-    if blocks and (model.startswith("claude/") or model.startswith("claude-")):
+    if blocks:
         out["claude_thinking"] = blocks
         out["_fuse_reasoning_model"] = model
     return out
