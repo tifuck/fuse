@@ -6,6 +6,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -180,11 +181,18 @@ class BackendContinuationTest(unittest.TestCase):
     def test_live_job_reconciliation_preserves_output_and_active_wait(self):
         self.make_jobs()
         self.conn.execute("UPDATE command_jobs SET status='running',out='' WHERE id='job0'")
-        messages = [{"tools": [{"id": "wait", "name": "get_command_output", "child_id": "job0", "status": "running", "output": "live output", "output_chars": 11}]}]
+        messages = [{"tools": [{"id": "wait", "name": "run_terminal_command", "child_id": "job0", "status": "running", "output": "live output", "output_chars": 11}]}]
         store.settle_command_traces(self.conn, 1, self.run["thread_id"], messages)
         trace = messages[0]["tools"][0]
         self.assertEqual(trace["status"], "running")
         self.assertEqual(trace["output"], "live output")
+        self.assertIsNone(trace.get("elapsed_ms"))
+        self.conn.execute("ALTER TABLE command_jobs ADD COLUMN started_at TEXT")
+        self.conn.execute("ALTER TABLE command_jobs ADD COLUMN created_at TEXT")
+        self.conn.execute("UPDATE command_jobs SET started_at=? WHERE id='job0'",
+                          ((datetime.now(timezone.utc) - timedelta(seconds=40)).strftime("%Y-%m-%dT%H:%M:%SZ"),))
+        store.settle_command_traces(self.conn, 1, self.run["thread_id"], messages)
+        self.assertGreaterEqual(trace["elapsed_ms"], 40000)
         trace["status"] = "done"
         store.settle_command_traces(self.conn, 1, self.run["thread_id"], messages)
         self.assertEqual(trace["status"], "done")

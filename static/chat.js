@@ -7674,7 +7674,14 @@
     const now = Date.now();
     const clock = (msg._spinThink ||= { since: 0, flash: null });
     if (thinking) {
-      if (!clock.since) clock.since = now;
+      if (!clock.since) {
+        // The thought's own duration, streamed on its segment. Anchoring at
+        // page paint restarted "still thinking" on every reload.
+        const segs = Array.isArray(msg.segments) ? msg.segments : [];
+        const last = [...segs].reverse().find((seg) => seg && seg.type === "reasoning");
+        const ms = Number(last && last.ms);
+        clock.since = Number.isFinite(ms) && ms > 0 ? now - ms : now;
+      }
       clock.flash = null;
       const ms = now - clock.since;
       return ms >= 45000 ? "deep in thought" : ms >= 30000 ? "thinking some more" : ms >= 20000 ? "thinking more"

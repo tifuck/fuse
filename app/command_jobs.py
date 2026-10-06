@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from . import db
@@ -162,6 +163,35 @@ def _append_err(rec: dict, text: str) -> None:
 
 def elapsed_ms(rec: dict) -> int:
     return int((time.monotonic() - rec["started"]) * 1000)
+
+
+def row_start_ms(row) -> int | None:
+    """Wall-clock start of a persisted job, epoch ms.
+
+    A reload rebuilds the command row from the database, where the live
+    elapsed_ms (a monotonic delta) was never stored, so the ticking clock
+    started over. started_at is written when the process starts."""
+    try:
+        keys = set(row.keys())
+    except AttributeError:
+        keys = set(row)
+    stamp = str((row["started_at"] if "started_at" in keys else "") or (row["created_at"] if "created_at" in keys else "") or "")
+    if not stamp:
+        return None
+    try:
+        dt = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp() * 1000)
+
+
+def row_elapsed_ms(row) -> int | None:
+    started = row_start_ms(row)
+    if started is None:
+        return None
+    return max(0, int(datetime.now(timezone.utc).timestamp() * 1000) - started)
 
 
 def _admit(kind: str, host_id: int, source: str) -> None:
@@ -1329,15 +1359,9 @@ def list_thread_jobs(user_id: int, thread_id: int) -> list[dict]:
         elapsed = None
         if rec is not None and rec.get("started"):
             elapsed = int((time.monotonic() - float(rec["started"])) * 1000)
-        started_ms = None
-        try:
-            stamp = str(row["started_at"] or row["created_at"] or "").replace("Z", "+00:00")
-            dt = datetime.fromisoformat(stamp)
-            started_ms = int(dt.timestamp() * 1000)
-            if elapsed is None and started_ms:
-                elapsed = max(0, int(datetime.now(timezone.utc).timestamp() * 1000) - started_ms)
-        except ValueError:
-            pass
+        started_ms = row_start_ms(row)
+        if elapsed is None:
+            elapsed = row_elapsed_ms(row)
         item = {
             "id": row["id"],
             "host": row["host"] or "",

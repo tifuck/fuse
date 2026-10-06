@@ -2336,6 +2336,9 @@ def command_trace(row, name="run_terminal_command"):
         "host": row.get("host") or "", "command": str(row.get("command") or "")[:8000],
         "cwd": str(row.get("cwd") or "")[:400], "exit_code": row.get("exit_code"),
         "duration_ms": row.get("duration_ms"),
+        # A live job's elapsed time lives only in memory; the row keeps the
+        # wall-clock start, which is what a reload can resume a clock from.
+        "elapsed_ms": command_jobs.row_elapsed_ms(row) if live else None,
         # A live row names the deadline it is counting toward, not the kill
         # budget a foreground job stores (its wait plus the background handoff).
         "timeout_ms": command_jobs.call_timeout_ms(row) if live else row.get("timeout_ms"),
@@ -2379,7 +2382,7 @@ def settle_command_traces(conn, user_id, thread_id, messages):
                 # An older DB launch row must not erase a live trace's output
                 # or complete a foreground wait which has not returned yet.
                 for key in ("status", "background", "preview", "output", "output_chars", "output_bytes",
-                            "output_chars_exact", "output_retained_chars", "output_mode", "output_start", "truncated", "elapsed_ms"):
+                            "output_chars_exact", "output_retained_chars", "output_mode", "output_start", "truncated"):
                     if key in tool:
                         update[key] = tool[key]
             tool.update(update)
