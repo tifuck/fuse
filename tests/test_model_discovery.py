@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from app import db, pricing
-from app.sources import chatgpt
+from app.sources import chatgpt, chatgpt_catalog
 from tests.mariadb_fixture import isolated_database
 
 CODEX_CATALOG = {
@@ -21,12 +21,12 @@ CODEX_CATALOG = {
 
 @pytest.fixture
 def fresh_chatgpt_cache():
-    saved = chatgpt._models_cache
-    chatgpt._models_cache = None
+    saved = chatgpt_catalog._models_cache
+    chatgpt_catalog._models_cache = None
     try:
         yield
     finally:
-        chatgpt._models_cache = saved
+        chatgpt_catalog._models_cache = saved
 
 
 def test_codex_catalog_lists_visible_slugs_only():

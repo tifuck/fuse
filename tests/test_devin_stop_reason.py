@@ -24,6 +24,7 @@ _TMP = tempfile.mkdtemp(prefix="fuse-devin-")
 os.environ.setdefault("DATABASE_PATH", str(Path(_TMP) / "devin.db"))
 
 from app.sources import devin_proto as proto  # noqa: E402
+from app.sources import devin_stream  # noqa: E402
 from app.sources.devin import DevinSource  # noqa: E402
 
 STOP_MAX_TOKENS = proto.STOP_MAX_TOKENS  # 3
@@ -89,7 +90,7 @@ class DevinStopReasonTest(unittest.IsolatedAsyncioTestCase):
     async def _stream_finish(self, frames: list[bytes]) -> str:
         collected: dict = {}
         chunks = []
-        async for chunk in self.src._stream_sse(_FakeResp(frames), _FakeClient(), collected, "test-model"):
+        async for chunk in devin_stream._stream_sse(_FakeResp(frames), _FakeClient(), collected, "test-model"):
             chunks.append(chunk)
         finishes = _finishes(chunks)
         self.assertTrue(finishes, "no finish_reason chunk emitted")
@@ -138,7 +139,7 @@ class DevinStopReasonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(finish, "stop")
 
     async def _collect_finish(self, frames: list[bytes]) -> str:
-        obj, _usage, _trailer = await self.src._collect_completion(_FakeResp(frames), "test-model")
+        obj, _usage, _trailer = await devin_stream._collect_completion(_FakeResp(frames), "test-model")
         return obj["choices"][0]["finish_reason"]
 
     async def test_collect_segment_max_tokens_not_length(self):
@@ -158,14 +159,14 @@ class DevinStopReasonTest(unittest.IsolatedAsyncioTestCase):
     async def test_collect_surfaces_trailer_error(self):
         # Connect end-stream trailers carry the upstream failure; previously
         # they were swallowed and a failed completion looked like an empty 200.
-        obj, _usage, trailer = await self.src._collect_completion(
+        obj, _usage, trailer = await devin_stream._collect_completion(
             _FakeResp([_frame(text="partial"), _trailer("an internal error occurred (trace ID: t)")]),
             "test-model",
         )
         self.assertEqual(trailer, "an internal error occurred (trace ID: t)")
 
     async def test_collect_clean_trailer_is_empty(self):
-        obj, _usage, trailer = await self.src._collect_completion(
+        obj, _usage, trailer = await devin_stream._collect_completion(
             _FakeResp([_frame(text="done"), _frame(stop=1)]),
             "test-model",
         )
@@ -190,7 +191,7 @@ class DevinSkuTrailerHealthTest(unittest.IsolatedAsyncioTestCase):
 
         collected: dict = {}
         chunks = []
-        async for chunk in self.src._stream_sse(
+        async for chunk in devin_stream._stream_sse(
             _FakeResp([_frame(text="hi"), _trailer("an internal error occurred (trace ID: t)")]),
             _FakeClient(),
             collected,
@@ -207,7 +208,7 @@ class DevinSkuTrailerHealthTest(unittest.IsolatedAsyncioTestCase):
         from app.sources import devin as devin_mod
 
         collected: dict = {}
-        async for _chunk in self.src._stream_sse(
+        async for _chunk in devin_stream._stream_sse(
             _FakeResp([_frame(text="hi"), _trailer("deadline exceeded")]),
             _FakeClient(),
             collected,

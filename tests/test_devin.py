@@ -18,7 +18,9 @@ os.environ.setdefault("APP_SECRET", "x" * 32)
 
 from app import db  # noqa: E402
 from app.sources import devin as devin_mod  # noqa: E402
+from app.sources import devin_catalog  # noqa: E402
 from app.sources import devin_proto as proto  # noqa: E402
+from app.sources import devin_stream  # noqa: E402
 from app.sources.devin import (  # noqa: E402
     canonical_fuse_id,
     canonical_upstream,
@@ -83,12 +85,12 @@ class PkceLoginTest(unittest.TestCase):
 
 
 def _clear_catalog():
-    devin_mod._model_wire_uids = {}
-    devin_mod._model_plain_uids = {}
-    devin_mod._model_efforts = {}
-    devin_mod._model_labels = {}
-    devin_mod._model_promo_until = {}
-    devin_mod._models_cache = None
+    devin_catalog._model_wire_uids = {}
+    devin_catalog._model_plain_uids = {}
+    devin_catalog._model_efforts = {}
+    devin_catalog._model_labels = {}
+    devin_catalog._model_promo_until = {}
+    devin_catalog._models_cache = None
     devin_mod.reset_sku_health()
 
 
@@ -774,8 +776,8 @@ class CatalogMetadataTest(unittest.TestCase):
                 {"id": "swe-2-high", "name": "SWE-2 High"},
             ]
         )
-        self.assertEqual(devin_mod._model_promo_until.get("devin/glm-5-2"), 1789545540)
-        self.assertNotIn("devin/swe-2", devin_mod._model_promo_until)
+        self.assertEqual(devin_catalog._model_promo_until.get("devin/glm-5-2"), 1789545540)
+        self.assertNotIn("devin/swe-2", devin_catalog._model_promo_until)
 
 
 class StreamBindTest(unittest.IsolatedAsyncioTestCase):
@@ -853,10 +855,9 @@ class StreamUsageDetailsTest(unittest.IsolatedAsyncioTestCase):
         stop_msg.uint32(5, proto.STOP_MAX_TOKENS)
         frames = [proto.connect_frame(usage_msg.finish()), proto.connect_frame(stop_msg.finish())]
         collected: dict = {}
-        source = object.__new__(DevinSource)
         client = unittest.mock.AsyncMock()
         chunks = []
-        async for chunk in source._stream_sse(_FrameResp(frames), client, collected, "swe-2", "uid-1"):
+        async for chunk in devin_stream._stream_sse(_FrameResp(frames), client, collected, "swe-2", "uid-1"):
             chunks.append(chunk.decode())
         joined = "".join(chunks)
         self.assertIn('"prompt_tokens_details":{"cached_tokens":4,"cache_write_tokens":6}', joined)

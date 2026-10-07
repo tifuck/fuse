@@ -271,7 +271,7 @@ def _long_context_tiers(pricing: dict) -> list[dict]:
 
 async def sync_openrouter_prices() -> dict:
     imported: set[str] = set()
-    from .sources import chatgpt, zai
+    from .sources import chatgpt, chatgpt_catalog, zai
 
     def listed(seeded, cache) -> set[str]:
         return set(seeded) | set(cache[1] if cache else [])
@@ -279,7 +279,7 @@ async def sync_openrouter_prices() -> dict:
     author_providers = (
         ("x-ai", "grok", None),
         ("openai", "openai", None),
-        ("openai", CHATGPT_PROVIDER, listed(chatgpt.CHATGPT_MODELS, chatgpt._models_cache)),
+        ("openai", CHATGPT_PROVIDER, listed(chatgpt.CHATGPT_MODELS, chatgpt_catalog._models_cache)),
         ("z-ai", "zai", listed(zai.ZAI_MODELS, zai._models_cache)),
     )
     catalogs = []
@@ -502,16 +502,16 @@ def _expected_columns(values: dict) -> dict:
 
 def _listed_pool_models() -> set[tuple[str, str]]:
     """(provider, recorded model) for every id the pool catalogs list now."""
-    from .sources import chatgpt, claude, grok, kimi, mimo, zai
+    from .sources import chatgpt, chatgpt_catalog, claude, claude_catalog, grok, kimi, mimo, zai
 
     out: set[tuple[str, str]] = set()
     for provider, mod in (
         (CHATGPT_PROVIDER, chatgpt), (GROK_PROVIDER, grok), (ZAI_PROVIDER, zai),
         (KIMI_PROVIDER, kimi), (MIMO_PROVIDER, mimo),
     ):
-        cache = mod._models_cache
+        cache = chatgpt_catalog._models_cache if mod is chatgpt else mod._models_cache
         out.update((provider, mid) for mid in (cache[1] if cache else []))
-    cache = claude._models_cache
+    cache = claude_catalog._models_cache
     # The Claude pool records the upstream slug, not the claude/ Fuse id.
     out.update((CLAUDE_PROVIDER, claude.upstream_id(mid)) for mid in (cache[1] if cache else []))
     return out

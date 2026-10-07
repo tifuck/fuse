@@ -8,12 +8,15 @@ from fastapi.responses import HTMLResponse
 from .. import context as ctxmod, db
 from ..sources import TYPES, grok as grok_mod, models_by_source, reasoning_efforts
 from ..sources import chatgpt as chatgpt_mod
+from ..sources import chatgpt_catalog as chatgpt_catalog_mod
 from ..sources import devin as devin_mod
+from ..sources import devin_catalog as devin_catalog_mod
 from ..sources import openrouter as openrouter_mod
 from ..sources import explabs as explabs_mod
 from ..sources import kimi as kimi_mod
 from ..sources import mimo as mimo_mod
 from ..sources import claude as claude_mod
+from ..sources import claude_catalog as claude_catalog_mod
 from ..sources import zai as zai_mod
 from ..sources.grok import grok_access_state
 from ..sources import pool_policy
@@ -340,12 +343,12 @@ def _family_title(group: dict) -> str:
 def _pool_catalog(type_id: str) -> list[str]:
     cache = {
         "grok": grok_mod._models_cache,
-        "chatgpt": chatgpt_mod._models_cache,
+        "chatgpt": chatgpt_catalog_mod._models_cache,
         "zai": zai_mod._models_cache,
-        "devin": devin_mod._models_cache,
+        "devin": devin_catalog_mod._models_cache,
         "kimi": kimi_mod._models_cache,
         "mimo": mimo_mod._models_cache,
-        "claude": claude_mod._models_cache,
+        "claude": claude_catalog_mod._models_cache,
     }.get(type_id)
     if cache and cache[1]:
         return list(cache[1])

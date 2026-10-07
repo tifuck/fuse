@@ -1,3 +1,13 @@
+"""ChatGPT subscription pool (Codex OAuth).
+
+Accounts link through OpenAI device auth; chat is Codex `/responses`
+translated to OpenAI chunks. Auth alone may use `OPENAI_AUTH_PROXY`; chat and
+usage always connect directly.
+
+Model identity/catalog state: `chatgpt_catalog`. Request shaping:
+`chatgpt_payload`. Stream translation: `chatgpt_stream`. Their public names
+are re-exported here as the provider's API surface.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -5,15 +15,14 @@ import base64
 import json
 import logging
 import math
-import time
 from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from .. import accounts, db, model_caps
+from .. import accounts, db
 from ..config import settings
 from ..crypto import encrypt
-from ..proxy import UsageStream, usage_from_obj
+from ..proxy import UsageStream
 from .base import ChatResult
 from .pool_pick import (
     CHATGPT_FREE_PLANS,
@@ -30,25 +39,39 @@ from . import pool_policy
 from .pool_session import bind, lookup
 from .token_store import expires_at, persist_rotated
 
+from .chatgpt_catalog import (
+    CHATGPT_MODELS,
+    _FAST_TIER_IDS,
+    _remember_models,
+    _row_has_fast,
+    base_slug,
+    cached_models,
+    fast_id,
+    is_chatgpt_model,
+    is_fast,
+    parse_catalog_payload,
+)
+from .chatgpt_payload import (
+    _input_content,
+    _text_of,
+    build_responses_payload,
+)
+from .chatgpt_stream import (
+    UpstreamProtocolError,
+    _CallBook,
+    _Translator,
+    _aggregate,
+    _error_body,
+    _sse,
+    _translated_stream,
+    _unsupported_param,
+    _upstream_events,
+    _usage_from_response,
+)
+
 logger = logging.getLogger(__name__)
 REFRESH_WINDOW = timedelta(minutes=5)
-_models_cache: tuple[float, list[str]] | None = None
 _refresh_locks: dict[int, asyncio.Lock] = {}
-
-CHATGPT_MODELS = [
-    "gpt-6-astra",
-    "gpt-6-sol",
-    "gpt-6-luna",
-    "gpt-5.5",
-    "gpt-5.4",
-    "gpt-5.4-mini",
-    "gpt-5.6-sol",
-    "gpt-5.6-terra",
-    "gpt-5.6-luna",
-]
-# Codex Fast mode is a service tier on the base slug, not its own model.
-# The catalog advertises it as service_tiers id "fast" (older catalogs: "priority").
-_FAST_TIER_IDS = frozenset({"fast", "priority"})
 
 
 def _auth_base() -> str:
@@ -276,56 +299,6 @@ def _note_invoke(cred_id: int) -> None:
     db.execute("UPDATE credentials SET pool_invokes = COALESCE(pool_invokes, 0) + 1 WHERE id=?", (cred_id,))
 
 
-async def _error_body(resp: httpx.Response) -> dict:
-    """Read a streamed error response. httpx.json() raises ResponseNotRead
-    until the body has been pulled."""
-    try:
-        await resp.aread()
-    except Exception:
-        return {"error": {"message": f"upstream {resp.status_code}"}}
-    text = resp.text or ""
-    try:
-        obj = json.loads(text)
-    except json.JSONDecodeError:
-        return {"error": {"message": text[:500]}}
-    if isinstance(obj, dict):
-        return obj
-    return {"error": {"message": str(obj)[:500]}}
-
-
-def _unsupported_param(obj) -> str | None:
-    """Codex /responses 400: {'detail': 'Unsupported parameter: max_output_tokens'}."""
-    if not isinstance(obj, dict):
-        return None
-    texts: list[str] = []
-    detail = obj.get("detail")
-    if isinstance(detail, str):
-        texts.append(detail)
-    err = obj.get("error")
-    if isinstance(err, dict):
-        param = err.get("param")
-        if isinstance(param, str) and param.strip():
-            return param.strip()
-        for key in ("message", "msg"):
-            val = err.get(key)
-            if isinstance(val, str):
-                texts.append(val)
-    elif isinstance(err, str):
-        texts.append(err)
-    for text in texts:
-        lower = text.lower()
-        if "unsupported parameter:" in lower:
-            tail = text.split(":", 1)[1].strip()
-            name = tail.split()[0].strip(".,;\"'`") if tail else ""
-            return name or None
-        marker = " is not supported"
-        idx = lower.find(marker)
-        if idx > 0:
-            name = text[:idx].strip().split()[-1].strip(".,;\"'`")
-            return name or None
-    return None
-
-
 async def start_device() -> dict:
     async with _auth_client() as client:
         r = await client.post(
@@ -507,94 +480,6 @@ def _models_url() -> str:
     return _backend_base() + "/models"
 
 
-def fast_id(slug: str) -> str:
-    return f"{slug}-fast"
-
-
-def base_slug(model: str) -> str:
-    """Picker id → Codex slug. `gpt-6.1-sol-fast` is `gpt-6.1-sol` at the fast tier."""
-    mid = (model or "").strip()
-    if len(mid) > 5 and mid.endswith("-fast"):
-        return mid[:-5]
-    return mid
-
-
-def is_fast(model: str) -> bool:
-    return bool(model) and model.endswith("-fast") and base_slug(model) != model
-
-
-def _row_has_fast(row: dict) -> bool:
-    tiers = row.get("service_tiers")
-    if isinstance(tiers, list):
-        for tier in tiers:
-            tid = tier.get("id") if isinstance(tier, dict) else tier
-            if str(tid or "") in _FAST_TIER_IDS:
-                return True
-    speeds = row.get("additional_speed_tiers")
-    return isinstance(speeds, list) and any(str(s) in _FAST_TIER_IDS for s in speeds)
-
-
-def parse_catalog_payload(data) -> list[str]:
-    """Listed Codex slugs. `visibility: hide` rows (auto-review, reserve) are
-    internal and not callable as chat models.
-
-    A slug whose row advertises the fast service tier is also listed as
-    `{slug}-fast`, right after the base slug, so the picker can offer it.
-    """
-    rows = (data.get("models") or data.get("data")) if isinstance(data, dict) else None
-    if not isinstance(rows, list):
-        return []
-    names = []
-    for row in rows:
-        if not isinstance(row, dict) or str(row.get("visibility") or "list") == "hide":
-            continue
-        slug = str(row.get("slug") or row.get("id") or "")
-        if not slug or slug in names:
-            continue
-        names.append(slug)
-        inputs = row.get("input_modalities")
-        if isinstance(inputs, list):
-            model_caps.remember("chatgpt", slug, "image" in inputs)
-        if _row_has_fast(row):
-            fid = fast_id(slug)
-            if fid not in names:
-                names.append(fid)
-                if isinstance(inputs, list):
-                    model_caps.remember("chatgpt", fid, "image" in inputs)
-    return names
-
-
-def is_chatgpt_model(model: str) -> bool:
-    """Seeded or live-listed Codex slug.
-
-    `{slug}-fast` counts only when the catalog listed it: Fast mode is a
-    service tier some models do not advertise, so a guessed suffix must not
-    route to the pool.
-    """
-    if model in CHATGPT_MODELS:
-        return True
-    return bool(_models_cache and model in _models_cache[1])
-
-
-def _remember_models(names: list[str]) -> list[str]:
-    """Seed plus anything Codex lists. A later fetch only adds ids, so a short
-    or failed catalog cannot drop a model the picker already showed."""
-    global _models_cache
-    fresh = [n for n in names if isinstance(n, str) and n.startswith("gpt-")]
-    if not fresh and _models_cache and _models_cache[1]:
-        return list(_models_cache[1])
-    base = list(_models_cache[1]) if _models_cache and _models_cache[1] else list(CHATGPT_MODELS)
-    merged: list[str] = []
-    # Upstream order first (new models sit where the provider puts them),
-    # then ids an earlier catalog listed and this one omits.
-    for name in fresh + base:
-        if name not in merged:
-            merged.append(name)
-    if merged:
-        _models_cache = (time.time(), merged)
-    return merged or list(CHATGPT_MODELS)
-
-
 def _safe_extra(cred) -> dict:
     """Credential extra, or {} for a row that cannot be read."""
     try:
@@ -623,9 +508,9 @@ async def _fetch_slugs(token: str, account_id: str | None = None) -> list[str]:
 
 
 async def fetch_catalog(token: str, account_id: str | None = None) -> list[str]:
-    now = time.time()
-    if _models_cache and now - _models_cache[0] < 300:
-        return list(_models_cache[1])
+    cached = cached_models(300.0)
+    if cached is not None:
+        return cached
     return _remember_models(await _fetch_slugs(token, account_id))
 
 
@@ -789,492 +674,6 @@ async def refresh_pool_usage(*, force: bool = False) -> None:
     await asyncio.gather(*(refresh_usage(c, force=force) for c in rows), return_exceptions=True)
 
 
-def _text_of(content) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for p in content:
-            if isinstance(p, dict) and p.get("type") == "text":
-                parts.append(str(p.get("text") or ""))
-        return "\n".join(x for x in parts if x)
-    return ""
-
-
-def _input_content(content) -> list:
-    if isinstance(content, str):
-        return [{"type": "input_text", "text": content}]
-    out = []
-    if isinstance(content, list):
-        for p in content:
-            if not isinstance(p, dict):
-                continue
-            kind = p.get("type")
-            if kind == "text":
-                out.append({"type": "input_text", "text": str(p.get("text") or "")})
-            elif kind == "image_url":
-                url_obj = p.get("image_url")
-                url = url_obj.get("url") if isinstance(url_obj, dict) else url_obj
-                if url:
-                    image = {"type": "input_image", "image_url": str(url)}
-                    if isinstance(url_obj, dict) and isinstance(url_obj.get("detail"), str):
-                        image["detail"] = url_obj["detail"]
-                    out.append(image)
-            elif kind in ("file", "input_file"):
-                file = p.get("file")
-                file = file if isinstance(file, dict) else p
-                item = {"type": "input_file"}
-                for key in ("file_id", "file_data", "filename"):
-                    if isinstance(file.get(key), str) and file[key]:
-                        item[key] = file[key]
-                if "file_id" in item or "file_data" in item:
-                    out.append(item)
-    return out or [{"type": "input_text", "text": ""}]
-
-
-def build_responses_payload(body: dict, model: str, session_id: str | None = None) -> dict:
-    instructions: list[str] = []
-    input_items: list[dict] = []
-    for msg in body.get("messages") or []:
-        if not isinstance(msg, dict):
-            continue
-        role = msg.get("role")
-        content = msg.get("content")
-        if role in ("system", "developer"):
-            text = _text_of(content)
-            if text:
-                instructions.append(text)
-            continue
-        if role == "user":
-            input_items.append({"role": "user", "content": _input_content(content)})
-        elif role == "assistant":
-            text = _text_of(content)
-            if text:
-                input_items.append(
-                    {"role": "assistant", "content": [{"type": "output_text", "text": text}]}
-                )
-            for tc in msg.get("tool_calls") or []:
-                if not isinstance(tc, dict):
-                    continue
-                fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
-                input_items.append(
-                    {
-                        "type": "function_call",
-                        "call_id": str(tc.get("id") or fn.get("name") or ""),
-                        "name": str(fn.get("name") or ""),
-                        "arguments": str(fn.get("arguments") or "{}"),
-                    }
-                )
-        elif role == "tool":
-            input_items.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": str(msg.get("tool_call_id") or ""),
-                    "output": _text_of(content),
-                }
-            )
-    payload: dict = {
-        "model": base_slug(model),
-        "input": input_items,
-        "stream": True,
-        "store": False,
-    }
-    if is_fast(model):
-        payload["service_tier"] = "fast"
-    # Always the scoped session id (hmac of user+model+client key), never the
-    # raw prompt_cache_key. Two tenants sending the same client string must
-    # not share an upstream routing group on a pooled account.
-    if session_id:
-        payload["prompt_cache_key"] = str(session_id)[:256]
-    if instructions:
-        payload["instructions"] = "\n\n".join(instructions)
-    tools = body.get("tools")
-    if isinstance(tools, list) and tools:
-        mapped = []
-        for t in tools:
-            if not isinstance(t, dict) or t.get("type") != "function":
-                continue
-            fn = t.get("function") if isinstance(t.get("function"), dict) else t
-            if not fn.get("name"):
-                continue
-            # Responses function tools default to strict, which makes every
-            # property required: the model then fills optional arguments with
-            # placeholders (both edits and old_string, include and glob, a
-            # dummy edit). Codex itself sends strict=false.
-            mapped.append(
-                {
-                    "type": "function",
-                    "name": str(fn.get("name")),
-                    "description": str(fn.get("description") or ""),
-                    "parameters": fn.get("parameters") or {"type": "object", "properties": {}},
-                    "strict": False,
-                }
-            )
-        if mapped:
-            payload["tools"] = mapped
-    choice = body.get("tool_choice")
-    if isinstance(choice, str) and choice in ("none", "auto", "required"):
-        payload["tool_choice"] = choice
-    elif isinstance(choice, dict) and choice.get("type") == "function":
-        fn = choice.get("function") if isinstance(choice.get("function"), dict) else {}
-        if fn.get("name"):
-            payload["tool_choice"] = {"type": "function", "name": str(fn["name"])}
-    if body.get("parallel_tool_calls") is not None:
-        payload["parallel_tool_calls"] = bool(body.get("parallel_tool_calls"))
-    # Codex /responses now rejects Chat Completions sampling and cache-lifetime
-    # fields (400 Unsupported parameter: max_output_tokens / temperature / top_p
-    # / prompt_cache_retention / prompt_cache_options), including on GPT-5.6.
-    # prompt_cache_key and reasoning.effort still work.
-    reasoning = body.get("reasoning")
-    if isinstance(reasoning, dict):
-        payload["reasoning"] = dict(reasoning)
-    effort = body.get("reasoning_effort")
-    if isinstance(effort, str):
-        payload.setdefault("reasoning", {})["effort"] = effort
-        payload["reasoning"].setdefault("summary", "auto")
-    summary = body.get("reasoning_summary")
-    if summary is None:
-        summary = body.get("reasoningSummary")
-    if isinstance(summary, str):
-        payload.setdefault("reasoning", {})["summary"] = summary
-    return payload
-
-
-def _usage_from_response(u: dict) -> dict:
-    return usage_from_obj({"usage": u}) if isinstance(u, dict) else {}
-
-
-class UpstreamProtocolError(ValueError):
-    pass
-
-
-async def _upstream_events(resp: httpx.Response):
-    buf = ""
-
-    def parse(line: str):
-        text = line.strip()
-        if not text.startswith("data:"):
-            return None
-        data = text[5:].strip()
-        if not data or data == "[DONE]":
-            return None
-        try:
-            obj = json.loads(data)
-        except json.JSONDecodeError as exc:
-            raise UpstreamProtocolError("upstream sent malformed terminal JSON") from exc
-        if not isinstance(obj, dict):
-            raise UpstreamProtocolError("upstream sent an invalid event object")
-        return obj
-
-    async for chunk in resp.aiter_text():
-        buf += chunk
-        while "\n" in buf:
-            line, buf = buf.split("\n", 1)
-            obj = parse(line)
-            if obj is not None:
-                yield obj
-    if buf.strip():
-        obj = parse(buf)
-        if obj is not None:
-            yield obj
-
-
-class _CallBook:
-    def __init__(self):
-        self.order: list[str] = []
-        self.calls: dict[str, dict] = {}
-
-    def add(self, item_id: str, call_id: str, name: str, arguments: str) -> dict:
-        rec = {
-            "index": len(self.order),
-            "id": call_id,
-            "name": name,
-            "arguments": arguments,
-        }
-        self.calls[item_id] = rec
-        self.order.append(item_id)
-        return rec
-
-    def get(self, item_id: str) -> dict | None:
-        return self.calls.get(item_id)
-
-    def tool_calls(self) -> list[dict]:
-        return [
-            {
-                "id": self.calls[i]["id"],
-                "type": "function",
-                "function": {
-                    "name": self.calls[i]["name"],
-                    "arguments": self.calls[i]["arguments"],
-                },
-            }
-            for i in self.order
-            if self.calls[i]["name"]
-        ]
-
-
-def _sse(obj: dict) -> bytes:
-    return f"data: {json.dumps(obj, separators=(',', ':'))}\n\n".encode()
-
-
-class _Translator:
-    def __init__(self, model: str):
-        self.model = model
-        self.created = int(time.time())
-        self.completion_id = "chatcmpl-chatgpt"
-        self.book = _CallBook()
-        self.usage: dict = {}
-        self.error: str = ""
-
-    def _chunk(self, delta: dict | None = None, finish: str | None = None) -> bytes:
-        obj = {
-            "id": self.completion_id,
-            "object": "chat.completion.chunk",
-            "created": self.created,
-            "model": self.model,
-            "choices": [{"index": 0, "delta": delta or {}, "finish_reason": finish}],
-        }
-        return _sse(obj)
-
-    def _error_chunk(self, message: str) -> bytes:
-        obj = {
-            "id": self.completion_id,
-            "object": "chat.completion.chunk",
-            "created": self.created,
-            "model": self.model,
-            "choices": [],
-            "error": {"message": message, "type": "api_error"},
-        }
-        return _sse(obj)
-
-    def _handle(self, event: dict) -> bytes | None:
-        etype = event.get("type") or ""
-        if etype == "response.created":
-            response = event.get("response") if isinstance(event.get("response"), dict) else {}
-            self.completion_id = "chatcmpl-" + str(response.get("id") or "chatgpt")
-            return self._chunk({"role": "assistant", "content": ""})
-        if etype == "response.output_text.delta":
-            delta = event.get("delta")
-            if delta:
-                return self._chunk({"content": str(delta)})
-            return None
-        if etype in ("response.reasoning_summary_text.delta", "response.reasoning_text.delta"):
-            delta = event.get("delta")
-            if delta:
-                return self._chunk({"reasoning_content": str(delta)})
-            return None
-        if etype == "response.output_item.added":
-            item = event.get("item") if isinstance(event.get("item"), dict) else {}
-            if item.get("type") == "function_call":
-                item_id = str(item.get("id") or "")
-                rec = self.book.add(
-                    item_id,
-                    str(item.get("call_id") or item.get("id") or f"call_{len(self.book.order)}"),
-                    str(item.get("name") or ""),
-                    str(item.get("arguments") or ""),
-                )
-                return self._chunk(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": rec["index"],
-                                "id": rec["id"],
-                                "type": "function",
-                                "function": {"name": rec["name"], "arguments": rec["arguments"]},
-                            }
-                        ]
-                    }
-                )
-            return None
-        if etype == "response.function_call_arguments.delta":
-            rec = self.book.get(str(event.get("item_id") or ""))
-            if rec and event.get("delta"):
-                rec["arguments"] += str(event.get("delta"))
-                return self._chunk(
-                    {"tool_calls": [{"index": rec["index"], "function": {"arguments": str(event.get("delta"))}}]}
-                )
-            return None
-        if etype == "response.function_call_arguments.done":
-            rec = self.book.get(str(event.get("item_id") or ""))
-            if rec and event.get("arguments") is not None:
-                rec["arguments"] = str(event.get("arguments") or "")
-            return None
-        if etype == "response.completed":
-            response = event.get("response") if isinstance(event.get("response"), dict) else {}
-            if not response:
-                self.error = "upstream terminal response is malformed"
-                return b"__ERROR__"
-            usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
-            if usage:
-                self.usage = _usage_from_response(usage)
-            return b"__FINAL__"
-        if etype in ("response.failed", "response.incomplete"):
-            response = event.get("response") if isinstance(event.get("response"), dict) else {}
-            usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
-            if usage:
-                self.usage = _usage_from_response(usage)
-            err = response.get("error") if isinstance(response.get("error"), dict) else {}
-            self.error = str(err.get("message") or ("upstream response incomplete" if etype == "response.incomplete" else "upstream response failed"))
-            return b"__ERROR__"
-        if etype == "error":
-            err = event.get("error") if isinstance(event.get("error"), dict) else {}
-            self.error = str(err.get("message") or event.get("message") or "upstream error")
-            return b"__ERROR__"
-        return None
-
-    def _final_chunks(self) -> list[bytes]:
-        finish = "tool_calls" if self.book.order else "stop"
-        out = [self._chunk({}, finish)]
-        if self.usage:
-            obj = {
-                "id": self.completion_id,
-                "object": "chat.completion.chunk",
-                "created": self.created,
-                "model": self.model,
-                "choices": [],
-                "usage": {
-                    "prompt_tokens": self.usage["prompt_tokens"],
-                    "completion_tokens": self.usage["completion_tokens"],
-                    "total_tokens": self.usage["total_tokens"],
-                    "prompt_tokens_details": {
-                        "cached_tokens": self.usage.get("cached_tokens") or 0,
-                        "cache_write_tokens": self.usage.get("cache_write_tokens") or 0,
-                    },
-                    "completion_tokens_details": {
-                        "reasoning_tokens": self.usage.get("reasoning_tokens") or 0,
-                    },
-                },
-            }
-            out.append(_sse(obj))
-        out.append(b"data: [DONE]\n\n")
-        return out
-
-
-async def _translated_stream(
-    resp: httpx.Response, client: httpx.AsyncClient, model: str, collected: dict | None = None
-):
-    translator = _Translator(model)
-    stream_status = "failed"
-    try:
-        try:
-            async for event in _upstream_events(resp):
-                out = translator._handle(event)
-                if out is None:
-                    continue
-                if out == b"__FINAL__":
-                    stream_status = "complete"
-                    break
-                if out == b"__ERROR__":
-                    yield translator._error_chunk(translator.error)
-                    yield b"data: [DONE]\n\n"
-                    return
-                yield out
-        except (UpstreamProtocolError, httpx.HTTPError) as exc:
-            translator.error = f"upstream stream failed ({type(exc).__name__})"
-        if stream_status != "complete":
-            yield translator._error_chunk(translator.error or "upstream stream ended before a terminal response")
-            yield b"data: [DONE]\n\n"
-            return
-        for piece in translator._final_chunks():
-            yield piece
-    finally:
-        await resp.aclose()
-        await client.aclose()
-        if collected is not None:
-            collected.clear()
-            collected.update(translator.usage or {})
-            collected["stream_status"] = stream_status
-            if translator.usage:
-                collected["usage_status"] = "complete" if stream_status == "complete" else "partial"
-
-
-async def _aggregate(resp: httpx.Response, client: httpx.AsyncClient, model: str) -> dict:
-    translator = _Translator(model)
-    text_parts: list[str] = []
-    reasoning_parts: list[str] = []
-    terminal = False
-    try:
-        async for event in _upstream_events(resp):
-            etype = event.get("type") or ""
-            if etype == "response.created":
-                response = event.get("response") if isinstance(event.get("response"), dict) else {}
-                translator.completion_id = "chatcmpl-" + str(response.get("id") or "chatgpt")
-            elif etype == "response.output_text.delta":
-                if event.get("delta"):
-                    text_parts.append(str(event.get("delta")))
-            elif etype in ("response.reasoning_summary_text.delta", "response.reasoning_text.delta"):
-                if event.get("delta"):
-                    reasoning_parts.append(str(event.get("delta")))
-            elif etype == "response.output_item.added":
-                item = event.get("item") if isinstance(event.get("item"), dict) else {}
-                if item.get("type") == "function_call":
-                    translator.book.add(
-                        str(item.get("id") or ""),
-                        str(item.get("call_id") or item.get("id") or f"call_{len(translator.book.order)}"),
-                        str(item.get("name") or ""),
-                        str(item.get("arguments") or ""),
-                    )
-            elif etype == "response.function_call_arguments.delta":
-                rec = translator.book.get(str(event.get("item_id") or ""))
-                if rec and event.get("delta"):
-                    rec["arguments"] += str(event.get("delta"))
-            elif etype == "response.function_call_arguments.done":
-                rec = translator.book.get(str(event.get("item_id") or ""))
-                if rec and event.get("arguments") is not None:
-                    rec["arguments"] = str(event.get("arguments") or "")
-            elif etype == "response.completed":
-                response = event.get("response") if isinstance(event.get("response"), dict) else {}
-                if not response:
-                    translator.error = "upstream terminal response is malformed"
-                    break
-                usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
-                if usage:
-                    translator.usage = _usage_from_response(usage)
-                terminal = True
-                break
-            elif etype in ("response.failed", "response.incomplete"):
-                response = event.get("response") if isinstance(event.get("response"), dict) else {}
-                usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
-                if usage:
-                    translator.usage = _usage_from_response(usage)
-                err = response.get("error") if isinstance(response.get("error"), dict) else {}
-                translator.error = str(err.get("message") or ("upstream response incomplete" if etype == "response.incomplete" else "upstream response failed"))
-                break
-            elif etype == "error":
-                err = event.get("error") if isinstance(event.get("error"), dict) else {}
-                translator.error = str(err.get("message") or "upstream error")
-                break
-    except (UpstreamProtocolError, httpx.HTTPError) as exc:
-        translator.error = f"upstream stream failed ({type(exc).__name__})"
-    finally:
-        await resp.aclose()
-        await client.aclose()
-    if not terminal and not translator.error:
-        translator.error = "upstream stream ended before a terminal response"
-    if translator.error:
-        return {
-            "error": {"message": translator.error, "type": "api_error", "code": 502},
-            "_fuse_usage": translator.usage,
-        }
-    message: dict = {"role": "assistant", "content": "".join(text_parts)}
-    if reasoning_parts:
-        message["reasoning_content"] = "".join(reasoning_parts)
-    calls = translator.book.tool_calls()
-    if calls:
-        message["tool_calls"] = calls
-    finish = "tool_calls" if calls else "stop"
-    body = {
-        "id": translator.completion_id,
-        "object": "chat.completion",
-        "created": translator.created,
-        "model": model,
-        "choices": [{"index": 0, "message": message, "finish_reason": finish}],
-    }
-    if translator.usage:
-        body["usage"] = dict(translator.usage)
-    return body
-
-
 class ChatGPTSource:
     type_id = "chatgpt"
 
@@ -1295,12 +694,11 @@ class ChatGPTSource:
         )
 
     async def models(self) -> list[str]:
-        global _models_cache
         if not self.creds:
             return []
-        now = time.time()
-        if _models_cache and now - _models_cache[0] < 300:
-            return list(_models_cache[1])
+        cached = cached_models(300.0)
+        if cached is not None:
+            return cached
         # Codex lists only what the account's plan can call, and the pool is
         # mostly Free. Read one paid and one Free/Go account so paid-only
         # models (gpt-6.1-sol) list; pick_account then routes them to paid.
