@@ -713,7 +713,15 @@ def delete_project(user_id: int, host_id: int, project_id: int, *, sessions: str
         return False
     if sessions == "delete":
         for tid in project_session_ids(user_id, project_id):
-            chats.delete_thread(user_id, tid)
+            try:
+                deleted = chats.delete_thread(user_id, tid)
+            except chats.ChatValidationError:
+                deleted = False
+            # False is the refusal contract (thread moved or refused under
+            # us): skip a thread that is already gone, but never delete the
+            # project row out from under a session that still lives.
+            if not deleted and chats.get_thread(user_id, tid) is not None:
+                raise HostError("project still has sessions; nothing was deleted", 409)
     else:
         from . import chat_store as store
 
@@ -729,11 +737,21 @@ def delete_project(user_id: int, host_id: int, project_id: int, *, sessions: str
                     (db.now(), tid, user_id),
                 )
                 store.thread_event(conn, user_id, tid)
-    result = db.execute(
-        "DELETE FROM user_projects WHERE id=? AND user_id=? AND host_id=?",
-        (project_id, user_id, host_id),
-    )
-    return result.rowcount > 0
+    with db.tx() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        # Same guard under the write lock: a session attached after the loop
+        # must not outlive the project row it points at.
+        live = conn.execute(
+            "SELECT 1 FROM chat_threads WHERE user_id=? AND project_id=? AND kind='project' LIMIT 1",
+            (user_id, project_id),
+        ).fetchone()
+        if live is not None:
+            raise HostError("project still has sessions; nothing was deleted", 409)
+        result = conn.execute(
+            "DELETE FROM user_projects WHERE id=? AND user_id=? AND host_id=?",
+            (project_id, user_id, host_id),
+        )
+        return result.rowcount > 0
 
 
 def secret_plain(user_id: int, host_id: int) -> tuple[str, str, dict]:

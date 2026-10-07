@@ -101,6 +101,7 @@ from .workspace_ops.search_render import (
 from .workspace_ops.transport import (
     _AgentExec,
     _ExecResult,
+    _PGID_DIR,
     _SSH_BEGIN,
     _agent_cwd,
     _agent_job_output,
@@ -673,26 +674,38 @@ def _shell_cwd(args: dict, root: str, *, windows: bool = False) -> str:
     return "~"
 
 
-_background_kills: set = set()
+# Cap for a best-effort remote kill: the script itself waits 2s between TERM
+# and KILL, and the supervisor's grace window for a command result is 12s.
+_KILL_CONFIRM_TIMEOUT_S = 8.0
 
 
-def _schedule_group_kill(user_id, host_id, token: str) -> None:
-    """Closing the SSH channel signals only the top shell; children (make,
-    test runners, servers) survive. Kill the recorded process group from a
-    second session. Detached so a cancelled job never blocks on it."""
+def _ssh_kill_confirm_script(token: str) -> str:
+    """Kill script whose exit status is the proof: _ssh_kill_script always
+    exits 0. Exit 0 means the TERM reached the process group the job script
+    recorded (the only group a kill may ever target)."""
+    return (
+        f'f="{_PGID_DIR}/{token}"; pg=$(tr -dc 0-9 < "$f" 2>/dev/null); ok=1; '
+        'if [ -z "$pg" ] || [ "$pg" -le 1 ] || ! kill -TERM -- -"$pg" 2>/dev/null; then ok=0; fi; '
+        'if [ "$ok" -eq 1 ]; then sleep 2; kill -KILL -- -"$pg" 2>/dev/null; fi; '
+        'rm -f "$f"; exit $((1 - ok))'
+    )
 
-    async def run():
-        from . import ssh_pool
 
-        try:
-            conn = await ssh_pool.connection(user_id, host_id)
-            await conn.run("bash -c " + shlex.quote(_ssh_kill_script(token)), check=False, timeout=10)
-        except Exception:
-            logger.debug("process-group kill for %s failed", token, exc_info=True)
+async def _remote_group_kill(user_id, host_id, token: str) -> bool:
+    """Kill the recorded process group from a second session and report
+    whether the signal provably reached it. Closing the SSH channel signals
+    only the top shell; children (make, test runners, servers) survive.
+    True mirrors the connector's termination_confirmed: the kill path
+    covered the tree, not just the transport."""
+    from . import ssh_pool
 
-    task = asyncio.get_running_loop().create_task(run())
-    _background_kills.add(task)
-    task.add_done_callback(_background_kills.discard)
+    conn = await ssh_pool.connection(user_id, host_id)
+    result = await conn.run(
+        "bash -c " + shlex.quote(_ssh_kill_confirm_script(token)),
+        check=False,
+        timeout=_KILL_CONFIRM_TIMEOUT_S,
+    )
+    return result.exit_status == 0
 
 
 def _is_agent(user_id, host_id) -> bool:
@@ -874,13 +887,28 @@ def _make_ssh_runner(user_id, host_id, command: str, cwd: str, timeout_ms: int):
         except asyncio.CancelledError:
             with contextlib.suppress(Exception):
                 proc.kill()
-            _schedule_group_kill(user_id, host_id, token)
+            # Best-effort tree kill before the cancellation is reported; a
+            # failure or a second cancellation never masks the raise.
+            try:
+                await asyncio.wait_for(_remote_group_kill(user_id, host_id, token), _KILL_CONFIRM_TIMEOUT_S)
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.debug("process-group kill for %s failed", token, exc_info=True)
             raise
         except TimeoutError:
             with contextlib.suppress(Exception):
                 proc.kill()
-            _schedule_group_kill(user_id, host_id, token)
-            raise command_jobs.CommandTimedOut() from None
+            confirmed = False
+            try:
+                confirmed = await asyncio.wait_for(
+                    _remote_group_kill(user_id, host_id, token), _KILL_CONFIRM_TIMEOUT_S
+                )
+            except Exception:
+                logger.debug("process-group kill for %s failed", token, exc_info=True)
+            # Confirmed only when the TERM provably reached the recorded
+            # process group — never merely because the channel was dropped.
+            raise command_jobs.CommandTimedOut(termination_confirmed=confirmed) from None
         finally:
             for dt in dtasks:
                 dt.cancel()
@@ -1071,16 +1099,26 @@ def _make_ws_runner(url: str, timeout_ms: int):
 
         async with asyncio.timeout(timeout_ms / 1000):
             try:
-                async with websockets.connect(url, open_timeout=15, max_size=65_536) as ws:
-                    async for message in ws:
-                        if isinstance(message, bytes):
-                            text = message.decode("utf-8", "replace")
-                        else:
-                            text = str(message)
-                        if text and not text.endswith("\n"):
-                            text += "\n"
-                        if text:
-                            sink(text)
+                sock = await _pinned_public_sock(url)
+                handed_off = False
+                try:
+                    # sock pins the verified IP; the URI keeps the hostname,
+                    # so SNI and Host survive the pinning.
+                    async with websockets.connect(url, sock=sock, open_timeout=15, max_size=65_536) as ws:
+                        handed_off = True
+                        async for message in ws:
+                            if isinstance(message, bytes):
+                                text = message.decode("utf-8", "replace")
+                            else:
+                                text = str(message)
+                            if text and not text.endswith("\n"):
+                                text += "\n"
+                            if text:
+                                sink(text)
+                finally:
+                    # websockets owns (and closes) the socket once connected.
+                    if not handed_off:
+                        sock.close()
             except asyncio.CancelledError:
                 raise
             except TimeoutError:
@@ -1176,13 +1214,28 @@ def _make_monitor_ssh_runner(user_id, host_id, command: str, cwd: str, timeout_m
         except asyncio.CancelledError:
             with contextlib.suppress(Exception):
                 proc.kill()
-            _schedule_group_kill(user_id, host_id, token)
+            # Best-effort tree kill before the cancellation is reported; a
+            # failure or a second cancellation never masks the raise.
+            try:
+                await asyncio.wait_for(_remote_group_kill(user_id, host_id, token), _KILL_CONFIRM_TIMEOUT_S)
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.debug("process-group kill for %s failed", token, exc_info=True)
             raise
         except TimeoutError:
             with contextlib.suppress(Exception):
                 proc.kill()
-            _schedule_group_kill(user_id, host_id, token)
-            raise command_jobs.CommandTimedOut() from None
+            confirmed = False
+            try:
+                confirmed = await asyncio.wait_for(
+                    _remote_group_kill(user_id, host_id, token), _KILL_CONFIRM_TIMEOUT_S
+                )
+            except Exception:
+                logger.debug("process-group kill for %s failed", token, exc_info=True)
+            # Confirmed only when the TERM provably reached the recorded
+            # process group — never merely because the channel was dropped.
+            raise command_jobs.CommandTimedOut(termination_confirmed=confirmed) from None
         finally:
             for dt in tasks:
                 dt.cancel()
@@ -1190,6 +1243,44 @@ def _make_monitor_ssh_runner(user_id, host_id, command: str, cwd: str, timeout_m
         return _ExecResult(proc.exit_status, "")
 
     return runner
+
+
+async def _pinned_public_sock(url: str):
+    """Pre-connected TCP socket pinned to a globally routable address for url.
+
+    public_ws_url checked the DNS answers at validation time, but
+    websockets.connect re-resolves, and a rebinding answer in that window
+    would route the monitor to a private address. Resolve once here, require
+    every answer globally routable, then connect to the pinned IP; the URI
+    keeps its hostname, so TLS SNI and the Host header stay correct.
+    """
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    port = parsed.port or (443 if parsed.scheme == "wss" else 80)
+    loop = asyncio.get_running_loop()
+    infos = await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    target = None
+    for family, type_, proto, _canon, sockaddr in infos:
+        addr = str(sockaddr[0]).split("%", 1)[0]
+        if not ipaddress.ip_address(addr).is_global:
+            raise OSError(f"{host} resolves to the non-public address {addr}")
+        if target is None:
+            target = (family, type_, proto, sockaddr)
+    if target is None:
+        raise OSError(f"{host} does not resolve")
+    family, type_, proto, sockaddr = target
+    sock = socket.socket(family, type_, proto)
+    sock.setblocking(False)
+    try:
+        await loop.sock_connect(sock, sockaddr)
+    except BaseException:
+        sock.close()
+        raise
+    return sock
 
 
 async def _monitor(user_id, host_id, alias, args, root, *, windows: bool = False, run_id: str = "", thread_id: int | None = None, on_started=None):

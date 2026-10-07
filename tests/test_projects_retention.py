@@ -3,6 +3,7 @@ import json
 import re
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from app import chat_store as store, chats, db, hosts, retention
 from scripts.migrate_chat_metadata import migrate as migrate_metadata
@@ -136,6 +137,24 @@ class ProjectsRetentionTest(unittest.TestCase):
         self.assertTrue(hosts.delete_project(1, 7, kept["id"], sessions="keep"))
         after = chats.get_thread(1, thread["id"])
         self.assertEqual((after["kind"], after["project_id"]), ("chat", None))
+
+    def test_delete_project_aborts_when_a_session_survives_delete_thread(self):
+        live = self.project("live")
+        thread, _ = self.session(live)
+        # delete_thread refusing (False) must abort: the project row cannot
+        # be deleted out from under a session that still exists.
+        with patch.object(chats, "delete_thread", return_value=False):
+            with self.assertRaises(hosts.HostError) as raised:
+                hosts.delete_project(1, 7, live["id"])
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertIsNotNone(hosts.get_project(1, 7, live["id"]))
+        self.assertIsNotNone(chats.get_thread(1, thread["id"]))
+        # A thread another caller already removed is skipped, not fatal.
+        gone = self.project("gone")
+        t2, _ = self.session(gone)
+        self.assertTrue(chats.delete_thread(1, t2["id"]))
+        with patch.object(chats, "delete_thread", return_value=False):
+            self.assertTrue(hosts.delete_project(1, 7, gone["id"]))
 
     # -- fork -------------------------------------------------------------
 
