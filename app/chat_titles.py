@@ -10,11 +10,14 @@ and the preview stays as the title meanwhile.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from . import chat_store, chats, db
+from . import db
+from .chat_schema import TITLE_MAX, _ROLES, _text, parse_messages
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +62,7 @@ def _backoff_cutoff() -> str:
 
 
 async def _generate(user_id: int, thread_id: int, model: str, prompt: str, placeholder: str) -> None:
-    from . import accounts, chat_runtime, chat_runs
+    from . import accounts, chat_runtime, chat_runs, chat_store
 
     token = await asyncio.to_thread(claim, user_id, thread_id)
     if not token:
@@ -91,6 +94,8 @@ async def _generate(user_id: int, thread_id: int, model: str, prompt: str, place
 
 async def sweep() -> None:
     """Queue title generation for due and pending threads; returns immediately."""
+    from . import chat_store
+
     due = set(_due)
     _due.difference_update(due)
     cutoff = _backoff_cutoff()
@@ -149,7 +154,7 @@ async def regenerate(user_id: int, thread_id: int) -> bool:
     the thread's messages are never modified, so the conversation's upstream
     prompt cache stays intact. Returns True when a regeneration was attempted.
     """
-    from . import accounts, chat_runtime, chat_runs
+    from . import accounts, chat_runtime, chat_runs, chat_store
 
     if thread_id in _regen_inflight:
         return False
@@ -166,7 +171,7 @@ async def regenerate(user_id: int, thread_id: int) -> bool:
         if row is None:
             return False
         try:
-            source = chats.title_tail_source(chats.parse_messages(row["messages"]))
+            source = title_tail_source(parse_messages(row["messages"]))
         except Exception:
             logger.exception("Title source build failed for thread %s", thread_id)
             source = ""
@@ -205,3 +210,220 @@ def spawn_regen(user_id: int, thread_id: int) -> asyncio.Task:
     _regen_tasks.add(task)
     task.add_done_callback(_regen_tasks.discard)
     return task
+
+
+TITLE_PROMPT_MAX = 800
+# Claude Code (generateSessionTitle): the first real prompt, at least 10
+# characters, capped at 2,000 characters as a 1,500-character head plus the tail.
+TITLE_MIN_CHARS = 10
+TITLE_INPUT_MAX = 2_000
+TITLE_INPUT_HEAD = 1_500
+# Claude Code's conversation-tail source for a re-title (/title): the last
+# 1,000 characters of user and assistant text.
+TITLE_TAIL_CHARS = 1_000
+TITLE_REGEN_PROMPT_MAX = 6_000
+TITLE_SOURCE_MAX = 3_000
+PROVISIONAL_TITLE_WORDS = 6
+PROVISIONAL_TITLE_CHARS = 48
+# A failed title is retried by the sweep with backoff, then only when the
+# user sends another message (Claude Code retries on the next prompt).
+TITLE_SWEEP_ATTEMPTS = 3
+_TITLE_THINK = re.compile(r"</?(?:think|thinking|thought|reasoning)>", re.I)
+_TITLE_THINK_BLOCK = re.compile(
+    r"<(?:think|thinking|thought|reasoning)>.*?</(?:think|thinking|thought|reasoning)>",
+    re.I | re.S,
+)
+_TITLE_WRAP = re.compile(r"^[\s\"'`“”‘’*#\-–—]+|[\s\"'`“”‘’*#\-–—.,;:!?]+$")
+_TITLE_PREFIX = re.compile(r"^(?:title|chat title|session title|topic)\s*:\s*", re.I)
+_TITLE_COMMAND = re.compile(r"^/[\w:-]+(?:\s|$)")
+_PLACEHOLDER_TITLES = frozenset({"", "new chat", "title", "untitled", "chat"})
+def _clean_title(title: str, *, strict: bool = False) -> str:
+    title = re.sub(r"\s+", " ", (title or "").strip())
+    if strict:
+        _text(title, "title", TITLE_MAX)
+        return title
+    return title[:TITLE_MAX]
+def _message_plain_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        bits = []
+        for part in content:
+            if isinstance(part, str):
+                bits.append(part)
+            elif isinstance(part, dict):
+                text = part.get("text")
+                if isinstance(text, str):
+                    bits.append(text)
+        return " ".join(bits)
+    return ""
+def first_user_text(messages: list[dict], *, limit: int = TITLE_PROMPT_MAX) -> str:
+    for msg in messages:
+        if msg.get("role") != "user":
+            continue
+        text = re.sub(r"\s+", " ", _message_plain_text(msg.get("content")).strip())
+        if text:
+            return clip_metadata_text(text, limit)
+        names = [str(a.get("name") or "Attachment") for a in msg.get("attachments") or [] if isinstance(a, dict)]
+        if names:
+            return clip_metadata_text("Attachments: " + ", ".join(names), limit)
+    return ""
+def clip_metadata_text(text: str, limit: int) -> str:
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u200b-\u200f\u202a-\u202e\u2066-\u2069]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) <= limit:
+        return text
+    marker = " […] "
+    if limit <= len(marker):
+        return text[:max(0, limit)]
+    head = max(0, int((limit - len(marker)) * 0.65))
+    tail = max(0, limit - len(marker) - head)
+    return text[:head] + marker + (text[-tail:] if tail else "")
+def parse_generated_title(raw: str) -> str:
+    """The model's title, lightly cleaned. Claude Code only trims its JSON
+    field; this also unwraps the prose, fences and labels other models add."""
+    text = _TITLE_THINK_BLOCK.sub(" ", raw or "")
+    if _TITLE_THINK.search(text):
+        return ""
+    text = text.replace("\r", "\n").strip()
+    text = re.sub(r"^```\w*\s*|\s*```$", "", text).strip()
+    if text.startswith("{"):
+        try:
+            parsed = json.loads(text)
+            text = parsed.get("title", "") if isinstance(parsed, dict) else ""
+        except (ValueError, TypeError):
+            return ""
+    if not isinstance(text, str):
+        return ""
+    lines = [candidate.strip() for candidate in text.splitlines() if candidate.strip()]
+    if not lines:
+        return ""
+    line = _TITLE_PREFIX.sub("", lines[0])
+    line = re.sub(r"\*\*|__|`", "", line)
+    line = _TITLE_WRAP.sub("", line).strip()
+    lowered = line.lower()
+    if not line or lowered in _PLACEHOLDER_TITLES or lowered.startswith((
+        "i cannot", "i can't", "i am unable", "i'm unable", "sorry", "as an ai",
+    )):
+        return ""
+    return _clean_title(line)
+def _title_plain(text: str) -> str:
+    text = re.sub(r"```.*?(?:```|$)", " ", text or "", flags=re.S)
+    text = re.sub(r"https?://(?:www\.)?([^/\s]+)(?:/([\w.-]+/[\w.-]+)/(?:issues|pull)/(\d+))?\S*",
+                  lambda m: f"{m.group(2)}#{m.group(3)}" if m.group(3) else m.group(1), text)
+    text = re.sub(r"^\s*/\w[\w-]*", " ", text)
+    text = re.sub(r"[`*_#>~\[\]]+(?=\s|$)|(?:^|(?<=\s))[`*_#>~\[\]]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+def _first_user(messages: list[dict]) -> dict | None:
+    return next((m for m in messages if m.get("role") == "user" and not m.get("auto")), None)
+def provisional_title(messages: list[dict]) -> str:
+    """Short, readable preview of the first request shown until a real title lands."""
+    first = _first_user(messages)
+    if first is None:
+        return "New chat"
+    text = _title_plain(_message_plain_text(first.get("content")))
+    if not text:
+        names = [str(a.get("name") or "") for a in first.get("attachments") or [] if isinstance(a, dict)]
+        text = next((n for n in names if n.strip()), "")
+        return _clean_title(text)[:PROVISIONAL_TITLE_CHARS] or "New chat"
+    words = text.split()
+    out = []
+    for word in words[:PROVISIONAL_TITLE_WORDS]:
+        if len(" ".join(out + [word])) > PROVISIONAL_TITLE_CHARS:
+            break
+        out.append(word)
+    if not out:
+        out = [words[0][:PROVISIONAL_TITLE_CHARS]]
+    title = " ".join(out).rstrip(".,;:!?")
+    if len(out) < len(words):
+        title += "…"
+    return title if not is_placeholder_title(title) else "New chat"
+def _title_session(text: str) -> str:
+    return (
+        "<session>\n" + text + "\n</session>\n\n"
+        "Write the title in the predominant language of the session \u2014 a stray word or code token in "
+        "another language doesn't change it, and neither does the English of these instructions."
+    )
+def title_prompt_text(messages: list[dict]) -> str:
+    """The prompt Claude Code titles a session from: the first user message
+    that is not a slash command and has at least TITLE_MIN_CHARS characters."""
+    for msg in messages:
+        if msg.get("role") != "user" or msg.get("auto"):
+            continue
+        text = _message_plain_text(msg.get("content")).strip()
+        if _TITLE_COMMAND.match(text) or len(text) < TITLE_MIN_CHARS:
+            continue
+        if len(text) > TITLE_INPUT_MAX:
+            omitted = len(text) - TITLE_INPUT_HEAD
+            marker = f"\n[\u2026 {omitted} characters omitted \u2026]\n"
+            tail = max(0, TITLE_INPUT_MAX - TITLE_INPUT_HEAD - len(marker))
+            text = text[:TITLE_INPUT_HEAD] + marker + (text[-tail:] if tail else "")
+        return text
+    return ""
+def title_source(messages: list[dict]) -> str:
+    """Automatic title request body, or "" while no prompt qualifies yet."""
+    text = title_prompt_text(messages)
+    return _title_session(text) if text else ""
+def title_tail_source(messages: list[dict], *, limit: int = TITLE_TAIL_CHARS) -> str:
+    """Explicit /title body: the end of the conversation, as Claude Code
+    re-titles a session from its last 1,000 characters of text."""
+    turns = [
+        (m.get("role"), _message_plain_text(m.get("content")).strip())
+        for m in messages
+        if m.get("role") in _ROLES and not m.get("auto")
+    ]
+    text = "\n".join(part for _role, part in turns if part)
+    if not text:
+        return ""
+    if len(text) > limit:
+        tail = text[-limit:]
+        # Unlike Claude Code, keep the latest request in view when a long
+        # final answer would fill the whole tail.
+        latest = next((part for role, part in reversed(turns) if role == "user" and part), "")
+        if latest and latest not in tail:
+            head = latest[: limit // 2]
+            tail = head + "\n[\u2026]\n" + text[-(limit - len(head)):]
+        text = tail
+    return _title_session(text)
+def parse_generated_recap(raw: str) -> str:
+    text = _TITLE_THINK_BLOCK.sub(" ", raw or "")
+    if _TITLE_THINK.search(text):
+        return ""
+    text = re.sub(r"`|\*\*|__|<[^>]*>|^\s*(?:[-•#>]+|\d+\.)\s*", "", text)
+    text = re.sub(r"^(?:recap|summary)\s*:\s*", "", re.sub(r"\s+", " ", text).strip(), flags=re.I)
+    lowered = text.lower()
+    if not text or len(text) > 400 or len(text.split()) > 45 or re.search(r"[<>]", text) or lowered.startswith((
+        "i cannot", "i can't", "i am unable", "i'm unable", "sorry", "as an ai",
+    )):
+        return ""
+    return text
+def is_placeholder_title(title: str | None, *, project_name: str = "") -> bool:
+    text = (title or "").strip()
+    if not text or text.lower() in _PLACEHOLDER_TITLES:
+        return True
+    needle = (project_name or "").strip()
+    return bool(needle) and text.lower() == needle.lower()
+def title_needs_generation(
+    title: str | None, *, project_name: str = "", first_user_text: str = "", title_state: str = "",
+    provisional: str = "",
+) -> bool:
+    """True while no real title exists: a placeholder, the provisional preview,
+    or a legacy row whose title is just the raw first user message."""
+    if title_state in ("generated", "user", "fallback"):
+        return False
+    if is_placeholder_title(title, project_name=project_name):
+        return True
+    text = (title or "").strip()
+    seed = (first_user_text or "").strip()
+    return (bool(seed) and text == _clean_title(seed)) or (bool(provisional) and text == provisional)
+def title_from_messages(messages: list[dict]) -> str:
+    for msg in messages:
+        if msg.get("role") != "user":
+            continue
+        if isinstance(msg.get("content"), str) and msg["content"].strip():
+            return _clean_title(msg["content"]) or "New chat"
+        attachments = msg.get("attachments") or []
+        if attachments:
+            name = attachments[0].get("name") if isinstance(attachments[0], dict) else ""
+            return _clean_title(str(name or "Attachment")) or "New chat"
+    return "New chat"

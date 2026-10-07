@@ -241,3 +241,42 @@ class TitleTextTest(unittest.TestCase):
         self.assertEqual(chats.provisional_title([{"role": "user", "content": "", "attachments": [{"name": "dot.png"}]}]),
                          "dot.png")
         self.assertLessEqual(len(chats.provisional_title([{"role": "user", "content": "word " * 40}])), chats.PROVISIONAL_TITLE_CHARS + 1)
+
+
+class SplitContractTest(unittest.TestCase):
+    """app/chats.py stays a stable re-export facade over the split modules."""
+
+    def test_facade_names_are_the_owner_modules(self):
+        from app import chat_schema, chat_threads
+
+        self.assertIs(chats.parse_messages, chat_schema.parse_messages)
+        self.assertIs(chats.model_content, chat_schema.model_content)
+        self.assertIs(chats.ASSISTANT_CONTENT_MAX, chat_schema.ASSISTANT_CONTENT_MAX)
+        self.assertIs(chats.PUBLIC_ID_RE, chat_schema.PUBLIC_ID_RE)
+        self.assertIs(chats.create_thread, chat_threads.create_thread)
+        self.assertIs(chats.resolve_thread_pk, chat_threads.resolve_thread_pk)
+        self.assertIs(chats._THREAD_LIST_COLS, chat_threads._THREAD_LIST_COLS)
+        self.assertIs(chats.parse_generated_title, chat_titles.parse_generated_title)
+        self.assertIs(chats.title_source, chat_titles.title_source)
+        self.assertIs(chats.TITLE_SWEEP_ATTEMPTS, chat_titles.TITLE_SWEEP_ATTEMPTS)
+
+    def test_chat_validation_error_contract(self):
+        from app import chat_schema
+
+        err = chats.ChatValidationError("bad", 413)
+        self.assertIs(chats.ChatValidationError, chat_schema.ChatValidationError)
+        self.assertIsInstance(err, ValueError)
+        self.assertEqual((err.detail, err.status_code), ("bad", 413))
+        self.assertEqual(chats.ChatValidationError("bad").status_code, 422)
+
+    def test_no_module_top_chat_store_import(self):
+        # The chats<->chat_store cycle must stay lazy inside function bodies.
+        import ast
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1] / "app"
+        for name in ("chat_schema.py", "chat_threads.py", "chat_titles.py", "chats.py"):
+            tree = ast.parse((root / name).read_text())
+            for node in tree.body:
+                if isinstance(node, (ast.Import, ast.ImportFrom)) and "chat_store" in ast.dump(node):
+                    self.fail(f"{name} imports chat_store at module top")
