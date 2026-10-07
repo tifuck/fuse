@@ -27,13 +27,22 @@ WALK_KINDS = ("grok", "chatgpt", "zai", "devin", "kimi", "mimo", "openrouter")
 def _parse_ts(ts: str) -> datetime | None:
     if not ts:
         return None
-    raw = str(ts).replace("Z", "")
-    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"):
-        try:
-            return datetime.strptime(raw.split("+")[0], fmt).replace(tzinfo=timezone.utc)
-        except ValueError:
-            continue
-    return None
+    raw = str(ts).strip()
+    if raw.endswith(("Z", "z")):
+        raw = raw[:-1]
+    parsed: datetime | None = None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"):
+            try:
+                parsed = datetime.strptime(raw.split("+")[0], fmt)
+                break
+            except ValueError:
+                continue
+    if parsed is None:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def _checked_at(extra: dict) -> str:

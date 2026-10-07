@@ -53,7 +53,9 @@ class LlamaSource(OpenAICompatSource):
     def _verify(self) -> bool:
         if "verify" in self.cfg:
             return bool(self.cfg["verify"])
-        return not self._url().lower().startswith("https://")
+        # https endpoints validate the peer by default: the request carries
+        # the configured API key, so an unvalidated TLS peer would capture it.
+        return True
 
     def _client(self, timeout) -> httpx.AsyncClient:
         return httpx.AsyncClient(timeout=timeout, verify=self._verify())

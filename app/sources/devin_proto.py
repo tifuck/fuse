@@ -6,6 +6,7 @@ Only the messages Fuse uses are encoded.
 from __future__ import annotations
 
 import gzip
+import io
 import struct
 from typing import Any
 
@@ -13,6 +14,10 @@ from typing import Any
 CONNECT_COMPRESSED = 0x01
 CONNECT_END_STREAM = 0x02
 MAX_FRAME = 16 * 1024 * 1024
+# Cap on decompressed Connect frame/unary body size. MAX_FRAME bounds the
+# compressed bytes only; gzip expands ~1000x, so an unbounded decompress of
+# one hostile frame can exhaust memory.
+MAX_GUNZIP = 64 * 1024 * 1024
 
 CHAT_SOURCE_USER = 1
 CHAT_SOURCE_SYSTEM = 2
@@ -136,9 +141,23 @@ class ProtoDecoder:
         return ProtoDecoder(self.raw())
 
 
+def gunzip(data: bytes, *, cap: int = MAX_GUNZIP) -> bytes:
+    """gzip.decompress with a hard output cap; a larger payload is a protocol error."""
+    out = bytearray()
+    with gzip.GzipFile(fileobj=io.BytesIO(data)) as gz:
+        while len(out) <= cap:
+            chunk = gz.read(min(1 << 20, cap + 1 - len(out)))
+            if not chunk:
+                break
+            out.extend(chunk)
+            if len(out) > cap:
+                raise ValueError("gzip payload exceeds decompression cap")
+    return bytes(out)
+
+
 def maybe_gunzip(data: bytes) -> bytes:
     if len(data) >= 2 and data[0] == 0x1F and data[1] == 0x8B:
-        return gzip.decompress(data)
+        return gunzip(data)
     return data
 
 
@@ -161,7 +180,7 @@ def iter_connect_frames(buf: bytes) -> tuple[list[tuple[int, bytes]], bytes]:
             break
         payload = buf[pos + 5 : pos + 5 + length]
         if flag & CONNECT_COMPRESSED:
-            payload = gzip.decompress(payload)
+            payload = gunzip(payload)
         frames.append((flag, payload))
         pos += 5 + length
     return frames, buf[pos:]

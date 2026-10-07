@@ -8,6 +8,7 @@ which the chat loop then flagged as truncated tool calls.
 
 from __future__ import annotations
 
+import gzip
 import os
 import sys
 import tempfile
@@ -68,6 +69,25 @@ class SplitToolArgsTest(unittest.TestCase):
         e.string(3, "lo world")
         msg = proto.decode_get_chat_message(e.finish())
         self.assertEqual(msg["delta_text"], "hello world")
+
+
+class GunzipCapTest(unittest.TestCase):
+    """A compressed Connect frame may expand ~1000x; decompression is capped."""
+
+    def test_output_at_or_under_the_cap_is_kept(self):
+        payload = b"x" * 4096
+        self.assertEqual(proto.gunzip(gzip.compress(payload, mtime=0), cap=4096), payload)
+
+    def test_output_over_the_cap_is_rejected(self):
+        payload = b"x" * 4096
+        with self.assertRaises(ValueError):
+            proto.gunzip(gzip.compress(payload, mtime=0), cap=4095)
+
+    def test_oversized_frame_payload_is_a_protocol_error(self):
+        bomb = gzip.compress(b"\0" * (proto.MAX_GUNZIP + 2 * 1024 * 1024), mtime=0)
+        self.assertLess(len(bomb), 1024 * 1024)  # small wire frame, huge expansion
+        with self.assertRaises(ValueError):
+            proto.maybe_gunzip(bomb)
 
 
 class DevinRequestCapsTest(unittest.TestCase):

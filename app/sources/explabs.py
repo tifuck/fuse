@@ -169,6 +169,14 @@ async def _fetch(key: str) -> dict:
 async def fetch_catalog(user_id: int | None, *, force: bool = False) -> dict:
     if not user_id:
         return {"by_id": {}}
+    if len(_locks) > 1024:
+        for k in [k for k, v in _locks.items() if not v.locked()]:
+            _locks.pop(k, None)
+    if len(_catalogs) > 512:
+        now = time.monotonic()
+        for k in [k for k, v in _catalogs.items() if now - v[1] > CATALOG_TTL]:
+            _catalogs.pop(k, None)
+            _errors.pop(k, None)
     async with _locks.setdefault(user_id, asyncio.Lock()):
         cred = user_credential(user_id)
         if not cred:
@@ -245,7 +253,12 @@ def disable_credential(cred_id: int) -> None:
 async def resolve(model: str, user_id: int | None) -> str | None:
     if not model.startswith(PUBLIC_PREFIX) or not user_has_explabs(user_id):
         return None
-    catalog = await fetch_catalog(user_id)
+    try:
+        catalog = await fetch_catalog(user_id)
+    except CatalogError:
+        # First-ever fetch failing must degrade to "not routable now", not
+        # raise out of pick() and turn the chat request into a 500.
+        return None
     upstream = upstream_id(model)
     return upstream if upstream in catalog["by_id"] else None
 
@@ -268,7 +281,17 @@ class ExperientialLabsSource:
         if not cred:
             return ChatResult(status=403, body={"error": {"message": "Connect an Experiential Labs API key."}}, model=model)
         revision = _revision(cred)
-        catalog = await fetch_catalog(user_id)
+        try:
+            catalog = await fetch_catalog(user_id)
+        except CatalogError as exc:
+            # Transient catalog outage: fail this request cleanly instead of
+            # an unhandled exception. The chat itself never needed the catalog.
+            return ChatResult(
+                status=502,
+                body={"error": {"message": str(exc)}},
+                credential_id=cred["id"],
+                model=model,
+            )
         current = user_credential(user_id, self.source_id)
         if not current or _revision(current) != revision:
             return ChatResult(status=403, body={"error": {"message": "Experiential Labs key changed. Retry the request."}}, model=model)

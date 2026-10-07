@@ -60,6 +60,9 @@ _EFFORT_MAP = {
 def _refresh_lock(cred_id: int) -> asyncio.Lock:
     lock = _refresh_locks.get(cred_id)
     if lock is None:
+        if len(_refresh_locks) > 256:
+            for cid in [cid for cid, v in _refresh_locks.items() if not v.locked()]:
+                _refresh_locks.pop(cid, None)
         lock = asyncio.Lock()
         _refresh_locks[cred_id] = lock
     return lock
@@ -663,7 +666,6 @@ def _bearer(cred, extra: dict) -> str:
 
 async def fetch_usage_for_token(token: str, region: str, extra: dict | None = None) -> tuple[dict | None, str]:
     _, base = _endpoints(region)
-    last = "usage fetch failed"
     async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
         try:
             r = await client.get(base + "/usages", headers=_usage_headers(token, extra))
@@ -680,7 +682,6 @@ async def fetch_usage_for_token(token: str, region: str, extra: dict | None = No
         if not isinstance(data, dict):
             return None, "invalid JSON"
         return parse_usage_payload(data), ""
-    return None, last
 
 
 async def fetch_userinfo(token: str, region: str, extra: dict | None = None) -> dict:

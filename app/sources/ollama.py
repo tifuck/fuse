@@ -193,7 +193,17 @@ class OllamaSource:
         async with httpx.AsyncClient(timeout=20) as client:
             key = accounts.cred_secret(self.creds[0])
             r = await client.get(self.base + "/tags", headers={"Authorization": f"Bearer {key}"})
-            names = [m["name"] for m in r.json().get("models", []) if m.get("name")]
+            if r.status_code != 200:
+                raise ValueError(f"ollama tags http {r.status_code}")
+            names = [
+                m["name"]
+                for m in r.json().get("models", [])
+                if isinstance(m, dict) and m.get("name")
+            ]
+            if not names:
+                # Never cache an empty catalog: a blip would blank the model
+                # list for a full TTL instead of falling back to cfg["model"].
+                raise ValueError("ollama catalog returned no models")
 
             slots = asyncio.Semaphore(8)
 
@@ -228,34 +238,54 @@ class OllamaSource:
         self._refresh_task = loop.create_task(self._refresh_access(pending))
 
     async def _refresh_access(self, names: list[str]) -> None:
-        if not self.creds:
+        keys: list[str] = []
+        for c in self.creds:
+            try:
+                key = accounts.cred_secret(c)
+            except Exception:
+                continue
+            if key and key not in keys:
+                keys.append(key)
+        if not keys:
             return
-        key = accounts.cred_secret(self.creds[0])
-        headers = {"Authorization": f"Bearer {key}"}
+        # The access map gates the whole source, but keys can have different
+        # plan tiers: probe each key and mark a model free when any of them
+        # can call it. Probing only creds[0] hid models other keys serve and
+        # listed models only a paid key could call.
         async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=10.0)) as client:
             for name in names:
+                gated: tuple[int, str] | None = None
+                other: tuple[int, str] | None = None
                 try:
-                    r = await client.post(
-                        self.base + "/chat",
-                        headers=headers,
-                        json={
-                            "model": name,
-                            "messages": [{"role": "user", "content": "ping"}],
-                            "stream": False,
-                            "num_predict": 1,
-                        },
-                    )
-                    body = r.text[:300]
-                    if r.status_code == 200:
-                        ollama_access.note(self.source_id, name, ollama_access.FREE, status=200)
-                    elif ollama_access.is_gated_error(r.status_code, body):
-                        ollama_access.note(
-                            self.source_id, name, ollama_access.GATED, status=r.status_code, error=body
+                    for key in keys:
+                        r = await client.post(
+                            self.base + "/chat",
+                            headers={"Authorization": f"Bearer {key}"},
+                            json={
+                                "model": name,
+                                "messages": [{"role": "user", "content": "ping"}],
+                                "stream": False,
+                                "num_predict": 1,
+                            },
                         )
+                        body = r.text[:300]
+                        if r.status_code == 200:
+                            ollama_access.note(self.source_id, name, ollama_access.FREE, status=200)
+                            gated = None
+                            break
+                        if ollama_access.is_gated_error(r.status_code, body):
+                            gated = gated or (r.status_code, body)
+                        else:
+                            other = other or (r.status_code, body)
                     else:
-                        ollama_access.note(
-                            self.source_id, name, ollama_access.UNKNOWN, status=r.status_code, error=body
-                        )
+                        if gated is not None:
+                            ollama_access.note(
+                                self.source_id, name, ollama_access.GATED, status=gated[0], error=gated[1]
+                            )
+                        elif other is not None:
+                            ollama_access.note(
+                                self.source_id, name, ollama_access.UNKNOWN, status=other[0], error=other[1]
+                            )
                 except Exception as e:
                     ollama_access.note(
                         self.source_id, name, ollama_access.UNKNOWN, status=0, error=type(e).__name__

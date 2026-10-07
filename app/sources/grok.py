@@ -37,6 +37,9 @@ GROK_MODELS = [
 def _refresh_lock(cred_id: int) -> asyncio.Lock:
     lock = _refresh_locks.get(cred_id)
     if lock is None:
+        if len(_refresh_locks) > 256:
+            for cid in [cid for cid, v in _refresh_locks.items() if not v.locked()]:
+                _refresh_locks.pop(cid, None)
         lock = asyncio.Lock()
         _refresh_locks[cred_id] = lock
     return lock
@@ -513,7 +516,7 @@ class GrokSource:
         return list(GROK_MODELS)
 
     async def chat(self, body: dict, *, session_id: str | None = None, user_id: int | None = None) -> ChatResult:
-        await refresh_due()
+        # refresh_pool_billing() opens with its own refresh_due() sweep.
         await refresh_pool_billing()
         self.creds = pool_policy.filter_credentials(
             db.fetchall(

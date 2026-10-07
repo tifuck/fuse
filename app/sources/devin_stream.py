@@ -356,7 +356,10 @@ async def _stream_sse(resp, client, collected: dict, model: str, uid: str = ""):
                 "cache_write_tokens": collected.get("cache_write_tokens") or 0,
             },
         }
-        collected.setdefault("usage_status", "complete")
+        # Only mark usage complete when Devin actually reported usage: a
+        # stream that never sent a usage frame is unknown, not a complete zero.
+        if raw_usage:
+            collected.setdefault("usage_status", "complete")
         collected["stream_status"] = "complete"
         final_delta: dict = {}
         if signature:

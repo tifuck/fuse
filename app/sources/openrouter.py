@@ -722,6 +722,10 @@ async def add_user_key(source_id: int, raw: str, donated_by: int, *, label: str 
             """UPDATE credentials SET disabled=0, donated_by=?, label=?, secret=?, extra=? WHERE id=?""",
             (donated_by, name, encrypt(key), encrypt(json.dumps(prev)), cred["id"]),
         )
+        if found and found[0]["id"] != cred["id"] and not found[0]["disabled"]:
+            # The same key was already active on another row of this user;
+            # keep a single credential or the pair confuses dedup and listing.
+            db.execute("UPDATE credentials SET disabled=1 WHERE id=?", (found[0]["id"],))
         return int(cred["id"]), ""
     if found and found[0]["disabled"]:
         cred = found[0]

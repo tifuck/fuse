@@ -449,6 +449,10 @@ def catalog_ids_from_records(recs: list[dict]) -> tuple[list[str], dict[str, str
         raw_name = str(rec.get("name") or "").strip()
         meta_effort = _effort_token(str(rec.get("effort") or ""))
         promo_until = int(rec.get("promo_until") or 0)
+        if promo_until and promo_until < int(time.time()):
+            # Promo window already lapsed upstream: do not list or route the
+            # SKU. It returns automatically if the catalog re-lists it.
+            continue
         if is_internal_uid(uid):
             _base, effort = _split_internal_uid(uid)
             if meta_effort:

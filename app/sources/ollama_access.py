@@ -46,6 +46,10 @@ ACCOUNT_MARKERS = (
     "account is currently unavailable",
     "contact support@ollama.com",
 )
+# Body wording that marks a 403 as a credential problem. Any other 403 is
+# model/plan scoping: striking auth on it disabled valid keys whenever the
+# upstream reworded its paywall.
+CREDENTIAL_MARKERS = ("invalid token", "invalid api key", "unauthorized", "token expired")
 
 KIND_LABELS = {
     "model_gated": "Paid model",
@@ -160,8 +164,13 @@ def classify_cloud_error(status: int, body_text: str) -> str:
         if "usage limit" in lower or "quota" in lower:
             return "weekly_quota"
         return "rate_limit"
-    if status in (401, 403):
+    if status == 401:
         return "auth"
+    if status == 403:
+        if any(marker in lower for marker in CREDENTIAL_MARKERS):
+            return "auth"
+        # A 403 without credential wording is plan/model gating, not a bad key.
+        return "model_gated"
     if 500 <= status <= 599:
         return "server"
     return "other"
@@ -181,7 +190,7 @@ def is_credential_auth_error(status: int, body_text: str) -> bool:
     if status != 403:
         return False
     lower = (body_text or "")[:500].lower()
-    return any(marker in lower for marker in ("invalid token", "invalid api key", "unauthorized", "token expired"))
+    return any(marker in lower for marker in CREDENTIAL_MARKERS)
 
 
 def label_for(kind: str | None) -> str:

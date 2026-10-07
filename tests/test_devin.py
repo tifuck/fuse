@@ -768,16 +768,26 @@ class CatalogMetadataTest(unittest.TestCase):
         self.assertEqual(efforts_for("devin/opus-9"), ("xhigh",))
         self.assertEqual(resolve_wire_uid("devin/opus-9", "xhigh"), "opus-9-xhigh")
 
-    def test_catalog_records_promo_expiry(self):
-        catalog_ids_from_records(
+    def test_catalog_records_promo_expiry_and_hides_lapsed_promos(self):
+        import time
+
+        live = int(time.time()) + 86400
+        lapsed = int(time.time()) - 86400
+        names, _labels = catalog_ids_from_records(
             [
-                {"id": "glm-5-2", "name": "GLM-5.2 High", "effort": "High", "promo_until": 1789545540},
-                {"id": "glm-5-2-none", "name": "GLM-5.2 No Thinking", "effort": "No Thinking", "promo_until": 1789545540},
+                {"id": "glm-5-2", "name": "GLM-5.2 High", "effort": "High", "promo_until": live},
+                {"id": "glm-5-2-none", "name": "GLM-5.2 No Thinking", "effort": "No Thinking", "promo_until": live},
+                {"id": "kimi-k3-high", "name": "Kimi K3 High", "promo_until": lapsed},
                 {"id": "swe-2-high", "name": "SWE-2 High"},
             ]
         )
-        self.assertEqual(devin_catalog._model_promo_until.get("devin/glm-5-2"), 1789545540)
+        self.assertEqual(devin_catalog._model_promo_until.get("devin/glm-5-2"), live)
         self.assertNotIn("devin/swe-2", devin_catalog._model_promo_until)
+        # A lapsed promo is neither listed nor routable; it returns if the
+        # catalog re-lists it.
+        self.assertNotIn("devin/kimi-k3", names)
+        self.assertNotIn("devin/kimi-k3", devin_catalog._model_labels)
+        self.assertNotIn("devin/kimi-k3", devin_catalog._model_wire_uids)
 
 
 class StreamBindTest(unittest.IsolatedAsyncioTestCase):
@@ -830,6 +840,50 @@ class StreamBindTest(unittest.IsolatedAsyncioTestCase):
             async for _chunk in result.stream:
                 pass
         bind.assert_called_once_with("devin", "sess-9", 9)
+
+
+class PoolExhaustAttemptsTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        _clear_catalog()
+        unittest.mock.patch("app.sources.pool_pick.accounts.cred_extra", lambda c: c.get("_extra") or {}).start()
+        self.addCleanup(unittest.mock.patch.stopall)
+
+    async def test_pool_exhaustion_records_final_attempt_once(self):
+        # Parity with grok/chatgpt/kimi/zai/mimo: when the pool is exhausted
+        # the final failed attempt rides on the returned result, not also in
+        # attempts (its usage would be counted twice).
+        async def fake_chat_one(_self, token, body, model, cred, session_id, attempts):
+            from app.sources.base import ChatResult
+
+            return ChatResult(
+                status=429,
+                body={"error": {"message": "quota"}},
+                usage={"prompt_tokens": 5},
+                credential_id=cred["id"],
+                model=model,
+            )
+
+        cred = {"id": 9, "disabled": 0, "week_tokens": 0, "week_start": db.iso_week_start(), "last_usage_percent": 0, "_extra": {"api_key": "tok"}}
+        source = object.__new__(DevinSource)
+        source.source_id = 5
+        source.name = "t"
+        source.cfg = {}
+        source.creds = [cred]
+        with (
+            unittest.mock.patch.object(devin_mod, "refresh_pool_status", new_callable=unittest.mock.AsyncMock),
+            unittest.mock.patch.object(devin_mod.pool_policy, "filter_credentials", return_value=[cred]),
+            unittest.mock.patch.object(devin_mod, "note_pool_invoke"),
+            unittest.mock.patch.object(devin_mod, "reserve"),
+            unittest.mock.patch.object(devin_mod, "release"),
+            unittest.mock.patch.object(devin_mod, "note_failure"),
+            unittest.mock.patch.object(DevinSource, "_chat_one", fake_chat_one),
+        ):
+            result = await source.chat(
+                {"model": "devin/swe-2", "messages": [{"role": "user", "content": "hi"}]},
+            )
+        self.assertEqual(result.status, 429)
+        self.assertEqual(result.credential_id, 9)
+        self.assertEqual(result.attempts, [])
 
 
 class _FrameResp:

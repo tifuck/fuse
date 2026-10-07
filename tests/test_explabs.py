@@ -209,6 +209,24 @@ def test_catalog_invalid_auth_disables_key_but_quota_keeps_it(backend, network, 
     asyncio.run(run())
 
 
+def test_resolve_and_chat_degrade_when_first_catalog_fetch_fails(backend, network):
+    """An unreachable catalog on the request path degrades instead of raising out of pick()."""
+    src, uid, _ = backend
+    network(catalog_response)
+
+    async def run():
+        await connect(src, uid)
+        explabs.clear_catalog(uid)
+        network(lambda request: httpx.Response(503, json={"error": {"message": "synthetic outage"}}))
+        assert await explabs.resolve("explabs/" + MODEL, uid) is None
+        result = await src.chat({"model": "explabs/" + MODEL, "messages": []}, user_id=uid)
+        assert result.status == 502
+        assert "HTTP 503" in result.body["error"]["message"]
+        assert explabs.user_has_explabs(uid)
+
+    asyncio.run(run())
+
+
 def test_minimal_chat_body_has_no_provider_defaults_or_internal_fields(backend, network):
     src, uid, _ = backend
     messages = [{"role": "user", "content": "Synthetic hello"}]

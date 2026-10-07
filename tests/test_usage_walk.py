@@ -25,6 +25,22 @@ import pytest
 pytestmark = pytest.mark.usefixtures("isolated_db")
 
 
+class ParseTsTest(unittest.TestCase):
+    def test_parse_ts_accepts_offsets_and_z(self):
+        from datetime import datetime, timedelta, timezone
+
+        self.assertIsNone(usage_walk._parse_ts(""))
+        self.assertIsNone(usage_walk._parse_ts("not-a-time"))
+        utc = usage_walk._parse_ts("2026-03-01T00:00:00Z")
+        self.assertEqual(utc, datetime(2026, 3, 1, tzinfo=timezone.utc))
+        naive = usage_walk._parse_ts("2026-03-01T00:00:00")
+        self.assertEqual(naive.utcoffset(), timedelta(0))
+        # A negative offset must parse (not sort as oldest-forever).
+        west = usage_walk._parse_ts("2026-03-01T05:00:00-05:00")
+        self.assertIsNotNone(west)
+        self.assertEqual(west.astimezone(timezone.utc), datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc))
+
+
 class UsageWalkTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         db.execute("DELETE FROM credentials")

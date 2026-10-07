@@ -151,6 +151,10 @@ async def get_user_jwt(token: str) -> tuple[dict | None, str]:
     if not decoded.get("user_jwt"):
         return None, "Devin auth returned an empty JWT."
     _jwt_cache[token] = (time.time(), decoded)
+    if len(_jwt_cache) > 64:
+        cutoff = time.time() - 2 * _JWT_TTL
+        for stale in [k for k, v in _jwt_cache.items() if v[0] < cutoff]:
+            _jwt_cache.pop(stale, None)
     return decoded, ""
 
 
@@ -334,7 +338,10 @@ def _store_billing(cred_id: int, parsed: dict, *, error: str = "") -> dict:
         extra["email"] = parsed["email"]
     if parsed.get("name"):
         extra["account_name"] = parsed["name"]
-    billing["plan_type"] = parsed.get("plan_type") or billing.get("plan_type") or "Pro"
+    # Keep the plan the upstream reported; only fall back to the prior value
+    # or Pro when the status call said nothing. A forced "Pro" masked
+    # demoted/free accounts and kept them pool-eligible.
+    billing["plan_type"] = parsed.get("plan_type") or billing.get("plan_type") or ("Pro" if parsed.get("pro") else "")
     billing["pro"] = bool(parsed.get("pro") or billing.get("plan_type") == "Pro")
     billing["fetched_at"] = now
     billing["last_error"] = ""
@@ -433,8 +440,8 @@ async def probe_token(raw: str) -> tuple[dict | None, str]:
         "api_server_url": (jwt.get("custom_api_server_url") or "").strip() or _api_server(),
         "email": status.get("email") or "",
         "name": status.get("name") or "",
-        "plan_type": status.get("plan_type") or ("Pro" if status.get("pro") else "Pro"),
-        "pro": True,
+        "plan_type": status.get("plan_type") or ("Pro" if status.get("pro") else ""),
+        "pro": bool(status.get("pro")),
     }
     return info, ""
 
@@ -483,10 +490,13 @@ async def add_session_token(source_id: int, raw: str, donated_by: int, *, label:
 async def refresh_status(cred, *, force: bool = False) -> None:
     extra = accounts.cred_extra(cred)
     billing = extra.get("billing") if isinstance(extra.get("billing"), dict) else {}
-    fetched = str(billing.get("fetched_at") or "")
-    if not force and fetched:
+    # Gate on checked_at (set on success AND error) like the other pools: a
+    # credential whose status keeps failing must not cost an HTTP round trip
+    # on every chat call until it succeeds once.
+    checked = str(billing.get("checked_at") or billing.get("fetched_at") or "")
+    if not force and checked:
         try:
-            ts = datetime.fromisoformat(fetched.replace("Z", "+00:00"))
+            ts = datetime.fromisoformat(checked.replace("Z", "+00:00"))
             if (datetime.now(timezone.utc) - ts).total_seconds() < USAGE_TTL:
                 return
         except ValueError:
@@ -497,8 +507,8 @@ async def refresh_status(cred, *, force: bool = False) -> None:
         _store_billing(int(cred["id"]), {}, error=err or "auth failed")
         return
     status = await fetch_status(token)
-    status.setdefault("plan_type", billing.get("plan_type") or "Pro")
-    status["pro"] = True
+    if not str(status.get("plan_type") or ""):
+        status["plan_type"] = billing.get("plan_type") or ""
     _store_billing(int(cred["id"]), status)
 
 
@@ -596,6 +606,11 @@ class DevinSource:
         while True:
             picked = self._pick(exclude=tried, prefer_id=prefer_id)
             if not picked:
+                # Parity with grok/chatgpt/kimi/zai/mimo: the final failed
+                # attempt is reported once via the returned result; drop the
+                # duplicate so its usage is not counted twice.
+                if attempts and last.credential_id == attempts[-1].get("credential_id"):
+                    attempts.pop()
                 last.attempts = attempts
                 return last
             cred, extra = picked
