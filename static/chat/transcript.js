@@ -27,5 +27,7 @@ export function createTranscript(ctx) {
     get resumeFollowOnScroll() { return follow.resumeFollowOnScroll; },
     set resumeFollowOnScroll(value) { follow.resumeFollowOnScroll = value; },
     get threadFollowFrame() { return follow.threadFollowFrame; },
+    get pendingToolPaint() { return reveal.pendingToolPaint; },
+    set pendingToolPaint(value) { reveal.pendingToolPaint = value; },
   };
 }

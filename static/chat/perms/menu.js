@@ -291,9 +291,12 @@ export function createMenu(ctx) {
     refreshPerms,
     renderPermsMenu,
     setPermsOpen,
-    permsFilter,
-    permsMenuEl,
-    threadPermData,
+    get permsFilter() { return permsFilter; },
+    set permsFilter(value) { permsFilter = value; },
+    get permsMenuEl() { return permsMenuEl; },
+    set permsMenuEl(value) { permsMenuEl = value; },
+    get threadPermData() { return threadPermData; },
+    set threadPermData(value) { threadPermData = value; },
   };
 }
 

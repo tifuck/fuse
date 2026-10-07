@@ -98,7 +98,8 @@ export function createReveal(ctx) {
     flushToolGesture,
     setToolReveal,
     motionPaints,
-    pendingToolPaint,
+    get pendingToolPaint() { return pendingToolPaint; },
+    set pendingToolPaint(value) { pendingToolPaint = value; },
     revealToolRow,
   };
 }

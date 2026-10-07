@@ -15,7 +15,7 @@ from ...sources import zai as zai_mod
 from ...sources.grok import ensure_grok_source
 from ...sources import pool_policy
 from ...sources.probe import probe_source
-from ..deps import _notices, render, require_admin
+from ..deps import _notices, current_user, render, require_admin
 from .admin_pages import _admin_sources_ctx, _admin_web_ctx
 from .context import _source_cfg
 

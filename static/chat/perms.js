@@ -9,5 +9,13 @@ export function createPerms(ctx) {
   const menu = createMenu({ ...ctx,
     queue,
   });
-  return { ...queue, ...menu };
+  return {
+    ...queue, ...menu,
+    get permsFilter() { return menu.permsFilter; },
+    set permsFilter(value) { menu.permsFilter = value; },
+    get permsMenuEl() { return menu.permsMenuEl; },
+    set permsMenuEl(value) { menu.permsMenuEl = value; },
+    get threadPermData() { return menu.threadPermData; },
+    set threadPermData(value) { menu.threadPermData = value; },
+  };
 }

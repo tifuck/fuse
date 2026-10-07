@@ -269,7 +269,7 @@ export function createInput(ctx) {
     syncComposer,
     syncDockSpace,
     syncEmptyComposer,
-    dockSpaceLocked,
+    get dockSpaceLocked() { return dockSpaceLocked; },
   };
 }
 

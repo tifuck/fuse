@@ -17,5 +17,8 @@ export function createComposer(ctx) {
   const drafts = createDrafts({ ...ctx,
 
   });
-  return { ...input, ...slash, ...attachments, ...drafts };
+  return {
+    ...input, ...slash, ...attachments, ...drafts,
+    get dockSpaceLocked() { return input.dockSpaceLocked; },
+  };
 }
