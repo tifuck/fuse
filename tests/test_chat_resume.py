@@ -321,7 +321,7 @@ class ResumeTest(unittest.IsolatedAsyncioTestCase):
             rebuilt = [{"role": "user", "content": "handoff"}]
             return rebuilt, ctx.meter_from_messages(rebuilt, model="offline", type_id="openai"), "summarize"
 
-        with patch.object(runtime, "TOOL_RESULT_CHARS", 600000), patch.object(runtime, "_run_tools", fake_tools), patch.object(runtime, "_compact_current", side_effect=compact) as compactor:
+        with patch("app.chat_generation.tool_jobs.TOOL_RESULT_CHARS", 600000), patch.object(runtime, "_run_tools", fake_tools), patch.object(runtime, "_compact_current", side_effect=compact) as compactor:
             await self.stream_turn(fake_invoke)
         self.assertEqual(compactor.await_count, 2)
 
@@ -396,7 +396,7 @@ class ResumeTest(unittest.IsolatedAsyncioTestCase):
                 event_id="ts_0_0", text="x" * 600_000, trace={"id": "ts_0_0", "status": "done"}, done=True,
             )]
 
-        with patch.object(runtime, "TOOL_RESULT_CHARS", 600_000), patch.object(runtime, "_run_tools", fake_run_tools), patch.object(
+        with patch("app.chat_generation.tool_jobs.TOOL_RESULT_CHARS", 600_000), patch.object(runtime, "_run_tools", fake_run_tools), patch.object(
             runtime.ctxmod, "should_auto_compact", return_value=False
         ), patch.object(runtime.ctxmod, "clip_to_fit", side_effect=AssertionError("history must not be clipped")):
             objects = await self.stream_turn(fake_invoke)

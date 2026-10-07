@@ -31,7 +31,7 @@ def call(name, arguments):
 class ArgumentsTest(unittest.IsolatedAsyncioTestCase):
     async def run_calls(self, calls, executor):
         events, jobs = [], None
-        with patch.object(runtime, "execute_tool", executor), patch.object(runtime, "_record_failure"):
+        with patch.object(runtime, "execute_tool", executor), patch("app.chat_generation.tool_runner._record_failure"):
             async for item in runtime._run_tools(calls, user_id=1, allowed_urls=set(), request=Request(), completion_i=0, budgets={}, coding=True):
                 if isinstance(item, list):
                     jobs = item

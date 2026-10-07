@@ -321,7 +321,7 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
                 self.calls += 1
                 return self.calls > 1
 
-        with patch("app.search.engine.search_bulk", search), patch.object(runtime, "HEARTBEAT_S", .01):
+        with patch("app.search.engine.search_bulk", search), patch("app.chat_generation.messages.HEARTBEAT_S", .01):
             async with asyncio.timeout(2):
                 results = [item async for item in runtime._retrieval_first(
                     Disconnect(), 1, [{"role": "user", "content": "test"}], {})]

@@ -1,0 +1,339 @@
+"""Pure parsing of visible assistant text and tool-call payloads.
+
+Text cleanup (leaked EOS / chat-template tokens, XML tool dumps),
+Qwen/Hermes/GLM XML and JSON tool-call extraction, streamed
+tool-call accumulation, and the reasoning/thinking replay shape.
+No I/O, no state, no provider calls."""
+
+from __future__ import annotations
+
+import json
+import re
+
+
+_ARG_LIMIT_FILE = 400_000
+_ARG_LIMIT_ARTIFACT = 400_000
+_ARG_OVERFLOW = "[Fuse: tool arguments exceeded the 400000-character limit; call not executed]"
+
+
+_SPECIAL_TOKENS = re.compile(
+    r"<\|(?:eos|endoftext|end|eot_id|im_end|im_start|end_of_text)\|?>"
+    r"|</s>",
+    re.I,
+)
+_TOOL_XML_BLOCK = re.compile(
+    r"<tool_calls?\b[^>]*>.*?</tool_calls?>",
+    re.I | re.S,
+)
+_TOOL_XML_OPEN = re.compile(r"<tool_calls?\b", re.I)
+_FUNCTION_XML = re.compile(
+    r"<function\s*=\s*([A-Za-z][\w.-]*)>(.*?)</function>",
+    re.I | re.S,
+)
+_INVOKE_XML = re.compile(
+    r"<invoke\s+name\s*=\s*[\"']([^\"']+)[\"']>(.*?)</invoke>",
+    re.I | re.S,
+)
+_PARAM_EQ_XML = re.compile(
+    r"<parameter\s*=\s*([A-Za-z][\w.-]*)>(.*?)</parameter>",
+    re.I | re.S,
+)
+_PARAM_NAME_XML = re.compile(
+    r"<parameter\s+name\s*=\s*[\"']([^\"']+)[\"']>(.*?)</parameter>",
+    re.I | re.S,
+)
+
+
+def strip_special_tokens(text: str) -> str:
+    """Remove leaked EOS / chat-template tokens from visible model text."""
+    if not text:
+        return text
+    return _SPECIAL_TOKENS.sub("", text)
+
+
+def drop_tool_xml(text: str) -> tuple[str, str]:
+    """Split assistant text into (visible, incomplete <tool_call> tail).
+
+    Complete XML tool dumps are dropped so they are not shown as the answer.
+    An unclosed opener is held back until the next chunk or round end.
+    """
+    if not text:
+        return "", ""
+    visible = _TOOL_XML_BLOCK.sub("", text)
+    last = None
+    for match in _TOOL_XML_OPEN.finditer(visible):
+        last = match
+    if last:
+        return visible[: last.start()], visible[last.start() :]
+    return visible, ""
+
+
+def _xml_param_value(raw: str):
+    text = (raw or "").strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        text = text[1:-1]
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return text
+
+
+def _xml_params(body: str) -> dict:
+    args = {}
+    for match in _PARAM_EQ_XML.finditer(body or ""):
+        args[match.group(1)] = _xml_param_value(match.group(2))
+    for match in _PARAM_NAME_XML.finditer(body or ""):
+        args[match.group(1)] = _xml_param_value(match.group(2))
+    return args
+
+
+def _xml_call(name: str, args: dict, index: int, *, coding: bool) -> dict | None:
+    from ..chat_tools import suggest_tool
+
+    resolved = suggest_tool(name, json.dumps(args, ensure_ascii=False), coding=coding) or (name or "").strip()
+    if not resolved:
+        return None
+    return {
+        "id": f"xml_{index}",
+        "type": "function",
+        "function": {
+            "name": resolved[:64],
+            "arguments": _bounded_arguments(json.dumps(args, ensure_ascii=False)),
+        },
+    }
+
+
+def _calls_from_xml_body(body: str, *, coding: bool, start: int = 0) -> list[dict]:
+    calls = []
+    for match in _FUNCTION_XML.finditer(body or ""):
+        rec = _xml_call(match.group(1), _xml_params(match.group(2)), start + len(calls), coding=coding)
+        if rec:
+            calls.append(rec)
+    if calls:
+        return calls
+    for match in _INVOKE_XML.finditer(body or ""):
+        rec = _xml_call(match.group(1), _xml_params(match.group(2)), start + len(calls), coding=coding)
+        if rec:
+            calls.append(rec)
+    if calls:
+        return calls
+    blob = re.sub(
+        r"^<tool_calls?\b[^>]*>|</tool_calls?>$",
+        "",
+        (body or "").strip(),
+        flags=re.I,
+    ).strip()
+    if not blob:
+        return calls
+    try:
+        parsed = json.loads(blob)
+    except (json.JSONDecodeError, ValueError, RecursionError):
+        parsed = None
+    items = parsed if isinstance(parsed, list) else [parsed] if isinstance(parsed, dict) else []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        fn = item.get("function") if isinstance(item.get("function"), dict) else {}
+        name = item.get("name") or fn.get("name")
+        args = item.get("arguments") if "arguments" in item else item.get("parameters") or item.get("input") or {}
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except (json.JSONDecodeError, ValueError):
+                args = {"_": args}
+        if not isinstance(args, dict):
+            args = {"value": args}
+        rec = _xml_call(str(name or ""), args, start + len(calls), coding=coding)
+        if rec:
+            calls.append(rec)
+    return calls
+
+
+def extract_text_tool_calls(content: str, *, coding: bool = False) -> tuple[str, list[dict]]:
+    """Parse Qwen/Hermes/GLM XML or JSON tool dumps out of assistant content."""
+    if not content:
+        return content, []
+    lowered = content.lower()
+    if "<tool" not in lowered and "<function" not in lowered and "<invoke" not in lowered:
+        return content, []
+    calls: list[dict] = []
+    cleaned = content
+
+    def _replace(match: re.Match) -> str:
+        extracted = _calls_from_xml_body(match.group(0), coding=coding, start=len(calls))
+        if not extracted:
+            # Inner body without the outer tags, in case the regex included them.
+            inner = match.group(0)
+            inner = re.sub(r"^</?tool_calls?\b[^>]*>|</tool_calls?>$", "", inner, flags=re.I | re.S)
+            extracted = _calls_from_xml_body(inner, coding=coding, start=len(calls))
+        if extracted:
+            calls.extend(extracted)
+            return ""
+        return match.group(0)
+
+    cleaned = _TOOL_XML_BLOCK.sub(_replace, cleaned)
+    if not calls:
+        opener = _TOOL_XML_OPEN.search(cleaned)
+        if opener:
+            extracted = _calls_from_xml_body(cleaned[opener.end() :], coding=coding)
+            if extracted:
+                calls.extend(extracted)
+                cleaned = cleaned[: opener.start()]
+    if not calls:
+        extracted = _calls_from_xml_body(cleaned, coding=coding)
+        if extracted:
+            calls.extend(extracted)
+            cleaned = _FUNCTION_XML.sub("", cleaned)
+            cleaned = _INVOKE_XML.sub("", cleaned)
+    return cleaned.strip(), calls
+
+
+def _finalize_assistant_payload(content, reasoning, calls, finish, *, coding: bool = False):
+    content = strip_special_tokens(content or "")
+    reasoning = strip_special_tokens(reasoning or "")
+    allc = [c for c in (calls or []) if isinstance(c, dict)]
+    named = [c for c in allc if (c.get("function") or {}).get("name")]
+    # Nameless entries ride along so the round loop can log them as
+    # malformed calls; execution filters them again before tools run.
+    native = allc
+    content, extracted = extract_text_tool_calls(content, coding=coding)
+    if not named and extracted:
+        native = extracted
+    if named or extracted:
+        finish = "tool_calls"
+    return content, reasoning, native, finish
+
+
+def calls_incomplete(calls: list) -> bool:
+    """True when any tool call has empty or truncated JSON arguments."""
+    for call in calls or []:
+        if not isinstance(call, dict):
+            return True
+        fn = call.get("function") if isinstance(call.get("function"), dict) else {}
+        if not fn.get("name"):
+            return True
+        raw = fn.get("arguments")
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            return True
+        if isinstance(raw, str):
+            try:
+                json.loads(raw)
+            except (json.JSONDecodeError, ValueError, RecursionError):
+                return True
+    return False
+
+
+def round_signature(calls: list) -> tuple:
+    sig = []
+    for call in calls or []:
+        if not isinstance(call, dict):
+            continue
+        fn = call.get("function") if isinstance(call.get("function"), dict) else {}
+        sig.append((str(fn.get("name") or ""), str(fn.get("arguments") or "")))
+    return tuple(sorted(sig))
+
+
+def _complete_json_object(raw: str):
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, ValueError, RecursionError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _bounded_arguments(raw: str) -> str:
+    # Never execute a clipped prefix, even when that prefix happens to be JSON.
+    return raw if len(raw) <= _ARG_LIMIT_FILE else _ARG_OVERFLOW
+
+
+def _take_calls(bucket: dict, raw) -> None:
+    if isinstance(raw, dict):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        try:
+            idx = int(item.get("index", len(bucket)))
+        except (TypeError, ValueError):
+            idx = len(bucket)
+        rec = bucket.setdefault(
+            idx,
+            {"id": "", "type": "function", "function": {"name": "", "arguments": ""}},
+        )
+        if item.get("id"):
+            rec["id"] = str(item["id"])[:128]
+        fn = item.get("function") if isinstance(item.get("function"), dict) else {}
+        name = fn.get("name")
+        if isinstance(name, str) and name:
+            cur = rec["function"]["name"]
+            if not cur or name.startswith(cur):
+                rec["function"]["name"] = name[:64]
+            elif not cur.startswith(name):
+                rec["function"]["name"] = (cur + name)[:64]
+        args = fn.get("arguments")
+        if rec["function"]["arguments"] == _ARG_OVERFLOW:
+            continue
+        if isinstance(args, dict):
+            rec["function"]["arguments"] = _bounded_arguments(json.dumps(args, ensure_ascii=False))
+        elif isinstance(args, str) and args:
+            if fn.get("name"):
+                parsed = _complete_json_object(args)
+                if parsed is not None:
+                    rec["function"]["arguments"] = _bounded_arguments(args)
+                    continue
+            rec["function"]["arguments"] = _bounded_arguments(rec["function"]["arguments"] + args)
+
+
+def _take_thinking(bucket: list, raw) -> None:
+    if not isinstance(raw, list):
+        return
+    for block in raw:
+        if not isinstance(block, dict):
+            continue
+        redacted = str(block.get("redacted_thinking") or "")
+        if redacted:
+            bucket.append({"redacted_thinking": redacted})
+            continue
+        text = str(block.get("thinking") or block.get("text") or "")
+        signature = str(block.get("signature") or "")
+        # Signed-empty is a valid omitted-display block and must replay.
+        if signature:
+            bucket.append({"thinking": text, "signature": signature})
+
+
+def _native_reasoning(reasoning, model, thinking=None):
+    """Keep only the reasoning the serving provider will be sent again.
+
+    Preserve native reasoning for backends whose message adapters replay it.
+    Claude and Devin retain their signed thinking blocks separately; OpenAI and
+    Grok do not replay their visible reasoning text as conversation messages.
+    """
+    out = {}
+    if (model.startswith(("glm-", "openrouter/z-ai/", "kimi-", "k3-", "mimo-", "openrouter/moonshotai/", "openrouter/xiaomi/"))
+            or model == "k3"):
+        if reasoning:
+            out["reasoning_content"] = str(reasoning)
+            out["_fuse_reasoning_model"] = model
+        return out
+    keeps_blocks = model.startswith("claude/") or model.startswith("claude-")
+    keeps_text = model.startswith("devin/")
+    if not keeps_blocks and not keeps_text:
+        return out
+    blocks = []
+    for block in thinking or []:
+        if not isinstance(block, dict):
+            continue
+        redacted = str(block.get("redacted_thinking") or "")
+        if redacted:
+            blocks.append({"redacted_thinking": redacted})
+            continue
+        text = str(block.get("thinking") or block.get("text") or "")
+        signature = str(block.get("signature") or "")
+        if (text or signature) and (signature or keeps_text):
+            blocks.append({"thinking": text, "signature": signature})
+    if blocks:
+        out["claude_thinking"] = blocks
+        out["_fuse_reasoning_model"] = model
+    return out

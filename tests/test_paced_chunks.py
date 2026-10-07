@@ -133,7 +133,7 @@ class ConsumeRoundBeatTest(unittest.IsolatedAsyncioTestCase):
         src = SimpleNamespace(source_id=1, type_id="openai")
         user = {"id": 1, "key_id": None}
 
-        with unittest.mock.patch.object(rt, "PROVIDER_BEAT_S", 0.03), unittest.mock.patch.object(
+        with unittest.mock.patch("app.chat_generation.consume.PROVIDER_BEAT_S", 0.03), unittest.mock.patch.object(
             rt.api, "_safe_record_usage", lambda *a, **k: None
         ), unittest.mock.patch.object(rt.api, "_tap", side_effect=lambda s, *a, **k: s):
             events = []
