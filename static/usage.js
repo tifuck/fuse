@@ -446,7 +446,7 @@
     if (item.is_new) return '<span class="uz-chg new">new</span>';
     if (item.token_change === null || item.token_change === undefined) return '<span class="uz-chg">—</span>';
     const n = Number(item.token_change);
-    const size = Math.abs(n) >= 100 ? Math.abs(n).toFixed(0) : Math.abs(n).toFixed(0);
+    const size = Math.abs(n) >= 100 ? Math.abs(n).toFixed(0) : Math.abs(n).toFixed(1).replace(/\.0$/, "");
     return `<span class="uz-chg">${n > 0 ? "↑" : n < 0 ? "↓" : "→"}${size}%</span>`;
   }
   function trendSvg(values, color) {

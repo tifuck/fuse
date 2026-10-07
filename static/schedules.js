@@ -111,7 +111,7 @@
   }
 
   function escapeHtml(value) {
-    return String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+    return escapeText(value);
   }
   function escapeAttr(value) {
     return escapeHtml(value).replace(/`/g, "&#96;");

@@ -34,7 +34,14 @@ self.addEventListener("push", (event) => {
   if (!data || typeof data !== "object") data = {};
   const title = typeof data.title === "string" && data.title ? data.title : "Fuse";
   const body = typeof data.body === "string" ? data.body : "";
-  const url = typeof data.url === "string" && data.url.startsWith("/") ? data.url : "/chat";
+  // Same-origin only: a leading "/" alone would let "//host" through.
+  let url = "/chat";
+  if (typeof data.url === "string" && data.url.startsWith("/")) {
+    try {
+      const parsed = new URL(data.url, self.location.origin);
+      if (parsed.origin === self.location.origin) url = parsed.pathname + parsed.search + parsed.hash;
+    } catch {}
+  }
   const threadId = typeof data.threadId === "string" ? data.threadId : "";
   event.waitUntil(
     (async () => {

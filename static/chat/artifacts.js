@@ -1,5 +1,6 @@
 // Artifact pane: open, versions, source view.
 import { S } from './state.js';
+import { escapeHtml } from './core.js';
 
 function artifactContentUrl(id, version) {
   const path = "/a/" + encodeURIComponent(id) + "/content";
@@ -106,7 +107,7 @@ export function createArtifacts(ctx) {
           S.artifactVersionEl.innerHTML = versions
             .slice()
             .reverse()
-            .map((ver) => `<option value="${ver}"${String(ver) === current ? " selected" : ""}>v${ver}</option>`)
+            .map((ver) => `<option value="${escapeHtml(String(ver))}"${String(ver) === current ? " selected" : ""}>v${escapeHtml(String(ver))}</option>`)
             .join("");
         }
       } else {

@@ -58,7 +58,7 @@ function autolinkHtml(src) {
     const held = [];
     let out = String(src || "").replace(/<a\b[^>]*>[\s\S]*?<\/a>|<img\b[^>]*>/gi, (tag) => {
       held.push(tag);
-      return `%%L${held.length - 1}%%`;
+      return `\uE000L${held.length - 1}\uE001`;
     });
     out = out.replace(/(^|[\s>(])((?:https?:\/\/|mailto:)[^\s<]+)(?=$|[\s<])/gi, (all, lead, raw) => {
       let href = raw.replace(/&amp;/g, "&");
@@ -71,20 +71,22 @@ function autolinkHtml(src) {
       if (!url) return all;
       return lead + linkHtml(url, deps.escapeHtml(href)) + trail;
     });
-    return out.replace(/%%L(\d+)%%/g, (_, i) => held[Number(i)] || "");
+    return out.replace(/\uE000L(\d+)\uE001/g, (_, i) => held[Number(i)] || "");
   }
 
 function renderInline(text) {
     const codes = [];
     let src = String(text || "").replace(/`([^`]+)`/g, (_, code) => {
       codes.push(code);
-      return `%%C${codes.length - 1}%%`;
+      return `\uE000C${codes.length - 1}\uE001`;
     });
     src = deps.escapeHtml(src);
+    // Remote images are CSP-blocked (img-src 'self' data:), so image syntax
+    // renders as a link to the source instead of a permanently broken <img>.
     src = src.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, href) => {
       const url = deps.safeUrl(href.replace(/&amp;/g, "&"));
       if (!url || !/^https?:/i.test(url)) return alt;
-      return `<img src="${deps.escapeHtml(url)}" alt="${alt}" loading="lazy">`;
+      return linkHtml(url, alt || deps.escapeHtml(url));
     });
     src = src.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, href) => {
       const url = deps.safeUrl(href.replace(/&amp;/g, "&"));
@@ -97,7 +99,7 @@ function renderInline(text) {
     src = src.replace(/__([^_]+)__/g, "<strong>$1</strong>");
     src = src.replace(/(^|[^\w])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
     src = src.replace(/(^|[^\w])_([^_\n]+)_(?!_)/g, "$1<em>$2</em>");
-    src = src.replace(/%%C(\d+)%%/g, (_, i) => `<code>${deps.escapeHtml(codes[Number(i)] || "")}</code>`);
+    src = src.replace(/\uE000C(\d+)\uE001/g, (_, i) => `<code>${deps.escapeHtml(codes[Number(i)] || "")}</code>`);
     return src;
   }
 

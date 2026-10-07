@@ -162,7 +162,6 @@ function toolStepHtml(trace, index, live, open, openMap, opts = {}) {
     const openId = openKind === "artifact" ? trace.identifier : openKind === "agent" ? trace.child_id : "";
     const revealed = open;
     let inner;
-    inner = deps.consoleDetailHtml(trace, failed, running);
     const icon = (failed ? deps.STEP_ICONS.error : interrupted ? deps.STEP_ICONS.stop : artifact ? deps.STEP_ICONS.artifact : deps.toolIcon(trace.name, false, false));
     {
       const verbose = Boolean(opts.verbose);

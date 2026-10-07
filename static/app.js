@@ -905,7 +905,8 @@ function escapeText(s) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function probeBox(id) {
@@ -963,9 +964,24 @@ document.querySelectorAll(".probe").forEach((btn) => {
 
 /* —— Shared toasts + vault unlock prompt (fuseUI) —— */
 (() => {
-  const PW_KEY = "fuse.vault.pw";
+  // fuse.vault.pw used to live in localStorage; the password is now held in
+  // this page load only, so a reload re-prompts instead of caching a secret.
   const DISMISS_KEY = "fuse.vault.dismissed";
-  const PW_TTL = 12 * 60 * 60 * 1000;
+  let cachedUid = null;
+  let cachedPw = "";
+  const store = {
+    load(uid) {
+      return cachedPw && Number(cachedUid) === Number(uid) ? cachedPw : "";
+    },
+    save(uid, password) {
+      cachedUid = Number(uid);
+      cachedPw = String(password);
+    },
+    clear() {
+      cachedUid = null;
+      cachedPw = "";
+    },
+  };
   let toastRoot = null;
   let vaultEl = null;
   let vaultScrim = null;
@@ -986,33 +1002,6 @@ document.querySelectorAll(".probe").forEach((btn) => {
     }
     return toastRoot;
   }
-
-  const store = {
-    load(uid) {
-      try {
-        const raw = JSON.parse(localStorage.getItem(PW_KEY) || "null");
-        if (!raw || typeof raw.p !== "string" || !raw.p) return "";
-        if (Number(raw.u) !== Number(uid)) return "";
-        if (!raw.t || Date.now() - Number(raw.t) > PW_TTL) {
-          localStorage.removeItem(PW_KEY);
-          return "";
-        }
-        return raw.p;
-      } catch (_) {
-        return "";
-      }
-    },
-    save(uid, password) {
-      try {
-        localStorage.setItem(PW_KEY, JSON.stringify({ u: Number(uid), p: String(password), t: Date.now() }));
-      } catch (_) {}
-    },
-    clear() {
-      try {
-        localStorage.removeItem(PW_KEY);
-      } catch (_) {}
-    },
-  };
 
   function dismissed() {
     try {
@@ -1263,11 +1252,6 @@ document.querySelectorAll(".probe").forEach((btn) => {
     if (!opts.force && dismissed()) return;
     vaultPrompt(opts);
   }
-
-  document.addEventListener("submit", (event) => {
-    const form = event.target.closest ? event.target.closest('form[action="/logout"]') : null;
-    if (form) store.clear();
-  }, true);
 
   window.fuseUI = {
     toast,

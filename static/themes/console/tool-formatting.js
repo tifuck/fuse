@@ -290,10 +290,6 @@ function consoleCallHtml(trace, presentation, full = false) {
       // per call, like every other row.
       return `<span class="chat-console-call"><span class="chat-tool-action">${deps.escapeHtml(verb)}</span></span>${hostHtml}${clock}`;
     }
-    if (name === "run_terminal_command" && running && !deps.toolBackground(trace) && !full && false) {
-      const label = String((trace && trace.progressLabel) || "").trim() || "Running";
-      return `<span class="chat-console-call"><span class="chat-tool-action">${deps.escapeHtml(label)}</span></span>`;
-    }
     let inner = "";
     // A wrapped path or command breaks after a slash, never inside a name.
     const path = ["read_file", "write_file", "search_replace", "list_dir", "run_terminal_command", "get_command_output"].includes(name);
@@ -315,8 +311,6 @@ function consoleCallHtml(trace, presentation, full = false) {
       const pattern = consoleArgText(trace.pattern || trace.query || "", 80);
       const where = String(trace.path || "").trim();
       inner = `pattern: "${pattern}"` + (where ? `, path: "${consoleArgText(compactPath(where, trace, 60), 60)}"` : "");
-    } else if (name === "grep" || name === "glob") {
-      inner = consoleArgText(trace.pattern || trace.query || "pattern", 90);
     } else if (name === "read_url") {
       inner = consoleArgText(trace.url || "page", 100);
     } else if (isSearchTool(name)) {

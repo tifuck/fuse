@@ -79,17 +79,26 @@ test('autolinks wrap bare https urls once', () => {
   assert.equal((html.match(/<a /g) || []).length, 1);
 });
 
+test('literal placeholder-like text is not swallowed by code-span or link holding', () => {
+  assert.equal(md('%%C0%% and %%L0%%'), '<p>%%C0%% and %%L0%%</p>');
+  const html = md('`sh` then %%C0%%');
+  assert.match(html, /<code>sh<\/code>/);
+  assert.match(html, /%%C0%%/);
+});
+
 test('markdown links are not double-wrapped', () => {
   const html = md('[Example](https://example.com/)');
   assert.equal((html.match(/<a /g) || []).length, 1);
   assert.match(html, />Example<\/a>/);
 });
 
-test('images require http urls', () => {
+test('images render as links (remote images are CSP-blocked)', () => {
   const ok = md('![box](https://example.com/red.png)');
   const bad = md('![box](javascript:alert(1))');
-  assert.match(ok, /<img src="https:\/\/example.com\/red.png" alt="box"/);
-  assert.equal(bad.includes('<img'), false);
+  assert.match(ok, /<a href="https:\/\/example.com\/red\.png"[^>]*>box<\/a>/);
+  assert.equal(ok.includes('<img'), false);
+  assert.equal(bad.includes('<a'), false);
+  assert.equal(bad, '<p>box)</p>');
 });
 
 test('details allowlist strips other html', () => {

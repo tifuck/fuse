@@ -11,8 +11,7 @@
   const LOGO_MAX = 96 * 1024;
   const FOLDER_PATH = "M1.9 4.1c0-.6.5-1.1 1.1-1.1h3.1l1.5 1.5H13c.6 0 1.1.5 1.1 1.1v6.3c0 .6-.5 1.1-1.1 1.1H3c-.6 0-1.1-.5-1.1-1.1z";
 
-  const esc = (s) =>
-    String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  const esc = (s) => escapeText(s);
   const csrf = () => document.querySelector('meta[name="csrf-token"]')?.content || "";
   const validColor = (c) => (/^#[0-9A-Fa-f]{6}$/.test(String(c || "")) ? String(c).toUpperCase() : "");
 
