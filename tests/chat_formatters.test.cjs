@@ -7,29 +7,24 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const source = require('./chat_source.cjs');
 
+// Real modules: pure semantics are static exports; the mutating trace
+// functions come from the actual merge factory over the real shared state.
+const REG = { ...source.Core, ...source.Semantics, ...source.makeTraces() };
 function load(name, context) {
   const themed = require("./theme_factory.cjs")(context)[name];
   if (typeof themed === "function") { context[name] = themed; return; }
-  const start = source.indexOf(`  function ${name}(`);
-  assert.ok(start >= 0, name);
-  const end = source.indexOf('\n  }', start) + 4;
-  vm.runInContext(source.slice(start, end), context);
+  assert.ok(typeof REG[name] === 'function', `missing module function: ${name}`);
+  context[name] = REG[name];
 }
 
 function world() {
-  const ctx = vm.createContext({
-    activeRun: null,
-    runIsActive: () => false,
-    runIsStopping: () => false,
-    EXECUTION_FIELDS: ['state', 'execution_status', 'output', 'output_mode', 'output_chars'],
-    SETTLED_TOOL_STATUS: new Set(['done', 'error', 'interrupted']),
+  const ctx = vm.createContext({ ...REG,
+    get activeRun() { return source.S.activeRun; }, set activeRun(v) { source.S.activeRun = v; },
+    get messages() { return source.S.messages; }, set messages(v) { source.S.messages = v; },
+    get agentRun() { return source.S.agentRun; }, set agentRun(v) { source.S.agentRun = v; },
+    get agentsOpen() { return source.S.agentsOpen; }, set agentsOpen(v) { source.S.agentsOpen = v; },
+    get log() { return source.S.log; }, set log(v) { source.S.log = v; },
   });
-  for (const name of [
-    'executionState', 'executionIdentity', 'executionPending', 'toolBackground',
-    'toolAwaitingCancellation', 'isShellExecTool', 'childBackedTool', 'toolIsCurrent',
-    'toolRunning', 'applyCommandResult', 'shellExitOnly',
-    'shellExitCode', 'toolFailed', 'toolInterrupted', 'toolPresentation',
-  ]) load(name, ctx);
   return ctx;
 }
 
@@ -363,11 +358,7 @@ test('output caps cut on character boundaries and say which slice survived', () 
 test('a child that died has no completed report; a partial one stays partial', () => {
   const c = world();
   const trace = { name: 'spawn_subagent', child_id: 'child', status: 'running' };
-  Object.assign(c, {
-    messages: [{ tools: [trace] }], agentRun: null, agentsOpen: false,
-    articleFor: () => null, syncLiveDock() {}, scheduleAgentView() {},
-    workClocksLive: () => false, startLiveClock() {},
-  });
+  Object.assign(source.S, { messages: [{ tools: [trace] }], agentRun: null, agentsOpen: false, log: { children: [] } });
   load('mapAgentToolStatus', c);
   load('reconcileAgentTraces', c);
   const apply = (row) => { c.reconcileAgentTraces([row]); return trace.summary; };

@@ -43,7 +43,7 @@ const wrote = (extra = {}) => ({ id: 'wrote', name: 'write_file', status: 'done'
         const response = await route.fetch();
         let source = await response.text();
         const end = source.lastIndexOf('\n})();');
-        const hook = '\nwindow.widgetModels = { add(model) { allModels.push(model); modelsById.set(model.id, model); }, use(id) { modelId = id; meterAnchor = null; syncContextMeter(); } };\n';
+        const hook = '\nwindow.widgetModels = { add(model) { S.allModels.push(model); S.modelsById.set(model.id, model); }, use(id) { S.modelId = id; S.meterAnchor = null; context.syncContextMeter(); } };\n';
         await route.fulfill({ response, body: source.slice(0, end) + hook + source.slice(end) });
       })();
     });

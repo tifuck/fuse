@@ -72,9 +72,9 @@ function agent(id, patch) {
     // chat.js that registers a second fixture model at boot. (Fulfilling the
     // document instead breaks the live-sync WebSocket in Chromium.)
     const src = await page.evaluate(() => fetch('/static/chat.js').then((r) => r.text()));
-    const needle = 'const modelsById = new Map(allModels.map((model) => [model.id, model]));';
-    assert.ok(src.includes(needle), 'modelsById registry found in chat.js');
-    const patched = src.replace(needle, needle + "\nallModels.push({ id: 'offline-two', name: 'Offline fixture two', type: 'llama', title: 'Test', reasoning: ['none', 'low', 'medium', 'high'], reasoningDefault: 'medium' });\nmodelsById.set('offline-two', allModels[allModels.length - 1]);\n");
+    const needle = '\n})();';
+    assert.ok(src.includes(needle), 'fixture injection seam found in chat.js');
+    const patched = src.replace(needle, "\nS.allModels.push({ id: 'offline-two', name: 'Offline fixture two', type: 'llama', title: 'Test', reasoning: ['none', 'low', 'medium', 'high'], reasoningDefault: 'medium' });\nS.modelsById.set('offline-two', S.allModels[S.allModels.length - 1]);\n" + needle);
     await page.route('**/static/chat.js*', (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: patched }));
     await page.route('**/chat/runs/*', (route) => {
       const id = decodeURIComponent(new URL(route.request().url()).pathname.split('/').pop());

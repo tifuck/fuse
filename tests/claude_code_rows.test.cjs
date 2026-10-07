@@ -5,19 +5,22 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const source = require('./chat_source.cjs');
+// Real modules: pure helpers and permission-card copy from static exports.
+const REG = { ...source.Core, ...source.Semantics, permToolLabel: source.Perms.permToolLabel,
+  permGrantKind: source.Perms.permGrantKind, permGrantPath: source.Perms.permGrantPath,
+  permCardCopy: source.Perms.permCardCopy, permLeftS: source.Perms.permLeftS,
+  fmtPermCountdown: source.Perms.fmtPermCountdown, permCardSignature: source.Perms.permCardSignature };
 function load(name, context) {
   const themed = require("./theme_factory.cjs")(context)[name];
   if (typeof themed === "function") { context[name] = themed; return; }
-  const start = source.indexOf(`  function ${name}(`);
-  assert.ok(start >= 0, name);
-  const end = source.indexOf('\n  }', start) + 4;
-  vm.runInContext(source.slice(start, end), context);
+  assert.ok(typeof REG[name] === 'function', `missing module function: ${name}`);
+  context[name] = REG[name];
 }
 function constant(name, context) {
-  const start = source.indexOf(`  const ${name} =`);
+  const start = source.source.indexOf(`  const ${name} =`);
   assert.ok(start >= 0, name);
-  const end = source.indexOf(';\n', start) + 2;
-  vm.runInContext(source.slice(start, end).replace(`const ${name}`, `var ${name}`), context);
+  const end = source.source.indexOf(';\n', start) + 2;
+  vm.runInContext(source.source.slice(start, end).replace(`const ${name}`, `var ${name}`), context);
 }
 function world() {
   const ctx = vm.createContext({ compactPath: (path) => path });
@@ -122,5 +125,5 @@ test('an interrupted call says why, never naming Claude', () => {
   assert.equal(ctx.ccInterruptedText({ name: 'run_terminal_command', status: 'interrupted', execution_status: 'cancelled', error: 'cancellation requested; remote termination is not confirmed', termination_confirmed: false }), 'Interrupted · stopped; the process may still be running');
   assert.equal(ctx.ccInterruptedText({ name: 'search_replace', status: 'interrupted', error: 'Tool interrupted.' }), 'Interrupted · the run ended before it finished');
   assert.equal(ctx.ccInterruptedText({ name: 'run_terminal_command', status: 'running' }), 'Interrupted · the run ended before it finished');
-  assert.ok(!/claude/i.test(source.slice(source.indexOf('  function ccInterruptedText('), source.indexOf('\n  }', source.indexOf('  function ccInterruptedText(')))));
+  assert.ok(!/claude/i.test(source.source.slice(source.source.indexOf('  function ccInterruptedText('), source.source.indexOf('\n  }', source.source.indexOf('  function ccInterruptedText(')))));
 });

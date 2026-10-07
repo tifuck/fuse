@@ -11,36 +11,33 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const source = require('./chat_source.cjs');
 
+// Real modules: pure helpers and semantics from their static exports, trace
+// mutation from the actual merge factory over the real shared state.
+const LivePure = require('../static/chat/agents/live.js');
+const REG = { ...source.Core, ...source.Semantics, ...source.makeTraces(),
+  isUntitledThread: source.Threads.isUntitledThread, agentLive: LivePure.agentLive };
 function load(name, context) {
   const themed = require("./theme_factory.cjs")(context)[name];
   if (typeof themed === "function") { context[name] = themed; return; }
-  const start = source.indexOf(`  function ${name}(`);
-  assert.ok(start >= 0, name);
-  const end = source.indexOf('\n  }', start) + 4;
-  vm.runInContext(source.slice(start, end), context);
+  assert.ok(typeof REG[name] === 'function', `missing module function: ${name}`);
+  context[name] = REG[name];
 }
 
 function constant(name, context) {
-  const start = source.indexOf(`  const ${name} =`);
+  const start = source.source.indexOf(`  const ${name} =`);
   assert.ok(start >= 0, name);
-  const end = source.indexOf(';\n', start) + 2;
-  vm.runInContext(source.slice(start, end).replace(`const ${name}`, `var ${name}`), context);
+  const end = source.source.indexOf(';\n', start) + 2;
+  vm.runInContext(source.source.slice(start, end).replace(`const ${name}`, `var ${name}`), context);
 }
 
 // Tool presentation counting: toolCounts / countsLabel.
 function executionWorld(extra = {}) {
-  const ctx = vm.createContext(Object.assign({
-    activeRun: null,
-    runIsActive: () => false,
-    runIsStopping: () => false,
+  const ctx = Object.assign({ ...REG,
     activeAssistant: () => null,
-    EXECUTION_FIELDS: ['state', 'execution_status', 'output', 'output_mode', 'output_chars'],
-  }, extra));
-  for (const name of ['executionState', 'executionIdentity', 'executionPending', 'toolBackground',
-    'toolAwaitingCancellation', 'isShellExecTool', 'childBackedTool', 'toolIsCurrent', 'toolRunning',
-    'applyCommandResult', 'shellExitOnly', 'shellExitCode', 'toolFailed',
-    'toolInterrupted', 'toolPresentation']) load(name, ctx);
-  return ctx;
+    get activeRun() { return source.S.activeRun; }, set activeRun(v) { source.S.activeRun = v; },
+    get messages() { return source.S.messages; }, set messages(v) { source.S.messages = v; },
+  }, extra);
+  return vm.createContext(ctx);
 }
 
 // Row labels: toolAction / toolSubject / toolRowLabel.

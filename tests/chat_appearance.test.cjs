@@ -170,7 +170,7 @@ test('tool rows collapse to one line; thinking unwraps in place', () => {
   assert.match(css, /html\[data-chat-theme="void"\]/);
   assert.match(css, /html\[data-chat-theme="paper"\] \{[\s\S]*?--ink:\s*#ffffff/);
   assert.doesNotMatch(css, /Terminal is an appearance invariant/);
-  const js = require('./chat_source.cjs');
+  const js = require('./chat_source.cjs').source;
   assert.match(js, /function syncThinkingMode\(/);
   assert.match(js, /windowEl\.inert = mode === "collapsed"/);
   assert.match(js, /mode === "collapsed" \? -1 : 0/);

@@ -1,125 +1,129 @@
 // Loaded inside chat.js's closure by the isolated browser server only.
+// Exercises the modularized runtime through its real owners: state lives on
+// S (static/chat/state.js), functions on their feature interfaces
+// (transcript.paint(), sidebar.renderHistory(), ...), and the theme
+// destructuring keeps its classic names in scope for direct calls.
 window.fuseToolFixture = {
   mount(rows, live = false, threadId = null) {
-    messages = rows.map((row, index) => ({
+    S.messages = rows.map((row, index) => ({
       id: `fixture-message-${index}`, role: 'assistant', content: '', reasoning: '',
       noActions: true, ...(threadId ? {} : { activityOpenMap: { 0: true } }), ...structuredClone(row),
     }));
-    currentId = threadId;
-    log._threadId = threadId;
-    activeRun = live ? { id: 'fixture-run', message_id: messages.at(-1).id, status: 'running' } : null;
-    streaming = live;
-    root.classList.add('history-collapsed');
-    root.classList.remove('is-empty');
-    log.hidden = false;
-    welcomeEl.hidden = true;
-    log.replaceChildren(...messages.map((msg, i) => {
-      const article = renderAssistant(msg, live && i === messages.length - 1);
+    S.currentId = threadId;
+    S.log._threadId = threadId;
+    S.activeRun = live ? { id: 'fixture-run', message_id: S.messages.at(-1).id, status: 'running' } : null;
+    S.streaming = live;
+    S.root.classList.add('history-collapsed');
+    S.root.classList.remove('is-empty');
+    S.log.hidden = false;
+    S.welcomeEl.hidden = true;
+    S.log.replaceChildren(...S.messages.map((msg, i) => {
+      const article = renderAssistant(msg, live && i === S.messages.length - 1);
       article.dataset.messageId = msg.id;
       return article;
     }));
-    thread.scrollTop = 0;
-    syncLiveDock();
+    S.thread.scrollTop = 0;
+    ui.syncLiveDock();
   },
   // A whole thread through the real paint path: user and automated wake
   // messages, wake results applied to their calls, every message hydrated.
   mountThread(rows, { live = false, phase = '' } = {}) {
-    messages = rows.map((row, index) => ({
+    S.messages = rows.map((row, index) => ({
       id: `fixture-message-${index}`, role: 'assistant', content: '', reasoning: '', ...structuredClone(row),
     }));
-    currentId = null;
-    log._threadId = null;
-    const last = [...messages].reverse().find(msg => msg.role === 'assistant');
-    activeRun = live && last ? { id: 'fixture-run', message_id: last.id, status: 'running', ...(phase ? { activity: { phase } } : {}) } : null;
-    streaming = Boolean(live && last);
-    root.classList.add('history-collapsed');
-    root.classList.remove('is-empty');
-    log.hidden = false;
-    welcomeEl.hidden = true;
-    log.replaceChildren();
-    paint();
-    log.querySelectorAll('[data-deferred-message]').forEach(hydrateHistoricalMessage);
-    syncLiveDock();
+    S.currentId = null;
+    S.log._threadId = null;
+    const last = [...S.messages].reverse().find(msg => msg.role === 'assistant');
+    S.activeRun = live && last ? { id: 'fixture-run', message_id: last.id, status: 'running', ...(phase ? { activity: { phase } } : {}) } : null;
+    S.streaming = Boolean(live && last);
+    S.root.classList.add('history-collapsed');
+    S.root.classList.remove('is-empty');
+    S.log.hidden = false;
+    S.welcomeEl.hidden = true;
+    S.log.replaceChildren();
+    transcript.paint();
+    S.log.querySelectorAll('[data-deferred-message]').forEach(transcript.hydrateHistoricalMessage);
+    ui.syncLiveDock();
   },
-  thinking: setShowThinking,
-  slash: runSlash,
-  api,
-  runInfo: () => structuredClone(activeRun),
-  elapsed: liveElapsedSeconds,
-  repaint: paint,
+  thinking: panels.setShowThinking,
+  slash: composer.runSlash,
+  api: net.api,
+  runInfo: () => structuredClone(S.activeRun),
+  elapsed: transcript.liveElapsedSeconds,
+  repaint: transcript.paint,
   update(id, patch, live = false) {
-    messages.forEach((msg, i) => {
+    S.messages.forEach((msg, i) => {
       const trace = (msg.tools || []).find(t => t.id === id);
       if (trace) Object.assign(trace, patch);
-      if (msg.role === 'assistant') updateAssistant(log.children[i], msg, live);
+      if (msg.role === 'assistant') updateAssistant(S.log.children[i], msg, live);
     });
   },
   append(trace, live = false) {
-    const msg = messages.at(-1);
+    const msg = S.messages.at(-1);
     msg.tools.push(trace);
-    updateAssistant(log.lastElementChild, msg, live);
+    updateAssistant(S.log.lastElementChild, msg, live);
   },
-  agents: reconcileAgentTraces,
+  agents: traces.reconcileAgentTraces,
   todo: {
-    sync: syncTodoSections,
-    openAgent(id) { setAgentsOpen(true); return showAgent(id); },
-    agents(rows) { agentsRows = structuredClone(rows); syncTodoSections(); },
-    reset() { Object.values(todoSections).forEach((sec) => { sec.sig = ''; sec.shownKey = ''; sec.lingerUntil = 0; sec.expanded = false; }); todoDismissedKeys = new Set(); },
+    sync: transcript.syncTodoSections,
+    openAgent(id) { agents.setAgentsOpen(true); return agents.showAgent(id); },
+    agents(rows) { S.agentsRows = structuredClone(rows); transcript.syncTodoSections(); },
+    reset() { Object.values(S.todoSections).forEach((sec) => { sec.sig = ''; sec.shownKey = ''; sec.lingerUntil = 0; sec.expanded = false; }); S.todoDismissedKeys = new Set(); },
   },
-  pollAgent: pollAgentView,
-  jobs: reconcileBgTraces,
-  work(rows) { setAgentsOpen(true); jobsRows = structuredClone(rows); renderJobsList(); syncAgentsUi(); },
-  event: receiveEvent,
+  pollAgent: agents.pollAgentView,
+  jobs: traces.reconcileBgTraces,
+  work(rows) { agents.setAgentsOpen(true); S.jobsRows = structuredClone(rows); agents.renderJobsList(); agents.syncAgentsUi(); },
+  event: sync.receiveEvent,
   sidebar: {
     mount(thread, nativeProjects = []) {
-      threads = [];
-      archivedThreads = [];
-      projects = structuredClone(nativeProjects);
-      pendingProject = null;
-      currentId = thread.id;
-      upsertLocal(structuredClone(thread));
-      renderHistory();
+      S.threads = [];
+      S.archivedThreads = [];
+      S.projects = structuredClone(nativeProjects);
+      S.pendingProject = null;
+      S.currentId = thread.id;
+      sidebar.upsertLocal(structuredClone(thread));
+      sidebar.renderHistory();
     },
-    update(thread) { upsertLocal(structuredClone(thread)); renderHistory(); },
-    snapshot: () => structuredClone([...threads, ...archivedThreads]),
+    update(thread) { sidebar.upsertLocal(structuredClone(thread)); sidebar.renderHistory(); },
+    snapshot: () => structuredClone([...S.threads, ...S.archivedThreads]),
   },
-  state: toolPresentation,
-  activity: currentActivity,
-  merge: mergeToolEvent,
-  serializeTrace: persistToolTrace,
+  state: traces.toolPresentation,
+  activity: ui.currentActivity,
+  merge: traces.mergeToolEvent,
+  serializeTrace: traces.persistToolTrace,
   label: toolRowLabel,
   command: displayCommand,
   path: shortToolPath,
   toolEvent(event) {
-    const msg = messages.at(-1);
-    applyFuseEvent(msg, event);
-    updateAssistant(log.lastElementChild, msg, true);
+    const msg = S.messages.at(-1);
+    sync.applyFuseEvent(msg, event);
+    updateAssistant(S.log.lastElementChild, msg, true);
   },
   progress(messageIndex, payload) {
-    applyProgressPayload(messages[messageIndex], payload);
-    updateAssistant(log.children[messageIndex], messages[messageIndex], false);
-    syncLiveDock();
+    sync.applyProgressPayload(S.messages[messageIndex], payload);
+    updateAssistant(S.log.children[messageIndex], S.messages[messageIndex], false);
+    ui.syncLiveDock();
   },
   stream(messageIndex, patch) {
-    applyProgressPayload(messages[messageIndex], { message: patch });
-    updateAssistant(log.children[messageIndex], messages[messageIndex], true);
-    syncLiveDock();
-    scrollThread();
+    sync.applyProgressPayload(S.messages[messageIndex], { message: patch });
+    updateAssistant(S.log.children[messageIndex], S.messages[messageIndex], true);
+    ui.syncLiveDock();
+    transcript.scrollThread();
   },
-  follow(on = true) { if (on) { stickToBottom = true; scrollThread(); } else pauseThreadFollow(); },
-  scrollState: () => ({ following: stickToBottom, frame: threadFollowFrame, top: thread.scrollTop, gap: thread.scrollHeight - thread.clientHeight - thread.scrollTop, streaming, reduced: reduceMotion.matches }),
-  run(patch) { activeRun = { ...activeRun, ...patch }; setRunning(); },
-  snapshot: () => structuredClone(messages),
-  dock: () => liveDockLabel && liveDockLabel.textContent,
+  follow(on = true) { if (on) { S.stickToBottom = true; transcript.scrollThread(); } else transcript.pauseThreadFollow(); },
+  scrollState: () => ({ following: S.stickToBottom, frame: S.threadFollowFrame, top: S.thread.scrollTop, gap: S.thread.scrollHeight - S.thread.clientHeight - S.thread.scrollTop, streaming: S.streaming, reduced: S.reduceMotion.matches }),
+  run(patch) { S.activeRun = { ...S.activeRun, ...patch }; sync.setRunning(); },
+  snapshot: () => structuredClone(S.messages),
+  dock: () => S.liveDockLabel && S.liveDockLabel.textContent,
   context: {
-    accept: acceptMeter,
-    fuse: applyFuseEvent,
-    snapshot: contextSnapshot,
-    estimate: liveStreamEstimate,
-    recount: recountLocalContext,
-    rows: () => occupancyRows(contextSnapshot()),
-    live(on) { streaming = Boolean(on); if (!on) activeRun = null; },
-    reset() { liveMeter = null; meterAnchor = null; compacting = false; },
-    busy: () => Boolean(compacting),
+    accept: context.acceptMeter,
+    fuse: sync.applyFuseEvent,
+    snapshot: context.contextSnapshot,
+    estimate: context.liveStreamEstimate,
+    recount: context.recountLocalContext,
+    rows: () => context.occupancyRows(context.contextSnapshot()),
+    live(on) { S.streaming = Boolean(on); if (!on) S.activeRun = null; },
+    reset() { S.liveMeter = null; S.meterAnchor = null; S.compacting = false; },
+    busy: () => Boolean(S.compacting),
   },
 };

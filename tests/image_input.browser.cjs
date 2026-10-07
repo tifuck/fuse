@@ -15,16 +15,16 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
         const end = source.lastIndexOf('\n})();');
         source = source.slice(0, end) + `
           window.imageFixture = {
-            resizeImage, selectModel, imageTokens,
+            resizeImage: composer.resizeImage, selectModel: picker.selectModel, imageTokens: context.imageTokens,
             setup() {
-              const model = currentModel();
+              const model = context.currentModel();
               model.image = true;
               const text = { ...model, id: 'fixture-text', name: 'Text only', image: false };
-              allModels.push(text); modelsById.set(text.id, text);
-              pendingAttachments = [{ kind: 'image', name: 'test.png', data: 'data:image/png;base64,AA==' }];
-              renderAttachList(); renderPickerList();
+              S.allModels.push(text); S.modelsById.set(text.id, text);
+              S.pendingAttachments = [{ kind: 'image', name: 'test.png', data: 'data:image/png;base64,AA==' }];
+              composer.renderAttachList(); picker.renderPickerList();
             },
-            images() { return pendingAttachments.length; }
+            images() { return S.pendingAttachments.length; }
           };
         ` + source.slice(end);
         await route.fulfill({ response, body: source });

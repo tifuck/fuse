@@ -1,21 +1,33 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
 const vm = require('node:vm');
-const source = require('./chat_source.cjs');
+const chat = require('./chat_source.cjs');
+// The real modularized runtime: semantics are static exports, the mutating
+// trace functions come from the actual merge factory over the real shared
+// state (chat.S). Stub collaborators match the seams the vm-based suites
+// stubbed (scheduleAgentView, startLiveClock, ...).
+const REG = { ...chat.Core, ...chat.Semantics, ...chat.makeTraces() };
 function load(name, context) {
   const themed = require("./theme_factory.cjs")(context)[name];
   if (typeof themed === "function") { context[name] = themed; return; }
-  const start = source.indexOf(`  function ${name}(`);
-  assert.ok(start >= 0);
-  const end = source.indexOf('\n  }', start) + 4;
-  vm.runInContext(source.slice(start, end), context);
+  assert.ok(typeof REG[name] === 'function', `missing module function: ${name}`);
+  context[name] = REG[name];
 }
+// S-backed aliases must stay live (Object.assign would flatten getters), so
+// tests keep driving the real state owner through them.
+const S_ALIASES = ['activeRun', 'messages', 'agentRun', 'agentPendingEvents', 'agentsRows',
+  'agentsRequest', 'agentsRefreshAgain', 'agentLifecycleEpoch', 'agentLifecycle', 'agentsFailCount'];
 function world() {
-  const ctx = vm.createContext({ activeRun: null, runIsActive: () => false,
-    EXECUTION_FIELDS: ['state', 'execution_status', 'output', 'output_mode', 'output_chars'] });
-  for (const name of ['executionState', 'executionIdentity', 'executionPending', 'toolBackground', 'toolAwaitingCancellation', 'isShellExecTool', 'childBackedTool', 'toolIsCurrent', 'toolRunning', 'applyCommandResult', 'shellExitOnly', 'shellExitCode', 'toolFailed', 'toolInterrupted', 'toolPresentation']) load(name, ctx);
-  return ctx;
+  const ctx = Object.assign({}, REG, {
+    applyCancelResult: chat.makeSyncStatus().applyCancelResult,
+    acceptAgentSnapshot: chat.makeAgentView({ traces: REG }).acceptAgentSnapshot,
+    assistantSegments: () => [],
+    groupTraces: () => [],
+  });
+  for (const key of S_ALIASES) Object.defineProperty(ctx, key, {
+    get: () => chat.S[key], set: (v) => { chat.S[key] = v; }, enumerable: true, configurable: true,
+  });
+  return vm.createContext(ctx);
 }
 test('automated labels read envelope ids, not the handoff boilerplate', () => {
   const c = vm.createContext({});
@@ -102,11 +114,11 @@ test('a wait abandoned by its parent cannot spin for the lifetime of its child',
 
 test('agent lifecycle reconciliation never completes or restarts wait invocations', () => {
   const c = world();
-  Object.assign(c, { messages: [{ tools: [
+  Object.assign(chat.S, { messages: [{ tools: [
     { name: 'spawn_subagent', child_id: 'child', status: 'done', state: 'running', execution_status: 'running' },
     { name: 'get_subagent_output', child_id: 'child', status: 'running' },
     { name: 'get_subagent_output', child_id: 'child', status: 'done', execution_status: 'running' },
-  ] }], agentRun: null, log: { children: [] }, syncLiveDock() {}, workClocksLive: () => false, startLiveClock() {} });
+  ] }], agentRun: null, log: { children: [] } });
   load('mapAgentToolStatus', c);
   load('articleFor', c);
   load('reconcileAgentTraces', c);
@@ -120,8 +132,8 @@ test('agent lifecycle reconciliation never completes or restarts wait invocation
 test('agent list previews do not truncate a delivered report', () => {
   const c = world();
   const report = 'Final report. '.repeat(100);
-  Object.assign(c, { messages: [{ tools: [{ name: 'spawn_subagent', child_id: 'child', status: 'done', summary: report }] }],
-    agentRun: null, log: { children: [] }, syncLiveDock() {}, workClocksLive: () => false, startLiveClock() {} });
+  Object.assign(chat.S, { messages: [{ tools: [{ name: 'spawn_subagent', child_id: 'child', status: 'done', summary: report }] }],
+    agentRun: null, log: { children: [] } });
   load('mapAgentToolStatus', c);
   load('articleFor', c);
   load('reconcileAgentTraces', c);
@@ -133,9 +145,10 @@ test('background command completion reaches nested-agent transcript tools', () =
   const c = world();
   const trace = { name: 'run_terminal_command', child_id: 'job', status: 'done', execution_status: 'running', background: true };
   let paints = 0;
-  Object.assign(c, { messages: [], agentRun: { messages: [{ role: 'assistant', tools: [trace] }] }, agentsOpen: true,
-    log: { children: [] }, scheduleAgentView() { paints++; } });
-  load('reconcileBgTraces', c);
+  const traceModule = chat.makeTraces({ agents: { scheduleAgentView() { paints++; } } });
+  Object.assign(chat.S, { messages: [], agentRun: { messages: [{ role: 'assistant', tools: [trace] }] }, agentsOpen: true,
+    log: { children: [] } });
+  c.reconcileBgTraces = traceModule.reconcileBgTraces;
   c.reconcileBgTraces([{ id: 'job', state: 'completed', output: 'Final output', output_chars: 12, exit_code: 0 }]);
   assert.equal(c.toolPresentation(trace, false).statusLabel, 'Done');
   assert.equal(trace.output, 'Final output');
@@ -155,13 +168,13 @@ test('historical tool activity cannot resurrect a thinking spinner or running la
 
 test('command polling cannot rewrite pending or returned wait invocations', () => {
   const c = world();
-  Object.assign(c, { messages: [], agentRun: null, agentsOpen: false, log: { children: [] } });
+  Object.assign(chat.S, { messages: [], agentRun: null, agentsOpen: false, log: { children: [] } });
   load('reconcileBgTraces', c);
   for (const state of ['completed', 'failed', 'cancelled', 'lost']) {
     for (const status of ['running', 'done', 'error', 'interrupted']) {
       const trace = { name: 'get_command_output', child_id: 'job', status, state: 'running', output: 'observed' };
       const before = { ...trace };
-      c.messages = [{ role: 'assistant', tools: [trace] }];
+      chat.S.messages = [{ role: 'assistant', tools: [trace] }];
       c.reconcileBgTraces([{ id: 'job', state, output: 'later output', output_chars: 12 }], false);
       assert.deepEqual(trace, before);
     }
@@ -180,8 +193,7 @@ test('wake envelopes preserve historical command observations', () => {
 
 test('late cancellation acknowledgement cannot install a run in an idle thread', () => {
   const c = world();
-  Object.assign(c, { activeRun: null, stoppingRunId: '', setRunning() {}, runIsActive: r => r?.status === 'running' });
-  load('applyCancelResult', c);
+  Object.assign(chat.S, { activeRun: null, stoppingRunId: '' });
   c.applyCancelResult({ run: { id: 'old-run', status: 'running', cancel_requested: true } }, 'old-run');
   assert.equal(c.activeRun, null);
   c.activeRun = { id: 'new-run', status: 'running' };
@@ -191,31 +203,27 @@ test('late cancellation acknowledgement cannot install a run in an idle thread',
 
 test('agent activity uses its own queue and cancellation state', () => {
   const c = world();
-  Object.assign(c, { activeRun: { message_id: 'root', status: 'running' },
-    agentRun: { message_id: 'child', status: 'queued' }, groupTraces: () => [],
-    lastCurrentTrace: () => null, assistantSegments: () => [],
-    runIsStopping: run => Boolean(run.cancel_requested) });
+  Object.assign(chat.S, { activeRun: { message_id: 'root', status: 'running' },
+    agentRun: { message_id: 'child', status: 'queued' } });
   load('currentActivity', c);
   assert.equal(c.currentActivity({ id: 'child' }, [], true).label, 'Queued');
-  c.agentRun.status = 'running';
-  c.agentRun.cancel_requested = true;
+  chat.S.agentRun.status = 'running';
+  chat.S.agentRun.cancel_requested = true;
   assert.equal(c.currentActivity({ id: 'child' }, [], true).label, 'Stopping');
 });
 
 test('agent snapshots retain activity and replay cancellation without regressing the cursor', () => {
   const c = world();
-  Object.assign(c, { agentRun: null, jobsRows: [], completedJobs: new Map(),
-    reconcileBgTraces() {}, applyProgressPayload() {}, agentPendingEvents: [
+  Object.assign(chat.S, { agentRun: null, jobsRows: [], completedJobs: new Map(), agentPendingEvents: [
       { id: 12, type: 'agent.cancel_requested', payload: { run_id: 'child', status: 'running', cancel_requested: true } },
     ] });
-  load('acceptAgentSnapshot', c);
   assert.equal(c.acceptAgentSnapshot({ id: 'child', event_cursor: 10, status: 'running', message: {}, activity: { phase: 'model' } }), true);
   assert.equal(c.agentRun.message._activity.phase, 'model');
   assert.equal(c.agentRun.cancel_requested, true);
   assert.equal(c.agentRun.event_cursor, 12);
   assert.equal(c.acceptAgentSnapshot({ id: 'child', event_cursor: 11, status: 'running', message: {} }), false);
   assert.equal(c.agentRun.cancel_requested, true);
-  c.agentPendingEvents = [{ id: 14, type: 'agent.resumed', payload: { run_id: 'child' } }];
+  chat.S.agentPendingEvents = [{ id: 14, type: 'agent.resumed', payload: { run_id: 'child' } }];
   c.acceptAgentSnapshot({ id: 'child', event_cursor: 13, status: 'cancelled', cancel_requested: true, message: {} });
   assert.equal(c.agentRun.status, 'queued');
   assert.equal(c.agentRun.cancel_requested, false);
@@ -223,13 +231,10 @@ test('agent snapshots retain activity and replay cancellation without regressing
 
 test('agent list rejects reads overtaken by lifecycle events and schedules a replacement', async () => {
   const c = world();
-  const start = source.indexOf('  async function refreshAgents(');
-  const end = source.indexOf('\n  }', start) + 4;
   const pending = [];
-  Object.assign(c, { currentId: 'thread', generation: 1, agentsRequest: null, agentsRefreshAgain: false,
-    agentLifecycleEpoch: 0, agentLifecycle: new Map(), agentsRows: [], agentsFailCount: 0,
-    api: () => new Promise(resolve => pending.push(resolve)), reconcileAgentTraces() {}, syncAgentsUi() {}, refreshJobs() {} });
-  vm.runInContext(source.slice(start, end), c);
+  Object.assign(chat.S, { currentId: 'thread', generation: 1, agentsRequest: null, agentsRefreshAgain: false,
+    agentLifecycleEpoch: 0, agentLifecycle: new Map(), agentsRows: [], agentsFailCount: 0 });
+  c.refreshAgents = chat.makeAgentView({ traces: c, net: { api: () => new Promise(resolve => pending.push(resolve)) } }).refreshAgents;
   const first = c.refreshAgents();
   c.agentLifecycleEpoch++;
   await c.refreshAgents();

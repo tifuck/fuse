@@ -2,12 +2,10 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
-const source = require('./chat_source.cjs');
-const start = source.indexOf('  function escapeHtml(');
-const end = source.indexOf('  // Keep settled Markdown nodes', start);
-assert.ok(start >= 0 && end > start);
-const ctx = vm.createContext({ window: {} });
-vm.runInContext(source.slice(start, end), ctx);
+// Real modules: the markdown renderer's runtime deps (escapeHtml, safeUrl,
+// usage parsing) are core's static exports.
+const chat = require('./chat_source.cjs');
+const ctx = vm.createContext({ window: {}, ...chat.Core });
 Object.assign(ctx, require("./theme_factory.cjs")(ctx));
 
 function md(src) {
