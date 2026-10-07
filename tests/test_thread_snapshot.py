@@ -50,13 +50,13 @@ const fs = require('fs'), vm = require('vm');
 const src = fs.readFileSync(process.argv[1], 'utf8');
 const ctx = vm.createContext({});
 for (const name of ['unpackSegments', 'unpackThread']) {
-  const start = src.indexOf(`  function ${name}(`);
-  vm.runInContext(src.slice(start, src.indexOf('\n  }\n', start) + 4), ctx);
+  const start = src.indexOf(`function ${name}(`);
+  vm.runInContext(src.slice(start, src.indexOf('\n}\n', start) + 3), ctx);
 }
 const data = JSON.parse(fs.readFileSync(0, 'utf8'));
 process.stdout.write(JSON.stringify(ctx.unpackThread(data)));
 """
-    out = subprocess.run(["node", "-e", script, str(ROOT / "static" / "chat.js")],
+    out = subprocess.run(["node", "-e", script, str(ROOT / "static" / "chat" / "net.js")],
                          input=json.dumps(packed, ensure_ascii=False), capture_output=True, text=True, check=True)
     restored = json.loads(out.stdout)
     assert "segments_packed" not in restored
