@@ -185,7 +185,7 @@ class AdminKeyViewLabelTest(unittest.TestCase):
         creds = [{"id": 1, "disabled": 0}]
         with patch.object(web_sources.db, "fetchone", return_value=row), \
              patch.object(web_sources.db, "fetchall", return_value=creds), \
-             patch.object(web_sources, "OllamaSource", stub):
+             patch("app.web.source_routes.admin_pages.OllamaSource", stub):
             return web_sources._ollama_key_views(1)
 
     def test_account_unavailable_labelled_as_cooling(self):
