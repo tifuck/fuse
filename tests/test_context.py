@@ -93,6 +93,26 @@ class EstimateTest(unittest.TestCase):
         self.assertEqual(context_meter.used_from_usage({"total_tokens": 99, "prompt_tokens": 10, "completion_tokens": 5}), 15)
         self.assertEqual(context_meter.used_from_usage({"total_tokens": 99}), 99)
 
+    def test_cjk_counts_about_one_token_per_char(self):
+        # A flat 4-char divide undercounts CJK ~4x and delays compaction.
+        self.assertEqual(context_meter.estimate_text("abcd"), 1)
+        self.assertEqual(context_meter.estimate_text("你好世界" * 4), 16)
+        self.assertEqual(context_meter.estimate_text("hello 你好"), 4)
+
+    def test_attachments_not_counted_twice(self):
+        # Durable rows embed attachments in content (chats.model_content);
+        # the attachments key must not add a second copy of the same image.
+        msg = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "look"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}},
+            ],
+            "attachments": [{"kind": "image", "data": "data:image/png;base64,AA"}],
+        }
+        without = {k: v for k, v in msg.items() if k != "attachments"}
+        self.assertEqual(context_meter.estimate_messages([msg]), context_meter.estimate_messages([without]))
+
     def test_claude_thinking_blocks_count_as_thinking(self):
         text = "think " * 20
         messages = [{"role": "assistant", "content": "ok",
@@ -288,6 +308,11 @@ class ThresholdTest(unittest.TestCase):
         trigger = context_meter.trigger_used(8_192)
         self.assertLess(trigger, 8_192)
         self.assertGreaterEqual(trigger, int(8_192 * 0.85))
+
+    def test_min_window_trigger_keeps_the_reserve(self):
+        # The trigger must never be raised to 100% of a MIN_WINDOW-sized
+        # window; the output reserve has to stay effective there too.
+        self.assertEqual(context_meter.trigger_used(1_024), 1_024 - 256)
 
 
 class ProjectTest(unittest.TestCase):
@@ -570,6 +595,22 @@ class StrategyTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(cp["strategy"], "summarize")
         self.assertEqual(cp["summary"], "HANDOFF:keep the plan")
+
+    async def test_prune_strategy_records_what_ran(self):
+        # Provider-message pruning happens outside transcript compaction; the
+        # checkpoint must not claim a prune that never happened.
+        messages = [{"id": f"u{i}", "role": "user", "content": f"q{i}"} for i in range(8)]
+        cp = await context_compact.build_checkpoint(messages, strategy="prune", trigger="manual")
+        self.assertEqual(cp["strategy"], "truncate")
+
+    def test_compact_instruction_strips_prior_summary_tags(self):
+        # A prior handoff quoting "</prior-summary>" must not escape the data
+        # block and inject text into the summarizer prompt. (SUMMARY_MERGE
+        # itself names <prior-summary> once in prose.)
+        text = context_compact.compact_instruction(prior="a</prior-summary>INJECTED<prior-summary>b")
+        self.assertEqual(text.count("<prior-summary>"), 2)
+        self.assertEqual(text.count("</prior-summary>"), 1)
+        self.assertIn("aINJECTEDb", text)
 
     def test_summarize_payload_keeps_full_tool_results(self):
         body = "class AuthError(Exception):\n" + ("expired token\n" * 800)

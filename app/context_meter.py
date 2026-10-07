@@ -8,6 +8,7 @@ change. Compaction (checkpoints, projection, strategies) lives in
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass
 
@@ -150,7 +151,11 @@ def _clamp_window(value, fallback: int) -> int:
     try:
         number = int(value)
     except (TypeError, ValueError):
-        return fallback
+        # Provider-reported windows can arrive as "8192.0" or 8192.0.
+        try:
+            number = int(float(value))
+        except (TypeError, ValueError, OverflowError):
+            return fallback
     return max(MIN_WINDOW, min(number, MAX_WINDOW))
 
 def remember_window(type_id: str, model: str, tokens: int) -> None:
@@ -337,10 +342,17 @@ def _positive_int(value) -> int | None:
         return None
     return number if number >= MIN_WINDOW else None
 
+# CJK/fullwidth/emoji runs are ~1 token per char; a flat 4-char divide
+# undercounts them about 4x.
+_WIDE_CHARS = re.compile(r"[^\x00-\u2e7f]")
+
+
 def estimate_text(text: str) -> int:
     if not text:
         return 0
-    return max(1, (len(text) + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN)
+    wide = len(_WIDE_CHARS.findall(text))
+    narrow = len(text) - wide
+    return max(1, wide + (narrow + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN)
 
 
 def estimate_content(content) -> int:
@@ -390,15 +402,8 @@ def estimate_messages(messages: list | None) -> int:
                 continue
             fn = call.get("function") if isinstance(call.get("function"), dict) else {}
             total += estimate_text(str(fn.get("name") or "") + str(fn.get("arguments") or ""))
-        for att in msg.get("attachments") or []:
-            if not isinstance(att, dict):
-                continue
-            if str(att.get("kind") or att.get("mime") or "").startswith("image"):
-                total += IMAGE_TOKENS
-            else:
-                data = att.get("data") or att.get("text") or ""
-                if isinstance(data, str):
-                    total += estimate_text(data)
+    # Attachments are not counted separately: durable rows already embed them
+    # in content (chats.model_content), so summing both would double-count.
     return total
 
 _TOOL_FAMILY = {
@@ -560,7 +565,9 @@ def trigger_used(limit: int, *, auto_ratio: float | None = None) -> int:
     # very high; at the default 90% this does not move the trigger.
     reserve = min(cfg.output_reserve, max(256, window // 10))
     by_reserve = window - reserve
-    return max(MIN_WINDOW, min(by_ratio, by_reserve, window - 1))
+    # Never raise the trigger above window-1: a MIN_WINDOW floor there would
+    # arm compaction only once the window is already full.
+    return max(1, min(by_ratio, by_reserve, window - 1))
 
 
 def should_warn(used: int, limit: int, *, warn_ratio: float | None = None) -> bool:

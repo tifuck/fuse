@@ -144,6 +144,8 @@ def prepare(messages, type_id: str, model: str, *, user_id: int | None = None, s
             else:
                 parts.append(part)
         if all(p.get("type") == "text" for p in parts if isinstance(p, dict)):
-            parts = "\n\n".join(str(p.get("text") or "") for p in parts if isinstance(p, dict))
+            parts = "\n\n".join(
+                part if isinstance(part, str) else str(part.get("text") or "") for part in parts
+            )
         out.append({**msg, "content": parts})
     return out, omitted

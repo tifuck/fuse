@@ -222,7 +222,7 @@ def ensure_default_prices() -> list[str]:
                 provider,
                 model,
                 _usd_per_million(inp),
-                _usd_per_million(cached),
+                _usd_per_million(cached) if cached else None,
                 _usd_per_million(out),
                 None,
                 cache_write_rate=_usd_per_million(write) if write else None,
@@ -359,10 +359,14 @@ _AUTO_PROVIDERS = (
     CHATGPT_PROVIDER, GROK_PROVIDER, ZAI_PROVIDER, DEVIN_PROVIDER,
     KIMI_PROVIDER, MIMO_PROVIDER, CLAUDE_PROVIDER,
 )
-# Effort, speed and region tails appended to one priced model id.
+# Effort, speed and region tails appended to one priced model id. They are a
+# service tier on ChatGPT/Devin ids only (gpt-5.6-sol-fast, gpt-5-6-sol-low);
+# elsewhere such suffixes are distinct models (grok-4-fast) and must not be
+# priced from the base id.
 _SKU_TAILS = frozenset(
     {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "thinking", "priority", "fast", "usa"}
 )
+_TIER_TAIL_PROVIDERS = frozenset({CHATGPT_PROVIDER, DEVIN_PROVIDER})
 _PRICE_COLUMNS = (
     "input_micros_per_million", "cached_input_micros_per_million", "cache_write_micros_per_million",
     "output_micros_per_million", "reasoning_micros_per_million", "cached_input_known",
@@ -382,10 +386,15 @@ def price_key(model: str) -> str:
     return mid.replace(".", "-")
 
 
-def price_keys(model: str) -> list[str]:
-    """The model's key, then the same key with SKU tails stripped one by one."""
+def price_keys(model: str, *, tiered: bool = True) -> list[str]:
+    """The model's key, then the same key with SKU tails stripped one by one.
+
+    `tiered=False` is an exact-key lookup for providers whose tails name
+    distinct models."""
     parts = price_key(model).split("-")
     keys = ["-".join(parts)]
+    if not tiered:
+        return keys
     while len(parts) > 1 and parts[-1] in _SKU_TAILS:
         parts.pop()
         keys.append("-".join(parts))
@@ -455,7 +464,7 @@ def _reference_index(rows, catalog: dict | None) -> dict[str, list[tuple[int, st
 
 
 def _pick_reference(index: dict, provider: str, model: str) -> dict | None:
-    for key in price_keys(model):
+    for key in price_keys(model, tiered=provider in _TIER_TAIL_PROVIDERS):
         refs = index.get(key)
         if not refs:
             continue

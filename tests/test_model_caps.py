@@ -58,6 +58,16 @@ def test_switch_text_only_and_back_keeps_history():
     assert saved == before
 
 
+def test_prepare_keeps_plain_string_parts():
+    # A mixed string+part content list must keep the string when the images
+    # are replaced with text notes, not silently drop it.
+    msgs = [{"role": "user", "content": ["see this", {"type": "image_url", "image_url": {"url": PNG}}]}]
+    out, omitted = model_caps.prepare(msgs, "zai", "glm-5.3")
+    assert omitted == 1
+    assert out[0]["content"].startswith("see this")
+    assert model_caps.OMITTED in out[0]["content"]
+
+
 def test_saved_attachment_round_trip():
     content = chats.model_content("", [{"kind": "image", "data": PNG}])
     text, omitted = model_caps.prepare([{"role": "user", "content": content}], "zai", "glm-5.3")

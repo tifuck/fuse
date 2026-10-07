@@ -267,46 +267,6 @@ def project_transcript(messages: list | None, state: dict | None) -> list[dict]:
         *tail,
     ]
 
-def _repair_tool_pairs(messages: list[dict]) -> list[dict]:
-    """Drop orphaned tool rows and stub unanswered tool_calls after a cut."""
-    rows = [msg for msg in messages if isinstance(msg, dict)]
-    answered: set[str] = set()
-    for msg in rows:
-        if msg.get("role") != "assistant":
-            continue
-        for call in msg.get("tool_calls") or []:
-            if isinstance(call, dict) and isinstance(call.get("id"), str) and call["id"]:
-                answered.add(call["id"])
-    rows = [
-        msg
-        for msg in rows
-        if msg.get("role") != "tool" or str(msg.get("tool_call_id") or "") in answered
-    ]
-    out = []
-    for i, msg in enumerate(rows):
-        calls = msg.get("tool_calls") if msg.get("role") == "assistant" else None
-        if not isinstance(calls, list) or not calls:
-            out.append(msg)
-            continue
-        have = set()
-        j = i + 1
-        while j < len(rows) and rows[j].get("role") == "tool":
-            cid = rows[j].get("tool_call_id")
-            if isinstance(cid, str) and cid:
-                have.add(cid)
-            j += 1
-        missing = [
-            call["id"]
-            for call in calls
-            if isinstance(call, dict) and isinstance(call.get("id"), str) and call["id"] and call["id"] not in have
-        ]
-        out.append(msg)
-        out.extend(
-            {"role": "tool", "tool_call_id": cid, "content": TOOL_STUB}
-            for cid in missing
-        )
-    return out
-
 def prune_tool_outputs(messages: list | None, *, protect: int | None = None, minimum: int | None = None) -> tuple[list[dict], list[str], int]:
     """Stub old tool results. Keeps the newest `protect` tokens of tool output."""
     cfg = config()
@@ -517,13 +477,14 @@ class PruneStrategy:
         keep_tail: int | None = None,
         head: list[dict] | None = None,
     ) -> tuple[str, str]:
-        # Prune is applied to provider messages separately. For a transcript
-        # compact, fall through to truncate so there is still a checkpoint.
+        # Provider-message pruning is applied outside transcript compaction;
+        # fall through to truncate so there is still a checkpoint, and record
+        # the strategy that actually ran rather than claiming a prune.
         trunc = TruncateStrategy()
         summary, _ = await trunc.compact(
             messages, instructions=instructions, summarize=summarize, keep_tail=keep_tail, head=head
         )
-        return summary, self.name
+        return summary, "truncate"
 
 class SummarizeStrategy:
     name = "summarize"
@@ -783,8 +744,11 @@ def prior_handoff(messages: list | None) -> str:
 def compact_instruction(instructions: str = "", prior: str = "") -> str:
     parts = [SUMMARIZE_PROMPT]
     if prior:
+        # The prior handoff quotes untrusted content; it must not be able to
+        # close the tag early and place text outside the data block.
+        safe_prior = prior.strip().replace("<prior-summary>", "").replace("</prior-summary>", "")
         parts.append(SUMMARY_MERGE)
-        parts.append("<prior-summary>\n" + prior.strip() + "\n</prior-summary>")
+        parts.append("<prior-summary>\n" + safe_prior + "\n</prior-summary>")
     focus = (instructions or "").strip()
     if focus:
         parts.append(

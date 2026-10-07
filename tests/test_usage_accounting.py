@@ -235,6 +235,22 @@ class UsageParsingTest(unittest.TestCase):
         self.assertEqual(merge_usage(final, final), final)
 
 
+class PriceKeysTest(unittest.TestCase):
+    def test_tier_tails_only_stripped_for_tier_providers(self):
+        from app.pricing import _pick_reference, price_keys
+
+        self.assertEqual(
+            price_keys("gpt-5-6-sol-low"), ["gpt-5-6-sol-low", "gpt-5-6-sol"]
+        )
+        self.assertEqual(price_keys("grok-4-fast", tiered=False), ["grok-4-fast"])
+        values = {"input_rate": 2, "output_rate": 6}
+        # grok-4-fast is a distinct model: it must not inherit grok-4's row.
+        grok_index = {"grok-4": [(0, "grok", values)]}
+        self.assertIsNone(_pick_reference(grok_index, "grok", "grok-4-fast"))
+        chatgpt_index = {"gpt-5-6-sol": [(0, "chatgpt", values)]}
+        self.assertEqual(_pick_reference(chatgpt_index, "chatgpt", "gpt-5-6-sol-low"), values)
+
+
 class EstimatedCostTest(unittest.TestCase):
     def test_cache_read_and_write_not_double_counted(self):
         price = _price_row(

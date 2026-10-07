@@ -101,3 +101,18 @@ def test_rates_use_priced_traffic_and_openrouter_is_not_unpriced():
         assert s["pricing_coverage"] == 50
         models = {m["provider"]: m for m in stats.usage_analytics(1, range_id="24h")["models"]}
         assert models["openrouter"]["cost_tracked"] is False and models["zai"]["cost_tracked"] is True
+
+
+def test_events_without_a_user_row_stay_in_series_and_summary():
+    with isolated_database():
+        _seed()
+        _event(_ago(hours=1))
+        db.execute("DELETE FROM users WHERE id=1")
+        data = stats.usage_analytics(1, range_id="24h")
+        assert data["summary"]["requests"] == 1
+        assert data["models"][0]["requests"] == 1
+        assert any(point["requests"] for point in data["series"])
+        everyone = stats.usage_analytics(1, range_id="24h", all_users=True)
+        assert everyone["summary"]["requests"] == 1
+        assert everyone["users"][0]["requests"] == 1
+        assert everyone["users"][0]["email"] == "user 1"

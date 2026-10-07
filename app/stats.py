@@ -449,6 +449,9 @@ def usage_analytics(
     end = end_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     prev_start = previous_start.strftime("%Y-%m-%dT%H:%M:%SZ")
     where, args = _window_filters(user_id, start, end, provider, all_users)
+    # users is a LEFT JOIN: usage_events can outlive their user row, and
+    # _event_summary counts those rows, so the series and tables must not
+    # drop them (an INNER JOIN made the charts disagree with the summary).
     rows = db.fetchall(
         f"""SELECT (CAST(strftime('%s', e.created_at) AS INTEGER) / ?) * ? AS bucket,
                    e.user_id, u.email,
@@ -457,7 +460,7 @@ def usage_analytics(
                    {_EVENT_SUMS}
             FROM usage_events e
             LEFT JOIN sources s ON s.id=e.source_id
-            JOIN users u ON u.id=e.user_id
+            LEFT JOIN users u ON u.id=e.user_id
             WHERE {where}
             GROUP BY bucket, e.user_id, provider, model
             ORDER BY bucket""",
@@ -515,7 +518,7 @@ def usage_analytics(
         )
         user_item = user_totals.setdefault(
             int(item["user_id"]),
-            {"id": int(item["user_id"]), "email": item["email"], "tokens": 0, "requests": 0, "cost": 0, "providers": {}},
+            {"id": int(item["user_id"]), "email": item["email"] or f"user {int(item['user_id'])}", "tokens": 0, "requests": 0, "cost": 0, "providers": {}},
         )
         for target in (model_item, provider_item, user_item):
             for metric in ("tokens", "requests", "cost"):
