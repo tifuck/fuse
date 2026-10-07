@@ -145,9 +145,10 @@ test('backdrop wallpaper is a scene layer, not an opaque plate', () => {
   assert.match(js, /signal: \{ label: "Signal"/);
   for (const kind of ['orbit', 'galaxy', 'eclipse', 'belt', 'contact', 'koi']) assert.match(js, new RegExp(`\\n    ${kind}: \\{ label`));
   for (const gone of ['pulsar', 'fern', 'ink', 'sumi']) assert.doesNotMatch(js, new RegExp(`\\n    ${gone}: \\{ label`));
-  const engine = readFileSync(resolve(__dirname, '../static/chat-backdrop.js'), 'utf8');
-  for (const kind of ['glyphs', 'life', 'signal', 'orbit', 'pond', 'koi', 'galaxy', 'eclipse', 'belt', 'contact']) assert.match(engine, new RegExp(`\\n    ${kind}: \\{`));
-  for (const gone of ['pulsar', 'fern', 'ink', 'sumi']) assert.doesNotMatch(engine, new RegExp(`\\n    ${gone}: \\{`));
+  const registry = readFileSync(resolve(__dirname, '../static/backdrops/scenes.js'), 'utf8');
+  const sceneKeys = registry.match(/export const SCENES = \{([^}]+)\}/)[1].split(',').map(key => key.trim());
+  for (const kind of ['glyphs', 'life', 'signal', 'orbit', 'pond', 'koi', 'galaxy', 'eclipse', 'belt', 'contact']) assert.ok(sceneKeys.includes(kind), kind);
+  for (const gone of ['pulsar', 'fern', 'ink', 'sumi']) assert.ok(!sceneKeys.includes(gone), gone);
 });
 
 test('tool rows collapse to one line; thinking unwraps in place', () => {
