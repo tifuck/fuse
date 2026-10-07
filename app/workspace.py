@@ -124,12 +124,12 @@ logger = logging.getLogger(__name__)
 # catastrophic forms only; it is not a sandbox (the permission gate is).
 # With a gate these forms always raise the ask card (never Jev, never a grant)
 # and run on the user's own Allow or on bypass; gateless callers are blocked.
-_CMD_START = r"(?:^|[;&|(`{]\s*|\$\(\s*|\b(?:then|do|else|exec|xargs|env|nohup|time)\s+)"
+_CMD_START = r"(?:^|[;&|(`{]\s*|\$\(\s*|\b(?:then|do|else|exec|command|builtin|xargs|env|nohup|time|nice|ionice|eval|setsid|busybox)\s+['\"]?|\b(?:(?:ba|z|k|c|da|fi|tc|a)?sh(?:\.exe)?|pwsh|powershell(?:\.exe)?)\s+-c\s+['\"]?)"
 _DENY = re.compile(
     _CMD_START
     + r"(?:"
     # rm of the filesystem root itself: rm -rf /, rm -rf /*, --no-preserve-root
-    r"rm\s+(?:-{1,2}[\w-]+\s+)*(?:/\*?|--no-preserve-root\b)(?=\s|$|[;&|)])"
+    r"rm\s+(?:-{1,2}[\w-]+\s*)*(?:/\*?|--no-preserve-root\b)(?=\s|$|[;&|)])"
     r"|mkfs(?:\.\w+)?\b"
     r"|(?:shutdown|reboot|poweroff|halt)\b"
     r"|sudo\b"
@@ -570,7 +570,7 @@ async def execute(name: str, arguments: str, *, user_id: int, bound_host_id=None
     if on_started:
         on_started({"name": name, "status": "running", **context})
     mode = hosts.effective_permission(user_id, bound_host_id=host_id, bound_cwd=root)
-    if mode == "read_only" and name in ("write_file", "search_replace", "run_terminal_command", "monitor"):
+    if mode == "read_only" and name in ("write_file", "search_replace", "run_terminal_command", "monitor", "kill_command"):
         detail = "project is read-only"
         return detail, _error_rec(name, detail, host=alias, kind="not_allowed")
     deny_reason = ""
@@ -1928,7 +1928,9 @@ async def _read(user_id, host_id, alias, args, root, *, windows: bool = False, m
     if not raw and isinstance(data, bytes) and (file_images.image_magic(data) or b"\x00" in data):
         return await _image_read(user_id, host_id, alias, path, args)
     text = _decode_text(data) if isinstance(data, bytes) else str(data)
-    ledger_note(run_id, host_id, _canonical_path(host_id, ledger_path, windows=windows), version, windows=windows)
+    # `path` is the SFTP-expanded absolute form: ledger keys must match what a
+    # later write of the same file (absolute or ~/) canonicalizes to.
+    ledger_note(run_id, host_id, _canonical_path(host_id, path, windows=windows), version, windows=windows)
     lines = text.split("\n")
     if lines and lines[-1] == "":
         lines.pop()
@@ -2377,7 +2379,7 @@ async def _write(user_id, host_id, alias, args, root, *, windows: bool = False, 
                 if info.get("kind") == "dir":
                     raise WorkspaceError("write target is a directory, not a file")
                 existed = info.get("kind") == "file"
-                if existed and run_id:
+                if existed:
                     raise _not_read_error(path)
                 if info.get("parent") == "dmiss":
                     await _agent_mkdir_parent(user_id, host_id, path, windows=windows)
@@ -2424,7 +2426,7 @@ async def _write(user_id, host_id, alias, args, root, *, windows: bool = False, 
             if not _sftp_missing(exc):
                 raise _sftp_error(exc, path, "write") from exc
             attrs = None
-        if attrs is not None and stat.S_ISREG(getattr(attrs, "permissions", 0) or 0) and run_id:
+        if attrs is not None and stat.S_ISREG(getattr(attrs, "permissions", 0) or 0):
             seen, version = ledger_lookup(run_id, host_id, ledger_path, windows=windows)
             if not seen:
                 raise _not_read_error(path)
@@ -2553,8 +2555,8 @@ async def _replace(user_id, host_id, alias, args, root, *, windows: bool = False
             if _sftp_transport_error(exc):
                 raise
             raise _sftp_error(exc, path, "edit") from exc
-        if not stat.S_ISREG(getattr(attrs, "permissions", 0) or 0) and getattr(attrs, "permissions", None) is not None:
-            if stat.S_ISDIR(attrs.permissions):
+        if not stat.S_ISREG(getattr(attrs, "permissions", 0) or 0):
+            if stat.S_ISDIR(getattr(attrs, "permissions", 0) or 0):
                 raise WorkspaceError("target is a directory, not a file")
         expected = _sftp_version(attrs)
         if getattr(attrs, "size", 0) and attrs.size > _REPLACE_FILE_MAX:

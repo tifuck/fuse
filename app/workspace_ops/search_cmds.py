@@ -81,6 +81,12 @@ def _grep_include_arg(args: dict) -> str:
     include = str(raw).strip() if isinstance(raw, (str, int, float)) else ""
     if include and (len(include) > 200 or "\n" in include or "\x00" in include):
         raise WorkspaceError("include exceeds 200 characters or contains a newline; use one glob like *.py")
+    parts = include.replace("\\", "/").split("/")
+    # The literal-file narrowing turns include into './<include>' after cd'ing
+    # into the searched directory, so a `..` or absolute spelling would read a
+    # file outside it.
+    if ".." in parts or include.startswith(("/", "~")) or include == ".":
+        raise WorkspaceError("include must stay inside the searched path; use a glob like *.py")
     return include
 
 
@@ -142,7 +148,11 @@ def _glob_to_ere(pattern: str) -> str:
         elif c == "?":
             out.append("[^/]")
         elif c == "[":
-            end = pattern.find("]", i + 2 if pattern[i + 1:i + 2] in ("!", "^") else i + 1)
+            # POSIX: ']' as the first class member (after ! or ^) is literal.
+            start = i + 1 + (pattern[i + 1:i + 2] in ("!", "^"))
+            if pattern[start:start + 1] == "]":
+                start += 1
+            end = pattern.find("]", start)
             if end < 0:
                 out.append("\\[")
             else:
@@ -150,6 +160,9 @@ def _glob_to_ere(pattern: str) -> str:
                 neg = body[:1] in ("!", "^")
                 body = body[1:] if neg else body
                 body = body.replace("\\", "\\\\")
+                # ']' must lead the class body; move it first.
+                if "]" in body:
+                    body = "]" + body.replace("]", "")
                 out.append("[" + ("^" if neg else "") + body + "]")
                 i = end + 1
                 continue

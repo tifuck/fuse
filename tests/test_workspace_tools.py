@@ -453,6 +453,26 @@ class AgentPathTest(unittest.TestCase):
         self.assertEqual(ctx.exception.extra.get("exit_code"), 2)
         self.assertIn("unclosed group", ctx.exception.extra.get("stderr", ""))
 
+    def test_include_cannot_escape_the_searched_path(self):
+        # A literal include becomes ./<include> after cd'ing into path; a `..`
+        # or absolute spelling would read a file outside it.
+        for include in ("../secret.txt", "sub/../../etc/passwd", "/etc/passwd", "~/x"):
+            with self.assertRaises(WorkspaceError) as ctx:
+                self._run(
+                    workspace._grep(1, 2, "box", {"pattern": "x", "path": ".", "include": include}, "/tmp")
+                )
+            self.assertIn("inside the searched path", ctx.exception.detail)
+
+    def test_glob_to_ere_literal_bracket_edge_cases(self):
+        # A ']' immediately after '[' (or '[!'/'[^') is a literal member, not
+        # the class closer — the old translation emitted invalid ERE ('[]').
+        import re as _re
+        for pattern in ("x[]]y", "x[!]]y", "x[]a]y"):
+            _re.compile(workspace._glob_to_ere(pattern))
+        self.assertTrue(_re.compile(workspace._glob_to_ere("x[]]y")).fullmatch("x]y"))
+        self.assertTrue(_re.compile(workspace._glob_to_ere("x[!]]y")).fullmatch("xay"))
+        self.assertFalse(_re.compile(workspace._glob_to_ere("x[!]]y")).fullmatch("x]y"))
+
     def test_grep_tolerates_broken_pipe_write_error(self):
         # Connector execs run with SIGPIPE ignored, so grep | head ends on
         # EPIPE with exit 2 instead of SIGPIPE 141; matches already collected.
