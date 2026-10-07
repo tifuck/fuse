@@ -1,12 +1,9 @@
 import json
 import logging
-import os
 import sqlite3
 import threading
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
-from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlsplit
 
 from .config import settings
 
@@ -26,59 +23,31 @@ def iso_week_start() -> str:
     return d.fromisocalendar(d.isocalendar().year, d.isocalendar().week, 1).isoformat()
 
 
-def _database_target(raw: str) -> tuple[str, bool, Path | None, bool]:
-    if raw in ("", ":memory:"):
-        return raw, False, None, False
-    if raw.startswith("file:"):
-        parsed = urlsplit(raw)
-        mode = (parse_qs(parsed.query).get("mode") or [""])[0]
-        if mode == "memory" or parsed.path in ("", ":memory:"):
-            return raw, True, None, False
-        if parsed.netloc not in ("", "localhost"):
-            raise ValueError("unsupported SQLite URI authority")
-        path = Path(unquote(parsed.path)).expanduser()
-        if not str(path):
-            return raw, True, None, False
-        parent_created = not path.parent.exists()
-        if parent_created:
-            path.parent.mkdir(parents=True, mode=0o700)
-            os.chmod(path.parent, 0o700)
-        return raw, True, path, parent_created
-
-    path = Path(raw).expanduser()
-    parent_created = not path.parent.exists()
-    if parent_created:
-        path.parent.mkdir(parents=True, mode=0o700)
-        os.chmod(path.parent, 0o700)
-    return str(path), False, path, parent_created
-
-
-def _chmod_db(path: Path) -> None:
-    for p in (path, Path(str(path) + "-wal"), Path(str(path) + "-shm")):
-        if p.exists():
-            os.chmod(p, 0o600)
-
-
 def connect():
     global _conn
-    if _conn is None:
+    if _conn is not None:
+        return _conn
+    # Serialize creation: two threads racing an empty _conn would each build a
+    # full pool (settings.database_pool_size connections against the shared
+    # MariaDB max_connections) and leak one forever.
+    with _lock:
+        if _conn is not None:
+            return _conn
         url = (getattr(settings, "database_url", "") or "").strip()
         if not settings.database_mariadb_enabled or not url.startswith("mysql://"):
             raise RuntimeError("Fuse requires MariaDB: configure DATABASE_URL and DATABASE_MARIADB_ENABLED=true")
-        if settings.database_mariadb_enabled and url.startswith("mysql://"):
-            from .mysql_compat import connect as mysql_connect
-            conn = mysql_connect(url, max_connections=settings.database_pool_size)
-            try:
-                from .mysql_compat import SCHEMA_VERSION
-                if not conn.execute("SELECT value FROM schema_meta WHERE key=?", (SCHEMA_VERSION,)).fetchone():
-                    raise RuntimeError("MariaDB schema has not been migrated and verified")
-                conn.commit()
-            except Exception:
-                conn.close()
-                raise
-            _conn = conn
-            return _conn
-    return _conn
+        from .mysql_compat import connect as mysql_connect
+        conn = mysql_connect(url, max_connections=settings.database_pool_size)
+        try:
+            from .mysql_compat import SCHEMA_VERSION
+            if not conn.execute("SELECT value FROM schema_meta WHERE key=?", (SCHEMA_VERSION,)).fetchone():
+                raise RuntimeError("MariaDB schema has not been migrated and verified")
+            conn.commit()
+        except Exception:
+            conn.close()
+            raise
+        _conn = conn
+        return _conn
 
 
 def close() -> None:
@@ -1401,20 +1370,14 @@ def record_usage(
                  image, total, request_inc, effective_cost, model, ts),
             )
         if credential_id:
-            row = conn.execute(
-                "SELECT week_start, week_tokens, week_requests FROM credentials WHERE id=?",
-                (credential_id,),
-            ).fetchone()
-            if row is None:
-                return
-            if row["week_start"] != week:
-                week_tokens, week_requests = total, request_inc
-            else:
-                week_tokens = min(SQLITE_INT_MAX, max(0, int(row["week_tokens"] or 0)) + total)
-                week_requests = min(SQLITE_INT_MAX, max(0, int(row["week_requests"] or 0)) + request_inc)
+            # One conditional UPDATE instead of a read-then-write: two requests
+            # finishing on the same credential concurrently would otherwise lose
+            # one increment (SQLite's writer lock had masked the race).
             conn.execute(
                 """UPDATE credentials SET
-                     week_start=?, week_tokens=?, week_requests=?,
+                     week_start=?,
+                     week_tokens=CASE WHEN week_start=? THEN MIN(9223372036854775807, week_tokens+?) ELSE ? END,
+                     week_requests=CASE WHEN week_start=? THEN MIN(9223372036854775807, week_requests+?) ELSE ? END,
                      prompt_tokens = MIN(9223372036854775807, prompt_tokens + ?),
                      completion_tokens = MIN(9223372036854775807, completion_tokens + ?),
                      output_tokens = MIN(9223372036854775807, output_tokens + ?),
@@ -1427,7 +1390,7 @@ def record_usage(
                      cost_micros = MIN(9223372036854775807, cost_micros + ?)
                    WHERE id=?""",
                 (
-                    week, week_tokens, week_requests,
+                    week, week, total, total, week, request_inc, request_inc,
                     pt, ct, output, visible, rt, cached, cache_write, total, request_inc,
                     effective_cost, credential_id,
                 ),

@@ -69,6 +69,11 @@ def _node(node):
 
 @lru_cache(maxsize=4096)
 def _rewrite(sql: str, lock_rows: bool = False) -> str:
+    if "__fuse_parameter__" in sql:
+        # The marker is reserved for placeholder substitution after rendering;
+        # a literal collision would silently consume a bound argument and
+        # shift the parameter list.
+        raise ValueError("SQL contains the reserved parameter marker")
     statement = sqlglot.parse_one(sql, read="sqlite")
     if lock_rows and isinstance(statement, exp.Select) and not statement.args.get("group") and not any(statement.find_all(exp.AggFunc)):
         # Run-state repositories perform read/modify/write operations.
@@ -145,6 +150,14 @@ def _hex_args(sql, args):
     return args if size > _HEX_STATEMENT_MAX else out
 
 
+_CONTROL_STATEMENT_RE = re.compile(r"(?:BEGIN|COMMIT|ROLLBACK|PRAGMA|CREATE)\b", re.I)
+
+
+def _pymysql_errno(exc: Exception) -> int | None:
+    code = exc.args[0] if exc.args else None
+    return code if isinstance(code, int) else None
+
+
 class Conn:
     def __init__(self, raw):
         self._raw = raw
@@ -160,7 +173,7 @@ class Conn:
                 return Cursor(rows, cursor.rowcount, cursor.lastrowid or 0)
         except pymysql.IntegrityError as exc:
             # Preserve callers' established duplicate/constraint error contract.
-            raise IntegrityError(str(exc)) from exc
+            raise IntegrityError(str(exc), errno=_pymysql_errno(exc)) from exc
 
     def execute(self, sql, args=()):
         text = sql.strip().rstrip(";")
@@ -196,13 +209,35 @@ class Conn:
         return self.native(_rewrite(text, self._write_transaction), args)
 
     def executemany(self, sql, rows):
-        total = 0
-        last = 0
-        for values in rows:
-            result = self.execute(sql, values)
-            total += result.rowcount
-            last = result.lastrowid
-        return Cursor(rowcount=total, lastrowid=last)
+        rows = list(rows)
+        if not rows:
+            return Cursor()
+        text = sql.strip().rstrip(";")
+        if _CONTROL_STATEMENT_RE.match(text) or "sqlite_master" in text:
+            total = 0
+            last = 0
+            for values in rows:
+                result = self.execute(sql, values)
+                total += result.rowcount
+                last = result.lastrowid
+            return Cursor(rowcount=total, lastrowid=last)
+        rendered = _rewrite(text, self._write_transaction)
+        try:
+            with self._raw.cursor() as cursor:
+                if re.match(r"(?:INSERT|REPLACE)\b", rendered, re.I):
+                    # One cursor for the batch; pymysql folds multi-row INSERTs
+                    # into chunked statements instead of a round trip per row.
+                    cursor.executemany(rendered, [_hex_args(rendered, values) for values in rows])
+                    return Cursor(rowcount=cursor.rowcount or 0, lastrowid=cursor.lastrowid or 0)
+                total = 0
+                last = 0
+                for values in rows:
+                    cursor.execute(rendered, _hex_args(rendered, values))
+                    total += cursor.rowcount or 0
+                    last = cursor.lastrowid or 0
+                return Cursor(rowcount=total, lastrowid=last)
+        except pymysql.IntegrityError as exc:
+            raise IntegrityError(str(exc), errno=_pymysql_errno(exc)) from exc
 
     def executescript(self, script):
         # Parse statement boundaries, including semicolons inside strings.

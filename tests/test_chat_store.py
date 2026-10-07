@@ -978,5 +978,51 @@ class SidebarPinsUnreadTest(unittest.TestCase):
         self.assertFalse(chats.mark_thread_read(1, thread["id"]))
 
 
+class RecordUsageWeekRolloverTest(unittest.TestCase):
+    """db.record_usage weekly counters roll over atomically."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="fuse-usage-week-")
+        self.addCleanup(self.tmp.cleanup)
+        self.conn = sqlite3.connect(str(Path(self.tmp.name) / "test.db"), check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        db._init(self.conn)
+        self.addCleanup(self.conn.close)
+        self.connection_patch = patch.object(db, "connect", return_value=self.conn)
+        self.connection_patch.start()
+        self.addCleanup(self.connection_patch.stop)
+        db.execute("INSERT INTO users(id,email,password_hash,created_at) VALUES(1,'1@test.invalid','unused',?)",
+                   (db.now(),))
+        db.execute("INSERT INTO sources(id,type,name,created_at) VALUES(1,'grok','grok',?)", (db.now(),))
+        db.execute("INSERT INTO credentials(id,source_id,label,secret,created_at) VALUES(1,1,'c','s',?)",
+                   (db.now(),))
+
+    def test_new_week_resets_counters_and_lifetime_keeps_accumulating(self):
+        with patch.object(db, "iso_week_start", return_value="2026-09-28"):
+            db.record_usage(1, 1, 1, "grok-4", {"prompt_tokens": 10, "completion_tokens": 5})
+        with patch.object(db, "iso_week_start", return_value="2026-10-05"):
+            db.record_usage(1, 1, 1, "grok-4", {"prompt_tokens": 7, "completion_tokens": 3})
+        row = db.fetchone("SELECT * FROM credentials WHERE id=1")
+        self.assertEqual(row["week_start"], "2026-10-05")
+        self.assertEqual(row["week_tokens"], 10)  # only this week's events
+        self.assertEqual(row["week_requests"], 1)
+        self.assertEqual(row["prompt_tokens"], 17)  # lifetime totals keep adding
+        self.assertEqual(row["total_tokens"], 25)
+        self.assertEqual(row["requests"], 2)
+
+    def test_same_week_accumulates(self):
+        with patch.object(db, "iso_week_start", return_value="2026-10-05"):
+            db.record_usage(1, 1, 1, "grok-4", {"prompt_tokens": 10, "completion_tokens": 5})
+            db.record_usage(1, 1, 1, "grok-4", {"prompt_tokens": 7, "completion_tokens": 3})
+        row = db.fetchone("SELECT week_tokens, week_requests FROM credentials WHERE id=1")
+        self.assertEqual(row["week_tokens"], 25)
+        self.assertEqual(row["week_requests"], 2)
+
+    def test_missing_credential_is_a_noop(self):
+        with patch.object(db, "iso_week_start", return_value="2026-10-05"):
+            db.record_usage(1, 1, 999, "grok-4", {"prompt_tokens": 10})
+        self.assertEqual(db.fetchone("SELECT COUNT(*) AS n FROM usage_events")["n"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

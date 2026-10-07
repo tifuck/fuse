@@ -454,6 +454,7 @@ def parse_messages(raw, *, strict: bool = False) -> list[dict]:
     if strict and len(raw) > MSG_MAX:
         raise ChatValidationError(f"messages cannot contain more than {MSG_MAX} items", 413)
     out = []
+    seen_ids = set()
     for index, item in enumerate(raw[:MSG_MAX]):
         if not isinstance(item, dict):
             if strict:
@@ -512,7 +513,7 @@ def parse_messages(raw, *, strict: bool = False) -> list[dict]:
                 raise ChatValidationError("message id cannot be empty")
         if not isinstance(message_id, str) or not message_id.strip() or len(message_id) > 200 or _has_surrogate(message_id):
             message_id = str(uuid4())
-        if any(msg["id"] == message_id for msg in out):
+        if message_id in seen_ids:
             if strict:
                 raise ChatValidationError("message ids must be unique")
             message_id = str(uuid4())
@@ -607,6 +608,7 @@ def parse_messages(raw, *, strict: bool = False) -> list[dict]:
             msg["segments"] = segments
         if attachments:
             msg["attachments"] = attachments
+        seen_ids.add(message_id)
         out.append(msg)
     return out
 def _parse_permissions(raw, *, strict: bool = False, field: str = "permissions") -> list[dict]:
