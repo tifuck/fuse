@@ -67,10 +67,17 @@ def vault_kdf(password: str, salt: bytes, params: dict | None = None) -> bytes:
     spec = params or VAULT_KDF
     if spec.get("alg") != "scrypt":
         raise DecryptionError("unsupported vault kdf")
-    n = int(spec.get("n") or 16384)
-    r = int(spec.get("r") or 8)
-    p = int(spec.get("p") or 1)
-    dklen = int(spec.get("dklen") or 32)
+    try:
+        n = int(spec.get("n") or 16384)
+        r = int(spec.get("r") or 8)
+        p = int(spec.get("p") or 1)
+        dklen = int(spec.get("dklen") or 32)
+    except (TypeError, ValueError) as exc:
+        raise DecryptionError("invalid vault kdf params") from exc
+    # Bound the stored params: a tampered vault_kdf row must not make
+    # scrypt allocate unbounded memory (cost ~128*n*r bytes) at unlock.
+    if not (2 <= n <= 2**20) or not (1 <= r <= 32) or not (1 <= p <= 8) or dklen != 32:
+        raise DecryptionError("invalid vault kdf params")
     return hashlib.scrypt(password.encode(), salt=salt, n=n, r=r, p=p, dklen=dklen)
 
 

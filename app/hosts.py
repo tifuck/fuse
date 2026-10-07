@@ -145,8 +145,12 @@ def set_settings(user_id: int, *, agent_coding=None, allow_nested_spawn=None, pe
             (user_id,),
         )
         row = settings_for(user_id, conn)
-        coding = row["agent_coding"] if agent_coding is None else bool(agent_coding)
-        nested = row["allow_nested_spawn"] if allow_nested_spawn is None else bool(allow_nested_spawn)
+        if agent_coding is not None and not isinstance(agent_coding, bool):
+            raise HostError("agent_coding must be true or false")
+        if allow_nested_spawn is not None and not isinstance(allow_nested_spawn, bool):
+            raise HostError("allow_nested_spawn must be true or false")
+        coding = row["agent_coding"] if agent_coding is None else agent_coding
+        nested = row["allow_nested_spawn"] if allow_nested_spawn is None else allow_nested_spawn
         mode = row["permission_mode"]
         if permission_mode is not None:
             if permission_mode not in ("project", "read_only"):
@@ -440,8 +444,11 @@ def patch_host(user_id: int, host_id: int, raw: dict) -> dict:
                 if not isinstance(raw["passphrase"], str) or len(raw["passphrase"]) > 1024:
                     raise HostError("invalid passphrase")
                 passphrase = encrypt_with_dek(raw["passphrase"], dek) if raw["passphrase"] else ""
-        key_algo = "" if clear_pin else row["key_algo"]
-        fingerprint = "" if clear_pin else row["fingerprint"]
+        key_algo = row["key_algo"]
+        fingerprint = row["fingerprint"]
+        if clear_pin:
+            key_algo = ""
+            fingerprint = ""
         ts = db.now()
         try:
             conn.execute(
@@ -469,6 +476,10 @@ def patch_host(user_id: int, host_id: int, raw: dict) -> dict:
         except IntegrityError as exc:
             raise HostError("alias already exists", 409) from exc
         row = conn.execute("SELECT * FROM user_hosts WHERE id=?", (host_id,)).fetchone()
+        if clear_pin or any(k in raw for k in ("username", "auth_type", "secret", "passphrase")):
+            # Drop the pooled session: it was opened against the old endpoint
+            # or credentials and must not serve new work.
+            _evict_pool(user_id, host_id)
         return _public_host(row, _projects(conn, user_id, host_id))
 
 
@@ -490,6 +501,7 @@ def delete_host(user_id: int, host_id: int) -> bool:
             (host_id, user_id, user_id, host_id, host_id, user_id),
         )
         conn.execute("DELETE FROM user_hosts WHERE id=? AND user_id=?", (host_id, user_id))
+    _evict_pool(user_id, host_id)
     _publish(user_id, {"type": "host_removed", "id": int(host_id)})
     return True
 
@@ -1013,8 +1025,21 @@ def list_pending_pairings(user_id: int) -> list[dict]:
         return _pending_from_conn(conn, user_id)
 
 
+def _evict_pool(user_id: int, host_id: int) -> None:
+    try:
+        from . import ssh_pool
+
+        ssh_pool.evict(user_id, host_id)
+    except Exception:
+        pass
+
+
 def mint_pairing(user_id: int, alias_hint: str = "") -> dict:
-    hint = (alias_hint or "").strip().lower()
+    if alias_hint is None:
+        alias_hint = ""
+    if not isinstance(alias_hint, str):
+        raise HostError("invalid alias_hint")
+    hint = alias_hint.strip().lower()
     if hint:
         hint = normalize_alias(hint)
     now = db.now()
@@ -1153,36 +1178,45 @@ def redeem_pairing(code: str, meta: dict | None = None) -> tuple[dict, str]:
         if int(agents) >= MAX_AGENT_HOSTS:
             raise HostError("too many connector machines", 409)
         hint = row["alias_hint"] or hostname
-        alias = _unique_alias(conn, user_id, hint)
-        conn.execute(
-            """INSERT INTO user_hosts(
-                user_id, alias, label, hostname, port, username, auth_type, secret, passphrase,
-                default_cwd, device_token_hash, agent_version, agent_os, agent_arch,
-                last_seen_at, last_ok_at, last_error,
-                created_at, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                user_id,
-                alias,
-                "",
-                hostname,
-                0,
-                username,
-                "agent",
-                "",
-                "",
-                "",
-                token_hash(device),
-                version.strip(),
-                os_name,
-                arch,
-                now,
-                now,
-                "",
-                now,
-                now,
-            ),
-        )
+        for _ in range(8):
+            alias = _unique_alias(conn, user_id, hint)
+            try:
+                conn.execute(
+                    """INSERT INTO user_hosts(
+                        user_id, alias, label, hostname, port, username, auth_type, secret, passphrase,
+                        default_cwd, device_token_hash, agent_version, agent_os, agent_arch,
+                        last_seen_at, last_ok_at, last_error,
+                        created_at, updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        user_id,
+                        alias,
+                        "",
+                        hostname,
+                        0,
+                        username,
+                        "agent",
+                        "",
+                        "",
+                        "",
+                        token_hash(device),
+                        version.strip(),
+                        os_name,
+                        arch,
+                        now,
+                        now,
+                        "",
+                        now,
+                        now,
+                    ),
+                )
+            except IntegrityError:
+                # A concurrent redeem took the alias first; pick another.
+                hint = f"{hint}-{secrets.token_hex(2)}"
+                continue
+            break
+        else:
+            raise HostError("could not register connector machine", 500)
         host_id = db.last_id(conn)
         conn.execute(
             "UPDATE host_pairings SET used_at=?, code='' WHERE id=?",

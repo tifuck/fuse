@@ -129,6 +129,15 @@ class VaultTest(unittest.TestCase):
         self.assertFalse(vault.restore_keep(99, token))
         self.assertFalse(vault.unlocked(1))
 
+    def test_settings_and_pairing_validate_types(self):
+        with self.assertRaises(hosts.HostError):
+            hosts.set_settings(1, agent_coding="false")
+        self.assertFalse(hosts.settings_for(1)["agent_coding"])
+        with self.assertRaises(hosts.HostError):
+            hosts.set_settings(1, allow_nested_spawn=1)
+        with self.assertRaises(hosts.HostError):
+            hosts.mint_pairing(1, 123)
+
 
 class SshSsrfTest(unittest.TestCase):
     def test_loopback_blocked(self):

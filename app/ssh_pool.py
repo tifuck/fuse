@@ -113,21 +113,48 @@ async def _connect_once(user_id: int, host_id: int, *, probe: bool):
         "keepalive_interval": 30,
         "connect_timeout": 15,
     }
-    if not probe:
-        if not pub["fingerprint"]:
-            raise SshError("host is not trusted yet")
-        expected = pub["fingerprint"]
-        expected_algo = pub.get("key_algo") or ""
+    if probe:
+        # Harvest the host key without authenticating: no password or key is
+        # ever sent to a host that has not been pinned yet.
+        captured: dict = {}
 
-        class _PinClient(asyncssh.SSHClient):
+        class _ProbeClient(asyncssh.SSHClient):
             def validate_host_public_key(self, host, addr, port, key):
-                algo, digest = _key_id(key)
-                if expected_algo and algo != expected_algo:
-                    return False
-                return digest == expected
+                captured["algo"], captured["digest"] = _key_id(key)
+                return True
 
         kwargs["known_hosts"] = b""
-        kwargs["client_factory"] = _PinClient
+        kwargs["client_factory"] = _ProbeClient
+        try:
+            conn = await asyncssh.connect(**kwargs)
+        except Exception:
+            # Auth is refused once the key was captured; that is the probe.
+            if "digest" in captured:
+                return None, captured["algo"], captured["digest"]
+            raise
+        try:
+            algo, digest = _key_id(conn.get_server_host_key())
+        finally:
+            conn.close()
+            try:
+                await conn.wait_closed()
+            except Exception:
+                pass
+        return None, algo, digest
+    if not pub["fingerprint"]:
+        raise SshError("host is not trusted yet")
+    expected = pub["fingerprint"]
+    expected_algo = pub.get("key_algo") or ""
+
+    class _PinClient(asyncssh.SSHClient):
+        def validate_host_public_key(self, host, addr, port, key):
+            algo, digest = _key_id(key)
+            if expected_algo and algo != expected_algo:
+                return False
+            return digest == expected
+
+    kwargs["known_hosts"] = b""
+    kwargs["client_factory"] = _PinClient
     if pub["auth_type"] == "password":
         kwargs["password"] = secret
         kwargs["client_keys"] = None
@@ -141,10 +168,9 @@ async def _connect_once(user_id: int, host_id: int, *, probe: bool):
             _peer_ok(str(peer[0]))
         key = conn.get_server_host_key()
         algo, digest = _key_id(key)
-        if not probe:
-            if digest != pub["fingerprint"] or (pub["key_algo"] and algo != pub["key_algo"]):
-                conn.close()
-                raise SshError("host key changed")
+        if digest != pub["fingerprint"] or (pub["key_algo"] and algo != pub["key_algo"]):
+            conn.close()
+            raise SshError("host key changed")
         result = await conn.run("echo ok", check=False, timeout=10)
         out = (result.stdout or "").strip()
         if result.exit_status not in (0, None) or "ok" not in out.lower():
@@ -157,26 +183,19 @@ async def _connect_once(user_id: int, host_id: int, *, probe: bool):
         except Exception:
             pass
         raise
-    finally:
-        secret = ""
-        passphrase = ""
 
 
 async def probe(user_id: int, host_id: int) -> dict:
     try:
-        conn, algo, digest = await _connect_once(user_id, host_id, probe=True)
+        _conn, algo, digest = await _connect_once(user_id, host_id, probe=True)
     except VaultLocked as exc:
         raise SshError("vault locked", 401) from exc
-    except SshError:
+    except SshError as exc:
+        set_host_status(user_id, host_id, ok=False, error=exc.detail)
         raise
     except Exception as exc:
         set_host_status(user_id, host_id, ok=False, error="probe failed")
         raise SshError("probe failed") from exc
-    conn.close()
-    try:
-        await conn.wait_closed()
-    except Exception:
-        pass
     return {"algorithm": algo, "fingerprint": digest}
 
 
@@ -204,6 +223,34 @@ async def test(user_id: int, host_id: int) -> dict:
     return {"ok": True, "algorithm": algo, "fingerprint": digest}
 
 
+def _close(conn) -> None:
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+
+def evict(user_id: int, host_id: int) -> None:
+    """Drop the pooled connection for a host that was edited or deleted.
+
+    Callable from sync code: pops are atomic dict ops and asyncssh close()
+    only shuts the transport, no await needed."""
+    key = (int(user_id), int(host_id))
+    rec = _pool.pop(key, None)
+    _key_locks.pop(key, None)
+    if rec is not None and rec.get("conn") is not None:
+        _close(rec["conn"])
+
+
+def _reusable(rec) -> bool:
+    return bool(
+        rec
+        and rec.get("conn")
+        and not rec["conn"].is_closed()
+        and time.monotonic() - float(rec.get("last") or 0) <= IDLE_CLOSE
+    )
+
+
 async def close_user(user_id: int) -> None:
     async with _lock:
         keys = [k for k in _pool if k[0] == int(user_id)]
@@ -216,6 +263,10 @@ async def close_user(user_id: int) -> None:
             conn.close()
         except Exception:
             pass
+        try:
+            await conn.wait_closed()
+        except Exception:
+            pass
 
 
 async def connection(user_id: int, host_id: int):
@@ -223,14 +274,17 @@ async def connection(user_id: int, host_id: int):
     key = (int(user_id), int(host_id))
     async with _lock:
         rec = _pool.get(key)
-        if rec and rec.get("conn") and not rec["conn"].is_closed():
+        if _reusable(rec):
             rec["last"] = time.monotonic()
             return rec["conn"]
+        stale = _pool.pop(key, None)
+    if stale and stale.get("conn") is not None:
+        _close(stale["conn"])
     async with _connect_gate(key):
         # Another caller may have connected while we waited for the gate.
         async with _lock:
             rec = _pool.get(key)
-            if rec and rec.get("conn") and not rec["conn"].is_closed():
+            if _reusable(rec):
                 rec["last"] = time.monotonic()
                 return rec["conn"]
         conn, _algo, _digest = await _connect_once(user_id, host_id, probe=False)
@@ -249,5 +303,9 @@ async def drain() -> None:
             continue
         try:
             conn.close()
+        except Exception:
+            pass
+        try:
+            await conn.wait_closed()
         except Exception:
             pass
