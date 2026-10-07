@@ -29,7 +29,9 @@ static int g_worker_started = 0;
 int g_busy = 0;
 
 struct job *job_reserve(const char *id) {
-    if (!id || !id[0]) return NULL;
+    /* Reject rather than truncate: two ids sharing a 15-char prefix would
+     * collide in one slot, and cancel would hit the wrong job. */
+    if (!id || !id[0] || strlen(id) >= sizeof(g_jobs[0].id)) return NULL;
     pthread_mutex_lock(&g_job_mu);
     for (int i = 0; i < MAX_JOBS; i++) {
         if (g_jobs[i].id[0] && strcmp(g_jobs[i].id, id) == 0) {
@@ -40,7 +42,7 @@ struct job *job_reserve(const char *id) {
     for (int i = 0; i < MAX_JOBS; i++) {
         if (!g_jobs[i].id[0]) {
             memset(&g_jobs[i], 0, sizeof(g_jobs[i]));
-            strncpy(g_jobs[i].id, id, sizeof(g_jobs[i].id) - 1);
+            strcpy(g_jobs[i].id, id); /* length checked above */
             pthread_mutex_unlock(&g_job_mu);
             return &g_jobs[i];
         }
@@ -162,7 +164,8 @@ static void handle_job_impl(struct tls *t, cJSON *msg) {
             return;
         }
         int timed_out = 0, clipped = 0;
-        if (run_exec(cwd, cmd, timeout, out, EXEC_CAP, err, EXEC_CAP, &code, job, &timed_out, stream, id, &clipped) != 0) {
+        size_t out_len = 0, err_len = 0;
+        if (run_exec(cwd, cmd, timeout, out, EXEC_CAP, err, EXEC_CAP, &code, job, &timed_out, stream, id, &clipped, &out_len, &err_len) != 0) {
             send_res(t, id, 0, 1, "", "", "exec failed");
             return;
         }
@@ -184,7 +187,7 @@ static void handle_job_impl(struct tls *t, cJSON *msg) {
                 }
             }
             if (timed_out) emsg = "timed out";
-            send_res_tmo(t, id, code == 0, code, out, err, emsg, timed_out, clipped);
+            send_res_tmo_len(t, id, code == 0, code, out, out_len, err, err_len, emsg, timed_out, clipped);
         }
         return;
     }
@@ -346,19 +349,9 @@ static void handle_job_impl(struct tls *t, cJSON *msg) {
         }
         return;
     }
-    if (strcmp(op, "kill") == 0) {
-        const char *kid = json_cstr(msg, "id", "");
-        pthread_mutex_lock(&g_job_mu);
-        for (int i = 0; i < MAX_JOBS; i++) {
-            if (g_jobs[i].id[0] && strcmp(g_jobs[i].id, kid) == 0) {
-                g_jobs[i].cancel = 1;
-                if (g_jobs[i].pid > 0) kill(-g_jobs[i].pid, SIGKILL);
-            }
-        }
-        pthread_mutex_unlock(&g_job_mu);
-        send_res(t, id, 1, 0, "cancelled", "", "");
-        return;
-    }
+    /* op=kill removed: it read its target from "id", which is the job's own
+     * id - it could only ever cancel itself. Cancellation arrives as the
+     * "cancel" frame in session_loop. */
     send_res(t, id, 0, 1, "", "", "unknown op");
 }
 

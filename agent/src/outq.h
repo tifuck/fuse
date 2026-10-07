@@ -24,6 +24,9 @@ extern pthread_cond_t g_out_space;
 int out_enqueue(int opcode, const unsigned char *data, size_t n);
 int out_flush(struct tls *t);
 int send_chunk(const char *id, const char *stream, const char *data, size_t n);
+void send_res_tmo_len(struct tls *t, const char *id, int ok, int exit_code,
+                      const char *out, size_t out_len, const char *err, size_t err_len,
+                      const char *error, int timed_out, int clipped);
 void send_res_tmo(struct tls *t, const char *id, int ok, int exit_code, const char *out,
                   const char *err, const char *error, int timed_out, int clipped);
 void send_res(struct tls *t, const char *id, int ok, int exit_code, const char *out,

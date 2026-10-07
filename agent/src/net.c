@@ -21,19 +21,36 @@ int parse_url(const char *raw, struct url *u) {
     if (strncmp(raw, "https://", 8) != 0) return -1;
     const char *p = raw + 8;
     const char *slash = strchr(p, '/');
-    const char *colon = strchr(p, ':');
     size_t hostlen;
     u->port = 443;
-    if (colon && (!slash || colon < slash)) {
-        hostlen = (size_t)(colon - p);
-        u->port = atoi(colon + 1);
-        if (u->port <= 0 || u->port > 65535) return -1;
+    if (*p == '[') {
+        /* IPv6 literal: host ends at ']'; a colon must follow it. */
+        const char *close = strchr(p, ']');
+        if (!close) return -1;
+        hostlen = (size_t)(close - (p + 1));
+        if (hostlen == 0 || hostlen >= sizeof(u->host)) return -1;
+        memcpy(u->host, p + 1, hostlen);
+        u->host[hostlen] = 0;
+        if (close[1] == ':') {
+            u->port = atoi(close + 2);
+            if (u->port <= 0 || u->port > 65535) return -1;
+        } else if (close[1] && close[1] != '/') {
+            return -1;
+        }
+        slash = strchr(close, '/');
     } else {
-        hostlen = slash ? (size_t)(slash - p) : strlen(p);
+        const char *colon = strchr(p, ':');
+        if (colon && (!slash || colon < slash)) {
+            hostlen = (size_t)(colon - p);
+            u->port = atoi(colon + 1);
+            if (u->port <= 0 || u->port > 65535) return -1;
+        } else {
+            hostlen = slash ? (size_t)(slash - p) : strlen(p);
+        }
+        if (hostlen == 0 || hostlen >= sizeof(u->host)) return -1;
+        memcpy(u->host, p, hostlen);
+        u->host[hostlen] = 0;
     }
-    if (hostlen == 0 || hostlen >= sizeof(u->host)) return -1;
-    memcpy(u->host, p, hostlen);
-    u->host[hostlen] = 0;
     if (slash) {
         if (strlen(slash) >= sizeof(u->path)) return -1;
         strncpy(u->path, slash, sizeof(u->path) - 1);
@@ -301,10 +318,11 @@ int ws_handshake(struct tls *t, const struct url *u) {
     while (*acc == ' ' || *acc == '\t') acc++;
     size_t alen = strcspn(acc, "\r\n");
     if (alen != strlen(expect) || strncmp(acc, expect, alen) != 0) return -1;
-    /* Keep any bytes the server pipelined after the handshake response. */
+    /* Keep any bytes the server pipelined after the handshake response;
+     * more than the stash would be silently lost and desync framing. */
     if (got > hdr_end) {
         size_t extra = got - hdr_end;
-        if (extra > sizeof(t->pb)) extra = sizeof(t->pb);
+        if (extra > sizeof(t->pb)) return -1;
         memcpy(t->pb, buf + hdr_end, extra);
         t->pb_len = extra;
         t->pb_off = 0;
@@ -312,9 +330,10 @@ int ws_handshake(struct tls *t, const struct url *u) {
     return 0;
 }
 
-int ws_send(struct tls *t, int opcode, const unsigned char *data, size_t n) {
-    unsigned char hdr[14];
-    unsigned char mask[4];
+/* Build the frame header: FIN|opcode, masked flag, 7/16/64-bit length, then
+ * the 4-byte mask at hdr+hlen. Returns the header length. The 64-bit length
+ * occupies hdr[2..9] so the mask lands at hdr[10..13]. */
+size_t ws_header(int opcode, const unsigned char *mask, size_t n, unsigned char *hdr) {
     size_t hlen = 2;
     hdr[0] = (unsigned char)(0x80u | (opcode & 0xf));
     if (n < 126) {
@@ -326,16 +345,22 @@ int ws_send(struct tls *t, int opcode, const unsigned char *data, size_t n) {
         hlen = 4;
     } else {
         hdr[1] = 0x80 | 127;
-        memset(hdr + 2, 0, 6);
-        hdr[8] = (unsigned char)((n >> 24) & 0xff);
-        hdr[9] = (unsigned char)((n >> 16) & 0xff);
-        hdr[10] = (unsigned char)((n >> 8) & 0xff);
-        hdr[11] = (unsigned char)(n & 0xff);
+        memset(hdr + 2, 0, 4);
+        hdr[6] = (unsigned char)((n >> 24) & 0xff);
+        hdr[7] = (unsigned char)((n >> 16) & 0xff);
+        hdr[8] = (unsigned char)((n >> 8) & 0xff);
+        hdr[9] = (unsigned char)(n & 0xff);
         hlen = 10;
     }
-    if (RAND_bytes(mask, 4) != 1) return -1;
     memcpy(hdr + hlen, mask, 4);
-    hlen += 4;
+    return hlen + 4;
+}
+
+int ws_send(struct tls *t, int opcode, const unsigned char *data, size_t n) {
+    unsigned char hdr[14];
+    unsigned char mask[4];
+    if (RAND_bytes(mask, 4) != 1) return -1;
+    size_t hlen = ws_header(opcode, mask, n, hdr);
     if (tls_write_all(t, hdr, hlen) != 0) return -1;
     unsigned char tmp[4096];
     size_t off = 0;
@@ -489,6 +514,13 @@ char *ws_read_text(struct tls *t, int *opcode_out, size_t *n_out) {
         } else {
             free(payload);
             continue;
+        }
+        if (acc_len + (size_t)n > WS_MAX) {
+            /* Legal-size continuation frames would otherwise grow this
+             * buffer without bound; cap the accumulated message too. */
+            free(payload);
+            free(acc);
+            return NULL;
         }
         unsigned char *grown = realloc(acc, acc_len + (size_t)n + 1);
         if (!grown) {

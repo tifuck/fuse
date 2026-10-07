@@ -12,7 +12,7 @@
 #include "jobs.h"
 #include "outq.h"
 
-int run_exec(const char *cwd, const char *cmd, int timeout_ms, char *out, size_t ocap, char *errb, size_t ecap, int *code, struct job *job, int *timed_out, int stream, const char *job_id, int *clipped) {
+int run_exec(const char *cwd, const char *cmd, int timeout_ms, char *out, size_t ocap, char *errb, size_t ecap, int *code, struct job *job, int *timed_out, int stream, const char *job_id, int *clipped, size_t *out_len, size_t *err_len) {
     int outp[2], errp[2];
     /* O_CLOEXEC: exec'd commands (and daemons they spawn) must not inherit
      * job pipe fds. dup2() in the child clears CLOEXEC on stdout/stderr. */
@@ -97,6 +97,8 @@ int run_exec(const char *cwd, const char *cmd, int timeout_ms, char *out, size_t
             if (code) *code = -1; /* no reap: remote outcome remains unconfirmed */
             if (timed_out) *timed_out = by_timeout;
             if (clipped) *clipped = out_clipped || err_clipped;
+            if (out_len) *out_len = o;
+            if (err_len) *err_len = e;
             return 0;
         }
         struct pollfd pfd[2] = {{outp[0], POLLIN, 0}, {errp[0], POLLIN, 0}};
@@ -147,13 +149,17 @@ int run_exec(const char *cwd, const char *cmd, int timeout_ms, char *out, size_t
     if (out_clipped && ocap > marklen + 1) {
         size_t end = ocap - marklen - 1;
         while (end && ((unsigned char)out[end] & 0xc0) == 0x80) end--;
-        strcpy(out + end, mark);
+        memcpy(out + end, mark, marklen + 1);
+        o = end + marklen;
     }
     if (err_clipped && ecap > marklen + 1) {
         size_t end = ecap - marklen - 1;
         while (end && ((unsigned char)errb[end] & 0xc0) == 0x80) end--;
-        strcpy(errb + end, mark);
+        memcpy(errb + end, mark, marklen + 1);
+        e = end + marklen;
     }
+    if (out_len) *out_len = stream ? strlen(out) : o;
+    if (err_len) *err_len = stream ? strlen(errb) : e;
     if (WIFEXITED(status)) *code = WEXITSTATUS(status);
     else *code = 1;
     if (timed_out) *timed_out = by_timeout;

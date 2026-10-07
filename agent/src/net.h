@@ -27,6 +27,7 @@ void tls_close(struct tls *t);
 int tls_write_all(struct tls *t, const void *buf, size_t n);
 int tls_read_some(struct tls *t, void *buf, size_t n);
 int b64(const unsigned char *in, int inlen, char *out, int outcap);
+size_t ws_header(int opcode, const unsigned char *mask, size_t n, unsigned char *hdr);
 int ws_handshake(struct tls *t, const struct url *u);
 int ws_send(struct tls *t, int opcode, const unsigned char *data, size_t n);
 int ws_send_text(struct tls *t, const char *s);

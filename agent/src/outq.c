@@ -76,17 +76,13 @@ int out_flush(struct tls *t) {
 
 int send_chunk(const char *id, const char *stream, const char *data, size_t n) {
     if (!data || !n) return 0;
-    char *tmp = malloc(n + 1);
-    if (!tmp) return -1;
-    memcpy(tmp, data, n);
-    tmp[n] = 0;
     cJSON *o = cJSON_CreateObject();
     cJSON_AddNumberToObject(o, "v", 1);
     cJSON_AddStringToObject(o, "t", "chunk");
     cJSON_AddStringToObject(o, "id", id ? id : "");
     cJSON_AddStringToObject(o, "stream", stream ? stream : "out");
-    cJSON_AddStringToObject(o, "data", tmp);
-    free(tmp);
+    /* Output is arbitrary bytes: NUL would truncate a plain JSON string. */
+    cJSON_AddItemToObject(o, "data", json_string_bytes(data, n));
     char *s = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);
     int rc = -1;
@@ -97,15 +93,17 @@ int send_chunk(const char *id, const char *stream, const char *data, size_t n) {
     return rc;
 }
 
-void send_res_tmo(struct tls *t, const char *id, int ok, int exit_code, const char *out, const char *err, const char *error, int timed_out, int clipped) {
+void send_res_tmo_len(struct tls *t, const char *id, int ok, int exit_code,
+                      const char *out, size_t out_len, const char *err, size_t err_len,
+                      const char *error, int timed_out, int clipped) {
     cJSON *o = cJSON_CreateObject();
     cJSON_AddNumberToObject(o, "v", 1);
     cJSON_AddStringToObject(o, "t", "res");
     cJSON_AddStringToObject(o, "id", id ? id : "");
     cJSON_AddBoolToObject(o, "ok", ok);
     cJSON_AddNumberToObject(o, "exit", exit_code);
-    cJSON_AddStringToObject(o, "out", out ? out : "");
-    cJSON_AddStringToObject(o, "err", err ? err : "");
+    cJSON_AddItemToObject(o, "out", json_string_bytes(out ? out : "", out ? out_len : 0));
+    cJSON_AddItemToObject(o, "err", json_string_bytes(err ? err : "", err ? err_len : 0));
     if (error && error[0]) cJSON_AddStringToObject(o, "error", error);
     if (timed_out) cJSON_AddBoolToObject(o, "timeout", 1);
     cJSON_AddBoolToObject(o, "termination_confirmed", exit_code >= 0);
@@ -122,6 +120,11 @@ void send_res_tmo(struct tls *t, const char *id, int ok, int exit_code, const ch
          else out_enqueue_mode(1, (const unsigned char *)s, strlen(s), 1);
          free(s);
      }
+}
+
+void send_res_tmo(struct tls *t, const char *id, int ok, int exit_code, const char *out, const char *err, const char *error, int timed_out, int clipped) {
+    send_res_tmo_len(t, id, ok, exit_code, out, out ? strlen(out) : 0,
+                     err, err ? strlen(err) : 0, error, timed_out, clipped);
 }
 
 void send_res(struct tls *t, const char *id, int ok, int exit_code, const char *out, const char *err, const char *error) {

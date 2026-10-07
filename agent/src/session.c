@@ -13,6 +13,16 @@
 #include "session.h"
 #include "update.h"
 
+/* Server-supplied strings go to stderr (journal): keep them one line and
+ * free of control bytes so a crafted error cannot inject log lines or
+ * terminal escape sequences. */
+static void sanitize_log(char *s) {
+    for (; *s; s++) {
+        unsigned char c = (unsigned char)*s;
+        if (c < 0x20 || c == 0x7f) *s = '?';
+    }
+}
+
 static void wait_interruptible_ms(int ms) {
     if (ms <= 0) return;
     int64_t deadline = now_mono_ms() + ms;
@@ -126,7 +136,10 @@ int session_loop(void) {
         const char *typ = json_cstr(reply, "t", "");
         if (strcmp(typ, "hello_ok") != 0) {
             const char *err = json_cstr(reply, "error", "auth failed");
-            fprintf(stderr, "fuse-agent: %s\n", err);
+            char errbuf[256];
+            snprintf(errbuf, sizeof(errbuf), "%s", err);
+            sanitize_log(errbuf);
+            fprintf(stderr, "fuse-agent: %s\n", errbuf);
             cJSON_Delete(reply);
             tls_close(&t);
             if (strstr(err, "invalid") || strstr(err, "expired") || strstr(err, "token")) {
@@ -143,11 +156,25 @@ int session_loop(void) {
         }
         const char *tok = json_cstr(reply, "token", "");
         if (tok[0]) {
-            strncpy(g_token, tok, sizeof(g_token) - 1);
+            /* Reject rather than truncate: a clipped token persisted to
+             * config would auth-fail forever after the next restart. */
+            if (strlen(tok) >= sizeof(g_token)) {
+                fprintf(stderr, "fuse-agent: server token too long\n");
+                cJSON_Delete(reply);
+                tls_close(&t);
+                wait_interruptible_ms(60000);
+                continue;
+            }
+            strcpy(g_token, tok);
             g_code[0] = 0;
             if (g_config[0]) save_config(g_config);
         }
-        fprintf(stderr, "fuse-agent: connected as %s\n", json_cstr(reply, "alias", "machine"));
+        {
+            char alias[128];
+            snprintf(alias, sizeof(alias), "%s", json_cstr(reply, "alias", "machine"));
+            sanitize_log(alias);
+            fprintf(stderr, "fuse-agent: connected as %s\n", alias);
+        }
         cJSON_Delete(reply);
         fail_index = 0;
         auth_backoff = 0;
@@ -258,12 +285,15 @@ int session_loop(void) {
             if (strcmp(tt, "job") == 0) {
                 char jid[16] = {0};
                 json_str(o, "id", jid, sizeof(jid));
-                if (jid[0]) job_reserve(jid);
+                /* job_reserve rejects oversized ids; a truncated jid here
+                 * would reserve under a different key than the wire id. */
+                if (jid[0] && strlen(json_cstr(o, "id", "")) < sizeof(jid)) job_reserve(jid);
                 enqueue_job(&t, o); /* ownership moves to the worker */
                 o = NULL;
             } else if (strcmp(tt, "cancel") == 0) {
                  char cid[16];
-                 if (json_str(o, "id", cid, sizeof(cid)) == 0) {
+                 const char *raw_id = json_cstr(o, "id", "");
+                 if (strlen(raw_id) < sizeof(cid) && json_str(o, "id", cid, sizeof(cid)) == 0) {
                      pthread_mutex_lock(&g_job_mu);
                      for (int i = 0; i < MAX_JOBS; i++) {
                          if (strcmp(g_jobs[i].id, cid) == 0) {
@@ -347,12 +377,23 @@ int pair_once(void) {
     cJSON *reply = cJSON_Parse(first);
     free(first);
     if (strcmp(json_cstr(reply, "t", ""), "hello_ok") != 0) {
-        die("%s", json_cstr(reply, "error", "pairing failed"));
+        char errbuf[256];
+        snprintf(errbuf, sizeof(errbuf), "%s", json_cstr(reply, "error", "pairing failed"));
+        sanitize_log(errbuf);
+        die("%s", errbuf);
     }
     const char *tok = json_cstr(reply, "token", "");
-    if (tok[0]) strncpy(g_token, tok, sizeof(g_token) - 1);
+    if (tok[0]) {
+        if (strlen(tok) >= sizeof(g_token)) die("server token too long");
+        strcpy(g_token, tok);
+    }
     g_code[0] = 0;
-    fprintf(stderr, "fuse-agent: paired as %s\n", json_cstr(reply, "alias", "machine"));
+    {
+        char alias[128];
+        snprintf(alias, sizeof(alias), "%s", json_cstr(reply, "alias", "machine"));
+        sanitize_log(alias);
+        fprintf(stderr, "fuse-agent: paired as %s\n", alias);
+    }
     cJSON_Delete(reply);
     tls_close(&t);
     return 0;

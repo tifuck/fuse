@@ -13,6 +13,9 @@
 #include "update.h"
 
 static int write_unit(int system_wide, const char *bin, const char *cfg) {
+    /* bin and cfg are interpolated into a systemd unit: quotes or newlines
+     * (from HOME or --config) would inject extra directives. */
+    if (strpbrk(bin, "\"\n\r") || strpbrk(cfg, "\"\n\r")) return -1;
     char path[PATH_MAX];
     if (system_wide) snprintf(path, sizeof(path), "/etc/systemd/system/fuse-agent.service");
     else {

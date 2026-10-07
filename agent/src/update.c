@@ -9,11 +9,12 @@
 #include "agent.h"
 #include "config.h"
 #include "net.h"
+#include "reconnect.h"
 #include "update.h"
 
-static int http_get_file(const char *base, const char *path, const char *dest, size_t max_bytes) {
+static int http_get_file(const char *base, const char *path, int fd, size_t max_bytes) {
     char full[512];
-    snprintf(full, sizeof(full), "%s%s", base, path);
+    if (snprintf(full, sizeof(full), "%s%s", base, path) >= (int)sizeof(full)) return -1;
     struct url u;
     if (parse_url(full, &u) != 0) return -1;
     struct tls t;
@@ -47,13 +48,17 @@ static int http_get_file(const char *base, const char *path, const char *dest, s
         tls_close(&t);
         return -1;
     }
-    FILE *f = fopen(dest, "wb");
+    FILE *f = fdopen(fd, "wb");
     if (!f) {
         tls_close(&t);
         return -1;
     }
     size_t total = 0;
     int too_big = 0;
+    /* One deadline for the whole body: tls_read_some alone gives each stalled
+     * read a fresh timeout, so a peer trickling bytes could hold the update
+     * lock forever. */
+    int64_t deadline = now_mono_ms() + 5 * 60 * 1000;
     if (got > hdr_end) {
         size_t add = got - hdr_end;
         if (total + add > max_bytes) too_big = 1;
@@ -62,7 +67,7 @@ static int http_get_file(const char *base, const char *path, const char *dest, s
     }
     char buf[8192];
     int k;
-    while (!too_big && (k = tls_read_some(&t, buf, sizeof(buf))) > 0) {
+    while (!too_big && now_mono_ms() < deadline && (k = tls_read_some(&t, buf, sizeof(buf))) > 0) {
         if (total + (size_t)k > max_bytes) {
             too_big = 1;
             break;
@@ -75,12 +80,11 @@ static int http_get_file(const char *base, const char *path, const char *dest, s
     }
     if (too_big || ferror(f)) {
         fclose(f);
-        unlink(dest);
         tls_close(&t);
         return -1;
     }
     fflush(f);
-    fsync(fileno(f));
+    fsync(fd);
     fclose(f);
     tls_close(&t);
     return 0;
@@ -115,7 +119,12 @@ static int ver_parse(const char *s, int v[3]) {
         long x = strtol(s, &end, 10);
         if (end == s || x < 0 || x > 1000000) return -1;
         v[n++] = (int)x;
-        if (*end != '.') break;
+        if (*end != '.') {
+            /* Reject trailing junk ("1.2x", "1.2.3.4") instead of silently
+             * truncating it into a different version. */
+            if (*end) return -1;
+            break;
+        }
         s = end + 1;
     }
     while (n < 3) v[n++] = 0;
@@ -182,26 +191,36 @@ int maybe_update(int allow_exec) {
     char tmp[PATH_MAX] = {0}, neu[PATH_MAX] = {0};
     cJSON *root = NULL;
     char *body = NULL;
-    snprintf(tmp, sizeof(tmp), "/tmp/fuse-manifest.%d", (int)getpid());
-    if (http_get_file(g_url, "/agent/v1/manifest", tmp, 300000) != 0) goto out;
-    FILE *f = fopen(tmp, "rb");
-    if (!f) goto out;
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    rewind(f);
-    if (sz > 0 && sz < 200000) {
-        body = malloc((size_t)sz + 1);
-        if (body) {
-            size_t got = fread(body, 1, (size_t)sz, f);
-            if (got != (size_t)sz) {
-                free(body);
-                body = NULL;
-            } else {
-                body[sz] = 0;
-            }
+    /* mkstemp, not a predictable path + fopen: a symlink planted in /tmp by
+     * another local user must never be truncated by an updater running as
+     * root. */
+    snprintf(tmp, sizeof(tmp), "/tmp/fuse-manifest.XXXXXX");
+    int mfd = mkstemp(tmp);
+    if (mfd < 0) goto out;
+    if (http_get_file(g_url, "/agent/v1/manifest", mfd, 300000) != 0) {
+        close(mfd);
+        goto out;
+    }
+    /* http_get_file's fdopen consumed mfd; /tmp is sticky and the file is
+     * ours 0600, so reopening by name cannot be swapped by another user. */
+    mfd = open(tmp, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (mfd < 0) goto out;
+    struct stat st;
+    if (fstat(mfd, &st) != 0 || st.st_size <= 0 || st.st_size >= 200000) goto out;
+    body = malloc((size_t)st.st_size + 1);
+    if (body) {
+        size_t want = (size_t)st.st_size, got = 0;
+        ssize_t rd;
+        while (got < want && (rd = read(mfd, body + got, want - got)) > 0) got += (size_t)rd;
+        if (got != want) {
+            free(body);
+            body = NULL;
+        } else {
+            body[want] = 0;
         }
     }
-    fclose(f);
+    close(mfd);
+    mfd = -1;
     unlink(tmp);
     tmp[0] = 0;
     if (!body) goto out;
@@ -215,12 +234,14 @@ int maybe_update(int allow_exec) {
     cJSON *bin = bins ? cJSON_GetObjectItemCaseSensitive(bins, arch_sku()) : NULL;
     const char *path = json_cstr(bin, "path", "");
     const char *expect = json_cstr(bin, "sha256", "");
-    if (!path[0] || !expect[0]) goto out;
+    /* The path goes into a raw HTTP request line: spaces or CR/LF in a
+     * crafted manifest would inject extra headers. Require a clean path. */
+    if (path[0] != '/' || !expect[0] || strpbrk(path, " \t\r\n\"?#")) goto out;
     if (format_update_staging(neu, sizeof(neu), self) != 0) goto out;
     int sfd = mkstemp(neu);
     if (sfd < 0) goto out;
-    close(sfd);
-    if (http_get_file(g_url, path, neu, 128 * 1024 * 1024) != 0) {
+    if (http_get_file(g_url, path, sfd, 128 * 1024 * 1024) != 0) {
+        close(sfd);
         unlink(neu);
         goto out;
     }
@@ -248,6 +269,7 @@ int maybe_update(int allow_exec) {
     }
     _exit(0);
 out:
+    if (mfd >= 0) close(mfd);
     if (root) cJSON_Delete(root);
     free(body);
     if (tmp[0]) unlink(tmp);

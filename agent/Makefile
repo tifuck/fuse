@@ -67,13 +67,17 @@ tests/test_output_queue: tests/test_output_queue.c $(LIB_SRC) $(HDRS)
 tests/test_binary: tests/test_binary.c $(LIB_SRC) $(HDRS)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ tests/test_binary.c $(LIB_SRC) $(LIBS)
 
-test: tests/test_expand_home tests/test_reconnect tests/test_files tests/test_lifecycle tests/test_output_queue tests/test_binary
+tests/test_ws_frame: tests/test_ws_frame.c $(LIB_SRC) $(HDRS)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ tests/test_ws_frame.c $(LIB_SRC) $(LIBS)
+
+test: tests/test_expand_home tests/test_reconnect tests/test_files tests/test_lifecycle tests/test_output_queue tests/test_binary tests/test_ws_frame
 	tests/test_expand_home
 	tests/test_reconnect
 	tests/test_files
 	tests/test_lifecycle
 	tests/test_output_queue
 	tests/test_binary
+	tests/test_ws_frame
 
 clean:
 	rm -f dist/fuse-agent-* tests/test_expand_home tests/test_reconnect tests/test_files

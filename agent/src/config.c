@@ -43,6 +43,9 @@ int load_config(const char *path) {
 }
 
 int save_config(const char *path) {
+    /* Values are written as bare "k=v" lines: a newline in either would
+     * inject extra config keys on the next load. */
+    if (strpbrk(g_url, "\r\n") || strpbrk(g_token, "\r\n")) return -1;
     char dir[PATH_MAX];
     if (snprintf(dir, sizeof(dir), "%s", path) >= (int)sizeof(dir)) return -1;
     char *slash = strrchr(dir, '/');
