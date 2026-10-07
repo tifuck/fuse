@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Protocol
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 import httpx
+
+from ..client import PROVIDER_BODY_MAX, read_limited
 
 
 _TRACKING_PARAMS = {
@@ -77,6 +79,40 @@ def source_id(url: str) -> str:
 
     key = canonical_url(url) or str(url or "")
     return "web-" + hashlib.sha256(key.encode("utf-8", errors="replace")).hexdigest()[:12]
+
+
+async def safe_get(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    host_ok,
+    max_redirects: int = 4,
+    **kwargs,
+) -> httpx.Response:
+    """GET that follows redirects manually, validating every hop's host.
+
+    Never pass follow_redirects=True to a shared client: httpx would then
+    send the request wherever the server's Location points, with no SSRF
+    check. `host_ok` decides whether a URL may be fetched at all.
+    """
+    current = url
+    for _ in range(max_redirects + 1):
+        if not host_ok(current):
+            raise ValueError("redirect to a blocked or foreign host")
+        resp = await client.get(current, follow_redirects=False, **kwargs)
+        if resp.status_code in (301, 302, 303, 307, 308) and resp.headers.get("location"):
+            current = urljoin(current, resp.headers["location"])
+            continue
+        return resp
+    raise ValueError("redirect loop")
+
+
+async def read_json(resp) -> object:
+    """Bounded JSON body parse; caps the payload like HTML reads do."""
+    import json
+
+    text = await read_limited(resp, max_bytes=PROVIDER_BODY_MAX)
+    return json.loads(text)
 
 
 @dataclass

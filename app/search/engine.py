@@ -24,7 +24,7 @@ from .client import (
     get_client,
     get_fetch_client,
 )
-from .extract import FETCH_MAX_BYTES, PageExtract, extract_page
+from .extract import FETCH_CHARS, FETCH_MAX_BYTES, PageExtract, extract_page, find_windows, select_passages
 from .pack import MODEL_SEARCH_FAILED, flatten_hits, pack_page, pack_search
 from .providers.base import QueryResult, SearchHit, canonical_url
 from .providers.brave import BraveProvider, brave_auth_failed, freshness_bucket
@@ -124,33 +124,62 @@ def _discovered_links(raw: str, content_type: str, base_url: str) -> set[str]:
     return parser.urls
 
 
+def _parse_page(
+    body: str, ctype: str, url: str, download_truncated: bool, received: int
+) -> tuple[set[str], PageExtract]:
+    """Link scan + main-content extraction; CPU-bound, run off the loop."""
+    links = _discovered_links(body, ctype, url)
+    base_extract = extract_page(body, content_type=ctype, url=url)
+    if download_truncated:
+        base_extract.truncated = True
+    base_extract.bytes_in = received
+    return links, base_extract
+
+
 def _with_find(
     extract: PageExtract,
     find: str | None,
     *,
-    raw: str = "",
-    content_type: str = "",
-    url: str = "",
     query: str | None = None,
     offset: int = 0,
 ) -> PageExtract:
-    if not find or len(re.sub(r"\s+", " ", find).strip()) < 2:
-        if query and raw:
-            return extract_page(raw, content_type=content_type, url=url, query=query)
-        if offset and raw:
-            return extract_page(raw, content_type=content_type, url=url, offset=offset)
-        return replace(extract, used_find=False)
-    if raw:
-        return extract_page(raw, content_type=content_type, url=url, find=find, query=query)
-    from .extract import find_windows
-
-    text = find_windows(extract.text, find)
-    return replace(extract, text=text, used_find=True, chars_out=len(text))
+    """Re-window the full extracted text for find/query/offset reads."""
+    source = extract.full_text or extract.text
+    literal = re.sub(r"\s+", " ", find or "").strip()
+    if len(literal) >= 2:
+        text = find_windows(source, find or "")
+        return replace(
+            extract, text=text, used_find=True, chars_out=len(text),
+            paged=False, next_offset=None,
+        )
+    if query:
+        text = select_passages(source, query=query)
+        return replace(
+            extract, text=text, used_find=False, chars_out=len(text),
+            paged=False, next_offset=None,
+        )
+    if offset:
+        start = min(max(0, offset), len(source))
+        end = start + FETCH_CHARS
+        text = "" if start >= len(source) else source[start:end]
+        return replace(
+            extract, text=text, used_find=False, chars_out=len(text),
+            offset=start, truncated=len(source) > end, paged=True,
+            next_offset=end if end < len(source) else None,
+        )
+    return replace(extract, used_find=False)
 
 
 def _host_header(hostname: str, port: int) -> str:
     host = f"[{hostname}]" if ":" in hostname else hostname
     return host if port == 443 else f"{host}:{port}"
+
+
+def _pdf_text(raw_bytes: bytes) -> str:
+    from pypdf import PdfReader
+
+    reader = PdfReader(io.BytesIO(raw_bytes), strict=False)
+    return "\n\n".join((page.extract_text() or "") for page in reader.pages[:100])
 
 
 def is_fetch_cached(url: str, allowed: set[str] | None = None) -> bool:
@@ -293,11 +322,9 @@ def cache_ttl(bucket: str | None, kind: str) -> float | None:
 
 def _allow(user_id: int, kind: str) -> bool:
     per_min = FETCH_PER_MIN if kind == "fetch" else SEARCH_PER_MIN
-    if not limiter.allow(f"chat-{kind}:{user_id}", per_min, 60):
-        return False
     if kind != "fetch" and not limiter.allow(f"chat-{kind}-h:{user_id}", SEARCH_PER_HOUR, 3600):
         return False
-    return True
+    return limiter.allow(f"chat-{kind}:{user_id}", per_min, 60)
 
 
 def _cache_key(normalized: str, bucket: str | None, provider: str) -> str:
@@ -337,7 +364,7 @@ async def _one_query(
     bucket = freshness_bucket(recency)
     key = _brave_key()
     use_brave = bool(key) and not brave_auth_failed()
-    ck = _cache_key(normalize_query(query), bucket, "mix")
+    ck = _cache_key(normalize_query(query), bucket, "mix-b" if use_brave else "mix")
     cached = _cache.get(ck)
     if isinstance(cached, QueryResult):
         hit = QueryResult(
@@ -393,7 +420,7 @@ async def _one_query(
                 )
                 ttl = cache_ttl(bucket, kind)
                 if ttl:
-                    _cache.set(_cache_key(normalize_query(query), bucket, "mix"), result, ttl)
+                    _cache.set(_cache_key(normalize_query(query), bucket, "mix-b" if use_brave else "mix"), result, ttl)
                 _log(
                     logging.INFO if hits else logging.WARNING,
                     user_id=user_id,
@@ -473,9 +500,15 @@ async def _one_query(
             priority: list[list[SearchHit]] = []
             rest: list[list[SearchHit]] = []
             used: list[str] = []
+            # Only a provider that parsed a genuine results page counts as
+            # "no results"; the quotes provider reports error="empty" with
+            # status=0 when no coin API answered, which is not a page.
+            saw_empty = False
+            saw_failure = bool(pending)
             for name, resp in gathered:
                 if resp is None:
                     failures.append(f"{name}:0:exc")
+                    saw_failure = True
                     continue
                 last_timeout = resp.last_timeout
                 if resp.hits:
@@ -485,15 +518,17 @@ async def _one_query(
                         priority.append(bucket_hits)
                     else:
                         rest.append(bucket_hits)
+                    continue
+                failures.append(f"{name}:{resp.status}:{resp.error or 'empty'}")
+                if resp.status == 200 and (resp.error or "") == "empty" and name != "quotes":
+                    saw_empty = True
                 else:
-                    failures.append(f"{name}:{resp.status}:{resp.error or 'empty'}")
+                    saw_failure = True
             merged = _merge_hits(priority + rest, original)
             if merged:
                 label = "+".join(used) if used else "mix"
                 return await finish(merged, label, 200, last_timeout)
-            # Only providers that parsed a genuine results page count as "no
-            # results"; blocked/parse/http failures must surface as a failure.
-            if failures and all(item.endswith(":empty") for item in failures):
+            if saw_empty and not saw_failure:
                 return await finish([], "mix", 200, last_timeout)
 
             ms = int((time.monotonic() - started) * 1000)
@@ -592,7 +627,9 @@ async def search_bulk(
         if got is None:
             out.append(
                 QueryResult(
-                    query=slot, hits=[], error=MODEL_SEARCH_FAILED,
+                    query=slot,
+                    hits=[],
+                    error=f"Only {MAX_QUERIES_PER_BULK} queries run per call; this one was dropped.",
                     kind="provider_error", provider="", latency_ms=0, cached=False, status=0,
                 )
             )
@@ -626,25 +663,18 @@ async def fetch_url(
     """Return (extract, wrapped_text, error). extract is None on hard failure."""
     clean = allowed_fetch_url(url)
     if not clean:
-        if public_http_url(url, https_only=True) and not domain_allowed(host_of(url)):
+        clean_host = host_of(url)
+        if public_http_url(url, https_only=True) and clean_host and not domain_allowed(clean_host):
             msg = "That domain is not allowed."
         else:
             msg = "That URL is not an allowed public HTTPS address."
         return None, msg, msg
     cached = _page_cache.get(normalize_url(clean))
     if cached is not None:
-        final_url, base_extract, links, raw, content_type = cached
+        final_url, base_extract, links = cached
         allowed.add(final_url)
         allowed.update(links)
-        extract = _with_find(
-            base_extract,
-            find,
-            raw=raw,
-            content_type=content_type,
-            url=final_url,
-            query=query,
-            offset=offset,
-        )
+        extract = _with_find(base_extract, find, query=query, offset=offset)
         extract.bytes_in = base_extract.bytes_in
         return extract, pack_page(final_url, extract), ""
     if not _allow(user_id, "fetch"):
@@ -720,10 +750,7 @@ async def fetch_url(
                     del body_bytes
                     if "application/pdf" in ctype:
                         try:
-                            from pypdf import PdfReader
-
-                            reader = PdfReader(io.BytesIO(raw_bytes), strict=False)
-                            body = "\n\n".join((page.extract_text() or "") for page in reader.pages[:100])
+                            body = await asyncio.to_thread(_pdf_text, raw_bytes)
                         except Exception:
                             logger.warning("fuse.fetch pdf parse failed url_host=%s", hostname)
                             msg = "The PDF could not be extracted as text."
@@ -737,28 +764,18 @@ async def fetch_url(
                         except LookupError:
                             body = raw_bytes.decode("utf-8", errors="replace")
                     del raw_bytes
-                    links = _discovered_links(body, ctype, current)
-                    base_extract = extract_page(body, content_type=ctype, url=current)
-                    if truncated:
-                        base_extract.truncated = True
-                    base_extract.bytes_in = received
+                    links, base_extract = await asyncio.to_thread(
+                        _parse_page, body, ctype, current, truncated, received
+                    )
                     if base_extract.kind == "empty" or (not base_extract.text and base_extract.kind != "spa"):
                         msg = "The page had no extractable text."
                         return None, msg, msg
                     allowed.add(current)
                     allowed.update(links)
-                    cached_value = (current, base_extract, links, body, ctype)
+                    cached_value = (current, base_extract, links)
                     _page_cache.set(normalize_url(clean), cached_value, PAGE_CACHE_TTL)
                     _page_cache.set(normalize_url(current), cached_value, PAGE_CACHE_TTL)
-                    extract = _with_find(
-                        base_extract,
-                        find,
-                        raw=body,
-                        content_type=ctype,
-                        url=current,
-                        query=query,
-                        offset=offset,
-                    )
+                    extract = _with_find(base_extract, find, query=query, offset=offset)
                     extract.bytes_in = received
                     wrapped = pack_page(current, extract)
                     return extract, wrapped, ""

@@ -8,10 +8,15 @@ from urllib.parse import unquote
 import httpx
 
 from ..client import read_limited
-from ..ssrf import public_http_url
-from .base import ProviderResponse, SearchHit, empty_reason
+from ..ssrf import host_of, public_http_url
+from .base import ProviderResponse, SearchHit, empty_reason, safe_get
 
 logger = logging.getLogger(__name__)
+
+
+def _yahoo_host_ok(url: str) -> bool:
+    host = host_of(url)
+    return host == "yahoo.com" or host.endswith(".yahoo.com")
 
 TIMEOUT_YAHOO = httpx.Timeout(3.5, connect=1.5)
 _UA = (
@@ -78,12 +83,13 @@ class YahooProvider:
             params["fr2"] = "time"
             params["age"] = "1m"
         try:
-            resp = await client.get(
+            resp = await safe_get(
+                client,
                 "https://search.yahoo.com/search",
+                host_ok=_yahoo_host_ok,
                 params=params,
                 headers={"User-Agent": _UA, "Accept": "text/html", "Accept-Language": "en-US,en;q=0.9"},
                 timeout=timeout,
-                follow_redirects=True,
             )
             if resp.status_code != 200:
                 logger.error("fuse.search provider=yahoo status=%s", resp.status_code)
@@ -92,7 +98,7 @@ class YahooProvider:
         except httpx.TimeoutException:
             logger.error("fuse.search provider=yahoo error=timeout")
             return ProviderResponse(hits=[], status=0, error="timeout", last_timeout=timeout)
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, ValueError) as exc:
             logger.error("fuse.search provider=yahoo error=%s", type(exc).__name__)
             return ProviderResponse(hits=[], status=0, error="http", last_timeout=timeout)
         hits = parse_yahoo_html(body)

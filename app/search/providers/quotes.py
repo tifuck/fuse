@@ -6,7 +6,7 @@ import re
 import httpx
 
 from ..ssrf import public_http_url
-from .base import ProviderResponse, SearchHit
+from .base import ProviderResponse, SearchHit, read_json
 
 TIMEOUT_QUOTES = httpx.Timeout(2.0, connect=1.5)
 
@@ -80,7 +80,7 @@ async def _coingecko(client: httpx.AsyncClient, coin: str, fiat: str, timeout: h
     )
     if resp.status_code != 200:
         return []
-    data = resp.json()
+    data = await read_json(resp)
     row = data.get(coin) if isinstance(data, dict) else None
     if not isinstance(row, dict) or fiat not in row:
         return []
@@ -125,7 +125,7 @@ async def _binance(client: httpx.AsyncClient, coin: str, fiat: str, timeout: htt
     )
     if resp.status_code != 200:
         return []
-    data = resp.json()
+    data = await read_json(resp)
     price = data.get("price") if isinstance(data, dict) else None
     if not price:
         return []
@@ -150,7 +150,7 @@ async def _coincap(client: httpx.AsyncClient, coin: str, fiat: str, timeout: htt
     )
     if resp.status_code != 200:
         return []
-    data = resp.json()
+    data = await read_json(resp)
     row = data.get("data") if isinstance(data, dict) else None
     if not isinstance(row, dict) or not row.get("priceUsd"):
         return []

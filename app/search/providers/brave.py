@@ -8,7 +8,7 @@ import httpx
 
 from ..client import TIMEOUT_BRAVE
 from ..ssrf import public_http_url
-from .base import ProviderResponse, SearchHit
+from .base import ProviderResponse, SearchHit, read_json
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +120,7 @@ class BraveProvider:
             return ProviderResponse(hits=[], status=resp.status_code, error="http", last_timeout=last_timeout)
 
         try:
-            data = resp.json()
+            data = await read_json(resp)
         except ValueError:
             return ProviderResponse(hits=[], status=resp.status_code, error="parse", last_timeout=last_timeout)
         web = data.get("web") if isinstance(data, dict) else None

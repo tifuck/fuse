@@ -111,6 +111,9 @@ class PageExtract:
     paged: bool = False
     # Bytes the server sent for the page ("Received 12.3KB (200 OK)").
     bytes_in: int = 0
+    # Complete extracted text, unwindowed; kept for cached find/query/offset
+    # re-reads so callers never need the raw body again. Not serialized.
+    full_text: str = field(default="", repr=False)
 
 
 @dataclass(frozen=True)
@@ -723,6 +726,7 @@ def extract_page(
         total_chars=len(full),
         next_offset=window_end if paged and window_end < len(full) else None,
         paged=paged,
+        full_text=full,
     )
     host = ""
     try:

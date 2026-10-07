@@ -41,6 +41,12 @@ class FakeResp:
     def __init__(self, status=200, payload=None, text="", headers=None):
         self.status_code = status
         self._payload = payload
+        # httpx Response.json() decodes .text; mirror that so read_json
+        # (read_limited -> .text) sees the same bytes the provider parses.
+        if not text and payload is not None:
+            import json as _json
+
+            text = _json.dumps(payload)
         self.text = text
         self.headers = headers or {}
         self.request = None
@@ -750,6 +756,79 @@ class EngineAsyncTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("https://example.com/next", allowed)
         self.assertNotIn("https://localhost/private", allowed)
         self.assertNotIn("http://public.example/plain", allowed)
+
+    async def test_safe_get_refuses_redirect_to_foreign_host(self):
+        from app.search.providers.base import safe_get
+
+        client = FakeClient()
+
+        async def get(url, kwargs):
+            if "good.example" in url:
+                return FakeResp(302, headers={"location": "https://127.0.0.1/secret"})
+            return FakeResp(200, text="ok")
+
+        client.get_impl = get
+        with self.assertRaises(ValueError):
+            await safe_get(
+                client,
+                "https://good.example/search",
+                host_ok=lambda u: u.startswith("https://good.example"),
+            )
+        self.assertFalse(any("127.0.0.1" in str(call[1]) for call in client.calls))
+
+    async def test_dropped_bulk_queries_report_clip_not_failure(self):
+        from app.search.engine import MAX_QUERIES_PER_BULK, search_bulk
+
+        client = FakeClient()
+        client.get_impl = AsyncMock(
+            return_value=FakeResp(200, {"web": {"results": [{"title": "x", "url": "https://e.com"}]}})
+        )
+        queries = [f"query {i}" for i in range(MAX_QUERIES_PER_BULK + 2)]
+        with (
+            patch("app.search.engine.get_client", return_value=client),
+            patch("app.search.engine._brave_key", return_value="k"),
+            patch("app.search.engine.brave_auth_failed", return_value=False),
+            patch("app.search.engine._allow", return_value=True),
+        ):
+            from app.search.engine import _cache
+
+            _cache.clear()
+            out = await search_bulk(queries, user_id=77)
+        dropped = [r for r in out if "dropped" in (r.error or "")]
+        self.assertEqual(len(dropped), 2)
+        for r in dropped:
+            self.assertNotIn("failed", (r.error or "").lower())
+
+    async def test_quotes_empty_is_not_a_genuine_no_results(self):
+        from app.search.providers.base import ProviderResponse
+
+        client = FakeClient()
+
+        async def quotes_none(*args, **kwargs):
+            return ProviderResponse(hits=[], status=0, error="empty")
+
+        async def empty(*args, **kwargs):
+            return ProviderResponse(hits=[], status=200, error="empty")
+
+        from app.search import engine
+
+        with (
+            patch("app.search.engine._brave_key", return_value=""),
+            patch("app.search.engine._allow", return_value=True),
+            patch("app.search.engine.quote_ids", return_value=("bitcoin", "usd")),
+            patch("app.search.engine.is_live_query", return_value=True),
+            patch.object(engine._quotes, "search", side_effect=quotes_none),
+            patch.object(engine._ddg, "search", side_effect=empty),
+            patch.object(engine._bing, "search", side_effect=empty),
+            patch.object(engine._yahoo, "search", side_effect=empty),
+            patch.object(engine._hn, "search", side_effect=empty),
+            patch.object(engine._wiki, "search", side_effect=empty),
+        ):
+            from app.search.engine import _cache
+
+            _cache.clear()
+            out = await search_bulk(["btc price"], user_id=78)
+        self.assertEqual(out[0].kind, "provider_error")
 
 
 if __name__ == "__main__":

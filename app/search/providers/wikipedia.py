@@ -8,7 +8,7 @@ import httpx
 
 from ..client import TIMEOUT_WIKI
 from ..ssrf import public_http_url, wiki_page_url
-from .base import ProviderResponse, SearchHit
+from .base import ProviderResponse, SearchHit, read_json
 
 _UA = "FuseChat/1.0 (dashboard search for signed-in users)"
 _SEARCH_HOSTS = {"en.wikipedia.org"}
@@ -62,7 +62,7 @@ class WikipediaProvider:
         if resp.status_code != 200:
             return ProviderResponse(hits=[], status=resp.status_code, error="http", last_timeout=last_timeout)
         try:
-            data = resp.json()
+            data = await read_json(resp)
         except ValueError:
             return ProviderResponse(hits=[], status=resp.status_code, error="parse", last_timeout=last_timeout)
         rows = ((data.get("query") or {}).get("search") or []) if isinstance(data, dict) else []

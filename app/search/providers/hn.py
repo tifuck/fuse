@@ -5,7 +5,7 @@ import logging
 import httpx
 
 from ..ssrf import public_http_url
-from .base import ProviderResponse, SearchHit
+from .base import ProviderResponse, SearchHit, read_json
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ class HnProvider:
             logger.error("fuse.search provider=hn status=%s", resp.status_code)
             return ProviderResponse(hits=[], status=resp.status_code, error="http", last_timeout=timeout)
         try:
-            data = resp.json()
+            data = await read_json(resp)
         except ValueError:
             return ProviderResponse(hits=[], status=resp.status_code, error="parse", last_timeout=timeout)
         rows = data.get("hits") if isinstance(data, dict) else []

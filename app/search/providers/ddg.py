@@ -118,12 +118,7 @@ async def _warm(client: httpx.AsyncClient, timeout: httpx.Timeout) -> None:
     if _warmed:
         return
     try:
-        await client.get(
-            "https://duckduckgo.com/",
-            headers={"User-Agent": _UA, "Accept": "text/html"},
-            timeout=timeout,
-            follow_redirects=True,
-        )
+        await _request(client, "GET", "https://duckduckgo.com/", timeout, headers={"User-Agent": _UA, "Accept": "text/html"})
         _warmed = True
     except Exception:
         pass

@@ -81,7 +81,7 @@ def decode_ddg_url(href: str) -> str:
     except Exception:
         return ""
     host = (parsed.hostname or "").lower()
-    if "duckduckgo.com" in host and parsed.path.startswith("/l"):
+    if (host == "duckduckgo.com" or host.endswith(".duckduckgo.com")) and parsed.path.startswith("/l"):
         qs = parse_qs(parsed.query)
         target = (qs.get("uddg") or [""])[0]
         if target:
