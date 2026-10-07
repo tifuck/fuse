@@ -111,7 +111,6 @@ function bump(id, patch) {
     }));
     THREAD = created.id;
     await page.evaluate((thread) => {
-      fuseToolFixture.view('cli');
       fuseToolFixture.mount([{ tools: [
         { id: 'sp-a', name: 'spawn_subagent', status: 'done', background: true, child_id: 'alpha', description: 'Alpha worker' },
         { id: 'sp-b', name: 'spawn_subagent', status: 'done', background: true, child_id: 'bravo', description: 'Bravo worker' },
@@ -211,10 +210,11 @@ function bump(id, patch) {
     assert.doesNotMatch(wait.spawnSummary, /MUST_NOT_DELIVER/, 'a child that died delivers no partial as its report');
     assert.equal(wait.waitSummary, 'ALPHA_REPORT_ONLY', 'reconciling another child does not rewrite a returned wait');
     const waitRow = page.locator('[data-step="tool-wait-a"]');
-    assert.match(await waitRow.innerText(), /Done/);
-    await waitRow.locator('.chat-step-toggle').first().click();
-    assert.match(await waitRow.innerText(), /ALPHA_REPORT_ONLY/);
-    assert.doesNotMatch(await page.locator('[data-step="tool-sp-b"]').innerText(), /MUST_NOT_DELIVER/);
+    assert.match(await waitRow.innerText(), /finished/);
+    // The report rides the row (for Open agent); the transcript never prints it inline.
+    assert.match(await waitRow.evaluate(el => el.textContent), /ALPHA_REPORT_ONLY/);
+    assert.equal(await page.evaluate(() => (document.querySelector('[data-step="tool-wait-a"]').textContent.match(/ALPHA_REPORT_ONLY/g) || []).length), 1, 'the returned report rides the row once');
+    assert.doesNotMatch(await page.locator('[data-chat-log]').innerText(), /MUST_NOT_DELIVER/);
     console.log('PASS wait rows and refused partial reports');
 
     // --- 4. Sidebar keeps spinning after the main turn while a child runs ---

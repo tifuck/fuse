@@ -1,4 +1,4 @@
-// Console reading-mode GROUPS: the summary lines ("Read 2 files", "Ran 1
+// GROUPS: the summary lines ("Read 2 files", "Ran 1
 // shell command", "Committed 1a2b3c4…") a run folds into, and the collapsed
 // state those groups remember.
 //
@@ -6,13 +6,13 @@
 // the generated audit rules (console_ui.browser.cjs + console_ui_lib.js),
 // read/search fold labels and their growth (console_file_tools.browser.cjs),
 // group open/fold clicks and detail refresh (stream_consistency.browser.cjs,
-// collapse_states.browser.cjs), an expanded summary surviving a view switch
-// and a remount (console_reconcile.browser.cjs), settled agents-group child
+// collapse_states.browser.cjs), an expanded summary mid-turn keeping its
+// state (console_reconcile.browser.cjs), settled agents-group child
 // labels (console_subagent_rows.browser.cjs), per-kind header geometry
 // (console_layout.browser.cjs). This file pins only: summary counts and verbs
 // against the group's real membership as calls arrive, mixed transcripts
 // keeping row order (nothing swallowed into the wrong group), a group's
-// collapsed state across a page reload, a console↔mainframe switch and new
+// collapsed state across a page reload and new
 // output, truncation indicators on folded command output, and group rows at
 // 390px.
 // Run against chat_browser_fixture.py, never the live Fuse service.
@@ -138,8 +138,8 @@ const groupGrid = () => {
     await page.goto(origin);
     await page.waitForFunction(() => window.fuseToolFixture);
     await page.addStyleTag({ content: '* { animation: none !important; transition: none !important; }' });
-    const setup = (view) => page.evaluate((v) => { fuseToolFixture.thinking(true); fuseToolFixture.view(v); }, view || 'console');
-    await setup('console');
+    const setup = () => page.evaluate(() => { fuseToolFixture.thinking(true); });
+    await setup();
     const mount = (rows, live, threadId) => page.evaluate(({ rows, live, threadId }) => fuseToolFixture.mount(rows, live, threadId ?? null), { rows, live, threadId });
     const groupToggle = () => page.locator('.chat-log li.is-console-group:not(.is-console-agents) > .chat-step-main > .chat-step-head > .chat-step-toggle').first();
     const groupState = () => page.locator('.chat-log li.is-console-group:not(.is-console-agents)').first()
@@ -226,8 +226,8 @@ const groupGrid = () => {
       pass('mixed transcript keeps order; lone calls and thoughts stay out of the wrong group', from);
     }
 
-    // —— 4. A group the user collapsed stays collapsed across a page reload
-    //      and a reading-mode switch; one the user opened comes back open ——
+    // —— 4. A group the user collapsed stays collapsed across a page reload;
+    //      one the user opened comes back open ——
     {
       const from = failures.length;
       const persistRows = () => [user('Go.'), turn([say('Working.\n\n'),
@@ -249,28 +249,20 @@ const groupGrid = () => {
       check(!(await groupState()).open, 'a click on the printed calls folds the summary');
       await page.reload();
       await page.waitForFunction(() => window.fuseToolFixture);
-      await setup('console');
+      await setup();
       await remount('groups-thread');
       check(!(await groupState()).open && (await groupState()).aria === 'false', 'reload keeps an explicitly closed summary closed');
       await groupToggle().click();
       check((await groupState()).open, 'opening before the next reload');
       await page.reload();
       await page.waitForFunction(() => window.fuseToolFixture);
-      await setup('console');
+      await setup();
       await remount('groups-thread');
       const reopened = await groupState();
       check(reopened.open && reopened.aria === 'true', `reload restores the open summary (got ${JSON.stringify(reopened)})`);
-      await page.locator('.chat-log li.is-console-group .chat-console-bundle .chat-step-node').first().click({ force: true });
-      check(!(await groupState()).open, 'folding it again before the view switch');
-      for (const view of ['mainframe', 'console']) {
-        await page.evaluate((v) => fuseToolFixture.view(v), view);
-        await page.waitForFunction((v) => document.querySelector('[data-chat]')?.getAttribute('data-view') === v, view);
-        const state = await groupState();
-        check(!state.open && state.aria === 'false', `${view} keeps the collapsed summary collapsed (got ${JSON.stringify(state)})`);
-      }
       await remount('other-groups-thread');
       check(!(await groupState()).open, 'another thread does not inherit the disclosure');
-      pass('collapsed state survives reload and a console↔mainframe switch', from);
+      pass('collapsed state survives a reload and stays per-thread', from);
     }
 
     // —— 5. New output never re-opens or re-closes a group ——

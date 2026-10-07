@@ -43,7 +43,6 @@ window.fuseToolFixture = {
   },
   thinking: setShowThinking,
   slash: runSlash,
-  view: applyChatView,
   api,
   runInfo: () => structuredClone(activeRun),
   elapsed: liveElapsedSeconds,

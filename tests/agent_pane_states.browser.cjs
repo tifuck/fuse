@@ -1,5 +1,5 @@
 // Chat-page RIGHT agent pane/dock: persistence and multi-agent states across
-// navigation (panel close, view switch, model switch, reload, thread switch).
+// navigation (panel close, model switch, reload, thread switch).
 // Asserts latest server truth (mocked run/agent payloads), not pixels.
 // Already covered elsewhere — do not re-pin: dock status labels/classes/dots,
 // report delivery scope and "No completed report" (subagent_status.browser.cjs),
@@ -137,7 +137,6 @@ function agent(id, patch) {
     const setAgent = (id, patch) => Object.assign(agentsByThread[THREAD_A].find((row) => row.id === id), patch);
 
     await page.evaluate(({ thread, tools }) => {
-      fuseToolFixture.view('console');
       fuseToolFixture.mount([{ tools }], false, thread);
       fuseToolFixture.sidebar.mount({ id: thread, title: 'Pane states A', updated_at: new Date().toISOString(), running: false });
     }, { thread: THREAD_A, tools: spawnTools(THREAD_A) });
@@ -374,7 +373,7 @@ function agent(id, patch) {
     assert.match(ui.text, /LIMA_REPORT_UPDATED/, 'the transcript comes back with the recovery');
     console.log('PASS empty and unavailable pane states');
 
-    // --- 6. Persistence: panel close, reading-mode switch, model switch, reload ---
+    // --- 6. Persistence: panel close, model switch, reload ---
     // (a) Closing the panel keeps the child; reopening re-attaches to it.
     await page.locator('[data-agents-close]').click();
     await page.locator('[data-chat-agents]').waitFor({ state: 'hidden' });
@@ -388,23 +387,10 @@ function agent(id, patch) {
     assert.equal(ui.badge, 'completed');
     assert.equal(ui.docks, 1, 'no duplicated dock after a close/reopen cycle');
     assert.equal(ui.panes, 1);
-    // (b) Reading-mode switch keeps the pane on the same child.
+    // (b) Open the running Tate child; the switch checks below assert its state.
     await page.locator('[data-agent-back]').click();
     await openPane('tate');
     await page.locator('[data-agent-log-body]').getByText('TATE_DRAFT').waitFor();
-    for (const view of ['mainframe', 'console']) {
-      await page.evaluate((name) => fuseToolFixture.view(name), view);
-      await page.waitForFunction((name) => document.querySelector('[data-chat]')?.getAttribute('data-view') === name, view);
-      ui = await read();
-      assert.equal(ui.viewOpen, true, `${view}: the pane survives the reading-mode switch`);
-      assert.match(ui.title, /^Tate worker/, `${view}: same child after the switch`);
-      assert.equal(ui.badge, 'running', `${view}: the state survives the switch`);
-      assert.equal(ui.dockHidden, false, `${view}: the live dock re-attaches in the new mode`);
-      assert.equal(ui.spin, true, `${view}: exactly one spinner`);
-      assert.match(ui.text, /TATE_DRAFT/, `${view}: content is not lost or duplicated`);
-      assert.equal(ui.docks, 1, `${view}: one dock`);
-      assert.equal(ui.panes, 1, `${view}: one pane body`);
-    }
     // (c) A model switch leaves the pane exactly where it was.
     await page.locator('[data-chat-picker] .chat-picker-btn').click();
     await page.locator('.chat-picker-menu').waitFor({ state: 'visible' });
@@ -425,7 +411,6 @@ function agent(id, patch) {
     await page.locator('[data-sync-label]').filter({ hasText: 'Live sync' }).waitFor({ state: 'attached' });
     await page.waitForFunction(() => Boolean(window.fuseToolFixture));
     await page.evaluate(({ thread, tools, other }) => {
-      fuseToolFixture.view('console');
       fuseToolFixture.mount([{ tools }], false, thread);
       fuseToolFixture.sidebar.mount({ id: thread, title: 'Pane states A', updated_at: new Date().toISOString(), running: false });
       fuseToolFixture.sidebar.update({ id: other, title: 'Pane states B', updated_at: new Date().toISOString(), running: false });
@@ -445,7 +430,7 @@ function agent(id, patch) {
     assert.equal(ui.dockHidden, false, 'the dock re-attaches after the reload');
     assert.equal(ui.spin, true, 'the spinner is back exactly once');
     assert.equal((await paneText()).split('TATE_DRAFT').length - 1, 1, 'no duplicated content after the reload');
-    console.log('PASS pane survives panel close, view and model switches, and reload');
+    console.log('PASS pane survives panel close, a model switch, and reload');
 
     // --- 7. Thread switch: the pane resets cleanly, never orphans, never bleeds ---
     const openRow = async (id) => {

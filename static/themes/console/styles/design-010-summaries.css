@@ -1,0 +1,303 @@
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-notice > .chat-step-node::after {
+  content: "" !important;
+  display: block;
+  width: var(--console-dot);
+  height: var(--console-dot);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--mist) 45%, var(--ink));
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-notice.is-red > .chat-step-node::after { background: var(--call-fail); }
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-notice.is-gold > .chat-step-node::after { background: var(--call-idle); }
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-notice > .chat-step-main {
+  display: block;
+  min-width: 0;
+  color: var(--mist);
+  font: var(--console-type)/var(--console-leading) var(--mono);
+  overflow-wrap: anywhere;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-notice .chat-console-dim {
+  color: color-mix(in srgb, var(--mist) 58%, var(--ink));
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-progress {
+  display: grid;
+  min-width: 0;
+  color: color-mix(in srgb, var(--mist) 58%, var(--ink));
+  font: var(--console-type)/var(--console-leading) var(--mono);
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-progress .chat-console-lines,
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-progress .chat-console-stdout {
+  color: inherit;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-agent-step {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-lines.is-error,
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-lines.is-error .chat-console-stdout {
+  color: var(--fault);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-notice.is-green > .chat-step-node::after { background: var(--call-done); }
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-agents.is-done > .chat-step-node::after,
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-agents.is-error > .chat-step-node::after {
+  content: "" !important;
+  display: block;
+  width: var(--console-dot);
+  height: var(--console-dot);
+  border-radius: 50%;
+  background: var(--call-done);
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-agents.is-error > .chat-step-node::after { background: var(--call-fail); }
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-group.is-console-agents .chat-step-label { color: var(--mist); }
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-group.is-console-agents .chat-console-agent .chat-console-branch {
+  color: color-mix(in srgb, var(--mist) 40%, var(--ink));
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-agent-tree {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font: var(--console-type)/var(--console-leading) var(--mono);
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-agent {
+  min-width: 0;
+  cursor: pointer;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-console-agent-line, .chat-console-agent-sub) {
+  display: flex;
+  gap: 1ch;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-branch.is-blank {
+  visibility: hidden;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-agent-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--mist);
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-agent-name.is-dim,
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-agent-sub .chat-console-dim {
+  color: color-mix(in srgb, var(--mist) 58%, var(--ink));
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-agent.is-error .chat-console-agent-sub .chat-console-dim { color: var(--fault); }
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-agent:hover .chat-console-agent-name { color: var(--ink-strong, var(--mist)); text-decoration: underline; text-underline-offset: 2px; }
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-turn {
+  color: color-mix(in srgb, var(--mist) 58%, var(--ink));
+  font: var(--console-type)/var(--console-leading) var(--mono);
+  letter-spacing: 0;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-turn {
+  display: grid;
+  grid-template-columns: var(--console-col) minmax(0, 1fr);
+  column-gap: 0.45rem;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-turn-mark { justify-self: center; }
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-turn b { font-weight: 700; }
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-turn.is-user.is-auto-steps {
+  padding: 0;
+  background: none;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-turn.is-auto-steps .chat-auto-steps { margin: 0; }
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-turn.is-auto-steps .chat-auto-steps .chat-timeline { padding: 0; }
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-group.is-console-expanded,
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-call.is-console-expanded:not(.is-console-verbose) {
+  background: var(--console-user);
+  padding-block: 0.2rem;
+}
+
+html body.is-chat .chat:is([data-view="console"]) .chat-run-spin[data-run-spin] {
+  overflow: visible;
+}
+
+html body.is-chat .chat:is([data-view="console"]) .chat-run-spin[data-run-spin] > .chat-console-spin {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  font: 400 0.9rem/1 var(--mono);
+  font-style: normal;
+  text-align: center;
+  color: inherit;
+  text-shadow: 0 0 0.55em color-mix(in srgb, currentColor 40%, transparent);
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-notice.is-event .chat-step-head {
+  display: block;
+  min-height: 0;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-notice.is-event .chat-step-toggle {
+  display: inline;
+  width: auto;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-notice.is-event .is-event-more { cursor: pointer; }
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-notice.is-event:has(> .chat-step-main > .chat-step-reveal.is-open) :is(.is-event-more, .is-event-preview) {
+  display: none;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] {
+  --call-done: var(--mist);
+  --call-idle: var(--mist);
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-notice > .chat-step-node::after {
+  background: var(--mist);
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-call.is-interrupted > .chat-step-node::after,
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-notice.is-gold > .chat-step-node::after {
+  background: var(--call-fail);
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-live-todos:not([hidden]) {
+  width: min(100%, var(--chat-col));
+  margin-top: 0.4rem;
+  padding-inline: var(--console-gutter);
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos):not([hidden]) {
+  font: var(--console-type)/var(--console-leading) var(--mono);
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-agent-live-todos:not([hidden]) { padding-inline: var(--console-gutter); }
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-bar { min-height: var(--console-row); padding-left: calc(var(--console-col) + 0.45rem); }
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-head {
+  font-size: 1em;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-title { color: var(--mist); font-weight: 600; }
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-rows { gap: 0; margin: 0; }
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-row {
+  grid-template-columns: var(--console-col) minmax(0, 1fr);
+  column-gap: 0.45rem;
+  min-height: var(--console-row);
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-box,
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-todo-line-mark {
+  display: grid;
+  place-items: center;
+  height: var(--console-row);
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-box::before,
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-todo-line-mark::before {
+  content: "";
+  box-sizing: border-box;
+  width: var(--console-dot);
+  height: var(--console-dot);
+  border-radius: 50%;
+  background: var(--mute);
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .is-pending .chat-todo-box::before { background: none; border: 1px solid var(--mute); }
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .is-in-progress .chat-todo-box::before { background: var(--brass); }
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .is-cancelled .chat-todo-box::before { opacity: 0.45; }
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .is-more .chat-todo-box::before {
+  content: "…";
+  width: auto;
+  height: auto;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--mute);
+  line-height: 1;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-todo-line-mark::before { background: var(--call-done); }
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-todo-line {
+  display: grid;
+  grid-template-columns: var(--console-col) minmax(0, 1fr);
+  column-gap: 0.45rem;
+  min-height: var(--console-row);
+  font: var(--console-type)/var(--console-leading) var(--mono);
+}
+
+/* The settled activity summary line: styled like a run head, but the
+   transcript never shows it — the status row and turn line carry the state. */
+.chat[data-view="console"] .chat-cli-run {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0 0 0.2rem;
+  min-height: 1.2rem;
+  color: var(--mute);
+  font-family: var(--mono);
+  font-size: calc(0.68rem * var(--chat-text-scale, 1));
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+.chat[data-view="console"] .chat-cli-run::before {
+  content: "·";
+  color: var(--mute);
+  font-size: calc(0.9rem * var(--chat-text-scale, 1));
+}
+
+.chat[data-view="console"] .chat-activity.is-live .chat-cli-run::before,
+.chat[data-view="console"] .chat-activity.is-waiting .chat-cli-run::before { content: none; }
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-cli-run { display: none; }
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-cli-run {
+  display: none !important;
+}
+

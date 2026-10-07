@@ -23,7 +23,7 @@ img.fp-logo { object-fit: contain; border-radius: 22%; background: transparent; 
 }
 .fp-dialog[open] { display: flex; animation: fp-in var(--dur-2, 180ms) var(--ease-snap, ease-out); }
 .fp-dialog::backdrop { background: color-mix(in srgb, var(--ink) 62%, transparent); }
-html:is([data-chat-view="cli"], [data-chat-view="console"], [data-chat-view="mainframe"]) body.is-chat .fp-dialog { --fp-font: var(--mono); --fp-radius: 4px; }
+html[data-chat-view="console"] body.is-chat .fp-dialog { --fp-font: var(--mono); --fp-radius: 4px; }
 @keyframes fp-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 .fp-dialog :is(button, input, select, label) { font-family: inherit; }
 .fp-shell { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; }

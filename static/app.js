@@ -1323,8 +1323,8 @@ document.querySelectorAll(".probe").forEach((btn) => {
   }
 
   function snapshot() {
-    const chatView = document.querySelector("[data-chat]");
-    const theme = chatView ? localStorage.getItem(THEME_KEY) || "" : "";
+    const chatRoot = document.querySelector("[data-chat]");
+    const theme = chatRoot ? localStorage.getItem(THEME_KEY) || "" : "";
     return {
       view: currentView(),
       ui_state: uiState(),

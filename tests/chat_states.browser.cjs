@@ -12,8 +12,8 @@
 //     and the composer comes back.
 //  6. Send while streaming queues by design (hint, queue row, cleared box) and
 //     the text lands exactly once when the turn ends.
-//  7. Drafts live in memory: they survive reading-mode switches and thread
-//     round trips, and a reload clears them cleanly with no stale send.
+//  7. Drafts live in memory: they survive thread round trips, and a reload
+//     clears them cleanly with no stale send.
 //  8. Background fetch failures: a down /chat/sync shows Disconnected with no
 //     blank page and recovers without duplicated rows; a failed thread open
 //     releases the composer and a retry opens the thread once.
@@ -303,20 +303,12 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       console.log('PASS send during streaming queues with its hint and lands exactly once');
     }
 
-    // 7. Drafts live in memory: view/thread round trips keep them, reload clears.
+    // 7. Drafts live in memory: thread round trips keep them, reload clears.
     {
       const p = await make(1440);
       await boot(p);
-      const draft = 'Draft that must outlive a view switch';
+      const draft = 'Draft that must outlive a thread round trip';
       await input(p).fill(draft);
-      for (const view of ['console', 'mainframe', 'cli']) {
-        await p.evaluate(v => fuseToolFixture.view(v), view);
-        const kept = await sendState(p);
-        assert.equal(kept.input, draft, `the draft survives switching to ${view}`);
-        assert.equal(kept.disabled, false, `the send button stays armed in ${view}`);
-        assert.equal(kept.inputDisabled, false);
-      }
-      assert.equal((await emptyState(p)).empty, true, 'the empty state survives reading-mode switches');
 
       const a = await seed(p, turn('Thread A prompt', 'Thread A answer'), 'Draft thread A');
       const b = await seed(p, turn('Thread B prompt', 'Thread B answer'), 'Draft thread B');
@@ -347,7 +339,7 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       const sent = await p.locator('.is-user').allTextContents();
       assert.equal(sent.filter(text => text.includes('Fresh send after reload')).length, 1, 'the clean state sends normally');
       await p.context().close();
-      console.log('PASS drafts survive view and thread switches and clear cleanly on reload');
+      console.log('PASS drafts survive thread switches and clear cleanly on reload');
     }
 
     // 8a. A down /chat/sync shows Disconnected, never a blank page, and the

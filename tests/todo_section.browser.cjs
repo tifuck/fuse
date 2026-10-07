@@ -1,6 +1,6 @@
 // Todo section suite: todo_write never prints as a transcript row. The list
-// lives in its own section under the status line and above the composer, in
-// every reading mode, and it never touches the spinner's words.
+// lives in its own section under the status line and above the composer, and
+// it never touches the spinner's words.
 //
 //  1. Placement and the spinner: status line, then the section, then the
 //     composer; the spinner keeps its own verb and state.
@@ -54,9 +54,9 @@ const DONE = OPEN.map(([text]) => [text, 'completed']);
     });
     const logText = () => page.evaluate(() => document.querySelector('.chat-log').textContent);
 
-    for (const view of ['console', 'mainframe', 'cli', 'compact']) {
-      await page.evaluate((view) => fuseToolFixture.view(view), view);
-      const tag = (what) => `${what} [${view}]`;
+    {
+
+      const tag = (what) => what;
       const user = { role: 'user', content: 'Go.' };
 
       // 1. Placement and the spinner.
@@ -139,15 +139,14 @@ const DONE = OPEN.map(([text]) => [text, 'completed']);
       await mount(settle, { live: false });
       const lines = await page.evaluate(() => [...document.querySelectorAll('[data-todo-line]')].map((el) => el.textContent.trim()));
       check(lines.length === 1 && lines[0] === 'Todos · 3/3 done', tag(`one settled line where the list finished: ${JSON.stringify(lines)}`));
-      // The mark is drawn in Console (a typed glyph like ☒ prints as a broken box in many fonts) and a check elsewhere.
+      // The mark is drawn (a typed glyph like ☒ prints as a broken box in many fonts).
       await mount(settle, { live: false });
       const mark = await page.evaluate(() => { const style = getComputedStyle(document.querySelector('.chat-todo-line-mark'), '::before'); return { content: style.content, radius: style.borderTopLeftRadius, width: parseFloat(style.width) }; });
-      if (view === 'console') check(mark.content === '""' && mark.radius === '50%' && mark.width > 2 && mark.width < 10, tag(`the settled line's mark is a dot in Console: ${JSON.stringify(mark)}`));
-      else check(mark.content === '"✓"', tag(`the settled line's mark is a check: ${mark.content}`));
-      if (view === 'console') {
+      check(mark.content === '""' && mark.radius === '50%' && mark.width > 2 && mark.width < 10, tag(`the settled line's mark is a drawn dot: ${JSON.stringify(mark)}`));
+      {
         await mount([user, turn([todo('m', [['Done', 'completed'], ['Doing', 'in_progress'], ['Next', 'pending'], ['Dropped', 'cancelled']])])], { live: false });
         const glyphs = await page.evaluate(() => [...document.querySelectorAll('[data-live-todos] .chat-todo-box')].map((el) => getComputedStyle(el, '::before').content));
-        check(glyphs.length === 4 && glyphs.every((content) => content === '""'), tag(`Console todo marks are drawn dots, not typed glyphs: ${JSON.stringify(glyphs)}`));
+        check(glyphs.length === 4 && glyphs.every((content) => content === '""'), tag(`todo marks are drawn dots, not typed glyphs: ${JSON.stringify(glyphs)}`));
       }
       await mount([user, turn([todo('a', OPEN)])], { live: false });
       check((await page.locator('[data-todo-line]').count()) === 0, tag('an unfinished list leaves no line'));
@@ -166,7 +165,7 @@ const DONE = OPEN.map(([text]) => [text, 'completed']);
     }
 
     // 5. Isolation: main chat and a subagent, in the same page.
-    await page.evaluate(() => fuseToolFixture.view('console'));
+
     await page.route('**/chat/runs/kid-run', (route) => route.fulfill({
       status: 200, contentType: 'application/json',
       body: JSON.stringify({

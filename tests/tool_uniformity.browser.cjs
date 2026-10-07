@@ -1,4 +1,4 @@
-// Console reading mode — UNIFORMITY + CORRECTNESS matrix over every tool-call
+// UNIFORMITY + CORRECTNESS matrix over every tool-call
 // row type, in four presentations: settled/default, user-collapsed,
 // user-expanded, and GROUPED (summary lines like "read 2 files, ran 1 shell
 // command"). Isolated fixture only; never the live Fuse service.
@@ -14,9 +14,9 @@
 // lifecycle strings and values (tests/console_file_tools.browser.cjs,
 // console_meta_tools.browser.cjs, console_shell_lifecycle.browser.cjs,
 // console_subagent_rows.browser.cjs), seeded histories and stale-state rules
-// (tests/console_ui.browser.cjs + tests/console_ui_lib.js), state words in
-// cli/compact and wait/exit precedence (tests/tool_ui.browser.cjs), widget
-// details (tests/tool_widgets.browser.cjs), cli/compact collapse transitions
+// (tests/console_ui.browser.cjs + tests/console_ui_lib.js), wait/exit
+// precedence and the tool-state gallery (tests/tool_ui.browser.cjs), widget
+// details (tests/tool_widgets.browser.cjs), collapse transitions
 // (tests/collapse_states.browser.cjs). The skill row's one-line
 // condensation is pinned by tests/tool_edge_cases.browser.cjs; only its
 // semantics are pinned below.
@@ -178,7 +178,7 @@ const COLLECT = () => {
     await page.locator('[data-sync-label]').filter({ hasText: 'Live sync' }).waitFor({ state: 'attached' });
     await page.waitForFunction(() => Boolean(window.fuseToolFixture));
     await page.addStyleTag({ content: '* { animation: none !important; transition: none !important; }' });
-    await page.evaluate(() => { fuseToolFixture.view('console'); fuseToolFixture.thinking(true); });
+    await page.evaluate(() => { fuseToolFixture.thinking(true); });
     const raf = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
     const rows = () => page.evaluate(COLLECT);
 
@@ -289,8 +289,8 @@ const COLLECT = () => {
       }
     }
     // Disclosure anatomy and chevron direction are one contract for all rows:
-    // Console call rows uniformly hide the caret and rotate nothing (the
-    // chevron rules in app.css:4713 target the other views' carets).
+    // call rows uniformly hide the caret and rotate nothing (the
+    // chevron rules in app.css:4713 target other rows' carets).
     ok(callRows.every((r) => r.caretShown === false), `a Console call row grew a visible chevron: ${callRows.filter((r) => r.caretShown).map((r) => r.tool).join(', ')}`);
     // Hidden content always comes with a disclosure; rows without one show all they have.
     for (const t of TOOLS) {

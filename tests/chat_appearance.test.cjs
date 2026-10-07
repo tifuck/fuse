@@ -3,6 +3,8 @@ const assert = require('node:assert/strict');
 const { readFileSync } = require('node:fs');
 const { resolve } = require('node:path');
 const vm = require('node:vm');
+const { readdirSync } = require('node:fs');
+const themeStyles = readdirSync(resolve(__dirname, '../static/themes/console/styles')).filter(name => name.endsWith('.css')).map(name => readFileSync(resolve(__dirname, '../static/themes/console/styles', name), 'utf8')).join('\n');
 
 const source = readFileSync(resolve(__dirname, '../static/chat-appearance.js'), 'utf8');
 
@@ -10,12 +12,8 @@ function boot(saved = {}, blocked = false) {
   const storage = new Map(Object.entries(saved));
   const meta = {};
   const html = { dataset: {}, style: { setProperty() {}, removeProperty() {} }, removeAttribute(name) { delete this.dataset[name.replace(/^data-/, '').replace(/-([a-z])/g, (_, c) => c.toUpperCase())]; } };
-  const buttons = ['cli', 'compact'].map(view => ({
-    dataset: { view }, setAttribute(name, value) { this[name] = value; },
-  }));
-  const root = { dataset: { view: saved['fuse.chat.view.v2'] || 'cli' }, querySelectorAll: () => buttons };
+  const root = { dataset: { view: 'console' } };
   let ready;
-  let observe;
   const world = {
     document: {
       documentElement: html,
@@ -27,7 +25,6 @@ function boot(saved = {}, blocked = false) {
         return null;
       },
       querySelectorAll: (selector) => {
-        if (selector === '[data-view-menu] [data-view]') return buttons;
         return [];
       },
       addEventListener: (name, fn) => { ready = fn; },
@@ -36,29 +33,28 @@ function boot(saved = {}, blocked = false) {
       getItem(key) { if (blocked) throw new Error('Unavailable'); return storage.get(key); },
       setItem(key, value) { if (blocked) throw new Error('Unavailable'); storage.set(key, value); },
     },
-    MutationObserver: class { constructor(fn) { observe = fn; } observe() {} },
+    MutationObserver: class { constructor(fn) {} observe() {} },
   };
   world.window = world;
   vm.runInNewContext(source, world);
   return {
-    html, root, meta, storage, buttons, ready, appearance: world.FuseChatAppearance,
+    html, root, meta, storage, ready, appearance: world.FuseChatAppearance,
     change(theme) { world.FuseChatAppearance.setTheme(theme); },
-    view(view) { root.dataset.view = view; observe(); },
   };
 }
 
-test('restores theme and terminal before DOM ready', () => {
-  const ui = boot({ 'fuse.chat.theme.v1': 'paper', 'fuse.chat.view.v2': 'cli' });
-  assert.equal(ui.html.dataset.chatTheme, 'paper');
-  assert.equal(ui.html.dataset.chatTerminal, 'true');
-  assert.equal(ui.meta['meta[name="color-scheme"]'], 'light');
-  assert.equal(ui.meta['meta[name="theme-color"]'], '#ffffff');
-  ui.ready();
-  ui.view('compact');
-  assert.equal(ui.html.dataset.chatTheme, 'paper');
-  assert.equal(ui.meta['meta[name="color-scheme"]'], 'light');
-  assert.equal(ui.buttons[0]['aria-pressed'], 'false');
-  assert.equal(ui.buttons[1]['aria-pressed'], 'true');
+test('restores palette and default layout before DOM ready despite legacy preferences', () => {
+  for (const legacy of ['cli', 'compact', 'console', 'mainframe', 'prism', 'unknown', '']) {
+    const ui = boot({ 'fuse.chat.theme.v1': 'paper', 'fuse.chat.view.v2': legacy });
+    assert.equal(ui.html.dataset.chatTheme, 'paper');
+    assert.equal(ui.html.dataset.chatConsole, 'true');
+    assert.equal(ui.html.dataset.chatView, 'console');
+    assert.equal(ui.meta['meta[name="color-scheme"]'], 'light');
+    assert.equal(ui.meta['meta[name="theme-color"]'], '#ffffff');
+    ui.ready();
+    assert.equal(ui.html.dataset.chatView, 'console');
+    assert.equal(ui.appearance.view, undefined);
+  }
 });
 
 test('composer prefs default on and persist in this browser', () => {
@@ -73,19 +69,17 @@ test('composer prefs default on and persist in this browser', () => {
   assert.equal(ui.appearance.getComposerPrefs().palettes, true);
 });
 
-test('theme persistence is independent from reading mode', () => {
+test('theme choice persists with its meta colors', () => {
   const ui = boot();
   ui.ready();
   ui.change('midnight');
   assert.equal(ui.storage.get('fuse.chat.theme.v1'), 'midnight');
-  ui.view('cli');
   assert.equal(ui.meta['meta[name="theme-color"]'], '#0a1018');
-  ui.view('compact');
   assert.equal(ui.html.dataset.chatTheme, 'midnight');
   assert.equal(ui.meta['meta[name="theme-color"]'], '#0a1018');
 });
 
-test('void and paper palettes apply in terminal', () => {
+test('void and paper palettes apply to the default layout', () => {
   const ui = boot({ 'fuse.chat.theme.v1': 'void', 'fuse.chat.view.v2': 'cli' });
   assert.equal(ui.html.dataset.chatTheme, 'void');
   assert.equal(ui.meta['meta[name="color-scheme"]'], 'dark');
@@ -120,10 +114,15 @@ test('backdrop kind persists independently of theme', () => {
   assert.equal(ui.html.dataset.chatBackdrop, 'orbit');
 });
 
-test('a saved view that was renamed opens its successor', () => {
-  const ui = boot({ 'fuse.chat.view.v2': 'prism', 'fuse.chat.fonts.v1': JSON.stringify({ prism: 'serif' }) });
-  assert.equal(ui.storage.get('fuse.chat.view.v2'), 'mainframe');
-  assert.equal(ui.appearance.view, 'mainframe');
+test('only the saved console font is restored; legacy view fonts cannot change it', () => {
+  const ui = boot({ 'fuse.chat.view.v2': 'prism', 'fuse.chat.fonts.v1': JSON.stringify({ cli: 'geist', compact: 'fraunces', prism: 'serif', mainframe: 'newsreader', console: 'jetbrains' }) });
+  assert.equal(ui.html.dataset.chatFont, 'jetbrains');
+  ui.appearance.setFont('fraunces');
+  assert.equal(ui.html.dataset.chatFont, 'fraunces');
+  assert.deepEqual(JSON.parse(ui.storage.get('fuse.chat.fonts.v1')), { console: 'fraunces' });
+  ui.appearance.setFont(null);
+  assert.equal(ui.html.dataset.chatFont, 'redhat');
+  assert.equal(boot({ 'fuse.chat.fonts.v1': JSON.stringify({ cli: 'geist', prism: 'serif' }) }).html.dataset.chatFont, 'redhat');
 });
 
 test('retired backdrops migrate to their replacement', () => {
@@ -155,6 +154,7 @@ test('tool rows collapse to one line; thinking unwraps in place', () => {
   const css = [
     readFileSync(resolve(__dirname, '../static/app.css'), 'utf8'),
     readFileSync(resolve(__dirname, '../static/chat-design.css'), 'utf8'),
+    themeStyles,
   ].join('\n');
   assert.match(css, /\.chat-step-label:not\(\.chat-think-preview\)[\s\S]*?text-overflow:\s*ellipsis/);
   assert.match(css, /\.chat-step-label:not\(\.chat-think-preview\)[\s\S]*?white-space:\s*nowrap/);
@@ -169,8 +169,8 @@ test('tool rows collapse to one line; thinking unwraps in place', () => {
   assert.match(css, /html\[data-chat-theme="void"\]/);
   assert.match(css, /html\[data-chat-theme="paper"\] \{[\s\S]*?--ink:\s*#ffffff/);
   assert.doesNotMatch(css, /Terminal is an appearance invariant/);
-  const js = readFileSync(resolve(__dirname, '../static/chat.js'), 'utf8');
-  assert.match(js, /function thinkOpenAt\(/);
-  assert.match(js, /function thinkStepHtml\([\s\S]*?<\/div><\/li>/);
-  assert.doesNotMatch(js, /function thinkStepHtml\([\s\S]*?chat-think-body/);
+  const js = require('./chat_source.cjs');
+  assert.match(js, /function syncThinkingMode\(/);
+  assert.match(js, /windowEl\.inert = mode === "collapsed"/);
+  assert.match(js, /mode === "collapsed" \? -1 : 0/);
 });

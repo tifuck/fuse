@@ -1,4 +1,4 @@
-// Shell-family lifecycles in Console and Mainframe, driven the way the
+// Shell-family lifecycles in the transcript, driven the way the
 // server drives them: a running mount, then tool events, progress snapshots
 // and wake envelopes, asserted after each step.
 //
@@ -39,7 +39,6 @@ function read(page) {
     const dock = document.querySelector('[data-live-dock]');
     const verb = document.querySelector('[data-live-dock] .chat-status-verb');
     return {
-      view: document.querySelector('.chat')?.dataset.view || '',
       rows, turn,
       dock: Boolean(dock && !dock.hidden && dock.getAttribute('aria-hidden') !== 'true'),
       verb: verb ? verb.textContent.trim() : '',
@@ -64,19 +63,19 @@ const seen = (snap) => snap.rows.map((r) => r.text).join('\n');
     await page.waitForFunction(() => window.fuseToolFixture);
 
     // —— A background command, a Wait opened on it, then the command ends ——
-    for (const view of ['console', 'mainframe']) {
-      await page.evaluate((view) => fuseToolFixture.view(view), view);
+    {
+
       const cmd = shell('bg-wait', 'npm run build', { description: 'Build the bundle', output: 'compiling\n' });
       await page.evaluate((cmd) => fuseToolFixture.mountThread(
         [{ role: 'user', content: 'Build it.' }, { role: 'assistant', model: 'qa/model', elapsedMs: 20000, content: '', tools: [cmd], segments: [{ type: 'tool', id: cmd.id }] }],
         { live: true, phase: 'model' }), cmd);
       let snap = await read(page);
       const launched = row(snap, 'bg-wait');
-      assert.ok(launched, `${view}: no row for the background launch: ${JSON.stringify(snap.rows)}`);
-      assert.equal(launched.state, 'running', `${view}: launch should pulse while the process runs, saw ${launched.cls}`);
-      assert.match(launched.text, /Running in the background/, `${view}: launch text: ${launched.text}`);
-      if (view === 'console') assert.match(launched.text, /\(timeout: 2m\)/, `${view}: a running command names its deadline: ${launched.text}`);
-      assert.equal(snap.dock, true, `${view}: the live dock is up during the turn`);
+      assert.ok(launched, `no row for the background launch: ${JSON.stringify(snap.rows)}`);
+      assert.equal(launched.state, 'running', `launch should pulse while the process runs, saw ${launched.cls}`);
+      assert.match(launched.text, /Running in the background/, `launch text: ${launched.text}`);
+      assert.match(launched.text, /\(timeout: 2m\)/, `a running command names its deadline: ${launched.text}`);
+      assert.equal(snap.dock, true, `the live dock is up during the turn`);
 
       await page.evaluate(() => fuseToolFixture.toolEvent({
         event: 'tool', id: 'wait-1', name: 'get_command_output', status: 'running', background: true,
@@ -84,27 +83,26 @@ const seen = (snap) => snap.rows.map((r) => r.text).join('\n');
       }));
       snap = await read(page);
       const waiting = row(snap, 'wait-1');
-      assert.ok(waiting, `${view}: the Wait never appeared: ${JSON.stringify(snap.rows.map((r) => r.head))}`);
-      assert.equal(waiting.state, 'running', `${view}: an open Wait is a running call, saw ${waiting.cls}`);
-      assert.match(waiting.head, /Wait.*Build the bundle/, `${view}: Wait header: ${waiting.head}`);
-      // Console names the wait; Mainframe keeps the shared views' "Running…".
-      assert.match(waiting.text, view === 'console' ? /Waiting for output…/ : /Running…/, `${view}: open Wait text: ${waiting.text}`);
+      assert.ok(waiting, `the Wait never appeared: ${JSON.stringify(snap.rows.map((r) => r.head))}`);
+      assert.equal(waiting.state, 'running', `an open Wait is a running call, saw ${waiting.cls}`);
+      assert.match(waiting.head, /Wait.*Build the bundle/, `Wait header: ${waiting.head}`);
+      assert.match(waiting.text, /Waiting for output…/, `open Wait text: ${waiting.text}`);
       // A Wait that arrives without its own timeout falls back to the deadline of
       // the command it waits on, which is the only deadline the row can name.
-      if (view === 'console') assert.match(waiting.text, /\(timeout: 2m\)/, `${view}: an open Wait names how long it waits: ${waiting.text}`);
-      assert.doesNotMatch(seen(snap), /Still running/, `${view}: "Still running" belongs to a Wait that already returned`);
-      assert.equal(snap.rows.filter((r) => r.exec === 'bg-wait').length, 2, `${view}: the launch and its Wait are two rows`);
+      assert.match(waiting.text, /\(timeout: 2m\)/, `an open Wait names how long it waits: ${waiting.text}`);
+      assert.doesNotMatch(seen(snap), /Still running/, `"Still running" belongs to a Wait that already returned`);
+      assert.equal(snap.rows.filter((r) => r.exec === 'bg-wait').length, 2, `the launch and its Wait are two rows`);
 
-      // Output grows while the Wait is open. Console's running background row
-      // says only "Running in the background"; Mainframe prints the output.
+      // Output grows while the Wait is open; the running background row
+      // says only "Running in the background".
       await page.evaluate(() => fuseToolFixture.toolEvent({
         event: 'tool', id: 'bg-wait', name: 'run_terminal_command', status: 'progress', output: 'compiling\nmodules 400\nmodules 800\n',
       }));
       snap = await read(page);
-      assert.match(row(snap, 'bg-wait').text, /Running in the background/, `${view}: growing output unsettled the launch: ${row(snap, 'bg-wait').text}`);
-      assert[view === 'console' ? 'doesNotMatch' : 'match'](row(snap, 'bg-wait').text, /modules 800/, `${view}: running background output: ${row(snap, 'bg-wait').text}`);
-      assert.match(row(snap, 'wait-1').text, view === 'console' ? /Waiting for output…/ : /Running…/, `${view}: the open Wait changed while output grew: ${row(snap, 'wait-1').text}`);
-      assert.doesNotMatch(row(snap, 'wait-1').text, /modules 800/, `${view}: command output landed in the Wait row`);
+      assert.match(row(snap, 'bg-wait').text, /Running in the background/, `growing output unsettled the launch: ${row(snap, 'bg-wait').text}`);
+      assert.doesNotMatch(row(snap, 'bg-wait').text, /modules 800/, `running background output: ${row(snap, 'bg-wait').text}`);
+      assert.match(row(snap, 'wait-1').text, /Waiting for output…/, `the open Wait changed while output grew: ${row(snap, 'wait-1').text}`);
+      assert.doesNotMatch(row(snap, 'wait-1').text, /modules 800/, `command output landed in the Wait row`);
 
       // The command finishes while the Wait is open. The Wait returns with it.
       await page.evaluate(() => {
@@ -120,33 +118,33 @@ const seen = (snap) => snap.rows.map((r) => r.text).join('\n');
       snap = await read(page);
       const done = row(snap, 'bg-wait');
       const returned = row(snap, 'wait-1');
-      assert.equal(done.state, 'done', `${view}: the launch still pulses after the process ended: ${done.cls} | ${done.text}`);
-      assert.match(done.text, /Ran in the background|Background command completed \(exit code 0\)/, `${view}: ended launch: ${done.text}`);
-      assert.doesNotMatch(done.text, /Running in the background/, `${view}: the launch still says it is running: ${done.text}`);
-      assert.equal(done.clocks.filter((c) => c.trim()).length, 0, `${view}: a finished background launch keeps ticking: ${done.clocks}`);
-      assert.equal(returned.state, 'done', `${view}: the Wait stays running after it returned: ${returned.cls}`);
-      assert.match(returned.text, /built ok/, `${view}: the Wait dropped the output it returned with: ${returned.text}`);
-      if (view === 'console') assert.match(returned.text, /· 9s/, `${view}: the Wait's own duration never landed: ${returned.text}`);
-      assert.doesNotMatch(seen(snap), /Still running|Waiting for output|Running…/, `${view}: a running claim survived the command ending: ${seen(snap)}`);
+      assert.equal(done.state, 'done', `the launch still pulses after the process ended: ${done.cls} | ${done.text}`);
+      assert.match(done.text, /Ran in the background|Background command completed \(exit code 0\)/, `ended launch: ${done.text}`);
+      assert.doesNotMatch(done.text, /Running in the background/, `the launch still says it is running: ${done.text}`);
+      assert.equal(done.clocks.filter((c) => c.trim()).length, 0, `a finished background launch keeps ticking: ${done.clocks}`);
+      assert.equal(returned.state, 'done', `the Wait stays running after it returned: ${returned.cls}`);
+      assert.match(returned.text, /built ok/, `the Wait dropped the output it returned with: ${returned.text}`);
+      assert.match(returned.text, /· 9s/, `the Wait's own duration never landed: ${returned.text}`);
+      assert.doesNotMatch(seen(snap), /Still running|Waiting for output|Running…/, `a running claim survived the command ending: ${seen(snap)}`);
 
       // The turn ends. Nothing keeps saying it runs, and a reload paints the same rows.
       await page.evaluate(() => fuseToolFixture.run({ status: 'completed' }));
       await page.waitForFunction(() => !document.body.classList.contains('is-streaming'));
       snap = await read(page);
-      assert.equal(snap.dock, false, `${view}: the live dock stays up after the turn: ${snap.verb}`);
-      assert.equal(snap.spins, 0, `${view}: a spinner survives the turn`);
-      assert.doesNotMatch(seen(snap), /\bRunning\b|Waiting for output/, `${view}: "Running" after the turn: ${seen(snap)}`);
+      assert.equal(snap.dock, false, `the live dock stays up after the turn: ${snap.verb}`);
+      assert.equal(snap.spins, 0, `a spinner survives the turn`);
+      assert.doesNotMatch(seen(snap), /\bRunning\b|Waiting for output/, `"Running" after the turn: ${seen(snap)}`);
       const liveText = seen(snap);
       await page.evaluate(() => fuseToolFixture.mountThread(fuseToolFixture.snapshot(), { live: false }));
       snap = await read(page);
-      assert.equal(seen(snap), liveText, `${view}: reloading the settled thread changed the rows`);
-      assert.ok(snap.overflow <= 0, `${view}: horizontal overflow ${snap.overflow}px`);
-      console.log(`PASS background → Wait → completes, in ${view}`);
+      assert.equal(seen(snap), liveText, `reloading the settled thread changed the rows`);
+      assert.ok(snap.overflow <= 0, `horizontal overflow ${snap.overflow}px`);
+      console.log('PASS background → Wait → completes');
     }
 
     // —— The same Wait, but the command fails before it returns ——
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.evaluate(() => fuseToolFixture.view('console'));
+
     {
       const cmd = shell('bg-fail', 'npm test', { description: 'Run the suite' });
       const wait = { id: 'wait-2', name: 'get_command_output', status: 'running', state: 'running', execution_status: 'running', background: true, command_id: 'bg-fail', child_id: 'bg-fail', command: 'npm test', elapsed_ms: 6000, output: '', error: '', results: [], ...ROOT };
@@ -173,7 +171,7 @@ const seen = (snap) => snap.rows.map((r) => r.text).join('\n');
     }
 
     // —— A long command keeps its deadline whole: the note wraps as a unit ——
-    await page.evaluate(() => fuseToolFixture.view('console'));
+
     {
       const long = 'docker run --rm -v /srv/qa:/workspace -w /workspace ghcr.io/qa/builder:latest cargo build --release --all-features --target-dir /workspace/target';
       const cmd = shell('long-1', long, { background: false, description: 'Build the bundle' });
@@ -198,15 +196,15 @@ const seen = (snap) => snap.rows.map((r) => r.text).join('\n');
 
     // —— A kill mid-output keeps what was already printed, and stops the clock ——
     await page.setViewportSize({ width: 1440, height: 1000 });
-    for (const view of ['console', 'mainframe']) {
-      await page.evaluate((view) => fuseToolFixture.view(view), view);
+    {
+
       const out = 'listening on :8080\nWARN cache miss\nready\n';
       const cmd = shell('bg-kill', 'npm start', { output: out, elapsed_ms: 15000 });
       await page.evaluate((cmd) => fuseToolFixture.mountThread(
         [{ role: 'user', content: 'Start it.' }, { role: 'assistant', elapsedMs: 8000, content: '', tools: [cmd], segments: [{ type: 'tool', id: cmd.id }] }],
         { live: true, phase: 'model' }), cmd);
       let snap = await read(page);
-      assert.equal(row(snap, 'bg-kill').state, 'running', `${view}: not pulsing before the kill: ${row(snap, 'bg-kill').text}`);
+      assert.equal(row(snap, 'bg-kill').state, 'running', `not pulsing before the kill: ${row(snap, 'bg-kill').text}`);
       await page.evaluate(() => {
         fuseToolFixture.toolEvent({ event: 'tool', id: 'kill-1', name: 'kill_command', status: 'done', command_id: 'bg-kill', child_id: 'bg-kill', output: '' });
         fuseToolFixture.toolEvent({ event: 'tool', id: 'bg-kill', name: 'run_terminal_command', status: 'interrupted', state: 'interrupted', execution_status: 'interrupted', error: 'cancelled', exit_code: null, output: 'listening on :8080\nWARN cache miss\nready\n' });
@@ -214,20 +212,20 @@ const seen = (snap) => snap.rows.map((r) => r.text).join('\n');
       snap = await read(page);
       const killed = row(snap, 'bg-kill');
       const kill = row(snap, 'kill-1');
-      assert.equal(killed.state, 'interrupted', `${view}: a killed command keeps a running dot: ${killed.cls} | ${killed.text}`);
-      assert.match(killed.text, /Interrupted( · stopped)?/, `${view}: kill result: ${killed.text}`);
-      assert.match(killed.text, /listening on :8080/, `${view}: the kill dropped output already produced: ${killed.text}`);
-      assert.match(killed.text, /ready/, `${view}: the kill truncated the kept output: ${killed.text}`);
-      assert.doesNotMatch(killed.text, /Running in the background/, `${view}: the killed row still says it is running`);
-      assert.equal(killed.clocks.filter((c) => c.trim()).length, 0, `${view}: the killed row's clock still ticks: ${killed.clocks}`);
-      assert.ok(kill, `${view}: the Stop Task row never appeared`);
-      assert.match(kill.head, /Stop Task/, `${view}: kill header: ${kill.head}`);
-      assert.equal(kill.state, 'done', `${view}: the kill call itself looks interrupted: ${kill.cls}`);
-      console.log(`PASS kill mid-output keeps the output, in ${view}`);
+      assert.equal(killed.state, 'interrupted', `a killed command keeps a running dot: ${killed.cls} | ${killed.text}`);
+      assert.match(killed.text, /Interrupted( · stopped)?/, `kill result: ${killed.text}`);
+      assert.match(killed.text, /listening on :8080/, `the kill dropped output already produced: ${killed.text}`);
+      assert.match(killed.text, /ready/, `the kill truncated the kept output: ${killed.text}`);
+      assert.doesNotMatch(killed.text, /Running in the background/, `the killed row still says it is running`);
+      assert.equal(killed.clocks.filter((c) => c.trim()).length, 0, `the killed row's clock still ticks: ${killed.clocks}`);
+      assert.ok(kill, `the Stop Task row never appeared`);
+      assert.match(kill.head, /Stop Task/, `kill header: ${kill.head}`);
+      assert.equal(kill.state, 'done', `the kill call itself looks interrupted: ${kill.cls}`);
+      console.log('PASS kill mid-output keeps the output');
     }
 
     // —— Two background commands finish out of order, one of them after the turn ——
-    await page.evaluate(() => fuseToolFixture.view('console'));
+
     {
       const first = shell('ord-1', 'npm run lint', { description: 'Lint', elapsed_ms: 30000 });
       const second = shell('ord-2', 'npm test', { description: 'Test', elapsed_ms: 5000 });
@@ -264,7 +262,7 @@ const seen = (snap) => snap.rows.map((r) => r.text).join('\n');
     }
 
     // —— A monitor: events accumulate, then the watch ends three ways ——
-    await page.evaluate(() => fuseToolFixture.view('console'));
+
     {
       const mon = shell('mon-1', 'tail -F /var/log/app.log', { name: 'monitor', description: 'errors in worker.log', event_count: 0, timeout_ms: 300000, pattern: 'ERROR' });
       await page.evaluate((mon) => fuseToolFixture.mountThread(

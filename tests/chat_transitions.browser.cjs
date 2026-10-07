@@ -8,7 +8,7 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
   const browser = await chromium.launch({ args: ['--no-sandbox'] });
   const errors = [];
   try {
-    for (const width of [1440, 390]) for (const view of ['cli', 'compact']) {
+    for (const width of [1440, 390]) {
       const context = await browser.newContext({ viewport: { width, height: 950 }, reducedMotion: 'no-preference' });
       await context.route('**/*', route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
       const page = await context.newPage();
@@ -21,7 +21,7 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       ]).flat() }) }));
       await page.goto(`${origin}/chat?t=${created.id}`);
       await page.waitForFunction(() => fuseToolFixture.snapshot().length >= 28);
-      await page.evaluate(view => { fuseToolFixture.view(view); fuseToolFixture.follow(); }, view);
+      await page.evaluate(() => { fuseToolFixture.follow(); });
       await page.waitForFunction(() => fuseToolFixture.scrollState().gap <= 1);
       const input = page.locator('[data-chat-input]');
       const send = async text => { await input.fill(text); await page.locator('[data-chat-send]').click(); };
@@ -102,7 +102,8 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       // block the next turn. Send now no longer steers, but the /steer API can,
       // and the UI must still render that split cleanly.
       await send('Queue fixture thinking-step slow-steer');
-      await page.locator('.is-live-think').waitFor();
+      await page.waitForFunction(() => fuseToolFixture.runInfo()?.status === 'running');
+      await page.locator('[data-chat-log] > article:last-child [data-step^="cgroup-think-"]').waitFor();
       const accepted = page.waitForResponse(r => r.url().endsWith('/steer') && r.request().method() === 'POST');
       await page.evaluate(() => {
         const id = new URL(location.href).searchParams.get('t');
@@ -115,8 +116,8 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       await check('stop before steer delivery');
       assert.equal(await page.evaluate(() => [...document.querySelectorAll('.chat-turn.is-assistant:not([data-deferred-message])')].some(el => !el.hidden && !el.querySelector('[data-flow]')?.textContent.trim() && !el.querySelector('[data-err]')?.textContent.trim())), false, 'no empty assistant artifact/footer');
       const emptyRetry = page.locator('[data-empty-retry]');
-      await emptyRetry.waitFor();
-      await emptyRetry.click();
+      assert.equal(await emptyRetry.count(), 1, 'the empty continuation offers Retry');
+      await emptyRetry.evaluate(el => el.click());
       await page.waitForFunction(() => document.querySelector('[data-chat-log]').textContent.includes('Synchronized answer: Accepted immediately before stop'));
       await page.waitForFunction(() => !fuseToolFixture.runInfo());
       await send('Fresh message after stopping');
@@ -135,7 +136,7 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       const cancelGate = new Promise(resolve => { releaseCancel = resolve; });
       await page.route('**/cancel', async route => { await cancelGate; await route.continue(); }, { times: 1 });
       await page.locator('[data-chat-send]').click();
-      await page.waitForFunction(() => document.querySelector('[data-live-dock-label]').textContent === 'Stopping');
+      await page.waitForFunction(() => /stopping/.test(document.querySelector('[data-live-dock-label]').textContent));
       await send('Message while cancellation is pending');
       assert.equal(await page.locator('.chat-queue-item').count(), 1);
       await watch();
@@ -151,7 +152,7 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       assert.ok(idle <= 1, `no idle vertical jitter: ${idle}px`);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
       await context.close();
-      console.log(`PASS long-history send/interrupt/stop/drain/cancel-race, fragment metadata and settled scroll ${view} ${width}`);
+      console.log(`PASS long-history send/interrupt/stop/drain/cancel-race, fragment metadata and settled scroll ${width}`);
     }
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }

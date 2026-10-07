@@ -65,7 +65,7 @@ const NOW = '2026-10-05T00:00:00Z';
     await page.locator('.chat-pop').waitFor();
   };
   try {
-    // Desktop: the collapse toggle, its aria state, and the per-view pref.
+    // Desktop: the collapse toggle, its aria state, and the saved pref.
     {
       const page = await makePage(1440);
       assert.equal(await page.locator('[data-history-list]').isVisible(), false, 'harness views start with the sidebar collapsed');
@@ -73,19 +73,19 @@ const NOW = '2026-10-05T00:00:00Z';
       await page.locator('.chat-bar [data-history-toggle]').click();
       await page.locator('[data-history-list]').waitFor();
       assert.deepEqual(await toggles(page), ['true', 'true', 'true'], 'every toggle reflects the open sidebar');
-      assert.equal((await page.evaluate(() => JSON.parse(localStorage.getItem('fuse.chat.historyCollapsed.v1') || '{}'))).cli, false, 'the open state is remembered for this view');
+      assert.equal((await page.evaluate(() => JSON.parse(localStorage.getItem('fuse.chat.historyCollapsed.v1') || '{}'))).console, false, 'the open state is remembered');
       assert.equal(await noOverflow(page), true, 'an open sidebar never overflows the window');
       await page.locator('.chat-history-head [data-history-toggle]').click();
       await page.locator('[data-history-list]').waitFor({ state: 'hidden' });
       assert.deepEqual(await toggles(page), ['false', 'false', 'false'], 'the head toggle collapses the sidebar');
-      assert.equal((await page.evaluate(() => JSON.parse(localStorage.getItem('fuse.chat.historyCollapsed.v1') || '{}'))).cli, true, 'the collapsed state is remembered too');
+      assert.equal((await page.evaluate(() => JSON.parse(localStorage.getItem('fuse.chat.historyCollapsed.v1') || '{}'))).console, true, 'the collapsed state is remembered too');
       await page.locator('.chat-bar [data-history-toggle]').click();
       await page.locator('[data-history-list]').waitFor();
       await page.reload();
       await live(page);
       await page.locator('[data-history-list]').waitFor();
       assert.deepEqual(await toggles(page), ['true', 'true', 'true'], 'the open sidebar survives a reload');
-      console.log('PASS desktop sidebar toggle, aria-expanded, and per-view persistence');
+      console.log('PASS desktop sidebar toggle, aria-expanded, and collapsed-state persistence');
       await page.context().close();
     }
 
@@ -292,7 +292,7 @@ const NOW = '2026-10-05T00:00:00Z';
       const lower = boxA.y > boxB.y ? a : b;
       const upper = boxA.y > boxB.y ? b : a;
       await rowMenu(page, lower.id);
-      assert.deepEqual(await page.locator('.chat-pop button').allTextContents(), ['Rename', 'Fork', 'Archive', 'Move to project', 'Delete'], 'the chat menu labels match the row state');
+      assert.deepEqual(await page.locator('.chat-pop button').allTextContents(), ['Pin to top', 'Rename', 'Fork', 'Archive', 'Move to project', 'Delete'], 'the chat menu labels match the row state');
       assert.equal(await page.locator('.chat-history-item.is-menu').count(), 1, 'the open menu flags its row');
       assert.equal(await page.locator(`[data-thread="${lower.id}"].is-menu`).count(), 1);
       // The flag alone must hold the row's ⋯ button once the pointer leaves

@@ -91,66 +91,64 @@ async def main(screenshots=False):
         await page.evaluate("localStorage.setItem('fuse.chat.theme.v1', 'fuse')")
         for width, height in ((1440, 900), (390, 844)):
             await page.set_viewport_size({"width": width, "height": height})
-            for view in ("cli", "console", "compact", "mainframe"):
-                await page.evaluate("view => localStorage.setItem('fuse.chat.view.v2', view)", view)
-                await page.goto(f"{BASE}/chat?t={tid}")
-                await page.wait_for_selector(".chat-recap")
-                recap = page.locator(".chat-recap")
-                assert await recap.count() == 1
-                assert await recap.inner_text() == "Recap: " + TEXT
-                assert await recap.locator("img").count() == 0
-                assert await recap.locator(".chat-recap-icon svg").count() == 1
-                assert await recap.locator(".chat-recap-icon").get_attribute("aria-hidden") == "true"
-                assert await recap.locator(".chat-recap-icon").evaluate("e => e.getBoundingClientRect().width > 0 && e.getBoundingClientRect().height > 0")
-                for theme in ("fuse", "paper"):
-                    await page.evaluate("theme => window.FuseChatAppearance.setTheme(theme)", theme)
-                    style = await recap.locator(".chat-recap-text").evaluate("""e => {
-                        const style = getComputedStyle(e);
-                        const canvas = document.createElement('canvas');
-                        canvas.width = canvas.height = 1;
-                        const ctx = canvas.getContext('2d');
-                        ctx.fillStyle = style.color;
-                        ctx.fillRect(0, 0, 1, 1);
-                        return { italic: style.fontStyle, weight: style.fontWeight,
-                                 rgb: [...ctx.getImageData(0, 0, 1, 1).data].slice(0, 3) };
-                    }""")
-                    assert style["italic"] == "italic", (view, theme, style)
-                    assert style["weight"] == "400", (view, theme, style)
-                    assert max(style["rgb"]) < 165 and min(style["rgb"]) > 60, (view, theme, style)
-                    assert max(style["rgb"]) - min(style["rgb"]) < 20, (view, theme, style)
-                await page.evaluate("window.FuseChatAppearance.setTheme('fuse')")
-                assert await page.locator("[data-chat-log] > .chat-recap").count() == 0
-                assert await recap.evaluate("e => e.parentElement.matches('article.is-assistant')")
-                assert await recap.evaluate("e => e.scrollWidth <= e.clientWidth + 1")
-                if screenshots:
-                    await page.screenshot(path=f"/tmp/opencode/recap-{view}-{width}.png")
-                # Appearance transitions and repainting must not duplicate it.
-                await page.evaluate("document.querySelector('[data-chat-input]').focus()")
-                assert await recap.count() == 1
-                print(f"recap render: {view} {width}x{height} passed")
-                # New-chat clicks hide it synchronously, before async saves.
-                hidden = await page.evaluate("""() => {
-                    document.querySelector('[data-chat-new]').click();
-                    return document.querySelectorAll('.chat-recap').length === 0;
+            await page.goto(f"{BASE}/chat?t={tid}")
+            await page.wait_for_selector(".chat-recap")
+            recap = page.locator(".chat-recap")
+            assert await recap.count() == 1
+            assert await recap.inner_text() == "Recap: " + TEXT
+            assert await recap.locator("img").count() == 0
+            assert await recap.locator(".chat-recap-icon svg").count() == 1
+            assert await recap.locator(".chat-recap-icon").get_attribute("aria-hidden") == "true"
+            assert await recap.locator(".chat-recap-icon").evaluate("e => e.getBoundingClientRect().width > 0 && e.getBoundingClientRect().height > 0")
+            for theme in ("fuse", "paper"):
+                await page.evaluate("theme => window.FuseChatAppearance.setTheme(theme)", theme)
+                style = await recap.locator(".chat-recap-text").evaluate("""e => {
+                    const style = getComputedStyle(e);
+                    const canvas = document.createElement('canvas');
+                    canvas.width = canvas.height = 1;
+                    const ctx = canvas.getContext('2d');
+                    ctx.fillStyle = style.color;
+                    ctx.fillRect(0, 0, 1, 1);
+                    return { italic: style.fontStyle, weight: style.fontWeight,
+                             rgb: [...ctx.getImageData(0, 0, 1, 1).data].slice(0, 3) };
                 }""")
-                assert hidden
-                await page.goto(f"{BASE}/chat?t={tid}")
-                await page.wait_for_selector(".chat-recap")
-                await page.wait_for_selector(".chat-sync[data-sync-state='live']", state="attached")
-                send_started.clear()
-                release_send.clear()
-                await page.fill("[data-chat-input]", "Please continue")
-                hidden = await page.evaluate("""() => {
-                    document.querySelector('[data-chat-form]').requestSubmit();
-                    return document.querySelectorAll('.chat-recap').length === 0;
-                }""")
-                assert hidden  # No animation frame or HTTP response required.
-                await asyncio.wait_for(send_started.wait(), 10)
-                assert await page.locator(".chat-recap").count() == 0
-                release_send.set()
-                await page.wait_for_selector(".chat-pending-send", state="detached")
-                assert await page.locator(".chat-recap").count() == 0
-                print(f"instant dismissal: {view} {width}x{height} passed")
+                assert style["italic"] == "italic", (theme, style)
+                assert style["weight"] == "400", (theme, style)
+                assert max(style["rgb"]) < 165 and min(style["rgb"]) > 60, (theme, style)
+                assert max(style["rgb"]) - min(style["rgb"]) < 20, (theme, style)
+            await page.evaluate("window.FuseChatAppearance.setTheme('fuse')")
+            assert await page.locator("[data-chat-log] > .chat-recap").count() == 0
+            assert await recap.evaluate("e => e.parentElement.matches('article.is-assistant')")
+            assert await recap.evaluate("e => e.scrollWidth <= e.clientWidth + 1")
+            if screenshots:
+                await page.screenshot(path=f"/tmp/opencode/recap-{width}.png")
+            # Appearance transitions and repainting must not duplicate it.
+            await page.evaluate("document.querySelector('[data-chat-input]').focus()")
+            assert await recap.count() == 1
+            print(f"recap render: {width}x{height} passed")
+            # New-chat clicks hide it synchronously, before async saves.
+            hidden = await page.evaluate("""() => {
+                document.querySelector('[data-chat-new]').click();
+                return document.querySelectorAll('.chat-recap').length === 0;
+            }""")
+            assert hidden
+            await page.goto(f"{BASE}/chat?t={tid}")
+            await page.wait_for_selector(".chat-recap")
+            await page.wait_for_selector(".chat-sync[data-sync-state='live']", state="attached")
+            send_started.clear()
+            release_send.clear()
+            await page.fill("[data-chat-input]", "Please continue")
+            hidden = await page.evaluate("""() => {
+                document.querySelector('[data-chat-form]').requestSubmit();
+                return document.querySelectorAll('.chat-recap').length === 0;
+            }""")
+            assert hidden  # No animation frame or HTTP response required.
+            await asyncio.wait_for(send_started.wait(), 10)
+            assert await page.locator(".chat-recap").count() == 0
+            release_send.set()
+            await page.wait_for_selector(".chat-pending-send", state="detached")
+            assert await page.locator(".chat-recap").count() == 0
+            print(f"instant dismissal: {width}x{height} passed")
         await page.evaluate("document.querySelector('[data-recaps-toggle]').click()")
         await page.wait_for_function("() => !document.querySelector('[data-recaps-toggle]').disabled")
         assert preference_writes and isinstance(preference_writes[-1]["recaps"], bool)

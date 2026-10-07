@@ -7,21 +7,20 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
 (async () => {
   const browser = await chromium.launch({ args: ['--no-sandbox'] });
   try {
-    for (const view of ['cli', 'compact', 'console', 'mainframe']) {
+    {
       const page = await browser.newPage();
       const errors = [];
       page.on('pageerror', error => errors.push(error.message));
       await page.route('**/*', route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
       await page.goto(origin);
       await page.waitForFunction(() => window.fuseToolFixture);
-      await page.evaluate(view => {
-        fuseToolFixture.view(view);
+      await page.evaluate(() => {
         window.failedRows = [
           { role: 'user', content: 'First request' },
           { role: 'assistant', content: '', error: 'No allowed providers are available for the selected model.' },
         ];
         fuseToolFixture.mountThread(failedRows);
-      }, view);
+      });
       assert.equal(await page.locator('[data-err]:visible').count(), 1, 'final failure is visible');
       await page.evaluate(() => {
         // The accepted snapshot adds a user message before output arrives.
@@ -54,7 +53,7 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       const created = await page.evaluate(async () => fuseToolFixture.api('/chat/threads', { method: 'POST', body: JSON.stringify({ model: 'offline', tools: [], command_id: crypto.randomUUID(), messages: failedRows }) }));
       await page.goto(`${origin}/chat?t=${created.id}`);
       await page.waitForFunction(() => fuseToolFixture.snapshot().length === 2);
-      await page.evaluate(view => fuseToolFixture.view(view), view);
+
       assert.equal(await page.locator('[data-err]:visible').count(), 1, 'reload retains unresolved error');
       await page.locator('[data-chat-input]').fill('Next accepted message');
       await page.locator('[data-chat-send]').click();
@@ -67,7 +66,7 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       assert.ok((await page.evaluate(() => fuseToolFixture.snapshot()[1].error)).includes('No allowed providers'));
       assert.deepEqual(errors, []);
       await page.close();
-      console.log(`PASS error lifecycle ${view}`);
+      console.log('PASS error lifecycle');
     }
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

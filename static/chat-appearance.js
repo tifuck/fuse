@@ -120,21 +120,7 @@
       .map((font) => "family=" + encodeURIComponent(font.label).replace(/%20/g, "+")).join("&");
     addStylesheet("font:preview", `https://fonts.googleapis.com/css2?${families}&text=${encodeURIComponent(FONT_SUBSET)}&display=swap`);
   }
-  const VIEW_DEFAULT_FONT = {
-    cli: "redhat",
-    compact: "bricolage",
-    console: "redhat",
-    mainframe: "redhat",
-  };
-  const VIEWS = Object.keys(VIEW_DEFAULT_FONT);
-  // Renamed views: a saved old id (view or per-view font) moves to its successor.
-  const RENAMED_VIEWS = { prism: "mainframe" };
-  const VIEW_LABELS = {
-    cli: "Terminal",
-    compact: "Compact",
-    console: "Console",
-    mainframe: "Mainframe",
-  };
+  const DEFAULT_FONT = "redhat";
   const THEME_VARS = {
     ink: "--ink",
     panel: "--panel",
@@ -166,11 +152,8 @@
   const STRENGTH_DEFAULT = 28;
   const html = document.documentElement;
   let theme = "fuse";
-  let terminal = true;
-  let consoleView = false;
   let textScale = SIZE_DEFAULT;
-  let fontMap = {};
-  let currentView = "cli";
+  let selectedFont = "";
   let custom = { ink: "#121212", brass: "#c5df88" };
   let backdrop = "none";
   let strength = STRENGTH_DEFAULT;
@@ -239,23 +222,12 @@
   try {
     const saved = localStorage.getItem(STORE_THEME);
     if (saved === "custom" || Object.prototype.hasOwnProperty.call(themes, saved)) theme = saved;
-    let storedView = localStorage.getItem("fuse.chat.view.v2");
-    if (RENAMED_VIEWS[storedView]) {
-      storedView = RENAMED_VIEWS[storedView];
-      localStorage.setItem("fuse.chat.view.v2", storedView);
-    }
-    if (VIEWS.includes(storedView)) currentView = storedView;
-    terminal = currentView === "cli";
-    consoleView = currentView === "console";
     const storedSize = Number(localStorage.getItem(STORE_SIZE));
     if (Number.isFinite(storedSize) && storedSize >= SIZE_MIN && storedSize <= SIZE_MAX) textScale = Math.round(storedSize / 5) * 5;
     const storedFonts = JSON.parse(localStorage.getItem(STORE_FONTS) || "{}");
     if (storedFonts && typeof storedFonts === "object") {
-      for (const [saved, stored] of Object.entries(storedFonts)) {
-        const view = RENAMED_VIEWS[saved] || saved;
-        const id = LEGACY_FONTS[stored] || stored;
-        if (VIEWS.includes(view) && FONTS[id]) fontMap[view] = id;
-      }
+      const id = LEGACY_FONTS[storedFonts.console] || storedFonts.console;
+      if (FONTS[id]) selectedFont = id;
     }
     const storedCustom = JSON.parse(localStorage.getItem(STORE_CUSTOM) || "null");
     if (storedCustom && typeof storedCustom === "object") {
@@ -276,9 +248,8 @@
     }
   } catch (_) {}
 
-  function fontFor(view) {
-    if (!VIEWS.includes(view)) view = "cli";
-    return FONTS[fontMap[view]] ? fontMap[view] : VIEW_DEFAULT_FONT[view] || "redhat";
+  function fontFor() {
+    return selectedFont || DEFAULT_FONT;
   }
 
   function specFor(id) {
@@ -318,17 +289,15 @@
   function apply() {
     const spec = specFor(theme);
     html.dataset.chatTheme = theme;
-    html.dataset.chatTerminal = String(terminal);
-    if (consoleView) html.dataset.chatConsole = "true";
-    else html.removeAttribute("data-chat-console");
+    html.dataset.chatConsole = "true";
     html.dataset.chatBackdrop = backdrop;
-    html.dataset.chatView = currentView;
-    ensureFont(fontFor(currentView));
+    html.dataset.chatView = "console";
+    ensureFont(fontFor());
     html.style.setProperty("--chat-text-scale", String(textScale / 100));
     // The reading font is the site font: it drives the --sans and --mono
     // tokens every rule reads, not just the transcript. Code keeps a fixed
     // pitch (--code): the chosen face when it is a mono, Red Hat Mono otherwise.
-    const fontId = fontFor(currentView);
+    const fontId = fontFor();
     const font = FONTS[fontId];
     html.dataset.chatFont = fontId;
     html.style.setProperty("--chat-view-font", font.stack);
@@ -392,7 +361,7 @@
   }
 
   function persistFonts() {
-    try { localStorage.setItem(STORE_FONTS, JSON.stringify(fontMap)); } catch (_) {}
+    try { localStorage.setItem(STORE_FONTS, JSON.stringify({ console: selectedFont })); } catch (_) {}
   }
   function persistTheme() {
     try { localStorage.setItem(STORE_THEME, theme); } catch (_) {}
@@ -405,11 +374,6 @@
       localStorage.setItem(STORE_BACKDROP, backdrop);
       localStorage.setItem(STORE_STRENGTH, String(strength));
     } catch (_) {}
-  }
-
-  function viewLabel(view) {
-    const fromMenu = document.querySelector(`[data-view-menu] [data-view="${view}"] span`)?.textContent;
-    return fromMenu || VIEW_LABELS[view] || "View";
   }
 
   function paintSwatches() {
@@ -450,11 +414,11 @@
       const card = (id, name, kind, stack) =>
         `<button type="button" class="ap-font" role="radio" aria-checked="false" data-font-id="${id}" data-font-kind="${kind}" style="--ap-face: ${stack.replace(/"/g, "&quot;")}">` +
         `<span class="ap-font-glyph" aria-hidden="true">Ag</span><span class="ap-font-name">${name}</span><small>${FONT_KINDS[kind] || kind}</small></button>`;
-      grid.innerHTML = card("", "View default", "default", "inherit") +
+      grid.innerHTML = card("", "Default", "default", "inherit") +
         Object.entries(FONTS).map(([id, font]) => card(id, font.label, font.kind, font.stack)).join("");
     }
-    const fallback = FONTS[VIEW_DEFAULT_FONT[currentView]];
-    const selected = fontMap[currentView] || "";
+    const fallback = FONTS[DEFAULT_FONT];
+    const selected = selectedFont || "";
     grid.querySelectorAll(".ap-font").forEach((btn) => {
       const id = btn.dataset.fontId;
       if (!id) {
@@ -471,7 +435,7 @@
     });
     const sample = document.querySelector("[data-chat-font-sample]");
     if (sample) {
-      const shown = fontHover !== "" && fontHover != null ? fontHover : fontFor(currentView);
+      const shown = fontHover !== "" && fontHover != null ? fontHover : fontFor();
       const font = FONTS[shown] || fallback;
       sample.style.fontFamily = font.stack;
       sample.dataset.fontLabel = font.label;
@@ -514,8 +478,6 @@
     const out = document.querySelector("[data-chat-size-value]");
     if (out) out.textContent = `${textScale}%`;
     paintFonts();
-    const label = document.querySelector("[data-chat-font-view]");
-    if (label) label.textContent = viewLabel(currentView);
     const prefs = getComposerPrefs();
     document.querySelectorAll("[data-composer-pref]").forEach((el) => {
       const key = el.getAttribute("data-composer-pref");
@@ -564,7 +526,6 @@
 
   window.FuseChatAppearance = {
     syncUi,
-    get view() { return currentView; },
     get size() { return textScale; },
     setSize(next) {
       const value = Math.round(Number(next));
@@ -577,10 +538,8 @@
       const out = document.querySelector("[data-chat-size-value]");
       if (out) out.textContent = `${textScale}%`;
     },
-    setFont(view, id) {
-      if (!VIEWS.includes(view)) return;
-      if (id && FONTS[id]) fontMap[view] = id;
-      else delete fontMap[view];
+    setFont(id) {
+      selectedFont = id && FONTS[id] ? id : "";
       persistFonts();
       apply();
       syncUi();
@@ -634,11 +593,11 @@
       const btn = event.target.closest(".ap-font");
       if (!btn) return;
       fontHover = "";
-      window.FuseChatAppearance.setFont(currentView, btn.dataset.fontId || null);
+      window.FuseChatAppearance.setFont(btn.dataset.fontId || null);
     });
     const preview = (event) => {
       const btn = event.target.closest?.(".ap-font");
-      const next = btn ? btn.dataset.fontId || VIEW_DEFAULT_FONT[currentView] : "";
+      const next = btn ? btn.dataset.fontId || DEFAULT_FONT : "";
       if (next === fontHover) return;
       fontHover = next;
       if (next) ensureFont(next);
@@ -684,19 +643,7 @@
         setComposerPrefs({ [key]: el.checked });
       });
     });
-    function sync() {
-      terminal = root.dataset.view === "cli";
-      consoleView = root.dataset.view === "console";
-      if (VIEWS.includes(root.dataset.view) && root.dataset.view !== currentView) {
-        currentView = root.dataset.view;
-      }
-      document.querySelectorAll("[data-view-menu] [data-view]").forEach((button) => {
-        button.setAttribute("aria-pressed", String(button.dataset.view === root.dataset.view));
-      });
-      apply();
-      syncUi();
-    }
-    new MutationObserver(sync).observe(root, { attributes: true, attributeFilter: ["data-view"] });
-    sync();
+    apply();
+    syncUi();
   });
 })();

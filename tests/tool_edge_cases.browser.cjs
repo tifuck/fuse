@@ -1,4 +1,4 @@
-// Console reading mode: edge cases and update-time jitter for the tool
+// Edge cases and update-time jitter for the tool
 // families the neighboring suites pin least — load_skill, web_search/read_url,
 // artifacts, image reads, spawn_subagent / list_subagents /
 // get_subagent_output, todo_write's row absence, and monitor rows — plus
@@ -58,7 +58,6 @@ const hits = (n, prefix = 'Result') => Array.from({ length: n }, (_, i) => ({
     await page.evaluate(() => fuseToolFixture.thinking(true));
 
     const frame = () => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    const view = (name) => page.evaluate((name) => fuseToolFixture.view(name), name);
     const width = (w) => page.setViewportSize({ width: w, height: w === 390 ? 844 : 1000 });
     const mount = (rows, live = false) => page.evaluate(([rows, live]) => {
       fuseToolFixture.todo.reset();
@@ -114,7 +113,6 @@ const hits = (n, prefix = 'Result') => Array.from({ length: n }, (_, i) => ({
     // together, no second sub-line, with the loaded body opening on demand.
     // ————————————————————————————————————————————————
     console.log('edge: skill load');
-    await view('console');
     await width(1440);
     const singleLine = (id) => page.evaluate((id) => {
       const li = document.querySelector(`[data-step="tool-${id}"]`);
@@ -200,19 +198,15 @@ const hits = (n, prefix = 'Result') => Array.from({ length: n }, (_, i) => ({
       }
       await width(1440);
 
-      // The same single line in the other retained reading mode: Mainframe's
-      // rows are one TUI line (the result column rides that line), so the
-      // condensed row keeps no result sub-line and stays under two lines.
-      await view('mainframe');
+      // Remount preserves the compact skill sentence and Unicode name.
       await mount([turn([sk], [T(sk)])]);
       await frame();
       row = await rowOf(sk.id);
-      eq(row.head, 'Loaded the café-🚀-über skill', 'mainframe skill line reads the same sentence');
-      eq(row.result, '', 'mainframe skill row keeps no second sub-line');
+      eq(row.head, 'Loaded the café-🚀-über skill', 'default skill line reads the same sentence');
+      eq(row.result, '', 'default skill row keeps no second sub-line');
       const mf = await singleLine(sk.id);
-      check(mf.liH < mf.labelH * 2, `the mainframe skill row is one line: row ${mf.liH}px vs line ${mf.labelH}px`);
-      check(/loaded/i.test(mf.visible) && mf.visible.includes('café-🚀-über'), `mainframe one line carries the name and the outcome: ${mf.visible}`);
-      await view('console');
+      check(mf.liH < mf.labelH * 2, `the default skill row is one line: row ${mf.liH}px vs line ${mf.labelH}px`);
+      check(/loaded/i.test(mf.visible) && mf.visible.includes('café-🚀-über'), `default one line carries the name and the outcome: ${mf.visible}`);
     } catch (error) { failures.push(`block threw: ${error.message}`); }
 
     // ————————————————————————————————————————————————
@@ -660,20 +654,36 @@ const hits = (n, prefix = 'Result') => Array.from({ length: n }, (_, i) => ({
       check(!row.cls.includes('is-running'), `killed watch is not running: ${row.cls}`);
       check(!row.text.includes('Monitor started'), `killed watch drops its start receipt: ${row.text}`);
 
-      // Mainframe's shared fold counts the events it was given.
-      await view('mainframe');
+      // The settled result line keeps the start receipt; the event count rides
+      // the job row's detail chips (chat-tool-context).
       const counted = tool('monitor', { description: 'worker log', command: 'tail -F worker.log', command_id: 'm2', event_count: 3 });
       await mount([turn([counted], [T(counted)])]);
       await frame();
-      eq((await rowOf(counted.id)).result, '3 events', 'monitor event count matches the delivered events');
+      let snap = await rowOf(counted.id);
+      eq(snap.result, 'Monitor started · task m2', 'the settled monitor keeps its start receipt');
+      const jobChips = async (id, trace) => {
+        await page.evaluate(({ id, trace }) => fuseToolFixture.work([{ ...trace, command_id: undefined, id, kind: 'monitor', state: 'running' }]), { id, trace });
+        await page.locator('[data-agents-close]').click();
+        await page.locator(`[data-show-job="${id}"]`).click();
+        return page.locator('.chat-jobs-detail .chat-tool-context').innerText();
+      };
+      let chips = await jobChips('watch-m2', counted);
+      check(/3 events?/.test(chips), `the count chip carries the delivered events: ${chips}`);
       await upd(counted.id, { event_count: 1 });
       await frame();
-      eq((await rowOf(counted.id)).result, '1 event', 'monitor count tracks a single event');
+      snap = await rowOf(counted.id);
+      eq(snap.result, 'Monitor started · task m2', 'the receipt survives a count update');
+      const updated = await page.evaluate((id) => fuseToolFixture.snapshot()[0].tools.find((t) => t.id === id), counted.id);
+      chips = await jobChips('watch-m2', updated);
+      check(/1 event/.test(chips), `the count chip tracks a single event: ${chips}`);
+      check(!/3 events?/.test(chips), `the count chip drops stale counts: ${chips}`);
       const uncounted = tool('monitor', { description: 'idle log', command: 'tail -F idle.log' });
       await mount([turn([uncounted], [T(uncounted)])]);
       await frame();
-      eq((await rowOf(uncounted.id)).result, 'watching', 'a watch with no count falls back to its state');
-      await view('console');
+      snap = await rowOf(uncounted.id);
+      eq(snap.result, 'Monitor started', 'a watch with no count keeps its start receipt');
+      chips = await jobChips('watch-idle', uncounted);
+      check(!/\d+ events?/.test(chips), `a watch with no count carries no count chip: ${chips}`);
     } catch (error) { failures.push(`block threw: ${error.message}`); }
 
     // ————————————————————————————————————————————————
@@ -683,8 +693,7 @@ const hits = (n, prefix = 'Result') => Array.from({ length: n }, (_, i) => ({
     // collapsed row updates its label without expanding it.
     // ————————————————————————————————————————————————
     const tall = `Setup paragraph ${'with some words '.repeat(20)}.\n\n`.repeat(24);
-    const jitter = async (viewName, w) => {
-      await view(viewName);
+    const jitter = async (w) => {
       await width(w);
       const fetchA = tool('web_search', { query: 'alpha', queries: ['alpha'], latency_ms: 300, results: hits(2, 'Alpha') });
       const fetchB = tool('read_url', { url: 'https://example.com/stream', status: 'running', output: '', results: [] });
@@ -698,7 +707,7 @@ const hits = (n, prefix = 'Result') => Array.from({ length: n }, (_, i) => ({
         fuseToolFixture.follow(false);
       }, { rows: [user('Go.'), turn([fetchA, skillC, fetchB, fetchD], segs(), { elapsedMs: 9000 })] });
       await frame();
-      const where = `${viewName}@${w}`;
+      const where = `${w}px`;
 
       // The user opens row A above; row C stays collapsed. The thread is
       // scrolled away from the bottom with follow off.
@@ -800,16 +809,16 @@ const hits = (n, prefix = 'Result') => Array.from({ length: n }, (_, i) => ({
       check(a.rowExpanded && a.hangExpanded, `${where} fetchA stays open at the settle: ${a.cls}`);
       eq(a.body, bodyBefore, `${where} fetchA keeps its content at the settle`);
       check(!settled.rowExpanded && !settled.hangExpanded, `${where} skillC stays collapsed at the settle: ${settled.cls}`);
-      eq(settledD.result, viewName === 'console' ? 'Received 2KB (200 OK)' : 'example.com', `${where} the settle brings the fetch receipt`);
+      eq(settledD.result, 'Received 2KB (200 OK)', `${where} the settle brings the fetch receipt`);
       check(!settledD.rowExpanded && !settledD.hangExpanded, `${where} fetchD stays collapsed at the settle: ${settledD.cls}`);
     };
 
-    for (const [viewName, w] of [['console', 1440], ['console', 390], ['mainframe', 1440]]) {
+    for (const w of [1440, 390]) {
       try {
-        console.log(`edge: jitter ${viewName}@${w}`);
-        await jitter(viewName, w);
+        console.log(`edge: jitter ${w}px`);
+        await jitter(w);
       } catch (error) {
-        failures.push(`jitter ${viewName}@${w} threw: ${error.message}`);
+        failures.push(`jitter ${w}px threw: ${error.message}`);
       }
     }
 

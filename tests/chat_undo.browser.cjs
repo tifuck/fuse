@@ -8,7 +8,7 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
   const browser = await chromium.launch({ args: ['--no-sandbox'], executablePath: process.env.CHROMIUM_PATH || undefined });
   const errors = [];
   try {
-    for (const width of [1440, 390]) for (const view of ['cli', 'compact', 'console', 'mainframe']) {
+    for (const width of [1440, 390]) {
       const context = await browser.newContext({ viewport: { width, height: 950 }, reducedMotion: 'reduce' });
       // A request dropped during context.close() is auto-handled; don't crash on it.
       await context.route('**/*', route => (new URL(route.request().url()).origin === origin ? route.continue() : route.abort()).catch(() => {}));
@@ -27,7 +27,7 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
         await page.goto(`${origin}/chat?t=${created.id}`);
         await live();
         await page.waitForFunction(n => fuseToolFixture.snapshot().length === n, texts.length * 2);
-        await page.evaluate(view => fuseToolFixture.view(view), view);
+
         return created;
       };
       const slash = async text => { await input.fill(text); await input.press('Enter'); };
@@ -37,7 +37,7 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       const history = async (id, u) => {
         await page.evaluate(({ id, u }) => sessionStorage.setItem('fuse.chat.undo.' + id, JSON.stringify({ u, r: [] })), { id, u });
         await page.reload(); await live(); await count(2);
-        await page.evaluate(view => fuseToolFixture.view(view), view);
+
       };
       const gatePatch = async () => {
         let release, arrived;
@@ -115,7 +115,7 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       abort.release(); await value('123'); await idle(); await count(0);
       assert.equal(await page.evaluate(() => FuseChatActions.state().canRedo), true);
 
-      if (width === 1440 && view === 'cli') {
+      if (width === 1440) {
         await seed();
         await input.fill('Actual sent prompt'); await page.locator('[data-chat-send]').click();
         await page.waitForFunction(() => fuseToolFixture.runInfo()?.status === 'running');
@@ -175,7 +175,7 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       await idle();
       assert.equal(await page.evaluate(() => fuseToolFixture.snapshot().some(msg => msg.content === '/undo')), false);
       await context.close();
-      console.log(`PASS acknowledged undo, stacks, failure recovery and draft ownership ${view} ${width}`);
+      console.log(`PASS acknowledged undo, stacks, failure recovery and draft ownership ${width}`);
     }
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }

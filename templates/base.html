@@ -4,7 +4,7 @@
 {% set is_artifact = path.startswith('/a/') %}
 {% set is_preview = path.startswith('/preview') %}
 {% set is_settings = user and not is_chat and not is_artifact and not is_preview %}
-<html lang="en"{% if 'FuseDesktop/' in request.headers.get('user-agent', '') %} data-desktop-app="true"{% endif %}>
+<html lang="en"{% if is_chat or is_settings %} data-chat-console="true" data-chat-view="console"{% endif %}{% if 'FuseDesktop/' in request.headers.get('user-agent', '') %} data-desktop-app="true"{% endif %}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
@@ -27,7 +27,9 @@
   {% if is_settings %}
   <script src="/static/chat-appearance.js?v=30"></script>
   <script src="/static/chat-backdrop.js?v=8" defer></script>
+  <link rel="stylesheet" href="/static/themes/console/theme.css?v=1">
   <link rel="stylesheet" href="/static/chat-design.css?v=231">
+  <link rel="stylesheet" href="/static/themes/console/styles/design.css?v=1">
   {% endif %}
   {% block head_extra %}{% endblock %}
 </head>

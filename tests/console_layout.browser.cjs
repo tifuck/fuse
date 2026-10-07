@@ -1,4 +1,4 @@
-// Console/Mainframe tool-row LAYOUT, measured with getBoundingClientRect at
+// Tool-row LAYOUT, measured with getBoundingClientRect at
 // 1440x1000 and 390x844 (never screenshots): long unbroken paths, commands,
 // URLs, patterns and subagent descriptions in every tool kind's header
 // (ellipsis + title, or wrap once opened), multi-line commands, expanded
@@ -14,7 +14,6 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const origin = process.env.FUSE_BROWSER_ORIGIN || 'http://127.0.0.1:8099';
 assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
 
-const VIEWS = ['console', 'mainframe'];
 const SIZES = [[1440, 1000], [390, 844]];
 const ROOT = { host: 'qa-box', cwd: '/srv/qa', platform: 'posix', project_root: '/srv/qa' };
 const TOKEN = 'dispatcher_backoff_and_retries_integration_test_fixture_payload_0123456789abcdef';
@@ -39,19 +38,18 @@ const sh = (id, command, fields = {}) => t('run_terminal_command', {
 });
 
 // One call of every tool kind, each carrying an unbreakable long value where
-// the kind has one. folds: 'both' folds into a summary line in either view
-// (read-like calls settle out of a live thread); 'mainframe' folds only there
-// (mainframe folds commands into its live line too); kinds without it never
-// fold and always print their own row.
+// the kind has one. folds: true folds into a summary line (read-like calls
+// settle out of a live thread); kinds without it never fold and always print
+// their own row.
 const kinds = () => [
-  { trace: t('read_file', { id: 'k-read', path: DEEP, output: `1: retries = 3\n2: backoff = ${'x'.repeat(200)}\n3: done\n` }), folds: 'both' },
+  { trace: t('read_file', { id: 'k-read', path: DEEP, output: `1: retries = 3\n2: backoff = ${'x'.repeat(200)}\n3: done\n` }), folds: true },
   { trace: t('write_file', { id: 'k-write', path: DEEP.replace('module', 'generated'), content: `print("${'x'.repeat(200)}")\n` }) },
   { trace: t('search_replace', { id: 'k-edit', path: DEEP, preview: DIFF, output: `updated ${DEEP}`, added: 1, removed: 1 }) },
-  { trace: t('list_dir', { id: 'k-list', path: DEEPDIR, output: `${TOKEN}_a.py\n${TOKEN}_b.py\n` }), folds: 'both' },
-  { trace: t('glob', { id: 'k-glob', pattern: `**/*${TOKEN}{,_fixture,_config}.py`, path: '/srv/qa', output: `tests/${TOKEN}_fixture.py\n` }), folds: 'both' },
-  { trace: t('grep', { id: 'k-grep', pattern: PATTERN, path: DEEPDIR, output: `${DEEP}:12:${PATTERN}\n` }), folds: 'both' },
-  { trace: sh('k-shell', MULTILINE, { ms: 124000, output: `svc api ok\nsvc worker ok\n${WIDE_LINE}\nsvc dispatcher ok\n5 lines tall\n` }), folds: 'both' },
-  { trace: sh('k-bg', `./gameserver -config=${TOKEN}.cfg -port=2302 -mod=@${TOKEN};@maps`, { background: true, ms: 300, state: 'running', execution_status: 'running', status: 'done', exit_code: null, output: 'Loading…\n' }), folds: 'mainframe' },
+  { trace: t('list_dir', { id: 'k-list', path: DEEPDIR, output: `${TOKEN}_a.py\n${TOKEN}_b.py\n` }), folds: true },
+  { trace: t('glob', { id: 'k-glob', pattern: `**/*${TOKEN}{,_fixture,_config}.py`, path: '/srv/qa', output: `tests/${TOKEN}_fixture.py\n` }), folds: true },
+  { trace: t('grep', { id: 'k-grep', pattern: PATTERN, path: DEEPDIR, output: `${DEEP}:12:${PATTERN}\n` }), folds: true },
+  { trace: sh('k-shell', MULTILINE, { ms: 124000, output: `svc api ok\nsvc worker ok\n${WIDE_LINE}\nsvc dispatcher ok\n5 lines tall\n` }), folds: true },
+  { trace: sh('k-bg', `./gameserver -config=${TOKEN}.cfg -port=2302 -mod=@${TOKEN};@maps`, { background: true, ms: 300, state: 'running', execution_status: 'running', status: 'done', exit_code: null, output: 'Loading…\n' }) },
   { trace: t('get_command_output', { id: 'k-wait', command: `./scripts/promote.sh --service ${TOKEN} --rollback-window 15m`, background: true, child_id: 'job-k-bg', command_id: 'job-k-bg', call_duration_ms: 31000, output: 'promoted\n' }) },
   { trace: t('monitor', { id: 'k-monitor', description: `retries and failures in /var/log/worker/${TOKEN}.log while the deploy rolls out`, command: `tail -F /var/log/worker/${TOKEN}.log`, pattern: 'ERROR|SUCCESS', background: true, child_id: 'mon-k', command_id: 'mon-k', state: 'running', execution_status: 'running', event_count: 2, timeout_ms: 300000 }) },
   { trace: t('web_search', { id: 'k-search', queries: [`integration dispatcher backoff retries ${TOKEN}`, 'second query', 'third query'], latency_ms: 2300, results: [{ title: TOKEN, url: `https://example.test/${TOKEN}`, snippet: 's' }] }) },
@@ -137,7 +135,7 @@ const kindsThread = (list) => {
     const frame = () => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 
     // A row's header keeps inside the log, single-line unless it may wrap, and
-    // its clock (console) is never overlapped by the text or spilled.
+    // its clock is never overlapped by the text or spilled.
     const rowHeader = (p, row, where, wrapOk = false) => {
       const at = `${where} ${row.step}`;
       if (!row.row || !row.label) return `${at}: no label`;
@@ -158,16 +156,14 @@ const kindsThread = (list) => {
       return null;
     };
 
-    for (const view of VIEWS) {
+    {
       for (const [width, height] of SIZES) {
-        const where = `[${view} @${width}]`;
+        const where = `[${width}px]`;
         await page.setViewportSize({ width, height });
-        await page.evaluate((view) => fuseToolFixture.view(view), view);
-        const isConsole = view === 'console';
 
         // —— 1. Every tool kind live: kinds that never fold stand as rows with
-        // ellipsized headers; read-like kinds (and, in mainframe, commands too)
-        // fold into summary lines — either way one column grid, no overflow.
+        // ellipsized headers; read-like kinds fold into summary lines — either
+        // way one column grid, no overflow.
         await page.evaluate((rows) => fuseToolFixture.mountThread(rows, { live: true, phase: 'tools' }), kindsThread(kinds()));
         await frame();
         const p = await layout();
@@ -176,7 +172,7 @@ const kindsThread = (list) => {
         const list = kinds();
         for (const kind of list) {
           const row = p.rows.find((r) => r.step === `tool-${kind.trace.id}`);
-          const foldsHere = kind.folds === 'both' || (kind.folds === 'mainframe' && view === 'mainframe');
+          const foldsHere = Boolean(kind.folds);
           if (foldsHere) {
             const group = p.rows.find((r) => r.step === `cgroup-tool-${kind.trace.id}`);
             check(!row && Boolean(group), `${where} ${kind.trace.id}: read-like call folds into its summary line (row ${Boolean(row)}, group ${Boolean(group)})`);
@@ -194,8 +190,8 @@ const kindsThread = (list) => {
             check(row.label.title === raw, `${where} ${kind.trace.id}: row title carries the full value (got ${JSON.stringify(row.label.title)})`);
           }
         }
-        // Column grid across kinds (summary lines included): console dots and
-        // label column, mainframe gutter, verb and result columns.
+        // Column grid across kinds (summary lines included): dots and the
+        // label column.
         const standalone = p.rows.filter((r) => r.label);
         if (standalone.length >= 4) {
           const col = (values, name) => {
@@ -203,22 +199,9 @@ const kindsThread = (list) => {
             const spread = Math.max(...vs) - Math.min(...vs);
             check(spread <= 1, `${where}: ${name} column drifts across kinds (${spread.toFixed(2)}px over ${vs.length} rows)`);
           };
-          if (isConsole) {
-            col(standalone.map((r) => r.node && r.node.l), 'dot');
-            col(standalone.filter((r) => !r.group).map((r) => r.label.l), 'label');
-            for (const r of standalone) if (r.node && r.label.l < r.node.r - 0.5) failures.push(`${where} ${r.step}: header starts left of the dot column "${r.text}"`);
-          } else {
-            col(standalone.map((r) => r.toggle && r.toggle.l - r.row.l), 'gutter');
-            // The verb column is a min-width: a verb that fits it leaves every
-            // argument on one column; a longer verb may push its own argument
-            // right, but never inside the column.
-            const short = standalone.filter((r) => r.verb && r.val && r.verb.w <= r.verb.minW + 0.75);
-            if (short.length >= 3) col(short.map((r) => r.val.l), 'argument');
-            for (const r of standalone) {
-              if (r.verb && r.val && r.verb.w < r.verb.minW - 0.75) failures.push(`${where} ${r.step}: verb narrower than its column "${r.text}"`);
-              if (r.result && r.result.r > r.row.r + 1) failures.push(`${where} ${r.step}: result column spills its row "${r.text}"`);
-            }
-          }
+          col(standalone.map((r) => r.node && r.node.l), 'dot');
+          col(standalone.filter((r) => !r.group).map((r) => r.label.l), 'label');
+          for (const r of standalone) if (r.node && r.label.l < r.node.r - 0.5) failures.push(`${where} ${r.step}: header starts left of the dot column "${r.text}"`);
         }
         // Sideways scrollers inside rows never widen the page or leave the log.
         for (const row of p.rows) {
@@ -307,10 +290,10 @@ const kindsThread = (list) => {
         const bottomMost = [chrome.todos || chrome.dock, chrome.compose].filter(Boolean);
         if (bottomMost[0] && bottomMost[1]) check(bottomMost[0].b <= bottomMost[1].t + 0.75, `${where}: composer overlaps the todo list / status area (${bottomMost[0].b.toFixed(1)} > ${bottomMost[1].t.toFixed(1)})`);
 
-        // —— 5. Running -> done: the header rewrite changes width; the row (or,
-        // in mainframe, its summary line) keeps its column and stays unclipped,
-        // and the neighbour above does not move. mount(), not mountThread:
-        // fixture.update walks every message and cannot cross a user article.
+        // —— 5. Running -> done: the header rewrite changes width; the row
+        // keeps its column and stays unclipped, and the neighbour above does
+        // not move. mount(), not mountThread: fixture.update walks every
+        // message and cannot cross a user article.
         const steadyTrace = t('write_file', { id: 'steady', path: DEEP, content: 'x = 1\n' });
         const turnTrace = sh('turnrow', `python3 -m pytest -q tests/integration/test_${TOKEN}.py -k 'backoff or retries' --maxfail=1`, { status: 'running', state: 'running', execution_status: 'running', exit_code: null, description: 'Rebuild the production bundle', ms: 4000, output: '' });
         await page.evaluate((msg) => fuseToolFixture.mount([msg], true), turn([say('Two calls.\n\n'), T(steadyTrace), T(turnTrace)], [steadyTrace, turnTrace]));
@@ -338,9 +321,9 @@ const kindsThread = (list) => {
           check(Math.abs(steadyBefore.label.l - steadyAfter.label.l) <= 0.5, `${where}: the row above's column moved when the header rewrote`);
         }
         if (turnBefore && turnAfter) {
-          rowHeader(live2, turnAfter, `${where} settled`, view === 'mainframe');
+          rowHeader(live2, turnAfter, `${where} settled`);
           check(Math.abs(turnBefore.label.l - turnAfter.label.l) <= 0.5, `${where}: the settled row left its column (${turnBefore.label.l.toFixed(1)} -> ${turnAfter.label.l.toFixed(1)}) "${turnAfter.text}"`);
-          if (view === 'console' && turnAfter.step === 'tool-turnrow') check(turnAfter.state === 'done', `${where}: the settled row reads done (got ${turnAfter.state})`);
+          if (turnAfter.step === 'tool-turnrow') check(turnAfter.state === 'done', `${where}: the settled row reads done (got ${turnAfter.state})`);
         }
       }
     }
@@ -348,8 +331,8 @@ const kindsThread = (list) => {
     assert.deepEqual(errors, [], `page errors: ${errors.join('; ')}`);
     const unique = [...new Set(failures)];
     if (unique.length) console.error(unique.join('\n'));
-    assert.equal(unique.length, 0, `${unique.length} Console/Mainframe layout problems`);
-    console.log('PASS console layout: every tool kind at 1440/390 in console+mainframe — columns, long headers, clocks, sideways bodies, spacing, running chrome, running->done');
+    assert.equal(unique.length, 0, `${unique.length} tool-row layout problems`);
+    console.log('PASS console layout: every tool kind at 1440/390 — columns, long headers, clocks, sideways bodies, spacing, running chrome, running->done');
   } finally {
     await browser.close();
   }

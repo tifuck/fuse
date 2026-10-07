@@ -24,10 +24,10 @@ const message = { id: 'image-message', role: 'assistant', content: '', tools: [t
     assert.deepEqual(await page.evaluate(trace => fuseToolFixture.serializeTrace(trace).image, { ...trace, image }), image);
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 1000 });
-      for (const view of ['cli', 'compact', 'console', 'mainframe']) {
-        await page.evaluate(view => fuseToolFixture.view(view), view);
+      {
+
         await page.evaluate(message => fuseToolFixture.mount([message]), message);
-        console.log(`Checking ${view}/${width}`);
+        console.log(`Checking ${width}`);
         const check = async scope => {
           let preview = scope.locator('.chat-tool-image [data-image-preview]').first();
           if (!(await preview.isVisible())) {
@@ -38,7 +38,7 @@ const message = { id: 'image-message', role: 'assistant', content: '', tools: [t
               await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
             }
           }
-          assert.equal(await preview.isVisible(), true, `${view}/${width}`);
+          assert.equal(await preview.isVisible(), true, `${width}`);
           const figure = scope.locator('.chat-tool-image').first();
           assert.match(await figure.innerText(), /resized from 2 × 2.*frame 1 of 3/);
           assert.match(await figure.innerText(), /Preview only/);
@@ -56,7 +56,7 @@ const message = { id: 'image-message', role: 'assistant', content: '', tools: [t
         await page.locator('[data-agents-close]').click();
       }
     }
-    await page.evaluate(() => fuseToolFixture.view('console'));
+
     for (const bad of [{ ...image, mime: 'image/svg+xml' }, { ...image, data: '\" onerror=alert(1)' }, { ...image, data: 'https://example.com/a.png' }, { ...image, data: 'AA=A' }, { ...previewImage, preview_url: '//example.com/image' }, { ...previewImage, preview_url: '/chat/runs/../images/ts_0_0' }]) {
       await page.evaluate(trace => fuseToolFixture.mount([{ tools: [trace] }]), { ...trace, image: bad });
       const summary = page.locator('[data-chat-log] .chat-step-toggle[aria-expanded="false"]');

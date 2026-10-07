@@ -1,7 +1,7 @@
 // Parallel calls of different kinds finishing out of order, then a late or
-// duplicate event, a snapshot racing the live stream, a reload, and a view
-// switch. Pins that Console and Mainframe show the latest state after each
-// of those, and that a settled row never reverts to running.
+// duplicate event, a snapshot racing the live stream, and a reload. Pins that
+// the transcript shows the latest state after each of those, and that a
+// settled row never reverts to running.
 // Run against chat_browser_fixture.py, never the live Fuse service.
 const assert = require('node:assert/strict');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
@@ -78,7 +78,6 @@ function readDom() {
         return Boolean(el && el.dataset.state === want);
       }, [id, state]);
 
-      await page.evaluate((name) => fuseToolFixture.view(name), 'console');
       await page.evaluate((rows) => fuseToolFixture.mountThread(rows, { live: true, phase: 'tools' }), thread(CALLS.map(running)));
       let seen = await dom();
       check(seen.calls === 6, `${tag} six parallel calls render once, saw ${seen.calls}`);
@@ -166,7 +165,7 @@ function readDom() {
       check(reloaded.groups.join('\n') === live.groups.join('\n'), `${tag} reload keeps the summary line\n live: ${live.groups.join(' | ')}\n reload: ${reloaded.groups.join(' | ')}`);
       check(!reloaded.dock, `${tag} the dock is gone once the turn has ended, saw ${reloaded.dock}`);
 
-      // Open one summary, then switch views mid-turn and come back.
+      // Open one summary mid-turn and check it shows the latest state.
       await page.evaluate((rows) => fuseToolFixture.mountThread(rows, { live: true, phase: 'tools' }), thread(CALLS.map(running)));
       await event({ event: 'tool', ...GREP_CALL, status: 'done', output: GREP });
       await event({ event: 'tool', ...BASH, status: 'done', state: 'completed', execution_status: 'completed', exit_code: 0, output: SHELL, termination_confirmed: true });
@@ -177,38 +176,9 @@ function readDom() {
       const opened = await dom();
       check(opened.open.length === 1, `${tag} one summary is open, saw ${opened.open.join(',')}`);
       check(opened.rows.bash.state === 'done' && opened.rows.read.state === 'running', `${tag} the open summary shows the finished shell beside the still-running read`);
-
-      for (const view of ['mainframe', 'cli', 'console']) {
-        await page.evaluate((name) => fuseToolFixture.view(name), view);
-        await page.waitForFunction((name) => document.querySelector('[data-chat]')?.getAttribute('data-view') === name, view);
-        const switched = await dom();
-        check(switched.rows.bash?.state === 'done', `${tag} ${view} keeps the shell done, saw ${switched.rows.bash?.state}`);
-        check(switched.rows.read?.state === 'running', `${tag} ${view} keeps the read running, saw ${switched.rows.read?.state}`);
-        check(/Found 2 lines|timeout_for/.test(switched.rows.grep?.text || ''), `${tag} ${view} still shows the grep result: ${switched.rows.grep?.text}`);
-        if (view === 'cli') {
-          const bash = page.locator('[data-step="tool-bash"]');
-          const toggle = bash.locator(':scope > .chat-step-main > .chat-step-head > [data-step-toggle]').locator('visible=true').first();
-          if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
-          await bash.locator('.chat-step-reveal.is-open').waitFor();
-          const body = await bash.locator('.chat-step-reveal').innerText();
-          check((body.match(/2 passed/g) || []).length === 1, `${tag} cli shows the shell output once: ${body}`);
-        } else {
-          check((switched.rows.bash.text.match(/2 passed/g) || []).length === 1, `${tag} ${view} shows the shell output once: ${switched.rows.bash.text}`);
-        }
-        const openNow = await page.evaluate(() => {
-          const msg = fuseToolFixture.snapshot().find((row) => row.role === 'assistant');
-          const group = document.querySelector('.is-console-group');
-          return { map: msg && msg.stepOpen || {}, key: group?.dataset.step || '', expanded: Boolean(group?.classList.contains('is-console-expanded')) };
-        });
-        if (view === 'cli') {
-          check(openNow.map[opened.open[0]] === true, `${tag} cli keeps the open flag for ${opened.open[0]}: ${JSON.stringify(openNow.map)}`);
-        } else {
-          check(openNow.expanded, `${tag} ${view} keeps the summary open (key ${openNow.key}, flag ${JSON.stringify(openNow.map)})`);
-        }
-        check(switched.overflow <= 0, `${tag} ${view} does not overflow sideways by ${switched.overflow}px`);
-      }
-      const back = await dom();
-      check(back.groups.join('\n') === opened.groups.join('\n'), `${tag} returning to console restores the summary line\n before: ${opened.groups.join(' | ')}\n after: ${back.groups.join(' | ')}`);
+      check(/Found 2 lines|timeout_for/.test(opened.rows.grep?.text || ''), `${tag} the open summary still shows the grep result: ${opened.rows.grep?.text}`);
+      check((opened.rows.bash.text.match(/2 passed/g) || []).length === 1, `${tag} the open summary shows the shell output once: ${opened.rows.bash.text}`);
+      check(opened.overflow <= 0, `${tag} the open summary does not overflow sideways by ${opened.overflow}px`);
       console.log(`PASS reconcile ${tag} (${checks} checks)`);
       await page.close();
     }

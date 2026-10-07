@@ -1,0 +1,283 @@
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box textarea::placeholder {
+  font-style: normal;
+  color: color-mix(in srgb, var(--mute) 78%, var(--ink));
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-picker-btn {
+  height: 1.55rem;
+  min-height: 1.55rem;
+  font: 0.68rem/1.55rem var(--mono);
+  color: var(--mute);
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-attach-btn, .chat-search-btn, .chat-context, .chat-send) {
+  width: 1.55rem;
+  height: 1.55rem;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-report-btn {
+  width: 1.4rem;
+  height: 1.55rem;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-agents {
+  background: var(--ink);
+  border-left: 1px solid var(--line);
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-agents-head {
+  background: color-mix(in srgb, var(--ink) 92%, var(--panel));
+  font-family: var(--mono);
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-agents-copy p {
+  font: 0.68rem/1.3 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: lowercase;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-agents-kicker {
+  font: 0.58rem/1.3 var(--mono);
+  letter-spacing: 0.1em;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-agents-row, .chat-jobs-row):hover {
+  background: color-mix(in srgb, var(--brass) 7%, transparent);
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-pop,
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-picker-menu,
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-context-pop {
+  border-radius: 0;
+  box-shadow: none;
+  background: var(--ink);
+  border: 1px solid var(--line);
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-foot-meta {
+  font-size: calc(0.62rem * var(--chat-text-scale, 1));
+  letter-spacing: 0.04em;
+}
+
+@media (max-width: 800px) {
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] {
+    --console-gutter: 0.55rem;
+  }
+}
+
+@media (max-width: 800px) {
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box {
+    margin-bottom: 0.35rem;
+    padding: 0.32rem 0.45rem;
+  }
+}
+
+@media (max-width: 800px) {
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box::before {
+    font: 500 0.82rem/1.7rem var(--mono);
+  }
+}
+
+@media (max-width: 800px) {
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box textarea {
+    font: 16px/1.7rem var(--mono);
+  }
+}
+
+@media (max-width: 800px) {
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-md {
+    font-size: calc(0.78rem * var(--chat-text-scale, 1));
+  }
+}
+
+@media (max-width: 800px) {
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-bar-title::before {
+    content: none;
+  }
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] {
+  --console-band: color-mix(in srgb, var(--mist) 11%, var(--ink));
+  --console-user: color-mix(in srgb, var(--mist) 14%, var(--ink));
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-turn.is-user {
+  align-self: stretch;
+  box-sizing: border-box;
+  width: 100%;
+  margin-inline: 0;
+  margin-block: 0.2rem;
+  padding: 0.32rem 0.75rem;
+  background: var(--console-user);
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-turn.is-user .chat-bubble {
+  display: grid;
+  grid-template-columns: 0.85rem minmax(0, 1fr);
+  column-gap: 0.45rem;
+  align-items: start;
+  max-width: none;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  background: none;
+  color: color-mix(in srgb, var(--mist) 90%, var(--ink));
+  white-space: pre-wrap;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  text-overflow: unset;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-turn.is-user .chat-bubble::before {
+  content: ">";
+  color: color-mix(in srgb, var(--mist) 62%, var(--ink));
+  font: inherit;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-turn.is-user .chat-msg-actions,
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-foot .chat-msg-actions {
+  display: none;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-md {
+  display: grid;
+  grid-template-columns: 0.7rem minmax(0, 1fr);
+  column-gap: 0.45rem;
+  align-items: start;
+  position: relative;
+  padding-left: 0;
+  overflow: visible;
+  white-space: normal;
+  text-overflow: unset;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-md::before {
+  content: "";
+  position: static;
+  grid-column: 1;
+  grid-row: 1;
+  justify-self: center;
+  width: 0.38rem;
+  height: 0.38rem;
+  margin-top: calc((1lh - 0.38rem) / 2);
+  border-radius: 50%;
+  background: var(--mist);
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-md > * {
+  grid-column: 2;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-md > :first-child {
+  margin-top: 0;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-md p {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-md table {
+  /* A block scroll container: display:table ignores max-width once its
+     content is wider, which made the whole transcript scroll sideways. */
+  display: block;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  width: max-content;
+  max-width: 100%;
+  border-collapse: collapse;
+  margin: 0.65rem 0;
+  font-size: 0.92em;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-md :is(th, td) {
+  border: 1px solid color-mix(in srgb, var(--mist) 28%, var(--ink));
+  padding: 0.28rem 0.7rem;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-md th {
+  text-align: center;
+  font-weight: 600;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-md :not(pre) > code {
+  color: color-mix(in srgb, var(--steel) 70%, var(--mist));
+  background: none;
+  padding: 0;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-call > .chat-step-main > .chat-step-head > .chat-step-caret,
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-think-size {
+  display: none !important;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-call > .chat-step-main > .chat-step-head {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-call,
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-tool-action,
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-paren,
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-val,
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-key,
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-sep,
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-eq {
+  color: var(--mist);
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-hang {
+  color: var(--mist);
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-branch {
+  color: color-mix(in srgb, var(--mist) 38%, var(--ink));
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-result-text {
+  white-space: pre-wrap;
+  overflow: visible;
+  text-overflow: unset;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-hang.is-expanded .chat-console-result-text {
+  display: block;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-hang:not(.is-expanded) .chat-console-out {
+  display: none;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-hang.is-expanded .chat-console-preview {
+  display: none;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step:is([data-tool="run_terminal_command"], [data-tool="get_command_output"]) .chat-console-hang.is-expanded:not(.is-error):not(.is-kept):has(.chat-console-out.is-stdout) .chat-console-result-text {
+  display: none;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-nline {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 0.55rem;
+  min-height: 1.25em;
+  width: 100%;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-nline:has(.chat-console-mark) {
+  grid-template-columns: max-content max-content minmax(0, 1fr);
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-n {
+  color: color-mix(in srgb, var(--mist) 40%, var(--ink));
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  user-select: none;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-mark {
+  color: color-mix(in srgb, var(--mist) 55%, var(--ink));
+  user-select: none;
+}
+

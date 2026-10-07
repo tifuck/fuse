@@ -9,9 +9,11 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
-const source = fs.readFileSync(require('node:path').join(__dirname, '../static/chat.js'), 'utf8');
+const source = require('./chat_source.cjs');
 
 function load(name, context) {
+  const themed = require("./theme_factory.cjs")(context)[name];
+  if (typeof themed === "function") { context[name] = themed; return; }
   const start = source.indexOf(`  function ${name}(`);
   assert.ok(start >= 0, name);
   const end = source.indexOf('\n  }', start) + 4;
@@ -25,14 +27,6 @@ function constant(name, context) {
   vm.runInContext(source.slice(start, end).replace(`const ${name}`, `var ${name}`), context);
 }
 
-// Group titles: stackTitle / cliStackTitle / stackSubject.
-function stackWorld(harness = false) {
-  const ctx = vm.createContext({ isHarnessView: () => harness, sessionProject: () => null, messages: [] });
-  constant('STACK', ctx);
-  for (const name of ['stackSpec', 'countPhrase', 'stackTitle', 'stackSubject', 'toolPathLeaf', 'cliStackTitle', 'toolText', 'shortToolPath']) load(name, ctx);
-  return ctx;
-}
-
 // Tool presentation counting: toolCounts / countsLabel.
 function executionWorld(extra = {}) {
   const ctx = vm.createContext(Object.assign({
@@ -44,7 +38,7 @@ function executionWorld(extra = {}) {
   }, extra));
   for (const name of ['executionState', 'executionIdentity', 'executionPending', 'toolBackground',
     'toolAwaitingCancellation', 'isShellExecTool', 'childBackedTool', 'toolIsCurrent', 'toolRunning',
-    'backgroundCommandLabel', 'applyCommandResult', 'shellExitOnly', 'shellExitCode', 'toolFailed',
+    'applyCommandResult', 'shellExitOnly', 'shellExitCode', 'toolFailed',
     'toolInterrupted', 'toolPresentation']) load(name, ctx);
   return ctx;
 }
@@ -58,72 +52,8 @@ function rowWorld() {
   return ctx;
 }
 
-test('group titles count the work and name the failures', () => {
-  const c = stackWorld();
-  assert.equal(c.countPhrase(1, 'call', 'calls'), '1 call');
-  assert.equal(c.countPhrase(0, 'call', 'calls'), '0 calls');
-  assert.equal(c.countPhrase(3, 'call', 'calls'), '3 calls');
 
-  assert.equal(c.stackTitle('run_terminal_command', 3, 0, false), 'Executed 3 commands');
-  assert.equal(c.stackTitle('run_terminal_command', 3, 0, true), 'Executing 3 commands');
-  assert.equal(c.stackTitle('run_terminal_command', 1, 1, false), '1 command failed');
-  assert.equal(c.stackTitle('run_terminal_command', 3, 3, false), '3 commands failed');
-  assert.equal(c.stackTitle('run_terminal_command', 3, 1, false), 'Executed 3 commands · 1 failed');
 
-  assert.equal(c.stackTitle('get_command_output', 1, 0, false), 'Checked 1 job');
-  assert.equal(c.stackTitle('get_command_output', 2, 0, true), 'Waiting for 2 jobs');
-  assert.equal(c.stackTitle('get_command_output', 2, 2, false), '2 jobs failed');
-
-  assert.equal(c.stackTitle('spawn_subagent', 1, 0, false), 'Spawned 1 subagent');
-  assert.equal(c.stackTitle('spawn_subagent', 3, 0, true), 'Spawning 3 subagents');
-  assert.equal(c.stackTitle('spawn_subagent', 3, 2, false), 'Spawned 3 subagents · 2 failed');
-
-  assert.equal(c.stackTitle('get_subagent_output', 1, 0, false), 'Collected 1 result');
-  assert.equal(c.stackTitle('get_subagent_output', 1, 0, true), 'Waiting for 1 result');
-
-  assert.equal(c.stackTitle('list_subagents', 1, 0, false), 'Listed agents');
-  assert.equal(c.stackTitle('list_subagents', 1, 0, true), 'Listing agents');
-  assert.equal(c.stackTitle('search_models', 1, 0, false), 'Found models');
-  assert.equal(c.stackTitle('search_models', 1, 0, true), 'Finding models');
-
-  // Generic tools share one pluralized shape.
-  assert.equal(c.stackTitle('todo_write', 1, 0, false), 'Ran 1 step');
-  assert.equal(c.stackTitle('todo_write', 2, 0, true), 'Running 2 steps');
-  assert.equal(c.stackTitle('todo_write', 1, 1, false), '1 step failed');
-  assert.equal(c.stackTitle('todo_write', 2, 2, false), '2 steps failed');
-  assert.equal(c.stackTitle('todo_write', 3, 1, false), 'Ran 3 steps · 1 failed');
-  assert.equal(c.stackTitle('unknown_tool', 2, 0, false), 'Ran 2 steps');
-});
-
-test('harness group titles drop the past-tense verb and keep the counts', () => {
-  const c = stackWorld(true);
-  assert.equal(c.stackTitle('run_terminal_command', 3, 0, false), '3 commands');
-  assert.equal(c.stackTitle('run_terminal_command', 3, 0, true), 'exec 3 commands');
-  assert.equal(c.stackTitle('run_terminal_command', 2, 2, false), '2 commands failed');
-  assert.equal(c.stackTitle('run_terminal_command', 3, 1, false), '3 commands · 1 failed');
-});
-
-test('stacked rows read as subjects joined without losing words', () => {
-  const c = stackWorld(true);
-  const file = (path) => ({ trace: { name: 'read_file', path } });
-  const two = c.cliStackTitle({ name: 'read_file' }, [file('a.py'), file('b.py')], 0, false);
-  assert.equal(two, 'Read a.py and b.py');
-  const three = c.cliStackTitle({ name: 'read_file' }, [file('a.py'), file('b.py'), file('c.py')], 0, false);
-  assert.equal(three, 'Read a.py and 2 other files');
-  assert.equal(c.cliStackTitle({ name: 'read_file' }, [file('a.py'), file('b.py'), file('c.py')], 1, false),
-    'Read a.py and 2 other files · 1 failed');
-  // Every row failed: no conjunction of subjects, the count speaks.
-  assert.equal(c.cliStackTitle({ name: 'read_file' }, [file('a.py'), file('b.py')], 2, false), '2 files failed');
-  const grep = (pattern) => ({ trace: { name: 'grep', pattern } });
-  assert.equal(c.cliStackTitle({ name: 'grep' }, [grep('foo'), grep('bar')], 0, false), 'Grepped “foo” and “bar”');
-  assert.equal(c.cliStackTitle({ name: 'grep' }, [grep('foo'), grep('bar'), grep('baz')], 0, false),
-    'Grepped “foo” and 2 other patterns');
-  // No subject at all falls back to the counted title.
-  assert.equal(c.cliStackTitle({ name: 'grep' }, [{ trace: { name: 'grep' } }, { trace: { name: 'grep' } }], 0, false),
-    'Grepped 2 patterns');
-  const harnessOff = stackWorld(false);
-  assert.equal(harnessOff.cliStackTitle({ name: 'read_file' }, [file('a.py'), file('b.py')], 0, false), 'Read 2 files');
-});
 
 test('summary counts name each state and never drop a category', () => {
   const c = executionWorld();
@@ -432,17 +362,9 @@ test('done-at times pick the right grain for the day distance', () => {
   assert.equal(c.ccDoneAt(at(30).toISOString()), `${dateOf(at(30))}, ${timeOf(at(30))}`);
 });
 
-test('turn meta shows tokens on console and the model elsewhere', () => {
-  const c = vm.createContext({ modelId: '', isConsoleView: () => consoleView });
-  let consoleView = false;
-  for (const name of ['usageInOut', 'formatTokens', 'shortModelName', 'formatTurnDuration', 'formatTurnMeta']) load(name, c);
-  assert.deepEqual({ ...c.formatTurnMeta({ model: 'anthropic/claude-sonnet-4-5', elapsedMs: 65000 })[0] },
-    { text: 'claude-sonnet-4-5', title: 'anthropic/claude-sonnet-4-5' });
-  assert.deepEqual({ ...c.formatTurnMeta({ model: 'anthropic/claude-sonnet-4-5', elapsedMs: 65000 })[1] },
-    { text: '1m 5s', title: '1m 5s elapsed' });
-  assert.equal(c.formatTurnMeta({ elapsedMs: 0 }).length, 1, 'a zero elapsed still prints');
-  assert.equal(c.formatTurnMeta({}).length, 0, 'no model, no clock, no chips');
-  consoleView = true;
+test('turn meta shows output tokens and elapsed time', () => {
+  const c = vm.createContext({});
+  for (const name of ['usageInOut', 'formatTokens', 'formatTurnDuration', 'formatTurnMeta']) load(name, c);
   const bits = c.formatTurnMeta({ usage: { prompt_tokens: 100, output_tokens: 500 }, elapsedMs: 1500 });
   assert.deepEqual({ ...bits[0] }, { text: '500 tok', title: '500 output tokens this reply' });
   assert.deepEqual({ ...bits[1] }, { text: '1.5s', title: '1.5s elapsed' });
@@ -450,16 +372,6 @@ test('turn meta shows tokens on console and the model elsewhere', () => {
     'console prints output tokens only');
 });
 
-test('model names shorten to their leaf', () => {
-  const c = vm.createContext({});
-  load('shortModelName', c);
-  assert.equal(c.shortModelName('openai/gpt-5.2'), 'gpt-5.2');
-  assert.equal(c.shortModelName('a/b/c'), 'c');
-  assert.equal(c.shortModelName('plain'), 'plain');
-  assert.equal(c.shortModelName('  '), '');
-  assert.equal(c.shortModelName(null), '');
-  assert.equal(c.shortModelName('org/' + 'x'.repeat(30)), 'x'.repeat(20), 'names cap at 20 characters');
-});
 
 test('usage splits input and output tokens', () => {
   const c = vm.createContext({});
@@ -554,39 +466,7 @@ test('activity elapsed text only appears once there is time to show', () => {
   assert.equal(c.formatActivityElapsed(3661, true), ' for 1h 1m 1s');
 });
 
-test('failed cluster kinds name the work', () => {
-  const c = vm.createContext({});
-  constant('WORKSPACE_VERBS', c);
-  for (const name of ['isSearchTool', 'failKind']) load(name, c);
-  const kind = (...names) => c.failKind(names.map((name) => ({ trace: { name } })));
-  assert.equal(kind('read_url'), 'Page read');
-  assert.equal(kind('web_search'), 'Web search');
-  assert.equal(kind('search'), 'Web search');
-  assert.equal(kind('read_file'), 'File read');
-  assert.equal(kind('list_dir'), 'Directory listing');
-  assert.equal(kind('run_terminal_command'), 'Shell');
-  assert.equal(kind('grep'), 'Grep');
-  assert.equal(kind('spawn_subagent'), 'Subagent');
-  assert.equal(kind('unknown_tool'), 'Steps');
-  assert.equal(kind('read_file', 'grep'), 'Steps', 'a mixed cluster has no single kind');
-  assert.equal(c.failKind([{ trace: { name: 'read_file', error: 'x' } }, { trace: { name: 'read_file', error: 'y' } }]),
-    'File read', 'repeats of one tool stay that kind');
-  // Write and edit kinds name the work so the cluster reads "File write failed".
-  assert.equal(kind('write_file'), 'File write');
-  assert.equal(kind('search_replace'), 'File edit');
-});
 
-test('repeated error lines collapse with a count', () => {
-  const c = vm.createContext({});
-  load('coalesceLines', c);
-  assert.deepEqual([...c.coalesceLines('b\na\nb\nA')], ['b ×2', 'a ×2'], 'case variants count as repeats');
-  assert.deepEqual([...c.coalesceLines('q\nq\nq')], ['q ×3']);
-  assert.deepEqual([...c.coalesceLines('  x  \n\n x ')], ['x ×2'], 'whitespace is not part of the line');
-  assert.deepEqual([...c.coalesceLines('')], []);
-  assert.deepEqual([...c.coalesceLines(' \n\n ')], []);
-  assert.deepEqual([...c.coalesceLines('😀 ok\n😀 ok')], ['😀 ok ×2'], 'unicode survives the fold');
-  assert.deepEqual([...c.coalesceLines('first\nsecond')], ['first', 'second']);
-});
 
 test('untitled threads hide their title', () => {
   const c = vm.createContext({});

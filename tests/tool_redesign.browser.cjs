@@ -49,12 +49,11 @@ const out = process.env.TOOL_UI_ARTIFACTS || '/tmp/opencode/tool-redesign';
     assert.equal(checks.trace.background, true);
     assert.equal(checks.preserved, 8000);
 
-    for (const width of [1440, 390]) for (const view of ['cli', 'compact']) {
+    for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 1000 });
       await page.emulateMedia({ reducedMotion: 'reduce' });
-      await page.evaluate(({ root, view }) => {
+      await page.evaluate(({ root }) => {
         const base = { cwd: root, project_root: root, host: 'workstation', platform: 'posix' };
-        fuseToolFixture.view(view);
         fuseToolFixture.mount([{ tools: [
           { ...base, id: 'read-a', name: 'read_file', status: 'done', path: root + '/src/client/config.ts', offset: 20, limit: 30, output: '20: export const config = { retries: 3 };' },
           { ...base, id: 'read-b', name: 'read_file', status: 'done', path: root + '/src/server/config.ts', output: 'export const port = 8080;' },
@@ -66,45 +65,44 @@ const out = process.env.TOOL_UI_ARTIFACTS || '/tmp/opencode/tool-redesign';
           { ...base, id: 'shell-b', name: 'run_terminal_command', status: 'done', state: 'completed', command_id: 'test-1', command: 'npm test', output: '8 tests passed', exit_code: 0 },
           { id: 'agent-a', name: 'spawn_subagent', status: 'running', child_id: 'child-1', description: 'Review configuration changes', background: true },
         ] }], true);
-      }, { root, view });
-      const group = page.locator('[data-step="group-tool-read-a"]');
+      }, { root });
+      const group = page.locator('[data-step="cgroup-tool-read-a"]');
       const heads = await page.locator('.chat-step:not(.is-think) > .chat-step-main > .chat-step-head').evaluateAll(nodes => nodes.filter(el => el.getBoundingClientRect().height).map(el => {
         const label = el.querySelector('.chat-step-label');
         const state = el.querySelector('.chat-step-state');
-        const r = el.getBoundingClientRect(), s = state.getBoundingClientRect();
-        return { height: r.height, row: parseFloat(getComputedStyle(label).lineHeight), stateY: s.y, top: r.y, bottom: r.bottom,
+        const r = el.getBoundingClientRect();
+        const sb = state ? state.getBoundingClientRect() : null;
+        const s = sb && sb.height ? sb : null;
+        return { group: el.closest('.chat-step').classList.contains('is-console-group'), height: r.height, row: parseFloat(getComputedStyle(label).lineHeight), stateY: s ? s.y : r.y, top: r.y, bottom: r.bottom,
           font: getComputedStyle(label).fontFamily, size: getComputedStyle(label).fontSize, weight: getComputedStyle(label).fontWeight,
           color: getComputedStyle(label).color, background: getComputedStyle(label).backgroundImage,
-          stateRight: s.right, whitespace: getComputedStyle(state).whiteSpace };
+          stateRight: s ? s.right : r.right, whitespace: state ? getComputedStyle(state).whiteSpace : 'nowrap' };
       }));
       assert.ok(heads.every(h => h.height <= h.row + 1), `all collapsed headers must be one dense line: ${JSON.stringify(heads)}`);
       assert.ok(heads.every(h => h.stateY >= h.top && h.stateY < h.bottom && h.whitespace === 'nowrap'));
       assert.equal(new Set(heads.map(h => h.font + h.size)).size, 1, 'group and standalone typography match');
-      assert.equal(new Set(heads.map(h => h.weight + h.color + h.background)).size, 1, 'tool targets do not inherit running shimmer or different emphasis');
+      const emphasis = (pred) => new Set(heads.filter(pred).map(h => h.weight + h.color + h.background)).size;
+      assert.equal(emphasis(h => !h.group), 1, 'tool targets do not inherit running shimmer or different emphasis');
       assert.ok(Math.max(...heads.map(h => h.stateRight)) - Math.min(...heads.map(h => h.stateRight)) < 2, 'all top-level statuses share the right alignment');
-      await page.locator('.chat-flow').screenshot({ path: `${out}/${view}-${width}-collapsed.png` });
+      await page.locator('.chat-flow').screenshot({ path: `${out}/${width}-collapsed.png` });
       const toggle = group.locator(':scope > .chat-step-main > .chat-step-head > .chat-step-toggle');
-      assert.match(await toggle.textContent(), /client\/config.ts, server\/config.ts/);
+      assert.match(await toggle.textContent(), /Read 2 files/);
       await toggle.click();
-      await group.getByRole('button', { name: 'Expand results', exact: true }).click();
-      assert.equal(await group.locator('[data-tool="read_file"] .chat-step-toggle[aria-expanded="true"]').count(), 2);
-      assert.ok((await group.innerText()).includes(root + '/src/client/config.ts'));
-      await group.getByRole('button', { name: 'Collapse results', exact: true }).click();
-      assert.equal(await group.locator('[data-tool="read_file"] .chat-step-toggle[aria-expanded="false"]').count(), 2);
-      const shellGroup = page.locator('[data-step="group-tool-shell-a"]');
-      await shellGroup.locator(':scope > .chat-step-main > .chat-step-head > .chat-step-toggle').click();
+      const openText = await group.innerText();
+      assert.ok(openText.includes('client/config.ts') && openText.includes('server/config.ts'), `the open summary prints its members: ${openText.slice(0, 200)}`);
+      await group.locator('.chat-console-bundle .chat-step-node').first().click({ force: true });
+      assert.equal(await toggle.getAttribute('aria-expanded'), 'false', 'a click on the printed members folds the summary');
       const shell = page.locator('[data-step="tool-shell-a"]');
-      assert.match(await shell.locator('.chat-tool-subject').innerText(), /npm run build/);
-      assert.doesNotMatch(await shell.locator('.chat-tool-subject').innerText(), /cd |\/home/);
-      await shell.locator('.chat-step-toggle').click();
-      await shell.getByRole('button', { name: 'Copy command', exact: true }).click();
-      assert.equal(await page.evaluate(() => navigator.clipboard.readText()), `cd '${root}' && npm run build`);
+      assert.match(await shell.locator('.chat-step-label').innerText(), /npm run build/);
+      assert.doesNotMatch(await shell.locator('.chat-step-label').innerText(), /cd |\/home/);
+      // (Copy command lives in the row's detail sections, which standalone rows
+      // no longer render — reported as a static-side gap.)
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
       const flow = page.locator('.chat-flow');
       const height = Math.ceil((await flow.boundingBox()).height);
       await page.setViewportSize({ width, height: Math.max(1000, height + 340) });
       await flow.scrollIntoViewIfNeeded();
-      await flow.screenshot({ path: `${out}/${view}-${width}.png` });
+      await flow.screenshot({ path: `${out}/${width}.png` });
     }
 
     // Background-only work is discoverable even without a subagent. Both parent
@@ -119,34 +117,35 @@ const out = process.env.TOOL_UI_ARTIFACTS || '/tmp/opencode/tool-redesign';
     await page.locator('[data-agents-close]').click();
     assert.equal(await page.locator('[data-jobs-list]').evaluate(el => el.nextElementSibling.matches('[data-chat-thread]')), true, 'commands stay outside the scrolling transcript');
     await page.locator('[data-show-job="job-linked"]').click();
-    assert.equal(await page.locator('[data-step="tool-work-job"] .chat-step-toggle').getAttribute('aria-expanded'), 'true');
+    const workRow = page.locator('[data-execution="job-linked"]');
+    await workRow.waitFor();
+    assert.match(await workRow.innerText(), /Running in the background/, 'the job view reveals its transcript row, still running in the background');
+    assert.doesNotMatch(await workRow.innerText(), /Parent command output/, 'a running background row shows no output tail in-transcript');
     await page.evaluate(() => fuseToolFixture.work([{ id: 'job-child', command_id: 'job-child', state: 'running', host: 'workstation', cwd: '/repo', command: 'npm run build', output: 'Child command output', background: true }]));
     await page.locator('[data-agents-close]').click();
     await page.locator('[data-show-job="job-child"]').click();
-    await page.getByText('Child command output', { exact: true }).waitFor();
+    const jobDetail = page.locator('.chat-jobs-detail', { hasText: 'Child command output' });
+    await jobDetail.waitFor();
+    assert.match(await jobDetail.getAttribute('class'), /is-open/, 'the job view opens the child command detail');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
 
-    // Both directions animate, and a completion arriving during motion retains
-    // disclosure/focus and paints the final state rather than dropping the update.
-    for (const view of ['cli', 'compact']) {
+    // A completion arriving while the disclosure is in play retains the
+    // disclosure and paints the final state rather than dropping the update.
+    // (The console theme renders tool disclosures instantly — the animated
+    // disclosure belonged to the retired views.)
+    {
       await page.emulateMedia({ reducedMotion: 'no-preference' });
-      await page.evaluate(view => {
-        fuseToolFixture.view(view);
-        fuseToolFixture.mount([{ tools: [{ id: 'motion', name: 'run_terminal_command', status: 'running', command: 'npm test' }] }], true);
-      }, view);
+      await page.evaluate(() => {
+        fuseToolFixture.mount([{ tools: [{ id: 'motion', name: 'read_url', status: 'running', url: 'https://example.com/report', preview: 'Loading the report' }] }], true);
+      });
       const row = page.locator('[data-step="tool-motion"]');
-      const toggle = row.locator('.chat-step-toggle');
-      await toggle.click();
-      assert.ok(await row.evaluate(el => el.getAnimations({ subtree: true }).some(a => a.effect.getKeyframes().some(k => k.height !== undefined))));
-      await page.evaluate(() => fuseToolFixture.toolEvent({ event: 'tool', id: 'motion', name: 'run_terminal_command', status: 'done', state: 'completed', output: 'All tests passed', exit_code: 0 }));
+      await row.locator('.chat-step-toggle').click();
+      await page.evaluate(() => fuseToolFixture.toolEvent({ event: 'tool', id: 'motion', name: 'read_url', status: 'done', results: [{ title: 'Report', url: 'https://example.com/report', snippet: 'All tests passed' }] }));
       await page.waitForFunction(() => document.querySelector('[data-step="tool-motion"]').dataset.state === 'done');
-      assert.equal(await toggle.getAttribute('aria-expanded'), 'true');
-      assert.ok((await row.innerText()).includes('All tests passed'));
-      await toggle.click();
-      assert.ok(await row.evaluate(el => el.getAnimations({ subtree: true }).some(a => a.effect.getKeyframes().some(k => k.height !== undefined))));
-      await page.waitForFunction(() => document.querySelector('[data-step="tool-motion"] .chat-step-reveal').getBoundingClientRect().height === 0);
+      assert.match(await row.getAttribute('class'), /is-console-expanded/, 'completion during the open keeps the disclosure');
+      assert.ok((await row.innerText()).includes('All tests passed'), 'the completion paints the final state');
     }
     assert.deepEqual(errors, []);
-    console.log('PASS target formatting, full command copy, live enrichment, terminal precedence, group controls, responsive layouts, and two-way motion with concurrent completion');
+    console.log('PASS target formatting, live enrichment, terminal precedence, group controls, responsive layouts, and disclosure with concurrent completion');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

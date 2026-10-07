@@ -10,7 +10,6 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
 const IMAGE = { mime: 'image/png', data: PNG, width: 1, height: 1, original_width: 2, original_height: 2, format: 'PNG', frame: 0, frames: 2 };
 const ROOT = { host: 'qa-box', cwd: '/srv/qa', platform: 'posix', project_root: '/srv/qa' };
-const VIEWS = ['cli', 'console', 'compact'];
 const WIDTHS = [1440, 390];
 const LOCATED = [
   '--- a/src/app.py',
@@ -78,10 +77,8 @@ const wrote = (extra = {}) => ({ id: 'wrote', name: 'write_file', status: 'done'
 
     for (const width of WIDTHS) {
       await page.setViewportSize({ width, height: 900 });
-      for (const view of VIEWS) {
-        const tag = (what) => `${what} [${view}/${width}]`;
-        await page.evaluate((view) => fuseToolFixture.view(view), view);
-        const console = view === 'console';
+      {
+        const tag = (what) => `${what} [${width}]`;
 
         // 1. State marks: green done, red failed, text color while running, never the accent.
         await mount([
@@ -99,20 +96,15 @@ const wrote = (extra = {}) => ({ id: 'wrote', name: 'write_file', status: 'done'
         }));
         const byId = Object.fromEntries(marks.map((mark) => [mark.id, mark]));
         check(byId['tool-ok'].state === 'done' && byId['tool-bad'].state === 'error' && byId['tool-live'].state === 'running' && byId['tool-halt'].state === 'interrupted', tag(`row states ${JSON.stringify(marks.map((m) => [m.id, m.state]))}`));
-        const markOf = (id) => console ? byId[id].dot : byId[id].color;
+        const markOf = (id) => byId[id].dot;
         check(markOf('tool-bad') === failColor, tag(`a failure is red (${markOf('tool-bad')} vs ${failColor})`));
         check([markOf('tool-ok'), markOf('tool-bad'), markOf('tool-live'), markOf('tool-halt')].every((color) => color !== accentColor), tag('no state mark uses the accent'));
         check(marks.every((mark) => mark.svg), tag('every row keeps its tool glyph mounted'));
-        if (console) {
-          // Console draws a dot (::after) over a transparent node. A finished dot
+        {
+          // A dot (::after) is drawn over a transparent node. A finished dot
           // is white (--mist), not the diff green; failure red and the accent are
           // what this guards.
           check(markOf('tool-ok') !== failColor && markOf('tool-ok') !== accentColor, tag(`a finished dot is not red or the accent (${markOf('tool-ok')})`));
-        } else {
-          // Terminal and Compact keep one gray icon in every state except failure,
-          // which turns red. State stays in the right-hand label, never the accent.
-          check(byId['tool-ok'].color === byId['tool-live'].color && byId['tool-ok'].color !== failColor, tag('a finished icon matches the running icon, not the failure red'));
-          check(byId['tool-bad'].color !== byId['tool-ok'].color, tag('a failure icon changes color'));
         }
 
         // 2. The icon names the tool; the text says what it did.
@@ -175,7 +167,7 @@ const wrote = (extra = {}) => ({ id: 'wrote', name: 'write_file', status: 'done'
         check(diffs.edit.lines.some((line) => line.text.trim() === 'def load():'), tag(`the diff keeps its context line: ${JSON.stringify(diffs.edit.lines)}`));
         const changed = diffs.multi.lines.map((line) => line.text.trim());
         check(changed.includes('retries = 3') && changed.includes('retries = 5') && changed.includes('timeout = 5') && changed.includes('timeout = 8'), tag(`a multi-edit shows both hunks: ${JSON.stringify(diffs.multi.lines)}`));
-        if (console) check(diffs.multi.lines.some((line) => line.text.trim() === 'retries = 5' && line.n.trim() === '4'), tag(`a hunk header locates the edit: ${JSON.stringify(diffs.multi.lines)}`));
+        check(diffs.multi.lines.some((line) => line.text.trim() === 'retries = 5' && line.n.trim() === '4'), tag(`a hunk header locates the edit: ${JSON.stringify(diffs.multi.lines)}`));
         check(diffs.noloc.lines.every((line) => line.n.trim() === ''), tag(`an unlocated edit has no fabricated line numbers: ${JSON.stringify(diffs.noloc.lines)}`));
         check(!/@@ -1\b/.test(JSON.stringify(diffs.noloc)), tag('an unlocated edit never prints @@ -1'));
         check(diffs.wrong.file.includes('other.py') && diffs.wrong.lines.some((line) => line.text === '    return attempts'), tag(`the row names the file that was edited, not the diff label: ${diffs.wrong.file}`));
@@ -189,24 +181,15 @@ const wrote = (extra = {}) => ({ id: 'wrote', name: 'write_file', status: 'done'
           if (await toggle.count() && (await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click();
         }
         await frame();
-        const files = await page.evaluate(() => Object.fromEntries(['read', 'wrote'].map((id) => {
-          const row = document.querySelector(`[data-step="tool-${id}"]`);
-          return [id, [...row.querySelectorAll('.chat-console-nline')].map((line) => [(line.querySelector('.chat-console-n') || {}).textContent.trim(), line.querySelector('.chat-console-nbody').textContent])];
-        })));
-        if (console) {
-          // Console folds a short read into "Read N lines" and keeps the body for the expand.
+        {
+          // A short read folds into "Read N lines" and keeps the body for the expand.
           const readText = await page.locator('[data-step="tool-read"]').innerText();
-          check(/Read 2 lines/.test(readText.replace(/\s+/g, ' ')), tag(`console read names how many lines: ${readText}`));
-        } else {
-          check(files.read.map((line) => line.join(':')).join('|') === '12:const a = 1;|13:const b = 2;', tag(`read rows use file line numbers, once: ${JSON.stringify(files.read)}`));
+          check(/Read 2 lines/.test(readText.replace(/\s+/g, ' ')), tag(`read names how many lines: ${readText}`));
         }
         // A write row confirms the path it wrote. It does not repeat the body.
-        if (console) {
+        {
           const wroteText = await page.locator('[data-step="tool-wrote"]').innerText();
-          check(/Wrote/.test(wroteText) && /new\.py/.test(wroteText), tag(`console write names the file: ${wroteText}`));
-        } else {
-          check(files.wrote.length === 1 && files.wrote[0][0] === '1' && /wrote src\/new\.py/.test(files.wrote[0][1]), tag(`write rows name the file they wrote: ${JSON.stringify(files.wrote)}`));
-          check(!JSON.stringify(files.wrote).includes('port = 8080'), tag('the written body is not smuggled into the confirmation line'));
+          check(/Wrote/.test(wroteText) && /new\.py/.test(wroteText), tag(`write names the file: ${wroteText}`));
         }
 
         // 5. Code scrolls; prose wraps. Nothing breaks mid-line.
@@ -250,7 +233,6 @@ const wrote = (extra = {}) => ({ id: 'wrote', name: 'write_file', status: 'done'
           return { state: row.dataset.state, status: row.querySelector('.chat-step-state').textContent.trim(), label, spinning: /cancell?ing/i.test(row.textContent) };
         });
         check(kill.state === 'done' && !kill.spinning, tag(`a copied cancelling state does not spin the receipt: ${JSON.stringify(kill)}`));
-        if (!console) check(kill.status === 'Done', tag(`the receipt reads Done, not Cancelling (${kill.status})`));
         check(/npm run watch/.test(kill.label) || /Stop/.test(kill.label), tag(`the receipt names its target: ${kill.label}`));
         await page.evaluate(() => fuseToolFixture.jobs([{ id: 'job-9', command_id: 'job-9', state: 'running', output: 'still going' }]));
         await frame();
@@ -345,7 +327,6 @@ const wrote = (extra = {}) => ({ id: 'wrote', name: 'write_file', status: 'done'
     await page.evaluate((image) => {
       widgetModels.add({ id: 'fixture-text', name: 'Text only', type: 'llama', contextWindow: 8192, image: false });
       widgetModels.add({ id: 'fixture-vision', name: 'Vision', type: 'llama', contextWindow: 8192, image: true });
-      fuseToolFixture.view('cli');
       fuseToolFixture.mount([{ tools: [{ id: 'shot', name: 'read_file', status: 'done', path: 'tiny.png', image }] }]);
     }, IMAGE);
     const open = async () => {

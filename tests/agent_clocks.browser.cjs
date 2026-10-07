@@ -75,7 +75,6 @@ const agentRow = (id, patch) => ({
         (li.querySelector('.chat-console-agent-name')?.innerText || '').replace(/\s+/g, ' ').trim(),
       ])));
     const mountGroup = (a, b) => page.evaluate(({ a, b }) => {
-      fuseToolFixture.view('console');
       fuseToolFixture.mount([{ tools: [a, b] }], false);
     }, { a, b });
     // One agents poll/reconcile (the exact call refreshAgents makes) plus a
@@ -222,7 +221,6 @@ const agentRow = (id, patch) => ({
       agentRow('d2', { work_ms: 15000, description: 'Ship the docs' }),
     ];
     await page.evaluate((thread) => {
-      fuseToolFixture.view('console');
       fuseToolFixture.mount([{ tools: [] }], false, thread);
       fuseToolFixture.sidebar.mount({ id: thread, title: 'Clock fixture', updated_at: new Date().toISOString(), running: false });
     }, THREAD);

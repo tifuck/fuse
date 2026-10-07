@@ -5,13 +5,14 @@
 <script src="/static/chat-boot.js?v=2"></script>
 <script src="/static/chat-appearance.js?v=30"></script>
 <script src="/static/chat-backdrop.js?v=8" defer></script>
+  <link rel="stylesheet" href="/static/themes/console/theme.css?v=1">
   <link rel="stylesheet" href="/static/chat-design.css?v=231">
-  <link rel="stylesheet" href="/static/chat-mainframe.css?v=23">
+  <link rel="stylesheet" href="/static/themes/console/styles/design.css?v=1">
 <link rel="stylesheet" href="/static/spinner-next.css?v=3">
 <link rel="stylesheet" href="/static/spinner-future.css?v=3">
 {% endblock %}
 {% block body %}
-<div class="chat is-empty" data-chat data-view="cli">
+<div class="chat is-empty" data-chat data-view="console">
   <aside class="chat-history" id="chat-history" data-history aria-label="Chat history">
     <div class="chat-history-head">
       <a class="chat-brand" href="/chat" aria-label="Fuse home">
@@ -98,9 +99,9 @@
     <h1 class="chat-bar-title"><span data-chat-title class="is-untitled"></span></h1>
     <div class="chat-bar-actions">
       <div class="chat-view" data-chat-view-picker>
-        <button type="button" class="chat-bar-btn" data-view-toggle aria-label="View and theme" aria-haspopup="dialog" aria-expanded="false" aria-controls="chat-view-menu" title="View and theme">
+        <button type="button" class="chat-bar-btn" data-view-toggle aria-label="Appearance" aria-haspopup="dialog" aria-expanded="false" aria-controls="chat-view-menu" title="Appearance">
           <svg viewBox="0 0 16 16" width="17" height="17" aria-hidden="true"><rect x="2.6" y="3.4" width="10.8" height="9.2" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5 6.2h6M5 8.2h4.2M5 10.2h5.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
-          <span data-view-label>View</span>
+          <span>Appearance</span>
         </button>
       </div>
       <button type="button" class="chat-bar-btn" data-artifact-toggle disabled aria-disabled="true" aria-pressed="false" aria-expanded="false" aria-controls="chat-artifact" aria-label="Artifact preview" title="Artifact preview">
@@ -388,42 +389,20 @@
     </div>
   </aside>
   <button type="button" class="chat-view-backdrop" data-view-backdrop hidden aria-label="Close appearance" tabindex="-1"></button>
-  <div class="chat-view-menu" id="chat-view-menu" data-view-menu hidden role="dialog" aria-label="View and appearance" aria-modal="true" tabindex="-1">
+  <div class="chat-view-menu" id="chat-view-menu" data-view-menu hidden role="dialog" aria-label="Appearance" aria-modal="true" tabindex="-1">
     <div class="chat-view-sheet-head" data-view-sheet-head>
       <span class="chat-view-grip" aria-hidden="true"></span>
-      <p class="chat-view-sheet-title">View &amp; appearance</p>
+      <p class="chat-view-sheet-title">Appearance</p>
       <button type="button" class="chat-menu-close chat-view-sheet-close" data-view-close aria-label="Close">
         <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
       </button>
     </div>
     <div class="chat-view-sheet-body ap">
-      <section class="ap-section" aria-labelledby="ap-h-mode">
-        <div class="ap-intro">
-          <h2 id="ap-h-mode">Reading mode</h2>
-          <p>How the conversation is laid out.</p>
-        </div>
-        <div class="ap-modes">
-          <button type="button" class="ap-mode" data-view="cli" aria-pressed="false">
-            <span class="ap-mode-art" data-art="cli" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-            <span class="ap-mode-name">Terminal</span><small>Full-window CLI</small>
-          </button>
-          <button type="button" class="ap-mode" data-view="console" aria-pressed="false">
-            <span class="ap-mode-art" data-art="console" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-            <span class="ap-mode-name">Console</span><small>Agent-style TUI</small>
-          </button>
-          <button type="button" class="ap-mode" data-view="compact" aria-pressed="false">
-            <span class="ap-mode-art" data-art="compact" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-            <span class="ap-mode-name">Compact</span><small>Quick-scan ledger</small>
-          </button>
-          <button type="button" class="ap-mode" data-view="mainframe" aria-pressed="false">
-            <span class="ap-mode-art" data-art="mainframe" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-            <span class="ap-mode-name">Mainframe</span><small>Framed panes</small>
-          </button>
-        </div>
+      <section class="ap-section" aria-label="Thinking">
         <div class="ap-body ap-switches">
           <label class="ap-switch">
             <input type="checkbox" role="switch" data-thinking-toggle checked>
-            <span class="ap-switch-copy"><span>Show thinking</span><small>Every view. Off hides thoughts, as Claude Code does; the status line still says when it is thinking. Also /thinking.</small></span>
+            <span class="ap-switch-copy"><span>Show thinking</span><small>Off hides thoughts, as Claude Code does; the status line still says when it is thinking. Also /thinking.</small></span>
           </label>
         </div>
       </section>
@@ -464,7 +443,7 @@
       <section class="ap-section" aria-labelledby="ap-h-type">
         <div class="ap-intro">
           <h2 id="ap-h-type">Type</h2>
-          <p>Size applies to every view. Each view keeps its own font.</p>
+          <p>Choose your reading font and text size.</p>
         </div>
         <div class="ap-body">
           <div class="ap-slider">
@@ -481,7 +460,7 @@
             <output for="chat-text-size" data-chat-size-value>100%</output>
           </div>
           <div class="ap-fontbar">
-            <p class="ap-scope">Font for <strong data-chat-font-view>Terminal</strong></p>
+            <p class="ap-scope">Font</p>
             <div class="ap-filters" role="group" aria-label="Filter fonts" data-chat-font-filters>
               <button type="button" data-chat-font-filter="all" aria-pressed="true">All</button>
               <button type="button" data-chat-font-filter="sans" aria-pressed="false">Sans</button>
@@ -545,6 +524,7 @@
 <script src="/static/spinner-next.js?v=3"></script>
 <script src="/static/spinner-future.js?v=3"></script>
   <script src="/static/chat-dom.js?v=1"></script>
-  <script src="/static/chat.js?v=362"></script>
-  <script src="/static/quick-dial.js?v=2"></script>
+  <script type="module" src="/static/chat.js?v=362"></script>
+  <!-- defer so it runs after the module chat.js publishes FuseChatActions -->
+  <script src="/static/quick-dial.js?v=2" defer></script>
 {% endblock %}

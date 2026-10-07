@@ -177,17 +177,16 @@ function scenarios() {
     await page.goto(origin);
     await page.waitForFunction(() => window.fuseToolFixture);
     await page.addScriptTag({ path: path.join(__dirname, 'console_ui_lib.js') });
-    await page.evaluate(() => fuseToolFixture.view('console'));
+
 
     // 1. Regression scenarios.
     const failures = [];
     for (const width of [1280, 390, 320]) {
       await page.setViewportSize({ width, height: 900 });
-      for (const view of ['cli', 'compact', 'console', 'mainframe']) {
-        const result = await page.evaluate(async ({ view, call }) => {
-          fuseToolFixture.view(view);
+      {
+        const result = await page.evaluate(async (call) => {
           await new Promise((resolve) => requestAnimationFrame(resolve));
-          const todo = { id: 'scale-todo', name: 'todo_write', status: 'done', todos: [{ content: 'Audit chat text scaling across every reading mode and every tool output', status: 'in_progress' }], results: [], error: '' };
+          const todo = { id: 'scale-todo', name: 'todo_write', status: 'done', todos: [{ content: 'Audit chat text scaling at every size and every tool output', status: 'in_progress' }], results: [], error: '' };
           fuseToolFixture.mountThread([{ role: 'user', content: 'Go.' }, { id: 'scale-turn', role: 'assistant', content: '', reasoning: 'Checking.', elapsedMs: 65000, content: 'Working.', tools: [todo, call], segments: [{ type: 'tool', id: todo.id }, { type: 'content', text: 'Working.' }, { type: 'tool', id: call.id }] }], { live: true, phase: 'tools' });
           const dock = document.querySelector('[data-live-dock]');
           const label = dock.querySelector('.chat-status-verb');
@@ -213,17 +212,8 @@ function scenarios() {
             const dot = row && row.querySelector(':scope > .chat-step-node');
             const head = row && (row.querySelector('.chat-console-call') || row.querySelector('.chat-step-label'));
             const glyph = dock.querySelector('.chat-activity-spin');
-            const prose = document.querySelector('.chat-md');
             const box = (el) => el.getBoundingClientRect();
-            if (view === 'mainframe' && glyph && prose) {
-              // Mainframe folds a running call into the live line, so its text column is the prose's.
-              aligned.push({
-                size,
-                text: Math.abs(box(label).left - (box(prose).left + parseFloat(getComputedStyle(prose).paddingLeft))),
-                type: Math.abs(parseFloat(getComputedStyle(label).fontSize) - parseFloat(getComputedStyle(prose).fontSize)),
-                at: 'prose',
-              });
-            } else if (row && dot && head && glyph) {
+            if (row && dot && head && glyph) {
               aligned.push({
                 size,
                 glyph: Math.abs(box(glyph).left + box(glyph).width / 2 - (box(dot).left + box(dot).width / 2)),
@@ -241,23 +231,19 @@ function scenarios() {
           const out = { unscaled, sizes, aligned, label: label.textContent, metaHidden: getComputedStyle(meta).display === 'none', fits: verbBounds.right <= bounds.right + 1, ellipsis: getComputedStyle(label).textOverflow === 'ellipsis' };
           FuseChatAppearance.setSize(100);
           return out;
-        }, { view, call: sh('npm test', { running: true, ms: 4000, description: 'Run the tests' }) });
-        if (Math.abs(result.sizes[1] / result.sizes[0] - 0.5) > 0.01 || Math.abs(result.sizes[2] / result.sizes[0] - 1.3) > 0.01) failures.push(`status scaling ${view} @${width}: ${result.sizes}`);
-        if (result.unscaled.length) failures.push(`transcript scaling ${view} @${width}: ${result.unscaled.join(', ')}`);
-        if (view === 'console' || view === 'mainframe') {
-          for (const row of result.aligned) {
-            if (row.missing) failures.push(`status line alignment ${view} @${width}: no call row to compare with`);
-            else if ((view === 'console' && row.glyph > 1) || row.text > 1.5 || row.type > 0.1) failures.push(`status line off the rows ${view} @${width} ${row.size}%: glyph ${(row.glyph || 0).toFixed(1)}px, text ${row.text.toFixed(1)}px, type ${row.type.toFixed(2)}px [${row.at}]`);
-          }
+        }, sh('npm test', { running: true, ms: 4000, description: 'Run the tests' }));
+        if (Math.abs(result.sizes[1] / result.sizes[0] - 0.5) > 0.01 || Math.abs(result.sizes[2] / result.sizes[0] - 1.3) > 0.01) failures.push(`status scaling @${width}: ${result.sizes}`);
+        if (result.unscaled.length) failures.push(`transcript scaling @${width}: ${result.unscaled.join(', ')}`);
+        for (const row of result.aligned) {
+          if (row.missing) failures.push(`status line alignment @${width}: no call row to compare with`);
+          else if (row.glyph > 1 || row.text > 1.5 || row.type > 0.1) failures.push(`status line off the rows @${width} ${row.size}%: glyph ${(row.glyph || 0).toFixed(1)}px, text ${row.text.toFixed(1)}px, type ${row.type.toFixed(2)}px [${row.at}]`);
         }
-        if (view === 'console') {
-          if (result.label.startsWith('Audit chat text scaling')) failures.push('Console status must never show the in-progress todo; it has its own section');
-          if (width <= 600 && (result.metaHidden || !result.fits || !result.ellipsis)) failures.push('mobile Console status keeps its duration and status, and ellipsizes the task');
-          if (width === 1280 && result.metaHidden) failures.push('desktop Console keeps status counters');
-        }
+        if (result.label.startsWith('Audit chat text scaling')) failures.push('the status line must never show the in-progress todo; it has its own section');
+        if (width <= 600 && (result.metaHidden || !result.fits || !result.ellipsis)) failures.push('the mobile status line keeps its duration and status, and ellipsizes the task');
+        if (width === 1280 && result.metaHidden) failures.push('the desktop status line keeps status counters');
       }
     }
-    await page.evaluate(() => fuseToolFixture.view('console'));
+
     for (const sc of scenarios()) {
       if (ONLY !== null) break;
       for (const width of sc.wide ? [1280, 390] : [1280]) {
@@ -298,35 +284,26 @@ function scenarios() {
     }
     await page.setViewportSize({ width: 1280, height: 900 });
 
-    // /thinking hides every thought at once, in every view, and brings them back.
+    // /thinking hides every thought at once, and brings them back.
     if (ONLY === null) {
       const thinking = await page.evaluate(() => {
         const a = { id: 'th1', name: 'read_file', status: 'done', path: '/srv/qa/a.py', output: '1: x\n', results: [], error: '' };
         const rows = [{ role: 'user', content: 'Go.' }, { role: 'assistant', model: 'qa/model', elapsedMs: 9000, endedAt: '2026-10-03T20:00:00Z',
           reasoning: 'Plan.Answer.', content: 'Done.', tools: [a],
           segments: [{ type: 'reasoning', text: 'Plan.', ms: 4000 }, { type: 'tool', id: 'th1' }, { type: 'reasoning', text: 'Answer.', ms: 9000 }, { type: 'content', text: 'Done.' }] }];
-        const out = {};
-        for (const view of ['console', 'cli', 'compact']) {
-          fuseToolFixture.view(view);
-          fuseToolFixture.thinking(true);
-          fuseToolFixture.mountThread(rows);
-          const shown = document.querySelectorAll('.chat-log .is-think, .chat-log .is-console-group').length;
-          const label = document.querySelector('.chat-log').innerText;
-          fuseToolFixture.slash('thinking', '');
-          const hidden = ConsoleAudit.check({}, { thinking: false }).filter((v) => v.rule === 'thinking-shown').length;
-          const after = document.querySelector('.chat-log').innerText;
-          fuseToolFixture.slash('thinking', 'on');
-          out[view] = { shown, hidden, thoughtBefore: /Thought for|Plan\./.test(label), thoughtAfter: /Thought for|Plan\./.test(after),
-            back: /Thought for|Plan\./.test(document.querySelector('.chat-log').innerText) };
-        }
-        fuseToolFixture.view('console');
-        return out;
+        fuseToolFixture.thinking(true);
+        fuseToolFixture.mountThread(rows);
+        const label = document.querySelector('.chat-log').innerText;
+        fuseToolFixture.slash('thinking', '');
+        const hidden = ConsoleAudit.check({}, { thinking: false }).filter((v) => v.rule === 'thinking-shown').length;
+        const after = document.querySelector('.chat-log').innerText;
+        fuseToolFixture.slash('thinking', 'on');
+        return { hidden, thoughtBefore: /Thought for|Plan\./.test(label), thoughtAfter: /Thought for|Plan\./.test(after),
+          back: /Thought for|Plan\./.test(document.querySelector('.chat-log').innerText) };
       });
-      for (const [view, r] of Object.entries(thinking)) {
-        if (!r.thoughtBefore) failures.push(`/thinking ${view}: thoughts shown before`);
-        if (r.thoughtAfter || r.hidden) failures.push(`/thinking ${view}: thoughts still shown after /thinking`);
-        if (!r.back) failures.push(`/thinking ${view}: /thinking on brings them back`);
-      }
+      if (!thinking.thoughtBefore) failures.push('/thinking: thoughts shown before');
+      if (thinking.thoughtAfter || thinking.hidden) failures.push('/thinking: thoughts still shown after /thinking');
+      if (!thinking.back) failures.push('/thinking: /thinking on brings them back');
     }
 
     // 2–3. Generated histories, every step audited.
@@ -340,19 +317,15 @@ function scenarios() {
           fuseToolFixture.mountThread(step.rows, { live: step.live, phase: step.phase });
           for (const v of ConsoleAudit.check(step.truth, { live: step.live, thinkingLine: step.thinkingLine })) found.push({ step: index, note: step.note, ...v });
         });
-        // The finished thread with thinking hidden, and in the other views.
+        // The finished thread with thinking hidden.
         const last = steps[steps.length - 1];
         fuseToolFixture.thinking(false);
         fuseToolFixture.mountThread(last.rows);
         for (const v of ConsoleAudit.check(last.truth, { thinking: false })) found.push({ step: steps.length - 1, note: 'thinking hidden', ...v });
         fuseToolFixture.thinking(true);
-        for (const view of ['cli', 'compact']) {
-          fuseToolFixture.view(view);
-          fuseToolFixture.mountThread(last.rows);
-          const text = document.querySelector('.chat-log').innerText;
-          if (/\bundefined\b|\bNaN\b|\[object Object\]/.test(text)) found.push({ step: steps.length - 1, note: view, rule: 'placeholder-text', row: '', detail: '' });
-        }
-        fuseToolFixture.view('console');
+        fuseToolFixture.mountThread(last.rows);
+        const text = document.querySelector('.chat-log').innerText;
+        if (/\bundefined\b|\bNaN\b|\[object Object\]/.test(text)) found.push({ step: steps.length - 1, note: 'settled', rule: 'placeholder-text', row: '', detail: '' });
         return { renders: steps.length + 3, found };
       }, seed);
       renders += result.renders;
@@ -366,7 +339,7 @@ function scenarios() {
       if (unique.length > 60) console.error(`… and ${unique.length - 60} more`);
     }
     assert.equal(unique.length, 0, `${unique.length} Console UI problems`);
-    console.log(`PASS: Console UI — ${scenarios().length} regression scenarios, /thinking in 3 views, ${seeds.length} generated histories (${renders} renders) in ${((Date.now() - started) / 1000).toFixed(1)}s`);
+    console.log(`PASS: Console UI — ${scenarios().length} regression scenarios, /thinking hide and show, ${seeds.length} generated histories (${renders} renders) in ${((Date.now() - started) / 1000).toFixed(1)}s`);
   } finally {
     await browser.close();
   }

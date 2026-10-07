@@ -104,7 +104,7 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       const p = await page();
       const created = await seed(p, turn('Compact this', 'Working'));
       await open(p, created.id);
-      await p.evaluate(() => fuseToolFixture.view('console'));
+
       await p.locator('[data-chat-input]').fill('Queue fixture tool-step compaction');
       await p.locator('[data-chat-send]').click();
       await p.waitForFunction(() => document.body.classList.contains('is-streaming'));
@@ -130,14 +130,18 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       const p = await page();
       const created = await seed(p, [...turn('Keep this wording', 'First answer'), ...turn('Change this one', 'Second answer')]);
       await open(p, created.id);
-      await p.locator('[aria-label="Edit"]').last().click();
+      const editBtn = p.locator('[data-chat-log] [aria-label="Edit"]').last();
+      assert.ok(await editBtn.count() >= 1, 'the user turn offers Edit');
+      await editBtn.evaluate(el => el.click());
       const box = p.locator('[data-edit]');
       await box.waitFor();
       await box.fill('Change this one, revised');
       assert.equal(await box.evaluate(el => document.activeElement === el && el.selectionStart === el.value.length), true, 'the edit opens with the caret at the end');
       await p.locator('[data-edit]').press('Escape');
       assert.equal(await p.locator('[data-edit]').count(), 0, 'escape closes the edit');
-      await p.locator('[aria-label="Rewind"]').first().click();
+      const rewindBtn = p.locator('[data-chat-log] [aria-label="Rewind"]').first();
+      assert.ok(await rewindBtn.count() >= 1, 'the user turn offers Rewind');
+      await rewindBtn.evaluate(el => el.click());
       await p.waitForFunction(() => document.querySelector('[data-chat-input]').value === 'Keep this wording');
       const caret = await p.locator('[data-chat-input]').evaluate(el => ({ start: el.selectionStart, end: el.selectionEnd, len: el.value.length, focused: document.activeElement === el }));
       assert.deepEqual(caret, { start: 'Keep this wording'.length, end: 'Keep this wording'.length, len: 'Keep this wording'.length, focused: true });
@@ -186,7 +190,7 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
     // Cancelling mid-tool settles every running row and re-arms the composer.
     {
       const p = await page();
-      await p.evaluate(() => fuseToolFixture.view('console'));
+
       await p.locator('[data-chat-input]').fill('Queue fixture tool-step then cancel');
       await p.locator('[data-chat-send]').click();
       await p.waitForFunction(() => document.querySelector('[data-state="running"]'));
@@ -209,7 +213,9 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       const p = await page();
       const created = await seed(p, turn('Retry me', 'First try'));
       await open(p, created.id);
-      await p.locator('[aria-label="Retry"]').click();
+      const retryBtn = p.locator('[data-chat-log] .chat-msg-actions button[aria-label="Retry"]');
+      assert.equal(await retryBtn.count(), 1, 'the last assistant turn offers Retry');
+      await retryBtn.evaluate(el => el.click());
       await p.waitForFunction(() => document.body.classList.contains('is-streaming'));
       await p.waitForFunction(() => !document.body.classList.contains('is-streaming'), null, { timeout: 30000 });
       const after = await p.evaluate(async id => (await fuseToolFixture.api('/chat/threads/' + id)).messages.map(m => m.content), created.id);
@@ -244,7 +250,7 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
         { id: crypto.randomUUID(), role: 'assistant', content: 'Started.', tools: [tool], segments: [{ type: 'content', text: 'Started.' }, { type: 'tool', id: 'orphan-cmd' }] },
       ]);
       await open(p, created.id);
-      await p.evaluate(() => fuseToolFixture.view('console'));
+
       await p.evaluate(() => fuseToolFixture.jobs([]));
       await p.waitForFunction(() => document.querySelector('[data-tool="run_terminal_command"]').dataset.state !== 'running');
       assert.equal(await p.locator('[data-tool="run_terminal_command"]').getAttribute('data-state'), 'interrupted');

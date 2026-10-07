@@ -1,4 +1,4 @@
-// Subagent tool rows in the PARENT Console/Mainframe transcript: spawn_subagent
+// Subagent tool rows in the PARENT transcript: spawn_subagent
 // (foreground and background), get_subagent_output, kill_subagent,
 // list_subagents, and the automated "background subagent report" wake row —
 // over their whole lifecycle (running → working → done/failed/interrupted,
@@ -85,16 +85,15 @@ const taskEnvelope = (id, body) => [
     const domCount = (needle) => page.evaluate((n) => (document.querySelector('.chat-log')?.textContent.split(n).length - 1) || 0, needle);
 
     // —— 1. Foreground spawn: running → what the child is doing → done ——
-    for (const view of ['console', 'mainframe']) {
+    {
       const fg = spawn({ id: 'sp-fg', child_id: 'fg1' });
-      await page.evaluate(({ view, fg }) => { fuseToolFixture.view(view); fuseToolFixture.mount([{ tools: [fg] }], true); }, { view, fg });
+      await page.evaluate((fg) => { fuseToolFixture.mount([{ tools: [fg] }], true); }, fg);
       await waitRow('[data-step="tool-sp-fg"]');
       let row = await readRow('[data-step="tool-sp-fg"]');
-      assert.equal(row.state, 'running', `${view} running state | ${JSON.stringify(row)}`);
-      // Mainframe's stylesheet hides the call parens; both heads name the child.
-      assert.equal(row.head, view === 'console' ? 'Agent(Audit the connection pool)' : 'AgentAudit the connection pool', `${view} head names the child | ${JSON.stringify(row)}`);
-      assert.equal(row.open, 'fg1', `${view} Open agent targets the child | ${JSON.stringify(row)}`);
-      assert.equal(row.status, 'Initializing…', `${view} pre-recent status, foreground never says backgrounded | ${JSON.stringify(row)}`);
+      assert.equal(row.state, 'running', `running state | ${JSON.stringify(row)}`);
+      assert.equal(row.head, 'Agent(Audit the connection pool)', `head names the child | ${JSON.stringify(row)}`);
+      assert.equal(row.open, 'fg1', `Open agent targets the child | ${JSON.stringify(row)}`);
+      assert.equal(row.status, 'Initializing…', `pre-recent status, foreground never says backgrounded | ${JSON.stringify(row)}`);
 
       // The row tracks the child's latest work as the agents feed updates it.
       await page.evaluate(() => fuseToolFixture.agents([{
@@ -109,13 +108,9 @@ const taskEnvelope = (id, body) => [
         context: { used: 32100 },
       }]));
       row = await readRow('[data-step="tool-sp-fg"]');
-      assert.equal(row.state, 'running', `${view} still running | ${JSON.stringify(row)}`);
-      if (view === 'console') {
-        assert.deepEqual(row.steps, ['Bash(npm test)', 'Searching for 1 pattern, reading 2 files…'], `console live steps | ${JSON.stringify(row)}`);
-        assert.equal(row.more, '… +5 tool uses', `console hidden count | ${JSON.stringify(row)}`);
-      } else {
-        assert.equal(row.status, 'Searching for 1 pattern, reading 2 files…', `mainframe status tracks the child's work | ${JSON.stringify(row)}`);
-      }
+      assert.equal(row.state, 'running', `still running | ${JSON.stringify(row)}`);
+      assert.deepEqual(row.steps, ['Bash(npm test)', 'Searching for 1 pattern, reading 2 files…'], `live steps | ${JSON.stringify(row)}`);
+      assert.equal(row.more, '… +5 tool uses', `hidden count | ${JSON.stringify(row)}`);
 
       await page.evaluate(() => fuseToolFixture.agents([{
         id: 'fg1', status: 'running',
@@ -129,13 +124,9 @@ const taskEnvelope = (id, body) => [
         context: { used: 32100 },
       }]));
       row = await readRow('[data-step="tool-sp-fg"]');
-      if (view === 'console') {
-        // Only the newest step reads as active ("Searching…"); older ones past tense.
-        assert.deepEqual(row.steps, ['Bash(npm test)', 'Searched for 1 pattern, read 1 file', 'Bash(pytest -q tests/api)'], `console steps track the newest call | ${JSON.stringify(row)}`);
-        assert.equal(row.more, '… +6 tool uses', `console count grows with tool_counts | ${JSON.stringify(row)}`);
-      } else {
-        assert.equal(row.status, 'Bash: pytest -q tests/api', `mainframe status names the newest call | ${JSON.stringify(row)}`);
-      }
+      // Only the newest step reads as active ("Searching…"); older ones past tense.
+      assert.deepEqual(row.steps, ['Bash(npm test)', 'Searched for 1 pattern, read 1 file', 'Bash(pytest -q tests/api)'], `steps track the newest call | ${JSON.stringify(row)}`);
+      assert.equal(row.more, '… +6 tool uses', `count grows with tool_counts | ${JSON.stringify(row)}`);
 
       // The child finishes: header, dot and counts settle and stop moving.
       await page.evaluate(() => fuseToolFixture.agents([{
@@ -143,30 +134,22 @@ const taskEnvelope = (id, body) => [
         work_ms: 65000, tool_counts: { run_terminal_command: 5, grep: 2, read_file: 3 }, context: { used: 32100 },
       }]));
       row = await readRow('[data-step="tool-sp-fg"]');
-      assert.equal(row.state, 'done', `${view} done state | ${JSON.stringify(row)}`);
-      assert.equal(row.title, 'Done', `${view} dot says Done | ${JSON.stringify(row)}`);
-      assert.equal(row.clocks, 0, `${view} no ticking clock on a spawn row | ${JSON.stringify(row)}`);
-      assert.equal(row.runningHang, false, `${view} running hang class leaves | ${JSON.stringify(row)}`);
-      assert.ok(!/Initializing|Backgrounded agent|Still running/.test(row.text), `${view} no stale running text | ${JSON.stringify(row)}`);
-      if (view === 'console') {
-        assert.equal(row.status, 'Done (10 tool uses · 32.1k tokens · 1m 5s)', `console done counts | ${JSON.stringify(row)}`);
-        assert.deepEqual(row.steps, [], `console steps leave on completion | ${JSON.stringify(row)}`);
-        assert.ok(!row.dom.includes('POOL_AUDIT_REPORT'), `console shows counts, not the report body | ${JSON.stringify(row)}`);
-      } else {
-        // Mainframe hides a call's output block until expanded, and an agent
-        // row is never expandable — the report rides the row for Open agent.
-        assert.equal(row.status, 'finished · 1m 5s', `mainframe done status | ${JSON.stringify(row)}`);
-        assert.ok(row.dom.includes('POOL_AUDIT_REPORT'), `mainframe keeps the report on its spawn row | ${JSON.stringify(row)}`);
-        assert.equal(row.open, 'fg1', `mainframe keeps Open agent | ${JSON.stringify(row)}`);
-      }
-      console.log(`PASS foreground spawn lifecycle ${view}`);
+      assert.equal(row.state, 'done', `done state | ${JSON.stringify(row)}`);
+      assert.equal(row.title, 'Done', `dot says Done | ${JSON.stringify(row)}`);
+      assert.equal(row.clocks, 0, `no ticking clock on a spawn row | ${JSON.stringify(row)}`);
+      assert.equal(row.runningHang, false, `running hang class leaves | ${JSON.stringify(row)}`);
+      assert.ok(!/Initializing|Backgrounded agent|Still running/.test(row.text), `no stale running text | ${JSON.stringify(row)}`);
+      assert.equal(row.status, 'Done (10 tool uses · 32.1k tokens · 1m 5s)', `done counts | ${JSON.stringify(row)}`);
+      assert.deepEqual(row.steps, [], `steps leave on completion | ${JSON.stringify(row)}`);
+      assert.ok(!row.dom.includes('POOL_AUDIT_REPORT'), `counts, not the report body | ${JSON.stringify(row)}`);
+      console.log('PASS foreground spawn lifecycle');
     }
 
     // —— 2. Failure, interruption, kill_subagent, get_subagent_output (console) ——
     const bad = spawn({ id: 'sp-bad', child_id: 'bad1' });
     const sep = { id: 'sep-1', name: 'read_file', status: 'done', path: 'README.md', preview: '1: hi', results: [] };
     const stopped = spawn({ id: 'sp-stopped', child_id: 'stopped1', description: 'Check the mail queue', preview: 'Check the mail queue' });
-    await page.evaluate(({ bad, sep, stopped }) => { fuseToolFixture.view('console'); fuseToolFixture.mount([{ tools: [bad, sep, stopped] }], true); }, { bad, sep, stopped });
+    await page.evaluate(({ bad, sep, stopped }) => { fuseToolFixture.mount([{ tools: [bad, sep, stopped] }], true); }, { bad, sep, stopped });
     await page.evaluate(() => fuseToolFixture.agents([
       { id: 'bad1', status: 'failed', error: 'provider 502', message: { role: 'assistant', content: 'PARTIAL_MUST_NOT_SHOW', error: 'provider 502' } },
       { id: 'stopped1', status: 'cancelled', description: 'Check the mail queue' },
@@ -266,7 +249,7 @@ const taskEnvelope = (id, body) => [
     // —— 3. Background spawns group; children finish out of order (console) ——
     const b1 = spawn({ id: 'sp-b1', child_id: 'b1', background: true, summary: 'Background task started', description: 'Index the docs', preview: 'Index the docs' });
     const b2 = spawn({ id: 'sp-b2', child_id: 'b2', background: true, summary: 'Background task started', description: 'Ship the docs', preview: 'Ship the docs' });
-    await page.evaluate(({ b1 }) => { fuseToolFixture.view('console'); fuseToolFixture.mount([{ tools: [] }], true); fuseToolFixture.append(b1, true); }, { b1 });
+    await page.evaluate(({ b1 }) => { fuseToolFixture.mount([{ tools: [] }], true); fuseToolFixture.append(b1, true); }, { b1 });
     await waitRow('[data-step="tool-sp-b1"]');
     let solo = await readRow('[data-step="tool-sp-b1"]');
     assert.equal(solo.status, 'Backgrounded agent', `a lone background spawn says so | ${JSON.stringify(solo)}`);
@@ -328,64 +311,8 @@ const taskEnvelope = (id, body) => [
     assert.equal(await domCount('REPORT_B1'), 0, 'reports stay out of the console transcript');
     console.log('PASS background group finishes out of order');
 
-    // —— 4. Mainframe rows: a report lands on its own spawn, once, and survives reload ——
-    const m1 = spawn({ id: 'sp-m1', child_id: 'm1', background: true, summary: 'Background task started', description: 'Index the docs', preview: 'Index the docs' });
-    const m2 = spawn({ id: 'sp-m2', child_id: 'm2', background: true, summary: 'Background task started', description: 'Ship the docs', preview: 'Ship the docs' });
-    await page.evaluate(({ m1, m2 }) => { fuseToolFixture.view('mainframe'); fuseToolFixture.mount([{ tools: [m1, m2] }], true); }, { m1, m2 });
-    await waitRow('[data-step="tool-sp-m1"]');
-    await waitRow('[data-step="tool-sp-m2"]');
-    let m1Row = await readRow('[data-step="tool-sp-m1"]');
-    let m2Row = await readRow('[data-step="tool-sp-m2"]');
-    assert.equal(m1Row.status, 'Backgrounded agent', `m1 running | ${JSON.stringify(m1Row)}`);
-    assert.equal(m2Row.status, 'Backgrounded agent', `m2 running | ${JSON.stringify(m2Row)}`);
-    assert.ok(!m1Row.text.includes('REPORT_M') && !m2Row.text.includes('REPORT_M'), `no reports yet | ${JSON.stringify([m1Row, m2Row])}`);
-
-    await page.evaluate(() => fuseToolFixture.agents([
-      { id: 'm2', status: 'completed', description: 'Ship the docs', message: { role: 'assistant', content: 'REPORT_M2' }, work_ms: 41000 },
-    ]));
-    m1Row = await readRow('[data-step="tool-sp-m1"]');
-    m2Row = await readRow('[data-step="tool-sp-m2"]');
-    assert.equal(m2Row.state, 'done', `m2 done | ${JSON.stringify(m2Row)}`);
-    assert.equal(m2Row.status, 'finished · 41s', `m2 duration from the child's work | ${JSON.stringify(m2Row)}`);
-    // The report attaches to its own spawn's row (DOM; the visible body stays
-    // behind Open agent) and never to the sibling's.
-    assert.ok(m2Row.dom.includes('REPORT_M2'), `m2 carries its report | ${JSON.stringify(m2Row)}`);
-    assert.ok(!m2Row.dom.includes('REPORT_M1'), `m2 has only its own report | ${JSON.stringify(m2Row)}`);
-    assert.equal(m1Row.state, 'running', `m1 untouched by m2's report | ${JSON.stringify(m1Row)}`);
-    assert.ok(!m1Row.dom.includes('REPORT_M2'), `m1 does not show m2's report | ${JSON.stringify(m1Row)}`);
-    assert.equal(m2Row.dom.split('REPORT_M2').length - 1, 1, `m2's report appears exactly once | ${JSON.stringify(m2Row)}`);
-
-    await page.evaluate(() => fuseToolFixture.agents([
-      { id: 'm1', status: 'completed', description: 'Index the docs', message: { role: 'assistant', content: 'REPORT_M1' }, work_ms: 96000 },
-    ]));
-    m1Row = await readRow('[data-step="tool-sp-m1"]');
-    assert.equal(m1Row.status, 'finished · 1m 36s', `m1 duration | ${JSON.stringify(m1Row)}`);
-    assert.ok(m1Row.dom.includes('REPORT_M1') && !m1Row.dom.includes('REPORT_M2'), `m1 shows only its report | ${JSON.stringify(m1Row)}`);
-    assert.equal(m1Row.dom.split('REPORT_M1').length - 1, 1, `each report once on its row`);
-
-    // Reload: the persisted traces paint the same rows without duplicating.
-    const persisted = await page.evaluate(() => fuseToolFixture.snapshot()[0].tools.map((t) => fuseToolFixture.serializeTrace(t)));
-    await page.evaluate((tools) => {
-      fuseToolFixture.mountThread([
-        { role: 'user', content: 'Run both audits.' },
-        { role: 'assistant', content: 'Both shipped.', tools, elapsedMs: 200000, endedAt: new Date().toISOString() },
-      ]);
-    }, persisted);
-    await waitRow('[data-step="tool-sp-m1"]');
-    const r1 = await readRow('[data-step="tool-sp-m1"]');
-    const r2 = await readRow('[data-step="tool-sp-m2"]');
-    assert.equal(r1.state, 'done', `reload keeps m1 done | ${JSON.stringify(r1)}`);
-    assert.equal(r2.state, 'done', `reload keeps m2 done | ${JSON.stringify(r2)}`);
-    assert.equal(r1.status, 'finished · 1m 36s', `reload keeps m1 duration | ${JSON.stringify(r1)}`);
-    assert.equal(r2.status, 'finished · 41s', `reload keeps m2 duration | ${JSON.stringify(r2)}`);
-    assert.equal(r1.dom.split('REPORT_M1').length - 1, 1, `reload: m1 report once, on its row`);
-    assert.equal(r2.dom.split('REPORT_M2').length - 1, 1, `reload: m2 report once, on its row`);
-    assert.ok(!r1.dom.includes('REPORT_M2') && !r2.dom.includes('REPORT_M1'), `reload keeps reports on their own rows | ${JSON.stringify([r1, r2])}`);
-    assert.ok(!/Backgrounded agent|Still running/.test(r1.text + r2.text), `reload leaves no running text | ${JSON.stringify([r1, r2])}`);
-    console.log('PASS mainframe report delivery and reload');
-
     // —— 5. The automated "background subagent report" wake row ——
-    for (const view of ['console', 'mainframe']) {
+    {
       const rows = [
         { role: 'user', content: 'Audit and ship.' },
         { role: 'assistant', content: 'Spawned.', elapsedMs: 4000, endedAt: new Date().toISOString(), tools: [
@@ -395,48 +322,39 @@ const taskEnvelope = (id, body) => [
         { role: 'user', auto: true, content: taskEnvelope('w1', 'WAKE_REPORT_BODY') },
         { role: 'assistant', content: 'Docs shipped.', elapsedMs: 3000, endedAt: new Date().toISOString() },
       ];
-      await page.evaluate(({ view, rows }) => { fuseToolFixture.view(view); fuseToolFixture.mountThread(rows); }, { view, rows });
+      await page.evaluate((rows) => { fuseToolFixture.mountThread(rows); }, rows);
       const chips = await page.evaluate(() => [...document.querySelectorAll('.chat-auto-chip')].map((el) => ({
         label: el.querySelector('.chat-auto-label')?.textContent || '',
         expanded: el.getAttribute('aria-expanded'),
       })));
-      assert.equal(chips.length, 1, `${view} exactly one wake row | ${JSON.stringify(chips)}`);
-      assert.equal(chips[0].label, 'Automated · background subagent report', `${view} wake row label | ${JSON.stringify(chips)}`);
-      if (view === 'console') {
-        const group = await readGroup('[data-step="agents-w1"]');
-        assert.equal(group.rows[0].sub, '', `the reported child drops its running line | ${JSON.stringify(group)}`);
-        assert.ok(group.rows[1].sub.includes('Running in the background'), `the other child still shows running | ${JSON.stringify(group)}`);
-        assert.ok(!group.text.includes('WAKE_REPORT_BODY'), `the group carries no report body | ${JSON.stringify(group)}`);
-      } else {
-        const w1 = await readRow('[data-step="tool-sp-w1"]');
-        assert.equal(w1.status, 'finished · 41s', `mainframe wake spawn done | ${JSON.stringify(w1)}`);
-        assert.ok(w1.dom.includes('WAKE_REPORT_BODY'), `mainframe wake spawn carries the report | ${JSON.stringify(w1)}`);
-        const w2 = await readRow('[data-step="tool-sp-w2"]');
-        assert.equal(w2.state, 'running', `the other child keeps running | ${JSON.stringify(w2)}`);
-        assert.ok(!w2.dom.includes('WAKE_REPORT_BODY'), `the wake report does not mark the other child | ${JSON.stringify(w2)}`);
-      }
+      assert.equal(chips.length, 1, `exactly one wake row | ${JSON.stringify(chips)}`);
+      assert.equal(chips[0].label, 'Automated · background subagent report', `wake row label | ${JSON.stringify(chips)}`);
+      const group = await readGroup('[data-step="agents-w1"]');
+      assert.equal(group.rows[0].sub, '', `the reported child drops its running line | ${JSON.stringify(group)}`);
+      assert.ok(group.rows[1].sub.includes('Running in the background'), `the other child still shows running | ${JSON.stringify(group)}`);
+      assert.ok(!group.text.includes('WAKE_REPORT_BODY'), `the group carries no report body | ${JSON.stringify(group)}`);
       // The envelope exists once in the DOM (the wake row's collapsed reveal);
       // the visible transcript shows the report at most once.
-      assert.equal(await domCount('WAKE_REPORT_BODY'), view === 'console' ? 1 : 2, `${view} envelope copy count (wake row reveal; mainframe also renders it on the spawn)`);
-      assert.ok((await visibleCount('WAKE_REPORT_BODY')) <= 1, `${view} report visible at most once`);
-      console.log(`PASS background subagent report wake row ${view}`);
+      assert.equal(await domCount('WAKE_REPORT_BODY'), 1, 'envelope copy count (the wake row reveal)');
+      assert.ok((await visibleCount('WAKE_REPORT_BODY')) <= 1, 'report visible at most once');
+      console.log('PASS background subagent report wake row');
     }
 
-    // —— 6. Phones: no horizontal overflow in either view ——
-    for (const view of ['console', 'mainframe']) {
+    // —— 6. Phones: no horizontal overflow ——
+    {
       await page.setViewportSize({ width: 390, height: 844 });
       const n1 = spawn({ id: 'sp-n1', child_id: 'n1', background: true, summary: 'Background task started', description: 'Rewrite the authentication layer and audit every caller with a very long description', preview: 'x' });
       const n2 = spawn({ id: 'sp-n2', child_id: 'n2', background: true, summary: 'Background task started', description: 'Ship it', preview: 'Ship it' });
       const waitN = { id: 'wait-n1', name: 'get_subagent_output', status: 'running', child_id: 'n1', preview: 'still running', background: true, results: [] };
       const list = { id: 'list-1', name: 'list_subagents', status: 'done', preview: '2 live, 1 finished', output: '{"live":[{"id":"n1","description":"Rewrite the authentication layer","status":"running"},{"id":"n2","description":"Ship it","status":"running"}],"finished":[{"id":"old","description":"Prior audit","status":"completed"}]}', results: [] };
-      await page.evaluate(({ view, n1, n2, waitN, list }) => { fuseToolFixture.view(view); fuseToolFixture.mount([{ tools: [n1, n2, waitN, list] }], true); }, { view, n1, n2, waitN, list });
+      await page.evaluate(({ n1, n2, waitN, list }) => { fuseToolFixture.mount([{ tools: [n1, n2, waitN, list] }], true); }, { n1, n2, waitN, list });
       await waitRow('[data-step="tool-wait-n1"]');
       const layout = await page.evaluate(() => {
         const over = document.scrollingElement.scrollWidth - innerWidth;
         const wide = [...document.querySelectorAll('.chat-log [data-step]')].filter((el) => el.getBoundingClientRect().right > innerWidth + 1).map((el) => el.getAttribute('data-step'));
         return { over, wide };
       });
-      assert.ok(layout.over <= 0, `${view} 390px no horizontal overflow (${layout.over}px) | wide rows ${JSON.stringify(layout.wide)}`);
+      assert.ok(layout.over <= 0, `390px no horizontal overflow (${layout.over}px) | wide rows ${JSON.stringify(layout.wide)}`);
       const listRow = await readRow('[data-step="tool-list-1"]');
       assert.match(listRow.text, /2 live, 1 finished/, `list_subagents renders its summary | ${JSON.stringify(listRow)}`);
       assert.ok(listRow.dom.includes('Prior audit'), `list_subagents carries its entries | ${JSON.stringify(listRow)}`);
@@ -445,7 +363,7 @@ const taskEnvelope = (id, body) => [
       await page.waitForFunction(() => (document.querySelector('[data-step="tool-list-1"]')?.innerText || '').includes('Prior audit'), null, { timeout: 4000 });
       const listOpen = await readRow('[data-step="tool-list-1"]');
       assert.ok(listOpen.text.includes('Rewrite the authentication layer') && listOpen.text.includes('Ship it'), `list_subagents discloses every child | ${JSON.stringify(listOpen)}`);
-      console.log(`PASS 390px layout ${view}`);
+      console.log('PASS 390px layout');
     }
 
     assert.deepEqual(errors, []);

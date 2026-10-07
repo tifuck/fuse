@@ -1,4 +1,4 @@
-// Open subagent pane (Console + Mainframe): the child's own transcript while
+// Open subagent pane: the child's own transcript while
 // the pane stays open. Dock labels, report delivery, disclosure and the
 // lifecycle matrix live in subagent_status / agent_ui / subagent_lifecycle.
 const assert = require('node:assert/strict');
@@ -96,7 +96,6 @@ function bump(id, patch) {
         overflow: document.scrollingElement.scrollWidth - window.innerWidth,
         panel: box('[data-chat-agents]'),
         close: box('[data-agents-close]'),
-        view: document.querySelector('.chat')?.getAttribute('data-view') || '',
       };
     });
     const open = async (id) => {
@@ -118,7 +117,6 @@ function bump(id, patch) {
     });
     agents = [{ id: 'nova', status: 'running', description: 'Audit the router', work_ms: 4000, work_live: true, created_at: NOW }];
     await page.evaluate((thread) => {
-      fuseToolFixture.view('console');
       fuseToolFixture.thinking(true);
       fuseToolFixture.mount([{ tools: [
         { id: 'sp-nova', name: 'spawn_subagent', status: 'done', background: true, child_id: 'nova', description: 'Audit the router' },
@@ -277,7 +275,6 @@ function bump(id, patch) {
     await page.locator('[data-sync-label]').filter({ hasText: 'Live sync' }).waitFor({ state: 'attached' });
     await page.waitForFunction(() => Boolean(window.fuseToolFixture));
     await page.evaluate((thread) => {
-      fuseToolFixture.view('console');
       fuseToolFixture.thinking(true);
       fuseToolFixture.mount([{ tools: [
         { id: 'sp-nova', name: 'spawn_subagent', status: 'done', background: true, child_id: 'nova', description: 'Audit the router' },
@@ -292,7 +289,7 @@ function bump(id, patch) {
     console.log('PASS console live pane, isolation, reopen and reload');
 
     // --- 5. A failed child and a killed child keep their output ---
-    for (const view of ['console', 'mainframe']) {
+    {
       child('fail', {
         status: 'failed', description: 'Broken worker', work_live: false,
         message: { role: 'assistant', content: 'FAIL_PARTIAL_OUTPUT', error: 'provider down', tools: [
@@ -309,34 +306,33 @@ function bump(id, patch) {
         { id: 'fail', status: 'failed', description: 'Broken worker', error: 'provider down', work_ms: 2000, created_at: NOW },
         { id: 'killed', status: 'cancelled', description: 'Stopped worker', resumable: true, work_ms: 3000, created_at: NOW },
       ];
-      await page.evaluate((name) => fuseToolFixture.view(name), view);
+
       await page.locator('[data-agents-close]').click();
       await open('fail');
       await page.locator('[data-agent-status]').getByText('failed', { exact: true }).waitFor();
       ui = await pane();
-      assert.match(ui.badgeClass, /badge fault/, `${view} failed badge: ${ui.badgeClass}`);
-      assert.equal(ui.resume, false, `${view}: a failed child has no Resume`);
-      assert.equal(ui.dockHidden, true, `${view}: a failed child shows no live dock`);
-      assert.match(ui.text, /FAIL_PARTIAL_OUTPUT/, `${view}: the failed pane keeps its text`);
-      assert.match(ui.text, /No such file/, `${view}: the failed call keeps its error`);
+      assert.match(ui.badgeClass, /badge fault/, `failed badge: ${ui.badgeClass}`);
+      assert.equal(ui.resume, false, `a failed child has no Resume`);
+      assert.equal(ui.dockHidden, true, `a failed child shows no live dock`);
+      assert.match(ui.text, /FAIL_PARTIAL_OUTPUT/, `the failed pane keeps its text`);
+      assert.match(ui.text, /No such file/, `the failed call keeps its error`);
       const failed = ui.steps.find((row) => row.tool === 'read_file');
-      assert.equal(failed?.state, 'error', `${view} failed row: ${JSON.stringify(failed)}`);
-      assert.doesNotMatch(failed.hang, /is-running/, `${view}: a failed row is not Running`);
+      assert.equal(failed?.state, 'error', `failed row: ${JSON.stringify(failed)}`);
+      assert.doesNotMatch(failed.hang, /is-running/, `a failed row is not Running`);
       await page.locator('[data-agent-back]').click();
       await open('killed');
       await page.locator('[data-agent-status]').getByText('cancelled', { exact: true }).waitFor();
       ui = await pane();
-      assert.match(ui.badgeClass, /badge stop/, `${view} cancelled badge: ${ui.badgeClass}`);
-      assert.equal(ui.resume, true, `${view}: an interrupted child offers Resume`);
+      assert.match(ui.badgeClass, /badge stop/, `cancelled badge: ${ui.badgeClass}`);
+      assert.equal(ui.resume, true, `an interrupted child offers Resume`);
       assert.match(ui.text, /KILLED_KEPT_OUTPUT/);
       const stopped = ui.steps.find((row) => row.tool === 'run_terminal_command');
-      assert.equal(stopped?.state, 'interrupted', `${view} killed row: ${JSON.stringify(stopped)}`);
-      assert.doesNotMatch(stopped.hang, /is-running/, `${view}: a killed call is not Running`);
-      // Console names why it stopped; Mainframe shares the markup but not that line.
-      if (view === 'console') assert.match(stopped.text, /Interrupted · stopped/, `${view}: ${stopped.text}`);
-      else assert.match(stopped.text, /sleep 30/, `${view}: the killed command stays: ${stopped.text}`);
-      assert.doesNotMatch(ui.text, /FAIL_PARTIAL_OUTPUT/, `${view}: the killed pane drops the failed sibling`);
-      console.log(`PASS failed and killed children ${view}`);
+      assert.equal(stopped?.state, 'interrupted', `killed row: ${JSON.stringify(stopped)}`);
+      assert.doesNotMatch(stopped.hang, /is-running/, `a killed call is not Running`);
+      // The stop names why it stopped.
+      assert.match(stopped.text, /Interrupted · stopped/, `${stopped.text}`);
+      assert.doesNotMatch(ui.text, /FAIL_PARTIAL_OUTPUT/, `the killed pane drops the failed sibling`);
+      console.log('PASS failed and killed children');
     }
 
     // --- 6. A background-command handoff folds into a step, not a raw blob ---
@@ -355,7 +351,7 @@ function bump(id, patch) {
     });
     agents = [{ id: 'fold', status: 'running', description: 'Folder', work_ms: 1000, work_live: true, created_at: NOW }];
     jobs = [{ id: 'jobnova01', command_id: 'jobnova01', agent_run_id: 'fold', state: 'completed', command: 'nohup pytest -q', exit_code: 0, background: true, elapsed_ms: 2500 }];
-    await page.evaluate(() => fuseToolFixture.view('console'));
+
     await page.locator('[data-agents-close]').click();
     await open('fold');
     await page.locator('[data-agent-log-body]').getByText(/background command/i).waitFor();

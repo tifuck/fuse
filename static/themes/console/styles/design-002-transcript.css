@@ -1,0 +1,280 @@
+html[data-chat-console="true"] .chat[data-view="console"] :is(.chat-log, .chat-turn, .chat-assistant, .chat-activity, .chat-timeline, .chat-step, .chat-step-head, .chat-query) {
+  min-width: 0;
+  max-width: 100%;
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] :is(.chat-step-toggle, .chat-step-static) {
+  min-height: var(--row);
+  height: auto;
+  padding: 0;
+  font: calc(0.92rem * var(--chat-text-scale, 1))/var(--row) var(--mono);
+  color: var(--chat-tool);
+  overflow: hidden;
+  align-items: center;
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step:not(.is-think) :is(.chat-step-toggle, .chat-step-static) {
+  display: flex;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  align-items: center;
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step-copy { gap: 0.55rem; width: 100%; align-items: center; min-height: var(--row); }
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step .chat-step-kind {
+  display: none;
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step-label {
+  font: calc(0.92rem * var(--chat-text-scale, 1))/var(--row) var(--mono);
+  color: var(--chat-tool);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step:not(.is-think) .chat-step-label {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step:not(.is-think) .chat-step-label:empty { display: none; }
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-think .chat-step-copy {
+  align-items: center;
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-think .chat-step-toggle[aria-expanded="true"] .chat-step-copy,
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-think.is-live-think .chat-step-copy {
+  align-items: flex-start;
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-think .chat-think-preview {
+  display: block !important;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--mute);
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-think:not(.is-live-think) .chat-step-toggle[aria-expanded="true"] .chat-think-preview {
+  overflow: auto;
+  text-overflow: unset;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-height: none;
+  max-width: 95ch;
+  line-height: 1.65;
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-think.is-live-think .chat-think-preview {
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  text-overflow: unset;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-height: calc(5 * var(--row));
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-think.is-live-think .chat-step-toggle[aria-expanded="true"] .chat-think-preview {
+  max-height: none;
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-think.is-live-think .chat-step-head {
+  align-items: flex-start;
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-think .chat-step-toggle[aria-expanded="true"],
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-think.is-live-think .chat-step-toggle {
+  overflow: visible;
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-think.is-live-think .chat-step-reveal {
+  display: none !important;
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-think .chat-step-reveal.is-open {
+  display: grid;
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-think .chat-think-body {
+  max-height: none;
+  margin: 0.15rem 0 0.4rem 0;
+  padding: 0;
+  border: 0;
+  color: var(--mute);
+  font: calc(0.86rem * var(--chat-text-scale, 1))/1.55 var(--mono);
+  white-space: pre-wrap;
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-think .chat-step-node { color: var(--cli-secondary); }
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-substeps {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  gap: 0.06rem;
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-query {
+  display: grid;
+  grid-template-columns: 1rem minmax(0, 1fr);
+  column-gap: 0.45rem;
+  align-items: center;
+  min-height: calc(1.1rem * var(--chat-text-scale, 1));
+  padding: 0;
+  color: var(--mute);
+  font: calc(0.86rem * var(--chat-text-scale, 1))/1.6 var(--mono);
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-query:not(.is-fail-note)::before,
+html[data-chat-console="true"] .chat[data-view="console"] .chat-query:not(.is-fail-note):last-child::before {
+  content: none !important;
+  display: none !important;
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-query.is-fail-note {
+  --nest: 0.55rem;
+  grid-template-columns: 1rem minmax(0, 1fr);
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-query.is-fail-note::before {
+  content: none;
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-query.is-fail-note .chat-query-label {
+  color: var(--fault);
+  white-space: normal;
+  overflow: visible;
+  text-overflow: unset;
+  line-height: 1.4;
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-query > .chat-query-icon {
+  grid-column: 1;
+  grid-row: 1;
+  width: 1rem;
+  height: calc(1.1rem * var(--chat-text-scale, 1));
+  background: none;
+  box-shadow: none;
+  color: var(--cli-secondary);
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-query > .chat-query-icon svg {
+  width: calc(13px * var(--chat-text-scale, 1));
+  height: calc(13px * var(--chat-text-scale, 1));
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-query > .chat-query-label,
+html[data-chat-console="true"] .chat[data-view="console"] .chat-query > a.chat-query-label {
+  grid-column: 2;
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  min-height: calc(1.1rem * var(--chat-text-scale, 1));
+  line-height: calc(1.1rem * var(--chat-text-scale, 1));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-query > .chat-substep-toggle {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+  min-height: var(--row) !important;
+  height: auto;
+  padding: 0;
+  overflow: hidden;
+  font: inherit;
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-query > .chat-substep-toggle .chat-step-chevron {
+  display: block;
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-query > .chat-step-reveal {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  min-width: 0;
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-query > .chat-step-reveal:not(.is-open) {
+  display: none;
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] :is(.chat-tool-command, .chat-tool-out) {
+  background: none;
+  border: 0;
+  margin: 0 0 0.2rem;
+  padding: 0.1rem 0;
+  font-size: calc(0.84rem * var(--chat-text-scale, 1));
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-tool-out::before { content: none; }
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step-caret {
+  display: grid;
+  grid-column: 1;
+  grid-row: 1;
+  width: 1rem;
+  height: var(--row);
+  align-self: start;
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step-caret { opacity: 0.85; }
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step-chevron { color: var(--cli-secondary); }
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step-state { display: block; grid-column: 3; grid-row: 1; }
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-error :is(.chat-step-node),
+html[data-chat-console="true"] .chat[data-view="console"] .chat-query.is-error > .chat-query-icon { color: var(--call-fail); }
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-running .chat-step-node { color: var(--call-live); }
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step-open { grid-row: 1; border: 0; text-transform: none; font-size: calc(0.75rem * var(--chat-text-scale, 1)); color: var(--cli-secondary); }
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step-head:has(:focus-visible) { outline: 1px solid var(--brass); outline-offset: 3px; }
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step :is(.chat-step-toggle, .chat-step-static) { background: none; }
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step:hover { background: none; }
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step-head:hover .chat-step-label { color: var(--mist); }
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step:not(.is-think) .chat-step-toggle[aria-expanded="true"] .chat-step-label {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-step-copy { align-items: flex-start; }
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-query .chat-step-reveal.is-open > .chat-step-reveal-inner { padding-left: 0; }
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-substep-toggle[aria-expanded="true"] .chat-query-label { white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal; }
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-query.is-fail-note { margin-top: 0.25rem; align-items: start; }
+
+html[data-chat-console="true"] .chat[data-view="console"] .chat-query.is-fail-note .chat-query-label { font: inherit; }
+

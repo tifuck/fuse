@@ -1,4 +1,4 @@
-// Console/Mainframe text and thinking interleaved with tool calls, over a
+// Text and thinking interleaved with tool calls, over a
 // whole live turn (the suites named in the brief pin tool rows, follow, pill,
 // chunk boundaries and settled thinking on their own):
 //  1. A turn driven phase by phase (model → calling → tools → model → done):
@@ -9,7 +9,7 @@
 //     ending in the "✻ <verb> for <dur> · done <time>" foot.
 //  2. Prose blocks between tool rows: ragged chunk splits across a tool-state
 //     boundary never duplicate or drop text, prose gaps stay symmetric, and
-//     long unbreakable prose does not overflow at 390px (both views).
+//     long unbreakable prose does not overflow at 390px.
 //  3. The hidden-thinking switch mid-turn, live and at the reconcile.
 //  4. Stopping/stopped and failed endings for the status line and the foot.
 //  5. The ✻ line's other values: pending agents, still-running shells, and
@@ -76,16 +76,15 @@ function snap() {
     const snapNow = () => page.evaluate(() => window.__tt.snap());
     // mount a live turn; every later step patches the whole message, as the
     // server's checkpoints do, and moves the run's activity phase.
-    const start = (view, id, elapsedMs) => page.evaluate(({ view, id, elapsedMs }) => {
+    const start = (id, elapsedMs) => page.evaluate(({ id, elapsedMs }) => {
       const f = fuseToolFixture;
       f.thinking(true);
-      f.view(view);
       f.todo.agents([]);
       f.mountThread([
         { role: 'user', content: 'Go.', reasoning: '', error: '' },
         { id, role: 'assistant', model: 'qa/model', content: '', reasoning: '', tools: [], segments: [], elapsedMs },
       ], { live: true, phase: 'model' });
-    }, { view, id, elapsedMs });
+    }, { id, elapsedMs });
     const drive = (patch, phase) => page.evaluate(({ patch, phase }) => {
       const f = fuseToolFixture;
       f.stream(1, patch);
@@ -98,7 +97,7 @@ function snap() {
     }, msg);
 
     // —— 1. Console: a whole turn, phase by phase. ——
-    await start('console', 'tt-turn-a', 9000);
+    await start('tt-turn-a', 9000);
     const read = tool('read_file', { path: '/srv/qa/app/config.py', status: 'running', elapsed_ms: 3000 });
     const grep = tool('grep', { pattern: 'retries', path: '/srv/qa', status: 'running', elapsed_ms: 1500 });
     const readDone = { ...read, status: 'done', output: '1: retries = 3\n', call_duration_ms: 4100, elapsed_ms: undefined };
@@ -189,10 +188,9 @@ function snap() {
     const readC = tool('read_file', { path: '/srv/qa/app/very_long_module_name_here.py', output: '1: x\n', call_duration_ms: 3200 });
     const finalC = { id: 'tt-chunks', role: 'assistant', model: 'qa/model', elapsedMs: 21000, endedAt: '2026-10-05T09:42:00Z',
       content: one + two + '\n\n' + long, tools: [readC], segments: [say(one), T(readC), say(two + '\n\n' + long)] };
-    for (const view of ['console', 'mainframe']) {
-      const chunked = await page.evaluate(async ({ view, one, two, long, readC, finalC }) => {
+    {
+      const chunked = await page.evaluate(async ({ one, two, long, readC, finalC }) => {
         const f = fuseToolFixture;
-        f.view(view);
         const frame = () => new Promise((r) => requestAnimationFrame(r));
         f.mountThread([
           { role: 'user', content: 'Go.', reasoning: '', error: '' },
@@ -224,21 +222,20 @@ function snap() {
           return out;
         });
         return { md, gaps, overflow: document.scrollingElement.scrollWidth > window.innerWidth };
-      }, { view, one, two, long, readC, finalC });
-      check(chunked.md.length === 2, `${view}: prose split by a tool renders two blocks: ${chunked.md}`);
-      check(chunked.md[0] === 'The retries constant lives in app/config.py, a path that keeps going', `${view}: the first block keeps its exact streamed text: ${chunked.md[0]}`);
-      check(chunked.md[1].startsWith('and the tests pin it at 3.'), `${view}: the second block starts where the first ended: ${chunked.md[1]}`);
-      check(!chunked.md[1].includes('keeps going and'), `${view}: the boundary does not double the split word: ${chunked.md[1]}`);
-      check((chunked.md.join(' ').match(/pin it at 3/g) || []).length === 1, `${view}: the tail sentence arrives once: ${chunked.md.join(' ')}`);
-      check(chunked.md[1].includes('module_deep.py'), `${view}: the long path survives the reconcile: ${chunked.md[1].slice(0, 80)}`);
-      check(chunked.gaps.every((g) => g <= 0.5), `${view}: prose gaps between tool rows stay symmetric: ${chunked.gaps}`);
-      check(!chunked.overflow, `${view}: no horizontal overflow at 1440`);
+      }, { one, two, long, readC, finalC });
+      check(chunked.md.length === 2, `prose split by a tool renders two blocks: ${chunked.md}`);
+      check(chunked.md[0] === 'The retries constant lives in app/config.py, a path that keeps going', `the first block keeps its exact streamed text: ${chunked.md[0]}`);
+      check(chunked.md[1].startsWith('and the tests pin it at 3.'), `the second block starts where the first ended: ${chunked.md[1]}`);
+      check(!chunked.md[1].includes('keeps going and'), `the boundary does not double the split word: ${chunked.md[1]}`);
+      check((chunked.md.join(' ').match(/pin it at 3/g) || []).length === 1, `the tail sentence arrives once: ${chunked.md.join(' ')}`);
+      check(chunked.md[1].includes('module_deep.py'), `the long path survives the reconcile: ${chunked.md[1].slice(0, 80)}`);
+      check(chunked.gaps.every((g) => g <= 0.5), `prose gaps between tool rows stay symmetric: ${chunked.gaps}`);
+      check(!chunked.overflow, `no horizontal overflow at 1440`);
     }
     await page.setViewportSize({ width: 390, height: 844 });
-    for (const view of ['console', 'mainframe']) {
-      const mobile = await page.evaluate((view) => {
+    {
+      const mobile = await page.evaluate(() => {
         const f = fuseToolFixture;
-        f.view(view);
         const read = { id: 'tt-m1', name: 'read_file', status: 'done', path: '/srv/qa/vendor/lib/python3.12/site-packages/very_long_distribution_name/inner/module_deep.py', output: '1: x\n', call_duration_ms: 3200, error: '', results: [], host: 'qa-box', cwd: '/srv/qa', platform: 'posix', project_root: '/srv/qa' };
         const tail = 'After a call that pins /srv/qa/vendor/lib/python3.12/site-packages/very_long_distribution_name/inner/module_deep.py in prose.';
         f.mountThread([
@@ -248,14 +245,14 @@ function snap() {
             segments: [{ type: 'content', text: 'Before the call.\n\n' }, { type: 'tool', id: read.id }, { type: 'content', text: tail }] },
         ]);
         return { overflow: document.scrollingElement.scrollWidth > window.innerWidth + 1 };
-      }, view);
-      check(!mobile.overflow, `${view}: long prose and paths do not overflow at 390px`);
+      });
+      check(!mobile.overflow, `long prose and paths do not overflow at 390px`);
     }
     await page.setViewportSize({ width: 1440, height: 1000 });
 
     // —— 3. The hidden-thinking switch, live and at the reconcile. ——
     {
-      await start('console', 'tt-hide', 4000);
+      await start('tt-hide', 4000);
       const readH = tool('read_file', { path: '/srv/qa/app/a.py', output: '1: x\n', call_duration_ms: 900 });
       await drive({ reasoning: 'Secret plan.', segments: [think('Secret plan.')] });
       await page.waitForFunction(() => /^Thinking for/.test(window.__tt.snap().labels[0] || ''), null, { timeout: 3500 });
@@ -285,7 +282,7 @@ function snap() {
 
     // —— 4. Stopping/stopped and failed endings. ——
     {
-      await start('console', 'tt-stop', 21000);
+      await start('tt-stop', 21000);
       const cmd = tool('run_terminal_command', { command: 'npm run build', description: 'Build the bundle', child_id: 'ttb1', command_id: 'ttb1', status: 'running', state: 'running', execution_status: 'running', exit_code: null, elapsed_ms: 5000, execution_duration_ms: null });
       await drive({ content: 'Building.\n\n', tools: [cmd], segments: [say('Building.\n\n'), T(cmd)] }, { phase: 'tools', tool_id: cmd.id });
       let s = await snapNow();
@@ -308,7 +305,7 @@ function snap() {
       check(s.clocks.length === 0, `a stopped turn leaves no ticking clock: ${s.clocks}`);
       check(s.foot === `✻ Interrupted · ${turnVerb('tt-stop')} for 24s`, `a stopped close says Interrupted, never done: ${s.foot}`);
 
-      await start('console', 'tt-fail', 30000);
+      await start('tt-fail', 30000);
       await finish({ id: 'tt-fail', role: 'assistant', model: 'qa/model', elapsedMs: 30000, endedAt: '2026-10-05T09:50:00Z', error: 'Upstream returned 502', content: '', reasoning: '', tools: [], segments: [] });
       await page.waitForTimeout(250);
       const failed = await snapNow();
@@ -328,7 +325,7 @@ function snap() {
         f.run({ status: 'completed' });
         f.progress(1, { message: msg });
       }, { msg, extra });
-      await start('console', 'tt-foot', 60000);
+      await start('tt-foot', 60000);
       await settle(footMsg(), { agents: [{ child_id: 'ag1', status: 'running', description: 'Audit retries' }, { child_id: 'ag2', status: 'running', description: 'Check timeouts' }] });
       check((await snapNow()).foot === '✻ Waiting for 2 background agents to finish', `pending agents replace the close: ${(await snapNow()).foot}`);
       await page.evaluate(() => fuseToolFixture.todo.agents([]));
@@ -341,37 +338,6 @@ function snap() {
       await settle(footMsg({ elapsedMs: undefined, endedAt: undefined }));
       const noClock = (await snapNow()).foot;
       check(!noClock.includes('✻') && noClock.includes('40 tok'), `no elapsedMs means no closing line, only the turn meta: ${noClock}`);
-    }
-
-    // —— 6. Mainframe: same phases through its own rendering. ——
-    {
-      await start('mainframe', 'tt-mf', 9000);
-      const readM = tool('read_file', { path: '/srv/qa/app/config.py', status: 'running', elapsed_ms: 3000 });
-      const readMDone = { ...readM, status: 'done', output: '1: retries = 3\n', call_duration_ms: 4100, elapsed_ms: undefined };
-      await drive({ reasoning: 'Plan.', segments: [think('Plan.')] });
-      let s = await snapNow();
-      check(s.dock && !s.dock.hidden && s.dock.meta.includes('· thinking') && s.dock.glyph === '✻', `mainframe shares the console status line while thinking: ${s.dock && s.dock.meta}`);
-      const mfVerb = s.dock.verb;
-      await drive({ tools: [readM], segments: [think('Plan.', 6505), T(readM)] }, { phase: 'tools', tool_id: readM.id });
-      s = await snapNow();
-      // Mainframe folds the running call into its live summary line (its own
-      // rendering; Console's standalone row chrome is isConsoleOnly) — the
-      // call becomes that line's headline, with a ticking clock of its own.
-      check(/Reading app\/config\.py(?: \S+)? · 3s/.test(s.labels.join('|')), `mainframe's live line carries the running call and its clock: ${s.labels}`);
-      await page.waitForFunction(() => /Reading app\/config\.py(?: \S+)? · [4-9]s/.test(window.__tt.snap().labels.join('|')), null, { timeout: 5000 });
-      await drive({ content: 'Read it.', tools: [readMDone], segments: [think('Plan.', 6505), T(readMDone), say('Read it.')] }, { phase: 'model' });
-      const mfLive = await snapNow();
-      check(mfLive.labels.some((l) => /^Thought for 6s, read 1 file/.test(l)), `the settled line folds the call behind its thought: ${mfLive.labels}`);
-      await finish({ id: 'tt-mf', role: 'assistant', model: 'qa/model', elapsedMs: 133000, endedAt: '2026-10-05T09:42:00Z',
-        content: 'Read it.', reasoning: 'Plan.', usage: { prompt_tokens: 1200, completion_tokens: 80 }, tools: [readMDone],
-        segments: [think('Plan.', 6505), T(readMDone), say('Read it.')] });
-      await page.waitForFunction(() => window.__tt.snap().dock.hidden, null, { timeout: 4000 });
-      s = await snapNow();
-      check(!s.foot.includes('✻'), `mainframe keeps its own foot (no console close): ${s.foot}`);
-      check(s.foot.includes('2m 13s'), `mainframe's foot still reports the persisted duration: ${s.foot}`);
-      check(s.dock.verb === mfVerb, `mainframe's spinner word holds across the turn: ${s.dock.verb}`);
-      check(JSON.stringify(s.prose) === JSON.stringify(mfLive.prose), `mainframe's reconcile keeps the prose exact: ${s.prose}`);
-      check(s.clocks.length === 0, `mainframe leaves no ticking clock after done: ${s.clocks}`);
     }
 
     check(errors.length === 0, `page errors: ${errors.join('; ')}`);

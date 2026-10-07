@@ -29,10 +29,9 @@ const BURST = 'A burst of streamed text that arrives all at once and should be s
       await page.route('**/*', (route) => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
       await page.goto(origin);
       await page.waitForFunction(() => window.fuseToolFixture);
-      for (const view of ['console', 'mainframe', 'cli', 'compact']) {
-        const tag = (what) => `${what} [${view}${reduced ? ', reduced motion' : ''}]`;
-        const run = await page.evaluate(async ({ view, burst }) => {
-          fuseToolFixture.view(view);
+      {
+        const tag = (what) => reduced ? `${what} [reduced motion]` : what;
+        const run = await page.evaluate(async ({ burst }) => {
           await new Promise((r) => requestAnimationFrame(r));
           const rows = [];
           for (let i = 0; i < 14; i++) {
@@ -84,7 +83,7 @@ const BURST = 'A burst of streamed text that arrives all at once and should be s
           fuseToolFixture.repaint();
           await new Promise((r) => setTimeout(r, 600));
           return { gaps, shown, full, calm, final: lastMd().textContent, expectLength: text.replace(/\n\n/g, '').length, finalGap: gap(), burstLength: burst.length };
-        }, { view, burst: BURST });
+        }, { burst: BURST });
         check(Math.max(...run.gaps) <= 1, tag(`the view trails the content by up to ${Math.max(...run.gaps)}px`));
         check(run.full >= run.burstLength - 3, tag(`the whole burst appears (${run.full} of ${run.burstLength})`));
         const early = run.shown.slice(0, 3);

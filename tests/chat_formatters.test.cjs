@@ -5,9 +5,11 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
-const source = fs.readFileSync(require('node:path').join(__dirname, '../static/chat.js'), 'utf8');
+const source = require('./chat_source.cjs');
 
 function load(name, context) {
+  const themed = require("./theme_factory.cjs")(context)[name];
+  if (typeof themed === "function") { context[name] = themed; return; }
   const start = source.indexOf(`  function ${name}(`);
   assert.ok(start >= 0, name);
   const end = source.indexOf('\n  }', start) + 4;
@@ -25,7 +27,7 @@ function world() {
   for (const name of [
     'executionState', 'executionIdentity', 'executionPending', 'toolBackground',
     'toolAwaitingCancellation', 'isShellExecTool', 'childBackedTool', 'toolIsCurrent',
-    'toolRunning', 'backgroundCommandLabel', 'applyCommandResult', 'shellExitOnly',
+    'toolRunning', 'applyCommandResult', 'shellExitOnly',
     'shellExitCode', 'toolFailed', 'toolInterrupted', 'toolPresentation',
   ]) load(name, ctx);
   return ctx;
@@ -116,14 +118,6 @@ test('tool presentation names queued, cancelling, lost, and timed-out executions
   assert.equal(c.toolRunning({ name: 'monitor', status: 'progress', child_id: 'm' }, false), true);
 });
 
-test('a background label needs a shell tool, the flag, and a child id', () => {
-  const c = world();
-  assert.equal(c.backgroundCommandLabel(null), '');
-  assert.equal(c.backgroundCommandLabel({ name: 'grep', background: true, child_id: 'j', command: 'x' }), '');
-  assert.equal(c.backgroundCommandLabel({ name: 'monitor', background: true, command: 'watch log' }), '', 'no child id');
-  assert.equal(c.backgroundCommandLabel({ name: 'monitor', background: true, child_id: 'm1', command: '  watch log  ' }), 'background · m1 · watch log');
-  assert.equal(c.backgroundCommandLabel({ name: 'run_terminal_command', background: true, child_id: 'j', command: '   ' }), 'background · j · command');
-});
 
 test('auto labels ignore boilerplate and fall back when nothing is addressed', () => {
   const c = vm.createContext({});
@@ -272,10 +266,8 @@ test('applying a result keeps killed output and refuses to revive a settled call
 
 test('a Wait names the command it waits on, else the job', () => {
   const c = world();
-  Object.assign(c, { messages: [], chatView: 'console' });
+  Object.assign(c, { messages: [] });
   c.escapeHtml = (value) => String(value ?? '');
-  c.isConsoleOnly = () => true;
-  c.isConsoleView = () => true;
   c.sessionProject = () => null;
   c.toolBackground = () => false;
   c.ccCallClockHtml = () => '';
@@ -298,7 +290,7 @@ test('a Wait names the command it waits on, else the job', () => {
 
 test('"Still running" tracks the command, and a stopped one says it already returned', () => {
   const c = world();
-  Object.assign(c, { messages: [], chatView: 'mainframe', isConsoleOnly: () => false });
+  Object.assign(c, { messages: [] });
   c.escapeHtml = (v) => String(v ?? '');
   c.renderAnsi = (v) => String(v ?? '');
   for (const name of ['toolText', 'displayCommand', 'relatedTrace', 'commandFor', 'commandOrigin', 'cleanToolOutput', 'consoleStdoutHtml', 'consoleResultLine', 'consoleDetailHtml', 'consoleSameText']) load(name, c);
@@ -318,19 +310,15 @@ test('"Still running" tracks the command, and a stopped one says it already retu
 
 test('a shell whose output is a diff prints that diff once', () => {
   const c = vm.createContext({
-    chatView: 'console', messages: [],
+    messages: [],
     escapeHtml: (v) => String(v ?? '').replace(/[&<>]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch])),
     renderAnsi: (v) => String(v ?? ''), highlightCode: (_lang, text) => String(text ?? ''),
     isSearchTool: () => false, structuredToolHtml: () => null, isCodeOutputTool: () => false,
     displayCommand: (trace) => String(trace.command || ''),
   });
-  for (const name of ['isConsoleOnly', 'executionState', 'toolBackground', 'isShellExecTool', 'shellExitCode', 'cleanToolOutput', 'ccShellSegments', 'ccExitMeaning', 'ccFlat', 'ccClip', 'ccErrorFold', 'looksLikeDiff', 'consoleChangeText', 'consoleTruncationNote', 'consoleStdoutHtml', 'consoleOutputText', 'consoleDetailHtml']) load(name, c);
-  // load() ends a function at its first `}`, and consoleOnlyFold has braces
-  // of its own. It runs through the next top-level function.
-  const foldStart = source.indexOf('  function consoleOnlyFold(');
-  vm.runInContext(source.slice(foldStart, source.indexOf('\n  function ', foldStart + 1)), c);
-  const diffStart = source.indexOf('  function consoleDiffHtml(');
-  vm.runInContext(source.slice(diffStart, source.indexOf('\n  function ', diffStart + 1)), c);
+  for (const name of ['executionState', 'toolBackground', 'isShellExecTool', 'shellExitCode', 'cleanToolOutput', 'ccShellSegments', 'ccExitMeaning', 'ccFlat', 'ccClip', 'ccErrorFold', 'looksLikeDiff', 'consoleChangeText', 'consoleTruncationNote', 'consoleStdoutHtml', 'consoleOutputText', 'consoleDetailHtml']) load(name, c);
+  load('consoleOnlyFold', c);
+  load('consoleDiffHtml', c);
   const diff = 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -1,3 +1,4 @@\n context\n-old\n+new one\n+new two\n';
   const pres = { running: false, failed: false, interrupted: false };
   const diffs = (html) => (String(html).match(/chat-console-lines is-diff/g) || []).length;

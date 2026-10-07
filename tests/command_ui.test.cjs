@@ -2,8 +2,10 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
-const source = fs.readFileSync(require('node:path').join(__dirname, '../static/chat.js'), 'utf8');
+const source = require('./chat_source.cjs');
 function load(name, context) {
+  const themed = require("./theme_factory.cjs")(context)[name];
+  if (typeof themed === "function") { context[name] = themed; return; }
   const start = source.indexOf(`  function ${name}(`);
   assert.ok(start >= 0);
   const end = source.indexOf('\n  }', start) + 4;
@@ -12,7 +14,7 @@ function load(name, context) {
 function world() {
   const ctx = vm.createContext({ activeRun: null, runIsActive: () => false,
     EXECUTION_FIELDS: ['state', 'execution_status', 'output', 'output_mode', 'output_chars'] });
-  for (const name of ['executionState', 'executionIdentity', 'executionPending', 'toolBackground', 'toolAwaitingCancellation', 'isShellExecTool', 'childBackedTool', 'toolIsCurrent', 'toolRunning', 'backgroundCommandLabel', 'applyCommandResult', 'shellExitOnly', 'shellExitCode', 'toolFailed', 'toolInterrupted', 'toolPresentation']) load(name, ctx);
+  for (const name of ['executionState', 'executionIdentity', 'executionPending', 'toolBackground', 'toolAwaitingCancellation', 'isShellExecTool', 'childBackedTool', 'toolIsCurrent', 'toolRunning', 'applyCommandResult', 'shellExitOnly', 'shellExitCode', 'toolFailed', 'toolInterrupted', 'toolPresentation']) load(name, ctx);
   return ctx;
 }
 test('automated labels read envelope ids, not the handoff boilerplate', () => {
@@ -56,7 +58,6 @@ test('background execution stays live independently of the assistant turn', () =
   const c = world();
   const trace = {name: 'run_terminal_command', background: true, status: 'running', child_id: 'job-1', command: 'sleep 10'};
   assert.equal(c.toolRunning(trace, false), true);
-  assert.equal(c.backgroundCommandLabel(trace), 'background · job-1 · sleep 10');
   c.applyCommandResult(trace, {state: 'completed', exit_code: null, duration_ms: 10, output: 'done'});
   assert.equal(c.toolRunning(trace, false), false);
   assert.equal(trace.exit_code, undefined);
@@ -64,7 +65,6 @@ test('background execution stays live independently of the assistant turn', () =
 test('completion receipts and cancellation are distinct from execution', () => {
   const c = world();
   const trace = {name: 'run_terminal_command', background: true, backgroundResult: true, status: 'done', child_id: 'job-2', command: 'sleep 2'};
-  assert.equal(c.backgroundCommandLabel(trace), 'background result · job-2 · sleep 2');
   c.applyCommandResult(trace, {state: 'cancelled', exit_code: null, duration_ms: null, error: 'cancelled', output: ''});
   assert.equal(trace.status, 'interrupted');
   assert.equal(c.toolRunning(trace, false), false);
@@ -72,7 +72,6 @@ test('completion receipts and cancellation are distinct from execution', () => {
 test('foreground commands retain ordinary presentation', () => {
   const c = world();
   const trace = {name: 'run_terminal_command', status: 'running'};
-  assert.equal(c.backgroundCommandLabel(trace), '');
   assert.equal(c.toolRunning(trace, true), true);
   assert.equal(c.toolRunning(trace, false), false);
 });
@@ -146,7 +145,7 @@ test('background command completion reaches nested-agent transcript tools', () =
 test('historical tool activity cannot resurrect a thinking spinner or running label', () => {
   const c = world();
   Object.assign(c, { activeRun: null, groupTraces: () => [], lastCurrentTrace: () => null,
-    assistantSegments: () => [], isConsoleView: () => false, runIsStopping: () => false });
+    assistantSegments: () => [], runIsStopping: () => false });
   load('currentActivity', c);
   const trace = { name: 'get_subagent_output', id: 'wait', status: 'running', child_id: 'child' };
   const state = c.currentActivity({ stopped: true, tools: [trace], _activity: { phase: 'tools', tool_id: 'wait' } }, [], false);
@@ -194,7 +193,7 @@ test('agent activity uses its own queue and cancellation state', () => {
   const c = world();
   Object.assign(c, { activeRun: { message_id: 'root', status: 'running' },
     agentRun: { message_id: 'child', status: 'queued' }, groupTraces: () => [],
-    lastCurrentTrace: () => null, assistantSegments: () => [], isConsoleView: () => false,
+    lastCurrentTrace: () => null, assistantSegments: () => [],
     runIsStopping: run => Boolean(run.cancel_requested) });
   load('currentActivity', c);
   assert.equal(c.currentActivity({ id: 'child' }, [], true).label, 'Queued');
@@ -247,7 +246,7 @@ test('a wait trace cannot change the background classification of its child', ()
   const c = world();
   Object.assign(c, { activeRun: { message_id: 'message', activity: { phase: 'tools' } },
     runIsStopping: () => false, groupTraces: () => [], lastCurrentTrace: () => null,
-    assistantSegments: () => [], isConsoleView: () => false });
+    assistantSegments: () => [] });
   load('currentActivity', c);
   const tools = [
     { id: 'spawn', name: 'spawn_subagent', child_id: 'child', status: 'done', execution_status: 'running', background: true },

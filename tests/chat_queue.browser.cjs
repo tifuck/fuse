@@ -11,7 +11,7 @@ const out = process.env.QUEUE_UI_ARTIFACTS || '/tmp/opencode/queue-ui-artifacts'
   const browser = await chromium.launch({ args: ['--no-sandbox'], executablePath: process.env.CHROMIUM_PATH || undefined });
   const errors = [];
   try {
-    for (const width of [1440, 390]) for (const view of ['cli', 'compact']) {
+    for (const width of [1440, 390]) {
       const context = await browser.newContext({ viewport: { width, height: width === 390 ? 844 : 1000 }, reducedMotion: 'reduce' });
       await context.route('**/*', route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
       const page = await context.newPage();
@@ -20,11 +20,11 @@ const out = process.env.QUEUE_UI_ARTIFACTS || '/tmp/opencode/queue-ui-artifacts'
       await page.locator('[data-sync-label]').filter({ hasText: 'Live sync' }).waitFor({ state: 'attached' });
       // Phones open on the chat list; start a chat from it like a user would.
       if (await page.locator('[data-chat].is-history').count()) await page.locator('.chat-history [data-chat-new]').click();
-      await page.evaluate(view => fuseToolFixture.view(view), view);
+
       const input = page.locator('[data-chat-input]');
       const send = async text => { await input.fill(text); await page.locator('[data-chat-send]').click(); };
       const queue = page.locator('[data-chat-queue]');
-      await send(`Queue fixture ${view} ${width}`);
+      await send(`Queue fixture ${width}`);
       await page.waitForFunction(() => document.body.classList.contains('is-streaming'));
       await page.waitForFunction(() => document.querySelector('[data-chat-log]').textContent.includes('Working before'));
       const id = new URL(page.url()).searchParams.get('t');
@@ -43,7 +43,7 @@ const out = process.env.QUEUE_UI_ARTIFACTS || '/tmp/opencode/queue-ui-artifacts'
       await send('Queue fixture send now target');
       await send('Keep this queued for later');
       await input.fill('An unsent draft must survive');
-      await page.screenshot({ path: `${out}/${view}-${width}-queued.png` });
+      await page.screenshot({ path: `${out}/${width}-queued.png` });
       const observer = await browser.newPage({ viewport: { width: 1100, height: 850 } });
       observer.on('pageerror', error => errors.push(error.message));
       await observer.route('**/*', route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
@@ -115,7 +115,7 @@ const out = process.env.QUEUE_UI_ARTIFACTS || '/tmp/opencode/queue-ui-artifacts'
         assert.equal(await p.locator('[data-live-dock]').isVisible(), true, 'spinner must remain visible');
         assert.equal(await p.evaluate(() => document.body.classList.contains('is-streaming')), true);
       }
-      await page.screenshot({ path: `${out}/${view}-${width}-sent-now.png` });
+      await page.screenshot({ path: `${out}/${width}-sent-now.png` });
       await page.reload();
       await page.waitForFunction(() => document.body.classList.contains('is-streaming'));
       assert.equal(await page.locator('.chat-queue-item').count(), 1);
@@ -129,7 +129,7 @@ const out = process.env.QUEUE_UI_ARTIFACTS || '/tmp/opencode/queue-ui-artifacts'
       assert.equal(final.messages.filter(m => m.role === 'user' && m.content === 'Keep this queued for later').length, 1);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
       await observer.close();
-      if (view === 'compact' && width === 1440) {
+      if (width === 1440) {
         await send('Queue fixture lost acknowledgment');
         await page.waitForFunction(() => document.body.classList.contains('is-streaming'));
         await send('Survive a lost acknowledgment');
@@ -144,7 +144,7 @@ const out = process.env.QUEUE_UI_ARTIFACTS || '/tmp/opencode/queue-ui-artifacts'
         await page.waitForFunction(() => !document.body.classList.contains('is-streaming'));
         console.log('PASS lost turn acknowledgment still lands exactly once and retires the queue item');
       }
-      if (view === 'compact' && width === 390) {
+      if (width === 390) {
         await send('Queue fixture attachment priority');
         await page.waitForFunction(() => document.body.classList.contains('is-streaming'));
         const attachmentRun = (await read()).run.id;
@@ -187,7 +187,7 @@ const out = process.env.QUEUE_UI_ARTIFACTS || '/tmp/opencode/queue-ui-artifacts'
         console.log('PASS attachment Send now interrupts and sends files as a new turn; remaining queue drains afterward');
       }
       await context.close();
-      console.log(`PASS queue edit/cancel/send-now-interrupt/reload/drain/observer ${view} ${width}`);
+      console.log(`PASS queue edit/cancel/send-now-interrupt/reload/drain/observer ${width}`);
     }
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }

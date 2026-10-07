@@ -45,7 +45,6 @@ async def main():
         page.on("pageerror", lambda err: errors.append(str(err)))
         await page.goto(ORIGIN)
         await page.wait_for_function("document.querySelector('[data-sync-label]')?.textContent === 'Live sync'")
-        await page.evaluate("fuseToolFixture.view('console')")
         await page.wait_for_timeout(300)
         inp = page.locator("[data-chat-input]")
 
@@ -150,7 +149,6 @@ async def main():
             "document.body.classList.contains('is-streaming') && !document.querySelector('[data-live-dock]').hidden",
             timeout=15000,
         )
-        await page.evaluate("fuseToolFixture.view('console')")
         label2 = await page.evaluate("document.querySelector('[data-live-dock-label]')?.textContent || ''")
         post_clock = clock_seconds(label2)
         if pre_clock is None or post_clock is None:

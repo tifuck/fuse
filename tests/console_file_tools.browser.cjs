@@ -1,4 +1,4 @@
-// Console/Mainframe rows for the file and search tools — read_file (ranges,
+// Rows for the file and search tools — read_file (ranges,
 // images, refusals), write_file (create vs overwrite), search_replace (single
 // and multi edits, counts), list_dir, glob, grep (modes, no match) — over
 // their whole lifecycle: running header → done header with the right values →
@@ -9,8 +9,7 @@
 // Already pinned elsewhere, so not repeated here: interrupted reads and edits
 // (tests/console_rows_audit.browser.cjs), generated read/search/glob/list_dir
 // histories and stale-state rules (tests/console_ui.browser.cjs +
-// console_ui_lib.js), per-tool state labels in cli/compact
-// (tests/tool_ui.browser.cjs).
+// console_ui_lib.js), per-tool state words (tests/tool_ui.browser.cjs).
 const assert = require('node:assert/strict');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const origin = process.env.FUSE_BROWSER_ORIGIN || 'http://127.0.0.1:8099';
@@ -202,27 +201,6 @@ function scenarios() {
     ] };
   });
 
-  // —— Mainframe: the same settled thread, no call clocks, no "across" ——
-  add('mainframe sibling: same values without Console-only extras', () => {
-    const read = tool('read_file', { path: `/srv/qa/${DEEP}`, output: lines(40, 60), offset: 40, limit: 60, call_duration_ms: 3500 });
-    const edit = tool('search_replace', { path: '/srv/qa/app/config.py', preview: '@@ -10,1 +10,1 @@\n-retries = 3\n+retries = 5\n' });
-    const grep = tool('grep', { pattern: 'retries', path: '/srv/qa', output: 'app/a.py:12:retries = 3\napp/b.py:30:retries = 5\n' });
-    const listing = tool('list_dir', { path: '/srv/qa/tests', output: 'a/\nb/\na.py\n' });
-    const bad = tool('read_file', { path: '/root/secrets/id_rsa', status: 'error', error: 'permission denied: /root/secrets/id_rsa (read)' });
-    return { view: 'mainframe', rows: [user('Go.'), turn([say('Working.\n\n'), T(read), T(edit), T(grep), T(listing), T(bad)], [read, edit, grep, listing, bad], ended)], steps: [
-      // The edit never folds; the reads/search/listing form lines around it
-      // (a refused read still counts as a read).
-      { name: 'folded', has: ['Read 1 file', 'Searched for 1 pattern, read 1 file, listed 1 directory'] },
-      { name: 'open', open: true, has: ['Read 60 lines', 'line 40', 'Added 1 line, removed 1 line', 'retries = 5', 'Found 2 lines', 'Listed 3 entries',
-        'permission denied: /root/secrets/id_rsa (read)'],
-        // Mainframe keeps the same rows without Console's per-call clocks or
-        // the "across N files" suffix.
-        lacks: [' · 3s', 'across 1 file'], gutter: '40' },
-      // Switching back keeps every value.
-      { name: 'console back', view: 'console', has: ['Read 60 lines', 'Added 1 line, removed 1 line', 'Found 2 lines across 2 files', ' · 3s'], gutter: '40' },
-    ] };
-  });
-
   return list;
 }
 
@@ -263,8 +241,7 @@ async function pageRunner(sc) {
     };
   };
   const settle = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-  fuseToolFixture.view(sc.view || 'console');
-    fuseToolFixture.thinking(true);
+  fuseToolFixture.thinking(true);
     fuseToolFixture.mountThread(sc.rows, { live: Boolean(sc.live), phase: sc.phase || '' });
     const shots = [];
     const take = async () => { await settle(); shots.push(snap()); };
@@ -282,7 +259,6 @@ async function pageRunner(sc) {
         fuseToolFixture.mountThread(rows, { live: Boolean(st.remount.live), phase: st.remount.phase || '' });
       }
       if (st.open) document.querySelectorAll('.chat-log [data-step-toggle]').forEach((el) => { if (el.getAttribute('aria-expanded') === 'false') el.click(); });
-      if (st.view) fuseToolFixture.view(st.view);
       await take();
     }
     return shots;
@@ -300,18 +276,17 @@ async function pageRunner(sc) {
     await page.locator('[data-sync-label]').filter({ hasText: 'Live sync' }).waitFor({ state: 'attached' });
     await page.waitForFunction(() => window.fuseToolFixture);
     const failures = [];
-    const pick = (value, view) => Array.isArray(value) ? value : (value && (value[view] || value.both)) || [];
     for (const sc of scenarios()) {
-      for (const view of sc.view ? [sc.view] : ['console']) {
+      {
         for (const width of sc.wide ? [1440, 390] : [1440]) {
           await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
-          const shots = await page.evaluate(pageRunner, { ...sc, view });
+          const shots = await page.evaluate(pageRunner, sc);
           const checks = [{ name: 'mount', has: sc.has, lacks: sc.lacks, running: sc.running, states: sc.states }, ...sc.steps];
           shots.forEach((shot, index) => {
             const step = checks[index];
-            const where = `${sc.name} [${view} @${width}] ${step.name || `step ${index}`}`;
-            for (const want of pick(step.has, view)) if (!shot.flat.includes(want)) failures.push(`${where}: missing "${want}" — saw "${shot.flat}"`);
-            for (const not of pick(step.lacks, view)) if (shot.flat.includes(not)) failures.push(`${where}: should not show "${not}" — saw "${shot.flat}"`);
+            const where = `${sc.name} [@${width}] ${step.name || `step ${index}`}`;
+            for (const want of step.has || []) if (!shot.flat.includes(want)) failures.push(`${where}: missing "${want}" — saw "${shot.flat}"`);
+            for (const not of step.lacks || []) if (shot.flat.includes(not)) failures.push(`${where}: should not show "${not}" — saw "${shot.flat}"`);
             if (step.running) {
               const want = [...step.running].sort();
               const got = [...shot.running].sort();
@@ -337,7 +312,7 @@ async function pageRunner(sc) {
       console.error(unique.slice(0, 60).join('\n'));
       if (unique.length > 60) console.error(`… and ${unique.length - 60} more`);
     }
-    assert.equal(unique.length, 0, `${unique.length} Console file/search tool problems`);
+    assert.equal(unique.length, 0, `${unique.length} file/search tool problems`);
     console.log(`PASS: Console file/search tools — ${scenarios().length} scenarios in ${((Date.now() - started) / 1000).toFixed(1)}s`);
   } finally {
     await browser.close();

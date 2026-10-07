@@ -2,12 +2,13 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
-const source = fs.readFileSync(require('node:path').join(__dirname, '../static/chat.js'), 'utf8');
+const source = require('./chat_source.cjs');
 const start = source.indexOf('  function escapeHtml(');
 const end = source.indexOf('  // Keep settled Markdown nodes', start);
 assert.ok(start >= 0 && end > start);
 const ctx = vm.createContext({ window: {} });
 vm.runInContext(source.slice(start, end), ctx);
+Object.assign(ctx, require("./theme_factory.cjs")(ctx));
 
 function md(src) {
   return ctx.renderMarkdown(src, false, []);

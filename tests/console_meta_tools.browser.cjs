@@ -1,12 +1,12 @@
-// Console and Mainframe rows for the tools that are not files, shell or
-// subagents. tool_ui.browser.cjs pins their state words only in cli/compact;
+// Rows for the tools that are not files, shell or
+// subagents. tool_ui.browser.cjs pins their state words;
 // here each call is driven running → done, then failed, then interrupted, and
 // the row must show the latest header, values and dot after every step.
 // A tool event keeps the fields mergeToolEvent copies; results, output and a
 // fetch's byte count arrive with the persisted snapshot, so those are checked
 // on the remount. todo_write never prints a transcript row
-// (todo_section.browser.cjs owns the section); this only checks Console and
-// Mainframe stay row-free too.
+// (todo_section.browser.cjs owns the section); this only checks the transcript
+// stays row-free too.
 const assert = require('node:assert/strict');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const origin = process.env.FUSE_BROWSER_ORIGIN || 'http://127.0.0.1:8099';
@@ -65,14 +65,13 @@ const turn = (trace, live) => ({
     };
     const paint = () => page.waitForFunction(() => new Promise((resolve) => requestAnimationFrame(() => resolve(true))));
 
-    // Console draws a coloured dot; Mainframe hides it and paints a glyph.
+    // The transcript draws a coloured dot.
     const mark = (id) => page.evaluate((id) => {
       const li = document.querySelector(`[data-step="tool-${id}"]`);
       if (!li) return null;
-      const view = document.querySelector('.chat')?.dataset.view;
       const state = li.dataset.state;
       const node = li.querySelector(':scope > .chat-step-node');
-      const dot = view === 'mainframe' ? getComputedStyle(li, '::before') : getComputedStyle(node, '::after');
+      const dot = getComputedStyle(node, '::after');
       const token = (name) => {
         const raw = getComputedStyle(document.querySelector('.chat')).getPropertyValue(name).trim();
         const probe = document.createElement('span');
@@ -82,7 +81,7 @@ const turn = (trace, live) => ({
         probe.remove();
         return color;
       };
-      return { view, state, cls: li.className, bg: view === 'mainframe' ? dot.color : dot.backgroundColor, glyph: dot.content,
+      return { state, cls: li.className, bg: dot.backgroundColor, glyph: dot.content,
         tokens: { running: token('--call-live'), done: token('--call-done'), error: token('--call-fail'), interrupted: token('--call-idle') },
         live: li.querySelector('.chat-console-call')?.classList.contains('is-live') || false };
     }, id);
@@ -102,14 +101,7 @@ const turn = (trace, live) => ({
       assert.equal(seen.cls.includes(`is-${want}`), true, `${where}: row class ${seen.cls}`);
       // An interrupted call is red, like a failure; done and running keep their own.
       const token = want === 'interrupted' ? 'error' : want;
-      if (seen.view === 'console') assert.equal(seen.bg, seen.tokens[token], `${where}: dot ${seen.bg}, wanted ${seen.tokens[token]}`);
-      if (seen.view === 'mainframe') {
-        // The running glyph animates, so its computed content stays "✓"; the
-        // colour is what distinguishes it.
-        const glyph = { done: '"✓"', error: '"✗"', interrupted: '"◌"' }[want];
-        if (glyph) assert.equal(seen.glyph, glyph, `${where}: glyph ${seen.glyph}`);
-        else assert.equal(seen.bg, seen.tokens.running, `${where}: live glyph ${seen.bg}, wanted ${seen.tokens.running}`);
-      }
+      assert.equal(seen.bg, seen.tokens[token], `${where}: dot ${seen.bg}, wanted ${seen.tokens[token]}`);
     };
 
     // One call, three endings. `start` is the running event the server sends;
@@ -142,17 +134,17 @@ const turn = (trace, live) => ({
       }
     };
 
-    for (const [view, width, height] of [['console', 1440, 1000], ['mainframe', 1440, 1000], ['console', 390, 844], ['mainframe', 390, 844]]) {
+    for (const [width, height] of [[1440, 1000], [390, 844]]) {
       await page.setViewportSize({ width, height });
-      await page.evaluate((view) => fuseToolFixture.view(view), view);
-      const tag = `${view}@${width}`;
+
+      const tag = `${width}px`;
 
       await life('web_search', {
         head: /Web Search\(?"fuse console rows" \+1\)?/, queries: ['fuse console rows', 'tool row lifecycle'], query: 'fuse console rows',
       }, [
         { event: SEARCH_DONE, head: /Web Search\(?"fuse console rows" \+1\)?/, live: ['Did 2 searches in 840ms'], keptHas: ['Console row guide', 'Lifecycle notes', 'example.com'], lacks: ['Running…'], dot: 'done' },
         { event: { status: 'error', error: 'Search failed. Try again shortly.', queries: ['fuse console rows', 'tool row lifecycle'], results: [] }, head: /Web Search/, live: ['Error: Search failed. Try again shortly.'], lacks: ['Did 2 searches', 'Running…'], dot: 'error' },
-        // Console names why it stopped; Mainframe's shared fold counts the query.
+        // The interrupted line names why it stopped and still counts the query.
         { event: { status: 'interrupted', error: 'Tool interrupted.', queries: ['fuse console rows'] }, head: /Web Search/, live: ['Interrupted · the run ended before it finished', 'Did 1 search'], lacks: ['Running…', 'Did 2 searches'], dot: 'interrupted' },
       ]);
 
@@ -192,8 +184,6 @@ const turn = (trace, live) => ({
       await life('load_skill', { head: /Loading the ponytail skill/, preview: 'ponytail' }, [
         { event: { status: 'done', preview: 'ponytail', output: 'Loaded.\n\n# Ponytail\n\nBe lazy.' }, head: /Loaded the ponytail skill/, live: ['Loaded the ponytail skill'], kept: { output: 'Loaded.\n\n# Ponytail\n\nBe lazy.' }, keptHas: ['Ponytail', 'Be lazy.'], lacks: ['Running…'], dot: 'done' },
         { event: { status: 'error', preview: 'nope', error: 'Unknown skill.' }, head: /Failed to load the nope skill/, live: ['Error: Unknown skill.'], lacks: ['Loaded skill', 'Running…'], dot: 'error' },
-        // At 390px Mainframe hides the result line of an opened row, so the name is
-        // all that remains.
         { event: { status: 'interrupted', preview: 'ponytail' }, head: /Loading the ponytail skill/, live: ['Interrupted · the run ended before it finished', 'ponytail'], lacks: ['Running…', 'Loaded skill'], dot: 'interrupted' },
       ]);
 
@@ -230,8 +220,7 @@ const turn = (trace, live) => ({
       ]) {
         await mount({ id: 'm-scratch', name: 'scratch', status: 'running', description }, true);
         let seen = await read('m-scratch');
-        // Mainframe hides the parentheses and lays verb and value out as columns.
-        const head = view === 'mainframe' ? `Scratch${description}` : `Scratch(${description})`;
+        const head = `Scratch(${description})`;
         assert.equal(seen.head, head, `${tag} scratch running head: ${seen.head}`);
         expectDot(seen.dot, 'running', `${tag} scratch running`);
         await send({ event: 'tool', id: 'm-scratch', name: 'scratch', status: 'done', description, preview, output });
@@ -282,17 +271,6 @@ const turn = (trace, live) => ({
       await send({ event: 'tool', id: 'm-todo', name: 'todo_write', status: 'error', error: 'todos[0].content is required' });
       await paint();
       assert.equal(await rowOf('m-todo').count(), 0, `${tag} a failed todo_write printed a row`);
-
-      // Switching views keeps the settled row; the other view reads it the same way.
-      await mount({ id: 'm-keep', name: 'web_search', status: 'done', ...SEARCH_DONE }, false);
-      await open('m-keep');
-      const before = await read('m-keep');
-      await page.evaluate((view) => fuseToolFixture.view(view === 'console' ? 'mainframe' : 'console'), view);
-      await open('m-keep');
-      const after = await read('m-keep');
-      for (const title of ['Console row guide', 'Lifecycle notes']) assert.equal(after.body.includes(title), true, `${tag} view switch dropped ${title}: ${after.body}`);
-      assert.match(after.head, /Web Search\(?"fuse console rows" \+1\)?/, `${tag} view switch head: ${after.head}`);
-      await page.evaluate((view) => fuseToolFixture.view(view), view);
 
       assert.equal(await page.evaluate(() => document.scrollingElement.scrollWidth <= window.innerWidth), true, `${tag} page wider than the viewport`);
       console.log(`PASS meta tools ${tag}`);

@@ -307,6 +307,14 @@ async def instrumented_chat():
     source = (ROOT / "static" / "chat.js").read_text()
     head, closing = source.rsplit("\n})();", 1)
     hooks = (ROOT / "tests" / "tool_ui_hooks.js").read_text()
+    # Formatting helpers live inside theme modules; pull them from the theme's
+    # public surface here so the hooks can reach them without widening the
+    # production runtime's own wiring.
+    seam = "  displayCommand,\n  shortToolPath,\n  toolRowLabel,\n"
+    anchor = "  } = createConsoleTheme("
+    if anchor not in head:
+        raise RuntimeError("chat.js theme destructuring seam not found")
+    head = head.replace(anchor, seam + anchor, 1)
     return Response(head + "\n" + hooks + "\n})();" + closing, media_type="text/javascript")
 
 

@@ -1,4 +1,4 @@
-// Console/Mainframe row-state audit. Seeds row types and state combinations
+// Row-state audit for the default transcript. Seeds row types and state combinations
 // the existing Console suite never generates (tests/console_ui.browser.cjs +
 // console_ui_lib.js generate(), claude_code_rows.test.cjs, command_ui.test.cjs),
 // and checks every render against the latest state of each call and command.
@@ -372,15 +372,6 @@ function scenarios() {
       has: ['Error: No such file or directory'], open: true };
   });
 
-  // —— Mainframe keeps the same states without Console's row chrome ——
-  add('mainframe shows the same ended states without a stale running claim', () => {
-    const cmd = sh('npm run build', { background: true, job: 'mf1', extra: { status: 'interrupted', state: 'interrupted', execution_status: 'interrupted', error: 'agent is offline', exit_code: null } });
-    const w = tool('get_command_output', { status: 'done', state: 'running', execution_status: 'running', background: true, child_id: 'mf1', command_id: 'mf1', call_duration_ms: 30006 });
-    return { view: 'mainframe', rows: [user('Go.'), turn([say('Building.\n\n'), T(cmd), T(w)], [cmd, w], ended)],
-      truth: { call: { [cmd.id]: 'interrupted', [w.id]: 'done' }, exec: { mf1: 'interrupted' } },
-      has: ['Interrupted', 'Returned while the command was still running'], lacks: ['Still running', 'Running in the background', 'qa-box went offline'] };
-  });
-
   return list;
 }
 
@@ -505,12 +496,11 @@ function audit(truth, opts) {
     await page.route('**/*', (route) => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
     await page.goto(origin);
     await page.waitForFunction(() => window.fuseToolFixture);
-    await page.evaluate(() => fuseToolFixture.view('console'));
+
     const failures = [];
     for (const sc of scenarios()) {
       const result = await page.evaluate(async ({ sc, auditSrc }) => {
         window.RowsAudit = new Function('truth', 'opts', `${auditSrc}\nreturn audit(truth, opts);`);
-        fuseToolFixture.view(sc.view || 'console');
         fuseToolFixture.thinking(sc.thinking !== false);
         fuseToolFixture.todo.reset();
         fuseToolFixture.mountThread(sc.rows, { live: Boolean(sc.live), phase: sc.phase || '' });

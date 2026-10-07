@@ -9,20 +9,17 @@
 //     does not drag the reader back.
 //  3. The live status line ends the transcript (after the log, not pinned over
 //     it) and scrolls away with the reply.
-//  4. A live thinking row survives a view switch mid-stream with its text and
-//     without the previous view's markup.
+//  4. A live thinking row keeps its earlier text while more streams into it.
 //  5. Streamed markdown at awkward chunk boundaries: a fence, a table and a link
 //     split inside their tokens render once, with no duplicated or swallowed text.
 //  6. A long answer streamed in truncated pieces equals the text the fixture
-//     emitted, in every reading mode.
+//     emitted.
 //  7. Reading text scale moves recap, status and transcript metadata with the
 //     answer text.
 const assert = require('node:assert/strict');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const origin = process.env.FUSE_BROWSER_ORIGIN || 'http://127.0.0.1:8099';
 assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
-
-const VIEWS = ['cli', 'compact', 'console', 'mainframe'];
 
 (async () => {
   const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'], ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}) });
@@ -37,11 +34,10 @@ const VIEWS = ['cli', 'compact', 'console', 'mainframe'];
     await page.waitForFunction(() => window.fuseToolFixture);
 
     // —— 1 + 2 + 3. Pill, forgiveness, status line. ——
-    for (const view of VIEWS) {
-      const tag = (what) => `${what} [${view}]`;
-      const run = await page.evaluate(async (view) => {
+    {
+      const tag = (what) => what;
+      const run = await page.evaluate(async () => {
         const f = fuseToolFixture;
-        f.view(view);
         await new Promise((r) => requestAnimationFrame(r));
         const rows = [];
         for (let i = 0; i < 16; i++) {
@@ -146,7 +142,7 @@ const VIEWS = ['cli', 'compact', 'console', 'mainframe'];
         const awayPlace = { dock: dock.offsetTop, logEnd: last ? last.offsetTop + last.offsetHeight : -1, scroll: Math.round(thread.scrollTop) };
 
         return { pinned, dockAfterLog, dockEnds, nudged, awayBefore, awayAfter, returned, wheelInside, zoomAndSwipe, paused, held, follows, awayPlace };
-      }, view);
+      });
 
       check(run.pinned.gap <= 1 && run.pinned.following, tag(`pinned to the end (gap ${run.pinned.gap})`));
       check(run.pinned.pill.hidden, tag('no Jump to latest while pinned'));
@@ -169,46 +165,40 @@ const VIEWS = ['cli', 'compact', 'console', 'mainframe'];
       check(run.follows, tag(`the status line sits at the end of the log, so it scrolls with the reply (dock ${run.awayPlace.dock}, log ends ${run.awayPlace.logEnd})`));
     }
 
-    // —— 4. Thinking rows survive a view switch mid-stream. ——
+    // —— 4. A live thinking row keeps receiving streamed additions. ——
     {
       const thought = 'First I check the config.\n\nThen I ' + 'reconsider the fallback path. '.repeat(12);
       const switched = await page.evaluate(async (thought) => {
         const f = fuseToolFixture;
         f.thinking(true);
-        f.view('console');
         await new Promise((r) => requestAnimationFrame(r));
         f.mountThread([
           { role: 'user', content: 'Think.' },
           { id: 'think', role: 'assistant', content: '', reasoning: thought, tools: [], segments: [{ type: 'reasoning', text: thought }] },
         ], { live: true, phase: 'model' });
         await new Promise((r) => setTimeout(r, 60));
-        const before = document.querySelector('[data-chat-log]').innerText.replace(/\s+/g, ' ');
-        f.view('cli');
         await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-        const log = document.querySelector('[data-chat-log]');
-        const row = log.querySelector('[data-step^="think-"]');
-        const preview = row && row.querySelector('[data-reason-preview] .chat-think-markdown');
         const more = thought + ' And one more clause after the switch.';
         f.stream(1, { reasoning: more, segments: [{ type: 'reasoning', text: more }] });
-        await new Promise((r) => requestAnimationFrame(r));
-        const body = preview ? preview.innerText : '';
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        const liveRow = document.querySelector('[data-step^="cgroup-think-"], [data-step^="think-"]');
+        const live = Boolean(liveRow && /is-running|is-live-think/.test(liveRow.className));
+        // A live thought is carried by the dock; it prints once it lands.
+        f.run({ status: 'completed' });
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        const row = document.querySelector('[data-step^="cgroup-think-"], [data-step^="think-"]');
         return {
-          before,
-          classes: row ? row.className : '',
-          consoleMarkup: Boolean(log.querySelector('.chat-console-bundle, .chat-console-thought, .is-console-group')),
-          preview: body,
-          live: Boolean(row && row.classList.contains('is-live-think')),
+          preview: row ? row.textContent : '',
+          live,
         };
       }, thought);
-      check(!/chat-console|is-console/.test(switched.classes), `a think row rebuilt for Terminal (classes: ${switched.classes})`);
-      check(!switched.consoleMarkup, 'Console markup does not survive into Terminal');
-      check(switched.live, 'the thought stays live after the view switch');
-      check(switched.preview.includes('reconsider the fallback path'), 'the thought text survives the view switch');
-      check(switched.preview.includes('one more clause after the switch'), 'streaming continues into the rebuilt thought');
+      check(switched.live, 'the thought stays live while it streams');
+      check(switched.preview.includes('reconsider the fallback path'), 'the thought keeps its earlier text');
+      check(switched.preview.includes('one more clause after the switch'), 'streaming continues into the live thought');
       check((switched.preview.match(/one more clause after the switch/g) || []).length === 1, 'the streamed addition is not doubled');
     }
 
-    // —— 5 + 6. Chunk boundaries and a long answer, every view. ——
+    // —— 5 + 6. Chunk boundaries and a long answer. ——
     const answer = [
       'Before the fence the prose stays whole.',
       '',
@@ -229,11 +219,10 @@ const VIEWS = ['cli', 'compact', 'console', 'mainframe'];
       'Closing sentence that must not be swallowed. ' + 'Filler word '.repeat(400),
     ].join('\n');
     const splits = [0, 4, answer.indexOf('value'), answer.indexOf('| beta'), answer.indexOf(']('), answer.indexOf('https'), answer.length - 7];
-    for (const view of VIEWS) {
-      const tag = (what) => `${what} [${view}]`;
-      const rendered = await page.evaluate(async ({ view, answer, splits }) => {
+    {
+      const tag = (what) => what;
+      const rendered = await page.evaluate(async ({ answer, splits }) => {
         const f = fuseToolFixture;
-        f.view(view);
         await new Promise((r) => requestAnimationFrame(r));
         f.mountThread([
           { role: 'user', content: 'Write it.' },
@@ -265,7 +254,7 @@ const VIEWS = ['cli', 'compact', 'console', 'mainframe'];
           linkText: link ? link.textContent : '',
           links: md.querySelectorAll('a').length,
         };
-      }, { view, answer, splits });
+      }, { answer, splits });
       const body = rendered.text.replace(/\s+/g, ' ');
       check(body.includes('Before the fence the prose stays whole'), tag('prose before a split fence survives'));
       check(body.includes('Closing sentence that must not be swallowed'), tag('the tail of a long answer is not truncated'));
@@ -280,11 +269,10 @@ const VIEWS = ['cli', 'compact', 'console', 'mainframe'];
     }
 
     // —— 7. Reading text scale reaches recap, status and transcript metadata. ——
-    for (const view of VIEWS) {
-      const tag = (what) => `${what} [${view}]`;
-      const scaled = await page.evaluate(async (view) => {
+    {
+      const tag = (what) => what;
+      const scaled = await page.evaluate(async () => {
         const f = fuseToolFixture;
-        f.view(view);
         await new Promise((r) => requestAnimationFrame(r));
         const text = 'Scaled answer body that the recap should match.';
         f.mountThread([
@@ -315,7 +303,7 @@ const VIEWS = ['cli', 'compact', 'console', 'mainframe'];
         const up = sample();
         FuseChatAppearance.setSize(100);
         return { base, up };
-      }, view);
+      });
       const ratio = (part) => scaled.up[part] / scaled.base[part];
       for (const part of ['body', 'recap', 'status', 'meta']) {
         check(Math.abs(ratio(part) - 1.3) < 0.02, tag(`${part} follows the reading scale (x${ratio(part).toFixed(3)})`));
@@ -329,5 +317,5 @@ const VIEWS = ['cli', 'compact', 'console', 'mainframe'];
     await browser.close();
   }
   assert.equal(failures.length, 0, `${failures.length} stream integrity problems\n${failures.join('\n')}`);
-  console.log('PASS: stream integrity — pill, follow forgiveness, status line, view-switch thinking, chunk boundaries, long answers, reading scale');
+  console.log('PASS: stream integrity — pill, follow forgiveness, status line, live thinking streaming, chunk boundaries, long answers, reading scale');
 })().catch((error) => { console.error(error); process.exit(1); });

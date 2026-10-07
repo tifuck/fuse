@@ -3,9 +3,9 @@
 
 Needs Playwright, which only the production venv has:
 
-    /root/fuse/venv/bin/python scripts/dev_qa_shot.py --view console --out /tmp/shots
-    /root/fuse/venv/bin/python scripts/dev_qa_shot.py --view cli,compact --size 390x844 --agents --live
-    /root/fuse/venv/bin/python scripts/dev_qa_shot.py --view console --backdrop garden:40 --wait 8
+    /root/fuse/venv/bin/python scripts/dev_qa_shot.py --out /tmp/shots
+    /root/fuse/venv/bin/python scripts/dev_qa_shot.py --size 390x844 --agents --live
+    /root/fuse/venv/bin/python scripts/dev_qa_shot.py --backdrop garden:40 --wait 8
 
 Run from /root/fuse-dev. Logs in with data/dev-qa-login.json (created by
 scripts.dev_qa_account) and opens the "QA · Tools, subagents and commands"
@@ -28,7 +28,6 @@ from playwright.async_api import async_playwright
 ROOT = Path(__file__).resolve().parents[1]
 BASE = "https://127.0.0.1:8089"
 FIXTURE_TITLE = "QA · Tools, subagents and commands"
-VIEWS = ("cli", "console", "compact", "mainframe")
 
 
 def _iso(dt):
@@ -104,39 +103,34 @@ async def main(args):
             thread = next(t["id"] for t in sync["threads"] if t["title"] == FIXTURE_TITLE)
         if args.live:
             await _live(page)
-        for view in args.view.split(","):
-            if view not in VIEWS:
-                raise SystemExit(f"unknown view {view!r}; one of {', '.join(VIEWS)}")
-            await page.evaluate(f"localStorage.setItem('fuse.chat.view.v2', '{view}')")
-            if args.theme:
-                name, _, colors = args.theme.partition(":")
-                await page.evaluate("([n, c]) => { localStorage.setItem('fuse.chat.theme.v1', n); if (c) {"
-                                    " const [ink, brass] = c.split(','); localStorage.setItem('fuse.chat.custom.v1',"
-                                    " JSON.stringify({ink, brass})); } }", [name, colors])
-            if args.pane_width:
-                await page.evaluate(f"localStorage.setItem('fuse.chat.agentsWidth', '{args.pane_width}')")
-            if args.backdrop:
-                kind, _, strength = args.backdrop.partition(":")
-                await page.evaluate("([k, s]) => { localStorage.setItem('fuse.chat.backdrop.v1', k);"
-                                    " if (s) localStorage.setItem('fuse.chat.backdrop.strength.v1', s); }", [kind, strength])
-            await page.goto(f"{BASE}/chat?t={thread}")
-            await page.wait_for_timeout(2500 + int(args.wait * 1000))
-            if args.agents or args.agent:
-                await page.click("[data-agents-tab]")
-                await page.wait_for_timeout(1000)
-                if args.agent:
-                    await page.click("[data-agents-list] button")
-                    await page.wait_for_timeout(1500)
-            tag = f"-{args.backdrop.partition(':')[0]}" if args.backdrop else ""
-            path = out / f"{view}-{args.size}{tag}{'-live' if args.live else ''}.png"
-            await page.screenshot(path=str(path), full_page=False)
-            print(path, json.dumps(await page.evaluate(BOXES)))
+        if args.theme:
+            name, _, colors = args.theme.partition(":")
+            await page.evaluate("([n, c]) => { localStorage.setItem('fuse.chat.theme.v1', n); if (c) {"
+                                " const [ink, brass] = c.split(','); localStorage.setItem('fuse.chat.custom.v1',"
+                                " JSON.stringify({ink, brass})); } }", [name, colors])
+        if args.pane_width:
+            await page.evaluate(f"localStorage.setItem('fuse.chat.agentsWidth', '{args.pane_width}')")
+        if args.backdrop:
+            kind, _, strength = args.backdrop.partition(":")
+            await page.evaluate("([k, s]) => { localStorage.setItem('fuse.chat.backdrop.v1', k);"
+                                " if (s) localStorage.setItem('fuse.chat.backdrop.strength.v1', s); }", [kind, strength])
+        await page.goto(f"{BASE}/chat?t={thread}")
+        await page.wait_for_timeout(2500 + int(args.wait * 1000))
+        if args.agents or args.agent:
+            await page.click("[data-agents-tab]")
+            await page.wait_for_timeout(1000)
+            if args.agent:
+                await page.click("[data-agents-list] button")
+                await page.wait_for_timeout(1500)
+        tag = f"-{args.backdrop.partition(':')[0]}" if args.backdrop else ""
+        path = out / f"chat-{args.size}{tag}{'-live' if args.live else ''}.png"
+        await page.screenshot(path=str(path), full_page=False)
+        print(path, json.dumps(await page.evaluate(BOXES)))
         await browser.close()
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--view", default=",".join(VIEWS), help="comma list of cli,console,compact,mainframe")
     ap.add_argument("--size", default="1440x900")
     ap.add_argument("--scale", type=float, default=1)
     ap.add_argument("--thread", help="public thread id (default: the QA fixture)")

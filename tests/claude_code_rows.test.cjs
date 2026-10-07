@@ -4,8 +4,10 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
-const source = fs.readFileSync(require('node:path').join(__dirname, '../static/chat.js'), 'utf8');
+const source = require('./chat_source.cjs');
 function load(name, context) {
+  const themed = require("./theme_factory.cjs")(context)[name];
+  if (typeof themed === "function") { context[name] = themed; return; }
   const start = source.indexOf(`  function ${name}(`);
   assert.ok(start >= 0, name);
   const end = source.indexOf('\n  }', start) + 4;

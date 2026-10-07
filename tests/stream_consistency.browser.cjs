@@ -6,38 +6,29 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
 
 const frames=page=>page.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));
 
-// A grouped run of shell calls opens and folds back. Terminal and Compact keep
-// their header as the control (mouse and keyboard). Console prints the opened
-// calls in place of the summary line, as Claude Code does, and a click on the
+// A grouped run of shell calls opens and folds back. The opened calls print
+// in place of the summary line, as Claude Code does, and a click on the
 // printed calls folds them back.
-async function checkGroup(page,scope,view){
+async function checkGroup(page,scope){
   const group=page.locator(`${scope} .is-stack, ${scope} .is-console-group`).first();
   const toggle=group.locator(':scope > .chat-step-main > .chat-step-head [data-step-toggle]').first();
   if(await toggle.getAttribute('aria-expanded')==='true'){
-    if(view==='console')await group.locator(':scope > .chat-step-main > .chat-console-bundle .chat-step-node').first().click({force:true});
-    else await toggle.click();
+    await group.locator(':scope > .chat-step-main > .chat-console-bundle .chat-step-node').first().click({force:true});
   }
-  assert.equal(await toggle.getAttribute('aria-expanded'),'false',`${view}: ${scope} group starts folded`);
+  assert.equal(await toggle.getAttribute('aria-expanded'),'false',`${scope} group starts folded`);
   await toggle.click();
-  assert.equal(await toggle.getAttribute('aria-expanded'),'true',`${view}: ${scope} group opens`);
-  if(view==='console'){
-    assert.equal(await group.locator(':scope > .chat-step-main > .chat-console-bundle').isVisible(),true,`${view}: opened calls are printed`);
-    assert.equal(await toggle.isVisible(),false,`${view}: the summary line gives way to its calls`);
+  assert.equal(await toggle.getAttribute('aria-expanded'),'true',`${scope} group opens`);
+  {
+    assert.equal(await group.locator(':scope > .chat-step-main > .chat-console-bundle').isVisible(),true,`opened calls are printed`);
+    assert.equal(await toggle.isVisible(),false,`the summary line gives way to its calls`);
     await group.locator(':scope > .chat-step-main > .chat-console-bundle .chat-step-node').first().click({force:true});
-    assert.equal(await toggle.getAttribute('aria-expanded'),'false',`${view}: a click on the printed calls folds them back`);
-    assert.equal(await toggle.isVisible(),true,`${view}: the summary line returns`);
+    assert.equal(await toggle.getAttribute('aria-expanded'),'false',`a click on the printed calls folds them back`);
+    assert.equal(await toggle.isVisible(),true,`the summary line returns`);
     await toggle.focus();await page.keyboard.press('Enter');
-    assert.equal(await toggle.getAttribute('aria-expanded'),'true',`${view}: Enter opens the summary line`);
+    assert.equal(await toggle.getAttribute('aria-expanded'),'true',`Enter opens the summary line`);
     await group.locator(':scope > .chat-step-main > .chat-console-bundle .chat-step-node').first().click({force:true});
-  } else {
-    assert.equal(await toggle.isVisible(),true,`${view}: collapse control remains visible`);
-    await toggle.click();
-    assert.equal(await toggle.getAttribute('aria-expanded'),'false');
-    await toggle.focus();await page.keyboard.press('Enter');
-    assert.equal(await toggle.getAttribute('aria-expanded'),'true');
-    await page.keyboard.press('Space');
   }
-  assert.equal(await toggle.getAttribute('aria-expanded'),'false',`${view}: ${scope} group folds`);
+  assert.equal(await toggle.getAttribute('aria-expanded'),'false',`${scope} group folds`);
 }
 
 (async () => {
@@ -49,44 +40,38 @@ async function checkGroup(page,scope,view){
     await page.route('**/*', route=>new URL(route.request().url()).origin===origin ? route.continue() : route.abort());
     await page.goto(origin);
     await page.waitForFunction(()=>window.fuseToolFixture);
-    for (const width of [1280,390]) for (const view of ['cli','compact','console']) {
+    for (const width of [1280,390]) {
       await page.setViewportSize({width,height:900});
-      await page.evaluate(view=>{
-        const f=fuseToolFixture;f.view(view);
-        f.mount([{id:'thinking-'+view,reasoning:'First thought',tools:[],segments:[{type:'reasoning',text:'First thought'}]}],true);
-      },view);
-      if (view==='console') {
-        // Console prints a thought only once it lands (Claude Code style): the
+      await page.evaluate(()=>{
+        const f=fuseToolFixture;f.mount([{id:'thinking-live',reasoning:'First thought',tools:[],segments:[{type:'reasoning',text:'First thought'}]}],true);
+      });
+      {
+        // A thought prints only once it lands (Claude Code style): the
         // live dock carries it while it streams, then a "Thought for" line.
-        assert.equal(await page.locator('.chat-log :is([data-reason-preview], .chat-console-thought)').count(),0,`${view}: an unfinished thought prints no row`);
+        assert.equal(await page.locator('.chat-log :is([data-reason-preview], .chat-console-thought)').count(),0,`an unfinished thought prints no row`);
         await page.evaluate(()=>fuseToolFixture.stream(0,{reasoning:'First thought and next thought',segments:[{type:'reasoning',text:'First thought and next thought'}]}));
-        assert.equal(await page.locator('.chat-log .chat-console-thought').count(),0,`${view}: streamed thinking text alone repaints nothing`);
+        assert.equal(await page.locator('.chat-log .chat-console-thought').count(),0,`streamed thinking text alone repaints nothing`);
         await page.evaluate(()=>fuseToolFixture.mount([{id:'thinking-console',reasoning:'First thought and next thought',tools:[],segments:[{type:'reasoning',text:'First thought and next thought'}]}],false));
         const line=page.locator('.chat-log .is-console-group').first();
-        assert.match(await line.locator(':scope > .chat-step-main > .chat-step-head .chat-step-label').textContent(),/^Thought for /,`${view}: landed thought reads as a summary line`);
+        assert.match(await line.locator(':scope > .chat-step-main > .chat-step-head .chat-step-label').textContent(),/^Thought for /,`landed thought reads as a summary line`);
         await line.locator('[data-step-toggle]').first().click();
         const thought=page.locator('.chat-log .chat-console-thought');
-        assert.equal(await thought.isVisible(),true,`${view}: expanding the line shows the thought`);
+        assert.equal(await thought.isVisible(),true,`expanding the line shows the thought`);
         assert.match(await thought.textContent(),/next thought/);
-      } else {
-        assert.equal(await page.locator('.chat-log [data-reason-preview]').count(),1,`${view}: live reasoning`);
-        assert.equal(await page.locator('.chat-log [data-reason-preview]').isVisible(),true,`${view}: reasoning text is visible`);
-        await page.evaluate(()=>fuseToolFixture.stream(0,{reasoning:'First thought and next thought',segments:[{type:'reasoning',text:'First thought and next thought'}]}));
-        assert.match(await page.locator('.chat-log [data-reason-preview]').textContent(),/next thought/);
       }
-      await page.evaluate(({view,width})=>fuseToolFixture.mount([{id:`group-${view}-${width}`,tools:Array.from({length:5},(_,i)=>({id:'shell'+i,name:'run_terminal_command',status:'done',state:'completed',command:'printf audit',output:'sample\n'.repeat(10),exit_code:0}))}],false),{view,width});
-      await checkGroup(page,'.chat-log',view);
-      const detail=await page.evaluate(view=>{
+      await page.evaluate(({width})=>fuseToolFixture.mount([{id:`group-${width}`,tools:Array.from({length:5},(_,i)=>({id:'shell'+i,name:'run_terminal_command',status:'done',state:'completed',command:'printf audit',output:'sample\n'.repeat(10),exit_code:0}))}],false),{width});
+      await checkGroup(page,'.chat-log');
+      const detail=await page.evaluate(()=>{
         const f=fuseToolFixture;
-        f.mount([{id:'output-'+view,tools:[{id:'detail',name:'run_terminal_command',status:'done',state:'completed',command:'printf audit',output:'OLD_OUTPUT',exit_code:0}]}],false);
+        f.mount([{id:'output',tools:[{id:'detail',name:'run_terminal_command',status:'done',state:'completed',command:'printf audit',output:'OLD_OUTPUT',exit_code:0}]}],false);
         f.update('detail',{output:'NEW_OUTPUT'},false);
         // Collapsed rows build their details on first open; open it so the
         // check covers what a reader sees, not a hidden stale copy.
         const lazy=document.querySelector('.chat-log [data-lazy-detail]');
         if(lazy)lazy.closest('[data-step]').querySelector(':scope > .chat-step-main > .chat-step-head [data-step-toggle]').click();
         return document.querySelector('.chat-log').textContent;
-      },view);
-      assert.ok(detail.includes('NEW_OUTPUT') && !detail.includes('OLD_OUTPUT'),`${view}: details refresh`);
+      });
+      assert.ok(detail.includes('NEW_OUTPUT') && !detail.includes('OLD_OUTPUT'),`details refresh`);
     }
     const count=await page.evaluate(()=>{
       const f=fuseToolFixture;const tools=Array.from({length:5},(_,i)=>({id:'t'+i,name:'read_file',status:'running'}));
@@ -106,8 +91,8 @@ async function checkGroup(page,scope,view){
     });
     await page.route('**/chat/threads/fixture-thread/agents',route=>route.fulfill({json:{agents:[]}}));
     await page.route('**/chat/threads/fixture-thread/jobs',route=>route.fulfill({json:{jobs:[]}}));
-    await page.evaluate(()=>{fuseToolFixture.view('cli');fuseToolFixture.mount([{id:'parent',tools:[{id:'spawn',name:'spawn_subagent',status:'running',background:true,child_id:'audit-child'}]}],true,'fixture-thread');});
-    await page.locator('[data-open-agent="audit-child"]').first().click();
+    await page.evaluate(()=>{fuseToolFixture.mount([{id:'parent',tools:[{id:'spawn',name:'spawn_subagent',status:'running',background:true,child_id:'audit-child'}]}],true,'fixture-thread');});
+    await page.evaluate(()=>fuseToolFixture.todo.openAgent('audit-child'));
     await page.waitForSelector('[data-agent-current]',{state:'attached'});
     const tools=Array.from({length:5},(_,i)=>({id:'t'+i,name:'read_file',status:'running',path:'file'+i}));
     await page.evaluate(tools=>fuseToolFixture.event({id:10,type:'agent.progress',thread_id:'fixture-thread',payload:{run_id:'audit-child',events:tools.map(t=>({fuse:{event:'tool',...t}}))}}),tools);
@@ -126,20 +111,20 @@ async function checkGroup(page,scope,view){
     release();await page.evaluate(()=>window.heldPoll);
     assert.equal(await page.locator('[data-agent-status]').textContent(),'completed','stale poll cannot undo completion');
     await page.waitForTimeout(100);
-    for(const view of ['cli','compact','console']){
+    {
       run.event_cursor++;
       run.status='running';run.messages=[];run.message={content:'',reasoning:'Child thinking',tools:[],segments:[{type:'reasoning',text:'Child thinking'}]};
-      await page.evaluate(view=>fuseToolFixture.view(view),view);await page.evaluate(()=>fuseToolFixture.pollAgent());
+      await page.evaluate(()=>fuseToolFixture.pollAgent());
       await frames(page);
-      // Console prints a child's thought once it lands, like the main log.
-      assert.equal(await page.locator('[data-agent-current] :is([data-reason-preview], .chat-console-thought)').count(),view==='console'?0:1,`${view}: child thinking`);
+      // A child's thought prints once it lands, like the main log.
+      assert.equal(await page.locator('[data-agent-current] :is([data-reason-preview], .chat-console-thought)').count(),0,`child thinking`);
       run.event_cursor++;
       run.message={content:'',reasoning:'',tools:Array.from({length:5},(_,i)=>({id:'s'+i,name:'run_terminal_command',status:'done',state:'completed',command:'pwd',output:'fixture\n'.repeat(8),exit_code:0}))};
       await page.evaluate(()=>fuseToolFixture.pollAgent());
-      await checkGroup(page,'[data-agent-current]',view);
+      await checkGroup(page,'[data-agent-current]');
     }
     run.event_cursor++;run.messages=[{id:'audit-child:agent-hist-1',role:'assistant',content:'',tools:[{id:'historical',name:'read_file',status:'interrupted',path:'file'}]}];run.message={content:'',tools:[]};
-    await page.evaluate(()=>{fuseToolFixture.view('cli');return fuseToolFixture.pollAgent()});
+    await page.evaluate(()=>{return fuseToolFixture.pollAgent()});
     run.event_cursor++;run.messages[0].tools[0].status='done';
     await page.evaluate(()=>fuseToolFixture.pollAgent());
     assert.equal(await page.locator('[data-agent-log-body] [data-tool="read_file"]').getAttribute('data-state'),'done','historical status refreshes');
@@ -149,6 +134,6 @@ async function checkGroup(page,scope,view){
     await frames(page);
     assert.equal(await page.locator('[data-agent-current] [data-tool="spawn_subagent"]').getAttribute('data-state'),'done','nested completion refreshes');
     assert.deepEqual(errors,[]);
-    console.log('PASS: three views, desktop/mobile, thinking, disclosures, detail updates, child snapshots, append replay and nested status');
+    console.log('PASS: desktop/mobile, thinking, disclosures, detail updates, child snapshots, append replay and nested status');
   } finally {await browser.close();}
 })().catch(error=>{console.error(error);process.exit(1)});
