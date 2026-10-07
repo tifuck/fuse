@@ -7,11 +7,26 @@ import io
 import json
 from pathlib import Path
 import sys
+import weakref
 
 MAX_SOURCE = 20 * 1024 * 1024
 MAX_OUTPUT = 5 * 1024 * 1024
 MAX_PIXELS = 40_000_000
-EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".ico", ".apng", ".avif"}
+DECODE_CONCURRENCY = 3
+EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".ico", ".apng"}
+
+# One interpreter per decode, each holding up to 1 GiB of address space: cap
+# how many may exist at once (per event loop — the semaphore binds to its loop).
+_decode_gates: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def _decode_gate() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    gate = _decode_gates.get(loop)
+    if gate is None:
+        gate = asyncio.Semaphore(DECODE_CONCURRENCY)
+        _decode_gates[loop] = gate
+    return gate
 
 
 def image_magic(data: bytes) -> bool:
@@ -26,18 +41,19 @@ async def decode_image(data: bytes, frame: int = 0) -> dict:
         raise ValueError("unsupported image format (AVIF and PDF are not supported)")
     if type(frame) is not int or frame < 0:
         raise ValueError("frame must be a zero-based non-negative integer")
-    proc = await asyncio.create_subprocess_exec(
-        sys.executable, str(Path(__file__).resolve()), str(frame),
-        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    try:
-        stdout, _ = await asyncio.wait_for(proc.communicate(data), 15)
-    except BaseException:
-        if proc.returncode is None:
-            proc.kill()
-        await proc.wait()
-        raise
+    async with _decode_gate():
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, str(Path(__file__).resolve()), str(frame),
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(data), 15)
+        except BaseException:
+            if proc.returncode is None:
+                proc.kill()
+            await proc.wait()
+            raise
     if proc.returncode or len(stdout) > MAX_OUTPUT * 2:
         raise ValueError("image decoding failed or exceeded resource limits")
     result = json.loads(stdout)

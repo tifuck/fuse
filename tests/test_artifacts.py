@@ -15,7 +15,7 @@ _TMP = tempfile.mkdtemp(prefix="fuse-art-")
 os.environ.setdefault("DATABASE_PATH", str(Path(_TMP) / "art.db"))
 os.environ.setdefault("APP_SECRET", "x" * 32)
 
-from app import accounts, artifacts, chats, db  # noqa: E402
+from app import accounts, artifacts, chats, db, push  # noqa: E402
 from app.security import limiter  # noqa: E402
 from app.chat_runtime import (  # noqa: E402
     _ARG_LIMIT_ARTIFACT,
@@ -195,6 +195,14 @@ class ArtifactStoreTest(unittest.TestCase):
         self.assertEqual(resp.headers["x-frame-options"], "SAMEORIGIN")
         self.assertEqual(resp.headers["x-robots-tag"], "noindex, nofollow")
 
+    def test_delete_is_rate_limited(self):
+        art = artifacts.create(self.owner, title="Rate", html="<html><body>r</body></html>")
+        for _ in range(artifacts.WRITES_PER_MIN - 1):
+            self.assertFalse(artifacts.delete(self.owner, "missing-artifact-xx"))
+        with self.assertRaises(artifacts.ArtifactError) as ctx:
+            artifacts.delete(self.owner, art["identifier"])
+        self.assertEqual(ctx.exception.status_code, 429)
+
 
 class ArtifactToolWiringTest(unittest.TestCase):
     def test_search_chip_does_not_include_artifacts(self):
@@ -269,6 +277,81 @@ class ArtifactToolWiringTest(unittest.TestCase):
         out = _redact_tool_args("create_artifact", raw)
         self.assertNotIn("secret", out)
         self.assertIn("T", out)
+
+
+class PushSafetyTest(unittest.TestCase):
+    """app/push.py subscription and payload safety (app/web/notifications.py + push)."""
+
+    @classmethod
+    def setUpClass(cls):
+        accounts.create_user("push-owner@example.test", "password12", admin=False, require_invite=False)
+        accounts.create_user("push-other@example.test", "password12", admin=False, require_invite=False)
+        cls.owner = int(accounts.user_by_email("push-owner@example.test")["id"])
+        cls.other = int(accounts.user_by_email("push-other@example.test")["id"])
+
+    def test_endpoint_allowlist(self):
+        good = (
+            "https://fcm.googleapis.com/fcm/send/abc",
+            "https://updates.push.services.mozilla.com/push/v1/x",
+            "https://web.push.apple.com/x",
+            "https://db5p.notify.windows.com/?token=t",
+        )
+        bad = (
+            "http://fcm.googleapis.com/x",
+            "https://evil.test/push",
+            "https://fcm.googleapis.com.evil.test/x",
+            "https://fcm.googleapis.com:8443/x",
+            "https://127.0.0.1/x",
+            "https://internal.test:8443/x",
+            "https://evil.test@fcm.googleapis.com.evil.test/x",
+            "ftp://fcm.googleapis.com/x",
+        )
+        for endpoint in good:
+            self.assertTrue(push.valid_endpoint(endpoint), endpoint)
+        for endpoint in bad:
+            self.assertFalse(push.valid_endpoint(endpoint), endpoint)
+
+    def test_invalid_endpoint_rejected_at_save(self):
+        before = push.count_for(self.owner)
+        with self.assertRaises(ValueError):
+            push.save_subscription(self.owner, "https://evil.test/push", "k", "a")
+        self.assertEqual(push.count_for(self.owner), before)
+
+    def test_subscription_stays_with_its_account(self):
+        endpoint = "https://fcm.googleapis.com/fcm/send/take1"
+        push.save_subscription(self.owner, endpoint, "k1", "a1")
+        with self.assertRaises(ValueError):
+            push.save_subscription(self.other, endpoint, "k2", "a2")
+        rows = {r["endpoint"]: r["p256dh"] for r in push.subscriptions_for(self.owner)}
+        self.assertEqual(rows.get(endpoint), "k1")
+        self.assertEqual(push.count_for(self.other), 0)
+        push.save_subscription(self.owner, endpoint, "k3", "a3")
+        rows = {r["endpoint"]: r["p256dh"] for r in push.subscriptions_for(self.owner)}
+        self.assertEqual(rows.get(endpoint), "k3")
+
+    def test_subscription_cap_evicts_oldest(self):
+        for i in range(push.MAX_SUBSCRIPTIONS + 5):
+            push.save_subscription(self.owner, f"https://fcm.googleapis.com/fcm/send/cap{i}", "k", "a")
+        self.assertEqual(push.count_for(self.owner), push.MAX_SUBSCRIPTIONS)
+        kept = {row["endpoint"] for row in push.subscriptions_for(self.owner)}
+        self.assertIn(f"https://fcm.googleapis.com/fcm/send/cap{push.MAX_SUBSCRIPTIONS + 4}", kept)
+        self.assertNotIn("https://fcm.googleapis.com/fcm/send/cap0", kept)
+
+    def test_push_payload_redacts_secrets(self):
+        raw = (
+            "password=hunter2 sk-abc123def456ghi789 "
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NSJ9.abcdefghij "
+            "ghp_0123456789abcdef0123456789abcdef0123 " + "A" * 45
+        )
+        redacted = push._redact_secrets(raw)
+        for secret in (
+            "hunter2",
+            "sk-abc123def456ghi789",
+            "eyJhbGciOiJIUzI1NiJ9",
+            "ghp_0123456789abcdef0123456789abcdef0123",
+        ):
+            self.assertNotIn(secret, redacted)
+        self.assertIn("[redacted]", redacted)
 
 
 class ArtifactTracePersistTest(unittest.TestCase):

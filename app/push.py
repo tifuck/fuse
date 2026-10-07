@@ -4,6 +4,9 @@ Each signed-in device subscribes once; a terminal root run fans a notification
 out to every subscription the user owns, so a turn started on the desktop can
 surface on a phone. VAPID keys persist in data/vapid.json — regenerating them
 silently breaks every existing subscription.
+
+Payload bodies are visible on lock screens, so secret-looking material is
+redacted before it leaves the server.
 """
 from __future__ import annotations
 
@@ -12,6 +15,7 @@ import base64
 import json
 import logging
 import os
+import re
 from urllib.parse import urlsplit
 
 from . import db
@@ -31,6 +35,58 @@ except Exception:  # pragma: no cover - dependency missing
     HAVE_PYWEBPUSH = False
 
 _keys: dict | None = None
+MAX_SUBSCRIPTIONS = 20
+
+# Subscribing stores an endpoint this server later POSTs to. Web Push
+# endpoints always come from the browser's configured push service, so a
+# closed allowlist is exact: anything else is SSRF bait.
+_PUSH_HOSTS = frozenset({
+    "fcm.googleapis.com",
+    "android.googleapis.com",
+    "updates.push.services.mozilla.com",
+    "push.apple.com",
+    "pushd.com",
+})
+_PUSH_HOST_SUFFIXES = (
+    ".push.apple.com",
+    ".notify.windows.com",
+    ".push.windows.net",
+)
+
+_SECRET_RES = (
+    re.compile(r"-----BEGIN[ A-Z]*PRIVATE KEY-----[\s\S]*?(?:-----END[ A-Z]*PRIVATE KEY-----|$)"),
+    re.compile(r"(?i)\b(authorization|api[-_ ]?key|secret|token|password|passwd|private[-_ ]?key)\b\s*[:=]\s*\S+"),
+    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{16,}"),
+    re.compile(r"\b(?:sk|rk|pk)-[A-Za-z0-9_-]{16,}\b"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"),
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b"),
+    re.compile(r"\b[0-9a-fA-F]{32,}\b"),
+    re.compile(r"(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/=_-]{40,}={0,2}(?![A-Za-z0-9+/=_-])"),
+)
+
+
+def valid_endpoint(endpoint) -> bool:
+    """Only browser push services may be stored and POSTed to."""
+    if not isinstance(endpoint, str) or not endpoint.startswith("https://") or len(endpoint) > 2048:
+        return False
+    try:
+        parts = urlsplit(endpoint)
+        host = (parts.hostname or "").lower().rstrip(".")
+        port = parts.port
+    except ValueError:
+        return False
+    if port not in (None, 443):
+        return False
+    return host in _PUSH_HOSTS or any(host.endswith(suffix) for suffix in _PUSH_HOST_SUFFIXES)
+
+
+def _redact_secrets(text: str) -> str:
+    out = text or ""
+    for pattern in _SECRET_RES:
+        out = pattern.sub("[redacted]", out)
+    return out
 
 
 def _b64url(raw: bytes) -> str:
@@ -106,8 +162,14 @@ def vapid_public_key() -> str:
     return _keys.get("public_key") or "" if isinstance(_keys, dict) else ""
 
 
-def _ready() -> bool:
-    return HAVE_PYWEBPUSH and bool(vapid_public_key())
+def ready() -> bool:
+    if not HAVE_PYWEBPUSH or not vapid_public_key():
+        return False
+    if not _subject():
+        # Push services reject or drop VAPID claims without a reachable
+        # contact; sending anyway only accumulates dead subscriptions.
+        return False
+    return True
 
 
 def _subject() -> str:
@@ -117,7 +179,7 @@ def _subject() -> str:
             return f"mailto:alerts@{host}"
     except Exception:
         pass
-    return "mailto:alerts@fuse"
+    return ""
 
 
 def count_for(user_id: int) -> int:
@@ -133,14 +195,35 @@ def subscriptions_for(user_id: int) -> list:
 
 
 def save_subscription(user_id: int, endpoint: str, p256dh: str, auth: str, user_agent: str = "") -> None:
-    db.execute(
-        """INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, user_agent, created_at)
-           VALUES (?,?,?,?,?,?)
-           ON CONFLICT(endpoint) DO UPDATE SET
-             user_id=excluded.user_id, p256dh=excluded.p256dh, auth=excluded.auth,
-             user_agent=excluded.user_agent""",
-        (user_id, endpoint, p256dh, auth, user_agent, db.now()),
-    )
+    """Store a device subscription. Raises ValueError when the endpoint is not
+    a push service or already belongs to another account."""
+    if not valid_endpoint(endpoint):
+        raise ValueError("endpoint is not a supported push service")
+    with db.tx() as conn:
+        row = conn.execute("SELECT user_id FROM push_subscriptions WHERE endpoint=?", (endpoint,)).fetchone()
+        if row is not None and int(row["user_id"]) != int(user_id):
+            raise ValueError("endpoint is registered to another account")
+        # The WHERE guard keeps a racing insert for another account from being
+        # silently reassigned by this upsert.
+        conn.execute(
+            """INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, user_agent, created_at)
+               VALUES (?,?,?,?,?,?)
+               ON CONFLICT(endpoint) DO UPDATE SET
+                 user_id=excluded.user_id, p256dh=excluded.p256dh, auth=excluded.auth,
+                 user_agent=excluded.user_agent
+               WHERE push_subscriptions.user_id=excluded.user_id""",
+            (user_id, endpoint, p256dh, auth, user_agent, db.now()),
+        )
+        rows = conn.execute(
+            "SELECT id FROM push_subscriptions WHERE user_id=? ORDER BY created_at DESC, id DESC",
+            (user_id,),
+        ).fetchall()
+        drop = [int(r["id"]) for r in rows[MAX_SUBSCRIPTIONS:]]
+        if drop:
+            conn.execute(
+                f"DELETE FROM push_subscriptions WHERE id IN ({','.join('?' * len(drop))})",
+                tuple(drop),
+            )
 
 
 def remove_subscription(user_id: int, endpoint: str) -> None:
@@ -179,19 +262,21 @@ def _send_one(row, payload: str) -> bool:
         return False
 
 
+async def _send_bounded(row: dict, payload: str) -> bool:
+    try:
+        return bool(await asyncio.wait_for(asyncio.to_thread(_send_one, row, payload), 20))
+    except Exception:
+        return False
+
+
 async def notify_user(user_id: int, payload: dict) -> int:
-    """Fan one payload to every device; never raises."""
-    if not _ready():
+    """Fan one payload to every device concurrently; never raises."""
+    if not ready():
         return 0
     body = json.dumps(payload)
-    sent = 0
-    for row in subscriptions_for(user_id):
-        try:
-            ok = await asyncio.wait_for(asyncio.to_thread(_send_one, dict(row), body), 20)
-        except Exception:
-            ok = False
-        sent += 1 if ok else 0
-    return sent
+    rows = [dict(row) for row in subscriptions_for(user_id)]
+    results = await asyncio.gather(*(_send_bounded(row, body) for row in rows))
+    return sum(1 for ok in results if ok)
 
 
 async def notify_run_done(user_id: int, thread_id, status: str, content: str = "", error: str = "") -> int:
@@ -210,11 +295,11 @@ async def notify_run_done(user_id: int, thread_id, status: str, content: str = "
             public = chats.public_id_for(thread_id) or ""
         except Exception:
             public = ""
-    title = (thread["title"] or "").strip()
+    title = _redact_secrets((thread["title"] or "").strip())
     if status == "failed":
-        body = error or "Generation failed."
+        body = _redact_secrets(error or "Generation failed.")
     else:
-        body = " ".join(str(content or "").split())
+        body = " ".join(_redact_secrets(str(content or "")).split())
     return await notify_user(
         user_id,
         {

@@ -345,15 +345,8 @@ def update(
         ).fetchone()
         if fresh is None:
             raise ArtifactError("artifact not found", 404)
-        version = int(fresh["current_version"])
-        if new_html is not None:
-            version = version + 1
-            conn.execute(
-                "INSERT INTO artifact_versions (artifact_id, version, html, created_at) VALUES (?,?,?,?)",
-                (row["id"], version, new_html, ts),
-            )
-            _prune_versions(conn, int(row["id"]))
-        conn.execute(
+        version = int(fresh["current_version"]) + (1 if new_html is not None else 0)
+        cursor = conn.execute(
             "UPDATE artifacts SET title=?, visibility=?, current_version=?, updated_at=? WHERE id=? AND user_id=? AND current_version=?",
             (
                 new_title if new_title is not None else fresh["title"],
@@ -361,6 +354,22 @@ def update(
                 version, ts, row["id"], user_id, int(fresh["current_version"]),
             ),
         )
+        if cursor.rowcount == 0:
+            # Either a concurrent update moved current_version (real conflict,
+            # and this transaction must not mint a version row) or nothing
+            # changed on a backend that counts changed rows. Tell them apart.
+            current = conn.execute(
+                "SELECT current_version FROM artifacts WHERE id=? AND user_id=?",
+                (row["id"], user_id),
+            ).fetchone()
+            if current is None or int(current["current_version"]) != int(fresh["current_version"]):
+                raise ArtifactError("artifact changed concurrently; retry", 409)
+        if new_html is not None:
+            conn.execute(
+                "INSERT INTO artifact_versions (artifact_id, version, html, created_at) VALUES (?,?,?,?)",
+                (row["id"], version, new_html, ts),
+            )
+            _prune_versions(conn, int(row["id"]))
         _link_thread(conn, int(row["id"]), thread_id)
     fresh_row = get_owned(user_id, public_id)
     return view(fresh_row)
@@ -389,6 +398,7 @@ def set_archived(user_id: int, public_id: str, archived: bool) -> dict:
 
 
 def delete(user_id: int, public_id: str) -> bool:
+    _rate(user_id)
     row = get_owned(user_id, public_id)
     if not row:
         return False
@@ -418,6 +428,7 @@ def attach_thread(user_id: int, public_id: str, thread_id: int) -> dict | None:
 def continue_in_chat(user_id: int, public_id: str, *, model: str = "") -> dict:
     from . import chats
 
+    _rate(user_id)
     row = get_owned(user_id, public_id)
     if not row:
         raise ArtifactError("artifact not found", 404)

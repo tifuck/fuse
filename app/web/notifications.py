@@ -30,7 +30,7 @@ async def notifications_status(request: Request):
         return err
     return JSONResponse(
         {
-            "enabled": push.HAVE_PYWEBPUSH,
+            "enabled": push.ready(),
             "vapid": push.vapid_public_key(),
             "count": push.count_for(user["id"]),
         },
@@ -57,7 +57,12 @@ async def notifications_subscribe(request: Request):
         if not isinstance(value, str) or not value or len(value) > 512:
             raise HTTPException(422, "Invalid keys")
     agent = raw.get("user_agent") if isinstance(raw.get("user_agent"), str) else ""
-    push.save_subscription(user["id"], endpoint, p256dh, auth, agent[:300])
+    if not limiter.allow(f"push-subscribe:{user['id']}", 20, 60):
+        raise HTTPException(429, "Too many subscription updates")
+    try:
+        push.save_subscription(user["id"], endpoint, p256dh, auth, agent[:300])
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
     return JSONResponse({"ok": True, "count": push.count_for(user["id"])})
 
 

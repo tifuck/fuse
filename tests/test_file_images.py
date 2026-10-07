@@ -190,3 +190,44 @@ def test_execute_decode_timeout_has_no_image():
         assert rec["status"] == "error"
         assert "time limit" in text
         assert "image" not in rec
+
+
+def test_decode_concurrency_capped(monkeypatch):
+    live = 0
+    peak = 0
+
+    class Proc:
+        returncode = 0
+
+        def kill(self):
+            pass
+
+        async def communicate(self, data):
+            nonlocal live, peak
+            live += 1
+            peak = max(peak, live)
+            await asyncio.sleep(0.02)
+            live -= 1
+            return b'{"error": "stop"}', b""
+
+        async def wait(self):
+            return 0
+
+    async def fake_exec(*args, **kwargs):
+        return Proc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    async def go():
+        await asyncio.gather(
+            *(file_images.decode_image(raster()) for _ in range(6)), return_exceptions=True
+        )
+
+    asyncio.run(go())
+    assert peak == min(6, file_images.DECODE_CONCURRENCY)
+
+
+def test_extensions_do_not_promise_avif():
+    assert ".avif" not in file_images.EXTENSIONS
+    with pytest.raises(ValueError):
+        asyncio.run(file_images.decode_image(b"xxxxftypavif"))

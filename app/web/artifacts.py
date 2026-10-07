@@ -203,7 +203,13 @@ async def artifact_delete(request: Request, public_id: str):
     if err:
         return err
     json_request = "application/json" in (request.headers.get("content-type") or "").lower()
-    if not artifacts.delete(user["id"], public_id):
+    try:
+        deleted = artifacts.delete(user["id"], public_id)
+    except artifacts.ArtifactError as exc:
+        if json_request:
+            raise _artifact_http_error(exc) from None
+        return RedirectResponse(f"/artifacts?error={quote_plus(exc.detail)}", status_code=303)
+    if not deleted:
         if json_request:
             raise HTTPException(404, "Artifact not found")
         return RedirectResponse(f"/artifacts?error={quote_plus('Artifact not found')}", status_code=303)
