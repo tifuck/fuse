@@ -5,13 +5,19 @@ import re
 from fastapi import HTTPException
 
 from . import chats
+from .chat_schema import MSG_MAX
 
 _ROLES = {"user", "assistant"}
-_MSG_MAX = 200
+_MSG_MAX = MSG_MAX  # a request may replay the whole transcript
 _CONTENT_MAX = 100_000
 _PART_DATA_MAX = 1_500_000
+# One message's worth of parts, for the request as a whole.
+_PAYLOAD_MAX = 32 * _PART_DATA_MAX
 _IMAGE_TYPES = {"image_url", "input_image"}
 _FILE_TYPES = {"file", "input_file"}
+# Control and bidi/format characters (zero-widths, embeddings, overrides) only
+# ever spoof display; same class as chat_titles._SCRUB_CHARS minus framing.
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u200b-\u200f\u202a-\u202e\u2066-\u2069]")
 
 _INIT_RE = re.compile(r"^/init(?:\s+([\s\S]*))?$", re.I)
 INIT_PROMPT = """Create or update `AGENTS.md` for this repository.
@@ -105,7 +111,7 @@ def _sanitize_parts(content) -> list[dict]:
             text = part.get("text")
             if not isinstance(text, str) or len(text) > _CONTENT_MAX:
                 raise HTTPException(400, "Message too long")
-            parts.append({"type": "text", "text": text})
+            parts.append({"type": "text", "text": _CONTROL_CHARS.sub(" ", text)})
         elif kind in _IMAGE_TYPES:
             image = part.get("image_url")
             url = image.get("url") if isinstance(image, dict) else image
@@ -136,14 +142,29 @@ def _content_nonempty(content) -> bool:
     if isinstance(content, str):
         return bool(content.strip())
     if isinstance(content, list):
-        return bool(content)
+        return any(
+            (p.get("type") == "text" and bool(p.get("text", "").strip()))
+            or p.get("type") in _IMAGE_TYPES
+            or p.get("type") in _FILE_TYPES
+            for p in content
+            if isinstance(p, dict)
+        )
     return False
+
+
+def _part_size(part: dict) -> int:
+    if part.get("type") == "text":
+        return len(part.get("text") or "")
+    if part.get("type") == "image_url":
+        return len(part["image_url"]["url"])
+    return len(part["file"]["file_data"])
 
 
 def sanitize_messages(raw) -> list[dict]:
     if not isinstance(raw, list) or not raw or len(raw) > _MSG_MAX:
         raise HTTPException(400, "Invalid messages")
     out = []
+    total = 0
     for item in raw:
         if not isinstance(item, dict):
             raise HTTPException(400, "Invalid messages")
@@ -156,14 +177,21 @@ def sanitize_messages(raw) -> list[dict]:
                 raise HTTPException(400, "Message too long")
             if not content.strip() and role == "user":
                 raise HTTPException(400, "Invalid messages")
-            out.append({"role": role, "content": content})
+            total += len(content)
+            out.append({"role": role, "content": _CONTROL_CHARS.sub(" ", content)})
             continue
         if isinstance(content, list):
             if role != "user":
                 raise HTTPException(400, "Invalid messages")
-            out.append({"role": role, "content": _sanitize_parts(content)})
+            parts = _sanitize_parts(content)
+            if not _content_nonempty(parts):
+                raise HTTPException(400, "Invalid messages")
+            total += sum(_part_size(p) for p in parts)
+            out.append({"role": role, "content": parts})
             continue
         raise HTTPException(400, "Invalid messages")
+    if total > _PAYLOAD_MAX:
+        raise HTTPException(413, "Message too long")
     if not any(m["role"] == "user" and _content_nonempty(m["content"]) for m in out):
         raise HTTPException(400, "Invalid messages")
     return out
@@ -429,8 +457,13 @@ def expand_slash_messages(messages: list[dict], *, project_session: bool, bound_
             continue
         args = (match.group(1) or "").strip() or "(none)"
         expanded = dict(msg)
+        # One pass so neither substituted value can re-trigger the other.
         expanded["content"] = _replace_user_text(
-            content, INIT_PROMPT.replace("$ARGUMENTS", args).replace("${path}", root)
+            content, re.sub(
+                r"\$ARGUMENTS|\$\{path\}",
+                lambda m: args if m.group() == "$ARGUMENTS" else root,
+                INIT_PROMPT,
+            )
         )
         out.append(expanded)
         changed = True

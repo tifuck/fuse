@@ -236,12 +236,32 @@ _TITLE_WRAP = re.compile(r"^[\s\"'`“”‘’*#\-–—]+|[\s\"'`“”‘’*
 _TITLE_PREFIX = re.compile(r"^(?:title|chat title|session title|topic)\s*:\s*", re.I)
 _TITLE_COMMAND = re.compile(r"^/[\w:-]+(?:\s|$)")
 _PLACEHOLDER_TITLES = frozenset({"", "new chat", "title", "untitled", "chat"})
+# Control/bidi characters never belong in metadata text, and < > are framing
+# characters: content carrying them could close a <session>/<episode> wrapper
+# or smuggle markup into a stored title. Tag-shaped spans are dropped whole.
+_SCRUB_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u200b-\u200f\u202a-\u202e\u2066-\u2069<>]")
+_HTML_TAG = re.compile(r"<[a-zA-Z!?/][^<>]*>")
+
+
+def _scrub_text(text: str) -> str:
+    return _SCRUB_CHARS.sub(" ", text or "")
+
+
+def _cut_at_word(text: str, limit: int) -> str:
+    """Cut at limit, keeping whole words when a boundary is available."""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    boundary = cut.rfind(" ")
+    return cut[:boundary] if boundary >= limit // 2 else cut
+
+
 def _clean_title(title: str, *, strict: bool = False) -> str:
-    title = re.sub(r"\s+", " ", (title or "").strip())
+    title = re.sub(r"\s+", " ", _scrub_text(title).strip())
     if strict:
         _text(title, "title", TITLE_MAX)
         return title
-    return title[:TITLE_MAX]
+    return _cut_at_word(title, TITLE_MAX)
 def _message_plain_text(content) -> str:
     if isinstance(content, str):
         return content
@@ -258,7 +278,7 @@ def _message_plain_text(content) -> str:
     return ""
 def first_user_text(messages: list[dict], *, limit: int = TITLE_PROMPT_MAX) -> str:
     for msg in messages:
-        if msg.get("role") != "user":
+        if msg.get("role") != "user" or msg.get("auto"):
             continue
         text = re.sub(r"\s+", " ", _message_plain_text(msg.get("content")).strip())
         if text:
@@ -268,8 +288,7 @@ def first_user_text(messages: list[dict], *, limit: int = TITLE_PROMPT_MAX) -> s
             return clip_metadata_text("Attachments: " + ", ".join(names), limit)
     return ""
 def clip_metadata_text(text: str, limit: int) -> str:
-    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u200b-\u200f\u202a-\u202e\u2066-\u2069]", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\s+", " ", _scrub_text(text)).strip()
     if len(text) <= limit:
         return text
     marker = " […] "
@@ -298,6 +317,7 @@ def parse_generated_title(raw: str) -> str:
     if not lines:
         return ""
     line = _TITLE_PREFIX.sub("", lines[0])
+    line = _HTML_TAG.sub(" ", line)
     line = re.sub(r"\*\*|__|`", "", line)
     line = _TITLE_WRAP.sub("", line).strip()
     lowered = line.lower()
@@ -349,14 +369,18 @@ def title_prompt_text(messages: list[dict]) -> str:
     for msg in messages:
         if msg.get("role") != "user" or msg.get("auto"):
             continue
-        text = _message_plain_text(msg.get("content")).strip()
+        text = _scrub_text(_message_plain_text(msg.get("content"))).strip()
         if _TITLE_COMMAND.match(text) or len(text) < TITLE_MIN_CHARS:
             continue
         if len(text) > TITLE_INPUT_MAX:
-            omitted = len(text) - TITLE_INPUT_HEAD
+            head = _cut_at_word(text, TITLE_INPUT_HEAD)
+            # Size the marker from an upper bound first so the tail shares the
+            # budget exactly and "omitted" counts only the characters dropped.
+            probe = f"\n[\u2026 {len(text)} characters omitted \u2026]\n"
+            tail = max(0, TITLE_INPUT_MAX - len(head) - len(probe))
+            omitted = len(text) - len(head) - tail
             marker = f"\n[\u2026 {omitted} characters omitted \u2026]\n"
-            tail = max(0, TITLE_INPUT_MAX - TITLE_INPUT_HEAD - len(marker))
-            text = text[:TITLE_INPUT_HEAD] + marker + (text[-tail:] if tail else "")
+            text = head + marker + (text[-tail:] if tail else "")
         return text
     return ""
 def title_source(messages: list[dict]) -> str:
@@ -367,31 +391,43 @@ def title_tail_source(messages: list[dict], *, limit: int = TITLE_TAIL_CHARS) ->
     """Explicit /title body: the end of the conversation, as Claude Code
     re-titles a session from its last 1,000 characters of text."""
     turns = [
-        (m.get("role"), _message_plain_text(m.get("content")).strip())
+        (m.get("role"), _scrub_text(_message_plain_text(m.get("content"))).strip())
         for m in messages
         if m.get("role") in _ROLES and not m.get("auto")
     ]
-    text = "\n".join(part for _role, part in turns if part)
+    # Label the turns so the model can tell a request from an answer (and so a
+    # role-shaped line in the text cannot impersonate one).
+    labelled = [
+        f"{'Request' if role == 'user' else 'Output'}: {part}"
+        for role, part in turns
+        if part
+    ]
+    text = "\n".join(labelled)
     if not text:
         return ""
     if len(text) > limit:
         tail = text[-limit:]
         # Unlike Claude Code, keep the latest request in view when a long
         # final answer would fill the whole tail.
-        latest = next((part for role, part in reversed(turns) if role == "user" and part), "")
+        latest = next((line for line in reversed(labelled) if line.startswith("Request: ")), "")
         if latest and latest not in tail:
-            head = latest[: limit // 2]
-            tail = head + "\n[\u2026]\n" + text[-(limit - len(head)):]
+            head = _cut_at_word(latest, limit // 2)
+            marker = "\n[\u2026]\n"
+            tail = head + marker + text[-(limit - len(head) - len(marker)):]
         text = tail
     return _title_session(text)
 def parse_generated_recap(raw: str) -> str:
     text = _TITLE_THINK_BLOCK.sub(" ", raw or "")
     if _TITLE_THINK.search(text):
         return ""
-    text = re.sub(r"`|\*\*|__|<[^>]*>|^\s*(?:[-•#>]+|\d+\.)\s*", "", text)
-    text = re.sub(r"^(?:recap|summary)\s*:\s*", "", re.sub(r"\s+", " ", text).strip(), flags=re.I)
+    # Tag-shaped spans are markup; stray < > are kept because comparisons like
+    # "n < 3" are content and the recap renders as plain text.
+    text = _HTML_TAG.sub(" ", text)
+    text = re.sub(r"`|\*\*|__", "", text)
+    text = re.sub(r"^\s*(?:[-•#>]+|\d+\.)\s*", "", re.sub(r"\s+", " ", text).strip())
+    text = re.sub(r"^(?:recap|summary)\s*:\s*", "", text, flags=re.I)
     lowered = text.lower()
-    if not text or len(text) > 400 or len(text.split()) > 45 or re.search(r"[<>]", text) or lowered.startswith((
+    if not text or len(text) > 400 or len(text.split()) > 45 or lowered.startswith((
         "i cannot", "i can't", "i am unable", "i'm unable", "sorry", "as an ai",
     )):
         return ""
@@ -417,7 +453,7 @@ def title_needs_generation(
     return (bool(seed) and text == _clean_title(seed)) or (bool(provisional) and text == provisional)
 def title_from_messages(messages: list[dict]) -> str:
     for msg in messages:
-        if msg.get("role") != "user":
+        if msg.get("role") != "user" or msg.get("auto"):
             continue
         if isinstance(msg.get("content"), str) and msg["content"].strip():
             return _clean_title(msg["content"]) or "New chat"

@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 
 from fastapi import HTTPException, Request
 
@@ -115,10 +116,25 @@ def _error_detail(body) -> str:
     return str(error if error is not None else body or "")[:300]
 
 
+def clip_prompt_text(text: str, limit: int) -> str:
+    """Cap an assembled metadata prompt: control characters out, but the line
+    structure and the <session>/<episode> wrapper tags stay intact (unlike
+    chats.clip_metadata_text, which flattens content for one-line display)."""
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u200b-\u200f\u202a-\u202e\u2066-\u2069]", " ", text or "")
+    if len(text) <= limit:
+        return text
+    marker = " [...] "
+    if limit <= len(marker):
+        return text[:max(0, limit)]
+    head = max(0, int((limit - len(marker)) * 0.65))
+    tail = max(0, limit - len(marker) - head)
+    return text[:head] + marker + (text[-tail:] if tail else "")
+
+
 async def metadata_once(request, user, model, text, system, limit, parser, *, consume):
     from .. import api
 
-    prompt = chats.clip_metadata_text(text or "", max(1, min(int(limit), chats.TITLE_REGEN_PROMPT_MAX)))
+    prompt = clip_prompt_text(text or "", max(1, min(int(limit), chats.TITLE_REGEN_PROMPT_MAX)))
     if not prompt or not isinstance(model, str) or not model.strip():
         return ""
     body = {

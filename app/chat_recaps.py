@@ -145,7 +145,7 @@ def _earlier(messages: list[dict], budget: int) -> list[str]:
         turns = [turns[0], *turns[-(EARLIER_MAX_MESSAGES - 1):]]
     else:
         omitted = 0
-    limit = max(90, min(320, budget // len(turns) - 24))
+    limit = max(16, min(320, budget // len(turns) - 24))
     lines = []
     for index, (msg, text) in enumerate(turns):
         label = ("Background report" if msg.get("auto") else "Earlier request" if msg.get("role") == "user"
@@ -154,6 +154,22 @@ def _earlier(messages: list[dict], budget: int) -> list[str]:
         if index == 0 and omitted:
             lines.append(f"[{omitted} messages between these are omitted]")
     return lines
+
+
+def _clip_tail_lines(text: str, limit: int) -> str:
+    """Keep whole trailing lines within limit so a trim never starts mid-line."""
+    if len(text) <= limit:
+        return text
+    out = []
+    used = 0
+    for line in reversed(text.split("\n")):
+        if used + len(line) + 1 > limit:
+            break
+        out.append(line)
+        used += len(line) + 1
+    if not out:
+        return text.split("\n")[-1][-limit:]
+    return "\n".join(reversed(out))
 
 
 def episode(messages: list[dict], start_id: str = "") -> tuple[str, str]:
@@ -185,11 +201,15 @@ def episode(messages: list[dict], start_id: str = "") -> tuple[str, str]:
         for tool in (msg.get("tools") or [])[-4:]:
             detail = chats.clip_metadata_text(str(tool.get("error") or tool.get("summary") or tool.get("preview") or ""), 160)
             if detail:
-                lines.append(f"Tool {tool.get('name', 'result')} ({tool.get('status', 'unknown')}): {detail}")
+                name = chats.clip_metadata_text(str(tool.get("name") or "result"), 40)
+                status = chats.clip_metadata_text(str(tool.get("status") or "unknown"), 20)
+                lines.append(f"Tool {name} ({status}): {detail}")
     latest = "\n".join(lines)
-    # The latest work is never starved: it keeps at least MIN_LATEST_CHARS (its tail if it is huge),
-    # and the earlier context takes what is left, up to EARLIER_CHARS.
-    latest = latest[-(SOURCE_CHARS - MIN_EARLIER_CHARS):]
+    # The latest work is never starved: it keeps at most
+    # SOURCE_CHARS - MIN_EARLIER_CHARS of its tail (whole lines only, so a trim
+    # never cuts a label or a JSON fragment in half), and the earlier context
+    # takes the reserved rest, up to EARLIER_CHARS.
+    latest = _clip_tail_lines(latest, SOURCE_CHARS - MIN_EARLIER_CHARS)
     earlier = "\n".join(_earlier(messages[:start], min(EARLIER_CHARS, SOURCE_CHARS - len(latest) - 150)))
     if earlier:
         body = "Earlier in the chat (background; condensed):\n" + earlier + "\n\nLatest work (the focus of the recap):\n" + latest

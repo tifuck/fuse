@@ -69,5 +69,30 @@ class ReplacePreviewTest(unittest.TestCase):
         self.assertIn("+new = 2", preview)
 
 
+class MessageSanitizeTest(unittest.TestCase):
+    def test_empty_text_parts_and_control_characters(self):
+        from fastapi import HTTPException
+
+        from app.chat_prompts import sanitize_messages
+
+        with self.assertRaises(HTTPException):
+            sanitize_messages([{"role": "user", "content": [{"type": "text", "text": ""}]}])
+        out = sanitize_messages([{"role": "user", "content": "a\u202eb\x00c"}])
+        self.assertEqual(out[0]["content"], "a b c")
+
+    def test_payload_budget_spans_the_whole_request(self):
+        from unittest.mock import patch
+
+        from fastapi import HTTPException
+
+        from app import chat_prompts
+
+        messages = [{"role": "user", "content": "a" * 60}, {"role": "user", "content": "b" * 60}]
+        with patch.object(chat_prompts, "_PAYLOAD_MAX", 100):
+            with self.assertRaises(HTTPException):
+                chat_prompts.sanitize_messages(messages)
+            self.assertEqual(len(chat_prompts.sanitize_messages(messages[:1])), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
