@@ -308,7 +308,7 @@ class Output:
                 self._last_event_at = _now()
             if kind == "notice" and event.get("message"):
                 line = str(event["message"]).strip()
-                from . import context as ctxmod
+                from . import context_compact as ctxmod
 
                 marker = ctxmod.compaction_marker_text(line)
                 if marker:

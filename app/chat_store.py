@@ -546,7 +546,7 @@ def last_assistant_text(messages) -> str:
         if msg.get("role") != "assistant" or msg.get("tool_calls") or msg.get("function_call"):
             return ""
         text = _provider_text(msg.get("content")).strip()
-        from . import context as ctxmod
+        from . import context_compact as ctxmod, context_meter
 
         return "" if ctxmod.is_compact_ack(text) else text
     return ""
@@ -623,7 +623,7 @@ def handoff_display_cut(transcript: list) -> int | None:
     followed it. UI history must start there: earlier rows are no longer
     sent, so they are not part of the session.
     """
-    from . import context as ctxmod
+    from . import context_compact as ctxmod, context_meter
 
     cut = None
     for index, item in enumerate(transcript or []):
@@ -666,7 +666,7 @@ def child_display_messages(run: dict, *, include_current: bool = False) -> list[
     # Preserve the seed through restart recovery; a fresh continuation resets it.
     display_seed = req.get("display_seed")
     if isinstance(display_seed, list):
-        from . import context as ctxmod
+        from . import context_compact as ctxmod, context_meter
         # Keep parent follow-up envelopes visible, without copying the live
         # leg's assistant/tool output back into the historical projection.
         skip_users = sum(m.get("role") == "user" for m in display_seed)
@@ -742,7 +742,7 @@ def child_display_messages(run: dict, *, include_current: bool = False) -> list[
             continue
         if role == "assistant":
             text = _provider_text(item.get("content")).strip()
-            from . import context as ctxmod
+            from . import context_compact as ctxmod, context_meter
 
             if ctxmod.is_compact_ack(text) and not item.get("tool_calls"):
                 pending_calls = []
@@ -770,7 +770,7 @@ def child_display_messages(run: dict, *, include_current: bool = False) -> list[
         text = _provider_text(item.get("content"))
         if not text.strip():
             continue
-        from . import context as ctxmod
+        from . import context_compact as ctxmod, context_meter
 
         if ctxmod.is_compact_ack(text):
             continue
@@ -857,7 +857,7 @@ def child_display_messages(run: dict, *, include_current: bool = False) -> list[
 
 def child_context_meter(run: dict) -> dict | None:
     """Standing occupancy of a child's isolated provider transcript."""
-    from . import context as ctxmod, chat_history
+    from . import context_compact as ctxmod, chat_history, context_meter
 
     req = run.get("request") if isinstance(run.get("request"), dict) else {}
     agent = req.get("agent") if isinstance(req.get("agent"), dict) else {}
@@ -882,14 +882,14 @@ def child_context_meter(run: dict) -> dict | None:
     calibration = (stored or {}).get("calibration") if stored else None
     if calibration and calibration.get("model") != model:
         calibration = None
-    type_id = ctxmod.source_type_for_model(model, stored)
+    type_id = context_meter.source_type_for_model(model, stored)
     override = None
     if stored and stored.get("model") == model:
         try:
             override = int(stored.get("limit") or 0) or None
         except (TypeError, ValueError):
             override = None
-    snap = ctxmod.meter_from_messages(
+    snap = context_meter.meter_from_messages(
         chat_history.for_model(rows, model),
         model=model,
         type_id=type_id,
@@ -2245,7 +2245,7 @@ def thread_view(conn, user_id, thread_id, *, queued=()):
         projected = display_messages(run.get("request") or {}, live, run["message_id"], live=True)
         result["messages"] = _project_thread_messages(result["messages"], projected, run.get("request") or {})
         result["run"] = {**run, "message": projected[run["message_id"]]}
-        from . import context as ctxmod
+        from . import context_compact as ctxmod, context_meter
         snap = ctxmod.parse_state(row["compaction"]).get("meter") or {}
         if snap.get("scope") == "prompt" and snap.get("run_id") == run["id"] and snap.get("model") == result["model"]:
             result["compaction"]["meter"] = snap
@@ -2640,7 +2640,7 @@ def start_turn(user_id, thread_id, text, expected_revision, command_id, model=No
         if not auto:
             conn.execute("UPDATE chat_threads SET recap_start_id=? WHERE id=?", (user_message["id"], thread_id))
         account = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
-        from . import context as ctxmod
+        from . import context_compact as ctxmod, context_meter
         from . import hosts as hosts_mod
 
         settings_row = hosts_mod.settings_for(user_id, conn)
@@ -2653,11 +2653,11 @@ def start_turn(user_id, thread_id, text, expected_revision, command_id, model=No
         state = ctxmod.parse_state(row["compaction"] if "compaction" in row.keys() else None)
         send_model = model if model is not None else row["model"]
         prior_meter = state.get("meter") if isinstance(state.get("meter"), dict) else None
-        send_type_id = ctxmod.source_type_for_model(send_model, prior_meter)
+        send_type_id = context_meter.source_type_for_model(send_model, prior_meter)
         from . import chat_history
         request_messages, history_info = chat_history.build(conn, user_id, thread_id, messages, state)
         prompt_snapshot = history_info.pop("prompt_snapshot", None)
-        state["meter"] = ctxmod.standing_meter(chat_history.for_model(request_messages, send_model), model=send_model, type_id=send_type_id,
+        state["meter"] = context_meter.standing_meter(chat_history.for_model(request_messages, send_model), model=send_model, type_id=send_type_id,
             override=state.get("window_override") or ((prior_meter or {}).get("limit") if send_type_id is None and (prior_meter or {}).get("model") == send_model else None),
             prior=prior_meter if (prior_meter or {}).get("model") == send_model else None)
 
@@ -4168,7 +4168,7 @@ def _compaction_row(conn, user_id, thread_id):
 
 
 def load_compaction(user_id, thread_id):
-    from . import chats, context as ctxmod
+    from . import chats, context_compact as ctxmod, context_meter
 
     pk = chats.resolve_thread_pk(user_id, thread_id)
     if pk is None:
@@ -4214,7 +4214,7 @@ def save_child_meter(run_id, meter):
 
 
 def save_meter(user_id, thread_id, meter):
-    from . import context as ctxmod, chats, hosts
+    from . import context_compact as ctxmod, chats, hosts, context_meter
 
     if not isinstance(meter, dict):
         return
@@ -4242,9 +4242,9 @@ def save_meter(user_id, thread_id, meter):
             messages = [current if msg.get("id") == run["message_id"] else msg for msg in messages]
         from . import chat_history
         replay, _info = chat_history.build(conn, user_id, pk, messages, state)
-        state["meter"] = ctxmod.standing_meter(
+        state["meter"] = context_meter.standing_meter(
             chat_history.for_model(replay, row["model"]), model=row["model"],
-            type_id=ctxmod.source_type_for_model(row["model"], meter),
+            type_id=context_meter.source_type_for_model(row["model"], meter),
             override=state.get("window_override") or meter.get("limit"), prior=meter,
         )
         conn.execute(
@@ -4254,7 +4254,7 @@ def save_meter(user_id, thread_id, meter):
 
 
 def save_compaction(user_id, thread_id, state, *, bump=True, event_name="compaction.updated"):
-    from . import chats, context as ctxmod
+    from . import chats, context_compact as ctxmod, context_meter
 
     parsed = ctxmod.parse_state(state)
     with transaction() as conn:
@@ -4298,7 +4298,7 @@ def prepare_compact(user_id, thread_id, expected_revision, command_id):
         ).fetchone():
             raise chats.ChatValidationError("chat already has an active run", 409)
         view = thread_view(conn, user_id, pk)
-        from . import chat_history, context as ctxmod
+        from . import chat_history, context_compact as ctxmod, context_meter
         messages = chats.parse_messages(row["messages"])
         history, history_info = chat_history.build(conn, user_id, pk, messages, ctxmod.parse_state(row["compaction"]))
         return {"thread": view, "fingerprint": fingerprint, "idempotent": False,
@@ -4311,7 +4311,7 @@ def remember_compact(user_id, command_id, fingerprint, thread, *, compacted: boo
 
 
 def finish_compact(user_id, thread_id, checkpoint, *, command_id, fingerprint, expected_revision=None, replay=None, history_info=None):
-    from . import chats, context as ctxmod, hosts
+    from . import chats, context_compact as ctxmod, hosts, context_meter
 
     with transaction() as conn:
         pk, row = _compaction_row(conn, user_id, thread_id)
@@ -4335,10 +4335,10 @@ def finish_compact(user_id, thread_id, checkpoint, *, command_id, fingerprint, e
                 (chat_history.envelope(messages, rebuilt, state, info=history_info), pk, user_id))
         projected, _info = chat_history.build(conn, user_id, pk, messages, state)
         model = row["model"] or ""
-        meter = ctxmod.standing_meter(
+        meter = context_meter.standing_meter(
             chat_history.for_model(projected, model),
             model=model,
-            type_id=ctxmod.source_type_for_model(model, state.get("meter")),
+            type_id=context_meter.source_type_for_model(model, state.get("meter")),
             override=state.get("window_override"),
             prior=state.get("meter"),
         )
@@ -4364,7 +4364,7 @@ def finish_compact(user_id, thread_id, checkpoint, *, command_id, fingerprint, e
 
 
 def apply_compaction_checkpoint(user_id, thread_id, checkpoint, *, meter=None):
-    from . import chats, context as ctxmod
+    from . import chats, context_compact as ctxmod, context_meter
 
     with transaction() as conn:
         pk, row = _compaction_row(conn, user_id, thread_id)

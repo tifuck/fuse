@@ -110,7 +110,7 @@ class LlamaSource(OpenAICompatSource):
                 except Exception:
                     n_ctx = n_ctx
             if n_ctx:
-                from .. import context as ctxmod
+                from .. import context_meter as ctxmod
 
                 for name in names:
                     ctxmod.remember_window(self.type_id, name, n_ctx)

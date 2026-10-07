@@ -6,7 +6,7 @@ from contextlib import nullcontext
 
 import pytest
 
-from app import chat_history, chat_store, chats, context
+from app import chat_history, chat_store, chats, context_compact as context
 
 
 @pytest.fixture

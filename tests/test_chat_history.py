@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app import chat_history as memory, chat_store as store, chats, context, db
+from app import chat_history as memory, chat_store as store, chats, context_compact as context, db, context_meter
 from app.chat_runs import Output
 
 
@@ -318,7 +318,7 @@ class OutputAndModelTest(unittest.TestCase):
             kept = chat_runtime._native_reasoning(text, model, blocks)
             self.assertIn(field, kept, model)
             projected = memory.for_model([{"role": "assistant", "content": "a", **kept}], model)
-            self.assertEqual(context.occupancy_parts(projected)["thinking"], 100, model)
+            self.assertEqual(context_meter.occupancy_parts(projected)["thinking"], 100, model)
         for model in ("gpt-5.5", "grok-4.6", "qwen3:32b",
                       "openrouter/openai/gpt-5"):
             self.assertEqual(chat_runtime._native_reasoning(text, model, blocks), {}, model)
@@ -341,8 +341,8 @@ class OutputAndModelTest(unittest.TestCase):
         other = memory.for_model([row], "grok-4.6")
         self.assertNotIn("_fuse_reasoning_model", glm[0])
         self.assertNotIn("reasoning_content", other[0])
-        self.assertEqual(context.estimate_messages(glm) - context.estimate_messages(other), 100)
-        self.assertEqual(context.occupancy_parts(glm)["thinking"], 100)
+        self.assertEqual(context_meter.estimate_messages(glm) - context_meter.estimate_messages(other), 100)
+        self.assertEqual(context_meter.occupancy_parts(glm)["thinking"], 100)
 
     def test_no_tool_backend_retains_results_as_untrusted_text(self):
         from app.chat_runtime import _drop_tools

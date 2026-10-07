@@ -3,7 +3,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-from app import agent_catalog, chat_store, context, skills
+from app import agent_catalog, chat_store, context_compact as context, skills
 from app.chat_tools import SCHEMAS, merge_queries
 from app.search.pack import pack_search
 from app.search.providers.base import QueryResult, SearchHit

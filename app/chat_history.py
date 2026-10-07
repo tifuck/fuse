@@ -187,7 +187,7 @@ def _legacy_turn(run, user_message, assistant):
 
 def build(conn, user_id, thread_id, messages, state, *, retained=None, model=""):
     """Return canonical replay rows and provenance for exactly these display rows."""
-    from . import chats, context
+    from . import chats, context_compact as context
 
     rows = _retained_display(messages)
     info = {"mode": "full", "recovered_turns": 0, "trace_fallbacks": 0}
@@ -272,7 +272,7 @@ def envelope(messages, provider, state, *, info=None, cutoffs=None, prompt_snaps
 
 def finalize(conn, run, request, display, message):
     """Seal and retain a root run; also preserve partial output on cancellation."""
-    from . import chat_store, context
+    from . import chat_store, context_compact as context
 
     if not request.get("history_replay"):
         return  # old in-flight runs are recovered per turn, not trusted as full history
@@ -350,7 +350,7 @@ def input_hashes(messages):
 
 def upgrade_legacy_run(conn, run, request, source):
     """Restore an old in-flight run's prefix without reexecuting its tools."""
-    from . import chats, context
+    from . import chats, context_compact as context
 
     if request.get("history_replay") or run["parent_run_id"]:
         return source

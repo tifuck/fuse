@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     retention_force_delete_days: int = 0
 
     # Dashboard context meter + compaction. Ratios are of the model window.
-    # Strategy is a name in app.context.STRATEGIES so a later summarizer can
+    # Strategy is a name in app.context_compact.STRATEGIES so a later summarizer can
     # replace the default without changing call sites.
     context_default_window: int = 128_000
     context_warn_ratio: float = 0.80

@@ -269,7 +269,7 @@ class ResumeTest(unittest.IsolatedAsyncioTestCase):
             frozen_context=chats.get_user_context(1))
 
     async def test_context_uses_single_request_usage_and_calibrates_next_payload(self):
-        from app import context as ctx
+        from app import context_meter as ctx
         sent = []
 
         async def fake_invoke(request, user, body, **_kwargs):
@@ -297,7 +297,7 @@ class ResumeTest(unittest.IsolatedAsyncioTestCase):
             ctx.occupancy_parts(sent[0]["messages"], tools=sent[0].get("tools"))["total"])
 
     async def test_tool_growth_can_compact_twice_from_a_small_start(self):
-        from app import context as ctx
+        from app import context_meter as ctx
         count = 0
 
         async def fake_invoke(request, user, body, **_kwargs):
@@ -396,8 +396,8 @@ class ResumeTest(unittest.IsolatedAsyncioTestCase):
                 event_id="ts_0_0", text="x" * 600_000, trace={"id": "ts_0_0", "status": "done"}, done=True,
             )]
 
-        with patch("app.chat_generation.tool_jobs.TOOL_RESULT_CHARS", 600_000), patch.object(runtime, "_run_tools", fake_run_tools), patch.object(
-            runtime.ctxmod, "should_auto_compact", return_value=False
+        with patch("app.chat_generation.tool_jobs.TOOL_RESULT_CHARS", 600_000), patch.object(runtime, "_run_tools", fake_run_tools), patch(
+            "app.context_meter.should_auto_compact", return_value=False
         ), patch.object(runtime.ctxmod, "clip_to_fit", side_effect=AssertionError("history must not be clipped")):
             objects = await self.stream_turn(fake_invoke)
         self.assertEqual(len(calls), 3)
@@ -461,14 +461,14 @@ class ResumeTest(unittest.IsolatedAsyncioTestCase):
         async def compact(rows, **kwargs):
             rebuilt = [rows[0], {"role": "user", "content": "new handoff"},
                        {"role": "assistant", "content": runtime.ctxmod.COMPACT_ACK}]
-            return rebuilt, runtime.ctxmod.meter(used=100, limit=128000), "summarize"
+            return rebuilt, runtime.context_meter.meter(used=100, limit=128000), "summarize"
 
         raw = {"model": "offline", "messages": [{"role": "user", "content": "go"}],
                "tools": ["web_search"], "prompt_snapshot": old}
         with patch.object(runtime, "build_system_prompt", return_value="new system"), patch.object(
             runtime, "_run_tools", fake_tools
-        ), patch.object(runtime, "_compact_current", side_effect=compact), patch.object(
-            runtime.ctxmod, "should_auto_compact", side_effect=[False, False, True, False]
+        ), patch.object(runtime, "_compact_current", side_effect=compact), patch(
+            "app.context_meter.should_auto_compact", side_effect=[False, False, True, False]
         ):
             # A pinned schema can still contain the search tools; its bytes
             # remain fixed until compaction.

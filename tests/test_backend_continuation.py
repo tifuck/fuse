@@ -14,7 +14,7 @@ _TMP = tempfile.TemporaryDirectory(prefix="fuse-continuation-")
 os.environ.setdefault("DATABASE_PATH", _TMP.name + "/test.db")
 os.environ.setdefault("APP_SECRET", "offline-continuation-secret" * 2)
 
-from app import chat_runs as runs, chat_runtime as runtime, chat_store as store, chats, context, db
+from app import chat_runs as runs, chat_runtime as runtime, chat_store as store, chats, context_meter as context, db
 
 PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII="
 ATT = {"name": "image.png", "mime": "image/png", "kind": "image", "data": PNG}

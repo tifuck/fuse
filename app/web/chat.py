@@ -7,24 +7,7 @@ import asyncio
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 
-from .. import (
-    artifacts,
-    chat_events,
-    chat_runtime,
-    chat_runs,
-    chat_recaps,
-    chat_store,
-    chat_titles,
-    chat_tools,
-    chats,
-    context as ctxmod,
-    db,
-    hosts,
-    model_caps,
-    permissions as permissions_mod,
-    skills,
-    vault,
-)
+from .. import artifacts, chat_events, chat_runtime, chat_runs, chat_recaps, chat_store, chat_titles, chat_tools, chats, context_compact as ctxmod, db, hosts, model_caps, permissions as permissions_mod, skills, vault, context_meter
 from ..config import settings
 from ..security import limiter
 from ..sources import openrouter as openrouter_mod
@@ -58,7 +41,7 @@ async def chat_page(request: Request):
                     "name": m.get("name") or m["id"],
                     "reasoning": list(_reasoning_efforts(group["type"], m["id"], user_id=user["id"])),
                     "reasoning_default": _reasoning_default(group["type"], m["id"], user_id=user["id"]),
-                    "context_window": m.get("context_window") or ctxmod.window_for(m["id"], group["type"]),
+                    "context_window": m.get("context_window") or context_meter.window_for(m["id"], group["type"]),
                     "image": model_caps.image_input(group["type"], m["id"], user_id=user["id"]),
                 }
                 for m in group["models"]
@@ -85,7 +68,7 @@ async def chat_page(request: Request):
                 "attachments": chats.ATTACH_MAX,
                 "attachment_chars": chats.ATTACH_DATA_MAX,
             },
-            "compaction": ctxmod.public_config(),
+            "compaction": context_meter.public_config(),
             "skills": skills.index_for_chat(user["id"]),
             "coding": bool(hosts.settings_for(user["id"]).get("agent_coding")),
             "openrouter": bool(openrouter_mod.user_has_openrouter(user["id"])),

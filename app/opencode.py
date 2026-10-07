@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-from . import context as ctxmod, model_caps
+from . import context_meter as ctxmod, model_caps
 from .sources import chatgpt as chatgpt_mod
 from .sources import devin as devin_mod
 from .sources import models_by_source

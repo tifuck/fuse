@@ -581,7 +581,7 @@ class ChatStoreTest(unittest.TestCase):
         self.assertNotEqual(thread["id"], other["id"])
 
     def test_compaction_projects_into_the_next_turn(self):
-        from app import context as ctxmod
+        from app import context_compact as ctxmod, context_meter
 
         thread = chats.create_thread(1, model="offline")
         messages = []
@@ -613,7 +613,7 @@ class ChatStoreTest(unittest.TestCase):
         self.assertTrue(any("[Compacted conversation]" in (m.get("content") or "") for m in sent if m["role"] == "user"))
 
     def test_start_turn_recomputes_meter_without_floor(self):
-        from app import context as ctxmod
+        from app import context_compact as ctxmod, context_meter
 
         thread = chats.create_thread(1, model="grok-4.6")
         messages = [
@@ -621,7 +621,7 @@ class ChatStoreTest(unittest.TestCase):
             {"role": "assistant", "content": "hello"},
         ]
         chats.update_thread(1, thread["id"], messages=messages, expected_revision=thread["revision"])
-        snap = ctxmod.meter(used=48_000, limit=500_000, model="grok-4.6", estimated=True)
+        snap = context_meter.meter(used=48_000, limit=500_000, model="grok-4.6", estimated=True)
         snap["standing"] = True
         snap["parts"] = {"system": 1_900, "history": 500, "messages": 500, "thinking": 0,
                          "tool_calls": 0, "tool_families": {}, "tools": 3_100, "draft": 0, "total": 48_000}
@@ -639,10 +639,10 @@ class ChatStoreTest(unittest.TestCase):
         self.assertGreater(parts["history"], 0)
 
     def test_live_peak_does_not_land_in_stored_meter(self):
-        from app import context as ctxmod
+        from app import context_compact as ctxmod, context_meter
 
         thread = chats.create_thread(1, model="grok-4.6")
-        peak = ctxmod.meter(used=90_000, limit=500_000, model="grok-4.6", estimated=False)
+        peak = context_meter.meter(used=90_000, limit=500_000, model="grok-4.6", estimated=False)
         peak["scope"] = "prompt"
         peak["parts"] = {"system": 1_900, "history": 500, "messages": 500, "thinking": 0,
                          "tool_calls": 0, "tool_families": {}, "tools": 3_100, "draft": 0, "total": 90_500}
@@ -657,7 +657,7 @@ class ChatStoreTest(unittest.TestCase):
         self.assertEqual(parts["tools"], 3_100)
 
     def test_thread_meter_rebuilds_stale_devin_delta(self):
-        from app import context as ctxmod
+        from app import context_compact as ctxmod, context_meter
 
         thread = chats.create_thread(1, model="devin/glm-5-2")
         messages = [
@@ -673,7 +673,7 @@ class ChatStoreTest(unittest.TestCase):
             },
         ]
         chats.update_thread(1, thread["id"], messages=messages, expected_revision=thread["revision"])
-        snap = ctxmod.meter(used=449, limit=1_000_000, model="devin/glm-5-2", estimated=False)
+        snap = context_meter.meter(used=449, limit=1_000_000, model="devin/glm-5-2", estimated=False)
         snap["standing"] = True
         store.save_meter(1, thread["id"], snap)
         got = chats.get_thread(1, thread["id"])
@@ -689,11 +689,11 @@ class ChatStoreTest(unittest.TestCase):
         self.assertTrue(got["messages"][-1]["reasoning"])
         from app import chat_history
         replay, _info = chat_history.build(self.conn, 1, None, got["messages"], ctxmod.parse_state({}), retained={})
-        expected = ctxmod.estimate_messages(replay)
+        expected = context_meter.estimate_messages(replay)
         self.assertEqual(meter["parts"]["history"], expected)
 
     def test_thread_meter_ignores_summed_turn_usage(self):
-        from app import context as ctxmod
+        from app import context_compact as ctxmod, context_meter
 
         thread = chats.create_thread(1, model="grok-4.6")
         messages = [
@@ -709,7 +709,7 @@ class ChatStoreTest(unittest.TestCase):
             },
         ]
         chats.update_thread(1, thread["id"], messages=messages, expected_revision=thread["revision"])
-        snap = ctxmod.meter(used=12_000, limit=500_000, model="grok-4.6", estimated=True)
+        snap = context_meter.meter(used=12_000, limit=500_000, model="grok-4.6", estimated=True)
         snap["standing"] = True
         store.save_meter(1, thread["id"], snap)
         got = chats.get_thread(1, thread["id"])
@@ -722,7 +722,7 @@ class ChatStoreTest(unittest.TestCase):
         self.assertFalse(meter["auto"])
 
     def test_thread_meter_ignores_in_turn_peak(self):
-        from app import context as ctxmod
+        from app import context_compact as ctxmod, context_meter
 
         thread = chats.create_thread(1, model="grok-4.6")
         messages = [
@@ -733,7 +733,7 @@ class ChatStoreTest(unittest.TestCase):
         store.save_meter(
             1,
             thread["id"],
-            ctxmod.meter(used=400_000, limit=500_000, model="grok-4.6", estimated=False),
+            context_meter.meter(used=400_000, limit=500_000, model="grok-4.6", estimated=False),
         )
         got = chats.get_thread(1, thread["id"])
         meter = got["compaction"]["meter"]
@@ -743,7 +743,7 @@ class ChatStoreTest(unittest.TestCase):
         self.assertFalse(meter["auto"])
 
     def test_update_thread_recomputes_meter_on_delete(self):
-        from app import context as ctxmod
+        from app import context_compact as ctxmod, context_meter
 
         thread = chats.create_thread(1, model="grok-4.6")
         messages = [
@@ -766,7 +766,7 @@ class ChatStoreTest(unittest.TestCase):
         self.assertLess(parts["history"], before["parts"]["history"])
 
     def test_update_thread_preserves_concurrent_compaction_state(self):
-        from app import context as ctxmod
+        from app import context_compact as ctxmod, context_meter
 
         thread = chats.create_thread(1, model="grok-4.6")
         messages = [
@@ -824,7 +824,7 @@ class ChatStoreTest(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 409)
 
     def test_save_meter_window_override_wins_over_live_limit(self):
-        from app import context as ctxmod
+        from app import context_compact as ctxmod, context_meter
 
         thread = chats.create_thread(1, model="grok-4.6")
         messages = [
@@ -840,7 +840,7 @@ class ChatStoreTest(unittest.TestCase):
                 "UPDATE chat_threads SET compaction=? WHERE id=?",
                 (ctxmod.dump_state(state), pk),
             )
-        snap = ctxmod.meter(used=10_000, limit=500_000, model="grok-4.6", estimated=False)
+        snap = context_meter.meter(used=10_000, limit=500_000, model="grok-4.6", estimated=False)
         snap["standing"] = True
         store.save_meter(1, thread["id"], snap)
         got = chats.get_thread(1, thread["id"])
@@ -850,7 +850,7 @@ class ChatStoreTest(unittest.TestCase):
         # model ids whose name cannot identify the backend.
         generic = chats.create_thread(1, model="mystery-local")
         pk2 = chats.resolve_thread_pk(1, generic["id"])
-        snap = ctxmod.meter(used=10_000, limit=32_000, model="mystery-local", estimated=False)
+        snap = context_meter.meter(used=10_000, limit=32_000, model="mystery-local", estimated=False)
         snap["standing"] = True
         store.save_meter(1, generic["id"], snap)
         got = chats.get_thread(1, generic["id"])

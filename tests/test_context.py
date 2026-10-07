@@ -15,99 +15,99 @@ _TMP = tempfile.mkdtemp(prefix="fuse-context-")
 os.environ.setdefault("DATABASE_PATH", str(Path(_TMP) / "ctx.db"))
 os.environ.setdefault("APP_SECRET", "x" * 32)
 
-from app import context as ctx  # noqa: E402
+from app import context_compact, context_meter  # noqa: E402
 
 
 class WindowTest(unittest.TestCase):
     def test_resolved_local_backend_and_window_survive_reload(self):
         prior = {"model": "gpt-oss:20b", "source_type": "ollama", "limit": 32768}
-        self.assertEqual(ctx.source_type_for_model("gpt-oss:20b", prior), "ollama")
-        snap = ctx.standing_meter([{"role": "user", "content": "hi"}], model="gpt-oss:20b", prior=prior)
+        self.assertEqual(context_meter.source_type_for_model("gpt-oss:20b", prior), "ollama")
+        snap = context_meter.standing_meter([{"role": "user", "content": "hi"}], model="gpt-oss:20b", prior=prior)
         self.assertEqual(snap["limit"], 32768)
         self.assertEqual(snap["source_type"], "ollama")
-        self.assertEqual(ctx.source_type_for_model("gpt-5.5", prior), "chatgpt")
+        self.assertEqual(context_meter.source_type_for_model("gpt-5.5", prior), "chatgpt")
 
     def test_known_pool_models(self):
-        self.assertEqual(ctx.window_for("grok-4.6", "grok"), 500_000)
-        self.assertEqual(ctx.window_for("glm-5.3-flash", "zai"), 1_000_000)
-        self.assertEqual(ctx.window_for("gpt-5.4-mini", "chatgpt"), 400_000)
-        self.assertEqual(ctx.window_for("devin/gpt-6-astra", "devin"), 1_050_000)
-        self.assertEqual(ctx.window_for("devin/gpt-6-astra-medium", "devin"), 1_050_000)
-        self.assertEqual(ctx.window_for("devin/claude-sonnet-5", "devin"), 200_000)
-        self.assertEqual(ctx.window_for("devin/glm-5-2", "devin"), 200_000)
-        self.assertEqual(ctx.window_for("devin/glm-5-2-1m", "devin"), 1_000_000)
-        self.assertEqual(ctx.window_for("glm-5-2", "devin"), 200_000)
-        self.assertEqual(ctx.window_for("k3", "kimi"), 262_144)
-        self.assertEqual(ctx.window_for("kimi-for-coding", "kimi"), 1_048_576)
-        self.assertEqual(ctx.type_id_for_model("devin/gpt-6-astra"), "devin")
-        self.assertEqual(ctx.type_id_for_model("k3"), "kimi")
+        self.assertEqual(context_meter.window_for("grok-4.6", "grok"), 500_000)
+        self.assertEqual(context_meter.window_for("glm-5.3-flash", "zai"), 1_000_000)
+        self.assertEqual(context_meter.window_for("gpt-5.4-mini", "chatgpt"), 400_000)
+        self.assertEqual(context_meter.window_for("devin/gpt-6-astra", "devin"), 1_050_000)
+        self.assertEqual(context_meter.window_for("devin/gpt-6-astra-medium", "devin"), 1_050_000)
+        self.assertEqual(context_meter.window_for("devin/claude-sonnet-5", "devin"), 200_000)
+        self.assertEqual(context_meter.window_for("devin/glm-5-2", "devin"), 200_000)
+        self.assertEqual(context_meter.window_for("devin/glm-5-2-1m", "devin"), 1_000_000)
+        self.assertEqual(context_meter.window_for("glm-5-2", "devin"), 200_000)
+        self.assertEqual(context_meter.window_for("k3", "kimi"), 262_144)
+        self.assertEqual(context_meter.window_for("kimi-for-coding", "kimi"), 1_048_576)
+        self.assertEqual(context_meter.type_id_for_model("devin/gpt-6-astra"), "devin")
+        self.assertEqual(context_meter.type_id_for_model("k3"), "kimi")
 
     def test_openrouter_catalog_wins(self):
         catalog = {"by_id": {"acme/fast": {"context_length": 32_768}}}
-        self.assertEqual(ctx.window_for("openrouter/acme/fast", "openrouter", catalog=catalog), 32_768)
+        self.assertEqual(context_meter.window_for("openrouter/acme/fast", "openrouter", catalog=catalog), 32_768)
 
     def test_openrouter_cached_catalog_without_caller_catalog(self):
         catalog = {"by_id": {"acme/huge": {"context_length": 1_000_000}}}
-        with mock.patch.object(ctx, "_cached_openrouter_catalog", return_value=catalog):
-            self.assertEqual(ctx.window_for("openrouter/acme/huge", "openrouter"), 1_000_000)
+        with mock.patch.object(context_meter, "_cached_openrouter_catalog", return_value=catalog):
+            self.assertEqual(context_meter.window_for("openrouter/acme/huge", "openrouter"), 1_000_000)
 
     def test_type_id_inferred_from_model_id(self):
-        self.assertEqual(ctx.type_id_for_model("grok-4.6"), "grok")
-        self.assertEqual(ctx.window_for("grok-4.6"), 500_000)
+        self.assertEqual(context_meter.type_id_for_model("grok-4.6"), "grok")
+        self.assertEqual(context_meter.window_for("grok-4.6"), 500_000)
 
     def test_llama_cache_and_default(self):
-        ctx.remember_window("llama", "local-7b", 8192)
-        self.assertEqual(ctx.window_for("local-7b", "llama"), 8192)
-        self.assertEqual(ctx.window_for("mystery", "llama"), 8_192)
+        context_meter.remember_window("llama", "local-7b", 8192)
+        self.assertEqual(context_meter.window_for("local-7b", "llama"), 8192)
+        self.assertEqual(context_meter.window_for("mystery", "llama"), 8_192)
 
     def test_ollama_does_not_inherit_gpt_prefix(self):
-        self.assertEqual(ctx.window_for("gpt-oss:20b", "ollama"), 128_000)
-        self.assertEqual(ctx.window_for("gpt-5.5", "chatgpt"), 1_050_000)
+        self.assertEqual(context_meter.window_for("gpt-oss:20b", "ollama"), 128_000)
+        self.assertEqual(context_meter.window_for("gpt-5.5", "chatgpt"), 1_050_000)
 
     def test_override(self):
-        self.assertEqual(ctx.window_for("grok-4.6", "grok", override=12_000), 12_000)
+        self.assertEqual(context_meter.window_for("grok-4.6", "grok", override=12_000), 12_000)
 
     def test_unknown_model_uses_learned_window(self):
         # No type prefix and no cached meter: a window learned from whichever
         # source served this exact model name beats the 128k default.
-        self.assertEqual(ctx.window_for("mystery-model"), ctx.config().default_window)
-        ctx.remember_window("llama", "mystery-model", 16_384)
-        self.assertEqual(ctx.window_for("mystery-model"), 16_384)
-        self.assertEqual(ctx.window_for("mystery-model", None), 16_384)
+        self.assertEqual(context_meter.window_for("mystery-model"), context_meter.config().default_window)
+        context_meter.remember_window("llama", "mystery-model", 16_384)
+        self.assertEqual(context_meter.window_for("mystery-model"), 16_384)
+        self.assertEqual(context_meter.window_for("mystery-model", None), 16_384)
         # A stale entry must not win.
-        ctx._WINDOW_CACHE[("llama", "mystery-model")] = (time.time() - ctx._WINDOW_TTL - 1, 16_384)
-        self.assertEqual(ctx.window_for("mystery-model"), ctx.config().default_window)
+        context_meter._WINDOW_CACHE[("llama", "mystery-model")] = (time.time() - context_meter._WINDOW_TTL - 1, 16_384)
+        self.assertEqual(context_meter.window_for("mystery-model"), context_meter.config().default_window)
 
     def test_known_type_beats_learned_window_of_same_name(self):
-        ctx.remember_window("llama", "grok-4.6", 8_192)
-        self.assertEqual(ctx.window_for("grok-4.6", "grok"), 500_000)
-        self.assertEqual(ctx.window_for("grok-4.6"), 500_000)
+        context_meter.remember_window("llama", "grok-4.6", 8_192)
+        self.assertEqual(context_meter.window_for("grok-4.6", "grok"), 500_000)
+        self.assertEqual(context_meter.window_for("grok-4.6"), 500_000)
 
 
 class EstimateTest(unittest.TestCase):
     def test_text_and_usage(self):
-        self.assertEqual(ctx.estimate_text("abcd"), 1)
-        self.assertEqual(ctx.used_from_usage({"prompt_tokens": 10, "completion_tokens": 5}), 15)
+        self.assertEqual(context_meter.estimate_text("abcd"), 1)
+        self.assertEqual(context_meter.used_from_usage({"prompt_tokens": 10, "completion_tokens": 5}), 15)
         # Occupancy is prompt+completion of one request. total_tokens on a
         # turn can be the sum of every tool round (billing), so it must not win.
-        self.assertEqual(ctx.used_from_usage({"total_tokens": 99, "prompt_tokens": 10, "completion_tokens": 5}), 15)
-        self.assertEqual(ctx.used_from_usage({"total_tokens": 99}), 99)
+        self.assertEqual(context_meter.used_from_usage({"total_tokens": 99, "prompt_tokens": 10, "completion_tokens": 5}), 15)
+        self.assertEqual(context_meter.used_from_usage({"total_tokens": 99}), 99)
 
     def test_claude_thinking_blocks_count_as_thinking(self):
         text = "think " * 20
         messages = [{"role": "assistant", "content": "ok",
                      "claude_thinking": [{"thinking": text, "signature": "sig"}]}]
-        parts = ctx.occupancy_parts(messages)
-        self.assertEqual(parts["thinking"], ctx.estimate_text(text))
-        self.assertEqual(ctx.estimate_messages(messages), ctx.estimate_messages(
+        parts = context_meter.occupancy_parts(messages)
+        self.assertEqual(parts["thinking"], context_meter.estimate_text(text))
+        self.assertEqual(context_meter.estimate_messages(messages), context_meter.estimate_messages(
             [{"role": "assistant", "content": "ok", "reasoning_content": text}]))
         # Counted once: blocks must not also land in the messages row.
-        self.assertEqual(parts["messages"], ctx.occupancy_parts(
+        self.assertEqual(parts["messages"], context_meter.occupancy_parts(
             [{"role": "assistant", "content": "ok"}])["messages"])
 
     def test_grok_reasoning_is_not_occupancy(self):
         self.assertEqual(
-            ctx.used_from_usage({
+            context_meter.used_from_usage({
                 "prompt_tokens": 1000,
                 "completion_tokens": 5,
                 "reasoning_tokens": 700,
@@ -117,23 +117,23 @@ class EstimateTest(unittest.TestCase):
         )
 
     def test_messages_include_images(self):
-        n = ctx.estimate_messages(
+        n = context_meter.estimate_messages(
             [
                 {"role": "user", "content": [{"type": "text", "text": "hi"}, {"type": "image_url", "image_url": {"url": "x"}}]},
             ]
         )
-        self.assertGreaterEqual(n, ctx.IMAGE_TOKENS)
+        self.assertGreaterEqual(n, context_meter.IMAGE_TOKENS)
 
     def test_tools_add_to_estimate(self):
         messages = [{"role": "user", "content": "hi"}]
         tools = [{"type": "function", "function": {"name": "web_search", "parameters": {"type": "object", "properties": {"q": {"type": "string"}}}}}]
-        with_tools = ctx.meter_from_messages(messages, model="grok-4.6", type_id="grok", tools=tools)
-        without = ctx.meter_from_messages(messages, model="grok-4.6", type_id="grok")
+        with_tools = context_meter.meter_from_messages(messages, model="grok-4.6", type_id="grok", tools=tools)
+        without = context_meter.meter_from_messages(messages, model="grok-4.6", type_id="grok")
         self.assertGreater(with_tools["used"], without["used"])
         self.assertEqual(with_tools["limit"], 500_000)
 
     def test_standing_preserves_retained_tool_pairs(self):
-        rows = ctx.standing_messages(
+        rows = context_compact.standing_messages(
             [
                 {"role": "system", "content": "sys"},
                 {"role": "user", "content": "go"},
@@ -144,13 +144,13 @@ class EstimateTest(unittest.TestCase):
         )
         self.assertEqual([m["role"] for m in rows], ["system", "user", "assistant", "tool", "assistant"])
         self.assertEqual(rows[-1]["content"], "done")
-        full = ctx.estimate_messages([
+        full = context_meter.estimate_messages([
             {"role": "system", "content": "sys"},
             {"role": "user", "content": "go"},
             {"role": "tool", "content": "file.txt " * 5000},
             {"role": "assistant", "content": "done"},
         ])
-        standing = ctx.estimate_messages(rows)
+        standing = context_meter.estimate_messages(rows)
         self.assertGreaterEqual(standing, full)
 
     def test_standing_meter_ignores_last_round_usage(self):
@@ -159,13 +159,13 @@ class EstimateTest(unittest.TestCase):
             {"role": "user", "content": "go"},
             {"role": "assistant", "content": "done"},
         ]
-        live = ctx.meter_from_messages(
+        live = context_meter.meter_from_messages(
             messages,
             model="grok-4.6",
             type_id="grok",
             usage={"prompt_tokens": 80_000, "completion_tokens": 20_000},
         )
-        standing = ctx.standing_meter(messages, model="grok-4.6", type_id="grok")
+        standing = context_meter.standing_meter(messages, model="grok-4.6", type_id="grok")
         self.assertGreater(live["used"], 90_000)
         self.assertLess(standing["used"], 100)
         self.assertTrue(standing["standing"])
@@ -177,12 +177,12 @@ class EstimateTest(unittest.TestCase):
             {"role": "user", "content": "one"},
             {"role": "assistant", "content": "ok"},
         ]
-        prior = ctx.standing_meter(first, model="grok-4.6", type_id="grok")
+        prior = context_meter.standing_meter(first, model="grok-4.6", type_id="grok")
         # Simulate a stale high-water total on the prior snapshot.
         prior["used"] = 99_000
         # Durable rows carry no system prompt; the recompute must inherit the
         # overhead parts but never the stale total.
-        dropped = ctx.standing_meter(
+        dropped = context_meter.standing_meter(
             [{"role": "user", "content": "one"}, {"role": "assistant", "content": "ok"}, {"role": "user", "content": "two"}],
             model="grok-4.6",
             type_id="grok",
@@ -194,7 +194,7 @@ class EstimateTest(unittest.TestCase):
         self.assertEqual(parts["system"], prior["parts"]["system"])
         # With the transcript present, the number only grows as history grows.
         later = first + [{"role": "user", "content": "two " * 40}]
-        grown = ctx.standing_meter(later, model="grok-4.6", type_id="grok", prior=prior)
+        grown = context_meter.standing_meter(later, model="grok-4.6", type_id="grok", prior=prior)
         self.assertGreater(grown["parts"]["history"], dropped["parts"]["history"])
 
     def test_devin_delta_usage_is_not_occupancy(self):
@@ -203,11 +203,11 @@ class EstimateTest(unittest.TestCase):
             {"role": "user", "content": "hello " * 40},
             {"role": "assistant", "content": "ok"},
         ]
-        estimated = ctx.estimate_messages(messages)
+        estimated = context_meter.estimate_messages(messages)
         self.assertGreater(estimated, 400)
         # Last-round Devin usage is a cache/delta, not the full window. The
         # standing meter must keep the transcript estimate.
-        standing = ctx.standing_meter(messages, model="devin/glm-5-2", type_id="devin")
+        standing = context_meter.standing_meter(messages, model="devin/glm-5-2", type_id="devin")
         self.assertGreaterEqual(standing["used"], estimated)
         self.assertEqual(standing["limit"], 200_000)
         self.assertGreater(standing["parts"]["system"], 0)
@@ -227,7 +227,7 @@ class EstimateTest(unittest.TestCase):
             },
         ]
         tools = [{"type": "function", "function": {"name": "web_search", "parameters": {"type": "object"}}}]
-        parts = ctx.occupancy_parts(messages, tools=tools)
+        parts = context_meter.occupancy_parts(messages, tools=tools)
         self.assertGreater(parts["system"], 0)
         self.assertGreater(parts["messages"], 0)
         self.assertGreater(parts["thinking"], 0)
@@ -236,7 +236,7 @@ class EstimateTest(unittest.TestCase):
         self.assertIn("web search", parts["tool_families"])
         self.assertEqual(parts["history"], parts["messages"] + parts["thinking"] + parts["tool_calls"])
         self.assertEqual(parts["total"], parts["system"] + parts["history"] + parts["tools"])
-        snap = ctx.standing_meter(messages, model="grok-4.6", type_id="grok", tools=tools)
+        snap = context_meter.standing_meter(messages, model="grok-4.6", type_id="grok", tools=tools)
         self.assertEqual(snap["parts"]["thinking"], parts["thinking"])
         self.assertEqual(snap["parts"]["tool_families"]["shell"], parts["tool_families"]["shell"])
 
@@ -246,7 +246,7 @@ class EstimateTest(unittest.TestCase):
         msgs = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "yo"}]
         prior = {"model": "grok-4.6", "limit": 500_000,
                  "parts": {"system": 1_879, "tools": 3_119}}
-        snap = ctx.standing_meter(msgs, model="grok-4.6", type_id="grok", tools=[], prior=prior)
+        snap = context_meter.standing_meter(msgs, model="grok-4.6", type_id="grok", tools=[], prior=prior)
         self.assertEqual(snap["parts"]["tools"], 3_119)
         self.assertEqual(snap["parts"]["system"], 1_879)
         self.assertEqual(snap["used"], 1_879 + snap["parts"]["history"] + 3_119)
@@ -255,27 +255,27 @@ class EstimateTest(unittest.TestCase):
 class ThresholdTest(unittest.TestCase):
     def test_auto_at_90_percent(self):
         limit = 100_000
-        self.assertFalse(ctx.should_compact(89_000, limit))
-        self.assertTrue(ctx.should_compact(90_000, limit))
-        self.assertTrue(ctx.should_warn(80_000, limit))
-        self.assertFalse(ctx.should_warn(79_000, limit))
+        self.assertFalse(context_meter.should_compact(89_000, limit))
+        self.assertTrue(context_meter.should_compact(90_000, limit))
+        self.assertTrue(context_meter.should_warn(80_000, limit))
+        self.assertFalse(context_meter.should_warn(79_000, limit))
 
     def test_estimated_spike_does_not_auto_compact(self):
         limit = 128_000
         # 4-char estimate can report 157% while the last standing snapshot was 4.3k.
         self.assertFalse(
-            ctx.should_auto_compact(201_000, limit, estimated=True, prior_used=4_300)
+            context_meter.should_auto_compact(201_000, limit, estimated=True, prior_used=4_300)
         )
         self.assertTrue(
-            ctx.should_auto_compact(201_000, limit, estimated=False, prior_used=4_300)
+            context_meter.should_auto_compact(201_000, limit, estimated=False, prior_used=4_300)
         )
         self.assertTrue(
-            ctx.should_auto_compact(120_000, limit, estimated=True, prior_used=120_000)
+            context_meter.should_auto_compact(120_000, limit, estimated=True, prior_used=120_000)
         )
 
     def test_usage_not_raised_to_estimate(self):
         huge = [{"role": "system", "content": "x" * 80_000}]
-        snap = ctx.meter_from_messages(
+        snap = context_meter.meter_from_messages(
             huge,
             model="offline",
             usage={"prompt_tokens": 4_000, "completion_tokens": 300},
@@ -285,7 +285,7 @@ class ThresholdTest(unittest.TestCase):
         self.assertFalse(snap["estimated"])
 
     def test_small_window_stays_near_ratio(self):
-        trigger = ctx.trigger_used(8_192)
+        trigger = context_meter.trigger_used(8_192)
         self.assertLess(trigger, 8_192)
         self.assertGreaterEqual(trigger, int(8_192 * 0.85))
 
@@ -299,18 +299,18 @@ class ProjectTest(unittest.TestCase):
             {"id": "d", "role": "assistant", "content": "done"},
             {"id": "e", "role": "user", "content": "three"},
         ]
-        state = ctx.parse_state({})
-        cp = ctx.make_checkpoint(
+        state = context_compact.parse_state({})
+        cp = context_compact.make_checkpoint(
             summary="Did one and two.",
             through_message_id="d",
             strategy="truncate",
             trigger="manual",
         )
-        state = ctx.append_checkpoint(state, cp)
-        out = ctx.project_transcript(messages, state)
+        state = context_compact.append_checkpoint(state, cp)
+        out = context_compact.project_transcript(messages, state)
         self.assertEqual(out[0]["role"], "user")
         self.assertIn("Did one and two.", out[0]["content"])
-        self.assertEqual(out[1]["content"], ctx.COMPACT_ACK)
+        self.assertEqual(out[1]["content"], context_compact.COMPACT_ACK)
         self.assertEqual([m["id"] for m in out[2:]], ["e"])
 
     def test_rewind_drops_stale_checkpoint(self):
@@ -318,13 +318,13 @@ class ProjectTest(unittest.TestCase):
             {"id": "a", "role": "user", "content": "one"},
             {"id": "b", "role": "assistant", "content": "ok"},
         ]
-        cp = ctx.make_checkpoint(
+        cp = context_compact.make_checkpoint(
             summary="gone",
             through_message_id="missing",
             strategy="truncate",
             trigger="auto",
         )
-        out = ctx.project_transcript(messages, {"checkpoints": [cp]})
+        out = context_compact.project_transcript(messages, {"checkpoints": [cp]})
         self.assertEqual([m["id"] for m in out], ["a", "b"])
 
 
@@ -338,11 +338,11 @@ class PruneTest(unittest.TestCase):
             {"role": "assistant", "content": "", "tool_calls": [{"id": "c2"}]},
             {"role": "tool", "tool_call_id": "c2", "content": "y" * 4_000},
         ]
-        out, ids, freed = ctx.prune_tool_outputs(messages, protect=1_000, minimum=100)
+        out, ids, freed = context_compact.prune_tool_outputs(messages, protect=1_000, minimum=100)
         self.assertIn("c1", ids)
         self.assertGreater(freed, 100)
         stubbed = [m for m in out if m.get("tool_call_id") == "c1"][0]
-        self.assertTrue(stubbed["content"].startswith(ctx.TOOL_STUB))
+        self.assertTrue(stubbed["content"].startswith(context_compact.TOOL_STUB))
         self.assertIn("x" * 40, stubbed["content"])
         self.assertLess(len(stubbed["content"]), 80_000)
         kept = [m for m in out if m.get("tool_call_id") == "c2"][0]
@@ -355,7 +355,7 @@ class SplitLiveTranscriptTest(unittest.TestCase):
         for i in range(8):
             messages.append({"id": f"u{i}", "role": "user", "content": f"q{i}"})
             messages.append({"id": f"a{i}", "role": "assistant", "content": f"a{i}"})
-        head, tail = ctx.split_transcript(messages, keep_tail=4)
+        head, tail = context_compact.split_transcript(messages, keep_tail=4)
         self.assertEqual([m["id"] for m in tail], ["u6", "a6", "u7", "a7"])
         self.assertEqual([m["id"] for m in head], ["u0", "a0", "u1", "a1", "u2", "a2", "u3", "a3", "u4", "a4", "u5", "a5"])
 
@@ -365,7 +365,7 @@ class SplitLiveTranscriptTest(unittest.TestCase):
             messages.append({"id": f"u{i}", "role": "user", "content": f"q{i}"})
             messages.append({"id": f"a{i}", "role": "assistant", "content": "", "tool_calls": [{"id": f"c{i}"}]})
             messages.append({"role": "tool", "tool_call_id": f"c{i}", "content": f"LIVE-{i}"})
-        head, tail = ctx.split_transcript(messages, keep_tail=4)
+        head, tail = context_compact.split_transcript(messages, keep_tail=4)
         self.assertTrue(any(m.get("role") == "tool" for m in head))
         tail_tools = [m.get("content") for m in tail if m.get("role") == "tool"]
         self.assertIn("LIVE-7", tail_tools)
@@ -377,9 +377,9 @@ class SplitLiveTranscriptTest(unittest.TestCase):
         for i in range(4):
             messages.append({"role": "assistant", "content": "", "tool_calls": [{"id": f"c{i}"}]})
             messages.append({"role": "tool", "tool_call_id": f"c{i}", "content": f"LIVE-{i}"})
-        self.assertTrue(ctx.compactable_transcript(messages, keep_tail=6, provider=True))
-        self.assertFalse(ctx.compactable_transcript(messages, keep_tail=6, provider=False))
-        head, tail = ctx.split_transcript(messages, keep_tail=6)
+        self.assertTrue(context_compact.compactable_transcript(messages, keep_tail=6, provider=True))
+        self.assertFalse(context_compact.compactable_transcript(messages, keep_tail=6, provider=False))
+        head, tail = context_compact.split_transcript(messages, keep_tail=6)
         self.assertTrue(head)
         self.assertTrue(any(m.get("role") == "tool" for m in tail))
         self.assertIn("LIVE-3", [m.get("content") for m in tail if m.get("role") == "tool"])
@@ -538,7 +538,7 @@ class LiveCompactTest(unittest.IsolatedAsyncioTestCase):
                 override=64_000,
             )
         self.assertEqual(meter["limit"], 64_000)
-        self.assertEqual(meter["auto_at"], ctx.trigger_used(64_000))
+        self.assertEqual(meter["auto_at"], context_meter.trigger_used(64_000))
 
 
 class StrategyTest(unittest.IsolatedAsyncioTestCase):
@@ -547,13 +547,13 @@ class StrategyTest(unittest.IsolatedAsyncioTestCase):
         for i in range(12):
             messages.append({"id": f"u{i}", "role": "user", "content": f"ask {i} " + "word " * 200})
             messages.append({"id": f"a{i}", "role": "assistant", "content": f"ans {i} " + "word " * 200})
-        cp = await ctx.build_checkpoint(messages, strategy="summarize", trigger="manual", summarize=None)
+        cp = await context_compact.build_checkpoint(messages, strategy="summarize", trigger="manual", summarize=None)
         self.assertIsNotNone(cp)
         self.assertEqual(cp["strategy"], "truncate")
         self.assertTrue(cp["summary"])
         self.assertTrue(cp["through_message_id"])
-        projected = ctx.project_transcript(messages, ctx.append_checkpoint({}, cp))
-        self.assertLess(ctx.estimate_messages(projected), ctx.estimate_messages(messages))
+        projected = context_compact.project_transcript(messages, context_compact.append_checkpoint({}, cp))
+        self.assertLess(context_meter.estimate_messages(projected), context_meter.estimate_messages(messages))
 
     async def test_summarize_strategy_uses_callback(self):
         messages = []
@@ -565,7 +565,7 @@ class StrategyTest(unittest.IsolatedAsyncioTestCase):
             self.assertGreater(len(head), 0)
             return "HANDOFF:" + instructions
 
-        cp = await ctx.build_checkpoint(
+        cp = await context_compact.build_checkpoint(
             messages, strategy="summarize", instructions="keep the plan", trigger="manual", summarize=fake
         )
         self.assertEqual(cp["strategy"], "summarize")
@@ -583,20 +583,20 @@ class StrategyTest(unittest.IsolatedAsyncioTestCase):
             },
             {"role": "tool", "name": "read_file", "tool_call_id": "c1", "content": body},
         ]
-        payload = ctx.summarize_payload(head, limit=200_000)
+        payload = context_compact.summarize_payload(head, limit=200_000)
         tool = next(msg for msg in payload if msg.get("role") == "tool")
         self.assertEqual(tool["content"], body)
         self.assertGreater(len(tool["content"]), 2_000)
         self.assertIn("app/auth.py", payload[2]["tool_calls"][0]["function"]["arguments"])
         self.assertIn("Do NOT call any tools", payload[-1]["content"])
-        self.assertIn("re-read", ctx.SUMMARIZE_PROMPT)
-        self.assertIn("lossy", ctx.COMPACT_PREAMBLE)
+        self.assertIn("re-read", context_compact.SUMMARIZE_PROMPT)
+        self.assertIn("lossy", context_compact.COMPACT_PREAMBLE)
         self.assertEqual(payload[0]["role"], "system")
 
     def test_summarize_payload_merges_prior_handoff(self):
-        payload = ctx.summarize_payload([
-            {"role": "user", "content": ctx.COMPACT_PREAMBLE + "keep foo.py and the exit code 2"},
-            {"role": "assistant", "content": ctx.COMPACT_ACK},
+        payload = context_compact.summarize_payload([
+            {"role": "user", "content": context_compact.COMPACT_PREAMBLE + "keep foo.py and the exit code 2"},
+            {"role": "assistant", "content": context_compact.COMPACT_ACK},
             {"role": "user", "content": "continue"},
         ])
         self.assertIn("<prior-summary>", payload[-1]["content"])
@@ -608,47 +608,47 @@ class StrategyTest(unittest.IsolatedAsyncioTestCase):
             {"id": "u", "role": "user", "content": "hi"},
             {"id": "a", "role": "assistant", "content": "yo"},
         ]
-        self.assertIsNone(await ctx.build_checkpoint(messages, trigger="manual"))
+        self.assertIsNone(await context_compact.build_checkpoint(messages, trigger="manual"))
 
 
 class MeterTest(unittest.TestCase):
     def test_provider_input_contracts(self):
         for provider in ("grok", "chatgpt", "zai", "openrouter", "openai", "llama", "ollama"):
             with self.subTest(provider=provider):
-                cal = ctx.prompt_calibration({"input_tokens": 5000}, 2500, model="model", type_id=provider)
+                cal = context_meter.prompt_calibration({"input_tokens": 5000}, 2500, model="model", type_id=provider)
                 self.assertEqual(cal["prompt_tokens"], 5000)
-        self.assertIsNone(ctx.prompt_calibration({"prompt_tokens": 50, "cached_tokens": 5000}, 2500,
+        self.assertIsNone(context_meter.prompt_calibration({"prompt_tokens": 50, "cached_tokens": 5000}, 2500,
             model="devin/model", type_id="devin"))
 
     def test_calibration_uses_inclusive_input_not_billing_or_cache_again(self):
         rows = [{"role": "user", "content": "x" * 400}]
-        raw = ctx.meter_from_messages(rows, model="glm-5.3")
-        calibration = ctx.prompt_calibration({"prompt_tokens": 208, "cached_tokens": 200,
+        raw = context_meter.meter_from_messages(rows, model="glm-5.3")
+        calibration = context_meter.prompt_calibration({"prompt_tokens": 208, "cached_tokens": 200,
             "completion_tokens": 5000, "total_tokens": 999999}, raw["used"], model="glm-5.3", type_id="zai")
-        snap = ctx.meter_from_messages(rows, model="glm-5.3", calibration=calibration)
+        snap = context_meter.meter_from_messages(rows, model="glm-5.3", calibration=calibration)
         self.assertEqual(snap["used"], 208)
         self.assertTrue(snap["estimated"])
         self.assertEqual(snap["basis"], "provider_calibrated")
-        changed = ctx.meter_from_messages(rows, model="grok-4.6", calibration=calibration)
+        changed = context_meter.meter_from_messages(rows, model="grok-4.6", calibration=calibration)
         self.assertEqual(changed["used"], raw["used"])
-        self.assertIsNone(ctx.prompt_calibration({"total_tokens": 999999}, 104, model="glm-5.3", type_id="zai"))
+        self.assertIsNone(context_meter.prompt_calibration({"total_tokens": 999999}, 104, model="glm-5.3", type_id="zai"))
 
     def test_standing_calibration_survives_reload_without_compounding_overhead(self):
         rows = [{"role": "system", "content": "s" * 400}, {"role": "user", "content": "x" * 400}]
-        raw = ctx.meter_from_messages(rows, model="glm-5.3")
-        cal = ctx.prompt_calibration({"prompt_tokens": raw["used"] * 2}, raw["used"], model="glm-5.3", type_id="zai")
-        prior = ctx.calibrate_meter(raw, cal)
+        raw = context_meter.meter_from_messages(rows, model="glm-5.3")
+        cal = context_meter.prompt_calibration({"prompt_tokens": raw["used"] * 2}, raw["used"], model="glm-5.3", type_id="zai")
+        prior = context_meter.calibrate_meter(raw, cal)
         for _ in range(4):
-            prior = ctx.standing_meter(rows[1:], model="glm-5.3", prior=prior)
+            prior = context_meter.standing_meter(rows[1:], model="glm-5.3", prior=prior)
             self.assertEqual(prior["used"], raw["used"] * 2)
-        smaller = ctx.standing_meter([{"role": "user", "content": "short handoff"}], model="glm-5.3", prior=prior)
+        smaller = context_meter.standing_meter([{"role": "user", "content": "short handoff"}], model="glm-5.3", prior=prior)
         self.assertLess(smaller["used"], prior["used"])
 
     def test_public_config_and_meter(self):
-        cfg = ctx.public_config()
+        cfg = context_meter.public_config()
         self.assertEqual(cfg["auto_ratio"], 0.9)
         self.assertEqual(cfg["warn_ratio"], 0.8)
-        snap = ctx.meter(used=90_000, limit=100_000, model="grok-4.6")
+        snap = context_meter.meter(used=90_000, limit=100_000, model="grok-4.6")
         self.assertTrue(snap["auto"])
         self.assertTrue(snap["warn"])
         self.assertEqual(snap["limit"], 100_000)
@@ -657,10 +657,10 @@ class MeterTest(unittest.TestCase):
 class ClipToFitTest(unittest.TestCase):
     def test_clipping_uses_calibrated_budget(self):
         rows = [{"role": "user", "content": "x" * 40000}]
-        cal = ctx.prompt_calibration({"prompt_tokens": 20008}, 10004, model="m", type_id="zai")
-        out, clipped = ctx.clip_to_fit(rows, limit=16000, reserve=2000, calibration=cal)
+        cal = context_meter.prompt_calibration({"prompt_tokens": 20008}, 10004, model="m", type_id="zai")
+        out, clipped = context_compact.clip_to_fit(rows, limit=16000, reserve=2000, calibration=cal)
         self.assertGreater(clipped, 0)
-        self.assertLessEqual(ctx.estimate_messages(out) * 2, 14000)
+        self.assertLessEqual(context_meter.estimate_messages(out) * 2, 14000)
 
     def test_passthrough_when_small(self):
         rows = [
@@ -668,7 +668,7 @@ class ClipToFitTest(unittest.TestCase):
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": "hi"},
         ]
-        out, clipped = ctx.clip_to_fit(rows, limit=128_000)
+        out, clipped = context_compact.clip_to_fit(rows, limit=128_000)
         self.assertEqual(clipped, 0)
         self.assertIs(out, rows)
 
@@ -684,14 +684,14 @@ class ClipToFitTest(unittest.TestCase):
             },
             {"role": "tool", "tool_call_id": "c1", "content": "ok"},
         ]
-        out, clipped = ctx.clip_to_fit(rows, limit=20_000, reserve=4_000)
+        out, clipped = context_compact.clip_to_fit(rows, limit=20_000, reserve=4_000)
         self.assertGreaterEqual(clipped, 1)
         self.assertEqual(len(out), len(rows))
         user = out[1]
         self.assertLess(len(user["content"]), 120_000)
         self.assertIn("truncated to fit", user["content"])
         self.assertTrue(user["content"].startswith("xxx"))
-        self.assertLess(ctx.estimate_messages(out), 20_000)
+        self.assertLess(context_meter.estimate_messages(out), 20_000)
         # Structural rows untouched, pairing intact, input not mutated.
         self.assertEqual(out[2]["tool_calls"][0]["id"], "c1")
         self.assertEqual(out[3]["content"], "ok")
@@ -703,9 +703,9 @@ class ClipToFitTest(unittest.TestCase):
         ]
         for i in range(4):
             rows.append({"role": "user", "content": f"msg{i} " + "y" * 40_000})
-        out, clipped = ctx.clip_to_fit(rows, limit=20_000, reserve=4_000)
+        out, clipped = context_compact.clip_to_fit(rows, limit=20_000, reserve=4_000)
         self.assertGreaterEqual(clipped, 1)
-        self.assertLessEqual(ctx.estimate_messages(out), 16_000)
+        self.assertLessEqual(context_meter.estimate_messages(out), 16_000)
         for i, row in enumerate(out):
             if row.get("role") == "user":
                 self.assertLessEqual(len(row["content"]), 40_100)
@@ -719,7 +719,7 @@ class ClipToFitTest(unittest.TestCase):
                 "tool_calls": [{"id": "c1", "function": {"name": "t", "arguments": "{}"}}],
             },
         ]
-        out, clipped = ctx.clip_to_fit(rows, limit=20_000)
+        out, clipped = context_compact.clip_to_fit(rows, limit=20_000)
         self.assertEqual(clipped, 0)
         self.assertIs(out, rows)
 
@@ -736,13 +736,13 @@ class ClipToFitTest(unittest.TestCase):
             {"role": "tool", "tool_call_id": "c1", "content": old},
         ]
         grown = [*rows, {"role": "user", "content": "N" * 40_000}]
-        out, clipped = ctx.clip_to_fit(grown, limit=20_000, reserve=4_000, frozen=len(rows))
+        out, clipped = context_compact.clip_to_fit(grown, limit=20_000, reserve=4_000, frozen=len(rows))
         self.assertGreater(clipped, 0)
         # The already-sent tool body replays byte-identical; only the new row shrank.
         self.assertEqual(out[3]["content"], old)
         self.assertLess(len(out[4]["content"]), 40_000)
         # Nothing clippable left: over-budget frozen history is compaction's job.
-        out2, clipped2 = ctx.clip_to_fit(rows, limit=8_000, reserve=1_000, frozen=len(rows))
+        out2, clipped2 = context_compact.clip_to_fit(rows, limit=8_000, reserve=1_000, frozen=len(rows))
         self.assertEqual(clipped2, 0)
         self.assertIs(out2, rows)
 
@@ -755,36 +755,36 @@ class DurableCheckpointTest(unittest.TestCase):
 
     def test_twin_anchors_durable_projection(self):
         live = {"summary": "the handoff", "strategy": "summarize", "trigger": "auto", "tokens_before": 9_000}
-        cp = ctx.durable_checkpoint(self._durable(), live)
+        cp = context_compact.durable_checkpoint(self._durable(), live)
         self.assertIsNotNone(cp)
         self.assertFalse(cp["provider"])
         self.assertTrue(cp["through_message_id"].startswith(("u", "a")))
-        projected = ctx.project_transcript(self._durable(), ctx.append_checkpoint({}, cp))
+        projected = context_compact.project_transcript(self._durable(), context_compact.append_checkpoint({}, cp))
         self.assertEqual(len(projected), 2)
         self.assertIn("the handoff", projected[0]["content"])
-        self.assertLess(ctx.estimate_messages(projected), ctx.estimate_messages(self._durable()))
+        self.assertLess(context_meter.estimate_messages(projected), context_meter.estimate_messages(self._durable()))
 
     def test_twin_needs_ids_and_enough_rows(self):
         no_ids = [{"role": "user", "content": "q"} for _ in range(20)]
-        self.assertIsNone(ctx.durable_checkpoint(no_ids, {"summary": "s"}))
+        self.assertIsNone(context_compact.durable_checkpoint(no_ids, {"summary": "s"}))
         short = [{"id": "u0", "role": "user", "content": "q"}]
-        self.assertIsNone(ctx.durable_checkpoint(short, {"summary": "s"}))
-        self.assertIsNone(ctx.durable_checkpoint(self._durable(), {"summary": "  "}))
+        self.assertIsNone(context_compact.durable_checkpoint(short, {"summary": "s"}))
+        self.assertIsNone(context_compact.durable_checkpoint(self._durable(), {"summary": "  "}))
 
     def test_state_round_trip_drops_legacy_prune_ids(self):
-        state = ctx.parse_state({"pruned_tool_ids": ["a", "b"], "keep_tail": 6})
+        state = context_compact.parse_state({"pruned_tool_ids": ["a", "b"], "keep_tail": 6})
         self.assertNotIn("pruned_tool_ids", state)
-        cp = ctx.durable_checkpoint(self._durable(), {"summary": "s"})
-        state = ctx.append_checkpoint(state, cp)
-        self.assertIn("checkpoints", ctx.dump_state(state))
+        cp = context_compact.durable_checkpoint(self._durable(), {"summary": "s"})
+        state = context_compact.append_checkpoint(state, cp)
+        self.assertIn("checkpoints", context_compact.dump_state(state))
 
 
 class DurableCompactCurrentTest(unittest.IsolatedAsyncioTestCase):
     async def test_auto_compact_recheck_uses_calibrated_input(self):
         from app.chat_runtime import _compact_current
         rows = [{"role": "user", "content": "x" * 400} for _ in range(20)]
-        raw = ctx.estimate_messages(rows)
-        calibration = ctx.prompt_calibration({"prompt_tokens": raw * 4}, raw, model="offline", type_id="openai")
+        raw = context_meter.estimate_messages(rows)
+        calibration = context_meter.prompt_calibration({"prompt_tokens": raw * 4}, raw, model="offline", type_id="openai")
         with mock.patch("app.chat_runtime.summarize_conversation", new_callable=mock.AsyncMock, return_value="handoff") as summarize:
             _, snap, kind = await _compact_current(rows, request=None, user={"id": 1},
                 model="offline", type_id="openai", trigger="auto", thread_id=None,
@@ -837,9 +837,9 @@ class DurableCompactCurrentTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(persisted["through_message_id"])
         self.assertIn("durable handoff", persisted["summary"])
         # The durable twin really projects the next turn.
-        state = ctx.append_checkpoint({}, persisted)
-        projected = ctx.project_transcript(durable, state)
-        self.assertLess(ctx.estimate_messages(projected), ctx.estimate_messages(durable))
+        state = context_compact.append_checkpoint({}, persisted)
+        projected = context_compact.project_transcript(durable, state)
+        self.assertLess(context_meter.estimate_messages(projected), context_meter.estimate_messages(durable))
 
     async def test_without_durable_rows_keeps_provider_checkpoint(self):
         from unittest.mock import patch
@@ -893,52 +893,52 @@ class SubagentHandoffTest(unittest.IsolatedAsyncioTestCase):
         src = [{"role": "user", "content": task}]
         for i in range(8):
             src += _tool_round(i, 30_000)
-        dropped, kept = ctx.split_recent(src, ctx.preserve_budget(128_000))
-        first = ctx.continuation("## Objective\n- audit", kept, pinned=ctx.pinned_assignment(dropped, kept))
+        dropped, kept = context_compact.split_recent(src, context_compact.preserve_budget(128_000))
+        first = context_compact.continuation("## Objective\n- audit", kept, pinned=context_compact.pinned_assignment(dropped, kept))
         self.assertIn(task, first[0]["content"])
-        self.assertEqual(ctx.compact_summary_body(first[0]["content"]), "## Objective\n- audit")
-        self.assertEqual(ctx.prior_handoff(first), "## Objective\n- audit")
+        self.assertEqual(context_compact.compact_summary_body(first[0]["content"]), "## Objective\n- audit")
+        self.assertEqual(context_compact.prior_handoff(first), "## Objective\n- audit")
 
         src = [*first, {"role": "user", "content": "[Fuse] Follow-up from the parent — x:\n\nAlso check bar.py"},
                {"role": "user", "content": "[Fuse] AUTOMATED EVENT — not written by the user. Background results"}]
         for i in range(8, 14):
             src += _tool_round(i, 30_000)
-        dropped, kept = ctx.split_recent(src, ctx.preserve_budget(128_000))
-        pin = ctx.pinned_assignment(dropped, kept)
+        dropped, kept = context_compact.split_recent(src, context_compact.preserve_budget(128_000))
+        pin = context_compact.pinned_assignment(dropped, kept)
         self.assertEqual(pin.count(task), 1)
         self.assertIn("Also check bar.py", pin)
         self.assertNotIn("AUTOMATED EVENT", pin)
 
     def test_preamble_says_compaction_is_not_completion(self):
-        self.assertIn("Compaction is not completion", ctx.COMPACT_PREAMBLE)
-        self.assertNotIn("\n\n", ctx.COMPACT_PREAMBLE.strip())
+        self.assertIn("Compaction is not completion", context_compact.COMPACT_PREAMBLE)
+        self.assertNotIn("\n\n", context_compact.COMPACT_PREAMBLE.strip())
 
     def test_handoff_is_described_as_the_entire_conversation(self):
-        self.assertIn("covers the entire earlier conversation", ctx.COMPACT_PREAMBLE)
-        self.assertIn("was kept verbatim", ctx.COMPACT_PREAMBLE)
-        self.assertIn("handoff alone", ctx.COMPACT_ACK)
-        self.assertIn("receives this handoff and nothing else", ctx.SUMMARIZE_PROMPT)
-        self.assertNotIn("remaining messages", ctx.COMPACT_PREAMBLE + ctx.COMPACT_ACK + ctx.SUMMARIZE_PROMPT)
+        self.assertIn("covers the entire earlier conversation", context_compact.COMPACT_PREAMBLE)
+        self.assertIn("was kept verbatim", context_compact.COMPACT_PREAMBLE)
+        self.assertIn("handoff alone", context_compact.COMPACT_ACK)
+        self.assertIn("receives this handoff and nothing else", context_compact.SUMMARIZE_PROMPT)
+        self.assertNotIn("remaining messages", context_compact.COMPACT_PREAMBLE + context_compact.COMPACT_ACK + context_compact.SUMMARIZE_PROMPT)
 
     def test_summary_prompt_follows_the_claude_code_structure(self):
         for heading in ("1. Primary Request and Intent", "6. All user messages", "9. Optional Next Step"):
-            self.assertIn(heading, ctx.SUMMARIZE_PROMPT)
-        self.assertIn("<analysis>", ctx.SUMMARIZE_PROMPT)
-        self.assertIn("<summary>", ctx.SUMMARIZE_PROMPT)
-        self.assertIn("preserved verbatim in the summary", ctx.SUMMARIZE_PROMPT)
+            self.assertIn(heading, context_compact.SUMMARIZE_PROMPT)
+        self.assertIn("<analysis>", context_compact.SUMMARIZE_PROMPT)
+        self.assertIn("<summary>", context_compact.SUMMARIZE_PROMPT)
+        self.assertIn("preserved verbatim in the summary", context_compact.SUMMARIZE_PROMPT)
 
     def test_compact_result_body_keeps_only_the_summary_block(self):
         reply = "<analysis>\nthinking out loud\n</analysis>\n\n<summary>\n## Objective\n- ship it\n</summary>"
-        self.assertEqual(ctx.compact_result_body(reply), "## Objective\n- ship it")
-        self.assertNotIn("thinking out loud", ctx.compact_result_body(reply))
-        self.assertEqual(ctx.compact_result_body("plain fallback"), "plain fallback")
-        self.assertEqual(ctx.compact_result_body("<analysis>\nplan\n</analysis>\nbody only"), "body only")
+        self.assertEqual(context_compact.compact_result_body(reply), "## Objective\n- ship it")
+        self.assertNotIn("thinking out loud", context_compact.compact_result_body(reply))
+        self.assertEqual(context_compact.compact_result_body("plain fallback"), "plain fallback")
+        self.assertEqual(context_compact.compact_result_body("<analysis>\nplan\n</analysis>\nbody only"), "body only")
 
     async def test_truncate_fallback_describes_the_actual_dropped_span(self):
         head = [{"role": "user", "content": "first ask"}]
         head += [{"role": "assistant", "content": f"step {i}"} for i in range(60)]
         tail = [{"role": "user", "content": "latest"}]
-        cp = await ctx.build_checkpoint([*head, *tail], strategy="truncate", trigger="auto",
+        cp = await context_compact.build_checkpoint([*head, *tail], strategy="truncate", trigger="auto",
                                         provider=True, head=head, tail=tail)
         self.assertIn("first ask", cp["summary"])
         self.assertIn("step 59", cp["summary"])
@@ -948,9 +948,9 @@ class SubagentHandoffTest(unittest.IsolatedAsyncioTestCase):
         tools = [{"type": "function", "function": {"name": f"t{i}", "description": "d" * 4000, "parameters": {}}}
                  for i in range(40)]
         rows = [{"role": "user", "content": "q"}, {"role": "tool", "tool_call_id": "a", "content": "z" * 400_000}]
-        fit = ctx.fit_summary_messages(rows, 128_000, tools=tools)
-        budget = 128_000 - ctx.config().output_reserve - 8_000
-        self.assertLessEqual(ctx.estimate_messages(fit) + ctx.estimate_tools(tools), budget + 64)
+        fit = context_compact.fit_summary_messages(rows, 128_000, tools=tools)
+        budget = 128_000 - context_meter.config().output_reserve - 8_000
+        self.assertLessEqual(context_meter.estimate_messages(fit) + context_meter.estimate_tools(tools), budget + 64)
 
 
 if __name__ == "__main__":

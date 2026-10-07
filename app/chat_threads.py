@@ -239,13 +239,13 @@ def _view(row, *, include_messages: bool = False, coding: bool = False, conn=Non
         data["context"] = _legacy_text(row["context"], CONTEXT_MAX)
         data["tools"] = parse_thread_tools(row["tools"])
         data["messages"] = parse_messages(row["messages"])
-        from . import context as ctxmod
+        from . import context_compact as ctxmod, context_meter
 
         raw_comp = row["compaction"] if "compaction" in keys else "{}"
         state = ctxmod.parse_state(raw_comp)
         model = data.get("model") or ""
         stored = state.get("meter") if isinstance(state.get("meter"), dict) else {}
-        type_id = ctxmod.source_type_for_model(model, stored)
+        type_id = context_meter.source_type_for_model(model, stored)
         # Measure the validated replay projection, including saved tool pairs,
         # rather than display previews or summed multi-request billing.
         from . import chat_history
@@ -259,7 +259,7 @@ def _view(row, *, include_messages: bool = False, coding: bool = False, conn=Non
                 "message": {},
                 "status": "completed",
             })
-        rebuilt = ctxmod.standing_meter(
+        rebuilt = context_meter.standing_meter(
             chat_history.for_model(replay, model),
             model=model,
             type_id=type_id,
@@ -275,7 +275,7 @@ def _view(row, *, include_messages: bool = False, coding: bool = False, conn=Non
             and stored.get("limit")
             and not state.get("window_override")
         ):
-            rebuilt.update(ctxmod.meter(used=rebuilt["used"], limit=stored["limit"], model=model,
+            rebuilt.update(context_meter.meter(used=rebuilt["used"], limit=stored["limit"], model=model,
                                        estimated=True))
         checkpoint = ctxmod.latest_checkpoint(state, data["messages"])
         if checkpoint:
@@ -631,17 +631,17 @@ def _update_thread(conn, row, *, title, model, archived, pinned, messages, conte
         # Recompute the meter from the new transcript in the same transaction:
         # a second UPDATE would race concurrent compaction writes (e.g. a
         # prune from an in-flight run) and ship without a revision bump.
-        from . import context as ctxmod, hosts
+        from . import context_compact as ctxmod, hosts, context_meter
 
         state = ctxmod.parse_state(row["compaction"] if "compaction" in row.keys() else None)
         previous = state.get("meter") or {}
         from . import chat_history
         replay, _history_info = chat_history.build(conn, row["user_id"], row["id"], msgs, state)
-        state["meter"] = ctxmod.standing_meter(
+        state["meter"] = context_meter.standing_meter(
             chat_history.for_model(replay, new_model), model=new_model,
             override=state.get("window_override") or (
                 previous.get("limit")
-                if ctxmod.type_id_for_model(new_model) is None and previous.get("model") == new_model
+                if context_meter.type_id_for_model(new_model) is None and previous.get("model") == new_model
                 else None
             ), prior=previous,
         )

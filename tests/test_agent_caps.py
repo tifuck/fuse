@@ -1290,7 +1290,7 @@ class AgentCapsTest(unittest.TestCase):
         self.assertEqual((hist[-1]["tools"][0] or {}).get("id"), "live1")
 
     def test_child_display_starts_at_latest_handoff(self):
-        from app import context
+        from app import context_compact as context
 
         rows = store.child_display_messages({
             "status": "running",
@@ -1319,7 +1319,7 @@ class AgentCapsTest(unittest.TestCase):
         self.assertNotIn("old evidence", " ".join(str(row.get("content") or "") for row in rows))
 
     def test_fold_handoff_drops_precompact_tools(self):
-        from app import chat_runs, context
+        from app import chat_runs, context_compact as context
 
         output = chat_runs.Output({
             "message": {
@@ -1341,7 +1341,7 @@ class AgentCapsTest(unittest.TestCase):
         self.assertEqual(stored["segments"][0]["summary"], "kept foo.py")
 
     def test_child_display_hides_compact_ack(self):
-        from app import context
+        from app import context_compact as context
 
         rows = store.child_display_messages({
             "status": "running",

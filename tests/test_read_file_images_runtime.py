@@ -5,7 +5,7 @@ import json
 import pytest
 from types import SimpleNamespace
 
-from app import chat_history, chat_runtime as runtime, chat_store, chats, context, model_caps
+from app import chat_history, chat_runtime as runtime, chat_store, chats, context_compact as context, model_caps, context_meter
 from app.sources import chatgpt, claude, ollama
 
 DATA = "iVBORw0KGgo="
@@ -94,8 +94,8 @@ def test_trace_sanitization_and_honest_recovery():
 
 def test_compaction_keeps_recent_pixels_and_marks_text_summary():
     rows = runtime._tool_messages([job()])
-    assert context.estimate_content(rows[-1]["content"]) < 2000
-    assert context.IMAGE_TOKENS == 1500
+    assert context_meter.estimate_content(rows[-1]["content"]) < 2000
+    assert context_meter.IMAGE_TOKENS == 1500
     head, tail = context.split_recent([{"role": "user", "content": "old" * 10000}, *rows], 3000)
     assert pixels(tail) == pixels(rows)
     summary = context.truncate_summary(rows)

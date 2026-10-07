@@ -2,7 +2,7 @@
 never mutate saved history, and keep provider transports honest."""
 import copy
 
-from app import chats, context, model_caps
+from app import chats, context_meter as context, model_caps
 from app.sources import chatgpt, devin, kimi, ollama, openrouter
 
 PNG = "data:image/png;base64,iVBORw0KGgo="

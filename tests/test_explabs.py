@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from app import accounts, context, db, model_caps, sources
+from app import accounts, context_meter as context, db, model_caps, sources
 from app.crypto import encrypt
 from app.sources import explabs
 

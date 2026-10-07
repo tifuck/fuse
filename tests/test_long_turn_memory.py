@@ -37,7 +37,7 @@ os.environ.setdefault("APP_SECRET", "x" * 32)
 
 from app import chat_store as store, chats, db  # noqa: E402
 from app.chat_runtime import MAX_EMPTY_RETRIES  # noqa: E402
-from app.context import should_auto_compact  # noqa: E402
+from app.context_meter import should_auto_compact  # noqa: E402
 
 import pytest
 

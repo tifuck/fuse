@@ -40,7 +40,7 @@ def public_id(model: str) -> str:
 def _remember_windows(catalog: dict) -> None:
     """Keep each model's real window so window_for() without a live catalog
     (cold process, meter recompute) does not fall back to the type default."""
-    from .. import context as ctxmod
+    from .. import context_meter as ctxmod
 
     for mid, rec in (catalog.get("by_id") or {}).items():
         window = rec.get("context_length")

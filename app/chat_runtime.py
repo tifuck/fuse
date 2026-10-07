@@ -11,7 +11,7 @@ import re
 from fastapi import HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from . import api, artifacts, chats, context as ctxmod
+from . import api, artifacts, chats, context_compact as ctxmod, context_meter
 from .chat_generation import metadata, policy, tool_runner
 from .chat_tools import execute_tool, openai_tools, parse_tool_names
 from .config import settings
@@ -334,7 +334,7 @@ async def _compact_current(
 ) -> tuple[list[dict], dict, str | None]:
     from . import chat_store as store
 
-    cfg = ctxmod.config()
+    cfg = context_meter.config()
     # Children share the parent's thread row; their compaction must stay in
     # their own run transcript (provider_messages), never mutate the parent
     # thread's compaction state, meter cache, or revision.
@@ -343,12 +343,12 @@ async def _compact_current(
     # results with stubs, and the handoff would never see the evidence.
     system = [msg for msg in current_messages if isinstance(msg, dict) and msg.get("role") == "system"]
     source = [msg for msg in current_messages if isinstance(msg, dict) and msg.get("role") != "system"]
-    snap = ctxmod.meter_from_messages(
+    snap = context_meter.meter_from_messages(
         current_messages, model=model, type_id=type_id, tools=tools, override=override, calibration=calibration
     )
     dropped, kept = source, []
     can_summarize = bool(dropped) and ctxmod.compactable_transcript(source, provider=True) and (
-        trigger != "auto" or ctxmod.should_compact(snap["used"], snap["limit"])
+        trigger != "auto" or context_meter.should_compact(snap["used"], snap["limit"])
     )
     focus = _compact_focus(instructions, is_child=is_child, agent=agent)
     checkpoint = None
@@ -379,7 +379,7 @@ async def _compact_current(
         # dropped span; the summary alone would paraphrase scope and report format.
         pinned = ctxmod.pinned_assignment(dropped, kept) if is_child else ""
         rebuilt = [*system, *ctxmod.continuation(checkpoint["summary"], kept, pinned=pinned)]
-        after = ctxmod.meter_from_messages(rebuilt, model=model, type_id=type_id, tools=tools, override=override, calibration=calibration)
+        after = context_meter.meter_from_messages(rebuilt, model=model, type_id=type_id, tools=tools, override=override, calibration=calibration)
         after["estimated"] = True
         after["standing"] = True
         after["scope"] = "transcript"
@@ -402,7 +402,7 @@ async def _compact_current(
     # rewrites the cached prefix and loses the evidence, and the next request
     # would re-send the full bodies anyway. Shrinking history is compaction's
     # job; a non-compactable transcript is returned untouched.
-    snap = ctxmod.meter_from_messages(
+    snap = context_meter.meter_from_messages(
         current_messages, model=model, type_id=type_id, tools=tools, override=override, calibration=calibration
     )
     return current_messages, snap, None
@@ -740,12 +740,12 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
         stored_meter = agent.get("meter") if is_child and isinstance(agent.get("meter"), dict) else None
         if not stored_meter:
             stored_meter = ((thread or {}).get("compaction") or {}).get("meter") if isinstance(thread, dict) else None
-        src_type_guess = ctxmod.source_type_for_model(model, stored_meter)
+        src_type_guess = context_meter.source_type_for_model(model, stored_meter)
         resolved_window = int((stored_meter or {}).get("limit") or 0) if (stored_meter or {}).get("model") == model else None
         if src_type_guess == "explabs":
             from .sources.explabs import cached_catalog
 
-            resolved_window = ctxmod.window_for(model, "explabs", catalog=cached_catalog(user["id"]))
+            resolved_window = context_meter.window_for(model, "explabs", catalog=cached_catalog(user["id"]))
         calibration = (stored_meter or {}).get("calibration")
         if calibration and calibration.get("model") != model:
             calibration = None
@@ -763,7 +763,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
         anchor = {"prompt": 0, "sent": None}
 
         def _note_anchor(usage, sent_messages):
-            prompt = ctxmod.prompt_token_count(usage)
+            prompt = context_meter.prompt_token_count(usage)
             if not prompt:
                 return
             # Devin reports billing/cache deltas, not an inclusive prompt size;
@@ -798,7 +798,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             projected = chat_history.for_model(measured, model)
             added = _anchored(projected)
             if added is not None:
-                snap = ctxmod.next_request_meter(
+                snap = context_meter.next_request_meter(
                     projected,
                     model=model,
                     type_id=src_type or src_type_guess,
@@ -811,9 +811,9 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 if extra_tokens:
                     snap["used"] = snap["used"] + max(0, extra_tokens)
                     snap["estimated"] = True
-                    snap["parts"] = ctxmod._fit_parts(snap.get("parts"), snap["used"])
+                    snap["parts"] = context_meter._fit_parts(snap.get("parts"), snap["used"])
             else:
-                snap = ctxmod.meter_from_messages(
+                snap = context_meter.meter_from_messages(
                     projected,
                     model=model,
                     type_id=src_type or src_type_guess,
@@ -838,7 +838,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             snap["source_type"] = src_type or src_type_guess
             snap["history_info"] = raw.get("history_info") or {"mode": "legacy" if run_id and not raw.get("history_replay") and not is_child else "full"}
             if snap.get("parts") and snap["parts"].get("total") != snap.get("used"):
-                snap["parts"] = ctxmod._fit_parts(snap["parts"], snap["used"])
+                snap["parts"] = context_meter._fit_parts(snap["parts"], snap["used"])
             return snap
 
         def _persist_meter(snap: dict):
@@ -860,14 +860,14 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 logger.exception("Could not persist context meter")
 
         boot = _live_meter(estimated=True)
-        yield _sse(ctxmod.context_event(boot, phase="start"))
+        yield _sse(context_meter.context_event(boot, phase="start"))
         _persist_meter(boot)
-        if ctxmod.should_auto_compact(
+        if context_meter.should_auto_compact(
             # Boot measures the exact payload about to be sent, not a
             # transient mid-turn estimate; the spike guard does not apply.
             boot["used"], boot["limit"], estimated=False, prior_used=prior_used
         ):
-            yield _sse(ctxmod.context_event({**boot, "compacting": True}, phase="compacting"))
+            yield _sse(context_meter.context_event({**boot, "compacting": True}, phase="compacting"))
             transcript, boot, kind = await _compact_current(
                 current_messages,
                 request=request,
@@ -894,10 +894,10 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 refresh_prompt()
                 last_round_usage = {}
                 current["messages"] = transcript
-                yield _sse(ctxmod.context_event({**boot, "compacting": False}, phase="compacted"))
+                yield _sse(context_meter.context_event({**boot, "compacting": False}, phase="compacted"))
                 yield _sse(ctxmod.compact_handoff_event(ctxmod.prior_handoff(current_messages)))
             else:
-                yield _sse(ctxmod.context_event(boot, phase="update"))
+                yield _sse(context_meter.context_event(boot, phase="update"))
             _persist_meter(boot)
         await persist_jobs()
         completion_i = start_i
@@ -1029,9 +1029,9 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             # Steers, background results and newly loaded tool schemas can
             # grow context after the preceding tool-boundary check.
             preflight = _live_meter()
-            if (ctxmod.should_auto_compact(preflight["used"], preflight["limit"])
+            if (context_meter.should_auto_compact(preflight["used"], preflight["limit"])
                     and last_compact_used is None):
-                yield _sse(ctxmod.context_event({**preflight, "compacting": True}, phase="compacting"))
+                yield _sse(context_meter.context_event({**preflight, "compacting": True}, phase="compacting"))
                 before_compact_used = preflight["used"]
                 transcript, preflight, kind = await _compact_current(
                     transcript, request=request, user=user, model=model,
@@ -1042,7 +1042,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     refresh_prompt()
                     last_compact_used = preflight["used"] if preflight["used"] >= int(before_compact_used * 0.95) else None
                     yield _sse(ctxmod.compact_handoff_event(ctxmod.prior_handoff(current_messages)))
-                yield _sse(ctxmod.context_event(preflight, phase="compacted" if kind in ("summarize", "truncate") else "update"))
+                yield _sse(context_meter.context_event(preflight, phase="compacted" if kind in ("summarize", "truncate") else "update"))
                 _persist_meter(preflight)
                 await persist_jobs()
             _user = user
@@ -1069,20 +1069,20 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     send.pop("tool_choice", None)
                 yield _sse({"fuse": {"event": "activity", "phase": "model", "run_id": run_id}})
                 send["messages"] = chat_history.for_model(send["messages"], model)
-                request_meter = ctxmod.meter_from_messages(send["messages"], model=model,
+                request_meter = context_meter.meter_from_messages(send["messages"], model=model,
                     type_id=src_type or src_type_guess, tools=send.get("tools"), override=window_override or resolved_window)
                 request_estimate = request_meter["used"]
                 added = _anchored(send["messages"])
                 if added is not None:
-                    request_meter = ctxmod.next_request_meter(
+                    request_meter = context_meter.next_request_meter(
                         send["messages"], model=model, type_id=src_type or src_type_guess,
                         tools=send.get("tools"), override=window_override or resolved_window,
                         anchor_prompt=anchor["prompt"], added=added, calibration=calibration,
                     )
                 else:
-                    request_meter = ctxmod.calibrate_meter(request_meter, calibration)
+                    request_meter = context_meter.calibrate_meter(request_meter, calibration)
                 request_meter.update(scope="prompt", run_id=run_id, source_type=src_type or src_type_guess)
-                yield _sse(ctxmod.context_event(request_meter, phase="request"))
+                yield _sse(context_meter.context_event(request_meter, phase="request"))
                 _persist_meter(request_meter)
                 try:
                     _user = src = upstream = requested = result = None
@@ -1129,20 +1129,20 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                             exc.status_code,
                         )
                     )
-                    _snap = _live_meter(); yield _sse(ctxmod.context_event(_snap, phase="end")); _persist_meter(_snap)
+                    _snap = _live_meter(); yield _sse(context_meter.context_event(_snap, phase="end")); _persist_meter(_snap)
                     yield b"data: [DONE]\n\n"
                     return
                 src_type = src.type_id
                 if not (src_type in ("llama", "ollama", "openai") and src_type == src_type_guess
-                        and resolved_window and not ctxmod.cached_window(src_type, upstream or model)):
+                        and resolved_window and not context_meter.cached_window(src_type, upstream or model)):
                     catalog = None
                     if src_type == "explabs":
                         from .sources.explabs import cached_catalog
 
                         catalog = cached_catalog(user["id"])
-                    resolved_window = ctxmod.window_for(upstream or model, src_type, catalog=catalog)
+                    resolved_window = context_meter.window_for(upstream or model, src_type, catalog=catalog)
                 if not window_override and src_type != "explabs":
-                    ctxmod.remember_window(src_type, model, resolved_window)
+                    context_meter.remember_window(src_type, model, resolved_window)
                 msg = api._error_message(result.body) if result.status != 200 else ""
                 if result.status != 400:
                     break
@@ -1217,7 +1217,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                         }
                     )
                     yield _sse(_error_obj(result.status, result.body))
-                    _snap = _live_meter(); yield _sse(ctxmod.context_event(_snap, phase="end")); _persist_meter(_snap)
+                    _snap = _live_meter(); yield _sse(context_meter.context_event(_snap, phase="end")); _persist_meter(_snap)
                     yield b"data: [DONE]\n\n"
                     return
                 break
@@ -1255,7 +1255,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                         yield frame
                     continue
                 yield _sse(_exhausted_provider_error(is_child, result.body, result.status))
-                _snap = _live_meter(); yield _sse(ctxmod.context_event(_snap, phase="end")); _persist_meter(_snap)
+                _snap = _live_meter(); yield _sse(context_meter.context_event(_snap, phase="end")); _persist_meter(_snap)
                 yield b"data: [DONE]\n\n"
                 return
             diag = {
@@ -1319,7 +1319,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     await persist_jobs()
                     continue
                 yield _sse(_exhausted_provider_error(is_child, {"error": {"message": err_msg, "code": 502}}))
-                _snap = _live_meter(); yield _sse(ctxmod.context_event(_snap, phase="end")); _persist_meter(_snap)
+                _snap = _live_meter(); yield _sse(context_meter.context_event(_snap, phase="end")); _persist_meter(_snap)
                 yield b"data: [DONE]\n\n"
                 return
             summary = _promote_provider_content_error(
@@ -1331,7 +1331,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 # Checkpoint cumulative usage before the next tool/model boundary
                 # so a mid-run steer can attribute tokens to the correct fragment.
                 yield _sse({"usage": total_usage, "choices": []})
-            calibration = ctxmod.prompt_calibration(summary.get("usage"), request_estimate,
+            calibration = context_meter.prompt_calibration(summary.get("usage"), request_estimate,
                 model=model, type_id=src_type or src_type_guess) or calibration
             if summary.get("content"):
                 final_text = str(summary.get("content") or "")
@@ -1339,7 +1339,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             # The prompt that just returned covers send["messages"], not the reply.
             _note_anchor(summary.get("usage"), send["messages"])
             round_meter = _live_meter(usage=summary.get("usage"), response=summary)
-            yield _sse(ctxmod.context_event(round_meter, phase="round"))
+            yield _sse(context_meter.context_event(round_meter, phase="round"))
             _persist_meter(round_meter)
             if summary.get("error"):
                 raw_err = summary["error"] if isinstance(summary["error"], dict) else {"error": {"message": str(summary["error"])}}
@@ -1381,7 +1381,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     await persist_jobs()
                     continue
                 yield _sse(_exhausted_provider_error(is_child, raw_err))
-                _snap = _live_meter(); yield _sse(ctxmod.context_event(_snap, phase="end")); _persist_meter(_snap)
+                _snap = _live_meter(); yield _sse(context_meter.context_event(_snap, phase="end")); _persist_meter(_snap)
                 yield b"data: [DONE]\n\n"
                 return
             raw_calls = summary.get("calls") or []
@@ -1552,9 +1552,9 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 agent["fetch_attempts"] = budgets.get("fetch_attempts", 0)
                 # tool_msgs are already in current_messages: count once.
                 tool_meter = _live_meter(usage=summary.get("usage"))
-                yield _sse(ctxmod.context_event(tool_meter, phase="tools"))
+                yield _sse(context_meter.context_event(tool_meter, phase="tools"))
                 _persist_meter(tool_meter)
-                do_compact = ctxmod.should_auto_compact(
+                do_compact = context_meter.should_auto_compact(
                     tool_meter["used"],
                     tool_meter["limit"],
                     # Full provider payload, not a UI-preview growth estimate.
@@ -1569,7 +1569,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     # Last compact did not free space; do not spin.
                     do_compact = False
                 if do_compact:
-                    yield _sse(ctxmod.context_event({**tool_meter, "compacting": True}, phase="compacting"))
+                    yield _sse(context_meter.context_event({**tool_meter, "compacting": True}, phase="compacting"))
                     before_compact_used = tool_meter["used"]
                     transcript, tool_meter, kind = await _compact_current(
                         transcript,
@@ -1599,7 +1599,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                         tool_meter["standing"] = True
                         stored_meter = tool_meter
                         yield _sse(ctxmod.compact_handoff_event(ctxmod.prior_handoff(current_messages)))
-                    yield _sse(ctxmod.context_event(tool_meter, phase="compacted" if real else "update"))
+                    yield _sse(context_meter.context_event(tool_meter, phase="compacted" if real else "update"))
                     _persist_meter(tool_meter)
                 if (
                     session.pop("project_promoted", None)
@@ -1725,7 +1725,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
         if total_usage:
             yield _sse({"usage": total_usage, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
         _snap = _live_meter(usage=(summary or {}).get("usage"))
-        yield _sse(ctxmod.context_event(_snap, phase="end")); _persist_meter(_snap)
+        yield _sse(context_meter.context_event(_snap, phase="end")); _persist_meter(_snap)
         yield b"data: [DONE]\n\n"
 
     return StreamingResponse(

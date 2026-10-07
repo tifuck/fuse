@@ -16,7 +16,7 @@ import logging
 from fastapi import HTTPException, Request
 
 from .. import chats
-from .. import context as ctxmod
+from .. import context_compact as ctxmod
 from ..chat_prompts import TITLE_MAX_TOKENS
 from ..config import settings
 
