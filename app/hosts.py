@@ -362,7 +362,9 @@ def add_host(user_id: int, raw: dict) -> dict:
                 ),
             )
         except IntegrityError as exc:
-            raise HostError("alias already exists", 409) from exc
+            if exc.errno == 1062:
+                raise HostError("alias already exists", 409) from exc
+            raise HostError("could not save host", 500) from exc
         host_id = db.last_id(conn)
         row = conn.execute("SELECT * FROM user_hosts WHERE id=?", (host_id,)).fetchone()
         return _public_host(row, [])
@@ -474,7 +476,9 @@ def patch_host(user_id: int, host_id: int, raw: dict) -> dict:
                 ),
             )
         except IntegrityError as exc:
-            raise HostError("alias already exists", 409) from exc
+            if exc.errno == 1062:
+                raise HostError("alias already exists", 409) from exc
+            raise HostError("could not update host", 500) from exc
         row = conn.execute("SELECT * FROM user_hosts WHERE id=?", (host_id,)).fetchone()
         if clear_pin or any(k in raw for k in ("username", "auth_type", "secret", "passphrase")):
             # Drop the pooled session: it was opened against the old endpoint

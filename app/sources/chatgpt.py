@@ -774,12 +774,12 @@ class ChatGPTSource:
             cred, extra = picked
             tried.add(int(cred["id"]))
             _note_invoke(cred["id"])
-            reserve(cred["id"])
             token = extra.get("access_token") or accounts.cred_secret(cred)
             account_id = extra.get("account_id") or None
             client = _client()
             stream_reserved = False
             try:
+                reserve(cred["id"])
                 try:
                     resp = await self._post(token, account_id, payload, client)
                 except httpx.TimeoutException as exc:

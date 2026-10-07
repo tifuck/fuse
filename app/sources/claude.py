@@ -770,11 +770,11 @@ class ClaudeSource:
             cred, extra = picked
             tried.add(int(cred["id"]))
             note_pool_invoke(cred["id"])
-            reserve(cred["id"])
             token = _bearer(cred, extra)
             client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=15.0))
             stream_reserved = False
             try:
+                reserve(cred["id"])
                 resp = await self._post(client, token, payload)
                 status = resp.status_code
                 if status == 401 and extra.get("refresh_token"):

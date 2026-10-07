@@ -6,7 +6,7 @@ import time
 import uuid
 import httpx
 
-from .. import accounts, model_caps
+from .. import accounts, context_meter, model_caps
 from ..config import ROOT
 from ..proxy import UsageStream, usage_from_obj
 from .base import ChatResult
@@ -212,9 +212,15 @@ class OllamaSource:
                     async with slots:
                         response = await client.post(self.base + "/show", headers={"Authorization": f"Bearer {key}"}, json={"model": name})
                     if response.status_code == 200:
-                        caps = response.json().get("capabilities")
+                        data = response.json()
+                        caps = data.get("capabilities")
                         if isinstance(caps, list):
                             model_caps.remember(self.type_id, name, "vision" in caps)
+                        info = data.get("model_info") or {}
+                        params = data.get("parameters") if isinstance(data.get("parameters"), dict) else {}
+                        ctx = next((v for k, v in info.items() if k.endswith(".context_length")), 0) or params.get("num_ctx", 0)
+                        if ctx:
+                            context_meter.remember_window(self.type_id, name, ctx)
                 except (httpx.HTTPError, ValueError):
                     pass
 

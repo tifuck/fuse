@@ -616,10 +616,10 @@ class DevinSource:
             cred, extra = picked
             tried.add(int(cred["id"]))
             note_pool_invoke(cred["id"])
-            reserve(cred["id"])
             token = extra.get("api_key") or accounts.cred_secret(cred)
             stream_reserved = False
             try:
+                reserve(cred["id"])
                 result = await self._chat_one(token, payload, model, cred, session_id, attempts)
                 if result.stream is not None:
                     stream_reserved = True

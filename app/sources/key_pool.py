@@ -836,11 +836,11 @@ class KeyPool:
             key_state.mark_error(f"server_{status}", backoff)
             return
 
-        if kind == "auth" and (status == 401 or is_credential_auth_error(status, body_text)):
-            # 401 is always a credential rejection; 403 only counts toward the
-            # auth-strike disable when the body actually says the token is bad —
-            # a 403 that is really a plan/quota denial must not permanently
-            # retire a healthy key.
+        if kind == "auth" and is_credential_auth_error(status, body_text):
+            # Only a classified auth error whose status/body says the credential
+            # is bad counts toward the auth-strike disable — a status that is
+            # really a plan/quota denial must not permanently retire a healthy
+            # key.
             key_state.consecutive_auth_errors += 1
             key_state.last_error_type = f"auth_{status}"
             key_state.last_error_at = time.time()

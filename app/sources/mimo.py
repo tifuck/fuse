@@ -658,13 +658,13 @@ class MimoSource:
             cred, extra = picked
             tried.add(int(cred["id"]))
             note_pool_invoke(cred["id"])
-            reserve(cred["id"])
             key = extra.get("api_key") or accounts.cred_secret(cred)
             region = extra.get("region") if extra.get("region") in _REGIONS else "cn"
             base = extra.get("base_url") or base_for_region(region)
             client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=15.0))
             stream_reserved = False
             try:
+                reserve(cred["id"])
                 status, obj, stream, usage, response_headers = await openai_chat(
                     client,
                     base.rstrip("/") + "/chat/completions",

@@ -543,11 +543,11 @@ class GrokSource:
             cred, extra = picked
             tried.add(int(cred["id"]))
             note_pool_invoke(cred["id"])
-            reserve(cred["id"])
             token = extra.get("access_token") or accounts.cred_secret(cred)
             client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=15.0))
             stream_reserved = False
             try:
+                reserve(cred["id"])
                 status, obj, stream, usage, response_headers = await openai_chat(
                     client,
                     settings.grok_proxy + "/chat/completions",
