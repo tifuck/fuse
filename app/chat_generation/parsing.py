@@ -198,7 +198,9 @@ def _finalize_assistant_payload(content, reasoning, calls, finish, *, coding: bo
     native = allc
     content, extracted = extract_text_tool_calls(content, coding=coding)
     if not named and extracted:
-        native = extracted
+        # Keep the nameless entries too: the round loop logs them as
+        # malformed calls; the extracted XML calls carry the real work.
+        native = [*allc, *extracted]
     if named or extracted:
         finish = "tool_calls"
     return content, reasoning, native, finish

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -158,6 +161,18 @@ class SpecialTokenAndXmlTest(unittest.TestCase):
         self.assertEqual(calls[0]["function"]["name"], "web_search")
         self.assertEqual(reasoning, "")
 
+    def test_finalize_keeps_nameless_calls_alongside_extracted_xml(self):
+        content, reasoning, calls, finish = _finalize_assistant_payload(
+            'Answering now.\n<tool_call><function=web_search><parameter=query>x</parameter></function></tool_call>',
+            "",
+            [{"id": "broken", "function": {"name": "", "arguments": ""}}],
+            "stop",
+            coding=False,
+        )
+        names = [c["function"]["name"] for c in calls]
+        self.assertIn("web_search", names)
+        self.assertIn("", names, "nameless entry must survive for malformed-call logging")
+
     def test_drop_tool_xml_holds_incomplete_opener(self):
         visible, pending = drop_tool_xml("hello <tool_call>\n<function=web_search>")
         self.assertEqual(visible, "hello ")
@@ -202,6 +217,36 @@ class SpecialTokenAndXmlTest(unittest.TestCase):
             ),
             (("web_search", '{"q":"a"}'),),
         )
+
+
+class ConsumeRoundTerminalTest(unittest.IsolatedAsyncioTestCase):
+    async def test_done_frame_then_held_open_stream_completes(self):
+        """A proxy keeping the socket open after [DONE] must not turn a
+        completed reply into a gap-timeout failure."""
+        from app.chat_generation.consume import consume_round
+
+        async def stream():
+            yield b'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n'
+            yield b"data: [DONE]\n\n"
+            await asyncio.Future()  # provider never closes the connection
+
+        result = SimpleNamespace(status=200, stream=stream(), body=None, usage={}, credential_id=1)
+        src = SimpleNamespace(type_id="llama", source_id=1)
+        summary = None
+        with (
+            patch("app.api._tap", side_effect=lambda s, *a, **k: s),
+            patch("app.api._safe_record_usage"),
+            # Without the fix this test would otherwise wait a full gap
+            # timeout before failing; keep that failure fast.
+            patch("app.chat_generation.consume.CHUNK_GAP_TIMEOUT_S", 0.3),
+        ):
+            async with contextlib.aclosing(consume_round(result, {"id": 1}, src, "m", "m")) as rounds:
+                async for kind, payload in rounds:
+                    if kind == "done":
+                        summary = payload
+        self.assertIsNotNone(summary)
+        self.assertEqual(summary["content"], "hello")
+        self.assertIsNone(summary["error"])
 
 
 class FakeResult:
@@ -649,6 +694,108 @@ class LoopTest(unittest.IsolatedAsyncioTestCase):
             body, _ = await self._run_raw(invoke, raw)
         self.assertEqual(ran["tools"], 1)
         self.assertIn(b"summary of remaining work", body)
+
+    async def test_truncated_sibling_call_does_not_drop_complete_calls(self):
+        payloads = []
+
+        async def invoke(request, user, payload, **_kwargs):
+            payloads.append(dict(payload))
+            if len(payloads) == 1:
+                return user, FakeSrc("llama"), "m", "m", FakeResult(
+                    200,
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": "",
+                                    "tool_calls": [
+                                        {"id": "good", "function": {"name": "web_search", "arguments": '{"query":"x"}'}},
+                                        {"id": "cut", "function": {"name": "web_search", "arguments": '{"query":'}},
+                                    ],
+                                },
+                                "finish_reason": "length",
+                            }
+                        ]
+                    },
+                )
+            return user, FakeSrc("llama"), "m", "m", FakeResult(
+                200, {"choices": [{"message": {"content": "done"}, "finish_reason": "stop"}]}
+            )
+
+        ran = []
+
+        async def fake_tools(calls, **_k):
+            ran.append([c["id"] for c in calls])
+            job = ToolJob(0, "good", "web_search", '{"query":"x"}', "ts_0_0", text="hits", done=True)
+            yield {"event": "tool", "id": "ts_0_0", "name": "web_search", "status": "done"}
+            yield [job]
+
+        with patch("app.chat_runtime._run_tools", fake_tools):
+            raw = {
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": ["web_search"],
+            }
+            body, _ = await self._run_raw(invoke, raw)
+        self.assertEqual(ran, [["good"]], "only the well-formed call must execute")
+        tool_rows = [m for m in payloads[1]["messages"] if m.get("role") == "tool"]
+        self.assertTrue(tool_rows, "the complete call's result must reach the next round")
+        self.assertEqual(tool_rows[0]["tool_call_id"], "good")
+        self.assertTrue(
+            any(m.get("role") == "user" and "discarded and NOT executed" in str(m.get("content"))
+                for m in payloads[1]["messages"]),
+            "the truncated call must be called out for re-issue",
+        )
+        self.assertIn(b"done", body)
+
+    async def test_stream_exception_resume_folds_seen_partial_text(self):
+        payloads = []
+
+        async def invoke(request, user, payload, **_kwargs):
+            payloads.append(dict(payload))
+            return user, FakeSrc("llama"), "m", "m", FakeResult(
+                200, {"choices": [{"message": {"content": "unused"}, "finish_reason": "stop"}]}
+            )
+
+        consume_calls = {"n": 0}
+
+        async def consume(*args, **kwargs):
+            consume_calls["n"] += 1
+            if consume_calls["n"] == 1:
+                yield ("out", {"choices": [{"delta": {"content": "partial answer"}}]})
+                raise RuntimeError("socket exploded")
+            yield (
+                "done",
+                {"calls": [], "finish": "stop", "content": "final", "reasoning": "",
+                 "thinking": [], "usage": {}, "error": None},
+            )
+
+        async def never_disconnects():
+            await asyncio.Future()
+
+        from starlette.requests import Request as StarletteRequest
+
+        scope = {"type": "http", "method": "POST", "path": "/", "headers": [], "client": ("127.0.0.1", 1)}
+        request = StarletteRequest(scope, receive=never_disconnects)
+        with patch("app.chat_runtime.api.invoke_chat", invoke), patch(
+            "app.chat_runtime.api._safe_record_usage", lambda *a, **k: None
+        ), patch("app.chat_runtime._consume_round", consume), patch(
+            "app.chat_runtime._resume_delay", lambda *a, **k: 0.0
+        ), patch(
+            "app.chat_runtime.chats.get_user_context",
+            return_value={"instructions": "", "profile": ""},
+        ):
+            resp = await stream_dashboard_chat(
+                request, {"id": 1, "key_id": None},
+                {"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "tools": []},
+            )
+            async for _ in resp.body_iterator:
+                pass
+        self.assertEqual(len(payloads), 2, "the round must resume once, not fail")
+        folded = [m for m in payloads[1]["messages"] if m.get("role") == "assistant"]
+        self.assertTrue(any(m.get("content") == "partial answer" for m in folded),
+                        "text the client already saw must ride into the retry")
 
     async def _run_raw(self, invoke, raw):
         from starlette.requests import Request as StarletteRequest

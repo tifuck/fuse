@@ -1029,7 +1029,9 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             # Steers, background results and newly loaded tool schemas can
             # grow context after the preceding tool-boundary check.
             preflight = _live_meter()
-            if (context_meter.should_auto_compact(preflight["used"], preflight["limit"])
+            if (context_meter.should_auto_compact(
+                    preflight["used"], preflight["limit"],
+                    estimated=False, prior_used=prior_used)
                     and last_compact_used is None):
                 yield _sse(context_meter.context_event({**preflight, "compacting": True}, phase="compacting"))
                 before_compact_used = preflight["used"]
@@ -1268,6 +1270,10 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             }
             summary = None
             round_client_usage = {}
+            # Content the client already saw this round; on an exception the
+            # consume summary is gone, so the resume hand-off replays it from
+            # here instead of restarting the round from scratch.
+            round_partial = ""
             try:
                 async with contextlib.aclosing(
                     _consume_round(result, _user, src, upstream, requested, coding=coding)
@@ -1281,6 +1287,9 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                                 if reported:
                                     round_client_usage = merge_usage(round_client_usage, reported) if round_client_usage else reported
                                     payload_obj = {**payload_obj, "usage": _add_usage(total_usage, round_client_usage)}
+                            choice = (payload_obj.get("choices") or [{}])[0] if isinstance(payload_obj.get("choices"), list) else {}
+                            delta = choice.get("delta") if isinstance(choice, dict) and isinstance(choice.get("delta"), dict) else {}
+                            round_partial += str(delta.get("content") or "")
                             yield _sse(payload_obj)
                         elif kind == "beat":
                             # Same liveness event tool-wait heartbeats already
@@ -1314,7 +1323,10 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     )
                     async for frame in _heartbeat_sleep(delay):
                         yield frame
-                    _apply_resume_state(transcript, "")
+                    partial = round_partial
+                    if _provider_error_content(partial):
+                        partial = ""
+                    _apply_resume_state(transcript, partial)
                     current_messages = transcript
                     await persist_jobs()
                     continue
@@ -1404,7 +1416,12 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             if calls:
                 summary["finish"] = "tool_calls"
             finish = summary.get("finish")
-            incomplete_calls = bool(calls) and calls_incomplete(calls)
+            # A response cut off mid-arguments invalidates only that call: its
+            # well-formed siblings still run, and the truncated ones are
+            # dropped with a corrective note after their results land.
+            truncated_calls = [c for c in calls if calls_incomplete([c])]
+            run_calls = [c for c in calls if not calls_incomplete([c])] if truncated_calls else calls
+            incomplete_calls = truncated_calls and not run_calls
             length_cut = not calls and finish in ("length", "max_tokens")
             if extra_wrap and calls and not dropped_tools:
                 yield _sse(
@@ -1515,10 +1532,10 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     continue
                 break
             jobs = None
-            preview = jobs_from_calls(calls, completion_i)
+            preview = jobs_from_calls(run_calls, completion_i)
             await persist_jobs(preview)
             async with contextlib.aclosing(_run_tools(
-                calls,
+                run_calls,
                 user_id=user["id"],
                 allowed_urls=allowed_urls,
                 request=request,
@@ -1546,6 +1563,10 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 tool_msgs[0].update(_native_reasoning(summary.get("reasoning"), model, summary.get("thinking")))
                 transcript = transcript + tool_msgs
                 current_messages = transcript
+                if truncated_calls and run_calls:
+                    # The truncated sibling was discarded before execution;
+                    # the executor never saw it, so say so here.
+                    transcript.append({"role": "user", "content": _TOOL_CONTINUE})
                 agent["allowed_urls"] = list(allowed_urls)
                 agent["search_queries"] = budgets.get("search_queries", 0)
                 agent["fetches"] = budgets.get("fetches", 0)

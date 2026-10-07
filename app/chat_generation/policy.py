@@ -101,6 +101,13 @@ _TERMINAL_MESSAGE = re.compile(
 )
 
 
+# api.invoke_chat wraps every source-adapter exception in this exact 502
+# message. Those are local bugs (serialization, TypeError), not upstream
+# conditions: retrying the identical payload fails identically and only
+# burns the resume budget and backoff.
+_LOCAL_ADAPTER_FAILURE = re.compile(r"^upstream request failed \([A-Za-z_][\w.]*\)$")
+
+
 _capability: dict[tuple[str, str], tuple[float, str]] = {}
 _CAP_TTL = 3600.0
 
@@ -143,6 +150,8 @@ def _resumable_failure(code: int, message: str) -> bool:
     retry would burn quota and fail identically.
     """
     if _TERMINAL_MESSAGE.search(message or ""):
+        return False
+    if _LOCAL_ADAPTER_FAILURE.match((message or "").strip()):
         return False
     if isinstance(code, int) and (code == 429 or 500 <= code <= 599):
         return True
@@ -289,4 +298,10 @@ def _cap_get(src_type: str, upstream: str) -> str | None:
 
 
 def _cap_set(src_type: str, upstream: str, value: str) -> None:
+    if len(_capability) > 4096:
+        # Bound the cache: entries are normally few, but a long-lived process
+        # churning models would otherwise grow it without eviction.
+        now = time.monotonic()
+        for key in [k for k, (expires, _v) in _capability.items() if expires <= now]:
+            _capability.pop(key, None)
     _capability[(src_type, upstream)] = (time.monotonic() + _CAP_TTL, value)

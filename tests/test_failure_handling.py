@@ -169,6 +169,23 @@ class ProxyErrorPropagationTest(unittest.TestCase):
         self.assertEqual(status, 502)
 
 
+class ResumableFailureClassificationTest(unittest.TestCase):
+    """Local adapter crashes must not spend the provider resume budget."""
+
+    def test_local_adapter_marker_is_terminal(self):
+        from app.chat_generation.policy import _resumable_failure
+
+        self.assertFalse(_resumable_failure(502, "upstream request failed (UnicodeEncodeError)"))
+        self.assertFalse(_resumable_failure(502, "upstream request failed (TypeError)"))
+
+    def test_upstream_conditions_still_resume(self):
+        from app.chat_generation.policy import _resumable_failure
+
+        self.assertTrue(_resumable_failure(502, "upstream stream failed (ReadError)"))
+        self.assertTrue(_resumable_failure(429, "rate limited"))
+        self.assertTrue(_resumable_failure(503, "The engine is currently overloaded, please try again later."))
+
+
 class ApiInputValidationTest(unittest.TestCase):
     def test_unhashable_role_is_400(self):
         with self.assertRaises(HTTPException) as caught:

@@ -193,6 +193,11 @@ async def consume_round(result, user, src, upstream: str, requested: str, *, cod
                             yield ("out", pending)
                         held_out.clear()
                         yield ("out", safe)
+            if terminal or error:
+                # The round is over. A proxy that keeps the socket open after
+                # [DONE] (or its terminal error frame) must not trip the gap
+                # timeout and mask a completed reply as a resumable failure.
+                break
     except asyncio.CancelledError:
         raise
     except TimeoutError:
