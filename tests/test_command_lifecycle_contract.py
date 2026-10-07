@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app import agent_hub as hub, command_jobs as jobs, db, workspace as ws, chats, chat_runtime, chat_store
+from app import chat_views
 
 
 class LifecycleContract(unittest.IsolatedAsyncioTestCase):
@@ -139,7 +140,7 @@ class LifecycleContract(unittest.IsolatedAsyncioTestCase):
         row = dict(self.conn.execute("SELECT * FROM command_jobs WHERE id=?", (rec["id"],)).fetchone())
         original = {"id": "receipt", "name": "get_command_output", "status": "done", "child_id": rec["id"], "output": "historical receipt"}
         pending = {"id": "pending", "name": "get_command_output", "status": "done", "child_id": rec["id"], "state": "running"}
-        with patch.object(chat_store, "command_rows", return_value={rec["id"]: row}):
+        with patch.object(chat_views, "command_rows", return_value={rec["id"]: row}):
             view = chat_store.settle_command_traces(self.conn, 1, 3, [{"tools": [original.copy(), pending]}])
         self.assertEqual(view[0]["tools"][0], original)
         self.assertEqual(view[0]["tools"][1]["state"], "running")
@@ -147,7 +148,7 @@ class LifecycleContract(unittest.IsolatedAsyncioTestCase):
             for status in ("running", "done", "error", "interrupted"):
                 wait = {**pending, "status": status, "output": "observed"}
                 original = dict(wait)
-                with patch.object(chat_store, "command_rows", return_value={rec["id"]: {**row, "status": state}}):
+                with patch.object(chat_views, "command_rows", return_value={rec["id"]: {**row, "status": state}}):
                     chat_store.settle_command_traces(self.conn, 1, 3, [{"tools": [wait]}])
                 self.assertEqual(wait, original)
 

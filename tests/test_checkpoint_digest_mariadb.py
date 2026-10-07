@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
+from app import chat_checkpoint, chat_tx
 from app import chat_store as store, chats, db
 from tests.mariadb_fixture import isolated_database
 
@@ -53,7 +54,7 @@ def test_stale_guard_skips_state_write_and_drops_cache():
         run = _run()
         store.checkpoint(run["id"], {"content": "kept"}, events=[], durable=True)
         stale = store._checkpoint_request
-        with patch.object(store, "_checkpoint_request", lambda rid, row: (stale(rid, row)[0], "0" * 32)):
+        with patch.object(chat_checkpoint, "_checkpoint_request", lambda rid, row: (stale(rid, row)[0], "0" * 32)):
             store.checkpoint(run["id"], {"content": "stale"}, events=[], durable=True)
         message, _, _ = _row(run["id"])
         assert message["content"] == "kept"
@@ -90,7 +91,7 @@ def test_repeated_heartbeat_does_not_rewrite_request():
                 conn.execute = original
 
         from contextlib import contextmanager
-        with patch.object(store, "transaction", contextmanager(spy)):
+        with patch.object(chat_tx, "transaction", contextmanager(spy)):
             store.checkpoint(run["id"], {"content": ""}, events=beat, durable=True)
         _, second, digest_after = _row(run["id"])
         assert second == first and digest_after == digest
@@ -103,6 +104,6 @@ def test_request_cache_is_mutation_isolated():
         store.checkpoint(run["id"], {"content": "x"}, events=[], durable=True)
         cached = store._request_cache[run["id"]][1]
         before = json.loads(store.dumps(cached))
-        with patch.object(store, "_checkpoint_request", lambda rid, row: (cached, "0" * 32)):
+        with patch.object(chat_checkpoint, "_checkpoint_request", lambda rid, row: (cached, "0" * 32)):
             store.checkpoint(run["id"], {"content": "y"}, events=[{"fuse": {"event": "activity", "phase": "tools"}}], durable=True)
         assert json.loads(store.dumps(cached)) == before

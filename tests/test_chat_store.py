@@ -13,6 +13,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app import chat_store as store, chats, db
+from app import chat_tx
 
 
 class ChatStoreTest(unittest.TestCase):
@@ -209,7 +210,7 @@ class ChatStoreTest(unittest.TestCase):
     def test_failed_event_rolls_back_entire_turn(self):
         thread = chats.create_thread(1)
         last = store.cursor(1)
-        with patch.object(store, "event", side_effect=RuntimeError("write failed")):
+        with patch.object(chat_tx, "event", side_effect=RuntimeError("write failed")):
             with self.assertRaises(RuntimeError):
                 self.turn(thread)
         self.assertEqual(chats.get_thread(1, thread["id"]), thread)

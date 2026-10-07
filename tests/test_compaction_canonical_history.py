@@ -6,6 +6,7 @@ from contextlib import nullcontext
 
 import pytest
 
+from app import chat_checkpoint, chat_tx, chat_views
 from app import chat_history, chat_store, chats, context_compact as context
 
 
@@ -46,10 +47,10 @@ def history(monkeypatch):
     row = {"revision": 7, "messages": json.dumps(raw), "compaction": "{}"}
     view = {"messages": copy.deepcopy(raw), "revision": 7}
     view["messages"][-1]["tools"][0].update(status="done", preview="Short settled preview")
-    monkeypatch.setattr(chat_store, "transaction", lambda: nullcontext(conn))
-    monkeypatch.setattr(chat_store, "command", lambda *args: ("fingerprint", None))
-    monkeypatch.setattr(chat_store, "_compaction_row", lambda *args: (1, row))
-    monkeypatch.setattr(chat_store, "thread_view", lambda *args: view)
+    monkeypatch.setattr(chat_tx, "transaction", lambda: nullcontext(conn))
+    monkeypatch.setattr(chat_tx, "command", lambda *args: ("fingerprint", None))
+    monkeypatch.setattr(chat_checkpoint, "_compaction_row", lambda *args: (1, row))
+    monkeypatch.setattr(chat_views, "thread_view", lambda *args: view)
     yield conn, row, view, raw, provider
     conn.close()
 

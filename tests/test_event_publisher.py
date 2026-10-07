@@ -3,6 +3,7 @@ import asyncio
 import unittest
 from unittest.mock import patch
 
+from app import chat_pub
 from app import chat_store as store
 
 
@@ -17,7 +18,7 @@ class PublisherTests(unittest.IsolatedAsyncioTestCase):
             accepted.extend(item[3]["sequence"] for item in batch)
             return [item[3]["sequence"] for item in batch]
 
-        with patch.object(store, "_commit_publications", side_effect=commit):
+        with patch.object(chat_pub, "_commit_publications", side_effect=commit):
             store.start_publisher()
             futures = [asyncio.get_running_loop().create_future() for _ in range(300)]
             for sequence, future in enumerate(futures):
@@ -27,7 +28,7 @@ class PublisherTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([future.result() for future in futures], list(range(300)))
 
     async def test_failed_commit_rejects_every_waiter(self):
-        with patch.object(store, "_commit_publications", side_effect=ValueError("storage unavailable")):
+        with patch.object(chat_pub, "_commit_publications", side_effect=ValueError("storage unavailable")):
             store.start_publisher()
             future = asyncio.get_running_loop().create_future()
             store.publish(1, "run.progress", future=future)
@@ -35,7 +36,7 @@ class PublisherTests(unittest.IsolatedAsyncioTestCase):
                 await future
 
     async def test_full_queue_explicitly_rejects_new_work(self):
-        with patch.object(store, "_PUB_MAX_DEPTH", 1), patch.object(store, "_commit_publications", return_value=[1]):
+        with patch.object(chat_pub, "_PUB_MAX_DEPTH", 1), patch.object(chat_pub, "_commit_publications", return_value=[1]):
             store.start_publisher()
             first = asyncio.get_running_loop().create_future()
             store.publish(1, "run.progress", future=first)

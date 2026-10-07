@@ -16,7 +16,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from . import db
+from . import db, chat_tx, chat_views
 from .chat_schema import TITLE_MAX, _ROLES, _text, parse_messages
 
 logger = logging.getLogger(__name__)
@@ -62,7 +62,7 @@ def _backoff_cutoff() -> str:
 
 
 async def _generate(user_id: int, thread_id: int, model: str, prompt: str, placeholder: str) -> None:
-    from . import accounts, chat_runtime, chat_runs, chat_store
+    from . import accounts, chat_runtime, chat_runs
 
     token = await asyncio.to_thread(claim, user_id, thread_id)
     if not token:
@@ -80,7 +80,7 @@ async def _generate(user_id: int, thread_id: int, model: str, prompt: str, place
         if not title:
             failed = True
             return
-        applied = await asyncio.to_thread(chat_store.apply_generated_title, user_id, thread_id, title, placeholder,
+        applied = await asyncio.to_thread(apply_generated_title, user_id, thread_id, title, placeholder,
                                           token=token)
         # A rename settles title_state, so a None here is a miss worth backing off.
         failed = applied is None
@@ -94,14 +94,13 @@ async def _generate(user_id: int, thread_id: int, model: str, prompt: str, place
 
 async def sweep() -> None:
     """Queue title generation for due and pending threads; returns immediately."""
-    from . import chat_store
 
     due = set(_due)
     _due.difference_update(due)
     cutoff = _backoff_cutoff()
     candidates = [
         item
-        for item in await asyncio.to_thread(chat_store.pending_title_threads, max(SWEEP_BATCH, len(due)),
+        for item in await asyncio.to_thread(pending_title_threads, max(SWEEP_BATCH, len(due)),
                                             attempted_before=cutoff, due=due)
         if item["id"] not in _inflight
     ]
@@ -154,7 +153,7 @@ async def regenerate(user_id: int, thread_id: int) -> bool:
     the thread's messages are never modified, so the conversation's upstream
     prompt cache stays intact. Returns True when a regeneration was attempted.
     """
-    from . import accounts, chat_runtime, chat_runs, chat_store
+    from . import accounts, chat_runtime, chat_runs
 
     if thread_id in _regen_inflight:
         return False
@@ -176,7 +175,7 @@ async def regenerate(user_id: int, thread_id: int) -> bool:
             logger.exception("Title source build failed for thread %s", thread_id)
             source = ""
         if not source.strip():
-            await asyncio.to_thread(chat_store.title_regen_failed, user_id, thread_id)
+            await asyncio.to_thread(title_regen_failed, user_id, thread_id)
             return True
         owner = await asyncio.to_thread(accounts.get_user, user_id)
         if owner is None:
@@ -188,14 +187,14 @@ async def regenerate(user_id: int, thread_id: int) -> bool:
             source,
         )
         if not title:
-            await asyncio.to_thread(chat_store.title_regen_failed, user_id, thread_id)
+            await asyncio.to_thread(title_regen_failed, user_id, thread_id)
             return True
-        await asyncio.to_thread(chat_store.apply_regenerated_title, user_id, thread_id, title, token=token)
+        await asyncio.to_thread(apply_regenerated_title, user_id, thread_id, title, token=token)
         return True
     except Exception:
         logger.exception("Title regeneration failed for thread %s", thread_id)
         try:
-            await asyncio.to_thread(chat_store.title_regen_failed, user_id, thread_id)
+            await asyncio.to_thread(title_regen_failed, user_id, thread_id)
         except Exception:
             logger.exception("Title regen failure event failed for thread %s", thread_id)
         return True
@@ -427,3 +426,163 @@ def title_from_messages(messages: list[dict]) -> str:
             name = attachments[0].get("name") if isinstance(attachments[0], dict) else ""
             return _clean_title(str(name or "Attachment")) or "New chat"
     return "New chat"
+
+# --- title application, moved from app/chat_store.py (chat-store-extract.py) ---
+
+
+def apply_generated_title(user_id, thread_id, title, placeholder="", *, token=None):
+    """Replace an auto title without changing conversation activity or a user rename."""
+    from . import chats
+
+    new_title = parse_generated_title(title) if title else ""
+    if not new_title:
+        return None
+    allowed = {"", "New chat"}
+    if placeholder:
+        allowed.add(placeholder)
+    with chat_tx.transaction() as conn:
+        pk = chats.resolve_thread_pk(user_id, thread_id, conn)
+        if pk is None:
+            return None
+        thread_id = pk
+        row = conn.execute(
+            """SELECT t.id, t.title, t.title_state, t.title_job_token, t.kind, t.project_id, t.messages, p.name AS project_name
+               FROM chat_threads t LEFT JOIN user_projects p ON p.id=t.project_id
+               WHERE t.id=? AND t.user_id=?""",
+            (thread_id, user_id),
+        ).fetchone()
+        if row is None:
+            return None
+        if token is not None and row["title_job_token"] != token:
+            return None
+        if row["title_state"] in ("user", "generated", "fallback"):
+            return None
+        project_name = ""
+        if (row["kind"] if "kind" in row.keys() else "") == "project":
+            try:
+                project_name = row["project_name"] or ""
+            except (KeyError, IndexError, TypeError):
+                project_name = ""
+        current = row["title"] or ""
+        try:
+            allowed.add(provisional_title(chats.parse_messages(row["messages"])))
+        except Exception:
+            pass
+        if current not in allowed and not is_placeholder_title(current, project_name=project_name):
+            return None
+        cur = conn.execute(
+            "UPDATE chat_threads SET title=?, title_state=?, title_attempts=0, title_attempted_at='', title_job_token='',title_job_until='', revision=revision+1 WHERE id=? AND user_id=? AND title_state=''"
+            + (" AND title_job_token=?" if token is not None else ""),
+            (new_title, "generated", thread_id, user_id) + ((token,) if token is not None else ()),
+        )
+        if not cur.rowcount:
+            return None
+        chat_tx.thread_event(conn, user_id, thread_id)
+        return chat_views.thread_view(conn, user_id, thread_id)
+
+
+def apply_regenerated_title(user_id, thread_id, title, *, token=None):
+    """Force-replace the title from an explicit /title request.
+
+    Unlike apply_generated_title this may overwrite a user rename, since the
+    user explicitly asked for a new title. Messages are never touched, so the
+    conversation's upstream prompt cache and last-activity timestamp stay intact.
+    """
+    from . import chats
+
+    new_title = parse_generated_title(title) if title else ""
+    if not new_title:
+        return None
+    with chat_tx.transaction() as conn:
+        pk = chats.resolve_thread_pk(user_id, thread_id, conn)
+        if pk is None:
+            return None
+        row = conn.execute(
+            "SELECT id, title, title_state, title_job_token FROM chat_threads WHERE id=? AND user_id=?",
+            (pk, user_id),
+        ).fetchone()
+        if row is None:
+            return None
+        if token is not None and row["title_job_token"] != token:
+            return None
+        cur = conn.execute(
+            "UPDATE chat_threads SET title=?, title_state='generated', title_attempts=0, title_attempted_at='',title_job_token='',title_job_until='', revision=revision+1 WHERE id=? AND user_id=?"
+            + (" AND title_job_token=?" if token is not None else ""),
+            (new_title, pk, user_id) + ((token,) if token is not None else ()),
+        )
+        if not cur.rowcount:
+            return None
+        chat_tx.thread_event(conn, user_id, pk)
+        return chat_views.thread_view(conn, user_id, pk)
+
+
+def title_regen_failed(user_id, thread_id):
+    """Tell the client an explicit /title request produced nothing."""
+    from . import chats
+
+    with chat_tx.transaction() as conn:
+        pk = chats.resolve_thread_pk(user_id, thread_id, conn)
+        if pk is None:
+            return
+        chat_tx.event(conn, user_id, "title.failed", pk, {"reason": "empty"})
+
+
+def pending_title_threads(limit=3, *, attempted_before="", due=()):
+    """Threads still waiting for a generated title.
+
+    Like Claude Code, a chat is named from its first prompt as soon as that
+    prompt is sent, in parallel with the turn. ``due`` threads (the user just
+    sent a message) skip the retry backoff and the attempt cap, so a failed
+    title is retried on the next message, as Claude Code does.
+    """
+    from . import chats
+
+    due = [int(i) for i in due][:50]
+    due_sql = (" OR t.id IN (" + ",".join("?" for _ in due) + ")") if due else ""
+    rows = db.fetchall(
+        f"""SELECT t.*, p.name AS project_name FROM chat_threads t
+           LEFT JOIN user_projects p ON p.id=t.project_id
+           WHERE t.title_state=''
+             AND ((t.title_attempted_at='' OR t.title_attempted_at < ?) AND t.title_attempts < ?{due_sql})
+             AND (t.title_job_until='' OR t.title_job_until < ?)
+           ORDER BY {"(t.id IN (" + ",".join("?" for _ in due) + ")) DESC, " if due else ""}t.title_attempted_at, t.updated_at LIMIT ?""",
+        (attempted_before, TITLE_SWEEP_ATTEMPTS, *due, db.now(), *due, max(int(limit) * 8, int(limit))),
+    )
+    out = []
+    for row in rows:
+        keys = row.keys()
+        project_name = (row["project_name"] or "") if "project_name" in keys else ""
+        try:
+            messages = chats.parse_messages(row["messages"])
+        except Exception:
+            continue
+        source = title_source(messages)
+        if source and title_needs_generation(
+            row["title"], project_name=project_name,
+            first_user_text=title_from_messages(messages),
+            title_state=row["title_state"] if "title_state" in row.keys() else "",
+            provisional=provisional_title(messages),
+        ):
+            out.append({
+                "id": int(row["id"]),
+                "user_id": int(row["user_id"]),
+                "model": row["model"] or "",
+                "title": row["title"] or "",
+                "prompt": source,
+                "attempts": int(row["title_attempts"]),
+            })
+            if len(out) >= int(limit):
+                break
+        else:
+            # No prompt qualifies yet (empty, too short, a slash command or
+            # attachments only); the next message makes the thread due again.
+            db.execute("UPDATE chat_threads SET title_attempted_at=? WHERE id=?", (db.now(), row["id"]))
+    return out
+
+
+def mark_title_attempted(thread_id):
+    """Record a failed title attempt so retries back off instead of hammering."""
+    db.execute(
+        "UPDATE chat_threads SET title_attempts=title_attempts+1, title_attempted_at=? WHERE id=?",
+        (db.now(), thread_id),
+    )

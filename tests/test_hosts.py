@@ -16,7 +16,7 @@ _TMP = tempfile.mkdtemp(prefix="fuse-hosts-")
 os.environ.setdefault("DATABASE_PATH", str(Path(_TMP) / "hosts.db"))
 os.environ.setdefault("APP_SECRET", "y" * 32)
 
-from app import accounts, chats, db, hosts, vault, workspace
+from app import accounts, chat_threads, chats, db, hosts, vault, workspace
 
 
 class HostsProjectsTest(unittest.TestCase):
@@ -404,8 +404,8 @@ class PromotionBindingTest(unittest.TestCase):
                     {"id": 8, "request": json.dumps({"agent": {"keep": True}})},
                 ]
                 with patch.object(store, "transaction") as transaction, patch.object(
-                    chats, "resolve_thread_pk", return_value=7
-                ), patch.object(chats, "_match_project_row", return_value={"id": 5, "remote_path": project_path}), patch.object(
+                    chat_threads, "resolve_thread_pk", return_value=7
+                ), patch.object(chat_threads, "_match_project_row", return_value={"id": 5, "remote_path": project_path}), patch.object(
                     store, "thread_event"
                 ), patch.object(store, "thread_view", return_value={"project_id": 5}):
                     transaction.return_value.__enter__.return_value = conn
@@ -543,7 +543,9 @@ class HostsHttpTest(unittest.TestCase):
         self.assertNotIn("data-project-picker", html)  # the sidebar workspace picker is gone
         self.assertIn('data-history-tab="projects"', html)
         self.assertIn("projects-ui.js", root.joinpath("templates", "base.html").read_text())
-        js = root.joinpath("static", "chat.js").read_text()
+        js = root.joinpath("static", "chat.js").read_text() + "\n" + "\n".join(
+            p.read_text() for p in sorted(root.joinpath("static", "chat").rglob("*.js"))
+        )
         self.assertIn("openProjectPicker", js)
         self.assertIn("FuseProjects.openChooser", js)
         self.assertIn("runCompact", js)
@@ -551,9 +553,10 @@ class HostsHttpTest(unittest.TestCase):
         self.assertIn("startProjectThread(hostId, projectId", js)
         self.assertIn("pendingProject", js)
         self.assertIn("bindCreatePayload", js)
-        start = js.index("async function startProjectThread")
-        end = js.index("async function openThread")
-        self.assertNotIn('/chat/threads', js[start:end])
+        threads_js = root.joinpath("static", "chat", "sidebar", "threads.js").read_text()
+        start = threads_js.index("async function startProjectThread")
+        end = threads_js.index("async function openThread")
+        self.assertNotIn('/chat/threads', threads_js[start:end])
         self.assertIn('historyTab === "projects"', js)
         self.assertIn('"/fork"', js)
 

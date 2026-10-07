@@ -12,6 +12,7 @@ os.environ.setdefault("DATABASE_PATH", _TMP.name + "/test.db")
 os.environ.setdefault("APP_SECRET", "audit-test-secret-" * 3)
 
 from app import agents, chat_runs, chat_runtime as runtime, chat_store as store, chat_tools, chats, db, tool_failures
+from app import chat_children
 
 import pytest
 
@@ -31,7 +32,7 @@ def call(name, arguments):
 class ArgumentsTest(unittest.IsolatedAsyncioTestCase):
     async def run_calls(self, calls, executor):
         events, jobs = [], None
-        with patch.object(runtime, "execute_tool", executor), patch("app.chat_generation.tool_runner._record_failure"):
+        with patch.object(runtime, "execute_tool", executor), patch.object(runtime, "_record_failure"):
             async for item in runtime._run_tools(calls, user_id=1, allowed_urls=set(), request=Request(), completion_i=0, budgets={}, coding=True):
                 if isinstance(item, list):
                     jobs = item
@@ -232,7 +233,7 @@ class StoreTest(unittest.TestCase):
     def test_resume_cannot_bypass_live_tree_cap(self):
         child = self.child()
         store.finish_run(child["id"], {"content": "done"}, "completed")
-        with patch.object(store, "LIVE_TREE_CHILDREN", 0), self.assertRaises(store.SpawnCapError):
+        with patch.object(chat_children, "LIVE_TREE_CHILDREN", 0), self.assertRaises(store.SpawnCapError):
             self.child(resume_from_id=child["id"])
 
     def test_parent_thread_and_cancel_are_enforced(self):

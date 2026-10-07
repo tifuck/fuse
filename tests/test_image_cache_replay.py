@@ -126,7 +126,7 @@ def test_runtime_persists_admission_before_dispatch(monkeypatch, routed):
     monkeypatch.setattr(chat_store, "take_child_results", lambda *a: [])
     monkeypatch.setattr(chat_store, "take_followups", lambda *a: [])
     monkeypatch.setattr(chat_store, "steer_display_deliveries", lambda *a: [])
-    monkeypatch.setattr(chat_runtime.ctxmod, "should_auto_compact", lambda *a, **k: False)
+    monkeypatch.setattr("app.context_meter.should_auto_compact", lambda *a, **k: False)
     monkeypatch.setattr(api, "_safe_record_usage", lambda *a, **k: True)
 
     def save(run_id, messages, **kwargs):
