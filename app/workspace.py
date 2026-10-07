@@ -6,8 +6,6 @@ import base64
 import binascii
 import codecs
 import contextlib
-import difflib
-import fnmatch
 import functools
 import json
 import logging
@@ -25,6 +23,99 @@ from uuid import uuid4
 from . import hosts
 from .hosts import HostError
 from .vault import VaultLocked
+
+# workspace_ops: responsibility modules extracted from this file. These
+# imports are also the stable surface callers and tests patch on app.workspace.
+from .workspace_ops.common import (
+    WorkspaceError,
+    _agent_error,
+    _args,
+    _as_bool,
+    _enrich_agent_data,
+    _exec_fail_detail,
+    _exec_text,
+    _int_arg,
+    _is_generic_mutation_error,
+    _pipe_ok_exit,
+    _quote_host_path,
+    _require,
+)
+from .workspace_ops.instructions import (
+    AGENTS_MAX,
+    _agents_cache,
+    _agents_cache_put,
+    _agents_fail,
+    _agents_last_good,
+    invalidate_agents_cache,
+    last_project_agents,
+    listing_names,
+    pick_agents_name,
+    unlabel_host,
+)
+from .workspace_ops.previews import (
+    _NOT_FOUND_HINT,
+    _READ_MAX_LINE,
+    _apply_replace,
+    _closest_match,
+    _edit_first_line,
+    _edit_snippet,
+    _multi_diff,
+    _parse_edits,
+    _post_edit_snippet,
+    _read_render,
+    _replace_preview,
+)
+from .workspace_ops.search_cmds import (
+    _GREP_DEFAULT_MATCHES,
+    _GREP_MAX_CONTEXT,
+    _GREP_MAX_MATCHES,
+    _GREP_MAX_PATTERN,
+    _GREP_TIMEOUT,
+    _LIST_SCAN_MAX,
+    _SEARCH_SKIP_DIRS,
+    _glob_search_cmd,
+    _glob_to_ere,
+    _grep_include_arg,
+    _grep_max_matches,
+    _grep_search_cmd,
+    _scope_glob,
+    _search_skip_name,
+    _tree_cmd_posix,
+)
+from .workspace_ops.search_render import (
+    _CONNECTOR_CLIP,
+    _SEARCH_OUT_CHARS,
+    _clip_note,
+    _filter_grep_include,
+    _format_search_lines,
+    _glob_order_arg,
+    _glob_result,
+    _grep_mode_arg,
+    _pack_search_rows,
+    _render_grep_output,
+    _reroot_lines,
+    _search_status,
+    _search_target,
+    _strip_connector_clip,
+)
+from .workspace_ops.transport import (
+    _AgentExec,
+    _ExecResult,
+    _SSH_BEGIN,
+    _agent_cwd,
+    _agent_job_output,
+    _agent_output_complete,
+    _agent_timed_out,
+    _as_text,
+    _is_sleep_command,
+    _probe_cmd,
+    _ps_path_expr,
+    _shell_prefix,
+    _ssh_job_script,
+    _ssh_kill_script,
+    _ssh_tool_script,
+    _strip_begin,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,22 +141,6 @@ _DENY = re.compile(
 )
 _DENY_REMOTE = re.compile(_CMD_START + r"(?:ssh|scp|sftp)(?![\w-])", re.I | re.M)
 RESERVED = frozenset({"local", "localhost", "127.0.0.1", ""})
-AGENTS_MAX = 12_000
-AGENTS_FILENAMES = (
-    "AGENTS.md",
-    "agents.md",
-    "AGENT.md",
-    "agent.md",
-    "CLAUDE.md",
-    "claude.md",
-)
-_AGENTS_BASENAMES = frozenset(name.lower() for name in AGENTS_FILENAMES)
-_agents_cache: dict[tuple, tuple] = {}
-# Last successful read per (user, host, cwd). A transient host/vault failure
-# serves this instead of blanking the system-prompt block. Only a confirmed
-# different read (missing name or empty body) drops it; a write does not,
-# because the pre-write body beats no instructions until the next read lands.
-_agents_last_good: dict[tuple, tuple[str, str]] = {}
 # Glob patterns are shell-quoted, so the only characters refused are those
 # that signal a shell pipeline or a regex/comma list rather than a glob.
 # Real names such as +page.svelte, @scope, "My File.md" are allowed.
@@ -80,99 +155,11 @@ _SSH_OUT_MAX = 65_536
 # OpenCode read tool: 2000 lines, 50KB, lines longer than 2000 chars truncated in place.
 _READ_DEFAULT_LIMIT = 2000
 _READ_MAX_LINES = 2000
-_READ_MAX_LINE = 2000
 _READ_MAX_BYTES = 50 * 1024
 _READ_MAX_CHARS = _READ_MAX_BYTES  # rendered bytes, including "N: " prefixes
 _LIST_MAX_ENTRIES = 400
-_GREP_DEFAULT_MATCHES = 50
-_GREP_MAX_MATCHES = 200
-_GREP_MAX_PATTERN = 2000
-_GREP_TIMEOUT = 20  # enforced on the host by coreutils timeout when present
-_GREP_WALK_MAX_FILESIZE = "1M"  # unfiltered directory walks only
-_CONNECTOR_CLIP = "[fuse-agent: output truncated]"
-_GLOB_MAX_PATHS = 400
-# Model-visible budget for grep/glob/list output. Stays under the runtime's
-# per-result clip (chat_runtime.TOOL_RESULT_CHARS) so footers always survive.
-_SEARCH_OUT_CHARS = 20_000
-_SEARCH_MAX_COLUMNS = 1000
-_SEARCH_LINE_CHARS = 500
 # Vendor/build trees rg would still walk when there is no .gitignore, and that
 # grep -R always walks. Same names the Windows connector skips in WalkDir.
-_SEARCH_SKIP_DIRS = (
-    "node_modules",
-    ".git",
-    ".hg",
-    ".svn",
-    "venv",
-    ".venv",
-    "env",
-    ".tox",
-    "dist",
-    "build",
-    "out",
-    "target",
-    "__pycache__",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-    "vendor",
-    ".next",
-    "coverage",
-    ".gradle",
-    ".idea",
-    ".cache",
-)
-
-
-class WorkspaceError(HostError):
-    def __init__(self, detail: str, status_code: int = 400, *, extra: dict | None = None):
-        super().__init__(detail, status_code)
-        self.extra = extra or {}
-
-
-def _args(raw: str) -> dict:
-    try:
-        data = json.loads(raw or "{}")
-    except (json.JSONDecodeError, TypeError, ValueError):
-        raise WorkspaceError("arguments must be a complete JSON object") from None
-    if not isinstance(data, dict):
-        raise WorkspaceError("arguments must be a JSON object")
-    return data
-
-
-def _require(args: dict, *names: str) -> None:
-    for name in names:
-        if name not in args:
-            raise WorkspaceError(f"{name} is required")
-
-
-def _as_bool(value, default=False) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        low = value.strip().lower()
-        if low in ("true", "1", "yes"):
-            return True
-        if low in ("false", "0", "no"):
-            return False
-    if value is None:
-        return default
-    return bool(value)
-
-
-def _int_arg(args: dict, key: str, default: int, lo: int, hi: int) -> int:
-    raw = args.get(key)
-    if raw is None or raw == "":
-        return default
-    try:
-        val = int(float(raw))
-    except (TypeError, ValueError, OverflowError):
-        return default
-    if val < lo and lo >= 1:
-        # 0 from a model that fills every property means "unset", not
-        # "one line" or "one match".
-        return default
-    return max(lo, min(val, hi))
 
 
 def _parse_timeout_ms(raw, default: int) -> int:
@@ -211,433 +198,9 @@ def _command_timeouts(args: dict, background: bool) -> tuple[int, int]:
     return wait + BACKGROUND_DEFAULT_MS, wait
 
 
-def _clip_read_line(line: str) -> str:
-    if len(line) <= _READ_MAX_LINE:
-        return line
-    return line[:_READ_MAX_LINE] + f"... (line truncated to {_READ_MAX_LINE} chars)"
-
-
-def _read_render(chunk: list[str], offset: int, *, total: int | None, more: bool, max_chars: int) -> str:
-    """Render read output with 'N: ' line prefixes and continuation footers
-    (the OpenCode/Claude Code convention). Long lines are truncated in place;
-    the page stops at max_chars without cutting a line in half."""
-    rows = []
-    used = 0
-    byte_cut = False
-    for i, line in enumerate(chunk):
-        row = f"{offset + i}: {_clip_read_line(line)}"
-        cost = len(row.encode()) + bool(rows)
-        if used + cost > max_chars:
-            byte_cut = True
-            break
-        rows.append(row)
-        used += cost
-    body = "\n".join(rows)
-    notes: list[str] = []
-    if not chunk:
-        notes.append("(End of file — 0 lines.)" if offset <= 1 else f"(No lines at offset {offset}.)")
-    else:
-        first, last = offset, offset + len(rows) - 1
-        if byte_cut:
-            if not rows:
-                notes.append(f"(Output capped at {max_chars // 1024}KB. Use grep to inspect this long line.)")
-            else:
-                notes.append(
-                    f"(Output capped at {max_chars // 1024}KB. Showing lines {first}-{last}. "
-                    f"Use offset={last + 1} to continue.)"
-                )
-        elif more:
-            of = f" of {total}" if total is not None else ""
-            notes.append(f"(Showing lines {first}-{last}{of}. Use offset={last + 1} to continue.)")
-        else:
-            notes.append(f"(End of file — {total if total is not None else last} lines.)")
-    return body + ("\n\n" + "\n".join(notes) if notes else "")
-
-
-def _render_grep_output(out: str) -> str:
-    """Older connectors return raw `rg --json` events. Re-render as path:line:text."""
-    text = out or ""
-    if not text.lstrip().startswith('{"type"'):
-        return text
-    rows: list[str] = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(event, dict) or event.get("type") != "match":
-            continue
-        data = event.get("data") if isinstance(event.get("data"), dict) else {}
-        path_obj = data.get("path")
-        path_text = ""
-        if isinstance(path_obj, dict):
-            path_text = str(path_obj.get("text") or "")
-        elif isinstance(path_obj, str):
-            path_text = path_obj
-        lines_obj = data.get("lines")
-        body = ""
-        if isinstance(lines_obj, dict):
-            body = str(lines_obj.get("text") or "")
-        elif isinstance(lines_obj, str):
-            body = lines_obj
-        body = body.rstrip("\n")
-        line_number = data.get("line_number")
-        if line_number:
-            rows.append(f"{path_text}:{line_number}:{body}")
-        else:
-            rows.append(f"{path_text}:{body}")
-    return "\n".join(rows) if rows else text
-
-
-def _search_skip_name(path: str) -> str:
-    return posixpath.basename(str(path or "").replace("\\", "/").rstrip("/"))
-
-
-def _rg_skip_globs(path: str) -> str:
-    base = _search_skip_name(path)
-    parts: list[str] = []
-    for name in _SEARCH_SKIP_DIRS:
-        if name == base:
-            continue
-        parts.append("--glob " + shlex.quote(f"!{name}"))
-        parts.append("--glob " + shlex.quote(f"!{name}/**"))
-    return " ".join(parts)
-
-
-def _grep_include_arg(args: dict) -> str:
-    raw = args.get("include")
-    if raw in (None, ""):
-        raw = args.get("glob")
-    include = str(raw).strip() if isinstance(raw, (str, int, float)) else ""
-    if include and (len(include) > 200 or "\n" in include or "\x00" in include):
-        raise WorkspaceError("include exceeds 200 characters or contains a newline; use one glob like *.py")
-    return include
-
-
-def _scope_glob(pattern: str, path: str, target: str, *, windows: bool = False) -> str:
-    """Make an include/glob relative to the searched directory, the one
-    meaning every host shares. Tolerates the spellings models use for the
-    same thing: a leading ./, or the searched directory repeated in front
-    (path app + include app/web/*.py)."""
-    text = (pattern or "").strip()
-    if not text:
-        return ""
-    # Only Windows uses \ as a separator; on POSIX it escapes a glob character.
-    sep_text = text.replace("\\", "/") if windows else text
-    while sep_text.startswith("./"):
-        sep_text = sep_text[2:]
-    for base in (path, target):
-        base = str(base or "")
-        base = (base.replace("\\", "/") if windows else base).rstrip("/")
-        if not base or base == ".":
-            continue
-        head = base + "/"
-        if (sep_text.lower() if windows else sep_text).startswith(head.lower() if windows else head) and sep_text != head:
-            sep_text = sep_text[len(head):]
-            break
-    if windows:
-        return sep_text.replace("/", "\\") if "\\" in text else sep_text
-    return sep_text
-
-
-def _literal_glob(pattern: str) -> bool:
-    return bool(pattern) and not any(c in pattern for c in "*?[]{}")
-
-
-def _ere_char(c: str) -> str:
-    # Escape only ERE metacharacters: GNU grep warns about a stray \ before
-    # anything else (re.escape also escapes &, ~, # and spaces).
-    return "\\" + c if c in ".^$+()|{}[]*?\\" else c
-
-
-def _glob_to_ere(pattern: str) -> str:
-    """Translate one rg/gitignore-style glob to a POSIX ERE over a path
-    relative to the searched directory: * and ? stop at /, **/ spans zero or
-    more directories, [..] classes and nested {a,b} alternatives work."""
-    out: list[str] = []
-    i, n = 0, len(pattern)
-    depth = 0
-    while i < n:
-        c = pattern[i]
-        if pattern.startswith("**/", i) and (i == 0 or pattern[i - 1] == "/"):
-            out.append("(.*/)?")
-            i += 3
-            continue
-        if pattern.startswith("**", i):
-            out.append(".*")
-            i += 2
-            continue
-        if c == "*":
-            out.append("[^/]*")
-        elif c == "?":
-            out.append("[^/]")
-        elif c == "[":
-            end = pattern.find("]", i + 2 if pattern[i + 1:i + 2] in ("!", "^") else i + 1)
-            if end < 0:
-                out.append("\\[")
-            else:
-                body = pattern[i + 1:end]
-                neg = body[:1] in ("!", "^")
-                body = body[1:] if neg else body
-                body = body.replace("\\", "\\\\")
-                out.append("[" + ("^" if neg else "") + body + "]")
-                i = end + 1
-                continue
-        elif c == "{":
-            depth += 1
-            out.append("(")
-        elif c == "}" and depth:
-            depth -= 1
-            out.append(")")
-        elif c == "," and depth:
-            out.append("|")
-        elif c == "\\" and i + 1 < n:
-            i += 1
-            out.append(_ere_char(pattern[i]))
-        else:
-            out.append(_ere_char(c))
-        i += 1
-    out.append(")" * depth)
-    return "".join(out)
-
-
-def _include_ere(pattern: str) -> str:
-    """ERE for a listed path ('./rel'): a glob without / matches the file
-    name at any depth, one with / matches the whole path under the searched
-    directory."""
-    body = _glob_to_ere(pattern)
-    if "/" in pattern:
-        return "^\\./" + body + "$"
-    return "(^|/)" + body + "$"
-
-
-def _grep_max_matches(args: dict) -> int:
-    if args.get("max_matches") not in (None, ""):
-        return _int_arg(args, "max_matches", _GREP_DEFAULT_MATCHES, 1, _GREP_MAX_MATCHES)
-    return _GREP_DEFAULT_MATCHES
-
-
-def _quote_host_path(path: str) -> str:
-    for home in ("~", "$HOME"):
-        if path == home or path.startswith(home + "/"):
-            return '"$HOME"' + shlex.quote(path[len(home):])
-    return shlex.quote(path)
-
-
-def _remote_timeout_prefix(seconds: int | None) -> str:
-    """Bound a search on the host itself so a timeout still returns the
-    matches printed so far (exit 124) instead of losing the whole call.
-    FUSE_DL/FUSE_TO carry the same deadline into xargs children."""
-    limit = int(seconds) if seconds else 3600
-    head = (
-        'T=""; FUSE_TO=""; if command -v timeout >/dev/null 2>&1; then '
-        + (f'T="timeout -k 2 {int(seconds)}"; ' if seconds else "")
-        + 'FUSE_TO=1; fi; '
-    )
-    return head + f"FUSE_DL=$(( $(date +%s) + {limit} )); export FUSE_TO FUSE_DL; "
-
-
-_GREP_MODES = ("content", "files_with_matches", "count")
-_GREP_MAX_CONTEXT = 10
-_GREP_MAX_LINES = 4000
-
-
-def _grep_line_cap(mode: str, max_matches: int, context: int) -> int:
-    """head -n bound: result lines, not matches, when context lines are shown."""
-    if mode != "content" or not context:
-        return max_matches
-    return min(_GREP_MAX_LINES, max_matches * (2 * context + 2))
-
-
-def _enter_dir_sh(target: str, include: str = "") -> str:
-    """Search a directory from inside it, so include/glob patterns are
-    relative to the searched path on every host (the Windows connector's
-    rule) and results print as ./rel. A literal include naming a file right
-    there narrows the search to that one file."""
-    literal = ""
-    if include and _literal_glob(include):
-        literal = f"if [ -f {shlex.quote('./' + include)} ]; then TGT={shlex.quote('./' + include)}; fi; "
-    return (
-        f"TGT={_quote_host_path(target)}; "
-        f'if [ -d "$TGT" ]; then cd -- "$TGT" || exit 2; TGT=.; {literal}fi; '
-    )
-
-
-def _list_files_sh(skip_base: str, *, no_ignore: bool, size_cap: bool, include: str) -> str:
-    """NUL-separated './rel' file list for a no-rg search of the current
-    directory. Inside a git work tree `git ls-files` honors .gitignore the
-    way rg does (no_ignore walks with find instead). Vendor/build dirs are
-    skipped unless they are the searched directory itself; symlinks and
-    deleted-but-tracked files are dropped, like rg's walk."""
-    names = [d for d in _SEARCH_SKIP_DIRS if d != skip_base]
-    size = f" -size -{1024 + 1}k" if size_cap else ""
-    prunes = " -o ".join(f"-name {shlex.quote(d)}" for d in names)
-    find = f"find -P . \\( -type d \\( {prunes} \\) -prune \\) -o -type f{size} -print0"
-    skip_re = "(^|/)(" + "|".join(re.escape(d) for d in names) + ")/"
-    git = (
-        "git ls-files -z -co --exclude-standard 2>/dev/null | sed -z 's|^|./|' "
-        f"| grep -zvE {shlex.quote(skip_re)} "
-        f"| xargs -0 -r sh -c 'find -P \"$@\" -maxdepth 0 -type f{size} -print0 2>/dev/null; exit 0' _"
-    )
-    listing = (
-        f"{{ if {'false' if no_ignore else 'git rev-parse --is-inside-work-tree >/dev/null 2>&1'}; "
-        f"then {git}; else {find}; fi; }}"
-    )
-    if include:
-        listing += f" | grep -zE {shlex.quote(_include_ere(include))}"
-    return listing + " | LC_ALL=C sort -z"
-
-
 # Runs grep over one xargs batch under the shared deadline. No-match (1) and
 # a closed pipe (SIGPIPE) are not failures; a spent deadline stops xargs
 # (255 -> xargs exit 124, which reads as a timeout).
-_XARGS_GREP = (
-    'l=$((FUSE_DL - $(date +%s))); [ "$l" -gt 0 ] || exit 255; '
-    'if [ -n "$FUSE_TO" ]; then timeout -k 2 "$l" grep "$@"; else grep "$@"; fi; '
-    'r=$?; case $r in 0|1) exit 0;; 124) exit 255;; esac; [ "$r" -ge 128 ] && exit 0; exit "$r"'
-)
-
-
-def _grep_search_cmd(
-    pattern: str,
-    path: str,
-    include: str = "",
-    max_matches: int = _GREP_DEFAULT_MATCHES,
-    *,
-    ignore_case: bool = False,
-    no_ignore: bool = False,
-    timeout_s: int | None = None,
-    context: int = 0,
-    mode: str = "content",
-    skip_base: str | None = None,
-) -> str:
-    """rg if present, else grep. Never `rg || grep`: rg exits 1 on no match
-    and that would walk node_modules/venv with no ignore file.
-
-    A directory is searched from inside it, so matches print as ./rel and
-    include is relative to the searched directory. Hidden files are searched
-    (dot-config, .github, .env.example); the skip list still prunes .git and
-    vendor trees. .gitignore is honored unless no_ignore (include uses an rg
-    type filter for that reason: a positive --glob would override it). rg
-    sorts by path so the first N results are the same on every call. The
-    grep fallback prefers PCRE (-P) so \\d, \\s, \\b and (?i) mean the same
-    thing they do in rg."""
-    n = max(1, min(int(max_matches or _GREP_DEFAULT_MATCHES), _GREP_MAX_MATCHES))
-    context = max(0, min(int(context or 0), _GREP_MAX_CONTEXT))
-    cap = _grep_line_cap(mode, n, context)
-    base = _search_skip_name(path) if skip_base is None else skip_base
-    skip = _rg_skip_globs(base)
-    if not include:
-        rg_filter = ""
-    elif "/" in include:
-        rg_filter = " --glob " + shlex.quote(include)
-    else:
-        rg_filter = " --type-add " + shlex.quote("fuseinc:" + include) + " -t fuseinc"
-    case = " -i" if ignore_case else ""
-    ignore = " --no-ignore" if no_ignore else ""
-    # Only an unfiltered directory walk skips large files (minified bundles,
-    # logs). A search narrowed by include names the files it wants, so they
-    # are searched whatever their size; rg never size-filters a file named
-    # as the path itself.
-    size_cap = "" if include else f" --max-filesize {_GREP_WALK_MAX_FILESIZE}"
-    if mode == "files_with_matches":
-        rg_mode, grep_mode, grep_tail = " -l", " -l", ""
-    elif mode == "count":
-        rg_mode, grep_mode, grep_tail = " -c", " -c", " | grep -v ':0$'"
-    else:
-        ctx = f" -C {context}" if context else ""
-        rg_mode, grep_mode, grep_tail = f" -n{ctx} -m {n}", f" -n{ctx}", ""
-    rg = (
-        f"$T rg -H --no-heading --color=never --sort path --hidden{ignore}{case}{rg_mode}{size_cap} "
-        f"--max-columns {_SEARCH_MAX_COLUMNS} "
-        f'{skip}{rg_filter} -- {shlex.quote(pattern)} "$TGT"'
-    )
-    grep_flags = f"-H $GF{case}{grep_mode} --binary-files=without-match -e {shlex.quote(pattern)} --"
-    one_file = f'$T grep {grep_flags} "$TGT"{grep_tail} | head -n {cap}'
-    walk = (
-        _list_files_sh(base, no_ignore=no_ignore, size_cap=not include, include=include)
-        + f" | xargs -0 -r sh -c {shlex.quote(_XARGS_GREP)} _ {grep_flags}{grep_tail} | head -n {cap}; "
-        # xargs 123 = some grep batch failed (unreadable file): grep's own 2.
-        'rc=$?; [ "$rc" -eq 123 ] && rc=2; exit "$rc"'
-    )
-    fallback = (
-        "GF=-E; if printf 'a1\\n' | grep -qP '\\d' 2>/dev/null; then GF=-P; fi; "
-        f'if [ -f "$TGT" ]; then {one_file}; else {walk}; fi'
-    )
-    return (
-        "set -o pipefail; "
-        + _remote_timeout_prefix(timeout_s)
-        + _enter_dir_sh(path, include)
-        + f"if command -v rg >/dev/null 2>&1; then {rg} | head -n {cap}; "
-        f"else {fallback}; fi"
-    )
-
-
-def _glob_search_cmd(
-    pattern: str,
-    path: str,
-    *,
-    no_ignore: bool = False,
-    timeout_s: int | None = None,
-    order: str = "path",
-    skip_base: str | None = None,
-) -> str:
-    """Files under a directory matching one glob, relative to that
-    directory. A pattern without / matches file names at any depth (an rg
-    type filter, so .gitignore still applies); one with / matches the whole
-    relative path. Without rg the same semantics come from a git/find
-    listing filtered by an ERE translation of the glob."""
-    base = _search_skip_name(path) if skip_base is None else skip_base
-    skip = _rg_skip_globs(base)
-    ignore = " --no-ignore" if no_ignore else ""
-    sort = " --sortr modified" if order == "modified" else " --sort path"
-    if "/" in pattern:
-        rg_filter = "-g " + shlex.quote(pattern)
-    else:
-        rg_filter = "--type-add " + shlex.quote("fuseglob:" + pattern) + " -t fuseglob"
-    rg = f'$T rg --files --hidden{ignore}{sort} --color=never {skip} {rg_filter} -- "$TGT"'
-    listing = _list_files_sh(base, no_ignore=no_ignore, size_cap=False, include=pattern)
-    if order == "modified":
-        fallback = (
-            f"{listing} | xargs -0 -r sh -c 'find -P \"$@\" -maxdepth 0 -printf \"%T@ %p\\n\"' _ "
-            "| sort -rn | cut -d' ' -f2-"
-        )
-    else:
-        fallback = f"{listing} | tr '\\0' '\\n'"
-    return (
-        "set -o pipefail; "
-        + _remote_timeout_prefix(timeout_s)
-        + f"TGT={_quote_host_path(path)}; "
-        + 'if [ -d "$TGT" ]; then cd -- "$TGT" || exit 2; TGT=.; fi; '
-        + f"if command -v rg >/dev/null 2>&1; then {rg} | head -n {_GLOB_MAX_PATHS}; "
-        f'elif [ -d "$TGT" ]; then {fallback} | head -n {_GLOB_MAX_PATHS}; '
-        f'else printf \'%s\\n\' "$TGT"; fi'
-    )
-
-
-def _reroot_lines(out: str, prefix: str) -> str:
-    """Results of a directory search print as ./rel; put the searched
-    directory back in front so paths stay relative to the project root (or
-    absolute outside it), the form read_file accepts."""
-    if not out or prefix in ("", "."):
-        return out
-    head = prefix.rstrip("/") + "/"
-    return "\n".join(head + line[2:] if line.startswith("./") else line for line in out.split("\n"))
-
-
-def _filter_grep_include(out: str, include: str) -> str:
-    if not include or not out:
-        return out
-    rows: list[str] = []
-    for line in out.splitlines():
-        loc = re.split(r":\d+:", line, maxsplit=1)[0].replace("\\", "/")
-        name = loc.rsplit("/", 1)[-1]
-        if fnmatch.fnmatch(name, include) or fnmatch.fnmatch(loc, include):
-            rows.append(line)
-    return "\n".join(rows)
 
 
 def _error_rec(name: str, msg: str, *, host: str = "", kind: str = "", extra: dict | None = None) -> dict:
@@ -653,115 +216,6 @@ def _error_kind(msg: str) -> str:
     from . import tool_failures
 
     return tool_failures.classify(msg)
-
-
-_BARE_EXEC_ERRORS = frozenset({"", "exit", "grep failed", "glob failed", "list failed", "exec failed"})
-
-
-def _first_lines(text: str, n: int = 8, cap: int = 500) -> str:
-    lines = [ln for ln in str(text or "").splitlines() if ln.strip()][:n]
-    return "\n".join(lines)[:cap]
-
-
-def _exec_fail_detail(data: dict, fallback: str = "failed") -> str:
-    """Never a bare 'exit'. Prefer stderr, then stdout, then a named fallback + code."""
-    err = _first_lines(data.get("err") or "")
-    out = _first_lines(data.get("out") or "")
-    error = (data.get("error") or "").strip()
-    if err:
-        body = err
-    elif out:
-        body = out
-    elif error.lower() not in _BARE_EXEC_ERRORS and not error.lower().startswith("exit"):
-        body = error
-    else:
-        body = fallback
-    try:
-        code = int(data.get("exit"))
-    except (TypeError, ValueError):
-        code = None
-    if code is not None and f"exit {code}" not in body.lower():
-        body = f"{body} (exit {code})"
-    if body.strip().lower() in ("exit", ""):
-        body = f"{fallback}" + (f" (exit {code})" if code is not None else "")
-    return body
-
-
-def _agent_error(data: dict, fallback: str) -> WorkspaceError:
-    extra: dict = {}
-    code = data.get("exit")
-    if code is not None and code != "":
-        extra["exit_code"] = code
-    err = (data.get("err") or "").strip()
-    if err:
-        extra["stderr"] = err[:500]
-    out = (data.get("out") or "").strip()
-    if out:
-        extra["stdout"] = out[:500]
-    return WorkspaceError(_exec_fail_detail(data, fallback), extra=extra)
-
-
-def _enrich_agent_data(data: dict, *, op: str = "") -> dict:
-    """Rewrite the connector's generic exec error 'exit' before any caller sees it."""
-    if not isinstance(data, dict) or data.get("ok"):
-        return data
-    error = (data.get("error") or "").strip()
-    if error.lower() not in _BARE_EXEC_ERRORS and not error.lower().startswith("exit"):
-        return data
-    detail = _exec_fail_detail(data, fallback=(f"{op} failed" if op else "failed"))
-    if detail == error:
-        return data
-    data = dict(data)
-    data["error"] = detail
-    return data
-
-
-def _exec_text(data: dict) -> str:
-    return " ".join(str(data.get(key) or "") for key in ("err", "out", "error"))
-
-
-_GENERIC_MUTATION_ERRORS = frozenset({"", "exit", "replace failed", "write failed"}) | _BARE_EXEC_ERRORS
-
-
-def _is_generic_mutation_error(data: dict) -> bool:
-    error = str(data.get("error") or "").strip().lower()
-    return error in _GENERIC_MUTATION_ERRORS or error.startswith("exit")
-
-
-def _ps_literal(text: str) -> str:
-    return "'" + str(text).replace("'", "''") + "'"
-
-
-def _ps_path_expr(path: str) -> str:
-    raw = str(path or "").replace("/", "\\")
-    if raw.startswith("~\\"):
-        return f"Join-Path $env:USERPROFILE {_ps_literal(raw[2:])}"
-    return _ps_literal(raw)
-
-
-def _probe_cmd(path: str, *, windows: bool) -> str:
-    """Read-only stat probe: kind, size, writability, parent state. Never mutates."""
-    if windows:
-        return (
-            f"$p = {_ps_path_expr(path)}\n"
-            "$d = Split-Path -Parent $p\n"
-            "if (Test-Path -LiteralPath $p -PathType Container) { 'dir' } "
-            "elseif (Test-Path -LiteralPath $p -PathType Leaf) { (Get-Item -LiteralPath $p).Length } "
-            "else { 'missing' }\n"
-            "if (-not (Test-Path -LiteralPath $d -PathType Container)) { 'dmiss' } else { 'dw' }\n"
-        )
-    q = _quote_host_path(path)
-    return (
-        f"p={q}\n"
-        'd=$(dirname "$p")\n'
-        'if [ -d "$p" ]; then echo dir; echo na\n'
-        'elif [ -f "$p" ]; then wc -c < "$p"\n'
-        'if [ -w "$p" ]; then echo w; else echo nw; fi\n'
-        "else echo missing; echo na; fi\n"
-        'if [ -d "$d" ] && [ -w "$d" ]; then echo dw\n'
-        'elif [ -d "$d" ]; then echo dnw\n'
-        "else echo dmiss; fi\n"
-    )
 
 
 async def _agent_probe_file(user_id, host_id, path: str, *, windows: bool) -> dict | None:
@@ -858,79 +312,7 @@ async def _refine_mutation_error(data: dict, exc: WorkspaceError, user_id, host_
     return WorkspaceError(detail, extra=extra)
 
 
-def _pipe_ok_exit(code, detail: str = "", *, no_match_ok: bool = True) -> bool:
-    if code is None or code == "":
-        return False
-    try:
-        val = int(code or 0)
-    except (TypeError, ValueError):
-        return False
-    # 0 = matches, 1 = no matches (rg/grep) or a find write error,
-    # 141 = SIGPIPE from head closing the pipe. ls exits 1 on real trouble,
-    # so _list passes no_match_ok=False to keep its native fallback.
-    if val in (0, 141):
-        return True
-    if val == 1:
-        return no_match_ok
-    # Connectors exec with SIGPIPE ignored (their socket writes must survive
-    # closed pipes), so head instead leaves the producer dying on EPIPE with
-    # a "write error: Broken pipe" message and exit 2. Same cause; only
-    # tolerate exit 2 when that message is actually present.
-    return val == 2 and "broken pipe" in (detail or "").lower()
-
-
-def _diff_sides(path: str) -> tuple[str, str]:
-    """a/ b/ labels for relative paths; absolute paths are their own labels."""
-    if path.startswith(("/", "\\", "~")) or re.match(r"^[A-Za-z]:[\\/]", path):
-        return path, path
-    return "a/" + path, "b/" + path
-
-
-_HUNK_LINE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@$")
-
-
-def _replace_preview(path: str, old: str, new: str, count: int, start: int | None = None) -> str:
-    """Diff of one edit. With `start` (1-based file line of old_string) the
-    hunk headers carry real file line numbers; without it there is no honest
-    header, so only the +/- body is shown — never a fabricated @@ -1."""
-    old_lines = str(old or "").splitlines()
-    new_lines = str(new or "").splitlines()
-    a_side, b_side = _diff_sides(path)
-    diff = list(
-        difflib.unified_diff(
-            old_lines,
-            new_lines,
-            fromfile=a_side,
-            tofile=b_side,
-            lineterm="",
-            n=2,
-        )
-    )
-    if not diff:
-        return f"{count} replacement(s)"
-    if start is None:
-        body = "\n".join(ln for ln in diff if not ln.startswith(("---", "+++", "@@")))
-    else:
-        rows = []
-        for ln in diff:
-            m = _HUNK_LINE.match(ln)
-            if m:
-                o = f"{int(m.group(1)) + start - 1}" + (f",{m.group(2)}" if m.group(2) else "")
-                n = f"{int(m.group(3)) + start - 1}" + (f",{m.group(4)}" if m.group(4) else "")
-                ln = f"@@ -{o} +{n} @@"
-            rows.append(ln)
-        body = "\n".join(rows)
-    if len(body) > 800:
-        body = body[:797] + "…"
-    return body
-
-
 _REPLACE_FILE_MAX = 64 * 1024 * 1024  # whole-file edit ceiling (SSH + connector parity)
-_NOT_FOUND_HINT = (
-    "old_string not found. It must match the file exactly, including whitespace and "
-    "indentation; do not include the 'N:' line-number prefix or the 'From host X:' "
-    "label from read_file output."
-)
 
 
 def _too_large_edit() -> str:
@@ -938,43 +320,6 @@ def _too_large_edit() -> str:
         f"file too large to edit (maximum {_REPLACE_FILE_MAX} bytes). Split the change "
         "or apply it with run_terminal_command instead"
     )
-
-
-def _crlf_normalize(text: str, old: str, new: str) -> tuple[str, str] | None:
-    """LF-only edit strings against a CRLF file.
-
-    read_file strips carriage returns from the lines it shows, so the model
-    cannot reproduce a CRLF old_string byte-for-byte. When the file uses CRLF
-    and both arguments are CR-free, convert LF to CRLF — deterministic, never
-    a fuzzy match.
-    """
-    if "\r" in old or "\r" in new or "\r\n" not in text:
-        return None
-    return old.replace("\n", "\r\n"), new.replace("\n", "\r\n")
-
-
-def _apply_replace(text: str, old: str, new: str, replace_all: bool) -> tuple[str, int]:
-    """Exact replacement only; never guess at whitespace-sensitive source edits."""
-    if not old:
-        raise WorkspaceError("old_string required")
-    count = text.count(old)
-    if count == 0:
-        normalized = _crlf_normalize(text, old, new)
-        if normalized is not None:
-            old, new = normalized
-            count = text.count(old)
-    if count == 0:
-        hint = " This file uses CRLF line endings; match them or edit single lines." if "\r\n" in text else ""
-        raise WorkspaceError(_NOT_FOUND_HINT + hint)
-    if count > 1 and not replace_all:
-        at = _match_lines(text, old)
-        where = ", ".join(str(n) for n in at) + (", …" if count > len(at) else "")
-        raise WorkspaceError(
-            f"old_string is not unique ({count} occurrences, at lines {where}). Include more surrounding "
-            "context lines, or pass replace_all=true."
-        )
-    updated = text.replace(old, new) if replace_all else text.replace(old, new, 1)
-    return updated, (count if replace_all else 1)
 
 
 def _label(alias: str, body: str) -> str:
@@ -1304,31 +649,6 @@ async def execute(name: str, arguments: str, *, user_id: int, bound_host_id=None
     return text, rec
 
 
-def _agent_cwd(cwd: str) -> str:
-    """Connector chdir()s the cwd string as-is. $HOME is not a path."""
-    if cwd in ("~", "$HOME", "", "%USERPROFILE%"):
-        return "~"
-    if cwd.startswith("$HOME/"):
-        return "~/" + cwd[6:]
-    if cwd.startswith("$HOME\\"):
-        return "~\\" + cwd[6:]
-    if cwd.startswith("%USERPROFILE%"):
-        rest = cwd[13:]
-        if rest.startswith("\\") or rest.startswith("/"):
-            return "~" + rest.replace("/", "\\")
-        return "~"
-    return cwd
-
-
-_SLEEP_CMD = re.compile(r"^\s*(?:setsid\s+)?sleep\s+\d+(?:\.\d+)?\s*$")
-
-
-def _is_sleep_command(command: str) -> bool:
-    """A command that is only `sleep` stops at its foreground timeout instead of
-    moving to the background (a wait must not outlive the wait)."""
-    return bool(_SLEEP_CMD.match(command or ""))
-
-
 def _shell_cwd(args: dict, root: str, *, windows: bool = False) -> str:
     from .permissions import expand_temp
 
@@ -1353,54 +673,7 @@ def _shell_cwd(args: dict, root: str, *, windows: bool = False) -> str:
     return "~"
 
 
-def _shell_prefix(cwd: str) -> str:
-    if cwd in ("~", "$HOME"):
-        return 'cd "$HOME"'
-    if cwd.startswith("~/"):
-        rest = shlex.quote(cwd[2:])
-        return f'cd "$HOME"/{rest}'
-    if cwd.startswith("$HOME/"):
-        rest = shlex.quote(cwd[6:])
-        return f'cd "$HOME"/{rest}'
-    return f"cd {shlex.quote(cwd)}"
-
-
-_PGID_DIR = "$HOME/.cache/fuse/jobs"
 _background_kills: set = set()
-
-
-def _ssh_job_script(cwd: str, command: str, token: str = "") -> str:
-    """bash script for an SSH command: stdin closed (a prompt fails fast
-    instead of hanging until the deadline), non-interactive env, and a cwd
-    failure that stops the whole command instead of running the rest of a
-    `a; b` list in $HOME. With a token, the session's process group id is
-    recorded so a timeout or kill can terminate the whole tree."""
-    lines = [
-        "exec </dev/null",
-        "export GIT_TERMINAL_PROMPT=0 DEBIAN_FRONTEND=noninteractive PAGER=cat GIT_PAGER=cat",
-    ]
-    if token:
-        lines += [
-            f'__fuse_pgf="{_PGID_DIR}/{token}"',
-            # Only record a group this session leads (sshd setsid()s the
-            # exec'd shell), never a foreign one.
-            '__fuse_pg=$(ps -o pgid= -p $$ 2>/dev/null | tr -dc 0-9)',
-            'if [ -n "$__fuse_pg" ] && { [ "$__fuse_pg" = "$$" ] || [ "$__fuse_pg" = "$PPID" ]; }; then',
-            '  { mkdir -p "${__fuse_pgf%/*}" && printf \'%s\\n\' "$__fuse_pg" > "$__fuse_pgf"; } 2>/dev/null',
-            "fi",
-            "trap 'rm -f \"$__fuse_pgf\" 2>/dev/null' EXIT",
-        ]
-    lines.append(f"{_shell_prefix(cwd)} || exit 1")
-    lines.append(command)
-    return "\n".join(lines) + "\n"
-
-
-def _ssh_kill_script(token: str) -> str:
-    return (
-        f'f="{_PGID_DIR}/{token}"; pg=$(tr -dc 0-9 < "$f" 2>/dev/null); '
-        'if [ -n "$pg" ] && [ "$pg" -gt 1 ]; then kill -TERM -- -"$pg" 2>/dev/null; '
-        'sleep 2; kill -KILL -- -"$pg" 2>/dev/null; fi; rm -f "$f"; exit 0'
-    )
 
 
 def _schedule_group_kill(user_id, host_id, token: str) -> None:
@@ -1460,45 +733,6 @@ def _outdated_connector(user_id, host_id, feature: str) -> WorkspaceError:
     )
 
 
-def _agent_output_complete(data: dict) -> bool:
-    if not isinstance(data, dict):
-        return False
-    if "output_complete" in data:
-        return data.get("output_complete") is True
-    truncated = data.get("truncated")
-    return truncated is False or truncated == 0
-
-
-def _agent_timed_out(data: dict) -> bool:
-    if not isinstance(data, dict):
-        return False
-    if data.get("timeout") is True or data.get("timeout") == 1:
-        return True
-    error = str(data.get("error") or "").strip().lower()
-    return error == "timed out" or error.startswith("timed out")
-
-
-def _agent_job_output(stdout: str, stderr: str) -> str:
-    stdout = stdout or ""
-    stderr = stderr or ""
-    if stdout and stderr:
-        sep = "" if stdout.endswith("\n") else "\n"
-        return f"{stdout}{sep}[stderr]\n{stderr}"
-    return stdout or stderr
-
-
-class _AgentExec:
-    __slots__ = ("stdout", "stderr", "exit_status")
-
-    def __init__(self, data: dict):
-        self.stdout = data.get("out") or ""
-        self.stderr = data.get("err") or ""
-        code = data.get("exit")
-        if data.get("error") and code is None:
-            code = 1
-        self.exit_status = int(code) if isinstance(code, int) else (0 if data.get("ok") else 1)
-
-
 async def _agent_call(user_id, host_id, op: str, args: dict, seconds: int = 30, on_chunk=None) -> dict:
     from . import agent_hub
 
@@ -1550,16 +784,6 @@ async def _run_remote(user_id, host_id, command: str, cwd: str, seconds: int, *,
     res.exit_status = proc.exit_status
     res.process = proc
     return res
-
-
-class _ExecResult:
-    """Runner result for command jobs: exit status plus combined output."""
-
-    __slots__ = ("exit_status", "output")
-
-    def __init__(self, exit_status, output: str):
-        self.exit_status = exit_status
-        self.output = output or ""
 
 
 def _make_agent_runner(user_id, host_id, command: str, cwd: str, timeout_ms: int):
@@ -2737,23 +1961,7 @@ async def _read(user_id, host_id, alias, args, root, *, windows: bool = False, m
     }
 
 
-_LIST_SCAN_MAX = 1500  # entries collected before sorting; shown list is _LIST_MAX_ENTRIES
-
-
 _LIST_MAX_DEPTH = 5
-
-
-def _tree_cmd_posix(depth: int, path: str) -> str:
-    """find to `depth` levels; vendor/build dirs are listed but not entered.
-    Directories get a trailing slash; paths are relative to `path`."""
-    names = " -o ".join(f"-name {shlex.quote(d)}" for d in _SEARCH_SKIP_DIRS if d != _search_skip_name(path))
-    return (
-        "set -o pipefail; "
-        f"find . -mindepth 1 -maxdepth {int(depth)} "
-        f"\\( -type d \\( {names} \\) -prune -exec printf '%s/\\n' {{}} + \\) "
-        "-o \\( -type d -exec printf '%s/\\n' {} + \\) -o -print "
-        f"| head -n {_LIST_SCAN_MAX + 1}"
-    )
 
 
 async def _list_tree(user_id, host_id, path: str, depth: int, *, windows: bool) -> tuple[list[str], bool]:
@@ -2925,30 +2133,6 @@ async def _list(user_id, host_id, alias, args, root, *, windows: bool = False, r
     return _label(alias, listing), {"name": "list_dir", "status": "done", "host": alias, "path": path, "preview": listing[:800]}
 
 
-_SSH_BEGIN = "\x1efuse-begin\x1e"
-
-
-def _strip_begin(out: str) -> str:
-    """Drop anything a login profile printed before the tool's own output."""
-    text = out or ""
-    at = text.find(_SSH_BEGIN)
-    if at < 0:
-        return text
-    rest = text[at + len(_SSH_BEGIN):]
-    return rest[1:] if rest.startswith("\n") else rest
-
-
-def _ssh_tool_script(cwd: str, cmd: str) -> str:
-    """bash -lc script for bounded tool commands: no stdin, fail closed on a
-    bad cwd, and a sentinel so login-profile chatter never reaches parsers."""
-    return (
-        "exec </dev/null\n"
-        f"{_shell_prefix(cwd or '~')} || exit 1\n"
-        f"printf '%s\\n' {shlex.quote(_SSH_BEGIN)}\n"
-        f"{cmd}\n"
-    )
-
-
 async def _tool_exec(user_id, host_id, cmd: str, cwd: str, seconds: int) -> dict:
     """Run a bounded, read-only tool command (grep/glob/list) on either
     transport. Returns {exit, out, err, timed_out}; never raises on a
@@ -2991,178 +2175,6 @@ async def _tool_exec(user_id, host_id, cmd: str, cwd: str, seconds: int) -> dict
         "error": "",
         "timed_out": code == 124,
     }
-
-
-def _as_text(value) -> str:
-    if isinstance(value, bytes):
-        return value.decode("utf-8", "replace")
-    return str(value or "")
-
-
-def _search_status(data: dict, op: str) -> list[str]:
-    """Classify a grep/glob exit. Returns notes for a usable (possibly partial)
-    result; raises for a real failure. rg and grep exit 2 whenever any file is
-    unreadable even though they printed valid matches — that is a partial
-    success, not an error."""
-    code = data.get("exit")
-    out = str(data.get("out") or "")
-    err = str(data.get("err") or "")
-    detail = f"{err}\n{data.get('error') or ''}\n{out}"
-    if data.get("timed_out"):
-        return [
-            f"({op} timed out after {_GREP_TIMEOUT}s; results are partial. Narrow path, include, or pattern.)"
-        ]
-    if _pipe_ok_exit(code, detail):
-        return []
-    if code == 2 and out.strip():
-        first = _first_lines(err, n=1, cap=200)
-        return [f"(some files could not be searched{': ' + first if first else ''})"]
-    raise _agent_error(
-        {"exit": code, "err": err, "out": out, "error": data.get("error") or "exit"},
-        f"{op} failed",
-    )
-
-
-def _strip_connector_clip(out: str, clipped: bool) -> tuple[str, bool]:
-    """Drop a connector's truncation marker and the partial line before it.
-
-    The marker is not a result: left in place it reads as a match line."""
-    text = out or ""
-    if _CONNECTOR_CLIP not in text and not clipped:
-        return text, False
-    text = text.replace("\n" + _CONNECTOR_CLIP + "\n", "\n").replace(_CONNECTOR_CLIP, "")
-    text = text.rstrip("\n")
-    text = text.rsplit("\n", 1)[0] if "\n" in text else ""
-    return text, True
-
-
-def _clip_note(op: str) -> str:
-    return (
-        f"({op} output hit the connector's 64 KB limit; results are partial. Lower max_matches, "
-        "use output_mode files_with_matches, or narrow the pattern or path.)"
-        if op == "grep"
-        else f"({op} output hit the connector's 64 KB limit; results are partial. Narrow the pattern or path.)"
-    )
-
-
-def _search_target(path: str, root: str, *, windows: bool) -> tuple[str, str]:
-    """(cwd, target) so the host prints paths relative to the project root,
-    which read_file and search_replace accept directly. A target outside the
-    root is searched by its own path and printed as such."""
-    if not root:
-        return "", path
-    sep = "\\" if windows else "/"
-    norm = (lambda p: p.lower()) if windows else (lambda p: p)
-    base = root.rstrip(sep) if root.rstrip(sep) else root
-    if norm(path.rstrip(sep) or path) == norm(base):
-        return root, "."
-    prefix = base + sep if not base.endswith(sep) else base
-    if norm(path).startswith(norm(prefix)):
-        return root, path[len(prefix):] or "."
-    return root, path
-
-
-def _relative_line(line: str, root: str, *, windows: bool) -> str:
-    """Strip './' and a root prefix from a result line (native Windows output)."""
-    if line.startswith("./"):
-        line = line[2:]
-    elif line.startswith(".\\"):
-        line = line[2:]
-    if root:
-        sep = "\\" if windows else "/"
-        prefix = root.rstrip(sep) + sep
-        if (line.lower() if windows else line).startswith(prefix.lower() if windows else prefix):
-            line = line[len(prefix):]
-    return line
-
-
-_MATCH_LINE = re.compile(r"^(.*?):(\d+):")
-_CONTEXT_LINE = re.compile(r"^(.*?)-(\d+)-")
-
-
-def _grep_line_path(line: str, mode: str = "content") -> str:
-    if mode == "files_with_matches":
-        return line
-    if mode == "count":
-        return line.rsplit(":", 1)[0]
-    match = _MATCH_LINE.match(line) or _CONTEXT_LINE.match(line)
-    if match:
-        return match.group(1)
-    return line.split(":", 1)[0]
-
-
-def _format_search_lines(
-    out: str,
-    *,
-    root: str,
-    windows: bool,
-    grep: bool,
-    hide_secrets: bool,
-    cap_lines: int,
-    mode: str = "content",
-) -> tuple[list[str], int, bool]:
-    """Normalize raw result lines. Returns (lines, hidden_secret_count, more).
-
-    For grep content output with context, only match lines (path:N:) count
-    toward cap_lines; context (path-N-) and '--' separators ride along."""
-    from .permissions import is_secret_path
-
-    rows: list[str] = []
-    hidden = 0
-    matches = 0
-    for raw in (out or "").splitlines():
-        if not raw.strip():
-            continue
-        line = _relative_line(raw.rstrip("\r"), root, windows=windows)
-        if grep and line == "--":
-            if rows and rows[-1] != "--":
-                rows.append(line)
-            continue
-        if hide_secrets:
-            loc = _grep_line_path(line, mode) if grep else line
-            full_path = ntpath.join(root, loc) if windows else posixpath.join(root, loc)
-            if is_secret_path(full_path):
-                if not grep or mode != "content" or _MATCH_LINE.match(line):
-                    hidden += 1
-                continue
-        if len(line) > _SEARCH_LINE_CHARS:
-            line = line[:_SEARCH_LINE_CHARS] + f"… [line clipped at {_SEARCH_LINE_CHARS} chars]"
-        if not grep or mode != "content" or _MATCH_LINE.match(line):
-            matches += 1
-        rows.append(line)
-    while rows and rows[-1] == "--":
-        rows.pop()
-    more = matches + hidden >= cap_lines
-    return rows, hidden, more
-
-
-def _pack_search_rows(rows: list[str], notes: list[str], *, budget: int = _SEARCH_OUT_CHARS) -> tuple[str, bool]:
-    """Join whole lines up to the budget; never cut a line in half."""
-    kept: list[str] = []
-    used = 0
-    clipped = False
-    for row in rows:
-        cost = len(row) + 1
-        if used + cost > budget:
-            clipped = True
-            break
-        kept.append(row)
-        used += cost
-    if clipped:
-        notes = [f"(output clipped at {len(kept)} of {len(rows)} lines; narrow the pattern or path)", *notes]
-    body = "\n".join(kept)
-    if notes:
-        body = (body + "\n" if body else "") + "\n".join(notes)
-    return body, clipped
-
-
-def _grep_mode_arg(args: dict) -> str:
-    raw = str(args.get("output_mode") or "content").strip().lower()
-    aliases = {"files": "files_with_matches", "files_with_match": "files_with_matches", "l": "files_with_matches", "c": "count"}
-    mode = aliases.get(raw, raw)
-    if mode not in _GREP_MODES:
-        raise WorkspaceError("output_mode must be content, files_with_matches, or count")
-    return mode
 
 
 async def _grep(user_id, host_id, alias, args, root, *, windows: bool = False):
@@ -3247,14 +2259,6 @@ async def _grep(user_id, host_id, alias, args, root, *, windows: bool = False):
     }
 
 
-def _glob_order_arg(args: dict) -> str:
-    raw = str(args.get("sort") or "path").strip().lower()
-    order = {"mtime": "modified", "recent": "modified", "name": "path"}.get(raw, raw)
-    if order not in ("path", "modified"):
-        raise WorkspaceError("sort must be path or modified")
-    return order
-
-
 async def _glob(user_id, host_id, alias, args, root, *, windows: bool = False):
     pattern = _confine_glob(str(args.get("pattern") or ""), root, windows=windows)
     path = _confine(str(args.get("path") or "."), root, windows=windows)
@@ -3301,21 +2305,6 @@ async def _glob(user_id, host_id, alias, args, root, *, windows: bool = False):
         "pattern": pattern[:200],
         "preview": text[:800],
     }
-
-
-def _glob_result(out: str, *, root: str = "", windows: bool = False, notes: list[str] | None = None, order: str = "path") -> str:
-    rows, _hidden, more = _format_search_lines(
-        out, root=root, windows=windows, grep=False, hide_secrets=False, cap_lines=_GLOB_MAX_PATHS,
-    )
-    rows = rows[:_GLOB_MAX_PATHS]
-    if order == "path":
-        rows = sorted(rows)
-    notes = list(notes or [])
-    if more and not any("timed out" in n for n in notes):
-        which = "most recently modified" if order == "modified" else "first"
-        notes.insert(0, f"(showing the {which} {_GLOB_MAX_PATHS} paths; narrow the pattern or path)")
-    text, _ = _pack_search_rows(rows, notes)
-    return text
 
 
 _mutation_locks: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
@@ -3460,182 +2449,6 @@ async def _write(user_id, host_id, alias, args, root, *, windows: bool = False, 
     ledger_note(run_id, host_id, ledger_path, version, windows=windows)
     verb = "created" if attrs is None else "overwrote"
     return _label(alias, f"{verb} {path} ({size} bytes)"), {"name": "write_file", "status": "done", "host": alias, "path": path}
-
-
-def _match_lines(text: str, needle: str, limit: int = 10) -> list[int]:
-    out: list[int] = []
-    at = text.find(needle)
-    while at >= 0 and len(out) < limit:
-        out.append(text.count("\n", 0, at) + 1)
-        at = text.find(needle, at + max(1, len(needle)))
-    return out
-
-
-def _numbered(lines: list[str], first: int, *, max_lines: int = 40, width: int = 300) -> str:
-    rows = []
-    for i, line in enumerate(lines[:max_lines]):
-        clip = line if len(line) <= width else line[:width] + "…"
-        rows.append(f"{first + i}: {clip}")
-    if len(lines) > max_lines:
-        rows.append(f"… ({len(lines) - max_lines} more lines)")
-    return "\n".join(rows)
-
-
-def _closest_match(text: str, old: str) -> str:
-    """Where the model probably meant: the window most similar to old_string,
-    anchored on lines that match ignoring surrounding whitespace. Bounded."""
-    olines = old.replace("\r\n", "\n").split("\n")
-    k = len(olines)
-    lines = text.replace("\r\n", "\n").split("\n")
-    if k > 80 or len(lines) > 100_000:
-        return ""
-    stripped_old = [ln.strip() for ln in olines]
-    anchors: dict[str, int] = {}
-    for idx, s in enumerate(stripped_old):
-        if s and s not in anchors:
-            anchors[s] = idx
-    if not anchors:
-        return ""
-    starts: set[int] = set()
-    for i, line in enumerate(lines):
-        idx = anchors.get(line.strip())
-        if idx is not None:
-            starts.add(max(0, i - idx))
-            if len(starts) >= 300:
-                break
-    if not starts:
-        return ""
-    target = "\n".join(olines)
-    best, best_start = 0.0, -1
-    for start in starts:
-        window = "\n".join(lines[start:start + k])
-        matcher = difflib.SequenceMatcher(None, window, target, autojunk=False)
-        if matcher.real_quick_ratio() <= best or matcher.quick_ratio() <= best:
-            continue
-        ratio = matcher.ratio()
-        if ratio > best:
-            best, best_start = ratio, start
-    if best_start < 0 or best < 0.5:
-        return ""
-    return (
-        f"\nClosest text in the file (lines {best_start + 1}-{best_start + k}, {int(best * 100)}% similar); "
-        "compare indentation, whitespace and punctuation:\n"
-        + _numbered(lines[best_start:best_start + k], best_start + 1, max_lines=30)
-    )
-
-
-def _edit_snippet(text: str, updated: str, old: str, new: str) -> str:
-    """The edited region with line numbers, so the model can verify the result
-    without re-reading the file."""
-    used_old, used_new = old, new
-    if text.find(old) < 0:
-        normalized = _crlf_normalize(text, old, new)
-        if normalized is not None:
-            used_old, used_new = normalized
-    at = text.find(used_old)
-    if at < 0:
-        return ""
-    first = text.count("\n", 0, at) + 1
-    lines = updated.replace("\r\n", "\n").split("\n")
-    span = used_new.replace("\r\n", "\n").count("\n") + 1
-    lo = max(1, first - 3)
-    hi = min(len(lines), first + span - 1 + 3)
-    return _numbered(lines[lo - 1:hi], lo)
-
-
-def _edit_first_line(text: str, old: str, new: str) -> int | None:
-    """1-based file line of old_string, or None when it cannot be located."""
-    used_old, used_new = old, new
-    if text.find(old) < 0:
-        normalized = _crlf_normalize(text, old, new)
-        if normalized is not None:
-            used_old, used_new = normalized
-    at = text.find(used_old)
-    return None if at < 0 else text.count("\n", 0, at) + 1
-
-
-def _post_edit_snippet(text: str, new: str) -> tuple[str, int | None]:
-    """Numbered edited region from post-edit file text (the connector path
-    never sees the pre-edit bytes). Returns (snippet, first line of the edit)."""
-    if not new:
-        return "", None  # a deletion leaves no anchor in the edited file
-    used = new
-    at = text.find(used)
-    if at < 0 and "\r\n" in text and "\r" not in used:
-        used = used.replace("\n", "\r\n")
-        at = text.find(used)
-    if at < 0:
-        return "", None
-    first = text.count("\n", 0, at) + 1
-    lines = text.replace("\r\n", "\n").split("\n")
-    span = used.replace("\r\n", "\n").count("\n") + 1
-    lo = max(1, first - 3)
-    hi = min(len(lines), first + span - 1 + 3)
-    return _numbered(lines[lo - 1:hi], lo), first
-
-
-_EDITS_MAX = 100
-
-
-def _parse_edits(args: dict) -> list[tuple[str, str, bool]]:
-    """One edit (old_string/new_string/replace_all) or an ordered edits list."""
-    raw = args.get("edits")
-    single = args.get("old_string") not in (None, "")
-    # Schema-filling models send every property: an empty edits list next to
-    # a real old_string, or empty old_string/new_string next to real edits.
-    if raw in ([], "") and single:
-        raw = None
-    if raw is not None:
-        if single:
-            first = raw[0] if isinstance(raw, list) and raw and isinstance(raw[0], dict) else {}
-            same = (
-                len(raw) == 1
-                and first.get("old_string") == args.get("old_string")
-                and first.get("new_string") == args.get("new_string")
-            )
-            if not same:
-                raise WorkspaceError("pass either edits or old_string/new_string, not both")
-        if not isinstance(raw, list) or not 1 <= len(raw) <= _EDITS_MAX:
-            raise WorkspaceError(f"edits must be a list of 1 to {_EDITS_MAX} objects")
-        items = raw
-    else:
-        _require(args, "old_string", "new_string")
-        items = [args]
-    edits: list[tuple[str, str, bool]] = []
-    total = 0
-    for index, item in enumerate(items, 1):
-        where = f"edits[{index - 1}]: " if raw is not None else ""
-        if not isinstance(item, dict):
-            raise WorkspaceError(f"{where}each edit must be an object")
-        old, new = item.get("old_string"), item.get("new_string")
-        if not isinstance(old, str) or not isinstance(new, str):
-            raise WorkspaceError(f"{where}old_string and new_string must be strings")
-        if not old:
-            raise WorkspaceError(f"{where}old_string required")
-        if old == new:
-            raise WorkspaceError(f"{where}old_string and new_string are identical; nothing to change")
-        if "\x00" in old or "\x00" in new:
-            raise WorkspaceError(f"{where}replacement strings must not contain NUL bytes")
-        size = len(old.encode("utf-8")) + len(new.encode("utf-8"))
-        if len(old.encode("utf-8")) > 200_000 or len(new.encode("utf-8")) > 200_000:
-            raise WorkspaceError(f"{where}old_string or new_string exceeds 200000 UTF-8 bytes; edit a smaller span")
-        total += size
-        edits.append((old, new, _as_bool(item.get("replace_all"))))
-    if total > 800_000:
-        raise WorkspaceError("edits exceed 800000 UTF-8 bytes in total; split them across calls")
-    return edits
-
-
-def _multi_diff(path: str, before: str, after: str, limit: int = 4000) -> str:
-    """Unified diff of the whole change set with real line numbers."""
-    a_side, b_side = _diff_sides(path)
-    diff = difflib.unified_diff(
-        before.replace("\r\n", "\n").split("\n"),
-        after.replace("\r\n", "\n").split("\n"),
-        fromfile=a_side, tofile=b_side, lineterm="", n=2,
-    )
-    body = "\n".join(list(diff)[2:])
-    return body if len(body) <= limit else body[:limit] + "\n… (diff clipped)"
 
 
 @_serialize_file_mutation
@@ -3808,64 +2621,6 @@ async def _replace(user_id, host_id, alias, args, root, *, windows: bool = False
     }
 
 
-def listing_names(listing: str, rec: dict | None = None) -> set[str]:
-    names: set[str] = set()
-    preview = (rec or {}).get("preview") or ""
-    for blob in (listing or "", preview):
-        for line in str(blob).splitlines():
-            item = line.strip().rstrip("/")
-            if not item or item.lower().startswith("from host "):
-                continue
-            names.add(posixpath.basename(item))
-    return names
-
-
-def pick_agents_name(names) -> str:
-    found = {str(item) for item in (names or []) if item}
-    lower = {item.lower(): item for item in found}
-    for candidate in AGENTS_FILENAMES:
-        if candidate in found:
-            return candidate
-        hit = lower.get(candidate.lower())
-        if hit:
-            return hit
-    return ""
-
-
-def unlabel_host(alias: str, text: str) -> str:
-    body = text if isinstance(text, str) else str(text or "")
-    prefix = f"From host {alias}:\n"
-    if body.startswith(prefix):
-        return body[len(prefix):]
-    return body
-
-
-def invalidate_agents_cache(user_id, host_id, path: str = "") -> None:
-    base = posixpath.basename(path or "").lower()
-    if path and base not in _AGENTS_BASENAMES:
-        return
-    uid, hid = int(user_id), int(host_id)
-    for key in [item for item in _agents_cache if item[0] == uid and item[1] == hid]:
-        _agents_cache.pop(key, None)
-
-
-def _agents_cache_put(key, expires, name, body, reason) -> None:
-    if len(_agents_cache) > 256:
-        _agents_cache.clear()
-    _agents_cache[key] = (expires, name, body, reason)
-
-
-def _agents_fail(key, now, reason) -> tuple[str, str]:
-    """Record a failed load, serving the last good body when one exists."""
-    last = _agents_last_good.get(key)
-    if last:
-        name, body = str(last[0] or ""), str(last[1] or "")
-        _agents_cache_put(key, now + 15, name, body, reason)
-        return name, body
-    _agents_cache_put(key, now + 15, "", "", reason)
-    return "", ""
-
-
 async def load_project_agents(user_id, bound_host_id, bound_cwd: str = "", report: dict | None = None) -> tuple[str, str]:
     """Read AGENTS.md (or agent.md / CLAUDE.md) from a bound project root. Never raises.
 
@@ -3960,16 +2715,3 @@ async def load_project_agents(user_id, bound_host_id, bound_cwd: str = "", repor
     if report is not None:
         report["reason"] = "loaded"
     return chosen, body
-
-
-def last_project_agents(user_id, bound_host_id, bound_cwd: str = "") -> tuple[str, str]:
-    """Last confirmed (name, body) for a bound project, or ("", ""): the
-    fallback for a load_project_agents call that timed out or raised at the
-    caller. A confirmed missing/empty read drops the entry, so deleted
-    instructions are never served."""
-    if not bound_host_id:
-        return "", ""
-    last = _agents_last_good.get((int(user_id), int(bound_host_id), posixpath.normpath(bound_cwd or "")))
-    if last:
-        return str(last[0] or ""), str(last[1] or "")
-    return "", ""
