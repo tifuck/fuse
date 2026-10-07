@@ -248,7 +248,7 @@ def sweep_user(user_id: int, prefs: dict | None = None, *, now: datetime | None 
             # expected_revision closes the check/delete window: delete_thread
             # aborts when the thread changed (or gained a run) underneath us.
             try:
-                deleted = chats.delete_thread(user_id, t["id"], expected_revision=int(fresh["revision"]))
+                deleted = chats.delete_thread(user_id, t["id"], expected_revision=int(fresh["revision"]), cancel_active=False)
             except chats.ChatValidationError:
                 deleted = False
             if deleted:

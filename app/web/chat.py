@@ -792,6 +792,8 @@ async def chat_thread_delete(request: Request, thread_id: str):
     raw = await _json_object(request)
     try:
         if not chats.delete_thread(user["id"], thread_id, expected_revision=_chat_revision(raw), command_id=raw.get("command_id")):
+            if chats.get_thread(user["id"], thread_id) is not None:
+                raise HTTPException(409, "Chat changed; retry with the current revision")
             raise HTTPException(404, "Chat not found")
     except chats.ChatValidationError as exc:
         raise _chat_validation_error(exc) from None
