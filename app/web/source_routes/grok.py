@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from ... import db
 from ...security import limiter
+from ...sources import invalidate_model_cache
 from ...sources import grok as grok_mod
 from ...sources.grok import disable_credential, ensure_grok_source, refresh_billing
 from ..deps import _pending, _pool_flash, logger, require_user
@@ -129,4 +130,5 @@ async def grok_revoke(request: Request, cred_id: int):
     if row["donated_by"] != user["id"] and not user["is_admin"]:
         raise HTTPException(403, "Forbidden")
     disable_credential(cred_id)
+    invalidate_model_cache("grok")
     return RedirectResponse("/sources", status_code=303)

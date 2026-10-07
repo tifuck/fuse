@@ -6,6 +6,7 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from ... import db
 from ...security import limiter
+from ...sources import invalidate_model_cache
 from ...sources import zai as zai_mod
 from ..deps import _pool_flash, require_user
 
@@ -42,4 +43,5 @@ async def zai_revoke(request: Request, cred_id: int):
     if row["donated_by"] != user["id"] and not user["is_admin"]:
         raise HTTPException(403, "Forbidden")
     zai_mod.disable_credential(cred_id)
+    invalidate_model_cache("zai")
     return RedirectResponse("/sources", status_code=303)

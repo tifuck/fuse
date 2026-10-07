@@ -6,6 +6,7 @@ SSE, plus non-stream error-body translation for the chat loop.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 
@@ -133,7 +134,7 @@ class _CallBook:
                 "type": "function",
                 "function": {
                     "name": self.calls[i]["name"],
-                    "arguments": self.calls[i]["arguments"],
+                    "arguments": self.calls[i]["arguments"] or "{}",
                 },
             }
             for i in self.order
@@ -222,6 +223,13 @@ class _Translator:
             rec = self.book.get(str(event.get("item_id") or ""))
             if rec and event.get("arguments") is not None:
                 rec["arguments"] = str(event.get("arguments") or "")
+                if not rec["arguments"]:
+                    # Zero-argument call: the concatenated deltas are empty,
+                    # but clients still need valid JSON.
+                    rec["arguments"] = "{}"
+                    return self._chunk(
+                        {"tool_calls": [{"index": rec["index"], "function": {"arguments": "{}"}}]}
+                    )
             return None
         if etype == "response.completed":
             response = event.get("response") if isinstance(event.get("response"), dict) else {}
@@ -295,6 +303,11 @@ async def _translated_stream(
                 yield out
         except (UpstreamProtocolError, httpx.HTTPError) as exc:
             translator.error = f"upstream stream failed ({type(exc).__name__})"
+        except (GeneratorExit, asyncio.CancelledError):
+            # A cancelled stream is neither complete nor failed: it must not
+            # cooldown the credential (see _bind_completed_stream).
+            stream_status = "cancelled"
+            raise
         if stream_status != "complete":
             yield translator._error_chunk(translator.error or "upstream stream ended before a terminal response")
             yield b"data: [DONE]\n\n"
@@ -345,7 +358,7 @@ async def _aggregate(resp: httpx.Response, client: httpx.AsyncClient, model: str
             elif etype == "response.function_call_arguments.done":
                 rec = translator.book.get(str(event.get("item_id") or ""))
                 if rec and event.get("arguments") is not None:
-                    rec["arguments"] = str(event.get("arguments") or "")
+                    rec["arguments"] = str(event.get("arguments") or "") or "{}"
             elif etype == "response.completed":
                 response = event.get("response") if isinstance(event.get("response"), dict) else {}
                 if not response:

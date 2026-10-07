@@ -185,12 +185,13 @@ class _Translator:
                     rec["signature"] += str(delta["signature"])
                 return None
             if kind == "input_json_delta" and delta.get("partial_json") is not None:
+                if rec is None:
+                    # A delta for a block that never started has no call to
+                    # belong to; attributing it to tool 0 corrupts that call.
+                    return None
                 piece = str(delta.get("partial_json") or "")
-                if rec is not None:
-                    rec["arguments"] += piece
-                    tool_index = self.tool_order.index(index) if index in self.tool_order else 0
-                else:
-                    tool_index = 0
+                rec["arguments"] += piece
+                tool_index = self.tool_order.index(index) if index in self.tool_order else 0
                 if not piece:
                     return None
                 return self._chunk({"tool_calls": [{"index": tool_index, "function": {"arguments": piece}}]})

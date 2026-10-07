@@ -63,7 +63,6 @@ def test_revoke_checks_source_and_owner(monkeypatch, owner, row, status):
     monkeypatch.setattr(sources.db, "fetchone", lambda *args: row)
     disable = Mock()
     monkeypatch.setattr(sources.explabs_mod, "disable_credential", disable)
-    owner["is_admin"] = True
     with pytest.raises(HTTPException) as error:
         asyncio.run(sources.explabs_revoke(None, 11))
     assert error.value.status_code == status
@@ -74,6 +73,16 @@ def test_revoke_own_key(monkeypatch, owner):
     monkeypatch.setattr(sources.db, "fetchone", lambda *args: {"source_id": 42, "donated_by": 7})
     disable = Mock()
     monkeypatch.setattr(sources.explabs_mod, "disable_credential", disable)
+    assert asyncio.run(sources.explabs_revoke(None, 11)).status_code == 303
+    disable.assert_called_once_with(11)
+    sources.invalidate_model_cache.assert_called_once_with("explabs")
+
+
+def test_revoke_admin_can_revoke_others(monkeypatch, owner):
+    monkeypatch.setattr(sources.db, "fetchone", lambda *args: {"source_id": 42, "donated_by": 8})
+    disable = Mock()
+    monkeypatch.setattr(sources.explabs_mod, "disable_credential", disable)
+    owner["is_admin"] = True
     assert asyncio.run(sources.explabs_revoke(None, 11)).status_code == 303
     disable.assert_called_once_with(11)
     sources.invalidate_model_cache.assert_called_once_with("explabs")

@@ -213,6 +213,78 @@ class ClaudeParseTest(unittest.TestCase):
         self.assertNotIn("thinking", payload)
         self.assertEqual(payload["temperature"], 0.2)
 
+    def test_forced_tool_choice_without_requested_effort_is_honored(self):
+        payload = claude_mod.build_messages_payload(
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}],
+                "tool_choice": {"type": "function", "function": {"name": "lookup"}},
+            },
+            "claude-sonnet-4-6",
+        )
+        # The client forced a tool and never asked for thinking: the default
+        # effort yields instead of silently downgrading the forced call.
+        self.assertEqual(payload["tool_choice"], {"type": "tool", "name": "lookup"})
+        self.assertNotIn("output_config", payload)
+
+    def test_forced_tool_choice_with_explicit_effort_is_demoted(self):
+        payload = claude_mod.build_messages_payload(
+            {
+                "reasoning_effort": "high",
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}],
+                "tool_choice": {"type": "function", "function": {"name": "lookup"}},
+            },
+            "claude-sonnet-4-6",
+        )
+        self.assertEqual(payload["tool_choice"], {"type": "auto"})
+        self.assertEqual(payload["output_config"], {"effort": "high"})
+
+    def test_small_max_tokens_drops_enabled_thinking(self):
+        meta = {"thinking_type": "enabled"}
+        with patch("app.sources.claude_payload._meta_for", return_value=meta):
+            payload = claude_mod.build_messages_payload(
+                {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 512},
+                "claude-sonnet-4-6",
+            )
+        # A budget clamped up to 1024 would exceed max_tokens and be rejected.
+        self.assertNotIn("thinking", payload)
+        with patch("app.sources.claude_payload._meta_for", return_value=meta):
+            payload = claude_mod.build_messages_payload(
+                {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 8000},
+                "claude-sonnet-4-6",
+            )
+        self.assertEqual(payload["thinking"], {"type": "enabled", "budget_tokens": 7999})
+
+    def test_data_url_media_type_must_be_image(self):
+        payload = claude_mod.build_messages_payload(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url", "image_url": {"url": "data:text/html;base64,QQ=="}}
+                        ],
+                    }
+                ]
+            },
+            "claude-sonnet-4-6",
+        )
+        # A non-image data URL is dropped, not forwarded as its media type.
+        self.assertEqual(payload["messages"][0]["content"][0]["type"], "text")
+
+    def test_failed_catalog_fetch_keeps_known_models(self):
+        from app.sources import claude_catalog
+
+        saved = (claude_catalog._models_cache, dict(claude_catalog._catalog_meta))
+        try:
+            claude_catalog._remember_models([{"id": "claude-future-9", "name": "Future 9"}])
+            self.assertIn("claude/claude-future-9", claude_catalog._remember_models([]))
+        finally:
+            claude_catalog._models_cache, claude_catalog._catalog_meta = saved
+            claude_catalog._catalog_meta.clear()
+            claude_catalog._catalog_meta.update(saved[1])
+
     def test_usage_windows_become_percent(self):
         parsed = claude_mod.parse_usage_payload(
             {
@@ -437,8 +509,11 @@ class ClaudePoolTest(unittest.IsolatedAsyncioTestCase):
             def __init__(self, *args, **kwargs):
                 self.posts = []
 
-            async def post(self, url, headers=None, json=None):
+            def build_request(self, method, url, headers=None, json=None):
                 self.posts.append((url, headers, json))
+                return url
+
+            async def send(self, req, stream=False):
                 return _FakeResp(events)
 
             async def aclose(self):
@@ -462,6 +537,43 @@ class ClaudePoolTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("data: [DONE]", text)
 
     @patch("app.sources.claude.note_pool_invoke")
+    @patch("app.sources.claude.refresh_pool_quota", new_callable=AsyncMock)
+    @patch("app.sources.claude.refresh_due", new_callable=AsyncMock)
+    async def test_chat_without_stream_key_is_non_streaming(self, _due, _quota, _invoke):
+        events = [
+            {"type": "message_start", "message": {"id": "msg_n", "usage": {"input_tokens": 3}}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "yo"}},
+            {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 1}},
+            {"type": "message_stop"},
+        ]
+
+        class Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def build_request(self, method, url, headers=None, json=None):
+                return url
+
+            async def send(self, req, stream=False):
+                return _FakeResp(events)
+
+            async def aclose(self):
+                return None
+
+        extra = {"access_token": "tok", "refresh_token": "rt"}
+        accounts.add_credential(self.sid, "mine", "tok", extra=extra, donated_by=self.alice["id"])
+        src = claude_mod.ClaudeSource({"id": self.sid, "name": "Claude"}, {}, [])
+        with patch("app.sources.claude.httpx.AsyncClient", Client):
+            result = await src.chat(
+                {"model": "claude/claude-sonnet-4-6", "messages": [{"role": "user", "content": "hi"}]},
+                user_id=self.alice["id"],
+            )
+        # Omitting "stream" is the OpenAI default: a JSON body, not SSE.
+        self.assertEqual(result.status, 200)
+        self.assertIsNone(result.stream)
+        self.assertEqual(result.body["choices"][0]["message"]["content"], "yo")
+
+    @patch("app.sources.claude.note_pool_invoke")
     @patch("app.sources.claude.refresh_due", new_callable=AsyncMock)
     async def test_signature_400_returns_actionable_error_without_rewriting_history(
         self, _due, _invoke
@@ -480,8 +592,11 @@ class ClaudePoolTest(unittest.IsolatedAsyncioTestCase):
             def __init__(self, *args, **kwargs):
                 pass
 
-            async def post(self, url, headers=None, json=None):
+            def build_request(self, method, url, headers=None, json=None):
                 posts.append(json)
+                return url
+
+            async def send(self, req, stream=False):
                 resp = AsyncMock()
                 resp.status_code = 400
                 resp.aread.return_value = err_body

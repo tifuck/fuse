@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from ... import db
 from ...security import limiter
+from ...sources import invalidate_model_cache
 from ...sources import chatgpt as chatgpt_mod
 from ..deps import _chatgpt_pending, _pool_flash, logger, require_user
 from .context import _chatgpt_pending_for, _oauth_tokens, _terminal_oauth_error
@@ -117,4 +118,5 @@ async def chatgpt_revoke(request: Request, cred_id: int):
     if row["donated_by"] != user["id"] and not user["is_admin"]:
         raise HTTPException(403, "Forbidden")
     chatgpt_mod.disable_credential(cred_id)
+    invalidate_model_cache("chatgpt")
     return RedirectResponse("/sources", status_code=303)

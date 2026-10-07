@@ -44,6 +44,8 @@ def _image_block(part: dict) -> dict | None:
         if not header.endswith(";base64") or not data:
             return None
         media = header[5:].split(";", 1)[0] or "image/png"
+        if not media.startswith("image/"):
+            return None
         return {"type": "image", "source": {"type": "base64", "media_type": media, "data": data}}
     if url.startswith("https://") or url.startswith("http://"):
         return {"type": "image", "source": {"type": "url", "url": url}}
@@ -286,7 +288,20 @@ def build_messages_payload(body: dict, model: str) -> dict:
         break
     choice = _tool_choice(body.get("tool_choice"), body.get("parallel_tool_calls"))
     effort = _requested_effort(body, model)
-    # A forced tool choice is illegal while thinking is on. Claude Code demotes it.
+    # A forced tool choice is illegal while thinking is on. A client that
+    # forces a tool without asking for thinking keeps its forced call (the
+    # default effort yields); only an explicit thinking request demotes the
+    # choice, as Claude Code does.
+    raw_effort = body.get("reasoning_effort")
+    if raw_effort is None and isinstance(body.get("reasoning"), dict):
+        raw_effort = body["reasoning"].get("effort")
+    explicit_effort = (
+        isinstance(raw_effort, str)
+        and bool(raw_effort.strip())
+        and raw_effort.strip().lower() not in _THINKING_OFF
+    )
+    if choice and choice.get("type") == "tool" and effort and not explicit_effort:
+        effort = None
     if choice and choice.get("type") == "tool" and effort:
         choice = {"type": "auto"}
     if choice and tools:
@@ -301,7 +316,10 @@ def build_messages_payload(body: dict, model: str) -> dict:
         if thinking_type == "adaptive":
             payload["thinking"] = {"type": "adaptive"}
         elif thinking_type == "enabled":
-            budget = max(1024, min(max_tokens - 1, 8192))
+            # Thinking must fit under max_tokens; below the 1024 floor there
+            # is no room, and clamping the budget up would make Anthropic
+            # reject the whole request.
+            budget = min(max_tokens - 1, 8192)
             if budget >= 1024:
                 payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
     else:

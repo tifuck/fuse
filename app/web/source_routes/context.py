@@ -28,6 +28,7 @@ def _pending_for(uid: int):
     if time.time() - float(data.get("_started") or 0) > _PENDING_TTL:
         _pending.pop(uid, None)
         return None
+    _clamp_interval(data)
     return data
 
 
@@ -38,6 +39,7 @@ def _chatgpt_pending_for(uid: int):
     if time.time() - float(data.get("_started") or 0) > _PENDING_TTL:
         _chatgpt_pending.pop(uid, None)
         return None
+    _clamp_interval(data)
     return data
 
 
@@ -58,6 +60,7 @@ def _kimi_pending_for(uid: int):
     if time.time() - float(data.get("_started") or 0) > _PENDING_TTL:
         _kimi_pending.pop(uid, None)
         return None
+    _clamp_interval(data)
     return data
 
 
@@ -79,6 +82,15 @@ def _mimo_pending_for(uid: int):
         _mimo_pending.pop(uid, None)
         return None
     return data
+
+
+def _clamp_interval(data: dict) -> None:
+    """The auth server controls `interval`; keep poll backoffs inside 3-30s
+    before the value reaches a client `retry_after` or the poll page."""
+    try:
+        data["interval"] = max(3, min(int(data.get("interval") or 5), 30))
+    except (TypeError, ValueError):
+        data["interval"] = 5
 
 
 def _oauth_tokens(raw) -> dict:
@@ -109,23 +121,25 @@ def _oauth_tokens(raw) -> dict:
     return {**raw, "access_token": access, "refresh_token": refresh, "expires_in": expires}
 
 
+# Terminal device-flow error codes, matched exactly: a transient message
+# merely containing "expired" or "denied" must keep polling, not kill the
+# pending sign-in.
+_TERMINAL_OAUTH_ERRORS = frozenset(
+    {
+        "access_denied",
+        "authorization_declined",
+        "cancelled",
+        "expired_token",
+        "invalid_grant",
+        "invalid_request",
+        "unauthorized_client",
+        "unsupported_grant_type",
+    }
+)
+
+
 def _terminal_oauth_error(error: str) -> bool:
-    value = (error or "").lower()
-    return any(
-        marker in value
-        for marker in (
-            "access_denied",
-            "denied",
-            "expired_token",
-            "expired",
-            "authorization_declined",
-            "invalid_grant",
-            "invalid_request",
-            "unauthorized_client",
-            "unsupported_grant_type",
-            "cancelled",
-        )
-    )
+    return (error or "").strip().lower() in _TERMINAL_OAUTH_ERRORS
 
 
 def _pool_card(user, row, *, kind: str, index: int, extra: dict | None = None) -> dict:

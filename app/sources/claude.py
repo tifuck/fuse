@@ -733,8 +733,12 @@ class ClaudeSource:
 
     async def _post(self, client: httpx.AsyncClient, token: str, payload: dict):
         url = settings.claude_api_base.rstrip("/") + "/v1/messages"
-        resp = await client.post(url, headers=_chat_headers(token), json=payload)
-        return resp
+        # Streaming send: the body stays unread until the translator iterates
+        # it, so the first event reaches the client as Anthropic produces it
+        # and a cancelled request stops generation promptly. client.post would
+        # buffer the whole SSE response before returning.
+        req = client.build_request("POST", url, headers=_chat_headers(token), json=payload)
+        return await client.send(req, stream=True)
 
     async def chat(self, body: dict, *, session_id: str | None = None, user_id: int | None = None) -> ChatResult:
         await refresh_due()
@@ -752,7 +756,7 @@ class ClaudeSource:
         last = ChatResult(status=503, body={"error": {"message": "No Claude accounts in the pool"}})
         requested = str(body.get("model") or CLAUDE_MODELS[0])
         upstream = upstream_id(requested)
-        want_stream = body.get("stream") is not False
+        want_stream = bool(body.get("stream"))
         payload = build_messages_payload(body, upstream)
         prefer_id = lookup("claude", session_id)
         failover = Failover()
@@ -779,7 +783,10 @@ class ClaudeSource:
                     ok = await refresh_one(cred)
                     if ok:
                         attempts.append({"credential_id": cred["id"], "status": 401, "usage": {}})
-                        extra = accounts.cred_extra(db.fetchone("SELECT * FROM credentials WHERE id=?", (cred["id"],)))
+                        row = db.fetchone("SELECT * FROM credentials WHERE id=?", (cred["id"],))
+                        if row is None:
+                            continue
+                        extra = accounts.cred_extra(row)
                         token = _bearer(cred, extra)
                         client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=15.0))
                         resp = await self._post(client, token, payload)
@@ -840,11 +847,17 @@ class ClaudeSource:
                     failover.served()
                     return self._stream_result(stream, collected, cred, session_id, fuse_id(upstream), attempts)
                 obj = await _aggregate(resp, client, upstream)
-                usage = obj.get("usage") if isinstance(obj.get("usage"), dict) else obj.get("_fuse_usage") or {}
-                if obj.get("error"):
-                    last = ChatResult(status=502, body=obj, usage=usage if isinstance(usage, dict) else {}, credential_id=cred["id"], model=fuse_id(upstream))
+                if isinstance(obj.get("error"), dict):
+                    partial_usage = obj.pop("_fuse_usage", {}) if isinstance(obj, dict) else {}
+                    if partial_usage:
+                        partial_usage["usage_status"] = "partial"
+                    last = ChatResult(status=502, body=obj, usage=partial_usage, credential_id=cred["id"], model=fuse_id(upstream))
+                    if failover.server_error(cred["id"], 502, 60):
+                        attempts.append({"credential_id": cred["id"], "status": 502, "usage": partial_usage})
+                        continue
                     last.attempts = attempts
                     return last
+                usage = obj.get("usage") if isinstance(obj.get("usage"), dict) else {}
                 failover.served()
                 bind("claude", session_id, cred["id"])
                 last = ChatResult(status=200, body=obj, usage=usage if isinstance(usage, dict) else {}, credential_id=cred["id"], model=fuse_id(upstream))

@@ -59,7 +59,7 @@ async def explabs_revoke(request: Request, cred_id: int):
     row = db.fetchone("SELECT id, donated_by, source_id FROM credentials WHERE id=?", (cred_id,))
     if not row or row["source_id"] != sid:
         raise HTTPException(404, "Not found")
-    if row["donated_by"] != user["id"]:
+    if row["donated_by"] != user["id"] and not user["is_admin"]:
         raise HTTPException(403, "Forbidden")
     explabs_mod.disable_credential(cred_id)
     invalidate_model_cache("explabs")

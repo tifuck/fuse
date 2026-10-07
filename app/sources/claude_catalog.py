@@ -109,7 +109,7 @@ def parse_catalog_payload(data: dict) -> list[dict]:
                 efforts = [str(opt.get("id")) for opt in options if isinstance(opt, dict) and opt.get("id")]
             efforts = tuple(str(item) for item in efforts if isinstance(item, str) and item)
             try:
-                window = int(runtime.get("max_input_tokens") or 0)
+                window = min(int(runtime.get("max_input_tokens") or 0), 1_000_000)
             except (TypeError, ValueError):
                 window = 0
             rows.append(
@@ -143,6 +143,11 @@ def _remember_models(rows: list[dict]) -> list[str]:
         names.append(fid)
         meta[upstream_id(fid)] = row
     if not names:
+        if _models_cache and _models_cache[1]:
+            # A failed or empty fetch must not drop models the picker already
+            # showed; keep the prior list (and its age, so the next call
+            # refetches) instead of resetting to the seed list.
+            return list(_models_cache[1])
         names = list(CLAUDE_MODELS)
         meta = {upstream_id(mid): {"id": upstream_id(mid), **CLAUDE_MODEL_META[upstream_id(mid)]} for mid in names}
     else:
