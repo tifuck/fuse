@@ -346,6 +346,12 @@ def _snippet(raw: str, needle: str) -> str:
             text = " ".join(content[start : idx + len(needle) + 64].split())
             return ("…" if start > 0 else "") + text
     return ""
+# Transcript search is a leading-wildcard LIKE over multi-MB blobs: it cannot
+# use an index, so it only scans the newest window of threads. Title, project
+# and host matches stay unbounded (small columns).
+# ponytail: real transcript search needs a FTS column (schema change); widen
+# the window if users miss older hits before then.
+_SEARCH_MESSAGE_WINDOW = 500
 def search_threads(user_id: int, q: str, *, archived: bool = False) -> list[dict]:
     needle = q.strip()
     if not needle:
@@ -358,11 +364,15 @@ def search_threads(user_id: int, q: str, *, archived: bool = False) -> list[dict
            LEFT JOIN user_projects p ON p.id=t.project_id
            LEFT JOIN chat_schedules s ON s.id=t.schedule_id
            WHERE t.user_id=? AND t.archived=? AND (
-                t.title LIKE ? ESCAPE '\\' OR t.messages LIKE ? ESCAPE '\\'
-                OR IFNULL(p.name,'') LIKE ? ESCAPE '\\' OR IFNULL(h.alias,'') LIKE ? ESCAPE '\\'
+                t.title LIKE ? ESCAPE '\\' OR IFNULL(p.name,'') LIKE ? ESCAPE '\\'
+                OR IFNULL(h.alias,'') LIKE ? ESCAPE '\\'
+                OR (t.id IN (SELECT id FROM (SELECT id FROM chat_threads WHERE user_id=? AND archived=?
+                             ORDER BY updated_at DESC, id DESC LIMIT ?) recent)
+                    AND t.messages LIKE ? ESCAPE '\\')
            )
            ORDER BY t.updated_at DESC, t.id DESC LIMIT 50""",
-        (user_id, 1 if archived else 0, like, like, like, like),
+        (user_id, 1 if archived else 0, like, like, like,
+         user_id, 1 if archived else 0, _SEARCH_MESSAGE_WINDOW, like),
     )
     lower = needle.lower()
     out = []
@@ -674,7 +684,13 @@ def _update_thread(conn, row, *, title, model, archived, pinned, messages, conte
         conn.execute("UPDATE chat_threads SET title_job_token='',title_job_until='' WHERE id=?", (row["id"],))
     elif model is not None and new_model != row["model"] and not new_state:
         conn.execute("UPDATE chat_threads SET title_attempts=0,title_attempted_at='' WHERE id=?", (row["id"],))
-def delete_thread(user_id: int, thread_id, *, expected_revision=None, command_id=None) -> bool:
+def delete_thread(user_id: int, thread_id, *, expected_revision=None, command_id=None,
+                  cancel_active: bool = True) -> bool:
+    """Delete a thread and its runs. A stale ``expected_revision`` is a no-op
+    (False), so background sweepers can skip a thread that moved under them
+    instead of aborting. With ``cancel_active=False`` (retention sweeps) the
+    deletion refuses while any run is queued/running; interactive callers keep
+    the legacy behavior of cancelling those runs and deleting anyway."""
     from . import chat_store as store
 
     with store.transaction() as conn:
@@ -687,9 +703,15 @@ def delete_thread(user_id: int, thread_id, *, expected_revision=None, command_id
         row = conn.execute("SELECT revision, public_id FROM chat_threads WHERE id=? AND user_id=?", (pk, user_id)).fetchone()
         if row is None:
             return False
-        store.check_revision(row["revision"], expected_revision)
+        if expected_revision is not None:
+            if type(expected_revision) is not int or expected_revision < 0:
+                raise ChatValidationError("expected_revision must be a non-negative integer")
+            if expected_revision != int(row["revision"]):
+                return False
         public = str(row["public_id"]) if "public_id" in row.keys() and row["public_id"] else public_id_for(pk, conn)
         active = conn.execute("SELECT * FROM chat_runs WHERE thread_id=? AND user_id=? AND status IN ('queued','running')", (pk, user_id)).fetchall()
+        if active and not cancel_active:
+            return False
         for run in active:
             conn.execute("UPDATE chat_runs SET cancel_requested=1,updated_at=? WHERE id=?", (db.now(), run["id"]))
             kind = "agent.cancel_requested" if run["parent_run_id"] else "run.cancel_requested"
@@ -720,21 +742,24 @@ def delete_schedule_owned_thread(user_id: int, thread_id: int, *, keep_thread_id
         return False
     with store.transaction() as conn:
         row = conn.execute(
-            """SELECT id, schedule_id FROM chat_threads WHERE id=? AND user_id=?""",
+            """SELECT id, schedule_id, public_id FROM chat_threads WHERE id=? AND user_id=?""",
             (tid, user_id),
         ).fetchone()
         if row is None or row["schedule_id"] is None:
             return False
+        # Any live run blocks: a background subagent can outlive its root turn,
+        # and deleting its row would leave the worker executing for a thread
+        # that no longer exists.
         active = conn.execute(
-            """SELECT 1 FROM chat_runs WHERE thread_id=? AND user_id=? AND status IN ('queued','running')
-               AND parent_run_id IS NULL""",
+            """SELECT 1 FROM chat_runs WHERE thread_id=? AND user_id=? AND status IN ('queued','running')""",
             (tid, user_id),
         ).fetchone()
         if active:
             return False
         conn.execute("DELETE FROM chat_runs WHERE thread_id=? AND user_id=?", (tid, user_id))
         conn.execute("DELETE FROM chat_threads WHERE id=? AND user_id=? AND schedule_id IS NOT NULL", (tid, user_id))
-        store.event(conn, user_id, "thread.deleted", tid, {"id": tid})
+        public = str(row["public_id"]) if "public_id" in row.keys() and row["public_id"] else tid
+        store.event(conn, user_id, "thread.deleted", tid, {"id": public})
     try:
         from . import command_jobs
 

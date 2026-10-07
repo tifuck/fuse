@@ -1,6 +1,7 @@
 """Publisher lifecycle checks without database or provider traffic."""
 import asyncio
 import unittest
+from contextlib import nullcontext
 from unittest.mock import patch
 
 from app import chat_pub
@@ -43,3 +44,17 @@ class PublisherTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(RuntimeError, "queue is full"):
                 store.publish(1, "run.progress")
             self.assertEqual(await first, 1)
+
+    async def test_fallback_fails_a_stranded_queue_instead_of_hanging(self):
+        loop = asyncio.get_running_loop()
+        stranded = loop.create_future()
+        chat_pub._pub_queue.append((1, "run.progress", None, {"sequence": 0}, None, stranded))
+        chat_pub._pub_task = None  # committer died with work still queued
+        direct = loop.create_future()
+        with patch.object(chat_pub.chat_tx, "transaction", return_value=nullcontext(object())), \
+                patch.object(chat_pub.chat_tx, "event", return_value=7):
+            chat_pub.publish(1, "run.progress", payload={"sequence": 1}, future=direct)
+        self.assertEqual(await direct, 7)
+        with self.assertRaisesRegex(RuntimeError, "publication failed"):
+            await stranded
+        self.assertEqual(list(chat_pub._pub_queue), [])

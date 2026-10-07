@@ -433,6 +433,9 @@ def save_meter(user_id, thread_id, meter):
                 return
             state["meter"] = dict(meter)
             conn.execute("UPDATE chat_threads SET compaction=? WHERE id=? AND user_id=?", (ctxmod.dump_state(state), pk, user_id))
+            # Compaction state is view-visible: publish so the thread watermark
+            # moves, or get_thread's unchanged short-circuit serves stale data.
+            chat_tx.thread_event(conn, user_id, pk)
             return
         messages = chats.parse_messages(row["messages"])
         run = conn.execute(
@@ -453,6 +456,7 @@ def save_meter(user_id, thread_id, meter):
             "UPDATE chat_threads SET compaction=? WHERE id=? AND user_id=?",
             (ctxmod.dump_state(state), pk, user_id),
         )
+        chat_tx.thread_event(conn, user_id, pk)
 
 
 def save_compaction(user_id, thread_id, state, *, bump=True, event_name="compaction.updated"):
@@ -476,6 +480,9 @@ def save_compaction(user_id, thread_id, state, *, bump=True, event_name="compact
                 "UPDATE chat_threads SET compaction=?, updated_at=? WHERE id=? AND user_id=?",
                 (dumped, ts, pk, user_id),
             )
+            # Same contract as save_meter: a view-visible write must advance the
+            # thread watermark even without a revision bump.
+            chat_tx.thread_event(conn, user_id, pk)
         view = chat_views.thread_view(conn, user_id, pk)
         payload = (view or {}).get("compaction") or {"meter": parsed.get("meter")}
         chat_tx.event(conn, user_id, event_name, pk, payload)

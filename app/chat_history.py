@@ -69,7 +69,9 @@ def for_model(messages, model):
                     while replacement in seen:
                         replacement = "fuse_" + hashlib.sha256(replacement.encode()).hexdigest()[:32]
                 seen.add(replacement)
-                pending[ident] = replacement
+                # A duplicate id inside one message: its result pairs with the
+                # first call, deterministically.
+                pending.setdefault(ident, replacement)
                 calls.append({**call, "id": replacement})
             row["tool_calls"] = calls
         elif row.get("role") == "tool":

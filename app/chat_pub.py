@@ -89,6 +89,22 @@ def _pub_drain():
     return batch
 
 
+def _fail_futures(batch) -> None:
+    for item in batch:
+        future = item[5]
+        if future is not None and not future.done():
+            _resolve_future(future, None, error=True)
+
+
+def _fail_stranded() -> None:
+    """No committer can run: fail everything still queued so its waiters do not
+    hang and a fallback cannot reorder those events after newer ones."""
+    with _pub_lock:
+        stranded = list(_pub_queue)
+        _pub_queue.clear()
+    _fail_futures(stranded)
+
+
 def _commit_publications(batch, attempts=3):
     eids = []
     try:
@@ -138,6 +154,8 @@ async def _pub_committer():
             try:
                 eids = await asyncio.to_thread(_commit_publications, batch)
             except asyncio.CancelledError:
+                # Shutdown mid-batch: do not strand its waiters unobserved.
+                _fail_futures(batch)
                 raise
             except Exception as exc:  # noqa: BLE001 - surfaced to every waiter
                 error = exc
@@ -145,13 +163,18 @@ async def _pub_committer():
             for index, (_user_id, _type, _thread_id, _payload, _guard_run, future) in enumerate(batch):
                 if future is None or future.done():
                     continue
-                if error is not None:
-                    # Do not attach the active committer's traceback to an
-                    # exception owned by another task; consumers may clear
-                    # traceback frames while this coroutine is suspended.
-                    future.set_exception(RuntimeError("event publication failed"))
-                else:
-                    future.set_result(eids[index] if eids else None)
+                try:
+                    if error is not None:
+                        # Do not attach the active committer's traceback to an
+                        # exception owned by another task; consumers may clear
+                        # traceback frames while this coroutine is suspended.
+                        future.set_exception(RuntimeError("event publication failed"))
+                    else:
+                        future.set_result(eids[index] if eids else None)
+                except Exception:
+                    # One bad future must not kill the committer: that strands
+                    # the queue and every later waiter.
+                    logger.exception("Failed to settle event publication future")
 
 
 def publish(user_id, type, thread_id=None, payload=None, guard_run=None, future=None):
@@ -163,6 +186,10 @@ def publish(user_id, type, thread_id=None, payload=None, guard_run=None, future=
     into a drain that will never come.
     """
     if _pub_task is None or _pub_task.done() or _pub_gate is None:
+        # A dead committer leaves its queue stranded; drain and fail it before
+        # falling back so those waiters resolve and cannot reorder behind this
+        # direct commit.
+        _fail_stranded()
         try:
             eid = None
             with chat_tx.transaction() as conn:

@@ -250,7 +250,11 @@ def events_after(user_id, cursor, limit=256):
         payload = json.loads(row["payload"])
         thread_id = row["thread_id"]
         public = payload.get("id") if isinstance(payload, dict) else None
-        if isinstance(public, str) and chats.PUBLIC_ID_RE.match(public):
+        # Only thread events carry the thread's own public id as "id" (and the
+        # JOIN is NULL once the thread row is gone); other payloads may hold
+        # unrelated ids that must not masquerade as the thread.
+        if (row["type"] in ("thread.updated", "thread.deleted")
+                and isinstance(public, str) and chats.PUBLIC_ID_RE.match(public)):
             thread_id = public
         out.append({"id": int(row["id"]), "type": row["type"], "thread_id": thread_id, "payload": payload})
     return out

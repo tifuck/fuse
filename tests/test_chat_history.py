@@ -157,6 +157,44 @@ class HistoryTest(unittest.TestCase):
         chats.delete_thread(1, self.thread["id"])
         self.assertIn("COPIED_TOOL", json.dumps(self.start(thread=copy)["request"]["messages"]))
 
+    def test_delete_skips_stale_or_busy_threads_unless_cancelling(self):
+        run = self.start("busy")
+        tid = self.thread["id"]
+        # A stale revision must not delete or raise: background sweeps skip.
+        self.assertFalse(chats.delete_thread(1, tid, expected_revision=999))
+        self.assertIsNotNone(chats.get_thread(1, tid))
+        # Retention-mode deletion refuses while runs are queued/running.
+        self.assertFalse(chats.delete_thread(1, tid, cancel_active=False))
+        self.assertIsNotNone(chats.get_thread(1, tid))
+        # The interactive default still cancels the runs and deletes.
+        self.assertTrue(chats.delete_thread(1, tid))
+        self.assertIsNone(chats.get_thread(1, tid))
+        self.assertIsNone(store.get_run(1, run["id"]))
+
+    def test_search_matches_message_text_within_the_scan_window(self):
+        self.complete(self.start("question"), content="the NEEDLE_RESULT is here")
+        view = chats.get_thread(1, self.thread["id"])
+        hits = chats.search_threads(1, "NEEDLE_RESULT")
+        self.assertEqual([item["id"] for item in hits], [view["id"]])
+        self.assertIn("NEEDLE_RESULT", hits[0]["snippet"])
+        self.assertEqual(chats.search_threads(1, "absent-needle"), [])
+
+    def test_wake_candidates_only_surface_unwoken_background_children(self):
+        run = self.start("go")
+        thread_id = run["thread_id"]
+        child = store.start_child_run(user_id=1, thread_id=thread_id, parent_run_id=run["id"],
+                                      prompt="work", description="audit", subagent_type="general-purpose")
+        store.save_turn_progress(child["id"], [{"role": "user", "content": "work"}])
+        store.finish_run(child["id"], {"content": "REPORT"}, "completed")
+        # Not background: the wake sweep must not pick it up.
+        self.assertEqual(store.wake_candidates(1, thread_id), [])
+        store.mark_child_background(child["id"])
+        candidates = store.wake_candidates(1, thread_id)
+        self.assertEqual([item["id"] for item in candidates], [child["id"]])
+        self.assertIn("REPORT", candidates[0]["summary"])
+        store.mark_wake_sent([child["id"]])
+        self.assertEqual(store.wake_candidates(1, thread_id), [])
+
     def test_deleted_tool_trace_is_not_restored_from_an_old_snapshot(self):
         run = self.start()
         source = [*run["request"]["messages"],
@@ -282,6 +320,18 @@ class OutputAndModelTest(unittest.TestCase):
             ids,
         )
         self.assertEqual(rows[2]["tool_calls"][0]["id"], "same")
+
+    def test_duplicate_call_ids_inside_one_message_pair_with_the_first_call(self):
+        rows = [
+            {"role": "assistant", "tool_calls": [
+                {"id": "same", "function": {"name": "read_file", "arguments": "{}"}},
+                {"id": "same", "function": {"name": "grep", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "same", "content": "RESULT"},
+        ]
+        wire = memory.for_model(rows, "glm-5.3")
+        first, second = wire[0]["tool_calls"]
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertEqual(wire[1]["tool_call_id"], first["id"])
 
     def test_full_replay_has_separate_internal_transport_budget(self):
         from app import api

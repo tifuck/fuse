@@ -410,6 +410,10 @@ def take_followups(run_id: str) -> list[str]:
             current = conn.execute("SELECT id,status,request FROM chat_runs WHERE id=?", (run_id,)).fetchone()
             if current is None:
                 return leftover
+            if current["status"] in chat_tx.ACTIVE:
+                # Re-queued since the first read (resume/follow-up continuation):
+                # its queue is live again and may hold fresh follow-ups.
+                return leftover
             try:
                 creq = json.loads(current["request"] or "{}")
             except (json.JSONDecodeError, TypeError):
@@ -503,6 +507,7 @@ def continue_child_with_followups(run_id: str, followups: list) -> bool:
         req["messages"] = sealed
         req["display_seed"] = sealed
         agent["pending_followups"] = []
+        agent["unconsumed_followups"] = []
         agent["background"] = True
         agent["followup_continuation"] = True
         agent["delivery_generation"] = uuid4().hex
@@ -996,7 +1001,9 @@ def resolve_child_run(user_id, token: str, *, thread_id=None, parent_run_id: str
     )
     needle = raw.lower()
     for row in rows:
-        if str(row["id"]).startswith(raw):
+        # Prefix ids must be uuid-like: a 1-2 character token would resolve to
+        # whichever recent child happens to sort first.
+        if len(raw) >= 8 and str(row["id"]).startswith(raw):
             return chat_views.run_view(row)
     # Description fallback must be an exact, unique match: substring matching
     # resolves vague tokens (kill/get_output) to an arbitrary recent child.

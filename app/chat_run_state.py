@@ -397,8 +397,13 @@ def start_turn(user_id, thread_id, text, expected_revision, command_id, model=No
 
 def wake_candidates(user_id, thread_id):
     """Terminal background children of a thread that have not woken the parent yet."""
-    rows = db.fetchall(
-        """SELECT child.id, child.status, child.request, child.message FROM chat_runs child
+    # Flags first, blobs second: every terminal child's request/message can be
+    # megabytes and only the wake-pending few need them.
+    flags = db.fetchall(
+        """SELECT child.id,
+                  COALESCE(json_extract(child.request, '$.agent.background'), 0) AS background,
+                  COALESCE(json_extract(child.request, '$.agent.wake_sent'), 0) AS wake_sent
+           FROM chat_runs child
            WHERE child.user_id=? AND child.thread_id=? AND child.parent_run_id IS NOT NULL
               AND child.status IN ('completed','failed','cancelled','interrupted')
               AND NOT EXISTS (
@@ -408,8 +413,21 @@ def wake_candidates(user_id, thread_id):
            ORDER BY child.created_at""",
         (user_id, thread_id),
     )
+    wanted = [row["id"] for row in flags if _json_flag(row["background"]) and not _json_flag(row["wake_sent"])]
+    if not wanted:
+        return []
+    rows = {}
+    for offset in range(0, len(wanted), 400):
+        batch = wanted[offset:offset + 400]
+        rows.update((r["id"], r) for r in db.fetchall(
+            f"SELECT id, status, request, message FROM chat_runs WHERE id IN ({','.join('?' for _ in batch)})",
+            batch,
+        ))
     out = []
-    for row in rows:
+    for ident in wanted:
+        row = rows.get(ident)
+        if row is None:
+            continue
         try:
             agent = (json.loads(row["request"]) or {}).get("agent")
         except (json.JSONDecodeError, TypeError):
@@ -866,6 +884,12 @@ def finish_run(run_id, message, status):
             chat_tx.event(conn, row["user_id"], "run.resumed", row["thread_id"],
                   {"run_id": run_id, "message_id": row["message_id"], "reason": "pending_steer"})
             return
+        if not child and agent.get("pending_steers"):
+            # Accepted steers the requeue above could not take (continuation
+            # budget spent, or the user stopped): their rows stay in the thread
+            # and replay with the next turn, so say so instead of dropping them
+            # silently.
+            _append_notice(message, "A queued message was not delivered this turn; it will be included with your next message.")
         if not child:
             request.pop("messages", None)
         if isinstance(request.get("agent"), dict):
@@ -995,6 +1019,15 @@ def request_cancel_self(user_id, run_id):
     return ids
 
 
+def _json_flag(value) -> bool:
+    """Truthiness for a json_extract column value: SQLite returns 1/0, while
+    MariaDB's JSON_VALUE returns 'true'/'false'/'null' strings (whose plain
+    bool() would be True even for 'false')."""
+    if isinstance(value, str):
+        return value not in ("", "0", "false", "null")
+    return bool(value)
+
+
 def _cancel_tree_rows(user_id, root, with_background):
     """Lightweight root-tree scan for cancellation walks.
 
@@ -1006,11 +1039,14 @@ def _cancel_tree_rows(user_id, root, with_background):
     if not with_background:
         return db.fetchall(f"{base} FROM chat_runs WHERE user_id=? AND root_run_id=?", (user_id, root))
     try:
-        return db.fetchall(
-            f"{base}, COALESCE(json_extract(request, '$.agent.background'), 0) AS background"
-            " FROM chat_runs WHERE user_id=? AND root_run_id=?",
-            (user_id, root),
-        )
+        return [
+            {**item, "background": _json_flag(item["background"])}
+            for item in db.fetchall(
+                f"{base}, COALESCE(json_extract(request, '$.agent.background'), 0) AS background"
+                " FROM chat_runs WHERE user_id=? AND root_run_id=?",
+                (user_id, root),
+            )
+        ]
     except Exception:
         out = []
         for item in db.fetchall(f"{base}, request FROM chat_runs WHERE user_id=? AND root_run_id=?", (user_id, root)):
