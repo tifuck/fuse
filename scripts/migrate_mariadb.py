@@ -14,6 +14,8 @@ import sqlite3
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
+from pymysql.cursors import SSCursor
+
 from app.config import settings
 from app.mysql_compat import SCHEMA_VERSION, connect
 
@@ -22,12 +24,15 @@ def q(name):
     return "`" + name.replace("`", "``") + "`"
 
 
+def digest_row(row):
+    values = [("blob", v.hex()) if isinstance(v, bytes) else (type(v).__name__, v) for v in row]
+    return json.dumps(values, ensure_ascii=True, separators=(",", ":")).encode() + b"\n"
+
+
 def digest(rows):
     result = hashlib.sha256()
     for row in rows:
-        values = [("blob", v.hex()) if isinstance(v, bytes) else (type(v).__name__, v) for v in row]
-        result.update(json.dumps(values, ensure_ascii=True, separators=(",", ":")).encode())
-        result.update(b"\n")
+        result.update(digest_row(row))
     return result.hexdigest()
 
 
@@ -110,17 +115,30 @@ def migrate(source, database):
         primary = [c[1] for c in sorted(columns, key=lambda c: c[5]) if c[5]]
         ordering = ",".join(map(q, primary or names))
         select = f"SELECT {','.join(map(q, names))} FROM {q(table)} ORDER BY {ordering}"
-        rows = src.execute(select).fetchall()
         query = f"INSERT INTO {q(table)} ({','.join(map(q, names))}) VALUES ({','.join(['%s'] * len(names))})"
+        # Stream both sides: chat-sized tables must never be held whole in
+        # memory for the copy or the verification read.
+        rows = 0
+        checksum = hashlib.sha256()
         with dst._raw.cursor() as cursor:
-            for start in range(0, len(rows), 200):
-                cursor.executemany(query, rows[start:start+200])
+            source = src.execute(select)
+            while batch := source.fetchmany(200):
+                rows += len(batch)
+                for row in batch:
+                    checksum.update(digest_row(row))
+                cursor.executemany(query, batch)
         dst.commit()
-        copied = [tuple(r.values()) for r in dst.native(select).fetchall()]
-        checksum = digest(rows)
-        if len(rows) != len(copied) or checksum != digest(copied):
+        copied = 0
+        verified = hashlib.sha256()
+        with dst._raw.cursor(SSCursor) as cursor:
+            cursor.execute(select)
+            while batch := cursor.fetchmany(200):
+                copied += len(batch)
+                for row in batch:
+                    verified.update(digest_row(row))
+        if rows != copied or checksum.hexdigest() != verified.hexdigest():
             raise RuntimeError(f"Content verification failed for {table}")
-        report[table] = {"rows": len(rows), "sha256": checksum}
+        report[table] = {"rows": rows, "sha256": checksum.hexdigest()}
         # Preserve sequence high-water marks, including deleted rows and the
         # empty thread-ID allocator. MAX(id) alone would reuse historical IDs.
         if primary == ["id"] and next(c for c in columns if c[1] == "id")[2].upper() == "INTEGER":
@@ -130,7 +148,7 @@ def migrate(source, database):
             if table == "chat_thread_ids":
                 floor = max(floor, src.execute("SELECT COALESCE(MAX(id),0) FROM chat_threads").fetchone()[0])
             dst.native(f"ALTER TABLE {q(table)} AUTO_INCREMENT={floor + 1}")
-        print(f"Verified {table}: {len(rows)} rows", flush=True)
+        print(f"Verified {table}: {rows} rows", flush=True)
     # Preserve SQLite's implicit command insertion order used on reconnect.
     dst.native("ALTER TABLE chat_commands ADD COLUMN rowid BIGINT NULL")
     with dst._raw.cursor() as cursor:

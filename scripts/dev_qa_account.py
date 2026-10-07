@@ -50,8 +50,9 @@ def _login() -> dict:
             return data
     data = {"email": EMAIL, "password": secrets.token_urlsafe(18), "url": "https://127.0.0.1:8089/login"}
     LOGIN_FILE.parent.mkdir(parents=True, exist_ok=True)
-    LOGIN_FILE.write_text(json.dumps(data, indent=2) + "\n")
-    os.chmod(LOGIN_FILE, 0o600)
+    fd = os.open(LOGIN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as stream:
+        stream.write(json.dumps(data, indent=2) + "\n")
     return data
 
 

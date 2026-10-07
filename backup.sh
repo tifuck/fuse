@@ -106,6 +106,7 @@ mv "$TMP" "$OUT"
 sha256sum "$OUT" > "$OUT.sha256"
 
 RETAIN="${FUSE_BACKUP_RETAIN:-10}"
+[[ "$RETAIN" =~ ^[0-9]+$ ]] || die "FUSE_BACKUP_RETAIN must be a non-negative integer (got '$RETAIN')"
 mapfile -t olds < <(ls -1 "$OUT_DIR"/fuse-source-*.tar.gz 2>/dev/null | sort -r)
 if [ "${#olds[@]}" -gt "$RETAIN" ]; then
   for old in "${olds[@]:RETAIN}"; do

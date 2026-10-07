@@ -12,35 +12,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
-import os
 import statistics
 import sys
 import time
 from unittest.mock import patch
-from urllib.parse import urlsplit, urlunsplit
 
-import pymysql
 from fastapi.responses import StreamingResponse
-
-
-def _scratch_schema(connections: int = 16):
-    from app.config import settings
-    from app.mysql_compat import connect
-
-    schema = f"fuse_loadtest_{os.getpid()}"
-    admin = pymysql.connect(user="root", unix_socket="/run/mysqld/mysqld.sock", autocommit=True)
-    url = urlsplit(settings.database_url)
-    with admin.cursor() as cursor:
-        cursor.execute(f"CREATE DATABASE `{schema}`")
-        cursor.execute(
-            "SELECT table_name FROM information_schema.tables WHERE table_schema=%s",
-            (url.path.strip("/"),),
-        )
-        for (table,) in cursor.fetchall():
-            cursor.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{url.path.strip('/')}`.`{table}`")
-        for host in ("localhost", "127.0.0.1"):
-            cursor.execute(f"GRANT ALL ON `{schema}`.* TO %s@%s", (url.username, host))
-    return connect(urlunsplit(url._replace(path="/" + schema)), max_connections=connections), admin, schema
 
 
 @contextlib.contextmanager

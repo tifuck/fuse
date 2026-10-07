@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Review queue for user-submitted bug reports (bug_reports in data/fuse.db).
+"""Review queue for user-submitted bug reports (bug_reports in the configured
+MariaDB schema).
 
 Run from the repo root (re-execs through ./venv when needed):
 
@@ -8,7 +9,7 @@ Run from the repo root (re-execs through ./venv when needed):
     ./venv/bin/python scripts/bugs.py set F-abc123 confirmed
     ./venv/bin/python scripts/bugs.py next F-abc123        # advance one step
     ./venv/bin/python scripts/bugs.py set F-abc123 rejected --force
-    ./venv/bin/python scripts/bugs.py delete F-abc123
+    ./venv/bin/python scripts/bugs.py delete F-abc123 --force   # permanent, hence --force
 
 Lifecycle is sequential, mirroring app/issues.py STATUSES:
 
@@ -48,12 +49,12 @@ SUMMARY_WIDTH = 88
 
 
 def _retry(fn, attempts: int = 4, delay: float = 1.5):
-    """The live service holds the DB; WAL keeps writes brief but contended."""
+    """The live service holds the DB; lock waits are brief but contended."""
     last: Exception | None = None
     for _ in range(attempts):
         try:
             return fn()
-        except Exception as exc:  # sqlite3.OperationalError: database is locked
+        except Exception as exc:  # lock wait / deadlock from the live pool
             last = exc
             if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
                 raise
@@ -213,9 +214,13 @@ def cmd_next(args: list[str]) -> int:
 
 def cmd_delete(args: list[str]) -> int:
     positional = [a for a in args if not a.startswith("-")]
+    force = "--force" in args or "-f" in args
     if len(positional) != 1:
-        print("usage: delete <ref>", file=sys.stderr)
+        print("usage: delete <ref> --force", file=sys.stderr)
         return 2
+    if not force:
+        print("refusing: delete is permanent; pass --force to remove the report", file=sys.stderr)
+        return 3
     ref = positional[0]
 
     def apply() -> int:

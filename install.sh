@@ -7,6 +7,7 @@ cd "$FUSE_HOME"
 ASSUME_YES=0
 WANT_SERVICE=1
 PRINT_UNIT=""
+FORCE_UNIT=0
 SERVICE_INSTALLED=0
 SERVICE_MODE=""
 
@@ -28,6 +29,8 @@ Sets up Fuse end to end in this directory:
 Options:
   -y, --yes          Non-interactive: accept all defaults (installs the service)
   --no-service       Skip the systemd service entirely
+  --force-unit       Overwrite an existing fuse.service that points at a
+                     different directory (e.g. reclaiming a stale unit)
   --print-unit MODE  Print the generated unit file and exit (MODE: system|user)
   -h, --help         Show this help
 USAGE
@@ -87,6 +90,18 @@ WantedBy=$wantedby
 UNIT
 }
 
+guard_existing_unit() {
+  # Running this installer from one tree must not silently capture another
+  # deployment's service (e.g. a dev worktree rewriting production's unit).
+  local unit="$1" root
+  [ -f "$unit" ] || return 0
+  root="$(grep -E '^WorkingDirectory=' "$unit" | tail -1 | cut -d= -f2-)"
+  if [ -n "$root" ] && [ "$root" != "$FUSE_HOME" ]; then
+    [ "$FORCE_UNIT" -eq 1 ] || die "$unit already points at $root; pass --force-unit to move it to $FUSE_HOME"
+    warn "overwriting $unit (it pointed at $root)"
+  fi
+}
+
 apt_install() {
   command -v apt-get >/dev/null 2>&1 || return 1
   [ "$(id -u)" -eq 0 ] || return 1
@@ -95,6 +110,7 @@ apt_install() {
 
 install_system_service() {
   local unit=/etc/systemd/system/fuse.service
+  guard_existing_unit "$unit"
   gen_unit system > "$unit"
   systemctl daemon-reload
   systemctl enable fuse >/dev/null 2>&1
@@ -111,6 +127,7 @@ install_user_service() {
     return 0
   fi
   mkdir -p "$HOME/.config/systemd/user"
+  guard_existing_unit "$HOME/.config/systemd/user/fuse.service"
   gen_unit user > "$HOME/.config/systemd/user/fuse.service"
   systemctl --user daemon-reload
   systemctl --user enable fuse >/dev/null 2>&1
@@ -125,6 +142,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     -y|--yes) ASSUME_YES=1 ;;
     --no-service) WANT_SERVICE=0 ;;
+    --force-unit) FORCE_UNIT=1 ;;
     --print-unit)
       shift
       PRINT_UNIT="${1:-}"

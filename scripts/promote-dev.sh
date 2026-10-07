@@ -63,16 +63,14 @@ git merge-base --is-ancestor "$PROD_BRANCH" FETCH_HEAD || die "$DEV_BRANCH is no
 [ "$(git rev-parse HEAD)" = "$(git rev-parse FETCH_HEAD)" ] && die "nothing to promote"
 
 BEFORE="$(git rev-parse --short HEAD)"
-"$PROD/backup-db.sh"
-git merge --ff-only FETCH_HEAD
-AFTER="$(git rev-parse --short HEAD)"
-
-# requirements.txt changes are installed by hand in the dev venv, then
-# mirrored into the prod venv before this script runs. fuse.service has
-# NoNewPrivileges, so pip in that venv cannot re-exec from here.
+# Check before the merge: after it, production would already run the new code
+# on any crash restart (Restart=on-failure) with venv deps still missing.
 if ! cmp -s "$DEV/requirements.txt" "$PROD/requirements.txt"; then
   die "requirements.txt changed; install it into $PROD/venv before promoting"
 fi
+"$PROD/backup-db.sh"
+git merge --ff-only FETCH_HEAD
+AFTER="$(git rev-parse --short HEAD)"
 
 systemctl restart fuse
 sleep 2

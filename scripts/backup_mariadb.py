@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 from datetime import datetime, timezone
 from urllib.parse import urlsplit, unquote
 
@@ -30,14 +31,20 @@ def backup(directory):
         auth.flush()
         proc = subprocess.Popen(["mariadb-dump", f"--defaults-extra-file={auth.name}",
             "--single-transaction", "--quick", "--hex-blob", "--skip-lock-tables", parsed.path.strip("/")], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # Drain stderr concurrently: unread, a full pipe would block the dump
+        # mid-stream and stall the stdout copy loop below.
+        stderr_buf = []
+        drain = threading.Thread(target=lambda: stderr_buf.append(proc.stderr.read()), daemon=True)
+        drain.start()
         try:
             fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb") as stream:
                 while block := proc.stdout.read(1024 * 1024):
                     stream.write(block)
-            error = proc.stderr.read()
-            if proc.wait():
-                raise RuntimeError("MariaDB dump failed: " + error.decode(errors="replace"))
+            status = proc.wait()
+            drain.join()
+            if status:
+                raise RuntimeError("MariaDB dump failed: " + stderr_buf[0].decode(errors="replace"))
             partial.rename(target)
         finally:
             if proc.poll() is None:
@@ -49,7 +56,7 @@ def backup(directory):
     target.with_suffix(target.suffix + ".sha256").write_text(f"{digest}  {target.name}\n")
     retain = max(1, int(os.environ.get("FUSE_BACKUP_RETAIN_DB", "14")))
     for old in sorted(root.glob("fuse-mariadb-*.sql.gz"), reverse=True)[retain:]:
-        old.unlink()
+        old.unlink(missing_ok=True)
         old.with_suffix(old.suffix + ".sha256").unlink(missing_ok=True)
     print(target)
     return target

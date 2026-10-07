@@ -24,7 +24,7 @@ def cutover(database):
         raise RuntimeError("Stop fuse.service before taking the final migration snapshot")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     root = ROOT / "backups" / ("mariadb-cutover-" + stamp)
-    root.mkdir(mode=0o700)
+    root.mkdir(parents=True, mode=0o700)
     shutil.copy2(ROOT / ".env", root / "env.before")
     snapshot = root / "fuse.db"
     fd = os.open(snapshot, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
