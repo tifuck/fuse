@@ -17,8 +17,11 @@ from __future__ import annotations
 import json
 import logging
 import secrets
+import sqlite3
+from datetime import datetime, timedelta, timezone
 
 from . import db
+from .database_errors import IntegrityError
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +51,11 @@ STATUSES = (
     "fixed",
     "released",
 )
+
+# 'triaging' is the pipeline's claim state (claim()/set_triage() own it); a
+# manual write there wedges the row until recover_stuck() frees it, so the
+# admin endpoint and update_status() refuse it.
+MANUAL_STATUSES = tuple(s for s in STATUSES if s != "triaging")
 
 REF_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
 
@@ -91,6 +99,60 @@ def _clip(value, limit: int) -> str:
     return str(value).strip()[:limit]
 
 
+def _clip_tree(value, *, text: int, items: int, depth: int):
+    """Structurally bound a JSON-ish value: clip strings, cap list/dict sizes."""
+    if isinstance(value, str):
+        return value[:text]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if depth <= 0:
+        return None
+    if isinstance(value, (list, tuple)):
+        out = []
+        for item in list(value)[:items]:
+            clipped = _clip_tree(item, text=text, items=items, depth=depth - 1)
+            if clipped is not None:
+                out.append(clipped)
+        return out
+    if isinstance(value, dict):
+        out = {}
+        for key, item in list(value.items())[:items]:
+            if not isinstance(key, str):
+                continue
+            clipped = _clip_tree(item, text=text, items=items, depth=depth - 1)
+            if clipped is not None:
+                out[key[:text]] = clipped
+        return out
+    try:
+        return str(value)[:text]
+    except Exception:
+        return None
+
+
+def _fit_json(value, limit: int, *, text: int = 600, items: int = 20, depth: int = 3) -> str:
+    """Serialize to JSON no longer than limit, shrinking caps until it fits.
+
+    Never slices the serialized text: a slice cuts mid-string and stores
+    invalid JSON. Returns "" when nothing fits."""
+    for scale in (1.0, 0.5, 0.25):
+        try:
+            raw = json.dumps(
+                _clip_tree(
+                    value,
+                    text=max(8, int(text * scale)),
+                    items=max(1, int(items * scale)),
+                    depth=depth,
+                ),
+                ensure_ascii=False,
+                default=str,
+            )
+        except (TypeError, ValueError):
+            return ""
+        if len(raw) <= limit:
+            return raw
+    return ""
+
+
 def _new_ref() -> str:
     return "F-" + "".join(secrets.choice(REF_ALPHABET) for _ in range(6))
 
@@ -104,14 +166,14 @@ def submit(
     user_agent: str = "",
     context: dict | None = None,
 ) -> dict | None:
-    """Insert one report. Returns {id, ref} or None when rejected as empty."""
+    """Insert one report. Returns {id, ref}, or None when rejected as empty.
+
+    Raises on storage failures other than a ref collision: an outage must not
+    masquerade as a validation error."""
     text = _clip(summary, SUMMARY_MAX)
     if len(text) < 4:
         return None
-    try:
-        context_json = json.dumps(context or {}, ensure_ascii=False, default=str)[:CONTEXT_MAX]
-    except (TypeError, ValueError):
-        context_json = ""
+    context_json = _fit_json(context or {}, CONTEXT_MAX)
     ref = _new_ref()
     with db.tx() as conn:
         for _ in range(4):
@@ -134,10 +196,12 @@ def submit(
                     ),
                 )
                 return {"id": cur.lastrowid, "ref": ref}
-            except Exception:
+            except (sqlite3.IntegrityError, IntegrityError):
+                # Ref collision only; anything else (schema drift, outage) is
+                # a real failure and must surface as one, not as a fake 400.
                 ref = _new_ref()
-    logger.debug("bug report insert failed")
-    return None
+    logger.warning("bug report insert could not allocate a unique ref")
+    raise RuntimeError("could not allocate a unique bug report ref")
 
 
 def _row_view(row) -> dict:
@@ -194,21 +258,37 @@ def pending(limit: int = 3, *, max_attempts: int = 5) -> list[dict]:
     return [_row_view(row) for row in rows]
 
 
+def older(report_id: int, *, limit: int = 12) -> list[dict]:
+    """Reports that predate this one — the pool duplicate detection reasons over."""
+    rows = db.fetchall(
+        "SELECT * FROM bug_reports WHERE id < ? ORDER BY id DESC LIMIT ?",
+        (int(report_id), max(1, min(int(limit), 50))),
+    )
+    return [_row_view(row) for row in rows]
+
+
 def update_status(report_id: int, status: str) -> bool:
-    if status not in STATUSES:
+    if status not in MANUAL_STATUSES:
         return False
     with db.tx() as conn:
-        cur = conn.execute(
-            "UPDATE bug_reports SET status=?, updated_at=? WHERE id=?",
-            (status, db.now(), int(report_id)),
-        )
+        if status == "new":
+            # Manual requeue: clear the attempt count, otherwise a report that
+            # hit max_attempts sits in 'new' forever (pending() skips it).
+            cur = conn.execute(
+                "UPDATE bug_reports SET status='new', attempts=0, updated_at=? WHERE id=?",
+                (db.now(), int(report_id)),
+            )
+        else:
+            cur = conn.execute(
+                "UPDATE bug_reports SET status=?, updated_at=? WHERE id=?",
+                (status, db.now(), int(report_id)),
+            )
         return cur.rowcount > 0
 
 
 def set_triage(report_id: int, triage: dict, *, status: str = "triaged") -> bool:
-    try:
-        triage_json = json.dumps(triage, ensure_ascii=False, default=str)[:TRIAGE_MAX]
-    except (TypeError, ValueError):
+    triage_json = _fit_json(triage, TRIAGE_MAX, text=1000, items=40, depth=4)
+    if not triage_json:
         return False
     if status not in STATUSES:
         status = "triaged"
@@ -243,13 +323,16 @@ def release(report_id: int, *, failed_attempt: bool = False) -> None:
 
 def summary(*, hours: int = 168) -> dict:
     out: dict = {"hours": hours, "total": 0, "by_status": {}, "by_view": {}}
-    row = db.fetchone("SELECT COUNT(*) AS n FROM bug_reports")
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(hours=max(1, int(hours)))
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    row = db.fetchone("SELECT COUNT(*) AS n FROM bug_reports WHERE created_at>=?", (cutoff,))
     out["total"] = int(row["n"]) if row else 0
     for key, column in (("by_status", "status"), ("by_view", "view")):
         rows = db.fetchall(
-            f"SELECT {column} AS k, COUNT(*) AS n FROM bug_reports "
+            f"SELECT {column} AS k, COUNT(*) AS n FROM bug_reports WHERE created_at>=? "
             f"GROUP BY {column} ORDER BY n DESC LIMIT 50",
-            (),
+            (cutoff,),
         )
         out[key] = {str(r["k"] or "unknown"): int(r["n"]) for r in rows}
     return out

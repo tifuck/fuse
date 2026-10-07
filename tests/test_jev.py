@@ -181,6 +181,40 @@ class JudgeTest(DbCase):
             self.assertFalse(asyncio.run(jev.judge(1, self.tid, {"command": "rm -rf /", "reasons": ["matches a destructive command pattern"]})))
         self.assertIn("destructive", " ".join(evaluate.call_args.args[1]["action"]["reasons"]))
 
+    def test_concurrent_judges_share_the_gate(self):
+        # The gate bounds concurrency; it must not serialize every user's
+        # decision behind one global lock.
+        response = Mock(status_code=200)
+        response.json.return_value = {"answers": _answers(), "model": jev.MODEL}
+        current = 0
+        peak = 0
+
+        async def slow_post(*args, **kwargs):
+            nonlocal current, peak
+            current += 1
+            peak = max(peak, current)
+            await asyncio.sleep(0.2)
+            current -= 1
+            return response
+
+        inner = Mock()
+        inner.post = slow_post
+        client = Mock()
+        client.__aenter__ = AsyncMock(return_value=inner)
+        client.__aexit__ = AsyncMock(return_value=False)
+
+        async def flow():
+            with patch.object(jev, "user_can_auto", return_value=True), patch(
+                "app.sources.openrouter.pick_key_for", return_value=(None, {}, "sk-or-v1-test", "user")
+            ), patch("app.jev.httpx.AsyncClient", return_value=client):
+                return await asyncio.gather(
+                    jev.judge(1, self.tid, {"path": "/srv/a"}),
+                    jev.judge(1, self.tid, {"path": "/srv/b"}),
+                )
+
+        self.assertEqual(asyncio.run(flow()), [True, True])
+        self.assertGreaterEqual(peak, 2)
+
 
 class ReviewAutoTest(DbCase):
     def setUp(self):

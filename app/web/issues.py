@@ -11,6 +11,34 @@ from .deps import _chat_auth, _json_object, require_admin
 router = APIRouter()
 
 
+def _clean_context_value(value, depth: int = 0):
+    """Bounded, JSON-safe capture of one client-snapshot value.
+
+    The snapshot's most useful fields are nested (ui_state is an object,
+    recent_errors a list of error records), so scalars alone silently drop
+    exactly what triage is promised — clip recursively instead."""
+    if isinstance(value, (str, int, float, bool)):
+        return str(value)[:600]
+    if depth >= 3:
+        return None
+    if isinstance(value, list):
+        return [
+            cleaned
+            for item in value[:20]
+            if (cleaned := _clean_context_value(item, depth + 1)) is not None
+        ]
+    if isinstance(value, dict):
+        out = {}
+        for key, item in list(value.items())[:20]:
+            if not isinstance(key, str):
+                continue
+            cleaned = _clean_context_value(item, depth + 1)
+            if cleaned is not None:
+                out[key[:40]] = cleaned
+        return out
+    return None
+
+
 @router.post("/report-issue")
 async def report_issue(request: Request):
     user, auth_fail = _chat_auth(request)
@@ -24,11 +52,13 @@ async def report_issue(request: Request):
     context = body.get("context")
     if not isinstance(context, dict):
         context = {}
-    clean_context = {
-        str(key)[:40]: str(value)[:600]
-        for key, value in context.items()
-        if isinstance(key, str) and isinstance(value, (str, int, float, bool))
-    }
+    clean_context = {}
+    for key, value in list(context.items())[:20]:
+        if not isinstance(key, str):
+            continue
+        cleaned = _clean_context_value(value)
+        if cleaned is not None:
+            clean_context[key[:40]] = cleaned
     record = issues.submit(
         summary=str(body.get("summary") or ""),
         expected=str(body.get("expected") or ""),
@@ -74,7 +104,7 @@ async def admin_issue_status(request: Request):
     except (TypeError, ValueError):
         raise HTTPException(400, "id") from None
     status = str(body.get("status") or "")
-    if status not in issues.STATUSES:
+    if status not in issues.MANUAL_STATUSES:
         raise HTTPException(400, "status")
     if not issues.update_status(report_id, status):
         raise HTTPException(404, "Unknown report")

@@ -1,6 +1,7 @@
 """Bug-report queue and triage pipeline; all database writes use a temporary DB."""
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 import sys
@@ -52,6 +53,27 @@ class IssuesQueueTest(unittest.TestCase):
         self.assertIsNone(issues.submit(summary="hi"))
         self.assertIsNone(issues.submit(summary="   "))
 
+    def test_context_is_stored_as_valid_json_not_a_slice(self):
+        big = {f"k{i}": "v" * 600 for i in range(60)}
+        record = self._submit(context=big)
+        row = issues.get(record["id"])
+        self.assertIsInstance(row["context"], dict)
+        self.assertLessEqual(len(json.dumps(row["context"])), issues.CONTEXT_MAX)
+        self.assertGreaterEqual(len(row["context"]), 1)
+
+    def test_submit_reraises_unexpected_db_errors(self):
+        db.execute("DROP TABLE bug_reports")
+        with self.assertRaises(sqlite3.OperationalError):
+            self._submit()
+
+    def test_ref_collision_retries_with_a_fresh_ref(self):
+        with patch.object(issues, "_new_ref", return_value="F-dupe0"):
+            self._submit(summary="The original report holding the ref")
+        with patch.object(issues, "_new_ref", side_effect=["F-dupe0", "F-dupe1"]):
+            record = self._submit(summary="A report colliding on the first ref")
+        self.assertEqual(record["ref"], "F-dupe1")
+        self.assertEqual(issues.get(record["id"])["ref"], "F-dupe1")
+
     def test_fields_are_clipped(self):
         record = self._submit(summary="x" * 9_000, expected="e" * 9_000, page="p" * 9_000, user_agent="u" * 9_000)
         row = issues.get(record["id"])
@@ -84,9 +106,40 @@ class IssuesQueueTest(unittest.TestCase):
         fresh = self._submit(summary="Fresh report from another surface")
         self.assertEqual([r["id"] for r in issues.pending(5)], [fresh["id"]])
 
+    def test_requeue_resets_attempts(self):
+        record = self._submit()
+        for _ in range(issues_pipeline.settings.issues_pipeline_max_attempts):
+            issues.claim(record["id"])
+            issues.release(record["id"], failed_attempt=True)
+        self.assertEqual(issues.pending(5), [])
+        self.assertTrue(issues.update_status(record["id"], "new"))
+        row = issues.get(record["id"])
+        self.assertEqual(row["attempts"], 0)
+        self.assertEqual([r["id"] for r in issues.pending(5)], [record["id"]])
+
+    def test_summary_respects_hours_window(self):
+        record = self._submit()
+        db.execute(
+            "UPDATE bug_reports SET created_at=? WHERE id=?",
+            ("2020-01-01T00:00:00Z", record["id"]),
+        )
+        self.assertEqual(issues.summary(hours=1)["total"], 0)
+        self.assertEqual(issues.summary(hours=24 * 365 * 100)["total"], 1)
+
+    def test_set_triage_never_stores_sliced_json(self):
+        record = self._submit()
+        self.assertTrue(issues.claim(record["id"]))
+        huge = {"verdict": "bug", "plan": ["x" * 900 for _ in range(60)]}
+        self.assertTrue(issues.set_triage(record["id"], huge, status="confirmed"))
+        row = issues.get(record["id"])
+        self.assertIsInstance(row["triage"], dict)
+        self.assertLessEqual(len(json.dumps(row["triage"])), issues.TRIAGE_MAX)
+
     def test_triage_write_and_status_guards(self):
         record = self._submit()
         self.assertFalse(issues.update_status(record["id"], "bogus"))
+        self.assertFalse(issues.update_status(record["id"], "triaging"))
+        self.assertEqual(issues.get(record["id"])["status"], "new")
         # set_triage is a CAS out of 'triaging': an unclaimed (or already
         # decided) report must not accept a pipeline verdict.
         self.assertFalse(issues.set_triage(record["id"], {"verdict": "bug"}, status="confirmed"))
@@ -101,6 +154,10 @@ class IssuesQueueTest(unittest.TestCase):
         other = self._submit(summary="Another report")
         self.assertTrue(issues.claim(other["id"]))
         self.assertTrue(issues.set_triage(other["id"], {"verdict": "need_info"}, status="wat"))
+        self.assertEqual(issues.get(other["id"])["status"], "triaged")
+        # 'triaging' is the pipeline's claim state; a manual write must not
+        # wedge the row there.
+        self.assertFalse(issues.update_status(other["id"], "triaging"))
         self.assertEqual(issues.get(other["id"])["status"], "triaged")
 
     def test_analysis_pack_shape(self):
@@ -184,6 +241,82 @@ class TriagePipelineTest(unittest.IsolatedAsyncioTestCase):
         row = issues.get(third["id"])
         self.assertEqual(row["status"], "new")
         self.assertEqual(row["attempts"], 1)
+
+    def test_other_reports_are_the_older_queue(self):
+        a = issues.submit(summary="Oldest report about the composer")
+        b = issues.submit(summary="Middle report about the composer")
+        c = issues.submit(summary="Newest report about the composer")
+        refs = [r["ref"] for r in issues_pipeline._other_reports(c["id"])]
+        self.assertEqual(refs, [b["ref"], a["ref"]])
+
+    def test_clean_verdict_normalizes_model_output(self):
+        report = issues.submit(summary="Verdict validation fixture report")
+        cleaned = issues_pipeline._clean_verdict(
+            {
+                "verdict": "bug",
+                "category": "made-up",
+                "severity": "apocalyptic",
+                "confidence": "very sure",
+                "duplicate_of": "F-notreal",
+                "summary": "x" * 5000,
+                "plan": ["do thing", 7, {"nested": True}],
+                "followups": "not a list",
+            },
+            report,
+        )
+        self.assertEqual(cleaned["category"], "other")
+        self.assertEqual(cleaned["severity"], "medium")
+        self.assertIsNone(cleaned["confidence"])
+        self.assertIsNone(cleaned["duplicate_of"])
+        self.assertLessEqual(len(cleaned["summary"]), 600)
+        self.assertEqual(cleaned["plan"][0], "do thing")
+        self.assertTrue(all(isinstance(item, str) for item in cleaned["plan"]))
+        self.assertEqual(cleaned["followups"], [])
+
+    def test_duplicate_verdict_needs_a_real_older_ref(self):
+        older = issues.submit(summary="The older report being duplicated")
+        report = issues.submit(summary="The newer report claiming duplication")
+        cleaned = issues_pipeline._clean_verdict(
+            {"verdict": "duplicate", "duplicate_of": "F-missing"}, report
+        )
+        self.assertEqual(cleaned["verdict"], "need_info")
+        self.assertIsNone(cleaned["duplicate_of"])
+        cleaned = issues_pipeline._clean_verdict(
+            {"verdict": "duplicate", "duplicate_of": older["ref"]}, report
+        )
+        self.assertEqual(cleaned["verdict"], "duplicate")
+        self.assertEqual(cleaned["duplicate_of"], older["ref"])
+        # A newer ref is not a valid duplicate target.
+        flipped = issues_pipeline._clean_verdict(
+            {"verdict": "duplicate", "duplicate_of": report["ref"]}, older
+        )
+        self.assertEqual(flipped["verdict"], "need_info")
+
+    async def test_cancellation_releases_without_burning_an_attempt(self):
+        record = issues.submit(summary="Report caught in a shutdown mid-triage")
+
+        async def cancelled(report):
+            raise asyncio.CancelledError()
+
+        with patch.object(issues_pipeline.settings, "issues_pipeline_enabled", True), patch.object(
+            issues_pipeline, "_triage_one", cancelled
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                await issues_pipeline.tick()
+        row = issues.get(record["id"])
+        self.assertEqual(row["status"], "new")
+        self.assertEqual(row["attempts"], 0)
+
+    async def test_disabled_pipeline_still_recovers_stuck_rows(self):
+        record = issues.submit(summary="Row wedged in triaging while the pipeline is off")
+        self.assertTrue(issues.claim(record["id"]))
+        db.execute(
+            "UPDATE bug_reports SET updated_at=? WHERE id=?",
+            ("2020-01-01T00:00:00Z", record["id"]),
+        )
+        with patch.object(issues_pipeline.settings, "issues_pipeline_enabled", False):
+            await issues_pipeline.tick()
+        self.assertEqual(issues.get(record["id"])["status"], "new")
 
     async def test_missing_model_releases_report(self):
         record = issues.submit(summary="No model is available for triage")

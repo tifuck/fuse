@@ -17,14 +17,17 @@ logger = logging.getLogger(__name__)
 DECISIONS_URL = "https://openrouter.ai/api/alpha/decisions"
 MODEL = "typesafe/jev-1.13"
 TIMEOUT_S = 2.0
-_lock: asyncio.Lock | None = None
+# Bound concurrent Jev calls instead of serializing every user's decision behind
+# one global lock: a slow upstream must not stall other runs' permission reviews.
+GATE_CONCURRENCY = 4
+_gate_sem: asyncio.Semaphore | None = None
 
 
-def _gate() -> asyncio.Lock:
-    global _lock
-    if _lock is None:
-        _lock = asyncio.Lock()
-    return _lock
+def _gate() -> asyncio.Semaphore:
+    global _gate_sem
+    if _gate_sem is None:
+        _gate_sem = asyncio.Semaphore(GATE_CONCURRENCY)
+    return _gate_sem
 DANGEROUS_CEILING = 0.40
 USER_CLIP = 2_000
 RECENT_TEXT = 400
