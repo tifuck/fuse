@@ -86,16 +86,21 @@ class OpenAICompatSource:
         hit = _models_cache.get(self.source_id)
         if hit and time.time() - hit[0] < _MODELS_TTL:
             return list(hit[1])
-        key = accounts.cred_secret(self.creds[0])
-        async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.get(self._url() + "/models", headers=self._headers(key))
+        for cred in self._next_creds():
+            key = accounts.cred_secret(cred)
+            try:
+                async with httpx.AsyncClient(timeout=30) as client:
+                    r = await client.get(self._url() + "/models", headers=self._headers(key))
+            except httpx.HTTPError:
+                continue
             if r.status_code != 200:
-                return []
+                continue
             data = r.json()
             names = [m.get("id") for m in data.get("data", []) if m.get("id")]
-        if names:
-            _models_cache[self.source_id] = (time.time(), names)
-        return names
+            if names:
+                _models_cache[self.source_id] = (time.time(), names)
+            return names
+        return []
 
     def _stream_result(self, stream, collected: dict, cred, session_id: str | None, model: str, attempts: list[dict]) -> ChatResult:
         if not session_id:
@@ -128,7 +133,7 @@ class OpenAICompatSource:
         last = ChatResult(status=503, body={"error": "All keys failed"})
         prefer_id = lookup(self.pin_kind, session_id) if session_id else None
         model = body.get("model", "")
-        for cred in self._next_creds(tried, prefer_id=prefer_id)[:1]:
+        for cred in self._next_creds(tried, prefer_id=prefer_id):
             tried.add(cred["id"])
             key = accounts.cred_secret(cred)
             client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=15.0))
@@ -148,7 +153,7 @@ class OpenAICompatSource:
                 return self._stream_result(stream, usage, cred, session_id, model, attempts)
             if status == 200 and session_id:
                 bind(self.pin_kind, session_id, cred["id"])
-            result = ChatResult(
+            last = ChatResult(
                 status=status,
                 body=obj,
                 usage=usage,
@@ -156,7 +161,16 @@ class OpenAICompatSource:
                 model=model,
                 response_headers=response_headers,
             )
-            result.attempts = attempts
-            return result
+            # Rotate only what cannot have generated output upstream: an auth
+            # rejection is credential-specific and a 5xx arrived before any
+            # tokens. 429 stays terminal (callers must see the rate limit) and
+            # 504 is a read timeout — upstream may still be running it.
+            if status == 401 or status in (500, 502, 503):
+                attempts.append({"credential_id": cred["id"], "status": status, "usage": usage or {}})
+                continue
+            last.attempts = attempts
+            return last
+        if attempts and last.credential_id == attempts[-1].get("credential_id"):
+            attempts.pop()
         last.attempts = attempts
         return last

@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import random
 import threading
 from datetime import datetime, timedelta, timezone
 from typing import Mapping
@@ -151,7 +152,11 @@ def _scope(user_id: int | None, model: str, raw: str) -> str:
     or upstream routing group, and no raw client identifier is persisted or
     forwarded upstream.
     """
-    secret = (settings.app_secret or "fuse-dev-secret").encode()
+    secret = (settings.app_secret or "").encode()
+    if not secret:
+        # APP_SECRET is validated at startup; never scope pins with a public
+        # constant — that would collapse tenant isolation if config degrades.
+        raise RuntimeError("APP_SECRET is required for pool session scoping")
     material = f"{int(user_id or 0)}|{model or ''}|{raw}".encode("utf-8")
     return "fx:" + hmac.new(secret, material, hashlib.sha256).hexdigest()[:40]
 
@@ -214,7 +219,10 @@ def bind(kind: str, session_id: str | None, credential_id: int | None, *, now: d
                  updated_at=excluded.updated_at""",
             (kind, session_id, cid, stamp),
         )
-        db.execute("DELETE FROM pool_sessions WHERE updated_at < ?", (cutoff,))
+        # Full-table vacuum per bind scans updated_at on every chat turn; run
+        # it rarely — expired rows are harmless and refreshed on lookup anyway.
+        if random.random() < 0.02:
+            db.execute("DELETE FROM pool_sessions WHERE updated_at < ?", (cutoff,))
 
 
 def lookup(kind: str, session_id: str | None, *, now: datetime | None = None) -> int | None:

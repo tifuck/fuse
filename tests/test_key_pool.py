@@ -126,6 +126,14 @@ class RotationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.disabled_reason, "auth_failure")
         self.assertEqual(state.available_at, 0.0)
 
+    def test_generic_403_does_not_count_toward_auth_disable(self):
+        pool = make_pool(self.tmp.name, ["keyA"])
+        state = pool.states["keyA"]
+        for _ in range(5):
+            pool._handle_error_status(403, httpx.Headers(), '{"error":"forbidden for this plan"}', state)
+        self.assertNotEqual(state.state, DISABLED)
+        self.assertEqual(state.consecutive_auth_errors, 0)
+
     def test_retry_after_extends_account_unavailable_cooldown(self):
         pool = make_pool(self.tmp.name, ["keyA"])
         state = pool.states["keyA"]

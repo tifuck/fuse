@@ -42,14 +42,19 @@ def persist_rotated(cas, cred_id: int, old_extra_raw, secret: str, extra: dict, 
     cid = int(cred_id)
     if cas(cid, old_extra_raw, secret, extra):
         return True
-    original = accounts.cred_extra({"extra": old_extra_raw})
+    try:
+        original = accounts.cred_extra({"extra": old_extra_raw})
+    except Exception:
+        logger.warning("Credential %s extra unreadable during token refresh; rotated tokens dropped", cid)
+        return False
+    orig_refresh = original.get("refresh_token")
     for _ in range(CAS_ATTEMPTS):
         row = db.fetchone("SELECT * FROM credentials WHERE id=?", (cid,))
         if row is None:
             logger.warning("Credential %s was removed during token refresh; rotated tokens dropped", cid)
             return False
         merged = accounts.cred_extra(row)
-        if row["disabled"] or merged.get("refresh_token") != original.get("refresh_token"):
+        if row["disabled"] or merged.get("refresh_token") != orig_refresh:
             return False  # Removed/re-linked credentials supersede this refresh.
         merged.update(rotated)
         if merge is not None:
@@ -63,7 +68,7 @@ def persist_rotated(cas, cred_id: int, old_extra_raw, secret: str, extra: dict, 
         if row is None or row["disabled"]:
             return False
         merged = accounts.cred_extra(row)
-        if merged.get("refresh_token") != original.get("refresh_token"):
+        if merged.get("refresh_token") != orig_refresh:
             return False
         merged.update(rotated)
         if merge is not None:

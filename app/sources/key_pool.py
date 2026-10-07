@@ -272,7 +272,8 @@ class KeyState:
         return max(0.0, self.available_at - time.time())
 
     def masked(self) -> str:
-        return self.key[:12] + "..."
+        # Non-secret identifier for logs: a hash prefix, not key material.
+        return "sha256:" + hashlib.sha256(self.key.encode()).hexdigest()[:10]
 
 
 # ---------------------------------------------------------------------------
@@ -617,10 +618,13 @@ class KeyPool:
 
             # If the only key available is a not-yet-ready COOLING key (last-resort
             # selection when every key is cooling/excluded), firing immediately just
-            # re-triggers its 429 and amplifies upstream load. Yield the event loop
-            # and wait a bounded amount so we don't hot-spin the retry budget.
+            # re-triggers its 429 and burns a retry slot. Wait while the wait is
+            # short; hand back the cooldown when it is not.
             wait = key_state.available_at - time.time()
             if wait > 0:
+                if wait > 5.0 and len(tried) < len(self.states):
+                    tried.add(key)
+                    continue
                 await asyncio.sleep(min(wait, 0.5))
 
             req = http_client.build_request(
@@ -727,6 +731,15 @@ class KeyPool:
             raise last_connect_error
         raise ConnectionError("No upstream keys available")
 
+    def _retry_after_capped(self, retry_after: Optional[float]) -> Optional[float]:
+        """Retry-After, never trusted past the longest cooldown tier.
+
+        A bogus/huge header must not park a key for months.
+        """
+        if retry_after is None:
+            return None
+        return min(retry_after, self.weekly_quota)
+
     def _handle_error_status(
         self,
         status: int,
@@ -737,7 +750,7 @@ class KeyPool:
         model: str = "",
     ) -> None:
         """Classify the error and apply the appropriate cooldown/disabled."""
-        from .ollama_access import classify_cloud_error
+        from .ollama_access import classify_cloud_error, is_credential_auth_error
 
         retry_after = parse_retry_after(headers.get("retry-after"))
         kind = classify_cloud_error(status, body_text)
@@ -764,8 +777,9 @@ class KeyPool:
                 "account unavailable key=%s body=%s", key_state.masked(), body_text[:200]
             )
             cooldown = self.account_unavailable
-            if retry_after is not None and retry_after > cooldown:
-                cooldown = retry_after
+            capped = self._retry_after_capped(retry_after)
+            if capped is not None and capped > cooldown:
+                cooldown = capped
             key_state.available_at = time.time() + cooldown
             key_state.mark_error(
                 "account_unavailable", cooldown, disable=True, disable_reason=DISABLED_UNAVAILABLE
@@ -775,8 +789,9 @@ class KeyPool:
         if kind == "weekly_quota":
             logger.warning("usage exhausted key=%s body=%s", key_state.masked(), body_text[:500])
             cooldown = self.weekly_quota
-            if retry_after is not None and retry_after > cooldown:
-                cooldown = retry_after
+            capped = self._retry_after_capped(retry_after)
+            if capped is not None and capped > cooldown:
+                cooldown = capped
             key_state.available_at = time.time() + cooldown
             key_state.mark_error(
                 "weekly_quota", cooldown, disable=True, disable_reason=DISABLED_WEEKLY
@@ -786,8 +801,9 @@ class KeyPool:
         if kind == "session_quota":
             logger.warning("session quota detected key=%s body=%s", key_state.masked(), body_text)
             cooldown = self.session_quota
-            if retry_after is not None and retry_after > cooldown:
-                cooldown = retry_after
+            capped = self._retry_after_capped(retry_after)
+            if capped is not None and capped > cooldown:
+                cooldown = capped
             key_state.available_at = time.time() + cooldown
             key_state.mark_error(
                 "session_quota", cooldown, disable=True, disable_reason=DISABLED_SESSION
@@ -797,14 +813,22 @@ class KeyPool:
         if kind == "hourly_quota":
             logger.warning("hourly quota detected key=%s body=%s", key_state.masked(), body_text)
             cooldown = self.hourly_quota
-            if retry_after is not None and retry_after > cooldown:
-                cooldown = retry_after
+            capped = self._retry_after_capped(retry_after)
+            if capped is not None and capped > cooldown:
+                cooldown = capped
             key_state.mark_error("hourly_quota", cooldown)
             return
 
         if kind == "rate_limit":
-            cooldown = max(retry_after or 0.0, self.transient_429)
-            key_state.mark_error("rate_limit", cooldown)
+            cooldown = max(self._retry_after_capped(retry_after) or 0.0, self.transient_429)
+            if retry_after is not None and retry_after >= self.weekly_disable_threshold:
+                # Retry-After at quota scale is a quota cooldown, not a blip.
+                key_state.available_at = time.time() + cooldown
+                key_state.mark_error(
+                    "weekly_quota", cooldown, disable=True, disable_reason=DISABLED_WEEKLY
+                )
+            else:
+                key_state.mark_error("rate_limit", cooldown)
             return
 
         if kind == "server" or status in (500, 502, 503, 504):
@@ -812,7 +836,11 @@ class KeyPool:
             key_state.mark_error(f"server_{status}", backoff)
             return
 
-        if kind == "auth" or status in (401, 403):
+        if kind == "auth" and (status == 401 or is_credential_auth_error(status, body_text)):
+            # 401 is always a credential rejection; 403 only counts toward the
+            # auth-strike disable when the body actually says the token is bad —
+            # a 403 that is really a plan/quota denial must not permanently
+            # retire a healthy key.
             key_state.consecutive_auth_errors += 1
             key_state.last_error_type = f"auth_{status}"
             key_state.last_error_at = time.time()

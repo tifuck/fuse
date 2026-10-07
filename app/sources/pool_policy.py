@@ -17,6 +17,7 @@ accounts they donated are withheld from every other user.
 from __future__ import annotations
 
 import json
+import time
 
 from .. import db
 
@@ -89,10 +90,19 @@ def admin_policy(kind: str) -> dict:
 def set_admin_policy(kind: str, *, pool_shared: bool, open_access: bool) -> None:
     if kind not in POOL_KIND_SET:
         raise ValueError(f"unknown pool kind {kind!r}")
-    cfg = _source_cfg(kind)
-    cfg["pool_shared"] = bool(pool_shared)
-    cfg["open_access"] = bool(open_access)
-    db.execute("UPDATE sources SET config=? WHERE id=?", (json.dumps(cfg), source_id(kind)))
+    sid = source_id(kind)
+    # Read-modify-write inside one transaction: concurrent admin saves must
+    # not silently drop each other's switch.
+    with db.tx() as conn:
+        row = conn.execute("SELECT config FROM sources WHERE id=? FOR UPDATE", (sid,)).fetchone()
+        try:
+            data = json.loads((row["config"] if row else None) or "{}")
+            cfg = data if isinstance(data, dict) else {}
+        except (json.JSONDecodeError, TypeError):
+            cfg = {}
+        cfg["pool_shared"] = bool(pool_shared)
+        cfg["open_access"] = bool(open_access)
+        conn.execute("UPDATE sources SET config=? WHERE id=?", (json.dumps(cfg), sid))
 
 
 def user_prefs(user_id: int) -> dict:
@@ -118,15 +128,20 @@ def user_own_only(user_id: int, kind: str) -> bool:
 def set_user_own_only(user_id: int, kind: str, own_only: bool) -> None:
     if kind not in POOL_KIND_SET:
         raise ValueError(f"unknown pool kind {kind!r}")
-    prefs = user_prefs(user_id)
-    item = prefs.get(kind)
-    item = dict(item) if isinstance(item, dict) else {}
-    item["own_only"] = bool(own_only)
-    prefs[kind] = item
-    db.execute(
-        "UPDATE users SET pool_prefs=? WHERE id=?",
-        (json.dumps(prefs), int(user_id)),
-    )
+    uid = int(user_id)
+    with db.tx() as conn:
+        row = conn.execute("SELECT pool_prefs FROM users WHERE id=? FOR UPDATE", (uid,)).fetchone()
+        try:
+            data = json.loads((row["pool_prefs"] if row else None) or "{}")
+            prefs = data if isinstance(data, dict) else {}
+        except (json.JSONDecodeError, TypeError):
+            prefs = {}
+        item = prefs.get(kind)
+        item = dict(item) if isinstance(item, dict) else {}
+        item["own_only"] = bool(own_only)
+        prefs[kind] = item
+        conn.execute("UPDATE users SET pool_prefs=? WHERE id=?", (json.dumps(prefs), uid))
+    _private_cache.pop(kind, None)
 
 
 def uses_shared_pool(user_id: int | None, kind: str) -> bool:
@@ -184,10 +199,22 @@ def _donated_by(row) -> int | None:
         return None
 
 
+_PRIVATE_TTL = 30.0
+_private_cache: dict[str, tuple[float, set[int]]] = {}
+
+
 def _private_donors(kind: str) -> set[int]:
-    """Donors who opted out. Their accounts stay off the shared pool."""
+    """Donors who opted out. Their accounts stay off the shared pool.
+
+    Cached briefly: this used to parse every users.pool_prefs row on every
+    pooled request. Writes through set_user_own_only invalidate the entry.
+    """
     if kind not in POOL_KIND_SET:
         return set()
+    hit = _private_cache.get(kind)
+    now = time.time()
+    if hit and now - hit[0] < _PRIVATE_TTL:
+        return set(hit[1])
     out: set[int] = set()
     for row in db.fetchall("SELECT id, pool_prefs FROM users"):
         try:
@@ -202,6 +229,7 @@ def _private_donors(kind: str) -> set[int]:
                 out.add(int(row["id"]))
             except (TypeError, ValueError):
                 continue
+    _private_cache[kind] = (now, out)
     return out
 
 
