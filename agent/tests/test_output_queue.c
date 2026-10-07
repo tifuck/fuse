@@ -1,7 +1,8 @@
-#define main fuse_agent_program_main
-#include "../src/fuse-agent.c"
-#undef main
+#include "../src/agent.h"
+#include "../src/outq.h"
 #include <assert.h>
+#include <pthread.h>
+#include <string.h>
 
 static void *terminal(void *unused) {
     (void)unused;

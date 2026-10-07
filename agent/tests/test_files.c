@@ -1,8 +1,13 @@
 /* Exercise the real connector functions, without starting a connector. */
-#define main fuse_agent_program_main
-#include "../src/fuse-agent.c"
-#undef main
+#include "../src/agent.h"
+#include "../src/edit.h"
+#include "../src/files.h"
+#include "../src/jobs.h"
+#include "../src/net.h"
+#include "../src/outq.h"
+#include "../src/update.h"
 #include <assert.h>
+#include <sys/stat.h>
 
 int main(void) {
     char dir[] = "/tmp/opencode/fuse-files-XXXXXX";

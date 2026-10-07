@@ -6,13 +6,17 @@
  *   - cross-process update ownership (flock + exclusive staging)
  *   - connection lifetime: shutdown targets only the live fd, under the
  *     connection mutex, and never a retired fd
- * Harness mirrors tests/test_files.c: the connector is included with main
- * renamed, so the static internals are directly exercisable. */
-#define main fuse_agent_program_main
-#include "../src/fuse-agent.c"
-#undef main
+ * Harness links the connector modules (minus main) so the internals are
+ * directly exercisable. */
+#include "../src/agent.h"
+#include "../src/jobs.h"
+#include "../src/lifecycle.h"
+#include "../src/outq.h"
+#include "../src/update.h"
 #include <assert.h>
+#include <fcntl.h>
 #include <sys/socket.h>
+#include <unistd.h>
 
 static void wr(int fd, const char *b, size_t n) {
     assert(write(fd, b, n) == (ssize_t)n);

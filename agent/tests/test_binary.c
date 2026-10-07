@@ -1,8 +1,13 @@
-/* Build like test_files; does not start a connector. */
-#define main fuse_agent_program_main
-#include "../src/fuse-agent.c"
-#undef main
+/* Links the connector modules (minus main); does not start a connector. */
+#include "../src/agent.h"
+#include "../src/files.h"
+#include "../src/jobs.h"
+#include "../src/outq.h"
 #include <assert.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <openssl/evp.h>
 
 int main(void) {
     char dir[] = "/tmp/fuse/binary-XXXXXX";

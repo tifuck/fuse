@@ -3,7 +3,11 @@ CC ?= gcc
 CFLAGS ?= -O2 -Wall -Wextra -std=c11 -D_GNU_SOURCE
 CPPFLAGS += -Ithird_party -Isrc -DFUSE_AGENT_VERSION=\"$(VERSION)\"
 LIBS ?= -lssl -lcrypto -lpthread -ldl
-SRC := src/fuse-agent.c src/reconnect.c third_party/cJSON.c
+SRC := src/main.c src/config.c src/lifecycle.c src/net.c src/outq.c src/exec.c \
+       src/files.c src/edit.c src/jobs.c src/update.c src/session.c \
+       src/reconnect.c third_party/cJSON.c
+LIB_SRC := $(filter-out src/main.c,$(SRC))
+HDRS := $(wildcard src/*.h) third_party/cJSON.h
 ARCH := $(shell uname -m)
 ifeq ($(ARCH),x86_64)
 SKU := linux-amd64
@@ -28,7 +32,7 @@ OPENSSL_ARM64 ?= /tmp/opencode/ssl-arm64
 
 all: $(BIN)
 
-$(BIN): $(SRC) src/reconnect.h third_party/cJSON.h VERSION
+$(BIN): $(SRC) $(HDRS) VERSION
 	mkdir -p dist
 	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ $(SRC) $(LIBS)
 	chmod 755 $@
@@ -51,17 +55,17 @@ tests/test_expand_home: tests/test_expand_home.c
 tests/test_reconnect: tests/test_reconnect.c src/reconnect.c src/reconnect.h
 	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_reconnect.c src/reconnect.c
 
-tests/test_files: tests/test_files.c $(SRC) src/reconnect.h
-	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ tests/test_files.c src/reconnect.c third_party/cJSON.c $(LIBS)
+tests/test_files: tests/test_files.c $(LIB_SRC) $(HDRS)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ tests/test_files.c $(LIB_SRC) $(LIBS)
 
-tests/test_lifecycle: tests/test_lifecycle.c $(SRC) src/reconnect.h
-	$(CC) $(CFLAGS) $(CPPFLAGS) -Isrc -o $@ tests/test_lifecycle.c src/reconnect.c third_party/cJSON.c $(LIBS)
+tests/test_lifecycle: tests/test_lifecycle.c $(LIB_SRC) $(HDRS)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ tests/test_lifecycle.c $(LIB_SRC) $(LIBS)
 
-tests/test_output_queue: tests/test_output_queue.c $(SRC) src/reconnect.h
-	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ tests/test_output_queue.c src/reconnect.c third_party/cJSON.c $(LIBS)
+tests/test_output_queue: tests/test_output_queue.c $(LIB_SRC) $(HDRS)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ tests/test_output_queue.c $(LIB_SRC) $(LIBS)
 
-tests/test_binary: tests/test_binary.c $(SRC) src/reconnect.h
-	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ tests/test_binary.c src/reconnect.c third_party/cJSON.c $(LIBS)
+tests/test_binary: tests/test_binary.c $(LIB_SRC) $(HDRS)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ tests/test_binary.c $(LIB_SRC) $(LIBS)
 
 test: tests/test_expand_home tests/test_reconnect tests/test_files tests/test_lifecycle tests/test_output_queue tests/test_binary
 	tests/test_expand_home
