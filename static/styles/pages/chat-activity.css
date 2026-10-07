@@ -1,0 +1,162 @@
+/* Chat facelift: keep the conversation primary and operational detail quiet. */
+body.is-chat .topbar { flex-shrink: 0; }
+.chat { --chat-col: 49rem; --chat-history: 19rem; --chat-secondary: #ADB3AD; --chat-tool: color-mix(in srgb, var(--mist) 35%, var(--mute)); min-width: 0; }
+.chat > * { min-width: 0; }
+@keyframes chat-search-enter { from { opacity: 0; transform: translateY(-0.35rem); } to { opacity: 1; transform: none; } }
+.chat-bar .btn { height: 2.5rem; border-color: transparent; color: var(--chat-secondary); }
+.chat-thread { min-width: 0; flex: 1 1 0; scrollbar-width: thin; scroll-padding-block: 1.25rem 1.5rem; transition: flex-grow calc(var(--dur-3) + 80ms) var(--ease-glide); }
+.chat-log, .chat-live-dock, .chat-live-todos, .chat-dock, .chat-empty { width: min(var(--chat-col), calc(100% - 4rem)); }
+.chat-log { gap: 2.6rem; padding: 2rem 0 4.5rem; }
+.chat-assistant { gap: 1rem; min-width: 0; }
+.chat-flow { display: flex; flex-direction: column; gap: inherit; min-width: 0; }
+.chat-bubble { max-width: min(80%, 36rem); padding: 0.9rem 1.25rem; border-radius: 1.45rem 1.45rem 0.45rem 1.45rem; background: var(--raise); font-size: calc(1rem * var(--chat-text-scale, 1)); line-height: 1.65; }
+.chat-md { font-size: calc(1.075rem * var(--chat-text-scale, 1)); line-height: 1.8; letter-spacing: 0; min-width: 0; }
+.chat-md p { margin: calc(1rem * var(--chat-text-scale, 1)) 0; }
+.chat-md h1, .chat-md h2, .chat-md h3, .chat-md h4, .chat-md h5, .chat-md h6 { margin: calc(1.8rem * var(--chat-text-scale, 1)) 0 calc(0.7rem * var(--chat-text-scale, 1)); line-height: 1.3; }
+.chat-md h1 { font-size: calc(1.85rem * var(--chat-text-scale, 1)); }
+.chat-md h2 { font-size: calc(1.5rem * var(--chat-text-scale, 1)); }
+.chat-md h3 { font-size: calc(1.25rem * var(--chat-text-scale, 1)); }
+.chat-md ul, .chat-md ol { padding-left: calc(1.5rem * var(--chat-text-scale, 1)); margin: calc(0.9rem * var(--chat-text-scale, 1)) 0; }
+.chat-md li { margin: calc(0.45rem * var(--chat-text-scale, 1)) 0; padding-left: calc(0.2rem * var(--chat-text-scale, 1)); }
+.chat-md li::marker { color: var(--chat-secondary); }
+.chat-md blockquote { color: var(--chat-secondary); border-color: var(--line); padding-left: calc(1rem * var(--chat-text-scale, 1)); }
+.chat-md a { color: var(--mist); text-decoration-color: var(--mute); }
+.chat-md a:hover { text-decoration-color: var(--steel); }
+.chat-md img { max-width: 100%; height: auto; border-radius: 10px; }
+.chat-md table { display: block; max-width: 100%; overflow-x: auto; font-size: calc(0.95rem * var(--chat-text-scale, 1)); }
+.chat-md th, .chat-md td { padding: calc(0.5rem * var(--chat-text-scale, 1)) calc(0.75rem * var(--chat-text-scale, 1)); }
+.chat-code { border-radius: 12px; background: var(--ink); margin: calc(1.2rem * var(--chat-text-scale, 1)) 0; }
+.chat-code-head { min-height: calc(2.65rem * var(--chat-text-scale, 1)); font-size: calc(0.75rem * var(--chat-text-scale, 1)); text-transform: none; letter-spacing: 0; }
+.chat-code-head button { min-height: calc(2.25rem * var(--chat-text-scale, 1)); padding: 0 calc(0.4rem * var(--chat-text-scale, 1)); font-size: calc(0.75rem * var(--chat-text-scale, 1)); }
+.chat-code pre { padding: calc(0.55rem * var(--chat-text-scale, 1)) calc(0.9rem * var(--chat-text-scale, 1)); font-size: calc(0.82rem * var(--chat-text-scale, 1)); line-height: 1.45; max-height: 32rem; overscroll-behavior: auto; }
+.chat-msg-actions { display: flex; gap: 0.25rem; }
+.chat-msg-actions button { height: 2rem; padding: 0 0.55rem; border-radius: 7px; font-family: var(--sans); font-size: 0.8rem; }
+.chat-error { margin: 0; padding: calc(0.8rem * var(--chat-text-scale, 1)) calc(1rem * var(--chat-text-scale, 1)); border: 1px solid color-mix(in srgb, var(--fault) 30%, var(--line)); border-radius: 10px; overflow-wrap: anywhere; }
+
+/* Activity timeline: quiet Grok-style chain — text, tiny icons, no circled nodes. */
+.chat-activity {
+  --node: calc(14px * var(--chat-text-scale, 1));
+  --row: calc(1.7rem * var(--chat-text-scale, 1));
+  --gap: calc(0.5rem * var(--chat-text-scale, 1));
+  --status-gap: 0.45rem;
+  min-width: 0;
+  color: var(--chat-secondary);
+}
+.chat-activity-summary {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  width: auto; max-width: 100%; min-height: 1.35rem; padding: 0;
+  border: 0; border-radius: 0;
+  color: var(--chat-secondary); text-align: left; font-size: calc(0.78rem * var(--chat-text-scale, 1)); line-height: 1.4;
+  cursor: pointer;
+  transition: color 150ms ease;
+}
+.chat-activity-summary:hover { color: var(--mist); }
+.chat-activity.is-waiting .chat-activity-summary,
+.chat-activity.is-waiting .chat-activity-summary:hover {
+  cursor: default;
+  color: var(--mute);
+}
+.chat-activity-spin {
+  display: none;
+  position: relative;
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  overflow: hidden;
+  place-items: center;
+  color: var(--mute);
+}
+.chat-activity.is-live .chat-activity-spin,
+.chat-activity.is-waiting .chat-activity-spin,
+.chat-live-status .chat-activity-spin {
+  display: grid;
+}
+.chat-live-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: calc(1.55rem * var(--chat-text-scale, 1));
+  margin-top: calc(0.15rem * var(--chat-text-scale, 1));
+  color: var(--mute);
+  font-size: calc(0.76rem * var(--chat-text-scale, 1));
+  line-height: 1.4;
+}
+/* Live status line (main dock + subagent dock). The dock's data-phase picks
+   a tint and a tempo; registered colors let a phase change cross-fade the
+   shimmer instead of snapping. */
+@property --status-ink { syntax: "<color>"; inherits: true; initial-value: #8a8a8a; }
+@property --status-gleam { syntax: "<color>"; inherits: true; initial-value: #ffffff; }
+:is(.chat-live-dock, .chat-agent-live-dock) {
+  --phase-tint: var(--mist);
+  --status-tempo: 2.4s;
+}
+:is(.chat-live-dock, .chat-agent-live-dock)[data-phase="thinking"] { --phase-tint: var(--reason); --status-tempo: 2.6s; }
+:is(.chat-live-dock, .chat-agent-live-dock)[data-phase="writing"] { --phase-tint: var(--brass); --status-tempo: 1.8s; }
+:is(.chat-live-dock, .chat-agent-live-dock):is([data-phase="searching"], [data-phase="reading"], [data-phase="building"], [data-phase="spawning"], [data-phase="working"]) {
+  --phase-tint: var(--steel);
+  --status-tempo: 2s;
+}
+:is(.chat-live-dock, .chat-agent-live-dock):is([data-phase="waiting"], [data-phase="starting"], [data-phase="queued"]) {
+  --phase-tint: var(--mute);
+  --status-tempo: 3.2s;
+}
+:is(.chat-live-dock, .chat-agent-live-dock):is([data-phase="stopping"], [data-phase="stalled"]) { --phase-tint: var(--fault); --status-tempo: 1.5s; }
+:is(.chat-live-dock, .chat-agent-live-dock) .chat-activity-spin {
+  color: color-mix(in srgb, var(--phase-tint) 55%, var(--mist));
+  transition: color 450ms ease;
+}
+.chat-status-shimmer {
+  --status-ink: color-mix(in srgb, var(--mute) 52%, var(--mist) 48%);
+  --status-gleam: color-mix(in srgb, var(--phase-tint, var(--mist)) 40%, var(--mist));
+  display: inline-flex;
+  align-items: baseline;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--status-ink);
+  transition: --status-ink 450ms ease, --status-gleam 450ms ease;
+}
+.chat-status-shimmer .chat-activity-text { display: inline-flex; align-items: baseline; min-width: 0; }
+.chat-status-shimmer .chat-status-verb {
+  display: inline-block;
+  /* Italic glyphs (and the synthesized italic of Bricolage) overhang their
+     advance. background-clip:text only paints inside the padding box, so pad
+     the end to cover the overhang and pull the following dots back. */
+  padding-inline-end: 0.28em;
+  margin-inline-end: -0.28em;
+  background-image: linear-gradient(
+    100deg,
+    var(--status-ink) 0%,
+    var(--status-ink) 38%,
+    var(--status-gleam) 50%,
+    var(--status-ink) 62%,
+    var(--status-ink) 100%
+  );
+  background-size: 250% 100%;
+  background-repeat: no-repeat;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  animation: chat-status-gleam var(--status-tempo, 2.4s) cubic-bezier(0.45, 0, 0.2, 1) infinite;
+}
+.chat-status-shimmer .chat-status-verb.is-swap {
+  animation:
+    chat-label-swap 380ms cubic-bezier(0.2, 0.8, 0.25, 1),
+    chat-status-gleam var(--status-tempo, 2.4s) cubic-bezier(0.45, 0, 0.2, 1) infinite;
+}
+.chat-status-shimmer .chat-status-meta {
+  flex: 0 0 auto;
+  margin-inline-start: 0.6em;
+  color: color-mix(in srgb, var(--mute) 80%, transparent);
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.chat-status-shimmer .chat-status-meta[hidden] { display: none; }
+@keyframes chat-label-swap {
+  from { opacity: 0; transform: translateY(0.5em); filter: blur(3px); }
+  to { opacity: 1; transform: none; filter: none; }
+}
+@keyframes chat-status-gleam {
+  0%, 15% { background-position: 100% 0; }
+  65%, 100% { background-position: 0% 0; }
+}

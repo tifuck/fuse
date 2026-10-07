@@ -1,0 +1,36 @@
+:root {
+  --ink: #141615;
+  --panel: #1C1F1E;
+  --mist: #E8EBE8;
+  --steel: #6EE7B7;
+  --brass: #B5E05A;
+  --raise: #2A2E2C;
+  --mute: #8F978F;
+  --line: rgba(232, 235, 232, 0.14);
+  --fault: #F87171;
+  --ok: #4ADE80;
+  /* Run-status semantics. Universal traffic-light values, deliberately NOT
+     overridden by chat themes: themes recolor decoration (brass/steel/ok),
+     but a finished run must read green and a dead one red in every theme. */
+  --status-live: #FBBF24;
+  --status-done: #34D399;
+  --status-fail: #F87171;
+  --reason: #94A3B8;
+  --topbar: 2.75rem;
+  --rail: 16.75rem;
+  --radius: 12px;
+  --gap: 1rem;
+  --page: 68rem;
+  --control: 2.15rem;
+  --sans: "Bricolage Grotesque", sans-serif;
+  --mono: "Red Hat Mono", ui-monospace, monospace;
+  /* Motion. Three durations, two curves; every chat effect draws from these.
+     snap: small state changes (hover, press, popovers, fades).
+     glide: things that travel (drawers, sheets, the docking composer). */
+  --dur-1: 120ms;
+  --dur-2: 200ms;
+  --dur-3: 280ms;
+  --ease-snap: cubic-bezier(0.2, 0, 0, 1);
+  --ease-glide: cubic-bezier(0.32, 0.72, 0, 1);
+}
+

@@ -153,7 +153,7 @@ test('backdrop wallpaper is a scene layer, not an opaque plate', () => {
 
 test('tool rows collapse to one line; thinking unwraps in place', () => {
   const css = [
-    readFileSync(resolve(__dirname, '../static/app.css'), 'utf8'),
+    readFileSync(resolve(__dirname, '../static/app.css'), 'utf8').replace(/@import url\("([^"]+)"\);/g, (_, path) => readFileSync(resolve(__dirname, '../static', path), 'utf8')),
     readFileSync(resolve(__dirname, '../static/chat-design.css'), 'utf8'),
     themeStyles,
   ].join('\n');

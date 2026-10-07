@@ -1,0 +1,268 @@
+/* —— Artifacts —— */
+.artifact-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 18rem), 1fr));
+  gap: var(--gap);
+}
+.artifact-card { display: flex; flex-direction: column; gap: 0.7rem; min-width: 0; }
+.artifact-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.7rem;
+}
+.artifact-card-title {
+  color: var(--mist);
+  font-weight: 600;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.artifact-card-title:hover { color: var(--steel); }
+.artifact-card-meta {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.85rem;
+  color: var(--mute);
+  font-size: 0.8rem;
+  font-family: var(--mono);
+}
+.artifact-card-actions { margin-top: auto; flex-wrap: wrap; }
+.artifact-card.is-archived { opacity: 0.62; }
+.artifact-card.is-archived .artifact-card-title { color: var(--mute); }
+
+body.is-artifact-page {
+  min-height: 0;
+  height: 100dvh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+body.is-artifact-page .stage {
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+body.is-artifact-page .stage-inner {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+body.is-artifact-page main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+body.is-artifact-page main > .panel { margin: 1.25rem auto; max-width: 28rem; }
+
+.artifact-shell {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  background: var(--ink);
+}
+.artifact-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem 0.85rem;
+  min-height: 2.7rem;
+  padding: 0.35rem 0.85rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+.artifact-banner-copy {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  min-width: 0;
+}
+.artifact-banner h1 {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.artifact-back {
+  flex-shrink: 0;
+  color: var(--mute);
+  font-size: 0.78rem;
+  text-decoration: none;
+}
+.artifact-back:hover { color: var(--mist); }
+.artifact-banner-note {
+  margin: 0;
+  color: var(--mute);
+  font-size: 0.72rem;
+}
+.artifact-banner-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+.artifact-banner-actions form { margin: 0; }
+.artifact-frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #fff;
+}
+.artifact-public-note {
+  margin: 0;
+  max-width: 28ch;
+  color: var(--mute);
+  font-size: 0.8rem;
+}
+
+.chat { --chat-artifact: min(36rem, 42vw); }
+.chat-bar, .chat-stage { grid-column: 2; }
+
+.chat-welcome {
+  max-height: 3.5rem;
+  margin: 0 0 1.15rem;
+  overflow: hidden;
+  text-align: center;
+  color: var(--mist);
+  font-size: 1.65rem;
+  font-weight: 500;
+  letter-spacing: -0.045em;
+  line-height: 1.2;
+  opacity: 1;
+  transition: opacity 0.28s ease, margin calc(var(--dur-3) + 80ms) var(--ease-glide), max-height calc(var(--dur-3) + 80ms) var(--ease-glide);
+}
+.chat:not(.is-empty) .chat-welcome {
+  max-height: 0;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.chat.is-empty .chat-thread {
+  flex-grow: 0;
+  padding-top: 0;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+}
+.chat.is-empty .chat-sync:not(.is-fault):not(:has(button:not([hidden]))) {
+  color: color-mix(in srgb, var(--steel) 72%, transparent);
+}
+.chat.is-empty .chat-latest { display: none; }
+.chat.is-empty .chat-dock {
+  align-self: center;
+  width: min(var(--chat-col), calc(100% - 4rem));
+  max-width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-stage::before,
+  .chat-stage::after,
+  .chat-thread,
+  .chat-welcome { transition: none; }
+}
+@media (max-width: 800px) {
+  .chat-welcome { font-size: 1.35rem; }
+  .chat.is-empty .chat-dock {
+    width: min(var(--chat-col), calc(100% - 1.5rem));
+  }
+}
+body.is-chat.is-keyboard .chat.is-empty .chat-stage::before,
+body.is-chat.is-keyboard .chat.is-empty .chat-stage::after {
+  flex-grow: 0;
+}
+body.is-chat.is-keyboard .chat-welcome {
+  display: none;
+}
+body.is-chat.is-keyboard .chat-dock {
+  margin-top: auto;
+}
+
+.chat {
+  --chat-col: 54rem;
+  --chat-bar-h: 3.2rem;
+  grid-template-rows: minmax(0, 1fr);
+}
+@media (min-width: 1440px) {
+  .chat { --chat-col: 58rem; }
+}
+.chat-stage {
+  grid-column: 2;
+  grid-row: 1;
+  position: relative;
+  z-index: 0;
+}
+/* Top bar: overlays the thread; the fade edge below it separates content. */
+.chat-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 0.5rem;
+  height: var(--chat-bar-h);
+  padding: 0 0.75rem 0 1rem;
+  background: transparent;
+  border: 0;
+  border-right: var(--chat-scroll-gutter, 0px) solid transparent;
+  pointer-events: none;
+}
+.chat-bar > * { pointer-events: auto; }
+.chat-bar .chat-bar-title { flex: 1 1 auto; }
+@media (min-width: 801px) {
+  .chat:not(.is-untitled) .chat-bar-title { min-width: 5rem; }
+}
+.chat-edge {
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+  z-index: 4;
+}
+.chat-edge-top {
+  top: 0;
+  height: calc(var(--chat-bar-h) + 1.35rem);
+  background: linear-gradient(180deg, var(--ink) 0%, var(--ink) calc(100% - 1.35rem), transparent 100%);
+}
+.chat.is-empty .chat-edge { opacity: 0; }
+.chat-thread {
+  padding-top: calc(var(--chat-bar-h) + 0.45rem);
+  scroll-padding-top: 0.4rem;
+}
+.chat-log,
+.chat-live-dock,
+.chat-live-todos,
+.chat-dock,
+.chat-empty {
+  width: min(var(--chat-col), calc(100% - 2.75rem));
+}
+.chat-log {
+  gap: 1.25rem;
+  padding: 0.55rem 0 0.75rem;
+}
+.chat-dock {
+  z-index: 6;
+  padding-top: 0.1rem;
+  padding-bottom: max(0.55rem, env(safe-area-inset-bottom));
+}
+.chat-sync {
+  padding: 0.02rem 0.15rem 0.12rem 0.55rem;
+}

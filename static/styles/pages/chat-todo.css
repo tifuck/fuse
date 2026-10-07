@@ -1,0 +1,112 @@
+/* —— Todo section: under the status line, above the composer. ——
+   todo_write never prints as a transcript row; the list lives here and updates
+   in place. The main chat's section is the transcript's last row after the
+   status line, so it takes over the clearance above the composer; a subagent's
+   sits under its own status dock. */
+.chat-live-todos,
+.chat-agent-live-todos { display: none; }
+.chat-live-todos:not([hidden]),
+.chat-agent-live-todos:not([hidden]) {
+  display: block;
+  flex: 0 0 auto;
+  color: var(--mist);
+  font: calc(0.84rem * var(--chat-text-scale, 1))/1.45 var(--sans);
+  animation: chat-todo-in var(--dur-2) var(--ease-snap) both;
+}
+.chat-live-todos:not([hidden]) { margin-top: 0.5rem; }
+.chat:not(.is-empty) .chat-live-todos:not([hidden]) { padding-bottom: calc(var(--dock-h, 7rem) + var(--dock-clearance)); }
+.chat:not(.is-empty) .chat-thread:has(> .chat-live-todos:not([hidden])) > .chat-live-dock { padding-bottom: 0 !important; }
+.chat:not(.is-empty) .chat-thread:has(> .chat-live-todos:not([hidden])):not(:has(> .chat-live-dock:not([hidden]))) > .chat-log { padding-bottom: 0 !important; }
+.chat-agent-live-todos:not([hidden]) {
+  padding: 0.45rem 0.75rem max(0.55rem, env(safe-area-inset-bottom));
+  border-top: 1px solid var(--line);
+}
+.chat-agent-live-dock:not([hidden]):has(+ .chat-agent-live-todos:not([hidden])) { padding-bottom: 0.2rem; border-bottom: 0; }
+.chat-agent-live-dock:not([hidden]) + .chat-agent-live-todos:not([hidden]) { border-top: 0; padding-top: 0; }
+@keyframes chat-todo-in {
+  from { opacity: 0; transform: translateY(0.3rem); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-live-todos:not([hidden]),
+  .chat-agent-live-todos:not([hidden]) { animation: none; }
+}
+:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 1.4em;
+}
+:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-head {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--mute);
+  font: inherit;
+  font-size: 0.82em;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  cursor: default;
+}
+:is(.chat-live-todos, .chat-agent-live-todos) button.chat-todo-head { cursor: pointer; }
+:is(.chat-live-todos, .chat-agent-live-todos) button.chat-todo-head:hover .chat-todo-fold { color: var(--mist); }
+:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-count {
+  color: var(--brass);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-fold { color: var(--mute); letter-spacing: 0; text-transform: none; }
+:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-dismiss {
+  margin-left: auto;
+  padding: 0 0.3rem;
+  border: 0;
+  background: none;
+  color: var(--mute);
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-dismiss:hover { color: var(--mist); }
+:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-rows {
+  display: grid;
+  gap: 0.12rem;
+  margin: 0.15rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-row {
+  display: grid;
+  grid-template-columns: 1.1rem minmax(0, 1fr);
+  column-gap: 0.45rem;
+  align-items: baseline;
+  min-width: 0;
+}
+:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-text { min-width: 0; overflow-wrap: anywhere; }
+:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-box { color: var(--mute); font-family: var(--mono); text-align: center; }
+:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-box::before { content: "○"; }
+:is(.chat-live-todos, .chat-agent-live-todos) .is-in-progress .chat-todo-box { color: var(--brass); }
+:is(.chat-live-todos, .chat-agent-live-todos) .is-in-progress .chat-todo-box::before { content: "›"; }
+:is(.chat-live-todos, .chat-agent-live-todos) .is-in-progress .chat-todo-text { color: var(--mist); font-weight: 600; }
+:is(.chat-live-todos, .chat-agent-live-todos) .is-completed .chat-todo-box { color: var(--ok); }
+:is(.chat-live-todos, .chat-agent-live-todos) .is-completed .chat-todo-box::before { content: "✓"; }
+:is(.chat-live-todos, .chat-agent-live-todos) .is-cancelled .chat-todo-box::before { content: "×"; }
+:is(.chat-live-todos, .chat-agent-live-todos) :is(.is-completed, .is-cancelled) .chat-todo-text { color: var(--mute); text-decoration: line-through; }
+:is(.chat-live-todos, .chat-agent-live-todos) .is-more .chat-todo-box::before { content: "…"; }
+:is(.chat-live-todos, .chat-agent-live-todos) .is-more .chat-todo-text { color: var(--mute); font-style: italic; }
+:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-row.is-pending .chat-todo-text { color: var(--mist); }
+
+/* The one line left in the transcript when a list finishes. */
+.chat .chat-todo-line {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  margin: 0;
+  color: var(--mute);
+  font: calc(0.78rem * var(--chat-text-scale, 1))/1.45 var(--mono);
+}
+.chat .chat-todo-line-mark::before { content: "✓"; color: var(--ok); }

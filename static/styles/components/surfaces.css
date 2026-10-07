@@ -1,0 +1,84 @@
+/* —— Surfaces —— */
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1.05rem 1.15rem 1.1rem;
+}
+.panel h2 {
+  margin: 0 0 0.9rem;
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--gap);
+}
+.grid-2 > .panel { min-width: 0; }
+.stack-y { display: flex; flex-direction: column; gap: var(--gap); }
+.stack-y > *,
+.panel,
+.table-wrap,
+.bars { min-width: 0; }
+.key-meta { margin: 0.75rem 0 0; color: var(--mute); }
+.panel-foot { margin-top: 0.9rem; }
+.panel .callout { margin: 0.85rem 0; }
+.panel .code-chip + .code-chip { margin-top: 0.75rem; }
+.key-create {
+  display: grid;
+  grid-template-columns: minmax(12rem, 24rem) auto;
+  align-items: end;
+  gap: 0.65rem;
+  margin-top: 1rem;
+}
+.key-create .btn { margin-bottom: 1px; }
+
+.copy { cursor: pointer; }
+.copy:hover { color: var(--steel); }
+.copy.ok { color: var(--ok); }
+.key { font-size: 0.8rem; }
+
+.code-chip {
+  display: block;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  background: var(--raise);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.65rem 0.75rem;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+.code-block {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  background: var(--raise);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.85rem 0.9rem;
+  overflow-x: auto;
+  white-space: pre;
+  color: var(--mist);
+  margin: 0.85rem 0 0;
+  line-height: 1.5;
+}
+.pills {
+  list-style: none;
+  margin: 0.85rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.pill {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  padding: 0.28rem 0.55rem;
+  border-radius: 999px;
+  background: var(--raise);
+  border: 1px solid var(--line);
+  color: var(--mist);
+}
+

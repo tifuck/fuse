@@ -1,0 +1,148 @@
+/* Filled chats use an overlaid glass composer so the transcript can pass behind it. */
+.chat {
+  --dock-overhang: 1rem;
+  --dock-clearance: 1rem;
+  --live-dock-space: 0px;
+  --chat-scroll-gutter: 0px;
+  --glass-bg: color-mix(in srgb, var(--panel) 68%, transparent);
+  --glass-line: var(--brass);
+  --glass-blur: 22px;
+  --glass-saturation: 122%;
+}
+.chat:not(.is-empty) .chat-thread {
+  padding-bottom: 0;
+}
+.chat:not(.is-empty) .chat-log {
+  padding-bottom: calc(var(--dock-h, 7rem) + var(--dock-clearance));
+}
+/* A running reply's status line is the transcript's last row, so it scrolls
+   away with the reply; it takes over the log's clearance above the composer. */
+.chat:not(.is-empty) .chat-thread:has(> .chat-live-dock:not([hidden])) > .chat-log { padding-bottom: 0; }
+.chat:not(.is-empty) .chat-live-dock {
+  padding-bottom: calc(var(--dock-h, 7rem) + var(--dock-clearance));
+}
+.chat:not(.is-empty) .chat-dock {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: min(calc(var(--chat-col) + var(--dock-overhang)), calc(100% - 1.25rem - var(--chat-scroll-gutter, 0px)));
+  max-width: none;
+  margin: 0;
+  transform: translateX(calc(-50% - var(--chat-scroll-gutter, 0px) / 2));
+}
+.chat .chat-box {
+  isolation: isolate;
+  border-color: var(--glass-line);
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+  box-shadow:
+    0 18px 48px rgb(0 0 0 / 34%),
+    inset 0 1px 0 color-mix(in srgb, var(--mist) 18%, transparent),
+    inset 0 -1px 0 rgb(0 0 0 / 18%);
+}
+.chat .chat-box::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  background:
+    radial-gradient(120% 90% at 12% 0%, color-mix(in srgb, var(--mist) 3%, transparent), transparent 45%),
+    linear-gradient(135deg, color-mix(in srgb, var(--mist) 2%, transparent), transparent 38%);
+  pointer-events: none;
+}
+.chat .chat-box > * {
+  position: relative;
+  z-index: 1;
+}
+.chat .chat-box:focus-within {
+  border-color: color-mix(in srgb, var(--brass) 30%, var(--glass-line));
+  box-shadow:
+    0 20px 54px rgb(0 0 0 / 38%),
+    0 0 0 1px color-mix(in srgb, var(--brass) 12%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--mist) 20%, transparent);
+}
+.chat:not(.is-empty) .chat-sync {
+  align-self: flex-start;
+  width: max-content;
+  max-width: calc(100% - 1rem);
+  margin: 0 0 0.22rem 0.55rem;
+  padding: 0.16rem 0.5rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ink) 58%, transparent);
+  -webkit-backdrop-filter: blur(9px);
+  backdrop-filter: blur(9px);
+  box-shadow: 0 5px 15px rgb(0 0 0 / 16%);
+}
+
+@media (max-width: 800px) {
+  .chat {
+    --dock-overhang: 0.4rem;
+    --dock-clearance: 0.7rem;
+    --glass-bg: color-mix(in srgb, var(--panel) 74%, transparent);
+    --glass-blur: 16px;
+  }
+  .chat:not(.is-empty) .chat-dock {
+    width: calc(100% - 1.15rem - var(--chat-scroll-gutter, 0px));
+  }
+  .chat:not(.is-empty) .chat-sync {
+    margin-left: 0.55rem;
+    margin-bottom: 0.18rem;
+    padding: 0.14rem 0.42rem;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .chat .chat-box,
+  .chat:not(.is-empty) .chat-sync {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .chat .chat-box {
+    background: color-mix(in srgb, var(--panel) 96%, var(--ink));
+  }
+}
+
+@supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .chat .chat-box {
+    background: color-mix(in srgb, var(--panel) 94%, var(--ink));
+  }
+}
+.chat.is-docking .chat-dock {
+  animation: chat-dock-drop calc(var(--dur-3) + 80ms) var(--ease-glide);
+}
+.chat.is-docking .chat-log,
+.chat.is-entering .chat-log,
+.chat.is-live-dock:is(.is-docking, .is-entering) .chat-live-dock {
+  animation: chat-transcript-in var(--dur-3) var(--ease-snap) both;
+}
+@keyframes chat-dock-drop {
+  from { transform: translate(calc(-50% - var(--chat-scroll-gutter, 0px) / 2), var(--dock-slide, -28dvh)); }
+  to { transform: translate(calc(-50% - var(--chat-scroll-gutter, 0px) / 2), 0); }
+}
+@keyframes chat-transcript-in {
+  from { opacity: 0; transform: translateY(var(--transcript-rise, 0.75rem)); }
+  to { opacity: 1; transform: none; }
+}
+/* Phones already animate the back swipe; a short, small settle is enough. */
+@media (max-width: 800px) {
+  .chat { --transcript-rise: 0.375rem; }
+  .chat.is-docking .chat-log,
+  .chat.is-entering .chat-log,
+  .chat.is-live-dock:is(.is-docking, .is-entering) .chat-live-dock { animation-duration: var(--dur-2); }
+}
+/* A turn that arrives while the chat is open (new reply, pending send)
+   settles in instead of appearing. Full repaints and thread switches don't. */
+.chat-turn.is-arriving,
+.chat-pending-send > .chat-turn { animation: chat-turn-arrive var(--dur-2) var(--ease-snap) backwards; }
+@keyframes chat-turn-arrive {
+  from { opacity: 0; translate: 0 0.375rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat.is-docking .chat-dock,
+  .chat.is-docking .chat-log,
+  .chat.is-entering .chat-log,
+  .chat.is-live-dock:is(.is-docking, .is-entering) .chat-live-dock { animation: none; }
+}
+

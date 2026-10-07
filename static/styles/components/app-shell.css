@@ -1,0 +1,150 @@
+/* —— App shell —— */
+body.is-app {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+body.is-settings {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 100%;
+  min-height: 0;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  background: var(--ink);
+}
+body.is-settings .stage {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+  z-index: 1;
+}
+body.is-settings .stage-inner {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.settings-top { display: none; }
+.nav-toggle {
+  display: none;
+  place-items: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  flex-shrink: 0;
+  border-radius: 8px;
+  color: var(--mist);
+  touch-action: manipulation;
+}
+.nav-toggle:hover { background: var(--raise); }
+.nav-toggle-close { display: none; }
+body.is-nav .nav-toggle-open { display: none; }
+body.is-nav .nav-toggle-close { display: block; }
+.nav-scrim { display: none; }
+.mark {
+  display: block;
+  font-weight: 700;
+  font-size: 1.05rem;
+  letter-spacing: -0.03em;
+  color: var(--mist);
+  text-decoration: none;
+  padding: 0;
+}
+.mark:hover { color: var(--brass); }
+
+.stage { min-width: 0; }
+.stage-inner {
+  max-width: var(--page);
+  margin: 0 auto;
+  padding: 0 2rem 4rem;
+}
+
+.page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1.25rem;
+  min-height: 0;
+  padding: 1.25rem 0 1rem;
+}
+.page-copy { min-width: 0; flex: 1; }
+.page-copy h1 {
+  margin: 0;
+  font-size: 1.55rem;
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  line-height: 1.15;
+  color: var(--mist);
+}
+.page-copy p {
+  margin: 0.28rem 0 0;
+  max-width: 54ch;
+  color: var(--mute);
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+.page-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-shrink: 0;
+  min-height: var(--control);
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.page-actions:empty, .page-actions:not(:has(*)) { display: none; }
+.page-actions form { margin: 0; display: flex; }
+
+main { min-width: 0; }
+
+/* —— Auth —— */
+body.is-auth .stage,
+body.is-auth .stage-inner {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+.auth-main {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 1.05fr 1fr;
+}
+.auth-brand {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 12vh 10vw 4rem;
+}
+.auth-brand h1 {
+  font-size: clamp(2.2rem, 4.6vw, 3.6rem);
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  margin: 0.45rem 0 1rem;
+}
+.auth-pane {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12vh 8vw 4rem;
+  background: color-mix(in srgb, var(--panel) 55%, var(--ink));
+  border-left: 1px solid var(--line);
+}
+.auth-card {
+  width: min(22.5rem, 100%);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 1.75rem 1.75rem 1.5rem;
+}
+.auth-card h2 {
+  margin: 0 0 1.1rem;
+  font-size: 1.2rem;
+  letter-spacing: -0.02em;
+}
+

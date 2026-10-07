@@ -1,0 +1,141 @@
+.chat-empty { max-width: 38rem; padding: 2rem 0 3rem; }
+.chat-empty-glyph { display: grid; place-items: center; width: 3.75rem; height: 3.75rem; margin: 0 auto 1.5rem; color: var(--brass); border: 1px solid var(--line); border-radius: 18px; }
+.chat-empty p.chat-empty-eyebrow { margin: 0 0 0.9rem; font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.06em; color: var(--chat-secondary); }
+.chat-empty h2 { font-size: clamp(2rem, 3.6vw, 3rem); font-weight: 500; letter-spacing: -0.055em; }
+.chat-empty p { margin-top: 1rem; font-size: 1rem; line-height: 1.75; }
+.chat-dock { flex: 0 0 auto; padding-top: 0.5rem; padding-bottom: max(1rem, env(safe-area-inset-bottom)); }
+.chat-box { padding: 1rem 1rem 0.8rem; border-radius: 1.4rem; box-shadow: 0 8px 28px rgba(0, 0, 0, 0.12); transition: border-color 160ms ease; }
+.chat-box:focus-within { border-color: color-mix(in srgb, var(--mist) 32%, transparent); }
+.chat-compose textarea { min-height: 4rem; max-height: min(12rem, 28dvh); font-size: 1.05rem; line-height: 1.65; padding: 0.15rem 0.25rem 0.9rem; }
+.chat-box-bar { gap: 0.5rem; align-items: flex-end; }
+.chat-box-left { flex: 1; gap: 0.4rem; }
+.chat-model { position: relative; min-width: 0; max-width: 100%; }
+.chat-picker-btn { max-width: min(22rem, 100%); }
+.chat-picker-btn { min-height: 2.2rem; font-size: 0.8rem; }
+.chat-attach-btn, .chat-search-btn { width: 2.2rem; height: 2.2rem; }
+.chat-send { width: 2.6rem; height: 2.6rem; }
+.chat-context { width: 2.4rem; height: 2.4rem; }
+.chat-context svg { width: 1.55rem; height: 1.55rem; }
+.chat-hint { text-align: center; margin-top: 0.6rem; min-height: 0; overflow-wrap: anywhere; }
+.chat-hint:empty { display: none; }
+/* Anchor to the thread's grid area, not its scrolling content or a guessed dock height. */
+.chat-memory { position: absolute; z-index: 9; inset: auto 0 calc(100% + 0.65rem); margin: 0; padding: 1rem; max-height: min(34rem, 55dvh); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 12px 35px rgba(0, 0, 0, 0.35); gap: 1rem; }
+.chat-memory-head { align-items: center; }
+.chat-memory-head p { font-size: 1rem; }
+.chat-memory-close { min-height: 2.25rem; padding: 0 0.6rem; border-radius: 7px; font-size: 0.85rem; }
+.chat-memory-close:hover { background: var(--raise); }
+.chat-memory-field > span { text-transform: none; letter-spacing: 0; font-family: var(--sans); font-size: 0.85rem; color: var(--chat-secondary); }
+.chat-memory textarea { flex-shrink: 0; font-size: 1rem; }
+.chat-memory-note { font-size: 0.8rem; line-height: 1.6; }
+
+@media (min-width: 801px) {
+  .chat.history-collapsed { grid-template-columns: 0 minmax(0, 1fr); }
+}
+@media (max-width: 1100px) and (min-width: 801px) {
+  .chat-log, .chat-live-dock, .chat-live-todos, .chat-dock, .chat-empty { width: min(var(--chat-col), calc(100% - 2.5rem)); }
+}
+@media (max-width: 800px) {
+  body.is-chat.is-app { grid-template-rows: auto minmax(0, 1fr); }
+  .chat-bar .btn { min-height: 2.5rem; }
+  .chat-log, .chat-live-dock, .chat-live-todos, .chat-dock, .chat-empty { width: min(var(--chat-col), calc(100% - 1.5rem)); }
+  .chat-log { gap: 2rem; padding-top: 1.25rem; padding-bottom: 4rem; }
+  .chat-md { font-size: calc(1rem * var(--chat-text-scale, 1)); line-height: 1.8; }
+  .chat-bubble { max-width: 90%; font-size: calc(1rem * var(--chat-text-scale, 1)); padding: 0.8rem 1rem; }
+  .chat-empty { padding: 1.5rem 0; }
+  .chat-empty h2 { font-size: 2.1rem; }
+  .chat-empty p { font-size: 0.925rem; }
+  .chat-empty-glyph { margin-bottom: 1rem; }
+  .chat-dock { padding-bottom: max(0.75rem, env(safe-area-inset-bottom)); }
+  .chat-box { padding: 0.85rem 0.75rem 0.65rem; border-radius: 1.25rem; }
+  .chat-slash-item,
+  .chat-rewind-item { min-height: 2.5rem; }
+  .chat-compose textarea { min-height: 3.5rem; font-size: 16px; }
+  .chat-picker-btn { min-height: 2.5rem; font-size: 0.8rem; }
+  .chat-search-btn { width: 2.5rem; height: 2.5rem; }
+  .chat-picker-btn { max-width: 12rem; }
+  .chat-send { width: 2.75rem; height: 2.75rem; }
+  .chat-context { width: 2.5rem; height: 2.5rem; }
+  .chat-context svg { width: 1.6rem; height: 1.6rem; }
+
+  .chat-activity-summary { min-height: 1.5rem; }
+  .chat-step-toggle, .chat-step-static { min-height: 1.85rem; }
+  .chat-msg-actions button { min-height: 2.5rem; }
+  .chat-memory { max-height: min(30rem, 50dvh); }
+  .chat-memory textarea, .chat-history input, .chat-picker-search { font-size: 16px; }
+}
+@media (max-width: 420px) {
+  .chat-model { min-width: 0; max-width: 7.5rem; }
+  /* The effort tag never shrinks; at this width it would push the chevron
+     out of the chip and leave no room for the model name. */
+  .chat-picker-btn > small { display: none; }
+  .chat-picker-btn { overflow: hidden; }
+  .chat-picker-btn { max-width: 100%; padding-inline: 0.6rem; }
+  .chat-empty p br { display: none; }
+  .chat-source-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-height: 560px) {
+  .chat-empty-glyph, .chat-empty p { display: none; }
+  .chat-empty { padding: 0.5rem 0; }
+  .chat-empty h2 { font-size: 1.5rem; }
+  .chat-compose textarea { min-height: 2.5rem; }
+  .chat-dock { padding-bottom: max(0.4rem, env(safe-area-inset-bottom)); }
+  .chat-memory { max-height: 42dvh; }
+}
+@keyframes chat-signal { 50% { opacity: 0.45; } }
+/* Reserve space for shell controls and a fully expanded composer on short screens. */
+.chat-memory { max-height: min(34rem, 55dvh, max(3rem, calc(var(--vv-height, 100dvh) - min(12rem, 28dvh) - 14rem))); }
+/* Keep these last so input resets and live-state animations cannot defeat accessibility. */
+.chat [hidden] { display: none !important; }
+.chat :is(button, summary, a, input, textarea, [tabindex]):focus-visible { outline: 2px solid var(--steel); outline-offset: 3px; }
+.chat textarea:focus-visible, .chat input:focus-visible { outline-offset: -2px; border-radius: 6px; }
+.chat-compose textarea:focus,
+.chat-compose textarea:focus-visible {
+  outline: none;
+  box-shadow: none;
+  border-radius: 0;
+}
+.chat-thread:focus-visible { outline-offset: -3px; }
+/* Reduced motion removes travel (slides, rises, drops, scale) but keeps
+   color/opacity feedback, and keeps spinners and loaders turning so a
+   running request never looks frozen. */
+@media (prefers-reduced-motion: reduce) {
+  body.is-chat *, body.is-chat *::before, body.is-chat *::after {
+    transition-property: opacity, color, background-color, border-color, box-shadow !important;
+    scroll-behavior: auto !important;
+  }
+  body.is-chat :not(:where([class*="spin"], [class*="loader"], [class*="cas-"], .chat-history-loading, .chat-history-loading *, .chat-dock-dots, .chat-dock-dots *)),
+  body.is-chat :not(:where([class*="spin"], [class*="loader"], [class*="cas-"], .chat-history-loading, .chat-history-loading *))::before,
+  body.is-chat :not(:where([class*="spin"], [class*="loader"], [class*="cas-"], .chat-history-loading, .chat-history-loading *))::after { animation: none !important; }
+}
+
+/* The composer follows the visible viewport, including keyboard dismissal. */
+.chat-compose textarea { max-height: min(12rem, calc(var(--vv-height, 100dvh) * 0.24)); }
+.chat-history-backdrop { display: none; }
+@media (max-width: 800px) {
+  body.is-chat.is-app {
+    position: fixed;
+    top: var(--vv-offset, 0px);
+    left: 0;
+    right: 0;
+    width: 100%;
+  }
+  body.is-chat.is-keyboard.is-app {
+    top: 0;
+  }
+  .chat-history-backdrop {
+    display: block;
+    position: absolute;
+    inset: 0;
+    z-index: 11;
+    border: 0;
+    border-radius: 0;
+    padding: 0;
+    background: rgb(0 0 0 / 45%);
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  body.is-keyboard .chat-dock { padding-bottom: 0.5rem; }
+  body.is-keyboard .chat-compose textarea { min-height: 2.5rem; }
+  body.is-keyboard .chat-empty-glyph { display: none; }
+  .chat textarea { scroll-margin-block: 1rem; }
+}

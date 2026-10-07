@@ -1,0 +1,60 @@
+/* —— Device / Pool —— */
+.section-title {
+  font-size: 0.82rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--steel);
+  margin: 1.4rem 0 0;
+  padding-bottom: 0.45rem;
+  border-bottom: 1px solid var(--raise);
+}
+.stack-y > .section-title:first-child { margin-top: 0; }
+.band { margin: 0 0 2rem; }
+.band-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  margin-bottom: 0.65rem;
+}
+.band-head h2 { margin: 0; font-size: 1.15rem; }
+.band-head .aside { margin-top: 0.35rem; }
+.band-head .head-actions { flex-wrap: wrap; }
+.band-solo {
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--line);
+}
+.band-solo .eyebrow { color: var(--brass); }
+.keys-table td { padding-top: 0.45rem; padding-bottom: 0.45rem; font-size: 0.8rem; }
+.keys-table tr.is-problem td {
+  background: color-mix(in srgb, var(--fault) 7%, transparent);
+}
+.keys-add { margin-top: 1rem; }
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  margin: 0.75rem 0 0;
+  flex-wrap: wrap;
+}
+.pager-meta {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--mute);
+  margin: 0.55rem 0 0;
+}
+.pager .pager-meta { margin: 0; }
+.device .code {
+  font-family: var(--mono);
+  font-size: 2.1rem;
+  letter-spacing: 0.18em;
+  margin: 0.5rem 0 0.7rem;
+  color: var(--brass);
+}
+.device p { margin: 0 0 0.65rem; color: var(--mute); }
+.device .eyebrow { margin-bottom: 0.15rem; }
+.device form { margin-top: 0.35rem; }
+.pulse { font-family: var(--mono); font-size: 0.8rem; color: var(--steel); }
+.hidden { display: none !important; }
+

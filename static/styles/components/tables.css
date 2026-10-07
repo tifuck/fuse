@@ -1,0 +1,52 @@
+/* —— Tables —— */
+.table-wrap { overflow-x: auto; margin: 0 -0.15rem; }
+.log {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+.log th {
+  text-align: left;
+  font-weight: 500;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--mute);
+  padding: 0.2rem 0.75rem 0.65rem 0;
+  white-space: nowrap;
+}
+.log td {
+  padding: 0.7rem 0.75rem 0.7rem 0;
+  border-top: 1px solid var(--line);
+  vertical-align: middle;
+  overflow-wrap: break-word;
+}
+.log td:last-child, .log th:last-child { padding-right: 0; }
+.log .num { text-align: right; font-variant-numeric: tabular-nums; }
+.log th.num { text-align: right; }
+.log .tight {
+  width: 1%;
+  min-width: max-content;
+  white-space: nowrap;
+  overflow-wrap: normal;
+  padding-left: 1.1rem;
+}
+.log tbody tr:hover td {
+  background: color-mix(in srgb, var(--mist) 3%, transparent);
+}
+.log td[data-label="Actions"] {
+  text-align: right;
+  vertical-align: middle;
+}
+.row-actions {
+  display: inline-flex;
+  gap: 0.4rem;
+  justify-content: flex-end;
+  align-items: center;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.row-actions form { margin: 0; display: flex; }
+

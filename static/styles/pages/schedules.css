@@ -1,0 +1,157 @@
+.hosts-tabs {
+  display: flex;
+  gap: 0.15rem;
+  margin: 0 0 1rem;
+  padding: 0.15rem;
+  width: fit-content;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--raise);
+}
+.hosts-tabs a {
+  position: relative;
+  padding: 0.35rem 0.85rem;
+  border-radius: 8px;
+  color: var(--steel);
+  text-decoration: none;
+  font-size: 0.84rem;
+}
+.hosts-tabs a.on {
+  background: color-mix(in srgb, var(--mist) 10%, transparent);
+  color: var(--mist);
+}
+.hosts-tab-dot {
+  display: inline-block;
+  width: 0.45rem;
+  height: 0.45rem;
+  margin-left: 0.35rem;
+  border-radius: 50%;
+  background: var(--fault, #c45b4a);
+  vertical-align: 0.1rem;
+}
+.sched-table-scroll { overflow-x: auto; }
+.sched-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.84rem;
+  table-layout: fixed;
+  min-width: 640px;
+}
+.sched-table th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--steel);
+  padding: 0.4rem 0.55rem;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sched-table td {
+  padding: 0.45rem 0.55rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  vertical-align: middle;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sched-table[data-sched-table] th:nth-child(1),
+.sched-table[data-sched-table] td:nth-child(1) { width: 34%; }
+.sched-table[data-sched-table] th:nth-child(2),
+.sched-table[data-sched-table] td:nth-child(2) { width: 19%; }
+.sched-table[data-sched-table] th:nth-child(3),
+.sched-table[data-sched-table] td:nth-child(3) { width: 15%; }
+.sched-table[data-sched-table] th:nth-child(4),
+.sched-table[data-sched-table] td:nth-child(4) { width: 16%; }
+.sched-table[data-sched-table] th:nth-child(5),
+.sched-table[data-sched-table] td:nth-child(5) { width: 16%; }
+.sched-table:not([data-sched-table]) th:nth-child(1),
+.sched-table:not([data-sched-table]) td:nth-child(1) { width: 26%; }
+.sched-table:not([data-sched-table]) th:nth-child(2),
+.sched-table:not([data-sched-table]) td:nth-child(2) { width: 48%; }
+.sched-table:not([data-sched-table]) th:nth-child(3),
+.sched-table:not([data-sched-table]) td:nth-child(3) { width: 26%; }
+.sched-table tbody tr { cursor: pointer; }
+.sched-table tbody tr:hover,
+.sched-table tbody tr.is-open { background: color-mix(in srgb, var(--raise) 80%, transparent); }
+.sched-table tbody tr.is-fault td:first-child { box-shadow: inset 2px 0 0 var(--fault, #c45b4a); }
+.sched-line {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.sched-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--mist);
+  font: inherit;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sched-edit {
+  flex: none;
+  margin-left: 0.15rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--steel);
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.sched-edit:hover { color: var(--mist); }
+.sched-muted { color: var(--steel); font-size: 0.75rem; }
+.sched-when { flex: none; color: var(--steel); font-size: 0.75rem; }
+.sched-err {
+  flex: 0 1 auto;
+  min-width: 0;
+  color: var(--steel);
+  font-size: 0.75rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sched-pill {
+  flex: none;
+  display: inline-block;
+  margin-left: 0.1rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--steel);
+  font-size: 0.68rem;
+}
+.sched-status { flex: none; font-weight: 500; }
+.sched-status.is-running { color: var(--brass); }
+.sched-status.is-failed, .sched-status.is-vault_locked { color: var(--fault, #c45b4a); }
+.sched-status.is-completed { color: var(--mist); }
+.sched-status.is-interrupted, .sched-status.is-cancelled { color: var(--steel); }
+.sched-open { flex: none; font-size: 0.75rem; }
+.sched-dows {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem 0.85rem;
+  align-items: center;
+  font-size: 0.82rem;
+}
+.sched-dows label { flex-direction: row; align-items: center; }
+.sched-page [hidden],
+dialog[data-sched-modal] [hidden] {
+  display: none !important;
+}
+dialog[data-sched-modal] input[type="checkbox"] {
+  width: 1rem;
+  height: 1rem;
+  margin-right: 0.4rem;
+  vertical-align: middle;
+}

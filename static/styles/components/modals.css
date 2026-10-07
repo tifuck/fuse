@@ -1,0 +1,127 @@
+/* —— Dialogs —— */
+.modal {
+  width: min(34rem, calc(100% - 2rem));
+  max-height: calc(100vh - 2rem);
+  max-height: calc(100dvh - 2rem);
+  padding: 0;
+  color: var(--mist);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 1.5rem 5rem rgba(0, 0, 0, 0.55);
+}
+.modal::backdrop { background: rgba(5, 6, 6, 0.76); }
+.modal-shell { padding: 1.25rem 1.35rem 1.4rem; }
+.modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.modal-head h2 { margin: 0.25rem 0 0; font-size: 1.1rem; }
+.modal .aside { margin: 0.85rem 0 1rem; }
+.modal .callout { margin: 0 0 1rem; }
+.device-code {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin: 0 0 1rem;
+  padding: 0.8rem 0.9rem;
+  background: var(--raise);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.device-code span {
+  color: var(--mute);
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.device-code strong {
+  color: var(--brass);
+  font-family: var(--mono);
+  font-size: 1.55rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+.modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.modal-actions form { margin: 0; }
+.modal-confirm {
+  width: min(24rem, calc(100% - 2rem));
+  margin: auto;
+}
+.modal-confirm .aside {
+  margin: 0 0 1.1rem;
+  color: var(--mist);
+  font-size: 0.95rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+.modal-confirm .modal-actions { justify-content: flex-end; }
+.modal-bugreport { width: min(30rem, calc(100% - 2rem)); margin: auto; }
+.bugreport-field { display: block; margin: 0 0 0.8rem; }
+.bugreport-field span {
+  display: block;
+  margin: 0 0 0.35rem;
+  color: var(--mute);
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.bugreport-field span em { font-style: normal; opacity: 0.7; text-transform: none; letter-spacing: 0.02em; }
+.bugreport-field textarea,
+.bugreport-field input {
+  width: 100%;
+  padding: 0.55rem 0.65rem;
+  color: var(--mist);
+  font-family: var(--sans);
+  font-size: 0.9rem;
+  background: var(--raise);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  resize: vertical;
+}
+.bugreport-field textarea:focus,
+.bugreport-field input:focus { outline: 2px solid var(--steel); outline-offset: -1px; }
+.bugreport-details { margin: 0 0 0.6rem; }
+.bugreport-details summary {
+  color: var(--mute);
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.bugreport-details summary:hover { color: var(--mist); }
+.bugreport-details pre {
+  max-height: 11rem;
+  margin: 0.5rem 0 0;
+  padding: 0.6rem 0.7rem;
+  overflow: auto;
+  color: var(--mute);
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--raise);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.bugreport-note { margin: 0 0 0.9rem; color: var(--mute); font-size: 0.72rem; }
+.bugreport-status { flex: 1 1 auto; color: var(--fault); font-size: 0.78rem; min-height: 1em; }
+.bugreport-ref { color: var(--mute); font-family: var(--mono); font-size: 0.8rem; }
+.bugreport-ref strong { color: var(--brass); letter-spacing: 0.1em; }
+.modal-bugreport .modal-actions { justify-content: flex-end; }
+.device-modal .poll-status { margin: 0.85rem 0 0; }
+

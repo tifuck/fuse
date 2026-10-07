@@ -1,0 +1,75 @@
+.chat-bar-title { display: flex; align-items: center; gap: 0.55rem; min-width: 0; }
+.chat-bar-title [data-chat-title] {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-bar-title [data-chat-title].is-untitled { visibility: hidden; }
+.chat-project-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: min(17rem, 45%);
+  height: 1.5rem;
+  padding: 0 0.5rem;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--mist) 7%, transparent);
+  color: var(--chat-secondary);
+  font: 0.6875rem/1 var(--mono);
+}
+.chat-project-chip[hidden] { display: none; }
+.chat-project-name {
+  color: var(--mist);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-project-chip svg { flex: 0 0 auto; }
+.chat-project-icon { display: inline-flex; flex: 0 0 auto; }
+.chat-project-icon .chat-history-glyph { opacity: 1; }
+.chat-run-spin {
+  position: relative;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  width: 0.82rem;
+  height: 0.82rem;
+  color: var(--brass);
+  opacity: 0.9;
+}
+.chat-run-spin > svg,
+.chat-run-spin > span {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+/* History rows reserve one slot for the age stamp; the run spinner occupies
+   the same box, so the title keeps its alignment in either state. */
+.chat-run-spin .cas-bloom i,
+.chat-run-spin .cas-orbit::before,
+.chat-run-spin .cas-lozenge::before,
+.chat-run-spin .cas-still {
+  border-width: 1.15px;
+}
+.chat-history-item.is-on .chat-run-spin {
+  color: color-mix(in srgb, var(--brass) 70%, var(--mist));
+  opacity: 1;
+}
+
+.chat-tool-out {
+  margin: 0;
+  max-height: 16rem;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: calc(0.78rem * var(--chat-text-scale, 1));
+  background: var(--raise);
+  border-radius: 8px;
+  padding: 0.55rem 0.7rem;
+  white-space: pre-wrap;
+}
+

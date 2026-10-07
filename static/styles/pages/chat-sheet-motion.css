@@ -1,0 +1,89 @@
+/* Mobile model picker: a full-screen sheet. It is portaled to the .chat root so
+   the glass dock's transform and backdrop-filter cannot contain or clip it, and
+   it opens without focusing the search field, so the keyboard stays closed. */
+.chat-picker-menu.is-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 68;
+  width: auto;
+  max-width: none;
+  max-height: none;
+  height: var(--vv-height, 100dvh);
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  animation: none;
+}
+/* Full-screen sheets (model picker, view menu) share one motion: rise in,
+   fall away on close (display transitions discretely; older engines close
+   instantly), and follow a downward drag on the head. */
+.chat-picker-menu.is-sheet,
+.chat-perms-menu.is-sheet,
+.chat-view-menu.is-sheet-motion {
+  transition:
+    opacity var(--dur-3) var(--ease-glide),
+    translate var(--dur-3) var(--ease-glide),
+    display var(--dur-3) allow-discrete;
+}
+.chat-picker-menu.is-sheet[hidden],
+.chat-perms-menu.is-sheet[hidden],
+.chat-view-menu.is-sheet-motion[hidden] {
+  opacity: 0;
+  translate: 0 1.5rem;
+  transition-duration: var(--dur-2);
+}
+@starting-style {
+  .chat-picker-menu.is-sheet:not([hidden]),
+  .chat-perms-menu.is-sheet:not([hidden]),
+  .chat-view-menu.is-sheet-motion:not([hidden]) { opacity: 0; translate: 0 1.5rem; }
+}
+:is(.chat-picker-menu.is-sheet, .chat-perms-menu.is-sheet, .chat-view-menu.is-sheet-motion).is-dragging { transition: none; }
+:is(.chat-picker-menu.is-sheet .chat-picker-head, .chat-perms-menu.is-sheet .chat-picker-head, .chat-view-menu.is-sheet-motion .chat-view-sheet-head) { touch-action: none; }
+@keyframes chat-picker-sheet-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@media (max-width: 800px) {
+  :is(.chat-picker-menu, .chat-perms-menu).is-sheet .chat-picker-head {
+    padding: calc(0.6rem + env(safe-area-inset-top)) 1rem 0.6rem;
+    border-bottom: 1px solid var(--line);
+  }
+  :is(.chat-picker-menu, .chat-perms-menu).is-sheet .chat-picker-head p {
+    font-family: var(--sans);
+    font-size: 1rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    text-transform: none;
+    color: var(--mist);
+  }
+  :is(.chat-picker-menu, .chat-perms-menu).is-sheet .chat-picker-head {
+    min-height: calc(3.5rem + env(safe-area-inset-top));
+  }
+  :is(.chat-picker-menu, .chat-perms-menu).is-sheet .chat-picker-searchrow { height: 3rem; padding: 0 1rem; }
+  :is(.chat-picker-menu, .chat-perms-menu).is-sheet .chat-picker-search { font-size: 16px; }
+  :is(.chat-picker-menu, .chat-perms-menu).is-sheet .chat-picker-kbd { display: none; }
+  .chat-picker-menu.is-sheet .chat-picker-list {
+    padding: 0.2rem 0.5rem calc(0.8rem + env(safe-area-inset-bottom));
+  }
+  .chat-picker-menu.is-sheet .chat-picker-group > p { padding: 0.75rem 0.55rem 0.3rem; }
+  .chat-picker-menu.is-sheet .chat-picker-row > button {
+    min-height: 2.75rem;
+    padding: 0.35rem 0.6rem;
+    border-radius: 9px;
+    font-size: 0.95rem;
+  }
+  .chat-picker-menu.is-sheet .chat-picker-meta { font-size: 0.72rem; }
+  .chat-picker-menu.is-sheet .chat-picker-thinking-host {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .chat-picker-menu.is-sheet .chat-picker-thinking { min-height: 3.25rem; padding: 0 1rem; }
+  .chat-picker-menu.is-sheet .chat-picker-efforts { --effort-thumb: 1.15rem; --effort-track: 0.22rem; }
+  .chat-picker-menu.is-sheet .chat-picker-efforts-slider { height: 2.75rem; }
+}
+@keyframes chat-drawer-enter {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
+}
+.chat-md.is-writing > :last-child::after { content: ""; display: inline-block; width: 0.4rem; height: 1em; margin-left: 0.3rem; vertical-align: -0.1em; border-radius: 1px; background: var(--brass); animation: chat-signal 1s ease-in-out infinite; }
+.chat-md.is-writing > :is(pre, table, ul, ol, .chat-code):last-child::after { display: none; }
+
