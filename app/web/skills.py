@@ -175,6 +175,7 @@ async def skills_install(request: Request):
             source=source,
             source_id=ident or f"{source}/{skill_id}",
             slug=None,
+            replace=False,
         )
     except skills.SkillError as exc:
         return _skill_fail(exc)

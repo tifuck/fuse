@@ -30,6 +30,10 @@ MAX_FILES = 50
 MAX_DEPTH = 4
 MAX_ZIP = 1 * 1024 * 1024
 MAX_ZIPBALL = 8 * 1024 * 1024
+# Loose scan bounds for whole-repo zipballs; the skill itself is bounded later
+# by filter_skill_files. Keeps a many-entry archive from decompressing unbounded.
+MAX_LOOSE_TOTAL = 32 * 1024 * 1024
+MAX_LOOSE_FILES = 4000
 MAX_FILE = 256 * 1024
 _SEG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 _GH_HOSTS = {"github.com", "api.github.com", "raw.githubusercontent.com", "codeload.github.com"}
@@ -252,6 +256,11 @@ def files_from_zip(data: bytes, *, max_compressed: int = MAX_ZIP, loose: bool = 
                 rel = _safe_rel(name, max_depth=16)
             except SkillError:
                 continue
+            total += info.file_size
+            if total > MAX_LOOSE_TOTAL:
+                raise SkillError("skill too large")
+            if len(raw) >= MAX_LOOSE_FILES:
+                raise SkillError("too many files")
         raw[rel] = zf.read(info)
     if not raw:
         raise SkillError("zip is empty")
@@ -286,7 +295,10 @@ def slice_skill_root(files: dict[str, bytes], root_md: str) -> dict[str, bytes]:
 
 
 def _decode_md(blob: bytes) -> str:
-    return blob.decode("utf-8-sig")
+    try:
+        return blob.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise SkillError("SKILL.md must be UTF-8") from exc
 
 
 def filter_skill_files(files: dict[str, bytes]) -> dict[str, bytes]:
@@ -366,7 +378,7 @@ def parse_upload(filename: str, data: bytes) -> tuple[str, dict[str, bytes]]:
         raw = files_from_zip(data, max_compressed=MAX_ZIP)
         return extract_skill_files(raw)
     if name.endswith(".md") or (filename or "") in ("SKILL.md", "skill.md"):
-        text = data.decode("utf-8-sig")
+        text = _decode_md(data)
         parsed = parse_skill_md(text)
         files = {"SKILL.md": text.encode("utf-8")}
         validate_files(files)
@@ -584,11 +596,8 @@ async def fetch_github_skill(source: str, skill_id: str) -> dict[str, bytes]:
                 parts = path.split("/", 1)
                 stripped[parts[1] if len(parts) == 2 else path] = blob
             files = stripped
-        except SkillError as exc:
-            if "too large" in exc.detail:
-                files = None
-            else:
-                files = None
+        except SkillError:
+            files = None
     if files is None:
         tree = await _github_get(
             f"https://api.github.com/repos/{quote(owner)}/{quote(repo)}/git/trees/"

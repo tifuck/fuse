@@ -316,18 +316,18 @@ def confirm_proposal(user_id: int, proposal_id: str, raw: dict) -> dict:
         rebuilt.pop("_hint", None)
         existing = skills.get_row(user_id, slug)
         on_disk = skill_dir(user_id, slug).exists()
-        if existing or on_disk:
-            if raw.get("replace") is not True:
-                origin = (existing or {}).get("origin") or "disk"
-                _release_claim(user_id, proposal_id)
-                raise SkillError(f"skill exists ({origin}); pass replace=true", 409)
+        replacing = raw.get("replace") is True
+        if (existing or on_disk) and not replacing:
+            origin = (existing or {}).get("origin") or "disk"
+            _release_claim(user_id, proposal_id)
+            raise SkillError(f"skill exists ({origin}); pass replace=true", 409)
         disk_files = _to_bytes(rebuilt)
         saved = skills.install_files(
             user_id,
             disk_files,
             origin="chat",
             slug=slug,
-            replace=True,
+            replace=replacing,
             enabled=bool(enable),
         )
     except Exception:

@@ -28,7 +28,13 @@ from app.chat_runtime import (
     fold_preload_skill,
 )
 from app.chat_tools import execute_tool, openai_tools
-from app.skill_install import extract_skill_files, files_from_zip, valid_github_source
+from app.skill_install import (
+    MAX_ZIPBALL,
+    extract_skill_files,
+    files_from_zip,
+    parse_upload,
+    valid_github_source,
+)
 from app.skill_parse import SkillError, parse_skill_md
 
 
@@ -89,6 +95,17 @@ class ParserTest(unittest.TestCase):
         self.assertTrue(parsed["disable_model_invocation"])
         self.assertFalse(parsed["user_invocable"])
         self.assertEqual(parsed["argument_hint"], "topic")
+
+    def test_frontmatter_close_must_own_its_line(self):
+        text = "---\nname: demo\n--- not a close\ndescription: Use when testing.\n---\nDo the thing.\n"
+        parsed = parse_skill_md(text)
+        self.assertEqual(parsed["body"].strip(), "Do the thing.")
+        self.assertIn("Use when testing", parsed["description"])
+
+    def test_frontmatter_close_at_eof(self):
+        parsed = parse_skill_md("---\nname: demo\ndescription: Use when testing.\n---")
+        self.assertEqual(parsed["name"], "demo")
+        self.assertEqual(parsed["body"], "")
 
 
 class SkillsDbTest(unittest.TestCase):
@@ -152,6 +169,14 @@ class SkillsDbTest(unittest.TestCase):
         self.assertIn("invalid skill path", skills.load(1, "pack", file="../etc/passwd"))
         self.assertIn("invalid skill path", skills.load(1, "pack", file="/etc/passwd"))
         self.assertIn("invalid skill path", skills.load(1, "pack", file="..\\x"))
+
+    def test_install_refuses_overwrite_without_replace(self):
+        self._install("demo", body="Original body.\n")
+        evil = {"SKILL.md": _md(name="demo", desc="Evil twin.", body="Replaced body.\n").encode()}
+        with self.assertRaises(SkillError) as ctx:
+            skills.install_files(1, evil, origin="github", replace=False)
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertIn("Original body.", skills.load(1, "demo"))
 
     def test_wipe_on_reupload(self):
         first = {
@@ -588,6 +613,26 @@ class ZipUploadTest(unittest.TestCase):
 
         with self.assertRaises(SkillError):
             files_from_zip(buf.getvalue())
+
+    def test_upload_md_invalid_utf8(self):
+        with self.assertRaises(SkillError):
+            parse_upload("SKILL.md", b"\xff\xfe\x00not utf8")
+
+    def test_loose_zipball_total_bound(self):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for i in range(2000):
+                zf.writestr(f"repo-h/{i}.md", b"\0" * 20 * 1024)
+        with self.assertRaises(SkillError):
+            files_from_zip(buf.getvalue(), max_compressed=MAX_ZIPBALL, loose=True)
+
+    def test_loose_zipball_entry_count_bound(self):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            for i in range(4001):
+                zf.writestr(f"repo-h/{i}.txt", b"x")
+        with self.assertRaises(SkillError):
+            files_from_zip(buf.getvalue(), max_compressed=MAX_ZIPBALL, loose=True)
 
     def test_loose_zipball_extracts_folded_skill(self):
         md = (

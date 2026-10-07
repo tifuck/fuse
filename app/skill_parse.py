@@ -185,11 +185,11 @@ def parse_skill_md(text: str, *, slug: str | None = None) -> dict:
     rest = raw[3:]
     if rest.startswith("\n"):
         rest = rest[1:]
-    end = rest.find("\n---")
-    if end < 0:
+    end_m = re.search(r"\n-{3,}[ \t]*(?:\n|$)", rest)
+    if end_m is None:
         raise SkillError("invalid SKILL.md")
-    fm = rest[:end]
-    body = rest[end + 4 :]
+    fm = rest[: end_m.start()]
+    body = rest[end_m.end() :]
     if body.startswith("\n"):
         body = body[1:]
     fields = _parse_yaml_subset(fm)
