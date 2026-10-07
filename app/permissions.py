@@ -48,7 +48,7 @@ _SECRET_EXACT = frozenset({
     ".env", "env", ".netrc", ".npmrc", ".htpasswd", "credentials.json",
     "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
     "shadow", "gshadow", ".pgpass", ".my.cnf", ".git-credentials",
-    "credentials", "secrets.json", "token.json", "kubeconfig",
+    "credentials", "secrets.json", "token.json", "kubeconfig", ".envrc",
 })
 _SECRET_SUFFIX = (".pem", ".key", ".keystore", ".env")
 _SECRET_DOTENV = re.compile(r"^\.env([._-]|$)")
@@ -70,6 +70,20 @@ _GLOB_SHELL = re.compile(r"[*?\[\]]")
 # Separators make operands non-exhaustive (cd X && anything), so a compound
 # command is never covered by a dir grant - but it still runs silently in scope.
 _COMPOUND_SHELL = re.compile(r"[;&|\n]")
+# Redirection is often glued to its operand (echo hi>/etc/x, cmd 2>err.log),
+# so shlex tokens are split on redirect operators before scanning.
+_REDIR_TOKENS = re.compile(r"([0-9&]*>>?|<)")
+# A flag joined to its path argument (tar -C/etc, gcc -I~/inc) leaves the path
+# unlisted as an operand; treat the whole command as opaque instead.
+_ATTACHED_FLAG_PATH = re.compile(r"^-[A-Za-z0-9]*[~/\\%.]")
+# A script string handed to an interpreter (bash -c '…', pwsh -Command "…")
+# hides its real targets behind one quoted argument, and eval/sshpass/expect/
+# busybox run arbitrary programs outright; only partial tokens would be
+# enumerable, so these commands are opaque and always ask.
+_INTERPRETER_SHELL = re.compile(
+    r"(?is)\b(?:(?:ba|z|da|k|a|c|tc|fi)?sh|pwsh|powershell)\b[^;|&\n]*\s-{1,2}[a-z]*c(?:ommand)?\b"
+    r"|\b(?:eval|sshpass|expect|busybox)\b"
+)
 _FETCH_EXEC_SHELL = re.compile(
     r"(?is)\b(?:curl|wget|fetch|aria2c)\b[^\n;]*\|\s*(?:sudo\s+)?(?:ba|z|k|fi|a|c|tc|da)?sh\b"
 )
@@ -296,7 +310,7 @@ def extract_shell_paths(command: str, cwd: str, windows: bool) -> list[tuple[str
     is_dir marks cd/pushd targets (a directory by construction); everything
     else is treated as a file-ish target."""
     text = str(command or "").strip()
-    if not text or _OPAQUE_SHELL.search(text):
+    if not text or _OPAQUE_SHELL.search(text) or _INTERPRETER_SHELL.search(text):
         return None
     try:
         tokens = shlex.split(text, posix=not windows)
@@ -306,26 +320,35 @@ def extract_shell_paths(command: str, cwd: str, windows: bool) -> list[tuple[str
     prev = ""
     expect_target = False
     for tok in tokens:
-        stripped = tok.strip('"\'')
-        if expect_target:
-            expect_target = False
-            if stripped:
+        # shlex keeps redirect operators glued to operands (echo x>/f), so
+        # split them out; the piece after > or < is a path target.
+        for piece in _REDIR_TOKENS.split(tok):
+            stripped = piece.strip('"\'')
+            if not stripped:
+                prev = ""
+                continue
+            if _ATTACHED_FLAG_PATH.match(stripped):
+                # -C/dir, -o./x, -I~: the path is fused to the flag and can
+                # never be enumerated, so the command is opaque.
+                return None
+            if expect_target:
+                expect_target = False
                 out.append((stripped, False))
-            prev = ""
-            continue
-        if stripped in (">", ">>", "2>", "2>>", "<", "&>", "&>>"):
-            expect_target = True
-            continue
-        if stripped in ("cd", "pushd") or stripped.lower() in ("cd", "pushd", "set-location"):
-            prev = "cd"
-            continue
-        if prev == "cd":
-            prev = ""
-            if stripped and stripped not in ("&&", ";", "||", "&") and not stripped.startswith("-"):
-                out.append((stripped, True))
-            continue
-        if _looks_like_path(stripped, windows) or is_secret_path(stripped):
-            out.append((stripped, False))
+                prev = ""
+                continue
+            if stripped in (">", ">>", "2>", "2>>", "<", "&>", "&>>", "1>", "1>>", "0<"):
+                expect_target = True
+                continue
+            if stripped in ("cd", "pushd") or stripped.lower() in ("cd", "pushd", "set-location"):
+                prev = "cd"
+                continue
+            if prev == "cd":
+                prev = ""
+                if stripped not in ("&&", ";", "||", "&") and not stripped.startswith("-"):
+                    out.append((stripped, True))
+                continue
+            if _looks_like_path(stripped, windows) or is_secret_path(stripped):
+                out.append((stripped, False))
     resolved: list[tuple[str, bool]] = []
     seen: list[str] = []
     for item, is_dir in out:
@@ -668,25 +691,30 @@ def resolve(user_id: int, thread_id: int, ask_id: str, action: str) -> dict:
             return _public_payload(row)
         expires = _parse_iso(row["expires_at"])
         if expires and expires < time.time():
-            conn.execute("UPDATE chat_permission_asks SET status='timeout', resolved_at=? WHERE id=?", (db.now(), ask_id))
+            conn.execute("UPDATE chat_permission_asks SET status='timeout', resolved_at=? WHERE id=? AND status='pending'", (db.now(), ask_id))
             row = conn.execute("SELECT * FROM chat_permission_asks WHERE id=?", (ask_id,)).fetchone()
             return _public_payload(row)
         if action == "deny":
-            conn.execute(
-                "UPDATE chat_permission_asks SET status='denied', decision=?, resolved_at=? WHERE id=?",
+            cur = conn.execute(
+                "UPDATE chat_permission_asks SET status='denied', decision=?, resolved_at=? WHERE id=? AND status='pending'",
                 (action, db.now(), ask_id),
             )
         else:
-            if action == "allow_session":
-                if row["grant_kind"] and row["host_id"]:
-                    add_grant(user_id, int(row["thread_id"]), int(row["host_id"]), row["grant_kind"], row["grant_value"], conn=conn)
-            elif action == "allow_host":
-                if row["grant_kind"] and row["host_id"]:
-                    add_grant(user_id, None, int(row["host_id"]), row["grant_kind"], row["grant_value"], conn=conn)
-            conn.execute(
-                "UPDATE chat_permission_asks SET status='allowed', decision=?, resolved_at=? WHERE id=?",
+            cur = conn.execute(
+                "UPDATE chat_permission_asks SET status='allowed', decision=?, resolved_at=? WHERE id=? AND status='pending'",
                 (action, db.now(), ask_id),
             )
+        if not cur.rowcount:
+            # Concurrent resolver/timeout won: report the stored outcome
+            # instead of resurrecting a finished ask or minting a grant.
+            row = conn.execute("SELECT * FROM chat_permission_asks WHERE id=?", (ask_id,)).fetchone()
+            return _public_payload(row)
+        if action == "allow_session":
+            if row["grant_kind"] and row["host_id"]:
+                add_grant(user_id, int(row["thread_id"]), int(row["host_id"]), row["grant_kind"], row["grant_value"], conn=conn)
+        elif action == "allow_host":
+            if row["grant_kind"] and row["host_id"]:
+                add_grant(user_id, None, int(row["host_id"]), row["grant_kind"], row["grant_value"], conn=conn)
         return _public_payload(conn.execute("SELECT * FROM chat_permission_asks WHERE id=?", (ask_id,)).fetchone())
 
 

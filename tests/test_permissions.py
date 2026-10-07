@@ -5,6 +5,7 @@ import asyncio
 import os
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -98,6 +99,46 @@ class ScopeTest(PermSchemaTest):
         self.assertIsNone(permissions.extract_shell_paths("echo $HOME/secret", "~", False))
         paths = permissions.extract_shell_paths("make test", "/srv/app", False)
         self.assertEqual(paths, [])
+
+    def test_glued_redirects_extract_targets(self):
+        # Redirection operators fused to an operand must still yield the path.
+        paths = permissions.extract_shell_paths("echo hi>/var/log/app.log", "/srv/app", False)
+        self.assertIn(("/var/log/app.log", False), paths)
+        paths = permissions.extract_shell_paths("make 2>/var/log/err.log", "/srv/app", False)
+        self.assertIn(("/var/log/err.log", False), paths)
+        paths = permissions.extract_shell_paths("cat</etc/passwd", "/srv/app", False)
+        self.assertIn(("/etc/passwd", False), paths)
+
+    def test_attached_flag_path_is_opaque(self):
+        # tar -C/dir, gcc -I~: the path is fused to the flag, so the command
+        # cannot be enumerated and must ask instead of silently allowing it.
+        self.assertIsNone(permissions.extract_shell_paths("tar -C/etc -xf a.tar", "/srv/app", False))
+        paths = permissions.extract_shell_paths("make -j4 CFLAGS=-O2", "/srv/app", False)
+        self.assertEqual(paths, [])
+
+    def test_interpreter_script_commands_are_opaque(self):
+        # A script string to an interpreter (or eval/sshpass/expect/busybox)
+        # hides its real targets: extraction must give up, not list partials.
+        opaque = (
+            "bash -c 'cat /etc/shadow'",
+            "sh -c \"rm -rf /var/www\"",
+            "zsh -c 'echo hi'",
+            "dash -c 'true'",
+            "ksh -c 'true'",
+            "bash -lc 'make'",
+            "pwsh -Command 'Remove-Item x'",
+            "powershell -command 'gci'",
+            "eval 'cat /etc/passwd'",
+            "sshpass -p secret ssh host cat /etc/shadow",
+            "expect -c 'spawn ssh host'",
+            "busybox sh",
+            "make && bash -c 'false'",
+        )
+        for command in opaque:
+            self.assertIsNone(permissions.extract_shell_paths(command, "/srv/app", False), command)
+        # Running a script file is still enumerable: only -c is opaque.
+        paths = permissions.extract_shell_paths("bash scripts/run.sh", "/srv/app", False)
+        self.assertIn("/srv/app/scripts/run.sh", [p for p, _ in paths])
 
 
 class ReviewTest(PermSchemaTest):
@@ -438,6 +479,62 @@ class ResolveTest(PermSchemaTest):
         row = db.fetchone("SELECT status, decision FROM chat_permission_asks WHERE id='pa_d'")
         self.assertEqual(row["status"], "denied")
         self.assertEqual(row["decision"], "deny")
+
+    def _pending_race_ask(self, ask_id):
+        with db.tx() as conn:
+            conn.execute("DELETE FROM chat_permission_asks")
+            conn.execute("DELETE FROM chat_permission_grants")
+            conn.execute(
+                """INSERT INTO chat_permission_asks(
+                       id,user_id,thread_id,run_id,status,decision,kind,tool,host_id,host,path,cwd,command,
+                       secret,requester,grant_kind,grant_value,created_at,expires_at)
+                   VALUES (?,1,1,'r','pending','','path','read_file',7,'prod','/var/www/index.html','', '',0,
+                       'Main agent','dir','/var/www','2026-01-01T00:00:00Z','2099-01-01T00:00:00Z')""",
+                (ask_id,),
+            )
+
+    def test_resolve_after_resolution_returns_stored_outcome(self):
+        self._pending_race_ask("pa_done")
+        first = permissions.resolve(1, 1, "pa_done", "allow_session")
+        self.assertEqual(first["status"], "allowed")
+        self.assertEqual(len(permissions.grants_for(1, 1)), 1)
+        again = permissions.resolve(1, 1, "pa_done", "deny")
+        self.assertEqual(again["status"], "allowed")
+        self.assertEqual(again["decision"], "allow_session")
+        self.assertEqual(len(permissions.grants_for(1, 1)), 1)
+
+    def test_concurrent_resolves_apply_one_decision(self):
+        # The transition is conditional on status='pending' and checked via
+        # rowcount, so racing resolvers (or a timeout) cannot both apply.
+        self._pending_race_ask("pa_race")
+        start = threading.Event()
+        outcomes: list = []
+
+        def decide(action):
+            start.wait(5)
+            try:
+                outcomes.append(permissions.resolve(1, 1, "pa_race", action))
+            except Exception as exc:  # surfaced through outcomes below
+                outcomes.append(exc)
+
+        threads = [threading.Thread(target=decide, args=(a,)) for a in ("allow_session", "deny", "allow")]
+        for t in threads:
+            t.start()
+        start.set()
+        for t in threads:
+            t.join(15)
+            self.assertFalse(t.is_alive())
+        self.assertEqual(len(outcomes), 3)
+        for item in outcomes:
+            self.assertNotIsInstance(item, Exception)
+        row = db.fetchone("SELECT status, decision FROM chat_permission_asks WHERE id='pa_race'")
+        grants = permissions.grants_for(1, 1)
+        if row["decision"] == "deny":
+            self.assertEqual(row["status"], "denied")
+            self.assertEqual(grants, [])
+        else:
+            self.assertEqual(row["status"], "allowed")
+            self.assertLessEqual(len(grants), 1)
 
     def test_set_bypass_resolves_pending(self):
         with db.tx() as conn:

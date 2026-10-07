@@ -44,6 +44,12 @@ def normalize_email(email: str) -> str:
     return email
 
 
+def password_fingerprint(user: dict) -> str:
+    """Bound into the session cookie; a password change rotates the stored hash,
+    which invalidates every session minted before it."""
+    return hashlib.sha256(str(user["password_hash"]).encode()).hexdigest()[:32]
+
+
 def create_user(email: str, password: str, *, admin: bool | None = None, require_invite: bool = False) -> dict:
     email = normalize_email(email)
     if len(password) < 8 or len(password) > 256:
@@ -51,6 +57,14 @@ def create_user(email: str, password: str, *, admin: bool | None = None, require
     raw = mint_api_key()
     with db.tx() as conn:
         n = conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
+        if n == 0:
+            # Snapshot reads let two concurrent first registrations both see an
+            # empty users table; the sentinel insert serializes the claim so
+            # only one wins first-admin/open-registration.
+            try:
+                conn.execute("INSERT INTO schema_meta(key, value) VALUES('first_user_claimed', ?)", (db.now(),))
+            except IntegrityError:
+                n = 1
         if require_invite:
             open_reg = settings.allow_register or n == 0
             consumed = conn.execute("DELETE FROM registration_whitelist WHERE email=?", (email,))
@@ -205,27 +219,36 @@ def admin_count() -> int:
     return int(row["n"] if row else 0)
 
 
+def _admins_locked(conn):
+    """Lock current admin rows so the last-admin check serializes against a
+    concurrent demote/delete. FOR UPDATE reads the latest committed rows."""
+    return conn.execute("SELECT id FROM users WHERE is_admin=1 FOR UPDATE").fetchall()
+
+
 def set_admin(user_id: int, admin: bool, *, actor_id: int) -> None:
-    target = get_user(user_id)
-    if not target:
-        raise ValueError("missing")
-    if user_id == actor_id:
-        raise ValueError("self")
-    if target["is_admin"] and not admin and admin_count() <= 1:
-        raise ValueError("last_admin")
-    db.execute("UPDATE users SET is_admin=? WHERE id=?", (1 if admin else 0, user_id))
+    with db.tx() as conn:
+        target = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+        if not target:
+            raise ValueError("missing")
+        if user_id == actor_id:
+            raise ValueError("self")
+        admins = _admins_locked(conn)
+        if target["is_admin"] and not admin and len(admins) <= 1:
+            raise ValueError("last_admin")
+        conn.execute("UPDATE users SET is_admin=? WHERE id=?", (1 if admin else 0, user_id))
 
 
 def delete_user(user_id: int, *, actor_id: int) -> str:
-    target = get_user(user_id)
-    if not target:
-        raise ValueError("missing")
-    if user_id == actor_id:
-        raise ValueError("self")
-    if target["is_admin"] and admin_count() <= 1:
-        raise ValueError("last_admin")
-    email = target["email"]
     with db.tx() as conn:
+        target = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+        if not target:
+            raise ValueError("missing")
+        if user_id == actor_id:
+            raise ValueError("self")
+        admins = _admins_locked(conn)
+        if target["is_admin"] and len(admins) <= 1:
+            raise ValueError("last_admin")
+        email = target["email"]
         conn.execute(
             "UPDATE credentials SET donated_by=NULL, disabled=1 WHERE donated_by=?",
             (user_id,),
@@ -235,6 +258,12 @@ def delete_user(user_id: int, *, actor_id: int) -> str:
         conn.execute("DELETE FROM usage_events WHERE user_id=?", (user_id,))
         conn.execute("DELETE FROM usage_hourly WHERE user_id=?", (user_id,))
         conn.execute("DELETE FROM users WHERE id=?", (user_id,))
+    try:
+        from . import vault
+
+        vault.lock(user_id)
+    except Exception:
+        pass
     return email
 
 

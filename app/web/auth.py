@@ -37,6 +37,7 @@ async def login_post(request: Request, email: str = Form(), password: str = Form
     if not user:
         return render(request, "login.html", error="Email or password is wrong.", status_code=401)
     request.session["uid"] = user["id"]
+    request.session["ph"] = accounts.password_fingerprint(user)
     request.session.pop("csrf", None)
     ensure_csrf(request)
     resp = RedirectResponse("/chat", status_code=303)
@@ -76,6 +77,7 @@ async def register_post(request: Request, email: str = Form(), password: str = F
         error, status = mapped
         return render(request, "register.html", error=error, status_code=status)
     request.session["uid"] = user["id"]
+    request.session["ph"] = accounts.password_fingerprint(user)
     request.session.pop("csrf", None)
     ensure_csrf(request)
     resp = RedirectResponse("/chat", status_code=303)
@@ -116,6 +118,8 @@ async def account_password(request: Request):
     user, err = _chat_auth(request)
     if err:
         return err
+    if _auth_limited(request):
+        raise HTTPException(429, "Too many attempts. Try again in a minute.")
     raw = await _json_object(request)
     old = raw.get("old_password")
     new = raw.get("new_password")
@@ -131,6 +135,7 @@ async def account_password(request: Request):
             raise HTTPException(400, "Password must be between 8 and 256 characters.") from None
         raise HTTPException(400, "Password could not be changed.") from None
     resp = JSONResponse({"ok": True})
+    request.session["ph"] = accounts.password_fingerprint(accounts.get_user(user["id"]))
     _set_vault_cookie(resp, user["id"])
     return resp
 
@@ -140,6 +145,8 @@ async def account_vault_unlock(request: Request):
     user, err = _chat_auth(request)
     if err:
         return err
+    if _auth_limited(request):
+        raise HTTPException(429, "Too many attempts. Try again in a minute.")
     raw = await _json_object(request)
     password = raw.get("password")
     if not isinstance(password, str) or not password:

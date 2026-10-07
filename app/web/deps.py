@@ -57,7 +57,17 @@ def current_user(request: Request):
     uid = request.session.get("uid")
     if not uid:
         return None
-    return accounts.get_user(uid)
+    user = accounts.get_user(uid)
+    if not user:
+        return None
+    # Sessions minted since the fingerprint stamp are bound to the password
+    # hash: a password change logs out every cookie issued before it. A
+    # session without a stamp predates the stamp and passes unchanged.
+    stamped = request.session.get("ph")
+    if stamped is not None and stamped != accounts.password_fingerprint(user):
+        request.session.clear()
+        return None
+    return user
 
 
 def _vault_cookie_args():
