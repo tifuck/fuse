@@ -6,7 +6,7 @@ import fcntl
 from contextlib import asynccontextmanager
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.gzip import GZipMiddleware
@@ -84,9 +84,11 @@ async def _usage_walk_loop(app: FastAPI):
             raise
         except Exception:
             logger.exception("Usage walk failed")
-            app.state.refresh_healthy = False
-            app.state.refresh_errors = ["usage walk: failed"]
+            app.state.walk_healthy = False
+            app.state.walk_errors = ["usage walk: failed"]
         else:
+            app.state.walk_healthy = True
+            app.state.walk_errors = []
             app.state.refresh_last_cycle = db.now()
         await asyncio.sleep(WALK_PAUSE)
 
@@ -124,6 +126,9 @@ async def _refresh_loop(app: FastAPI):
         if failures:
             app.state.refresh_errors = failures
             app.state.refresh_healthy = False
+        else:
+            app.state.refresh_errors = []
+            app.state.refresh_healthy = True
         delay = min(_REFRESH_MAX_BACKOFF, delay * 2) if failures else _REFRESH_INTERVAL
 
 
@@ -155,7 +160,7 @@ async def lifespan(app: FastAPI):
     loop = asyncio.get_running_loop()
     loop.set_default_executor(
         ThreadPoolExecutor(
-            max_workers=max(8, min(32, settings.database_pool_size)),
+            max_workers=max(8, settings.database_pool_size),
             thread_name_prefix="fuse-io",
         )
     )
@@ -208,6 +213,8 @@ async def lifespan(app: FastAPI):
         app.state.refresh_healthy = True
         app.state.refresh_errors = []
         app.state.refresh_last_cycle = None
+        app.state.walk_healthy = True
+        app.state.walk_errors = []
         task = asyncio.create_task(_refresh_loop(app), name="fuse-refresh")
         task.add_done_callback(lambda done: _refresh_done(app, done))
         app.state.refresh_task = task
@@ -339,7 +346,7 @@ app.include_router(agent_http_router)
 
 
 @app.get("/v1/health")
-async def health():
+async def health(request: Request):
     try:
         row = await asyncio.to_thread(db.fetchone, "SELECT 1 AS ok")
         database_ok = bool(row and row["ok"] == 1)
@@ -349,15 +356,24 @@ async def health():
     maint = getattr(app.state, "maintenance_task", None)
     walk = getattr(app.state, "usage_walk_task", None)
     task_running = bool(task and not task.done()) and bool(maint and not maint.done()) and bool(walk and not walk.done())
-    healthy = bool(database_ok and getattr(app.state, "refresh_healthy", False) and task_running)
+    refresh_ok = bool(getattr(app.state, "refresh_healthy", False))
+    walk_ok = bool(getattr(app.state, "walk_healthy", True))
+    healthy = bool(database_ok and refresh_ok and walk_ok and task_running)
+    errors = list(getattr(app.state, "refresh_errors", [])) + list(getattr(app.state, "walk_errors", []))
+    background = {
+        "running": task_running,
+        "healthy": refresh_ok and walk_ok,
+        "last_cycle": getattr(app.state, "refresh_last_cycle", None),
+    }
+    # Failure detail (exception types, job names) is for signed-in operators;
+    # anonymous callers get a count so the health contract stays stable.
+    if request.session.get("uid"):
+        background["errors"] = errors
+    else:
+        background["error_count"] = len(errors)
     payload = {
         "ok": healthy,
         "database": {"ok": database_ok, "backend": "mariadb"},
-        "background": {
-            "running": task_running,
-            "healthy": bool(getattr(app.state, "refresh_healthy", False)),
-            "last_cycle": getattr(app.state, "refresh_last_cycle", None),
-            "errors": getattr(app.state, "refresh_errors", []),
-        },
+        "background": background,
     }
     return JSONResponse(payload, status_code=200 if healthy else 503)

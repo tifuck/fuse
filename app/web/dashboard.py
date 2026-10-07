@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -237,10 +238,15 @@ async def delete_key(request: Request, key_id: int):
     return RedirectResponse("/keys", status_code=303)
 
 
+def _release_key(name: str):
+    """Numeric sort so 1.10.x beats 1.9.x; ties fall back to the name."""
+    return (tuple(int(part) for part in re.findall(r"\d+", name)), name)
+
+
 def _latest_release(suffix: str) -> str | None:
     release_dir = Path(__file__).resolve().parents[2] / "data" / "desktop-releases"
-    matches = sorted(p.name for p in release_dir.glob(f"*{suffix}") if not p.name.endswith(".blockmap"))
-    return f"/desktop/{matches[-1]}" if matches else None
+    names = [p.name for p in release_dir.glob(f"*{suffix}") if not p.name.endswith(".blockmap")]
+    return f"/desktop/{max(names, key=_release_key)}" if names else None
 
 
 @router.get("/download", response_class=HTMLResponse)
@@ -298,8 +304,18 @@ async def api_docs(request: Request):
 
 @router.get("/install-opencode.sh")
 async def install_opencode_sh(request: Request):
-    site_url = (settings.public_base_url or "").rstrip("/") or str(request.base_url).rstrip("/")
-    script = opencode_mod.install_script(origin=site_url, api_base=_public_base(request))
+    configured = (settings.public_base_url or "").rstrip("/")
+    # A poisoned Host header must be refused, not silently replaced by
+    # Starlette's fallback: the script's origin comes from config or a plainly
+    # valid request host, never anything else.
+    raw_host = (request.headers.get("host") or "").strip()
+    if not configured and not opencode_mod.safe_origin("https://" + raw_host):
+        raise HTTPException(400, "Set PUBLIC_BASE_URL to a plain http(s) origin to serve the installer") from None
+    site_url = configured or str(request.base_url).rstrip("/")
+    try:
+        script = opencode_mod.install_script(origin=site_url, api_base=_public_base(request))
+    except ValueError:
+        raise HTTPException(400, "Set PUBLIC_BASE_URL to a plain http(s) origin to serve the installer") from None
     return PlainTextResponse(
         script,
         media_type="text/x-shellscript; charset=utf-8",

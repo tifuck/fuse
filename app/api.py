@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import accounts, db, model_caps, opencode as opencode_mod
 from .config import settings
-from .proxy import merge_usage, usage_from_obj
+from .proxy import merge_usage, scrub_secrets, usage_from_obj
 from .security import client_ip, limiter
 from .sources import (
     POOL_TYPES,
@@ -49,7 +49,7 @@ def _bearer(request: Request) -> str:
     auth = request.headers.get("Authorization", "")
     if auth.lower().startswith("bearer "):
         return auth[7:].strip()
-    return auth.strip()
+    return ""
 
 
 def require_key(request: Request):
@@ -71,15 +71,15 @@ def _error_message(body) -> str:
     if isinstance(body, dict):
         err = body.get("error")
         if isinstance(err, str) and err.strip():
-            return err.strip()[:400]
+            return scrub_secrets(err.strip())[:400]
         if isinstance(err, dict):
             msg = err.get("message") or err.get("msg") or ""
             if isinstance(msg, str) and msg.strip():
-                return msg.strip()[:400]
+                return scrub_secrets(msg.strip())[:400]
         for key in ("message", "msg", "detail"):
             val = body.get(key)
             if isinstance(val, str) and val.strip():
-                return val.strip()[:400]
+                return scrub_secrets(val.strip())[:400]
     return ""
 
 
@@ -324,9 +324,10 @@ async def _tap(
             return
         if obj.get("error"):
             request_status = "failed"
-        got = usage_from_obj(obj, reasoning_separate=(provider == "grok"))
-        if got:
-            usage = got
+        # Only frames that carry a usage dict update the counts; a later
+        # delta frame must not zero what an earlier usage frame reported.
+        if isinstance(obj.get("usage"), dict):
+            usage = usage_from_obj(obj, reasoning_separate=(provider == "grok"))
 
     try:
         async for chunk in stream:
@@ -367,6 +368,9 @@ async def _tap(
         extra = getattr(stream, "usage", None)
         usage = merge_usage(usage, extra if isinstance(extra, dict) else None)
         usage.pop("stream_status", None)
+        if not usage:
+            # No usage frame anywhere: record the explicit unknown/zero shape.
+            usage = usage_from_obj({})
         # usage_status stays "complete" when a usage frame arrived (tokens are
         # known even if framing truncated); without one it is unknown.
         if usage and not any(v for k, v in usage.items() if k.endswith("tokens") and v):

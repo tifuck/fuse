@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from . import context_meter as ctxmod, model_caps
 from .sources import chatgpt as chatgpt_mod
@@ -238,10 +239,27 @@ def parse_opencode_text(text: str) -> dict:
     raise ValueError("OpenCode config is not valid JSON")
 
 
+_SAFE_ORIGIN_RE = re.compile(r"^https?://[A-Za-z0-9.\-:\[\]/]+$")
+
+
+def safe_origin(value: str) -> bool:
+    return bool(_SAFE_ORIGIN_RE.match((value or "").strip()))
+
+
+def _shell_single_quote(value: str) -> str:
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
 def install_script(*, origin: str, api_base: str) -> str:
     origin = (origin or "").rstrip("/")
     api_base = (api_base or "").rstrip("/")
-    return _INSTALL_SH.replace("@@ORIGIN@@", origin).replace("@@API@@", api_base)
+    # Origin can be Host-derived; never let anything but a plain origin reach
+    # the shell template, and single-quote it there even so.
+    if not safe_origin(origin) or not safe_origin(api_base):
+        raise ValueError("installer origin must be a plain http(s) origin")
+    return _INSTALL_SH.replace("@@ORIGIN@@", _shell_single_quote(origin)).replace(
+        "@@API@@", _shell_single_quote(api_base)
+    )
 
 
 _INSTALL_SH = r'''#!/bin/sh
@@ -251,8 +269,8 @@ if ! command -v python3 >/dev/null 2>&1; then
   echo "python3 is required to install Fuse for OpenCode." >&2
   exit 1
 fi
-export FUSE_ORIGIN="@@ORIGIN@@"
-export FUSE_API="@@API@@"
+export FUSE_ORIGIN=@@ORIGIN@@
+export FUSE_API=@@API@@
 exec python3 - "$@" <<'PY'
 from __future__ import annotations
 
