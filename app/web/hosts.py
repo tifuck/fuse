@@ -138,6 +138,8 @@ async def hosts_create(request: Request):
     if err:
         return err
     raw = await _json_object(request)
+    if set(raw) - {"alias", "label", "hostname", "port", "username", "auth_type", "secret", "passphrase", "default_cwd"}:
+        raise HTTPException(422, "Unsupported host fields")
     try:
         item = hosts.add_host(user["id"], raw)
     except hosts.HostError as exc:
@@ -186,6 +188,8 @@ async def hosts_project_create(request: Request, host_id: int):
     if err:
         return err
     raw = await _json_object(request)
+    if set(raw) - {"name", "remote_path", "notes", "default_model", "permission_mode", "color"}:
+        raise HTTPException(422, "Unsupported project fields")
     try:
         item = hosts.add_project(user["id"], host_id, raw)
     except hosts.HostError as exc:

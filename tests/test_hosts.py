@@ -517,6 +517,53 @@ class HostsHttpTest(unittest.TestCase):
         self.assertTrue(body["code"].startswith("fuse_"))
         self.assertEqual(body["install"], f"curl -fsSL https://fuse.test/i/{body['code']} | bash")
 
+    def test_create_rejects_unknown_fields_and_non_bool_settings(self):
+        csrf = self._login()
+        extra_host = self.client.post(
+            "/hosts",
+            headers={"x-csrf-token": csrf},
+            json={"alias": "box", "hostname": "example.com", "username": "u",
+                  "auth_type": "key", "secret": "k", "labal": "typo"},
+        )
+        self.assertEqual(extra_host.status_code, 422)
+        added = self.client.post(
+            "/hosts",
+            headers={"x-csrf-token": csrf},
+            json={"alias": "box", "hostname": "example.com", "username": "u",
+                  "auth_type": "key", "secret": "k"},
+        )
+        self.assertEqual(added.status_code, 201)
+        host_id = added.json()["id"]
+        extra_project = self.client.post(
+            f"/hosts/{host_id}/projects",
+            headers={"x-csrf-token": csrf},
+            json={"name": "api", "remote_path": "/srv/api", "colour": "#fff"},
+        )
+        self.assertEqual(extra_project.status_code, 422)
+        # Settings flags are booleans; a truthy string must not enable coding.
+        bad_settings = self.client.post(
+            "/hosts/settings",
+            headers={"x-csrf-token": csrf},
+            json={"agent_coding": "false"},
+        )
+        self.assertEqual(bad_settings.status_code, 400)
+        self.assertEqual(bad_settings.json()["error"]["type"], "host")
+        good_settings = self.client.post(
+            "/hosts/settings",
+            headers={"x-csrf-token": csrf},
+            json={"agent_coding": False},
+        )
+        self.assertEqual(good_settings.status_code, 200)
+        self.assertFalse(good_settings.json()["agent_coding"])
+        # A non-string alias hint is rejected, never a 500.
+        bad_alias = self.client.post(
+            "/hosts/pairings",
+            headers={"x-csrf-token": csrf},
+            json={"alias": {"nested": True}},
+        )
+        self.assertEqual(bad_alias.status_code, 400)
+        self.assertEqual(bad_alias.json()["error"]["type"], "host")
+
     def _login(self) -> str:
         login_page = self.client.get("/login")
         self.assertEqual(login_page.status_code, 200)

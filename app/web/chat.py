@@ -480,9 +480,9 @@ async def chat_thread_get(request: Request, thread_id: str):
         thread["unread"] = False
     public = _chat_public_thread(thread)
     if request.query_params.get("pack") == "1":
-        public["messages"] = chats.pack_segment_text(public.get("messages"))
+        public["messages"] = await asyncio.to_thread(chats.pack_segment_text, public.get("messages"))
         if isinstance(public.get("context_messages"), list):
-            public["context_messages"] = chats.pack_segment_text(public["context_messages"])
+            public["context_messages"] = await asyncio.to_thread(chats.pack_segment_text, public["context_messages"])
         public["segments_packed"] = True
     if request.query_params.get("stream") != "1":
         return JSONResponse(public, headers={"Cache-Control": "no-store"})
@@ -523,19 +523,23 @@ async def chat_project_agents(request: Request, thread_id: str):
     user, err = _chat_auth(request)
     if err:
         return err
-    pk = _chat_thread_pk(user, thread_id)
-    thread = chats.get_thread(user["id"], pk)
-    if not thread:
+    pk = await asyncio.to_thread(_chat_thread_pk, user, thread_id)
+    # Only the binding columns matter here; a full thread view would parse the
+    # whole transcript, which must stay off the event loop.
+    thread = await asyncio.to_thread(
+        db.fetchone,
+        "SELECT kind, host_id, project_id FROM chat_threads WHERE id=? AND user_id=?",
+        (pk, user["id"]),
+    )
+    if thread is None:
         raise HTTPException(404, "Chat not found")
-    if (thread.get("kind") or "chat") != "project" or not thread.get("host_id"):
+    if (thread["kind"] or "chat") != "project" or thread["host_id"] is None:
         return JSONResponse({"applicable": False}, headers={"Cache-Control": "no-store"})
-    import asyncio
-
     from .. import workspace
 
     host_id = int(thread["host_id"])
     cwd = ""
-    if thread.get("project_id"):
+    if thread["project_id"] is not None:
         proj = hosts.resolve_project_id(user["id"], int(thread["project_id"]))
         if proj:
             cwd = proj.get("remote_path") or ""
@@ -734,17 +738,26 @@ async def chat_thread_title_regen(request: Request, thread_id: str):
     user, err = _chat_auth(request)
     if err:
         return err
-    pk = chats.resolve_thread_pk(user["id"], thread_id)
-    if pk is None:
+    def _load():
+        # Parsing a multi-megabyte transcript is the cost here: keep it off
+        # the event loop.
+        pk = chats.resolve_thread_pk(user["id"], thread_id)
+        if pk is None:
+            return None
+        row = db.fetchone("SELECT messages,title_job_until FROM chat_threads WHERE id=? AND user_id=?", (pk, user["id"]))
+        if row is None:
+            return None
+        try:
+            messages = chats.parse_messages(row["messages"])
+        except Exception:
+            messages = []
+        return row, chats.first_user_text(messages).strip()
+
+    loaded = await asyncio.to_thread(_load)
+    if loaded is None:
         raise HTTPException(404, "Chat not found")
-    row = db.fetchone("SELECT messages,title_job_until FROM chat_threads WHERE id=? AND user_id=?", (pk, user["id"]))
-    if row is None:
-        raise HTTPException(404, "Chat not found")
-    try:
-        messages = chats.parse_messages(row["messages"])
-    except Exception:
-        messages = []
-    if not chats.first_user_text(messages).strip():
+    row, first_user_text = loaded
+    if not first_user_text:
         raise HTTPException(400, "Nothing to title yet")
     if row["title_job_until"] and row["title_job_until"] > db.now():
         return JSONResponse({"started": False, "busy": True}, headers={"Cache-Control": "no-store"})
@@ -922,7 +935,9 @@ async def chat_context_get(request: Request):
     thread_context = ""
     tools = list(chat_tools.DEFAULT_TOOLS)
     if thread_id:
-        thread = chats.get_thread(user["id"], thread_id)
+        # get_thread builds the full view (transcript parse + meter); keep it
+        # off the event loop.
+        thread = await asyncio.to_thread(chats.get_thread, user["id"], thread_id)
         if thread:
             thread_context = thread.get("context") or ""
             if "tools" in thread and thread["tools"] is not None:
