@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import secrets
+import time
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -28,7 +29,12 @@ MAX_CONCURRENT_GLOBAL = 4
 FRESH_CAP = 20
 CONTINUITY_KEEP = 5
 GRACE_CAP = 6 * 3600
-_INFLIGHT: set[int] = set()
+RETRY_COOLDOWN_S = 60
+RECONCILE_SECONDS = 60
+# Per-schedule count of in-flight _fire coroutines (tick claims + run_now).
+# Keyed by schedule id; tick never claims a schedule with a nonzero count.
+_INFLIGHT: dict[int, int] = {}
+_last_reconcile = 0.0
 _BANNED_EXACT = frozenset({"secret", "password", "token", "key", "dek", "cookie", "auth"})
 _BANNED_SUFFIX = ("_secret", "_password", "_token", "_key", "_dek", "_cookie", "_auth")
 _VAR_NAME = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
@@ -57,6 +63,15 @@ class ScheduleError(Exception):
 def banned_var(name: str) -> bool:
     n = (name or "").lower()
     return n in _BANNED_EXACT or n.endswith(_BANNED_SUFFIX)
+
+
+def _flag(value, field: str) -> bool:
+    """Strict boolean: JSON true/false (or 0/1), never truthy strings."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    raise ScheduleError(f"{field} must be true or false")
 
 
 def sanitize_schedule_error(value: str) -> str:
@@ -373,13 +388,12 @@ def _normalize(user_id: int, raw: dict, *, existing: dict | None = None) -> dict
         if not parse_iso_utc(str(once_at)):
             raise ScheduleError("once_at must be UTC ISO")
         once_at = iso_utc(parse_iso_utc(str(once_at)))
-    allow_coding = raw.get("allow_coding") if "allow_coding" in raw else (existing or {}).get("allow_coding", 0)
-    allow_coding = bool(allow_coding)
+    allow_coding = _flag(raw.get("allow_coding") if "allow_coding" in raw else (existing or {}).get("allow_coding", 0), "allow_coding")
     if target == "project":
         allow_coding = True
-    fresh = raw.get("fresh_each_fire") if "fresh_each_fire" in raw else (existing or {}).get("fresh_each_fire", 0)
-    enabled = raw.get("enabled") if "enabled" in raw else (existing or {}).get("enabled", 1)
-    paused = raw.get("paused") if "paused" in raw else (existing or {}).get("paused", 0)
+    fresh = _flag(raw.get("fresh_each_fire") if "fresh_each_fire" in raw else (existing or {}).get("fresh_each_fire", 0), "fresh_each_fire")
+    enabled = _flag(raw.get("enabled") if "enabled" in raw else (existing or {}).get("enabled", 1), "enabled")
+    paused = _flag(raw.get("paused") if "paused" in raw else (existing or {}).get("paused", 0), "paused")
     item = {
         "name": name,
         "target": target,
@@ -397,9 +411,9 @@ def _normalize(user_id: int, raw: dict, *, existing: dict | None = None) -> dict
         "at_local": at_local,
         "once_at": once_at,
         "allow_coding": allow_coding,
-        "fresh_each_fire": bool(fresh),
-        "enabled": bool(enabled),
-        "paused": bool(paused),
+        "fresh_each_fire": fresh,
+        "enabled": enabled,
+        "paused": paused,
     }
     _assert_interval(item)
     unknown = set(_VAR_TOKEN.findall(prompt)) - _BUILTINS - set(variables)
@@ -687,6 +701,15 @@ def reconcile() -> None:
                 "UPDATE chat_schedules SET last_status='interrupted', last_error='run lost', updated_at=? WHERE id=?",
                 (now, row["sid"]),
             )
+        elif not row["last_run_id"]:
+            # A fire that reached 'running' without a run id can never resolve
+            # to a run; close it instead of leaving the badge on Running.
+            db.execute(
+                """UPDATE chat_schedules SET last_status='interrupted', last_error='no run started', updated_at=?
+                   WHERE id=? AND last_status IN ('queued','running')
+                     AND (last_run_id IS NULL OR last_run_id='')""",
+                (now, row["sid"]),
+            )
 
 
 def _trim_schedule_threads(user_id: int, schedule_id: int, *, keep_id: int, cap: int) -> None:
@@ -764,19 +787,6 @@ async def _fire(schedule: dict, fire: dict, *, consume_slot: bool) -> None:
         from .sources.claude import user_has_claude
         from .sources.zai import user_has_zai
 
-        chosen = await pick(
-            schedule["model"],
-            allow_grok=user_has_grok(user_id),
-            allow_chatgpt=user_has_chatgpt(user_id),
-            allow_zai=user_has_zai(user_id),
-            allow_devin=user_has_devin(user_id),
-            allow_kimi=user_has_kimi(user_id),
-            allow_mimo=user_has_mimo(user_id),
-            allow_claude=user_has_claude(user_id),
-            user_id=user_id,
-        )
-        if chosen is None:
-            raise ScheduleError("model unavailable", 400)
         if schedule["fresh_each_fire"] == 0 and schedule.get("thread_id"):
             if db.fetchone(
                 """SELECT 1 FROM chat_runs WHERE thread_id=? AND status IN ('queued','running')
@@ -811,6 +821,27 @@ async def _fire(schedule: dict, fire: dict, *, consume_slot: bool) -> None:
         if n_sched >= MAX_CONCURRENT_USER or n_sched_global >= MAX_CONCURRENT_GLOBAL or n_user >= 4 or n_global >= 32:
             status = "skipped_capacity"
             _finish_fire(schedule, fire, status, "capacity", None, None, consume=False)
+            return
+        # Model resolution last: capacity/overlap skips must not pay for it
+        # (and a capacity-skip retry loop would otherwise hammer pick).
+        chosen = await pick(
+            schedule["model"],
+            allow_grok=user_has_grok(user_id),
+            allow_chatgpt=user_has_chatgpt(user_id),
+            allow_zai=user_has_zai(user_id),
+            allow_devin=user_has_devin(user_id),
+            allow_kimi=user_has_kimi(user_id),
+            allow_mimo=user_has_mimo(user_id),
+            allow_claude=user_has_claude(user_id),
+            user_id=user_id,
+        )
+        if chosen is None:
+            raise ScheduleError("model unavailable", 400)
+        # Everything from here to start_turn runs without an await, so this
+        # check cannot be raced on the event loop. A schedule deleted while
+        # this fire was suspended (e.g. in pick) must not start its run.
+        if db.fetchone("SELECT 1 FROM chat_schedules WHERE id=?", (schedule["id"],)) is None:
+            _finish_fire(schedule, fire, "cancelled", "schedule deleted", None, None, consume=False)
             return
         prompt = expand_prompt(
             schedule, fire_id=fire_id,
@@ -862,6 +893,13 @@ async def _fire(schedule: dict, fire: dict, *, consume_slot: bool) -> None:
         thread_pk = _thread_pk(thread)
         db.execute("UPDATE chat_schedules SET thread_id=?, updated_at=? WHERE id=?", (thread_pk, db.now(), schedule["id"]))
         coding_override = schedule["target"] == "project" or bool(schedule["allow_coding"])
+        # Claim the fire as running before the run row is committed. From here
+        # on a crash must never let tick re-run this slot (the run may already
+        # exist and be resumed): recovery closes it as interrupted instead.
+        db.execute(
+            "UPDATE schedule_fires SET status='running', thread_id=? WHERE schedule_id=? AND slot_key=?",
+            (thread_pk, schedule["id"], fire["slot_key"]),
+        )
         try:
             result = chat_store.start_turn(
                 user_id, thread_pk, prompt, None, None,
@@ -882,6 +920,13 @@ async def _fire(schedule: dict, fire: dict, *, consume_slot: bool) -> None:
             raise ScheduleError(str(exc.detail), exc.status_code) from exc
         run = result.get("run") or {}
         run_id = run.get("id")
+        # Record the run on the fire before anything else can interleave: a
+        # queued fire with a run_id is never retryable, so a crash between the
+        # run insert and the final _finish_fire cannot double-execute the slot.
+        db.execute(
+            "UPDATE schedule_fires SET run_id=? WHERE schedule_id=? AND slot_key=?",
+            (str(run_id or ""), schedule["id"], fire["slot_key"]),
+        )
         if coding_override:
             try:
                 get_dek(user_id)
@@ -919,7 +964,6 @@ async def _fire(schedule: dict, fire: dict, *, consume_slot: bool) -> None:
         error = sanitize_schedule_error(exc.detail)
         if exc.status_code == 413:
             error = "thread_limit" if "limit of" in exc.detail else "message_limit"
-        consume = schedule["recur_kind"] != "once" or True
         _finish_fire(schedule, fire, status, error, thread_pk, run_id, consume=True)
     except Exception:
         logger.exception("schedule fire failed")
@@ -934,36 +978,69 @@ def _thread_pk(thread) -> int | None:
     return int(row["id"]) if row else None
 
 
+# Config fields that decide the fire cadence. If one of these changed while a
+# fire was executing, the fire must not overwrite the editor's scheduling.
+_FINISH_CONFIG_FIELDS = ("recur_kind", "cron_expr", "every_seconds", "timezone", "once_at", "enabled", "paused")
+
+
 def _finish_fire(schedule, fire, status, error, thread_id, run_id, *, consume: bool) -> None:
     now = db.now()
     err = sanitize_schedule_error(error)
-    db.execute(
-        """UPDATE schedule_fires SET status=?, error=?, thread_id=?, run_id=?, finished_at=?
-           WHERE schedule_id=? AND slot_key=?""",
-        (status, err, thread_id, run_id, now if status not in ("queued", "running") else None, schedule["id"], fire["slot_key"]),
-    )
-    if status == "running":
-        db.execute(
-            """UPDATE schedule_fires SET status=?, run_id=?, thread_id=? WHERE schedule_id=? AND slot_key=?""",
-            (status, run_id, thread_id, schedule["id"], fire["slot_key"]),
-        )
-    next_at = schedule.get("next_fire_at")
-    enabled = 1 if schedule.get("enabled") else 0
     slot = fire["slot_key"]
-    if consume and not slot.startswith("manual:"):
-        if schedule["recur_kind"] == "once":
-            enabled = 0
-            next_at = None
-        else:
-            slot_dt = parse_iso_utc(slot)
-            nxt = _next_after(schedule, slot_dt or utcnow())
-            next_at = iso_utc(nxt) if nxt else None
-    db.execute(
-        """UPDATE chat_schedules SET last_fire_at=?, last_status=?, last_error=?, last_run_id=?,
-               next_fire_at=?, enabled=?, firing_at=NULL, thread_id=COALESCE(?, thread_id), updated_at=?
-           WHERE id=?""",
-        (now, status, err, run_id or "", next_at, enabled, thread_id, now, schedule["id"]),
-    )
+    manual = slot.startswith("manual:")
+    with db.tx() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            """UPDATE schedule_fires SET status=?, error=?, thread_id=?, run_id=?, finished_at=?
+               WHERE schedule_id=? AND slot_key=?""",
+            (status, err, thread_id, run_id, now if status not in ("queued", "running") else None, schedule["id"], slot),
+        )
+        row = conn.execute("SELECT * FROM chat_schedules WHERE id=?", (schedule["id"],)).fetchone()
+        if row is None:
+            return
+        # `schedule` is the config captured when the fire was claimed. A PATCH
+        # committing mid-fire rewrites next_fire_at/enabled from the new config;
+        # advancing the cadence from the stale snapshot would clobber it, so
+        # only consume the slot while the config is unchanged (commit ordering
+        # alone cannot prevent that clobber).
+        config_same = all(row[k] == schedule.get(k) for k in _FINISH_CONFIG_FIELDS)
+        next_at = row["next_fire_at"]
+        enabled = row["enabled"]
+        if consume and not manual and config_same:
+            if schedule["recur_kind"] == "once":
+                enabled = 0
+                next_at = None
+            else:
+                slot_dt = parse_iso_utc(slot)
+                nxt = _next_after(schedule, slot_dt or utcnow())
+                next_at = iso_utc(nxt) if nxt else None
+        conn.execute(
+            """UPDATE chat_schedules SET last_fire_at=?, last_status=?, last_error=?, last_run_id=?,
+                   next_fire_at=?, enabled=?, firing_at=?, thread_id=COALESCE(?, thread_id), updated_at=?
+               WHERE id=?""",
+            # firing_at is the claim token of the scheduled fire only; a manual
+            # fire never claims one and must not clear a concurrent claim's.
+            (now, status, err, run_id or "", next_at, 1 if enabled else 0,
+             None if not manual else row["firing_at"], thread_id, now, schedule["id"]),
+        )
+
+
+def _inflight_enter(schedule_id: int) -> None:
+    _INFLIGHT[schedule_id] = _INFLIGHT.get(schedule_id, 0) + 1
+
+
+def _inflight_exit(schedule_id: int) -> None:
+    n = _INFLIGHT.get(schedule_id, 0) - 1
+    if n > 0:
+        _INFLIGHT[schedule_id] = n
+        return
+    _INFLIGHT.pop(schedule_id, None)
+
+
+def _retry_due(fire: dict) -> bool:
+    """A retryable fire is re-queued at most once per RETRY_COOLDOWN_S."""
+    started = parse_iso_utc(str(fire.get("started_at") or ""))
+    return started is None or (utcnow() - started).total_seconds() >= RETRY_COOLDOWN_S
 
 
 def recover() -> None:
@@ -999,8 +1076,13 @@ def recover() -> None:
 
 
 async def tick() -> float:
+    global _last_reconcile
     recover()
-    reconcile()
+    # reconcile() full-scans schedule_fires; on a long-lived instance that is a
+    # growing table, so it runs once a minute rather than on every 5s tick.
+    if time.monotonic() - _last_reconcile >= RECONCILE_SECONDS:
+        _last_reconcile = time.monotonic()
+        reconcile()
     now = utcnow()
     claimed = []
     with db.tx() as conn:
@@ -1016,8 +1098,6 @@ async def tick() -> float:
             item = _row(raw)
             slot = item.get("next_fire_at") or ""
             if not slot or item["id"] in _INFLIGHT:
-                if item["id"] in _INFLIGHT:
-                    conn.execute("UPDATE chat_schedules SET firing_at=? WHERE id=?", (iso_utc(now), item["id"]))
                 continue
             existing = conn.execute(
                 "SELECT * FROM schedule_fires WHERE schedule_id=? AND slot_key=?",
@@ -1027,6 +1107,8 @@ async def tick() -> float:
             if existing:
                 fire_d = dict(existing)
                 if fire_row_retryable(fire_d, item):
+                    if not _retry_due(fire_d):
+                        continue
                     conn.execute(
                         """UPDATE schedule_fires SET status='queued', started_at=?, error=''
                            WHERE id=?""",
@@ -1056,11 +1138,11 @@ async def tick() -> float:
             conn.execute("UPDATE chat_schedules SET firing_at=? WHERE id=?", (iso_utc(now), item["id"]))
             claimed.append((item, {"slot_key": slot, "fire_id": fire_id, "status": "queued", "run_id": None}))
     for item, fire in claimed:
-        _INFLIGHT.add(item["id"])
+        _inflight_enter(item["id"])
         try:
             await _fire(item, fire, consume_slot=True)
         finally:
-            _INFLIGHT.discard(item["id"])
+            _inflight_exit(item["id"])
             db.execute("UPDATE chat_schedules SET firing_at=NULL WHERE id=? AND firing_at IS NOT NULL", (item["id"],))
     row = db.fetchone(
         """SELECT next_fire_at FROM chat_schedules
@@ -1102,10 +1184,11 @@ async def run_now(user_id: int, token) -> dict:
         (item["id"], user_id, slot, fire_id, now),
     )
     fire = {"slot_key": slot, "fire_id": fire_id, "status": "queued", "run_id": None}
-    _INFLIGHT.add(item["id"])
+    _inflight_enter(item["id"])
     try:
         await _fire(item, fire, consume_slot=False)
     finally:
-        _INFLIGHT.discard(item["id"])
-        db.execute("UPDATE chat_schedules SET firing_at=NULL WHERE id=?", (item["id"],))
+        # Manual fires never claim firing_at; leaving it alone keeps a
+        # concurrent scheduled claim's marker intact.
+        _inflight_exit(item["id"])
     return get_schedule(user_id, item["public_id"]) or item

@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
 SWEEP_SECONDS = 600
 MAX_ARCHIVE_HOURS = 24 * 365
 MAX_DELETE_DAYS = 3650
+# Operational history nothing else deletes: fire rows cascade only with their
+# schedule and command_jobs rows outlive their threads.
+HISTORY_DAYS = 30
 _last_sweep = 0.0
 
 
@@ -239,18 +242,48 @@ def sweep_user(user_id: int, prefs: dict | None = None, *, now: datetime | None 
             since = t["archived_at"] or t["updated_at"]
             if not since or since >= delete_cutoff:
                 continue
-            fresh = db.fetchone("SELECT archived FROM chat_threads WHERE id=? AND user_id=?", (t["id"], user_id))
+            fresh = db.fetchone("SELECT archived, revision FROM chat_threads WHERE id=? AND user_id=?", (t["id"], user_id))
             if fresh is None or not fresh["archived"]:
                 continue
-            if chats.delete_thread(user_id, t["id"]):
+            # expected_revision closes the check/delete window: delete_thread
+            # aborts when the thread changed (or gained a run) underneath us.
+            try:
+                deleted = chats.delete_thread(user_id, t["id"], expected_revision=int(fresh["revision"]))
+            except chats.ChatValidationError:
+                deleted = False
+            if deleted:
                 stats["deleted_chats"] += 1
     if any(stats.values()):
         logger.info("retention user=%s %s", user_id, stats)
     return stats
 
 
+def prune_history(*, now: datetime | None = None) -> dict:
+    """Age out terminal fire/command history older than HISTORY_DAYS."""
+    cutoff = _iso((now or datetime.now(timezone.utc)) - timedelta(days=HISTORY_DAYS))
+    counts = {"fires": 0, "jobs": 0}
+    with db.tx() as conn:
+        cur = conn.execute(
+            """DELETE FROM schedule_fires
+               WHERE status NOT IN ('queued','running') AND finished_at IS NOT NULL AND finished_at < ?""",
+            (cutoff,),
+        )
+        counts["fires"] = int(cur.rowcount or 0)
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='command_jobs'").fetchone():
+            cur = conn.execute(
+                """DELETE FROM command_jobs
+                   WHERE status NOT IN ('running','cancelling') AND finished_at IS NOT NULL AND finished_at < ?""",
+                (cutoff,),
+            )
+            counts["jobs"] = int(cur.rowcount or 0)
+    return counts
+
+
 def sweep(*, now: datetime | None = None) -> dict:
     limits = _limits()
+    pruned = prune_history(now=now)
+    if any(pruned.values()):
+        logger.info("retention pruned history %s", pruned)
     if limits["archive_days"] or limits["delete_days"]:
         rows = db.fetchall("SELECT id FROM users")
     else:

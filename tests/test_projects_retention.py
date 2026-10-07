@@ -290,6 +290,27 @@ class ProjectsRetentionTest(unittest.TestCase):
         prefs["archive_hours"] = 24 * 400
         self.assertEqual(retention.effective(prefs), (90 * 24, 0))
 
+    def test_prune_history_ages_out_fires_and_command_jobs(self):
+        old = ago(days=31)
+        recent = ago(days=1)
+        for tag, when in (("old", old), ("new", recent)):
+            db.execute(
+                """INSERT INTO schedule_fires(schedule_id, user_id, trigger, status, slot_key, fire_id, started_at, finished_at)
+                   VALUES(1, 1, 'scheduled', 'completed', ?, ?, ?, ?)""",
+                (tag, "fire-" + tag, when, when),
+            )
+            db.execute(
+                """INSERT INTO command_jobs(id, user_id, host_id, command, timeout_ms, status, created_at, started_at, finished_at)
+                   VALUES(?, 1, 0, 'ls', 1000, 'completed', ?, ?, ?)""",
+                ("job-" + tag, when, when, when),
+            )
+        counts = retention.prune_history()
+        self.assertEqual(counts, {"fires": 1, "jobs": 1})
+        self.assertIsNone(db.fetchone("SELECT id FROM schedule_fires WHERE fire_id='fire-old'"))
+        self.assertIsNotNone(db.fetchone("SELECT id FROM schedule_fires WHERE fire_id='fire-new'"))
+        self.assertIsNone(db.fetchone("SELECT id FROM command_jobs WHERE id='job-old'"))
+        self.assertIsNotNone(db.fetchone("SELECT id FROM command_jobs WHERE id='job-new'"))
+
 
 if __name__ == "__main__":
     unittest.main()

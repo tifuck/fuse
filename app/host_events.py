@@ -25,10 +25,16 @@ def publish(user_id, msg):
 
     def wake():
         for queue in list(_subscribers.get(uid, {}).values()):
-            try:
-                queue.put_nowait(payload)
-            except Exception:
-                pass
+            while True:
+                try:
+                    queue.put_nowait(payload)
+                    break
+                except asyncio.QueueFull:
+                    # Drop the oldest state update, keep the newest.
+                    try:
+                        queue.get_nowait()
+                    except Exception:
+                        break
 
     try:
         _loop.call_soon_threadsafe(wake)

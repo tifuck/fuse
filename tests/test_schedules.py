@@ -269,3 +269,85 @@ class FireStatusPropagationTest(unittest.TestCase):
         with db.tx() as conn:
             schedules.sync_run_status(conn, self.uid, run["id"], "completed", "")
         self.assertIsNone(db.fetchone("SELECT id FROM schedule_fires WHERE run_id=?", (run["id"],)))
+
+
+class FinishFireConfigTest(unittest.TestCase):
+    """A fire finishing after a PATCH must not revert the new cadence."""
+
+    def setUp(self):
+        self.user = _user()
+
+    def _schedule(self):
+        return schedules.create_schedule(self.user["id"], {
+            "name": "clobber",
+            "target": "chat",
+            "prompt": "hi {{date}}",
+            "model": "glm-5.3-flash",
+            "timezone": "UTC",
+            "recur_kind": "every",
+            "every_seconds": 3600,
+        })
+
+    def test_finish_fire_keeps_concurrent_patch(self):
+        item = self._schedule()
+        slot = item["next_fire_at"]
+        patched = schedules.patch_schedule(self.user["id"], item["public_id"], {"every_seconds": 600})
+        schedules._finish_fire(item, {"slot_key": slot}, "completed", "", None, "run-c", consume=True)
+        row = db.fetchone("SELECT next_fire_at, last_status FROM chat_schedules WHERE id=?", (item["id"],))
+        self.assertEqual(row["next_fire_at"], patched["next_fire_at"])
+        self.assertEqual(row["last_status"], "completed")
+
+    def test_finish_fire_consumes_unmodified_slot(self):
+        item = self._schedule()
+        slot = item["next_fire_at"]
+        schedules._finish_fire(item, {"slot_key": slot}, "completed", "", None, "run-c", consume=True)
+        row = db.fetchone("SELECT next_fire_at, enabled FROM chat_schedules WHERE id=?", (item["id"],))
+        self.assertNotEqual(row["next_fire_at"], slot)
+        self.assertTrue(row["enabled"])
+
+    def test_finish_fire_does_not_reenable_disabled_schedule(self):
+        item = self._schedule()
+        slot = item["next_fire_at"]
+        schedules.patch_schedule(self.user["id"], item["public_id"], {"enabled": False})
+        schedules._finish_fire(item, {"slot_key": slot}, "completed", "", None, "run-c", consume=True)
+        row = db.fetchone("SELECT enabled, next_fire_at FROM chat_schedules WHERE id=?", (item["id"],))
+        self.assertFalse(row["enabled"])
+        self.assertIsNone(row["next_fire_at"])
+
+    def test_retry_cooldown(self):
+        now = utcnow()
+        self.assertFalse(schedules._retry_due({"started_at": iso_utc(now)}))
+        self.assertTrue(schedules._retry_due({"started_at": iso_utc(now - timedelta(seconds=120))}))
+        self.assertTrue(schedules._retry_due({"started_at": ""}))
+
+    def test_string_flag_rejected(self):
+        with self.assertRaises(schedules.ScheduleError):
+            schedules._normalize(self.user["id"], {
+                "name": "x", "target": "chat", "prompt": "hi", "model": "m",
+                "timezone": "UTC", "recur_kind": "every", "every_seconds": 3600,
+                "enabled": "false",
+            })
+
+    def test_reconcile_closes_runless_running(self):
+        item = self._schedule()
+        db.execute("UPDATE chat_schedules SET last_status='running', last_run_id='' WHERE id=?", (item["id"],))
+        schedules.reconcile()
+        row = db.fetchone("SELECT last_status, last_error FROM chat_schedules WHERE id=?", (item["id"],))
+        self.assertEqual((row["last_status"], row["last_error"]), ("interrupted", "no run started"))
+
+
+class FireDeletedScheduleTest(unittest.IsolatedAsyncioTestCase):
+    async def test_fire_does_not_start_after_schedule_deleted(self):
+        user = _user()
+        item = schedules.create_schedule(user["id"], {
+            "name": "doomed", "target": "chat", "prompt": "hi {{date}}",
+            "model": "glm-5.3-flash", "timezone": "UTC",
+            "recur_kind": "every", "every_seconds": 3600,
+        })
+        fire = {"slot_key": item["next_fire_at"], "fire_id": "fire-d", "status": "queued", "run_id": None}
+        with patch("app.sources.pick", new=AsyncMock(return_value=("src", "m"))):
+            db.execute("DELETE FROM chat_schedules WHERE id=?", (item["id"],))
+            await schedules._fire(item, fire, consume_slot=True)
+        self.assertEqual(
+            db.fetchone("SELECT COUNT(*) AS n FROM chat_threads WHERE schedule_id=?", (item["id"],))["n"], 0,
+        )

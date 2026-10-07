@@ -5,6 +5,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from .. import hosts, schedules
 from ..cron import CronError
+from ..security import limiter
 from .deps import _chat_auth, _json_object, render, require_user, vault_locked_json
 
 router = APIRouter()
@@ -165,6 +166,10 @@ async def schedules_preview(request: Request):
     user, err = _chat_auth(request)
     if err:
         return err
+    # _normalize projects cron fires; without a limit that is repeatable CPU
+    # burn from one client.
+    if not limiter.allow(f"schedules:{user['id']}", 30, 60):
+        return _fail(schedules.ScheduleError("too many requests", 429))
     raw = await _json_object(request)
     try:
         item = schedules._normalize(user["id"], raw)

@@ -46,11 +46,41 @@ class MonitorHelpers(unittest.TestCase):
         self.assertEqual(monitor.max_events(99), 50)
 
     def test_ws_url_ssrf_and_canonicalize(self):
-        self.assertEqual(monitor.public_ws_url("wss://example.com/events"), "wss://example.com/events")
-        self.assertEqual(monitor.public_ws_url("wss://Example.COM:443/events?x=1"), "wss://example.com/events?x=1")
-        self.assertFalse(monitor.public_ws_url("ws://127.0.0.1/events"))
-        self.assertFalse(monitor.public_ws_url("https://example.com/events"))
-        self.assertFalse(monitor.public_ws_url("wss://user:pass@example.com/events"))
+        with patch.object(monitor, "_resolves_public", return_value=True):
+            self.assertEqual(monitor.public_ws_url("wss://example.com/events"), "wss://example.com/events")
+            self.assertEqual(monitor.public_ws_url("wss://Example.COM:443/events?x=1"), "wss://example.com/events?x=1")
+            self.assertFalse(monitor.public_ws_url("ws://127.0.0.1/events"))
+            self.assertFalse(monitor.public_ws_url("https://example.com/events"))
+            self.assertFalse(monitor.public_ws_url("wss://user:pass@example.com/events"))
+        with patch.object(monitor, "_resolves_public", return_value=False):
+            self.assertFalse(monitor.public_ws_url("wss://example.com/events"))
+
+    def test_ws_url_rejects_private_dns_answers(self):
+        private = [(2, 1, 6, "", ("10.0.0.5", 80))]
+        public = [(2, 1, 6, "", ("93.184.216.34", 80))]
+        with patch.object(monitor.socket, "getaddrinfo", return_value=private):
+            self.assertFalse(monitor._resolves_public("evil.example", 80))
+        with patch.object(monitor.socket, "getaddrinfo", return_value=public + private):
+            self.assertFalse(monitor._resolves_public("evil.example", 80))
+        with patch.object(monitor.socket, "getaddrinfo", return_value=public):
+            self.assertTrue(monitor._resolves_public("ok.example", 443))
+        with patch.object(monitor.socket, "getaddrinfo", side_effect=OSError("dns")):
+            self.assertFalse(monitor._resolves_public("nope.example", 80))
+        with patch.object(monitor.socket, "getaddrinfo", return_value=[]):
+            self.assertFalse(monitor._resolves_public("empty.example", 80))
+
+    def test_line_batcher_bounds_huge_lines(self):
+        async def run():
+            seen = []
+            batcher = monitor.LineBatcher({"_pattern": None}, lambda lines, overflow=0: seen.extend(lines))
+            batcher.feed("x" * 50_000)
+            batcher.feed("y" * 50_000 + "\n")
+            await batcher.close()
+            return seen
+
+        seen = asyncio.run(run())
+        self.assertTrue(seen)
+        self.assertLessEqual(max(len(line) for line in seen), monitor.MAX_LINE_CHARS + 1)
 
     def test_catalog_and_pack(self):
         self.assertIn("monitor", agent_catalog.WORKSPACE_NAMES)
@@ -298,12 +328,13 @@ class MonitorDescription(unittest.TestCase):
 
 class MonitorWorkspace(unittest.IsolatedAsyncioTestCase):
     async def test_rejects_both_command_and_url(self):
-        with self.assertRaises(workspace.WorkspaceError):
-            await workspace._monitor(
-                1, 2, "box",
-                {"command": "tail -f x", "url": "wss://example.com/e"},
-                "/repo",
-            )
+        with patch.object(monitor, "_resolves_public", return_value=True):
+            with self.assertRaises(workspace.WorkspaceError):
+                await workspace._monitor(
+                    1, 2, "box",
+                    {"command": "tail -f x", "url": "wss://example.com/e"},
+                    "/repo",
+                )
 
     async def test_rejects_neither(self):
         with self.assertRaises(workspace.WorkspaceError):

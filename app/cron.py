@@ -105,38 +105,54 @@ def _check_hm(hour: int, minute: int) -> None:
         raise CronError("time must be HH:MM")
 
 
+def _local_utc(wall: datetime, tz: ZoneInfo) -> datetime | None:
+    """UTC instant at which the local clock reads `wall`; None inside a DST gap."""
+    inst = wall.replace(tzinfo=tz, fold=0).astimezone(timezone.utc)
+    back = inst.astimezone(tz)
+    if (back.year, back.month, back.day, back.hour, back.minute) != (
+        wall.year, wall.month, wall.day, wall.hour, wall.minute,
+    ):
+        return None
+    return inst
+
+
 def next_fire(expr: str, tz_name: str, after_utc: datetime) -> datetime | None:
-    """Next UTC instant strictly after after_utc that matches expr in tz_name."""
+    """Next UTC instant strictly after after_utc where the local clock in tz_name matches expr.
+
+    Walks real time and re-reads local wall fields per candidate, so a slot
+    that occurs twice (DST fall-back) fires at both real occurrences, while a
+    slot inside a spring-forward gap never appears on the local clock and does
+    not fire. dom/dow follow POSIX: when both fields are restricted (not `*`),
+    a match in either is enough.
+    """
     minute, hour, dom, month, dow = parse_cron(expr)
     tz = parse_tz(tz_name)
+    parts = (expr or "").strip().split()
+    date_or = parts[2] != "*" and parts[4] != "*"
     if after_utc.tzinfo is None:
         after_utc = after_utc.replace(tzinfo=timezone.utc)
-    local = after_utc.astimezone(tz)
-    cursor = (local.replace(second=0, microsecond=0) + timedelta(minutes=1))
-    limit = cursor + timedelta(days=400)
+    cursor = (after_utc.replace(second=0, microsecond=0) + timedelta(minutes=1))
+    # At least one leap day lies within 8 years (e.g. 2096-02-29 -> 2104-02-29).
+    limit = after_utc + timedelta(days=366 * 8)
     while cursor <= limit:
-        if (
-            cursor.minute in minute
-            and cursor.hour in hour
-            and cursor.month in month
-            and cursor.day in dom
-            and (cursor.isoweekday() % 7) in dow
-        ):
-            try:
-                aware = datetime(
-                    cursor.year, cursor.month, cursor.day, cursor.hour, cursor.minute,
-                    tzinfo=tz, fold=0,
-                )
-            except Exception:
-                cursor += timedelta(minutes=1)
-                continue
-            if aware.strftime("%Y%m%d%H%M") != cursor.strftime("%Y%m%d%H%M"):
-                cursor += timedelta(minutes=1)
-                continue
-            utc = aware.astimezone(timezone.utc)
-            if utc > after_utc:
-                return utc
-        cursor += timedelta(minutes=1)
+        local = cursor.astimezone(tz)
+        day_ok = local.day in dom
+        dow_ok = (local.isoweekday() % 7) in dow
+        date_ok = (day_ok or dow_ok) if date_or else (day_ok and dow_ok)
+        if local.month not in month or not date_ok:
+            wall = datetime(local.year, local.month, local.day) + timedelta(days=1)
+        elif local.hour not in hour:
+            wall = datetime(local.year, local.month, local.day, local.hour) + timedelta(hours=1)
+        elif local.minute not in minute:
+            cursor += timedelta(minutes=1)
+            continue
+        else:
+            return cursor
+        # Skip whole days/hours that cannot match. A jump whose target falls in
+        # a DST gap has no local instant, so step a minute instead; the loop
+        # re-derives local fields and jumps again past the gap.
+        nxt = _local_utc(wall, tz)
+        cursor = nxt if nxt is not None and nxt > cursor else cursor + timedelta(minutes=1)
     return None
 
 

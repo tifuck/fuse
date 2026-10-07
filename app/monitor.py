@@ -7,8 +7,10 @@ events. Callers still own process lifecycle in command_jobs.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import re
+import socket
 import time
 from urllib.parse import urlparse, urlunparse
 
@@ -24,6 +26,9 @@ MAX_BATCH_LINES = 40
 FIREHOSE_WINDOW_S = 2.0
 FIREHOSE_MAX = 8
 ERR_TAIL_CHARS = 4_000
+# One logical line (and each newline-free buffer slice) is capped so a single
+# huge line cannot exhaust memory through the batcher or event envelopes.
+MAX_LINE_CHARS = 2_000
 _WS_SCHEMES = ("ws", "wss")
 EVENT_ID_RE = re.compile(r'<monitor_event id="([^"]+)" seq="(\d+)"')
 RESULT_ID_RE = re.compile(r'<(?:command_result|monitor_result) id="([^"]+)"')
@@ -74,6 +79,29 @@ def match_line(line: str, pattern) -> bool:
     return bool(pattern.search(text))
 
 
+def _resolves_public(host: str, port: int | None) -> bool:
+    """True only when every DNS answer for host is globally routable.
+
+    Name-based checks alone let a hostname pointing at a private address
+    reach internal services from the server; the answers must be checked too.
+    """
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except OSError:
+        return False
+    seen = False
+    for info in infos:
+        addr = str(info[4][0]).split("%", 1)[0]
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            return False
+        seen = True
+        if not ip.is_global:
+            return False
+    return seen
+
+
 def public_ws_url(raw: str) -> str:
     from .search.ssrf import _netloc, is_blocked_host
 
@@ -93,6 +121,8 @@ def public_ws_url(raw: str) -> str:
     if not host or is_blocked_host(host):
         return ""
     if port not in (None, 80, 443):
+        return ""
+    if not _resolves_public(host, 443 if parsed.scheme == "wss" else 80):
         return ""
     path = parsed.path or "/"
     if parsed.params:
@@ -153,11 +183,19 @@ class LineBatcher:
         self.buf += text
         while "\n" in self.buf:
             line, self.buf = self.buf.split("\n", 1)
-            line = line.rstrip("\r")
-            if match_line(line, self.pattern):
-                self.pending.append(line)
+            self._add(line.rstrip("\r"))
+        # A stream that never breaks a line must not grow buf without limit.
+        while len(self.buf) > MAX_LINE_CHARS:
+            self._add(self.buf[:MAX_LINE_CHARS])
+            self.buf = self.buf[MAX_LINE_CHARS:]
         if self.pending and self.task is None and not self.closed:
             self.task = asyncio.create_task(self._flush())
+
+    def _add(self, line: str) -> None:
+        if len(line) > MAX_LINE_CHARS:
+            line = line[:MAX_LINE_CHARS] + "…"
+        if match_line(line, self.pattern):
+            self.pending.append(line)
 
     def firehose(self) -> bool:
         now = time.monotonic()
@@ -204,8 +242,8 @@ class LineBatcher:
                 await task
             except (asyncio.CancelledError, Exception):
                 pass
-        if self.buf and match_line(self.buf.rstrip("\r"), self.pattern):
-            self.pending.append(self.buf.rstrip("\r"))
+        if self.buf:
+            self._add(self.buf.rstrip("\r"))
         self.buf = ""
         self._emit()
 
