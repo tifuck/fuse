@@ -218,6 +218,7 @@ static void usage(void) {
 }
 
 int main(int argc, char **argv) {
+    ensure_home_env(); /* before any thread: setenv is not thread-safe */
     srand((unsigned)(time(NULL) ^ getpid()));
     setvbuf(stderr, NULL, _IOLBF, 0);
     SSL_library_init();

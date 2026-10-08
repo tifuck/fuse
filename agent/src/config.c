@@ -84,6 +84,16 @@ void default_config_path(char *dst, size_t cap, int system_wide) {
     snprintf(dst, cap, "%s/.config/fuse-agent/agent.conf", home);
 }
 
+/* A system unit starts the connector without HOME, and the commands it runs
+ * inherit that (go, pip and git config fail). Fill it from the passwd entry;
+ * never override one that is set. */
+void ensure_home_env(void) {
+    const char *home = getenv("HOME");
+    if (home && home[0]) return;
+    struct passwd *pw = getpwuid(getuid());
+    if (pw && pw->pw_dir && pw->pw_dir[0]) setenv("HOME", pw->pw_dir, 1);
+}
+
 void hostname_user(char *host, size_t hcap, char *user, size_t ucap) {
     if (gethostname(host, hcap) != 0) strncpy(host, "machine", hcap - 1);
     host[hcap - 1] = 0;

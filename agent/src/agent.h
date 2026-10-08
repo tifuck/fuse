@@ -22,9 +22,10 @@
 #define FUSE_AGENT_VERSION "0.0.0"
 #endif
 #define OUT_CAP 65536
-/* exec-family output cap: the server clips results to 6000 chars, so
- * capturing more than this is pure waste of RAM and bandwidth. */
-#define EXEC_CAP 8192
+/* Non-streamed exec (the server's grep/glob/list commands) returns at most
+ * this much stdout and stderr each, then flags the result truncated. It
+ * was 8 KB, which cut a 200-match grep; the read frame is 64 KB too. */
+#define EXEC_CAP OUT_CAP
 /* Whole-file edit ceiling for the replace op. Only old/new travel over the
  * socket (never the file), so this is a RAM guard, not a transport limit.
  * Keep in sync with _REPLACE_FILE_MAX in app/workspace.py and editFileMax in

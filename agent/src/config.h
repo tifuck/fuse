@@ -15,6 +15,7 @@ extern int g_auto_update;
 int load_config(const char *path);
 int save_config(const char *path);
 void default_config_path(char *dst, size_t cap, int system_wide);
+void ensure_home_env(void);
 void hostname_user(char *host, size_t hcap, char *user, size_t ucap);
 const char *arch_sku(void);
 

@@ -1,5 +1,6 @@
 /* Links the connector modules (minus main); does not start a connector. */
 #include "../src/agent.h"
+#include "../src/config.h"
 #include "../src/files.h"
 #include "../src/jobs.h"
 #include "../src/outq.h"
@@ -8,6 +9,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <openssl/evp.h>
+#include <pwd.h>
 
 int main(void) {
     char dir[] = "/tmp/fuse/binary-XXXXXX";
@@ -64,6 +66,20 @@ int main(void) {
     last = (g_out_tail + OUT_QMAX - 1) % OUT_QMAX;
     r = cJSON_ParseWithLength((char *)g_outq[last].data, g_outq[last].n);
     assert(r && !json_bool(r, "ok")); cJSON_Delete(r); cJSON_Delete(msg);
+    /* A plain exec returns a 200-match grep whole (it was cut at 8 KB), and
+     * commands get HOME even when the unit started the connector without it. */
+    unsetenv("HOME");
+    ensure_home_env();
+    msg = cJSON_Parse("{\"id\":\"big\",\"op\":\"exec\",\"cwd\":\"/tmp\"}");
+    cJSON_AddStringToObject(msg, "cmd", "head -c 20000 /dev/zero | tr '\\0' a; printf %s \"$HOME\" >&2");
+    handle_job(NULL, msg);
+    cJSON_Delete(msg);
+    last = (g_out_tail + OUT_QMAX - 1) % OUT_QMAX;
+    r = cJSON_ParseWithLength((char *)g_outq[last].data, g_outq[last].n);
+    assert(r && json_bool(r, "ok") && !json_bool(r, "truncated"));
+    assert(strlen(json_cstr(r, "out", "")) == 20000);
+    assert(strcmp(json_cstr(r, "err", ""), getpwuid(getuid())->pw_dir) == 0);
+    cJSON_Delete(r);
     unlink(fifo); unlink(path); rmdir(dir);
     return 0;
 }
