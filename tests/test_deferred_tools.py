@@ -450,7 +450,6 @@ class CodingPromptTest(unittest.TestCase):
             # Waiting on a condition is a monitor on a marker line, never sleep.
             self.assertIn("echo READY` with pattern `^READY$`", text)
             self.assertIn("the event wakes you", text)
-            self.assertIn("find out why before re-arming", text)
             if kwargs.get("loaded_tools"):
                 self.assertIn("Loaded tools: run_terminal_command", text)
                 self.assertIn("Call them directly without `search_tools`", text)
@@ -483,8 +482,31 @@ class CodingPromptTest(unittest.TestCase):
         monitor = SCHEMAS["monitor"]["function"]["description"]
         self.assertIn("echo READY`, pattern ^READY$", monitor)
         self.assertIn("state=\"completed\" is the normal end", monitor)
+        self.assertIn("find out why before re-arming", monitor)
+        self.assertNotIn("reached max_events`", monitor)
         chat = build_system_prompt(instructions="", profile="", thread_context="", tools=["web_search"])
         self.assertNotIn("not shell with ls/find/rg/grep/cat/sed", chat)
+
+
+class ReadOnlyChildPromptTest(unittest.TestCase):
+    def test_read_only_children_get_no_editing_shell_or_loading_promises(self):
+        from app import agent_catalog
+
+        common = dict(instructions="", profile="", thread_context="", tools=["web_search"], coding=True,
+                      project_session=True, bound_label="box")
+        for kind in ("explore", "plan"):
+            text = build_system_prompt(**common, subagent=True, subagent_type=kind,
+                                       loaded_tools=agent_catalog.default_loaded_for_child(kind))
+            self.assertNotIn("Before editing in a subdirectory", text)
+            self.assertNotIn("still loads other packs", text)
+            self.assertIn("cannot add tools beyond your role's", text)
+            # Only plan has no shell: no cwd or throwaway-script guidance.
+            self.assertEqual("To run a command elsewhere" in text, kind == "explore")
+            self.assertEqual("Throwaway scripts" in text, kind == "explore")
+        main = build_system_prompt(**common, loaded_tools=["read_file"])
+        self.assertIn("Before editing in a subdirectory", main)
+        self.assertIn("To run a command elsewhere", main)
+        self.assertIn("still loads other packs", main)
 
 
 class SuggestToolTest(unittest.TestCase):
