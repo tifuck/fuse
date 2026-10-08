@@ -82,7 +82,8 @@ class AgentsLoadingTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_full_budget_and_paging_on_both_transports(self):
         for agent in (False, True):
-            for source in ("x" * 9000, "rule\n" * 500, "x" * 12000, "x" * 12001, "rule\n" * 3000):
+            for source in ("x" * 9000, "rule\n" * 500, "x" * 12001, "rule\n" * 3000, "x" * 32000, "x" * 32001,
+                           "rule\n" * 7000):
                 with self.subTest(agent=agent, length=len(source)):
                     workspace._agents_cache.clear()
                     async def agent_read(_uid, _hid, _op, args, _timeout):

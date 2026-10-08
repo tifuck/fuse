@@ -282,21 +282,28 @@ _SHELL = (
     "- Commands run without a terminal or input: anything that prompts (editors, `-i` flags, passwords, "
     "confirmations) fails or hangs until the timeout. Pass non-interactive flags (`-y`, `--yes`, "
     "`--no-edit`, `-m \"message\"`).\n"
-    "- You see at most the first ~4 KB and last ~12 KB of a command's output — the harness keeps "
-    "both for you, so do not pipe through `tail` (or any buffer-until-EOF filter): it holds "
-    "everything back, and a command killed at its deadline leaves nothing to capture. Use quiet "
-    "or fail-fast flags (`pytest -q -x`) and streaming filters (`| grep -E 'FAIL|Error'`); in "
-    "bash, start a filtered command with `set -o pipefail;` so the exit status is the command's, "
-    "not the filter's.\n"
+    "- You see at most the first ~4 KB and last ~12 KB of a command's output. When you expect more "
+    "(test suites, builds, logs, large listings), write it to a log and print only what you need: "
+    "`cmd > /tmp/fuse/test.log 2>&1; echo \"exit=$?\"; tail -n 40 /tmp/fuse/test.log` "
+    "(PowerShell: `cmd *> $env:TEMP\\fuse\\test.log; Get-Content $env:TEMP\\fuse\\test.log -Tail 40`), "
+    "then grep or read the log instead of re-running the command; the log also survives a timeout "
+    "or kill. Prefer quiet or fail-fast flags (`pytest -q -x`). A pipe filter (`| tail -n 40`, "
+    "`| grep -E 'FAIL|Error'`) suits a command that will finish: in bash, start it with "
+    "`set -o pipefail;` so the exit status is the command's, and keep `| tail` off long-running "
+    "commands, since it shows nothing until they exit.\n"
     "- Quote paths that contain spaces. Chain dependent steps with `&&`; put independent commands in "
     "separate calls in the same step."
 )
-_WAIT_VS_HOOK = (
+_WAIT = (
     "- Waiting: never sleep or poll. A command runs in the foreground (2 min unless you pass "
     "`timeout`, up to 10 min) and moves to the background on its own if it is still going — "
     "you get `<command_result>` when it exits, so do not re-run it and do not poll it. "
     "Set `timeout` up front when you expect longer than 2 minutes. Use `background: true` only "
-    "when you do not need the result to continue. "
+    "when you do not need the result to continue."
+)
+# Explore children cannot load monitor (agent_catalog.EXPLORE_TOOLS).
+_WAIT_VS_HOOK = (
+    _WAIT + " "
     "A later condition (log line, ERROR/Traceback, READY, WS frame) uses `monitor` — matching "
     "stdout/WS lines arrive as `<monitor_event>` while you keep working; do not start another watch. "
     "`<monitor_result>` means that watch ended (timeout, max events, kill). Load via `search_tools` "
@@ -576,7 +583,7 @@ def build_system_prompt(
     elif coding:
         parts.append("Tools:\n" + _PARALLEL)
         if kind == "explore":
-            parts.append(_SHELL + "\n" + _WAIT_VS_HOOK)
+            parts.append(_SHELL + "\n" + _WAIT)
     if coding:
         parts.append(_HOSTS)
     if "web_search" in tools:

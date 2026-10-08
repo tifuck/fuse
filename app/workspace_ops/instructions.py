@@ -10,7 +10,9 @@ from __future__ import annotations
 import posixpath
 
 
-AGENTS_MAX = 12_000
+# Project instructions are the highest-signal context a session gets; 12K
+# cut a typical repo file in half. Past this, the marker names the offset.
+AGENTS_MAX = 32_000
 AGENTS_FILENAMES = (
     "AGENTS.md",
     "agents.md",

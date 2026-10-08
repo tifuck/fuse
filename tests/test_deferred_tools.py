@@ -464,7 +464,10 @@ class CodingPromptTest(unittest.TestCase):
         self.assertIn("Inspect with list_dir/grep/glob/read_file", explore)
         self.assertIn("shell only for non-mutating commands those tools cannot run", explore)
         self.assertIn("Do not edit files or run mutating commands", explore)
-        self.assertIn("`monitor`", explore)
+        # Explore runs shell and must wait correctly, but cannot load monitor
+        # (agent_catalog.EXPLORE_TOOLS), so it is not offered one.
+        self.assertIn("never sleep or poll", explore)
+        self.assertNotIn("`monitor`", explore)
         plan = build_system_prompt(
             instructions="", profile="", thread_context="", tools=["web_search"],
             coding=True, subagent=True, subagent_type="plan",

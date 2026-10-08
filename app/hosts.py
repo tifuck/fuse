@@ -17,7 +17,7 @@ RESERVED_ALIASES = frozenset({"local", "localhost", "127.0.0.1"})
 _ALIAS_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,39}$")
 _USER_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 _CODE_RE = re.compile(r"^fuse_[A-Za-z0-9_-]{8,64}$")
-CATALOG_CHARS = 1024
+CATALOG_CHARS = 2048
 PAIRING_TTL = timedelta(minutes=15)
 MAX_PENDING_PAIRINGS = 3
 MAX_AGENT_HOSTS = 8

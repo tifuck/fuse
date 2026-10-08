@@ -558,7 +558,8 @@ SCHEMAS = {
                 "Linux hosts run bash (SSH: bash -lc; connectors: bash --noprofile --norc -c); Windows connectors use "
                 "PowerShell -NoProfile — match the host OS. Commands get no terminal or input: anything that prompts "
                 "(editors, -i flags, passwords, confirmations) fails or hangs until the deadline, so pass "
-                "non-interactive flags. Output keeps its first ~4 KB and last ~12 KB; filter or quiet verbose commands. "
+                "non-interactive flags. Output keeps its first ~4 KB and last ~12 KB; for long output, write it to a log "
+                "under /tmp/fuse and tail or grep the log. "
                 "Commands start in the host's listed working directory (the second `roots:` entry): the bound "
                 "project directory on the bound host, else that host's default directory or home. Omit cwd "
                 "for that default; do not prepend a redundant cd. Throwaway one-off scripts with no named "
@@ -579,17 +580,11 @@ SCHEMAS = {
                         "type": "string",
                         "maxLength": 200,
                         "description": (
-                            "Clear, concise description of what this command does in active voice. Never use words "
-                            "like \"complex\" or \"risk\" in the description - just describe what it does. "
-                            "Say what the command does in plain words: do not echo the command's text, its flags, or "
-                            "file paths - the user reads this description, often without seeing the command. "
-                            "For simple commands (git, npm, standard CLI tools), keep it brief (5-10 words): "
-                            "ls → \"List files in current directory\"; git status → \"Show working tree status\"; "
-                            "npm install → \"Install package dependencies\". For commands that are harder to parse at "
-                            "a glance (piped commands, obscure flags, etc.), add enough context to clarify what it "
-                            "does: find . -name \"*.tmp\" -exec rm {} \\; → \"Find and delete all .tmp files "
-                            "recursively\"; git reset --hard origin/main → \"Discard all local changes and match remote "
-                            "main\"; curl -s url | jq '.data[]' → \"Fetch JSON from URL and extract data array elements\"."
+                            "What the command does, in plain active voice; the user reads this instead of the "
+                            "command, so do not echo its text, flags, or paths. 5-10 words for simple commands "
+                            "(git status → \"Show working tree status\"); more context for pipelines or obscure "
+                            "flags (find . -name \"*.tmp\" -exec rm {} \\; → \"Find and delete all .tmp files "
+                            "recursively\"). Never words like \"complex\" or \"risk\"."
                         ),
                     },
                     "cwd": {

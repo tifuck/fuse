@@ -93,7 +93,7 @@ class VaultTest(unittest.TestCase):
 
     def test_catalog_clip(self):
         vault.unlock(1, "password12")
-        for i in range(12):
+        for i in range(24):
             h = hosts.add_host(
                 1,
                 {
@@ -112,7 +112,7 @@ class VaultTest(unittest.TestCase):
             self.assertTrue(line.endswith("x" * 40 + ")"), line)
         # The bound host leads even when it is listed last.
         bound = hosts.catalog_for_prompt(1, bound_host_id=h["id"])
-        self.assertTrue(bound.splitlines()[2].startswith("- h11 "))
+        self.assertTrue(bound.splitlines()[2].startswith("- h23 "))
         self.assertLessEqual(len(bound), hosts.CATALOG_CHARS)
 
     def test_keep_cookie_restores_after_lock(self):
