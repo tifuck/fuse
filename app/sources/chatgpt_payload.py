@@ -69,6 +69,17 @@ def build_responses_payload(body: dict, model: str, session_id: str | None = Non
         if role == "user":
             input_items.append({"role": "user", "content": _input_content(content)})
         elif role == "assistant":
+            # Reasoning comes first, as the model emitted it. Each item keeps
+            # its producing account; ChatGPTSource drops it for any other.
+            for block in msg.get("claude_thinking") or []:
+                item = block.get("openai_reasoning") if isinstance(block, dict) else None
+                if isinstance(item, dict) and item.get("encrypted_content"):
+                    input_items.append({
+                        "type": "reasoning",
+                        "summary": list(item.get("summary") or []),
+                        "encrypted_content": str(item["encrypted_content"]),
+                        "_fuse_account": item.get("account"),
+                    })
             text = _text_of(content)
             if text:
                 input_items.append(
@@ -99,6 +110,9 @@ def build_responses_payload(body: dict, model: str, session_id: str | None = Non
         "input": input_items,
         "stream": True,
         "store": False,
+        # Without stored state, the reasoning between tool calls survives only
+        # as encrypted items sent back on the next request (as Codex does).
+        "include": ["reasoning.encrypted_content"],
     }
     if is_fast(model):
         payload["service_tier"] = "fast"
@@ -159,3 +173,27 @@ def build_responses_payload(body: dict, model: str, session_id: str | None = Non
     if isinstance(summary, str):
         payload.setdefault("reasoning", {})["summary"] = summary
     return payload
+
+
+def for_account(payload: dict, account) -> dict:
+    """The payload one pooled account may receive.
+
+    Encrypted reasoning decrypts only for the account that produced it, so
+    other accounts get those items dropped (their cache is cold anyway).
+    """
+    items = []
+    for item in payload.get("input") or []:
+        if isinstance(item, dict) and item.get("type") == "reasoning":
+            if item.get("_fuse_account") is None or account is None or int(item["_fuse_account"]) != int(account):
+                continue
+            item = {k: v for k, v in item.items() if k != "_fuse_account"}
+        items.append(item)
+    return {**payload, "input": items}
+
+
+def drop_reasoning(payload: dict) -> bool:
+    """Remove replayed reasoning items; True when any were present."""
+    items = payload.get("input") or []
+    kept = [item for item in items if not (isinstance(item, dict) and item.get("type") == "reasoning")]
+    payload["input"] = kept
+    return len(kept) != len(items)

@@ -142,9 +142,33 @@ class _CallBook:
         ]
 
 
+def reasoning_block(item, account=None) -> dict | None:
+    """A finished Responses reasoning item as a replayable thinking block.
+
+    store=false keeps no server state, so the model's reasoning between tool
+    calls survives only if its encrypted item is sent back. It decrypts only
+    for the account that produced it; the block records that account.
+    """
+    if not isinstance(item, dict) or item.get("type") != "reasoning":
+        return None
+    encrypted = item.get("encrypted_content")
+    if not isinstance(encrypted, str) or not encrypted:
+        return None
+    summary = [
+        {"type": "summary_text", "text": str(part.get("text") or "")}
+        for part in item.get("summary") or []
+        if isinstance(part, dict) and part.get("text")
+    ]
+    block = {"encrypted_content": encrypted, "summary": summary}
+    if account is not None:
+        block["account"] = int(account)
+    return {"openai_reasoning": block}
+
+
 class _Translator:
-    def __init__(self, model: str):
+    def __init__(self, model: str, account=None):
         self.model = model
+        self.account = account
         self.created = int(time.time())
         self.completion_id = "chatcmpl-chatgpt"
         self.book = _CallBook()
@@ -211,6 +235,9 @@ class _Translator:
                     }
                 )
             return None
+        if etype == "response.output_item.done":
+            block = reasoning_block(event.get("item"), self.account)
+            return self._chunk({"claude_thinking": [block]}) if block else None
         if etype == "response.function_call_arguments.delta":
             rec = self.book.get(str(event.get("item_id") or ""))
             if rec and event.get("delta"):
@@ -283,9 +310,9 @@ class _Translator:
 
 
 async def _translated_stream(
-    resp: httpx.Response, client: httpx.AsyncClient, model: str, collected: dict | None = None
+    resp: httpx.Response, client: httpx.AsyncClient, model: str, collected: dict | None = None, account=None
 ):
-    translator = _Translator(model)
+    translator = _Translator(model, account)
     stream_status = "failed"
     try:
         try:
@@ -325,10 +352,11 @@ async def _translated_stream(
                 collected["usage_status"] = "complete" if stream_status == "complete" else "partial"
 
 
-async def _aggregate(resp: httpx.Response, client: httpx.AsyncClient, model: str) -> dict:
-    translator = _Translator(model)
+async def _aggregate(resp: httpx.Response, client: httpx.AsyncClient, model: str, account=None) -> dict:
+    translator = _Translator(model, account)
     text_parts: list[str] = []
     reasoning_parts: list[str] = []
+    thinking: list[dict] = []
     terminal = False
     try:
         async for event in _upstream_events(resp):
@@ -351,6 +379,10 @@ async def _aggregate(resp: httpx.Response, client: httpx.AsyncClient, model: str
                         str(item.get("name") or ""),
                         str(item.get("arguments") or ""),
                     )
+            elif etype == "response.output_item.done":
+                block = reasoning_block(event.get("item"), account)
+                if block:
+                    thinking.append(block)
             elif etype == "response.function_call_arguments.delta":
                 rec = translator.book.get(str(event.get("item_id") or ""))
                 if rec and event.get("delta"):
@@ -396,6 +428,8 @@ async def _aggregate(resp: httpx.Response, client: httpx.AsyncClient, model: str
     message: dict = {"role": "assistant", "content": "".join(text_parts)}
     if reasoning_parts:
         message["reasoning_content"] = "".join(reasoning_parts)
+    if thinking:
+        message["claude_thinking"] = thinking
     calls = translator.book.tool_calls()
     if calls:
         message["tool_calls"] = calls

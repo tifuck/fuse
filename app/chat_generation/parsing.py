@@ -305,6 +305,10 @@ def _take_thinking(bucket: list, raw) -> None:
         if redacted:
             bucket.append({"redacted_thinking": redacted})
             continue
+        reasoning_item = block.get("openai_reasoning")
+        if isinstance(reasoning_item, dict) and reasoning_item.get("encrypted_content"):
+            bucket.append({"openai_reasoning": dict(reasoning_item)})
+            continue
         text = str(block.get("thinking") or block.get("text") or "")
         signature = str(block.get("signature") or "")
         # Signed-empty is a valid omitted-display block and must replay.
@@ -329,6 +333,13 @@ def _native_reasoning(reasoning, model, thinking=None):
     keeps_blocks = model.startswith("claude/") or model.startswith("claude-")
     keeps_text = model.startswith("devin/")
     if not keeps_blocks and not keeps_text:
+        # ChatGPT (Codex Responses, store=false): its encrypted reasoning
+        # items are the only way the model keeps its reasoning across rounds.
+        items = [dict(block) for block in thinking or []
+                 if isinstance(block, dict) and isinstance(block.get("openai_reasoning"), dict)]
+        if items:
+            out["claude_thinking"] = items
+            out["_fuse_reasoning_model"] = model
         return out
     blocks = []
     for block in thinking or []:

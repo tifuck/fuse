@@ -55,6 +55,8 @@ from .chatgpt_payload import (
     _input_content,
     _text_of,
     build_responses_payload,
+    drop_reasoning,
+    for_account,
 )
 from .chatgpt_stream import (
     UpstreamProtocolError,
@@ -781,7 +783,7 @@ class ChatGPTSource:
             try:
                 reserve(cred["id"])
                 try:
-                    resp = await self._post(token, account_id, payload, client)
+                    resp = await self._post(token, account_id, for_account(payload, cred["id"]), client)
                 except httpx.TimeoutException as exc:
                     await client.aclose()
                     last = ChatResult(
@@ -815,7 +817,7 @@ class ChatGPTSource:
                             extra = accounts.cred_extra(row)
                             token = extra.get("access_token") or accounts.cred_secret(row)
                             account_id = extra.get("account_id") or None
-                        resp = await self._post(token, account_id, payload, client)
+                        resp = await self._post(token, account_id, for_account(payload, cred["id"]), client)
                 if resp.status_code != 200:
                     obj = await _error_body(resp)
                     status = resp.status_code
@@ -833,6 +835,12 @@ class ChatGPTSource:
                     if status == 400 and param and param in payload:
                         attempts.append({"credential_id": cred["id"], "status": status, "usage": {}})
                         payload.pop(param, None)
+                        tried.discard(int(cred["id"]))
+                        continue
+                    if status == 400 and "encrypted" in msg.lower() and drop_reasoning(payload):
+                        # Replayed reasoning the account cannot decrypt (or a
+                        # rejected format): continue without it, same account.
+                        attempts.append({"credential_id": cred["id"], "status": status, "usage": {}})
                         tried.discard(int(cred["id"]))
                         continue
                     if status == 400 and payload.get("prompt_cache_key") and "prompt_cache_key" in msg.lower():
@@ -859,7 +867,7 @@ class ChatGPTSource:
                     return last
                 if wants_stream:
                     collected: dict = {}
-                    inner = _translated_stream(resp, client, model, collected)
+                    inner = _translated_stream(resp, client, model, collected, account=cred["id"])
 
                     async def _bind_on_finish():
                         try:
@@ -881,7 +889,7 @@ class ChatGPTSource:
                     result = ChatResult(status=200, stream=stream, credential_id=cred["id"], model=model)
                     result.attempts = attempts
                     return result
-                obj = await _aggregate(resp, client, model)
+                obj = await _aggregate(resp, client, model, account=cred["id"])
                 if isinstance(obj.get("error"), dict):
                     partial_usage = obj.pop("_fuse_usage", {}) if isinstance(obj, dict) else {}
                     if partial_usage:

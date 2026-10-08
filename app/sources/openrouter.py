@@ -802,6 +802,13 @@ def _chat_payload(
     payload = dict(body)
     payload["model"] = upstream
     payload.pop("models", None)
+    if any(isinstance(m, dict) and "claude_thinking" in m for m in payload.get("messages") or []):
+        # Pool-native reasoning blocks (e.g. ChatGPT encrypted items kept for a
+        # pool id that fell back here) are not OpenRouter message fields.
+        payload["messages"] = [
+            {k: v for k, v in m.items() if k != "claude_thinking"} if isinstance(m, dict) else m
+            for m in payload["messages"]
+        ]
     effort = payload.pop("reasoning_effort", None)
     if isinstance(effort, str):
         reasoning = dict(payload["reasoning"]) if isinstance(payload.get("reasoning"), dict) else {}
