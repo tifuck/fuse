@@ -23,9 +23,6 @@ ITEMS=(
   start.sh
   .gitignore
   AGENTS.md
-  CODING_AGENT.md
-  CHAT_REDESIGN_PLAN.md
-  CHAT_SYNC.md
   install.sh
   backup.sh
   fuse-desktop/.github
@@ -39,8 +36,6 @@ ITEMS=(
 )
 
 OPTIONAL=(
-  CHAT_REDESIGN_PLAN.md
-  CHAT_SYNC.md
   docs
   scripts
   tests
