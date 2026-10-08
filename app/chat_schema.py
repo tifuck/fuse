@@ -739,7 +739,7 @@ def _parse_segments(raw, tools, *, strict: bool = False, field: str = "segments"
             out.append({"type": "permission", "id": ident})
             continue
         if kind == "marker":
-            mark = item.get("kind") if item.get("kind") in ("compaction", "prune") else "compaction"
+            mark = item.get("kind") if item.get("kind") in ("compaction", "prune", "resume") else "compaction"
             if strict:
                 text = _text(item.get("text"), f"{field}[{index}].text", 400)
             else:
@@ -793,7 +793,7 @@ def align_segments(segments, content, reasoning) -> list[dict]:
         kind = part.get("type")
         if kind == "marker":
             text = part.get("text") if isinstance(part.get("text"), str) else ""
-            mark = part.get("kind") if part.get("kind") in ("compaction", "prune") else "compaction"
+            mark = part.get("kind") if part.get("kind") in ("compaction", "prune", "resume") else "compaction"
             if text:
                 row = {"type": "marker", "kind": mark, "text": text[:400]}
                 summary = part.get("summary") if isinstance(part.get("summary"), str) else ""

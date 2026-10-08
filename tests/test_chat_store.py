@@ -338,7 +338,17 @@ class ChatStoreTest(unittest.TestCase):
         self.assertEqual(recovered["request"]["agent"]["loaded_tools"], ["read_file"])
         self.assertEqual(recovered["message"]["content"], "partial next")
         self.assertEqual(recovered["message"]["tools"][0]["status"], "done")
-        self.assertIn("Resumed after server restart", recovered["message"]["notice"])
+        marker = {"type": "marker", "kind": "resume", "text": store.RESUME_NOTICE}
+        self.assertEqual(recovered["message"]["segments"][-1], marker)
+        self.assertNotIn("Resumed after server restart", recovered["message"].get("notice", ""))
+        from app.chat_runs import Output
+        output = Output(recovered)
+        output.apply({"choices": [{"delta": {"content": "Resumed output"}}]})
+        message = chats.parse_messages([{**output.message, "role": "assistant"}])[0]
+        self.assertEqual(message["segments"][-2], marker)
+        self.assertEqual(message["segments"][-1]["type"], "content")
+        self.assertIn("Resumed output", message["segments"][-1]["text"])
+        self.assertNotIn(store.RESUME_NOTICE, json.dumps(recovered["provider_messages"]))
         overlay = chats.get_thread(1, run["thread_id"])
         self.assertEqual(overlay["run"]["id"], run["id"])
         self.assertEqual(overlay["messages"][-1]["content"], "partial next")

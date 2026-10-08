@@ -258,8 +258,11 @@ class RestartRecoveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("restart", note.lower())
         self.assertIn("user stopped", sent[-2]["content"], "the unfinished call is sealed with the real cause")
         self.assertEqual(resumed["request"]["agent"]["resume_reason"], "user")
-        self.assertIn(store.USER_RESUME_NOTICE, resumed["message"]["notice"])
-        self.assertNotIn("server restart", resumed["message"]["notice"])
+        self.assertEqual(resumed["message"]["segments"][-1], {
+            "type": "marker", "kind": "resume", "text": store.USER_RESUME_NOTICE,
+        })
+        self.assertNotIn(store.USER_RESUME_NOTICE, resumed["message"].get("notice", ""))
+        self.assertNotIn("server restart", json.dumps(resumed["message"]))
         # The guard against stacking notes also recognises the user variant.
         self.assertIs(store._with_resume_note(sent, run["id"], 9, True), sent)
 

@@ -40,6 +40,13 @@ function activityBlockHtml(entries, msg, live, blockIndex, showElapsed, turnLive
     );
   }
 
+function markerBlockHtml(block) {
+    if (block.markerKind === "resume") {
+      return `<p class="chat-notice" data-resume-marker role="status">${deps.escapeHtml(block.text)}</p>`;
+    }
+    return deps.compactionMarkHtml(block.text, block.summary);
+  }
+
 function visibleAssistantError(msg) {
     if (!msg.error) return "";
     const index = deps.messages.findIndex(item => item === msg || (msg.id && item.id === msg.id));
@@ -141,7 +148,7 @@ function updateAssistant(article, msg, live) {
         return;
       }
       if (part.type === "marker") {
-        blocks.push({ kind: "marker", text: part.text, summary: part.summary || "" });
+        blocks.push({ kind: "marker", markerKind: part.kind, text: part.text, summary: part.summary || "" });
         return;
       }
       if (part.type === "todo-line") {
@@ -161,7 +168,7 @@ function updateAssistant(article, msg, live) {
     // (the shape-change path innerHTML-renders every block); text growth is
     // handled per block by the settled/tail markdown streamer below.
     const structure = segments.map((part) => part?.type === "marker"
-      ? `marker:${part.text || ""}:${part.summary || ""}`
+      ? `marker:${part.kind || ""}:${part.text || ""}:${part.summary || ""}`
       : `${part?.type || ""}:${part.id || ""}`).join("|");
     const permSig = (msg.permissions || []).map((p) => `${p.id}:${p.status}`).join("|");
     const traceById = new Map(traces.map((trace) => [trace && trace.id, trace]));
@@ -179,7 +186,7 @@ function updateAssistant(article, msg, live) {
           return `t:${trace && trace.id}:${deps.tracesSig([trace])}:${running}`;
         }).join("~") + (consoleLive && blockIndex === blocks.length - 1 ? `~ph:${phase}` : "");
       }
-      if (block.kind === "marker") return `m:${block.text}:${block.summary || ""}`;
+      if (block.kind === "marker") return `m:${block.markerKind}:${block.text}:${block.summary || ""}`;
       if (block.kind === "todos") return `o:${block.text}`;
       if (block.kind === "permission") return `p:${block.entries[0] && block.entries[0].perm && block.entries[0].perm.id}`;
       return `c:${blockIndex}`;
@@ -199,7 +206,7 @@ function updateAssistant(article, msg, live) {
         if (block.kind !== "activity") {
           const html = block.kind === "permission"
             ? deps.permissionCardHtml(block.entries[0].perm, msg)
-            : block.kind === "todos" ? deps.todoLineHtml(block.text) : deps.compactionMarkHtml(block.text, block.summary);
+            : block.kind === "todos" ? deps.todoLineHtml(block.text) : markerBlockHtml(block);
           if (node.outerHTML === html) { node._blockSig = next; return; }
           const fresh = document.createElement("template");
           fresh.innerHTML = html;
@@ -236,7 +243,7 @@ function updateAssistant(article, msg, live) {
           return deps.permissionCardHtml(block.entries[0].perm, msg);
         }
         if (block.kind === "marker") {
-          return deps.compactionMarkHtml(block.text, block.summary);
+          return markerBlockHtml(block);
         }
         if (block.kind === "todos") return deps.todoLineHtml(block.text);
         if (block.kind === "content") {

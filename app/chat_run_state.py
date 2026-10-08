@@ -1613,7 +1613,10 @@ def _requeue_for_resume(row, messages, allowed=None, *, by_user=False):
         ]
     message["stopped"] = False
     message.pop("error", None)
-    _append_notice(message, USER_RESUME_NOTICE if by_user else RESUME_NOTICE)
+    message["segments"].append({
+        "type": "marker", "kind": "resume",
+        "text": USER_RESUME_NOTICE if by_user else RESUME_NOTICE,
+    })
     for tool in message.get("tools") or []:
         if isinstance(tool, dict) and tool.get("status") in ("running", "progress"):
             tool["status"] = "interrupted"

@@ -741,15 +741,6 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 await persist_jobs()
                 yield _sse(preload_event)
 
-        if agent.get("resumed"):
-            yield _sse(
-                {
-                    "fuse": {
-                        "event": "notice",
-                        "message": "Continued after stop." if agent.get("resume_reason") == "user" else "Resumed after server restart.",
-                    }
-                }
-            )
         src_type_guess = _model_type_guess(model)
         last_round_usage: dict = {}
         summary: dict | None = None

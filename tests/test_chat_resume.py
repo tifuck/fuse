@@ -444,7 +444,8 @@ class ResumeTest(unittest.IsolatedAsyncioTestCase):
             "SELECT provider_messages FROM chat_runs WHERE id=?", (second["id"],))[0])}
         resumed["agent"] = {**resumed.get("agent", {}), "resumed": True, "skip_sanitize": True}
         with patch.object(runtime, "build_system_prompt", return_value="after restart"):
-            await self.stream_turn(invoke, resumed, frozen_context=chats.get_user_context(1))
+            objects = await self.stream_turn(invoke, resumed, frozen_context=chats.get_user_context(1))
+        self.assertNotIn("Resumed after server restart.", json.dumps(objects))
         self.assertEqual(sent[2]["messages"][:len(sent[1]["messages"])], sent[1]["messages"])
         self.assertEqual(sent[2]["tools"], sent[1]["tools"])
 
