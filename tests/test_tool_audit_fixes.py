@@ -349,6 +349,19 @@ class ReplaceTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ws.WorkspaceError, r"lines 1, 3"):
             ws._apply_replace("a\nb\na\n", "a", "x", False)
 
+    async def test_connector_multi_edit_diff_shows_whole_lines(self):
+        fresh = "".join(f"line {i:03d} xxxx\n" for i in range(1, 61))
+        fresh = fresh.replace("line 050 ", "LINE 050 (edited) ").replace("line 060 ", "LINE 060 (last) ")
+        edits = [{"old_string": "line 050 ", "new_string": "LINE 050 (edited) "},
+                 {"old_string": "line 060 ", "new_string": "LINE 060 (last) "}]
+        with patch.object(ws, "_is_agent", return_value=True), patch.object(ws, "_agent_version", return_value=(1, 7, 1)), \
+                patch.object(ws, "_agent_call", AsyncMock(return_value={"ok": True, "out": "2 replacements"})), \
+                patch.object(ws, "_agent_read_sample", AsyncMock(return_value=fresh)):
+            text, _ = await ws._replace(1, 2, "h", {"path": "a.txt", "edits": edits}, "/repo")
+        body = ws.unlabel_host("h", text)
+        self.assertIn("@@ -50 +50 @@\n-line 050 xxxx\n+LINE 050 (edited) xxxx", body)
+        self.assertIn("@@ -60 +60 @@\n-line 060 xxxx\n+LINE 060 (last) xxxx", body)
+
     async def test_success_returns_numbered_snippet(self):
         body = "".join(f"line{i}\n" for i in range(1, 21)).encode()
         sftp = FakeSFTP({"/repo/a.py": body})
@@ -520,6 +533,20 @@ class JobOutputTest(unittest.TestCase):
         self.assertTrue(body.startswith("FIRST ERROR"))
         self.assertTrue(body.rstrip().endswith("LAST LINE"))
         self.assertIn("characters of output omitted", body)
+
+    def test_head_and_tail_cut_on_line_boundaries_with_exact_gap(self):
+        rec = {"out": ""}
+        text = "".join(f"{i} abcdefghij\n" for i in range(1, 60001))
+        for i in range(0, len(text), 777):
+            jobs._append_out(rec, text[i:i + 777])
+        body = jobs._model_body(rec, rec["out"])
+        head, rest = body.split("\n[... ", 1)
+        count, tail = rest.split(" characters of output omitted ...]\n", 1)
+        # Both sides are whole lines, and the gap rejoined with its two line
+        # breaks is exactly the original length.
+        self.assertTrue(text.startswith(head + "\n"), head[-40:])
+        self.assertTrue(text.endswith("\n" + tail), tail[:40])
+        self.assertEqual(len(head) + 1 + int(count) + 1 + len(tail), len(text))
 
     def test_head_survives_when_host_dropped_output(self):
         # A connector that dropped chunks makes the total inexact; the head
@@ -823,6 +850,17 @@ class GrepModeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(run(mode="count").split(), ["./a.txt:2"])
             self.assertIn("./a.txt-3-three", run(context=1))
 
+    def test_fallback_missing_target_is_an_error(self):
+        # Without rg, a path that does not exist must fail like rg does, not
+        # walk the current directory (the project root) under a bogus prefix.
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "a.txt").write_text("two\n")
+            for cmd in (ws._grep_search_cmd("two", "nope/x.py"), ws._glob_search_cmd("*.txt", "nope/x.py")):
+                run = subprocess.run(["bash", "-c", "command() { return 1; }; " + cmd],
+                                     capture_output=True, text=True, timeout=5, cwd=root)
+                self.assertEqual((run.returncode, run.stdout), (2, ""))
+                self.assertIn("nope/x.py: No such file or directory", run.stderr)
+
     async def test_context_output_counts_matches_and_filters_secrets(self):
         out = "src/a.py-1-before\nsrc/a.py:2:KEY\nsrc/a.py-3-after\n--\n.env-1-x\n.env:2:KEY=1\n.env-3-y\n"
         data = {"exit": 0, "out": out, "err": "", "timed_out": False}
@@ -839,6 +877,17 @@ class GrepModeTest(unittest.IsolatedAsyncioTestCase):
         with patch.object(ws, "_is_agent", return_value=False), patch.object(ws, "_tool_exec", AsyncMock(return_value=data)):
             text, _ = await ws._grep(1, 2, "h", {"pattern": "x", "output_mode": "files_with_matches", "max_matches": 3}, "/repo")
         self.assertIn("a.py\nb.py\nc.py\n(showing the first 3 files", ws.unlabel_host("h", text))
+
+    async def test_connector_marker_inside_a_match_is_content(self):
+        # Through the real connector path: only the operation's truncated flag
+        # (or a trailing marker) is a clip, never the marker text in a match.
+        line = 'agent/src/exec.c:164:    const char *mark = "\\n[fuse-agent: output truncated]\\n";\n'
+        reply = {"ok": True, "exit": 0, "out": line, "err": "", "truncated": False}
+        with patch.object(ws, "_is_agent", return_value=True), patch.object(ws, "_agent_call", AsyncMock(return_value=reply)):
+            text, _ = await ws._grep(1, 2, "h", {"pattern": "output truncated"}, "/repo")
+        body = ws.unlabel_host("h", text)
+        self.assertIn("agent/src/exec.c:164:", body)
+        self.assertNotIn("output limit", body)
 
     async def test_windows_modes_need_new_connector(self):
         with patch.object(ws, "_is_agent", return_value=True), patch.object(ws, "_agent_version", return_value=(1, 3, 3)):

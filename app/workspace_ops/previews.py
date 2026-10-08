@@ -105,6 +105,30 @@ def _replace_preview(path: str, old: str, new: str, count: int, start: int | Non
     return body
 
 
+_WIDEN_MAX = 400
+
+
+def _whole_lines(text: str, frag: str, other: str) -> tuple[str, str]:
+    """Widen one edit to the whole lines it touches so its diff shows full
+    lines, not a bare fragment. frag is located in text (old_string in the
+    pre-edit file, or new_string in the post-edit file on the connector
+    path); other is its counterpart. Returns (frag, other) widened alike; a
+    miss, or a line too long to show, keeps the fragments."""
+    text = text.replace("\r\n", "\n")
+    at = text.find(frag) if frag else -1
+    if at < 0:
+        return frag, other
+    start = text.rfind("\n", 0, at) + 1
+    end = at + len(frag)
+    if not frag.endswith("\n"):
+        nl = text.find("\n", end)
+        end = len(text) if nl < 0 else nl
+    prefix, suffix = text[start:at], text[at + len(frag):end]
+    if len(prefix) + len(suffix) > _WIDEN_MAX:
+        return frag, other
+    return prefix + frag + suffix, prefix + other + suffix
+
+
 _NOT_FOUND_HINT = (
     "old_string not found. It must match the file exactly, including whitespace and "
     "indentation; do not include the 'N:' line-number prefix or the 'From host X:' "

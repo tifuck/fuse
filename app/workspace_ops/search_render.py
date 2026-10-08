@@ -132,10 +132,10 @@ def _strip_connector_clip(out: str, clipped: bool) -> tuple[str, bool]:
 
 def _clip_note(op: str) -> str:
     return (
-        f"({op} output hit the connector's 64 KB limit; results are partial. Lower max_matches, "
+        f"({op} output hit the connector's output limit; results are partial. Lower max_matches, "
         "use output_mode files_with_matches, or narrow the pattern or path.)"
         if op == "grep"
-        else f"({op} output hit the connector's 64 KB limit; results are partial. Narrow the pattern or path.)"
+        else f"({op} output hit the connector's output limit; results are partial. Narrow the pattern or path.)"
     )
 
 

@@ -186,7 +186,11 @@ class MonitorJobs(unittest.IsolatedAsyncioTestCase):
             await rec["task"]
         self.assertEqual(rec["status"], "completed")
         self.assertEqual(rec["event_count"], 1)
-        self.assertIn("max_events", rec["error"])
+        # Reaching max_events is the normal end of a watch, not an error.
+        self.assertEqual(rec["error"], "")
+        envelope = monitor.result_envelope(rec)
+        self.assertIn("\nended: max_events reached (normal stop)\n", envelope)
+        self.assertNotIn("error:", envelope)
 
     async def test_timeout_reports_event_count(self):
         async def runner(sink):

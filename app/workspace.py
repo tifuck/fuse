@@ -64,6 +64,7 @@ from .workspace_ops.previews import (
     _post_edit_snippet,
     _read_render,
     _replace_preview,
+    _whole_lines,
 )
 from .workspace_ops.search_cmds import (
     _GREP_DEFAULT_MATCHES,
@@ -83,7 +84,6 @@ from .workspace_ops.search_cmds import (
     _tree_cmd_posix,
 )
 from .workspace_ops.search_render import (
-    _CONNECTOR_CLIP,
     _SEARCH_OUT_CHARS,
     _clip_note,
     _filter_grep_include,
@@ -2139,7 +2139,7 @@ async def _tool_exec(user_id, host_id, cmd: str, cwd: str, seconds: int) -> dict
         timed = _agent_timed_out(data) or code == 124
         return {"exit": code, "out": str(data.get("out") or ""), "err": str(data.get("err") or ""),
                 "error": str(data.get("error") or ""), "timed_out": timed,
-                "clipped": bool(data.get("truncated")) or _CONNECTOR_CLIP in str(data.get("out") or "")}
+                "clipped": bool(data.get("truncated"))}
     import asyncssh
 
     from . import ssh_pool
@@ -2538,7 +2538,7 @@ async def _replace(user_id, host_id, alias, args, root, *, windows: bool = False
                 if snip and not snippet:
                     snippet = snip
             diff = "\n".join(
-                _replace_preview(path, o, n, 1, start=s)
+                _replace_preview(path, *reversed(_whole_lines(fresh, n, o)), 1, start=s)
                 for (o, n, _a), s in zip(edits, starts)
             )
             preview = diff[:800]
@@ -2641,7 +2641,7 @@ async def _replace(user_id, host_id, alias, args, root, *, windows: bool = False
     if len(edits) == 1:
         old, new, _a = edits[0]
         snippet = _edit_snippet(text, updated, old, new)
-        preview = _replace_preview(path, old, new, count, start=_edit_first_line(text, old, new))
+        preview = _replace_preview(path, *_whole_lines(text, old, new), count, start=_edit_first_line(text, old, new))
     else:
         snippet = _multi_diff(path, text, updated)
         preview = snippet[:800]

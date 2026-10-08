@@ -160,7 +160,12 @@ class LifecycleContract(unittest.IsolatedAsyncioTestCase):
         rec = self.launch(runner)
         await rec["task"]
         text, trace = jobs.render(rec)
-        self.assertIn(f"id: {rec['id']}", text)
+        # A finished foreground command needs no id or limit in the model's text.
+        meta = text.split("\n\n")[0]
+        self.assertNotIn("id: ", meta)
+        self.assertNotIn("timeout_ms: ", meta)
+        self.assertIn(f"id: {rec['id']}", jobs.render({**rec, "background": True})[0])
+        self.assertIn("timeout_ms: 1000", jobs.render({**rec, "status": "timed_out"})[0])
         for key in ("id", "child_id", "command_id"):
             self.assertEqual(trace[key], rec["id"])
         self.assertEqual(trace["state"], "completed")

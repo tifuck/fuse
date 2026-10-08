@@ -39,6 +39,8 @@ OUT_HEAD_CHARS = 4_000
 # Model-visible body of a finished command: head + tail, under the runtime's
 # per-result clip (chat_runtime.TOOL_RESULT_CHARS).
 MODEL_TAIL_CHARS = 12_000
+# The head/tail cut moves to a line boundary when one is this close.
+_SNAP_CHARS = 1_000
 RESULT_CHARS = 6_000
 RUNNING_TAIL_CHARS = 1_200
 # Foreground: a command with no timeout gets 2 minutes and may ask for up to
@@ -489,7 +491,6 @@ def _on_monitor_batch(rec: dict, lines: list[str], overflow: int = 0) -> None:
     cap = int(rec.get("max_events") or monitor_mod.DEFAULT_MAX_EVENTS)
     if int(rec.get("event_count") or 0) >= cap:
         rec["_max_events_hit"] = True
-        rec["error"] = f"monitor reached max_events={cap}"
         task = rec.get("task")
         if task is not None and not task.done():
             task.cancel()
@@ -597,7 +598,7 @@ async def _supervise(rec: dict, runner) -> None:
             return
         if rec.get("_max_events_hit"):
             rec["termination_confirmed"] = True
-            await _finish(rec, status="completed", exit_code=0, error=str(rec.get("error") or "monitor reached max_events"))
+            await _finish(rec, status="completed", exit_code=0, error=str(rec.get("error") or ""))
             return
         if _is_monitor(rec) and rec.get("source") == "ws":
             rec["termination_confirmed"] = True
@@ -629,7 +630,7 @@ async def _supervise(rec: dict, runner) -> None:
             await _finish(rec, status="cancelled", exit_code=None, error=error or "monitor auto-stopped: too many events")
         elif rec.get("_max_events_hit"):
             rec["termination_confirmed"] = True
-            await _finish(rec, status="completed", exit_code=0, error=error or "monitor reached max_events")
+            await _finish(rec, status="completed", exit_code=0, error=error)
         else:
             await _finish(rec, status="cancelled", exit_code=None,
                           error="cancellation requested; remote termination is not confirmed")
@@ -1153,7 +1154,17 @@ def _model_body(rec: dict, out: str) -> str:
     # Counts cover the text Fuse received, so head and tail line up even when
     # the host dropped some of it (inexact total); that only adds the label.
     if head and tail_start > len(head):
-        omitted = tail_start - len(head)
+        # Cut on line boundaries so neither side ends or starts mid-line; the
+        # two newlines become the gap marker's own line breaks. A long line
+        # (no newline nearby) keeps the character cut.
+        head_end = len(head)
+        cut = head.rfind("\n")
+        if cut >= 0 and len(head) - cut <= _SNAP_CHARS:
+            head, head_end = head[:cut], cut + 1
+        nl = tail.find("\n")
+        if 0 <= nl < _SNAP_CHARS:
+            tail, tail_start = tail[nl + 1:], tail_start + nl
+        omitted = tail_start - head_end
         label = "" if fields["output_chars_exact"] else "[Output truncated; total unknown]\n"
         return f"{label}{head}\n[... {omitted} characters of output omitted ...]\n{tail}"
     if head and tail_start >= 0:
@@ -1177,13 +1188,17 @@ def render(rec: dict, *, tool: str = "run_terminal_command", host_label: bool = 
     name = "monitor" if _is_monitor(rec) and tool in ("run_terminal_command", "monitor") else tool
     head = f"From host {host}:\n" if host_label and host else ""
     if status in TERMINAL:
-        meta = [f"status: {status}", f"id: {rec['id']}"]
+        # Only what the model can act on: an id it was handed earlier (a
+        # background job or monitor), and the limit only when it caused the end.
+        meta = [f"status: {status}"]
+        if rec.get("background") or _is_monitor(rec):
+            meta.append(f"id: {rec['id']}")
         if status == "completed":
             code = rec.get("exit_code")
             meta.append(f"exit_code: {code if code is not None else 'unknown'}")
         if rec.get("duration_ms") is not None:
             meta.append(f"duration_ms: {int(rec['duration_ms'])}")
-        if timeout_ms:
+        if timeout_ms and status == "timed_out":
             meta.append(f"timeout_ms: {timeout_ms}")
         if rec.get("error"):
             meta.append(f"error: {str(rec['error'])[:300]}")

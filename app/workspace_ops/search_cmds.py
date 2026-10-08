@@ -266,6 +266,11 @@ _XARGS_GREP = (
 )
 
 
+# rg reports a missing path as an error; without rg a missing target must not
+# fall through to walking the current directory (the project root).
+_MISSING_TARGET_SH = 'else printf \'%s: No such file or directory\\n\' "$TGT" >&2; exit 2; fi'
+
+
 def _grep_search_cmd(
     pattern: str,
     path: str,
@@ -330,7 +335,8 @@ def _grep_search_cmd(
     )
     fallback = (
         "GF=-E; if printf 'a1\\n' | grep -qP '\\d' 2>/dev/null; then GF=-P; fi; "
-        f'if [ -f "$TGT" ]; then {one_file}; else {walk}; fi'
+        f'if [ -f "$TGT" ]; then {one_file}; elif [ -e "$TGT" ]; then {walk}; '
+        + _MISSING_TARGET_SH
     )
     return (
         "set -o pipefail; "
@@ -379,7 +385,8 @@ def _glob_search_cmd(
         + 'if [ -d "$TGT" ]; then cd -- "$TGT" || exit 2; TGT=.; fi; '
         + f"if command -v rg >/dev/null 2>&1; then {rg} | head -n {_GLOB_MAX_PATHS}; "
         f'elif [ -d "$TGT" ]; then {fallback} | head -n {_GLOB_MAX_PATHS}; '
-        f'else printf \'%s\\n\' "$TGT"; fi'
+        f'elif [ -e "$TGT" ]; then printf \'%s\\n\' "$TGT"; '
+        + _MISSING_TARGET_SH
     )
 
 
