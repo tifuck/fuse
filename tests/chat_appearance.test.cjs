@@ -143,11 +143,11 @@ test('backdrop wallpaper is a scene layer, not an opaque plate', () => {
   assert.doesNotMatch(css, /chat-scene-bubbles/);
   assert.match(js, /canvas data-chat-scene-fx/);
   assert.match(js, /signal: \{ label: "Signal"/);
-  for (const kind of ['orbit', 'galaxy', 'eclipse', 'belt', 'contact', 'koi']) assert.match(js, new RegExp(`\\n    ${kind}: \\{ label`));
+  for (const kind of ['orbit', 'galaxy', 'eclipse', 'belt', 'contact', 'koi', 'alpine', 'fjord', 'reef', 'desert', 'earthrise', 'kyoto', 'marine', 'forest', 'coast', 'sunset', 'storm', 'taj', 'varanasi']) assert.match(js, new RegExp(`\\n    ${kind}: \\{ label`));
   for (const gone of ['pulsar', 'fern', 'ink', 'sumi']) assert.doesNotMatch(js, new RegExp(`\\n    ${gone}: \\{ label`));
   const registry = readFileSync(resolve(__dirname, '../static/backdrops/scenes.js'), 'utf8');
   const sceneKeys = registry.match(/export const SCENES = \{([^}]+)\}/)[1].split(',').map(key => key.trim());
-  for (const kind of ['glyphs', 'life', 'signal', 'orbit', 'pond', 'koi', 'galaxy', 'eclipse', 'belt', 'contact']) assert.ok(sceneKeys.includes(kind), kind);
+  for (const kind of ['glyphs', 'life', 'signal', 'orbit', 'pond', 'koi', 'galaxy', 'eclipse', 'belt', 'contact', 'alpine', 'fjord', 'reef', 'desert', 'earthrise', 'kyoto', 'marine', 'forest', 'coast', 'sunset', 'storm', 'taj', 'varanasi']) assert.ok(sceneKeys.includes(kind), kind);
   for (const gone of ['pulsar', 'fern', 'ink', 'sumi']) assert.ok(!sceneKeys.includes(gone), gone);
 });
 
