@@ -112,6 +112,14 @@ static int sha256_file(const char *path, char *hex, size_t cap) {
     return 0;
 }
 
+/* The served binary is already the one running: a manifest whose version
+ * outruns its binaries (a SKU left unbuilt, a rollback) would otherwise
+ * download and re-exec the same file on every check. */
+int update_is_self(const char *self, const char *expect_sha) {
+    char mine[72];
+    return sha256_file(self, mine, sizeof(mine)) == 0 && strcmp(mine, expect_sha) == 0;
+}
+
 static int ver_parse(const char *s, int v[3]) {
     int n = 0;
     while (n < 3) {
@@ -237,6 +245,7 @@ int maybe_update(int allow_exec) {
     /* The path goes into a raw HTTP request line: spaces or CR/LF in a
      * crafted manifest would inject extra headers. Require a clean path. */
     if (path[0] != '/' || !expect[0] || strpbrk(path, " \t\r\n\"?#")) goto out;
+    if (update_is_self(self, expect)) goto out;
     if (format_update_staging(neu, sizeof(neu), self) != 0) goto out;
     int sfd = mkstemp(neu);
     if (sfd < 0) goto out;

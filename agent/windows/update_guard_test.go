@@ -53,6 +53,24 @@ func TestUpdateFetchURLRequiresHTTPS(t *testing.T) {
 	}
 }
 
+// A served binary identical to the running one is not an update: otherwise a
+// manifest version that outruns its binaries relaunches the same file forever.
+func TestFileHasSHA256(t *testing.T) {
+	self := filepath.Join(t.TempDir(), "fuse-agent.exe")
+	if err := os.WriteFile(self, []byte("abc"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if !fileHasSHA256(self, "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD") {
+		t.Fatal("own binary not recognized")
+	}
+	if fileHasSHA256(self, "0000000000000000000000000000000000000000000000000000000000000000") {
+		t.Fatal("different binary treated as own")
+	}
+	if fileHasSHA256(filepath.Join(t.TempDir(), "missing.exe"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad") {
+		t.Fatal("missing binary treated as own")
+	}
+}
+
 // Cross-process ownership: the anchor is kernel-locked (flock/LockFileEx on
 // the open handle, never unlinked), a second updater is refused while held,
 // ownership transfers on release, and release is idempotent.

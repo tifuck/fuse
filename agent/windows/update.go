@@ -178,6 +178,22 @@ func stageUpdateBinary(self string, data []byte) (string, error) {
 	return path, nil
 }
 
+// fileHasSHA256 reports whether the served binary is already the one running:
+// a manifest whose version outruns its binaries (a SKU left unbuilt, a
+// rollback) would otherwise download and relaunch the same file every check.
+func fileHasSHA256(path, want string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return false
+	}
+	return strings.EqualFold(hex.EncodeToString(h.Sum(nil)), want)
+}
+
 // maybeUpdate checks, downloads, verifies and - only when the admit callback
 // grants update admission - swaps and relaunches. admit must reserve update
 // admission (pause job intake, no in-flight work); holding it across
@@ -229,6 +245,14 @@ func maybeUpdate(cfg *agentConfig, force bool, admit func() (hold func(), ok boo
 		log.Printf("fuse-agent: update refused; download URL is not https")
 		return
 	}
+	self, err := os.Executable()
+	if err != nil {
+		return
+	}
+	self, _ = filepath.Abs(self)
+	if fileHasSHA256(self, bin.SHA256) {
+		return
+	}
 	data, err := httpGet(path)
 	if err != nil {
 		return
@@ -239,11 +263,6 @@ func maybeUpdate(cfg *agentConfig, force bool, admit func() (hold func(), ok boo
 		log.Printf("fuse-agent: update checksum mismatch")
 		return
 	}
-	self, err := os.Executable()
-	if err != nil {
-		return
-	}
-	self, _ = filepath.Abs(self)
 	release, lock, ok := acquireUpdateLock(self)
 	if !ok {
 		log.Printf("fuse-agent: update skipped; another updater is active")

@@ -131,6 +131,16 @@ int main(void) {
     assert(ver_newer("1.2.0", "1.2.0") == 0);
     assert(ver_newer("1.1.9", "1.2.0") == 0);
     assert(ver_newer("garbage", "1.0.0") == 0);
+    /* A served binary identical to the running one is not an update. */
+    {
+        char self[PATH_MAX];
+        snprintf(self, sizeof(self), "%s/self", dir);
+        assert(write_file_atomic(self, "abc") == 0);
+        assert(update_is_self(self, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"));
+        assert(!update_is_self(self, "0000000000000000000000000000000000000000000000000000000000000000"));
+        assert(!update_is_self("/nonexistent/fuse-agent", "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"));
+        assert(unlink(self) == 0);
+    }
     /* b64 must refuse undersized output buffers. */
     {
         unsigned char bin[3] = {1, 2, 3};
