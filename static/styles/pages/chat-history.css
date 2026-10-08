@@ -338,9 +338,15 @@
 .chat-history-item .chat-run-spin { width: 1.6rem; justify-items: start; }
 .chat-history-item .chat-run-spin .cas-face { width: 0.82rem; height: 0.82rem; }
 .chat-history-unread-dot {
-  flex: 0 0 auto;
-  width: 0.4rem;
-  height: 0.4rem;
+  /* Gutter dot: absolutely positioned in the row's left padding so it never
+     shifts the title, age or snippet (and clears the ⋯ button, which is a
+     static right-side row child on touch). */
+  position: absolute;
+  top: 50%;
+  left: 0.3rem;
+  width: 0.32rem;
+  height: 0.32rem;
+  transform: translateY(-50%);
   /* !important: something in the sidebar cascade zeroed the computed radius
      on the rendered row even though this block matched (probe: bg applied,
      radius 0px). Own display-only element; keep it round. */
@@ -349,6 +355,11 @@
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 18%, transparent);
 }
 .chat-history-item.is-unread .chat-history-name { color: var(--mist); }
+.chat-history-sep {
+  height: 1px;
+  margin: 0.35rem 0.625rem 0.25rem;
+  background: var(--line);
+}
 .chat-history-tab-unread {
   min-width: 1rem;
   padding: 0 0.28rem;

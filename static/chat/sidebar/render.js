@@ -38,6 +38,9 @@ function splitPinned(items) {
   };
 }
 
+// Hairline between the pinned section and the timeline below it.
+const PINNED_SEP = '<div class="chat-history-sep" aria-hidden="true"></div>';
+
 function historyIcons() {
   return {
     folder:
@@ -259,7 +262,7 @@ export function createRender(ctx) {
         return;
       }
       let html = "";
-      if (pinned.length) html += `<p class="chat-history-kicker">Pinned</p>` + pinned.map((item) => historyRow(item)).join("");
+      if (pinned.length) html += `<p class="chat-history-kicker">Pinned</p>` + pinned.map((item) => historyRow(item)).join("") + (rest.length ? PINNED_SEP : "");
       if (S.projectSort === "project") {
         projects.groupedProjectSessions(rest).forEach((group) => {
           html +=
@@ -285,7 +288,7 @@ export function createRender(ctx) {
     } else {
       const { pinned, rest } = splitPinned(items);
       S.historyList.innerHTML =
-        (pinned.length ? `<p class="chat-history-kicker">Pinned</p>` + pinned.map((item) => historyRow(item)).join("") : "") +
+        (pinned.length ? `<p class="chat-history-kicker">Pinned</p>` + pinned.map((item) => historyRow(item)).join("") + (rest.length ? PINNED_SEP : "") : "") +
         rest.map((item) => historyRow(item)).join("");
     }
     syncHistoryFooter();
