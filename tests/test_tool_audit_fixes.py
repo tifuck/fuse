@@ -521,6 +521,18 @@ class JobOutputTest(unittest.TestCase):
         self.assertTrue(body.rstrip().endswith("LAST LINE"))
         self.assertIn("characters of output omitted", body)
 
+    def test_head_survives_when_host_dropped_output(self):
+        # A connector that dropped chunks makes the total inexact; the head
+        # Fuse did receive must still be shown, with the label.
+        rec = {"out": "", "output_incomplete": True}
+        text = "FIRST ERROR\n" + ("noise\n" * 10000) + "LAST LINE\n"
+        for i in range(0, len(text), 777):
+            jobs._append_out(rec, text[i:i + 777])
+        body = jobs._model_body(rec, rec["out"])
+        self.assertTrue(body.startswith("[Output truncated; total unknown]\nFIRST ERROR"))
+        self.assertIn("characters of output omitted", body)
+        self.assertTrue(body.rstrip().endswith("LAST LINE"))
+
     def test_short_output_is_verbatim(self):
         rec = {"out": ""}
         jobs._append_out(rec, "hello\n")

@@ -1150,10 +1150,13 @@ def _model_body(rec: dict, out: str) -> str:
     head = str(rec.get("out_head") or "")
     tail = out[-MODEL_TAIL_CHARS:]
     tail_start = total - len(tail)
-    if fields["output_chars_exact"] and head and tail_start > len(head):
+    # Counts cover the text Fuse received, so head and tail line up even when
+    # the host dropped some of it (inexact total); that only adds the label.
+    if head and tail_start > len(head):
         omitted = tail_start - len(head)
-        return f"{head}\n[... {omitted} characters of output omitted ...]\n{tail}"
-    if fields["output_chars_exact"] and head and tail_start >= 0:
+        label = "" if fields["output_chars_exact"] else "[Output truncated; total unknown]\n"
+        return f"{label}{head}\n[... {omitted} characters of output omitted ...]\n{tail}"
+    if head and tail_start >= 0:
         # Head and tail overlap or touch: the whole output is known.
         return head + tail[len(head) - tail_start:] if len(head) > tail_start else head + tail
     # Label only when text is actually missing from what is shown: the

@@ -117,11 +117,14 @@ def _search_status(data: dict, op: str) -> list[str]:
 def _strip_connector_clip(out: str, clipped: bool) -> tuple[str, bool]:
     """Drop a connector's truncation marker and the partial line before it.
 
-    The marker is not a result: left in place it reads as a match line."""
-    text = out or ""
-    if _CONNECTOR_CLIP not in text and not clipped:
-        return text, False
-    text = text.replace("\n" + _CONNECTOR_CLIP + "\n", "\n").replace(_CONNECTOR_CLIP, "")
+    The marker is not a result: left in place it reads as a match line. The
+    connector only ever appends it, so the same text inside a matched line
+    (a file that mentions it) is content, not a clip."""
+    text = (out or "").rstrip("\n")
+    if text.endswith(_CONNECTOR_CLIP):
+        text = text[: -len(_CONNECTOR_CLIP)]
+    elif not clipped:
+        return out or "", False
     text = text.rstrip("\n")
     text = text.rsplit("\n", 1)[0] if "\n" in text else ""
     return text, True

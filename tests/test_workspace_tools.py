@@ -153,6 +153,9 @@ class GrepSearchCmdTest(unittest.TestCase):
         self.assertTrue(clipped)
         self.assertEqual(out, "a.py:1:one")
         self.assertEqual(workspace._strip_connector_clip("a.py:1:x", False), ("a.py:1:x", False))
+        # The marker text inside a match (a file that mentions it) is content.
+        quoted = 'src.c:9:mark = "[fuse-agent: output truncated]";\nsrc.c:10:end\n'
+        self.assertEqual(workspace._strip_connector_clip(quoted, False), (quoted, False))
 
     def test_include_over_cap_names_the_limit(self):
         with self.assertRaises(WorkspaceError) as ctx:
@@ -891,6 +894,31 @@ class AgentPathTest(unittest.TestCase):
         self.assertIn("updated /tmp/x.py (1 replacement)", text)
         self.assertNotIn("@@", rec["preview"])
         self.assertIn("-retries = 3", rec["preview"])
+
+    def test_connector_multi_edit_reports_every_edit(self):
+        # The 800-char UI preview used to be appended to the model text, cut
+        # mid-line with no marker; the model must see every edit.
+        def line(i, mark=""):
+            return f"value_{i} = {i}{mark}\n"
+
+        # The first edit rewrites 30 lines, so its diff alone passes 800 chars.
+        edits = [
+            {"old_string": "".join(line(i) for i in range(3, 33)),
+             "new_string": "".join(line(i, "  # changed") for i in range(3, 33))},
+            {"old_string": line(380), "new_string": line(380, "  # NEW")},
+        ]
+        after = "".join(line(i, "  # changed" if 3 <= i < 33 else "  # NEW" if i == 380 else "") for i in range(400))
+        fake = FakeAgent([
+            ("replace", {"ok": True, "exit": 0, "out": "2 replacement(s)", "err": "", "error": ""}),
+            ("read", {"ok": True, "exit": 0, "out": after, "err": "", "error": ""}),
+        ])
+        with patch.object(workspace, "_is_agent", return_value=True), patch.object(
+            workspace, "_connector_supports", return_value=True
+        ), patch.object(workspace, "_agent_call", fake):
+            text, rec = self._run(workspace._replace(1, 2, "box", {"path": "/tmp/x.py", "edits": edits}, "/tmp"))
+        self.assertIn("updated /tmp/x.py (2 replacements from 2 edits)", text)
+        self.assertIn("+value_380 = 380  # NEW", text)
+        self.assertLessEqual(len(rec["preview"]), 800)
 
     def test_replace_not_found_mentions_crlf(self):
         def replace_op(args):

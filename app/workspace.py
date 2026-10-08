@@ -2537,17 +2537,22 @@ async def _replace(user_id, host_id, alias, args, root, *, windows: bool = False
                 starts.append(start)
                 if snip and not snippet:
                     snippet = snip
-            preview = "\n".join(
+            diff = "\n".join(
                 _replace_preview(path, o, n, 1, start=s)
                 for (o, n, _a), s in zip(edits, starts)
-            )[:800]
+            )
+            preview = diff[:800]
             file_ledger.note_write(run_id, host_id, ledger_path, digest=_connector_digest(fresh) if fresh else None,
                                    windows=windows)
             head = f"updated {path} ({count} replacement{'s' if count != 1 else ''}"
             head += f" from {len(edits)} edits)" if multi and len(edits) > 1 else ")"
-            if snippet:
+            # Like the SSH path: one edit shows its numbered lines, several
+            # show the whole diff. The 800-char preview is for the UI only.
+            if snippet and len(edits) == 1:
                 head += ("; first edit:" if count > 1 else ":") + "\n" + snippet
-            return _label(alias, f"{head}\n{preview}"), {
+            else:
+                head += ":\n" + (diff if len(diff) <= 4000 else diff[:4000] + "\n… (diff clipped)")
+            return _label(alias, head), {
                 "name": "search_replace",
                 "status": "done",
                 "host": alias,
