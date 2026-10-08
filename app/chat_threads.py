@@ -635,7 +635,8 @@ def _update_thread(conn, row, *, title, model, archived, pinned, messages, conte
         tool_json = json.dumps(parse_thread_tools(tools, strict=True), separators=(",", ":"))
     else:
         tool_json = row["tools"] if "tools" in row.keys() and row["tools"] is not None else json.dumps(DEFAULT_TOOLS)
-    ts = db.now()
+    pin_only = pinned is not None and all(value is None for value in (title, model, archived, messages, context, tools))
+    ts = row["updated_at"] if pin_only else db.now()
     compaction_json = None
     if messages is not None:
         # Recompute the meter from the new transcript in the same transaction:
