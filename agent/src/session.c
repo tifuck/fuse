@@ -1,5 +1,6 @@
 /* Fuse connector: the connect/hello/session loop and one-shot pairing. */
 #include <poll.h>
+#include <sys/random.h>
 
 #include <openssl/ssl.h>
 
@@ -69,7 +70,14 @@ int session_loop(void) {
     /* Rock-solid connections never see the top-of-loop check, so poll the
      * manifest periodically while connected (only while idle). First check
      * soon after connecting so restarts pick up releases quickly. */
-    int64_t next_update_ms = now_mono_ms() + 60 * 1000;
+    int64_t next_update_ms = now_mono_ms() + UPDATE_SOON_MS;
+    /* Names this process to the server: jobs parked by a session of another
+     * process can never be answered, so the server fails them at once. */
+    char inst[17];
+    unsigned long long r;
+    if (getrandom(&r, sizeof(r), GRND_NONBLOCK) != (ssize_t)sizeof(r))
+        r = ((unsigned long long)getpid() << 32) ^ (unsigned long long)now_mono_ms();
+    snprintf(inst, sizeof(inst), "%016llx", r);
     start_watch_thread();
     while (!g_stop_main) {
         /* A stop that arrived before the first poll (e.g. during startup)
@@ -110,6 +118,7 @@ int session_loop(void) {
         cJSON_AddStringToObject(hello, "os", "linux");
         cJSON_AddStringToObject(hello, "arch", arch_sku());
         cJSON_AddStringToObject(hello, "ver", FUSE_AGENT_VERSION);
+        cJSON_AddStringToObject(hello, "inst", inst);
         char *hs = cJSON_PrintUnformatted(hello);
         cJSON_Delete(hello);
         if (!hs || ws_send_text(&t, hs) != 0) {
@@ -180,6 +189,7 @@ int session_loop(void) {
         auth_backoff = 0;
         attempts = 0;
         ever_connected = 1;
+        next_update_ms = update_check_after_connect(next_update_ms, now_mono_ms());
         int replaced = 0;
         const char *drop_reason = NULL;
         struct conn_watch watch;

@@ -48,6 +48,11 @@ int conn_watch_wait_ms(const struct conn_watch *w, int64_t mono_ms);
 /* Immediate retry, then 1s, 2s, 5s, 10s, 15s, cap 30s. jitter_rand adds 0..base/4. */
 int reconnect_backoff_ms(int fail_index, unsigned jitter_rand);
 
+/* A server restart drops every session, and the top-of-loop update check
+ * runs while that server is still down: check again soon after connecting. */
+#define UPDATE_SOON_MS 60000
+int64_t update_check_after_connect(int64_t next_ms, int64_t now_ms);
+
 const char *wake_reason_str(int wake);
 
 #endif

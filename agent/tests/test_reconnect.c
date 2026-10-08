@@ -117,6 +117,10 @@ int main(void) {
                            PING_INTERVAL_MS + 2 * PONG_TIMEOUT_MS, WAKE_NONE, &send_ping);
     expect_str(drop, "ping timeout", "second miss");
 
+    /* Reconnecting pulls the hourly update check in; it never pushes it out. */
+    expect_int((int)update_check_after_connect(3600000, 1000), 1000 + UPDATE_SOON_MS, "update soon after connect");
+    expect_int((int)update_check_after_connect(5000, 1000), 5000, "earlier check kept");
+
     expect_str(wake_reason_str(WAKE_RESUME), "resume", "wake str resume");
     expect_str(wake_reason_str(WAKE_NETWORK), "network change", "wake str net");
 

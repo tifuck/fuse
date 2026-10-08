@@ -97,6 +97,11 @@ int reconnect_backoff_ms(int fail_index, unsigned jitter_rand) {
     return base + (int)(jitter_rand % (unsigned)(span + 1));
 }
 
+int64_t update_check_after_connect(int64_t next_ms, int64_t now_ms) {
+    int64_t soon = now_ms + UPDATE_SOON_MS;
+    return next_ms < soon ? next_ms : soon;
+}
+
 const char *wake_reason_str(int wake) {
     if (wake == WAKE_RESUME) return "resume";
     if (wake == WAKE_NETWORK) return "network change";

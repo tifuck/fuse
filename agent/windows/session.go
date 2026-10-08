@@ -22,6 +22,10 @@ import (
 
 const wsMax = 1024 * 1024
 
+// processInst names this process to the server: jobs parked by a session of
+// another process can never be answered, so the server fails them at once.
+var processInst = fmt.Sprintf("%016x", rand.Uint64())
+
 // Overridable so tests can trust httptest's certificate. Production keeps
 // the default verification.
 var tlsConfig = &tls.Config{MinVersion: tls.VersionTLS12}
@@ -266,7 +270,7 @@ func pairOnce(cfg *agentConfig) error {
 	hello := map[string]any{
 		"v": 1, "t": "hello",
 		"hostname": host, "user": userName,
-		"os": "windows", "arch": archSKU(), "ver": version,
+		"os": "windows", "arch": archSKU(), "ver": version, "inst": processInst,
 	}
 	if cfg.Code != "" {
 		hello["code"] = cfg.Code
@@ -361,7 +365,7 @@ func runSession(cfg *agentConfig, stop chan struct{}) {
 		hello := map[string]any{
 			"v": 1, "t": "hello",
 			"hostname": host, "user": userName,
-			"os": "windows", "arch": archSKU(), "ver": version,
+			"os": "windows", "arch": archSKU(), "ver": version, "inst": processInst,
 		}
 		if cfg.Code != "" {
 			hello["code"] = cfg.Code

@@ -47,6 +47,19 @@ class FakeWS:
         return None
 
 
+class HelloWS(FakeWS):
+    """A connector socket that sends one hello, then stays connected."""
+
+    def __init__(self, host_id: int, hello: dict):
+        super().__init__(host_id)
+        self.frames = [json.dumps(hello)]
+
+    async def receive_text(self):
+        if self.frames:
+            return self.frames.pop(0)
+        await asyncio.sleep(3600)
+
+
 class AgentHubTest(unittest.TestCase):
     def setUp(self):
         replay_patch = patch.dict(agent_hub._cancel_replay, clear=True)
@@ -242,6 +255,64 @@ class AgentHubTest(unittest.TestCase):
             self.assertEqual((await fut)["out"], "ok")
 
         loop.run_until_complete(go())
+
+    def test_restarted_connector_fails_jobs_it_cannot_answer(self):
+        async def go():
+            key = (1, self.hid)
+            loop = asyncio.get_running_loop()
+            tasks = []
+
+            async def connect(inst):
+                hello = {"v": 1, "t": "hello", "token": self.token, "ver": "1.7.0"}
+                if inst:
+                    hello["inst"] = inst
+                ws = HelloWS(self.hid, hello)
+                tasks.append(asyncio.create_task(agent_hub.handle_socket(ws)))
+                for _ in range(500):
+                    await asyncio.sleep(0.01)
+                    rec = agent_hub._conns.get(key)
+                    if rec is not None and rec["ws"] is ws:
+                        return rec
+                self.fail("hello never registered")
+
+            async def failure(fut):
+                with self.assertRaises(agent_hub.AgentError) as ctx:
+                    await asyncio.wait_for(fut, 1)
+                return str(ctx.exception.detail)
+
+            # Same process on a new socket keeps its job; another process fails it
+            # now instead of leaving it to hang until its deadline.
+            first = await connect("b")
+            kept = loop.create_future()
+            first["pending"]["kept"] = kept
+            second = await connect("b")
+            self.assertIs(second["pending"].get("kept"), kept)
+            self.assertFalse(kept.done())
+            third = await connect("c")
+            self.assertNotIn("kept", third["pending"])
+            self.assertIn("connector restarted", await failure(kept))
+            # Jobs parked by process a: a live process c cannot take them...
+            raced = loop.create_future()
+            await agent_hub._hold_pending(key, {"raced": raced}, None, "a")
+            self.assertIn("connector restarted", await failure(raced))
+            # ...and neither can process d reclaiming them from the hold.
+            agent_hub._conns.pop(key)
+            parked = loop.create_future()
+            await agent_hub._hold_pending(key, {"parked": parked}, None, "a")
+            fourth = await connect("d")
+            self.assertNotIn("parked", fourth["pending"])
+            self.assertIn("connector restarted", await failure(parked))
+            # A connector that does not name its process keeps today's handoff.
+            legacy = loop.create_future()
+            fourth["pending"]["legacy"] = legacy
+            fifth = await connect("")
+            self.assertIs(fifth["pending"].get("legacy"), legacy)
+            fifth["pending"].clear()
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        asyncio.run(go())
 
     def test_inflight_cap_allows_burst(self):
         self.assertGreaterEqual(agent_hub.MAX_INFLIGHT, 100)

@@ -84,6 +84,16 @@ async def drain() -> None:
         _fail_pending(rec.get("pending") or {})
 
 
+_RESTARTED = "connector restarted; remote outcome is unknown"
+
+
+def _same_process(prev: dict | None, inst: str) -> bool:
+    """False when both sessions name their connector process (hello `inst`)
+    and they differ: a restarted connector can never answer the old jobs."""
+    before = str((prev or {}).get("inst") or "")
+    return not (before and inst and before != inst)
+
+
 def _fail_pending(pending: dict, reason: str = "agent is offline") -> None:
     for fut in list(pending.values()):
         if not fut.done():
@@ -128,20 +138,24 @@ async def _finish_rec(rec: dict, reason: str) -> None:
     await _close_ws(rec.get("ws"), reason)
 
 
-async def _hold_pending(key: tuple[int, int], pending: dict, chunks=None) -> None:
+async def _hold_pending(key: tuple[int, int], pending: dict, chunks=None, inst: str = "") -> None:
     if not pending:
         return
-    rec = {"pending": dict(pending), "chunks": {k: v for k, v in (chunks or {}).items() if k in pending}, "task": None, "user_id": key[0], "host_id": key[1]}
+    rec = {"pending": dict(pending), "chunks": {k: v for k, v in (chunks or {}).items() if k in pending}, "task": None, "user_id": key[0], "host_id": key[1], "inst": inst}
     pending.clear()
     async with _lock:
         live = _conns.get(key)
         if live is not None:
-            live.setdefault("pending", {}).update(rec["pending"])
-            live.setdefault("chunks", {}).update(rec["chunks"])
-            rec["pending"].clear()
-            return
-        old = _held.pop(key, None)
-        _held[key] = rec
+            if _same_process(live, inst):
+                live.setdefault("pending", {}).update(rec["pending"])
+                live.setdefault("chunks", {}).update(rec["chunks"])
+                rec["pending"].clear()
+        else:
+            old = _held.pop(key, None)
+            _held[key] = rec
+    if live is not None:
+        _fail_pending(rec["pending"], _RESTARTED)
+        return
     if old:
         _fail_pending(old.get("pending") or {})
         task = old.get("task")
@@ -315,19 +329,22 @@ async def handle_socket(ws, *, hello_timeout: float = HELLO_TIMEOUT) -> None:
         hello_ok["token"] = minted
     await ws.send_json(hello_ok)
     key = (int(user_id), int(host_id))
-    rec = {"ws": ws, "pending": {}, "user_id": int(user_id), "host_id": int(host_id)}
+    inst = str(msg.get("inst") or "")[:64]
+    rec = {"ws": ws, "pending": {}, "user_id": int(user_id), "host_id": int(host_id), "inst": inst}
+    orphaned: dict = {}
     async with _lock:
         old = _conns.pop(key, None)
         held = _held.get(key)
         if held:
             rec.setdefault("chunks", {}).update(held.get("chunks") or {})
-        rec["pending"].update(_take_held(key))
+        (rec["pending"] if _same_process(held, inst) else orphaned).update(_take_held(key))
         _conns[key] = rec
     if old is not None:
-        rec["pending"].update(old.get("pending") or {})
+        (rec["pending"] if _same_process(old, inst) else orphaned).update(old.get("pending") or {})
         rec.setdefault("chunks", {}).update(old.get("chunks") or {})
         old.get("pending", {}).clear()
         await _close_ws(old.get("ws"), "replaced")
+    _fail_pending(orphaned, _RESTARTED)
     try:
         replay = _cancel_replay.get(key, {})
         await _cancel_pending(ws, {i: None for i, deadline in replay.items() if deadline > time.monotonic()})
@@ -421,7 +438,7 @@ async def handle_socket(ws, *, hello_timeout: float = HELLO_TIMEOUT) -> None:
             rec["pending"] = {}
             if leftover:
                 # Connector workers retain results across transient reconnects.
-                await _hold_pending(key, leftover, rec.get("chunks"))
+                await _hold_pending(key, leftover, rec.get("chunks"), inst)
             else:
                 try:
                     await asyncio.to_thread(hosts.mark_agent_offline, user_id, host_id)
