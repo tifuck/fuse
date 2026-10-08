@@ -11,6 +11,21 @@ static void *terminal(void *unused) {
 }
 
 int main(void) {
+    /* Every byte crosses as valid JSON: a raw control byte inside the string
+     * makes the server's strict parser drop the whole frame. */
+    char all[255];
+    for (int i = 0; i < 255; i++) all[i] = (char)(i + 1);
+    assert(send_chunk("job", "out", all, sizeof(all)) == 0);
+    const unsigned char *frame = g_outq[g_out_head].data;
+    for (size_t i = 0; i < g_outq[g_out_head].n; i++) assert(frame[i] >= 0x20);
+    cJSON *parsed = cJSON_ParseWithLength((const char *)frame, g_outq[g_out_head].n);
+    const char *data = json_cstr(parsed, "data", NULL);
+    assert(data && strlen(data) == sizeof(all) && !memcmp(data, all, sizeof(all)));
+    cJSON_Delete(parsed);
+    free(g_outq[g_out_head].data);
+    g_out_head = (g_out_head + 1) % OUT_QMAX;
+    g_out_n--;
+
     /* Streaming exec stops reading while the queue is within the reserve. */
     assert(out_has_room());
     for (int i = 0; i < OUT_QMAX - OUT_STREAM_RESERVE; i++)

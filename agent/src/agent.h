@@ -51,7 +51,9 @@ static inline void die(const char *fmt, ...) {
 /* Like cJSON_CreateString but never silently truncates at the first NUL:
  * command output is arbitrary bytes and cJSON strings are strlen-bounded.
  * Emits a cJSON_Raw node holding a fully-escaped JSON string literal:
- * " -> \", \ -> \\, bytes outside printable/\t\n\r -> \uXXXX. */
+ * " -> \", \ -> \\, tab/LF/CR -> \t \n \r, other control bytes -> \uXXXX.
+ * JSON forbids raw control bytes in a string: the server rejects the whole
+ * frame, so a literal newline would lose every line of output. */
 static inline cJSON *json_string_bytes(const char *s, size_t n) {
     char *buf = malloc(n * 6 + 3);
     if (!buf) return NULL;
@@ -65,10 +67,10 @@ static inline cJSON *json_string_bytes(const char *s, size_t n) {
         } else if (c >= 0x20) {
             *w++ = (char)c;
         } else {
-            /* \uXXXX for control bytes (incl. 0x00); \t \n \r stay literal. */
             static const char hex[] = "0123456789abcdef";
             if (c == '\t' || c == '\n' || c == '\r') {
-                *w++ = (char)c;
+                *w++ = '\\';
+                *w++ = c == '\t' ? 't' : c == '\n' ? 'n' : 'r';
             } else {
                 *w++ = '\\'; *w++ = 'u'; *w++ = '0'; *w++ = '0';
                 *w++ = hex[c >> 4]; *w++ = hex[c & 15];

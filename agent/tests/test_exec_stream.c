@@ -31,14 +31,14 @@ static void *session(void *unused) {
         g_out_n--;
         pthread_cond_signal(&g_out_space);
         pthread_mutex_unlock(&g_out_mu);
-        /* {...,"data":"<bytes>"}: data is the last key, and seq output has
-         * nothing json_string_bytes escapes (\n stays literal). */
-        static const char key[] = "\"data\":\"";
-        unsigned char *p = memmem(data, n, key, strlen(key));
-        assert(p);
-        p += strlen(key);
-        if (!strncmp((char *)p, "1\n2\n", 4)) g_saw_first = 1;
-        g_bytes += n - (size_t)(p - data) - 2;
+        /* A raw newline on the wire is invalid JSON: the server drops it. */
+        assert(!memchr(data, '\n', n));
+        cJSON *frame = cJSON_ParseWithLength((const char *)data, n);
+        const char *text = json_cstr(frame, "data", NULL);
+        assert(text);
+        if (!strncmp(text, "1\n2\n", 4)) g_saw_first = 1;
+        g_bytes += strlen(text);
+        cJSON_Delete(frame);
         g_frames++;
         free(data);
         nanosleep(&pause, NULL);
