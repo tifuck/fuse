@@ -2733,8 +2733,12 @@ async def load_project_agents(user_id, bound_host_id, bound_cwd: str = "", repor
             report["reason"] = reason
         return _agents_fail(key, now, reason)
     if len(body) > AGENTS_MAX:
-        marker = "\n[Project instructions truncated]"
-        body = body[:AGENTS_MAX - len(marker)] + marker
+        # Whole lines, and where the rest starts, so the model can read it itself.
+        head = body[:AGENTS_MAX - 120]
+        cut = head.rfind("\n")
+        head = head[:cut + 1] if cut > 0 else head
+        line = head.count("\n") + 1
+        body = head.rstrip("\n") + f"\n[Project instructions truncated: read_file {chosen} offset={line} for the rest]"
     else:
         body = body.strip()
     if not body:

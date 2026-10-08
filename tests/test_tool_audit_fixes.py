@@ -633,6 +633,34 @@ class SameStepOrderingTest(unittest.IsolatedAsyncioTestCase):
         # Independent tools are not held back by host ordering.
         self.assertLess(log.index(("start", "free")), log.index(("end", "e1")))
 
+    async def test_host_ordering_is_per_host(self):
+        log = []
+
+        async def fake_execute(name, arguments, **kwargs):
+            tag = json.loads(arguments)["tag"]
+            log.append(("start", tag))
+            await asyncio.sleep(0.05)
+            log.append(("end", tag))
+            return "ok", {"name": name, "status": "done"}
+
+        def call(i, tag, host=None):
+            args = {"command": "true", "tag": tag}
+            if host is not None:
+                args["host"] = host
+            return {"id": f"c{i}", "function": {"name": "run_terminal_command", "arguments": json.dumps(args)}}
+
+        calls = [call(0, "a1", "a"), call(1, "b1", "b"), call(2, "a2", "A "), call(3, "bound")]
+        with patch("app.chat_runtime.execute_tool", fake_execute):
+            async for _ in runtime._run_tools(calls, user_id=1, allowed_urls=set(), request=FakeRequest(),
+                                              completion_i=0, budgets={}, coding=True):
+                pass
+        # Different hosts run together; the same host (any case) keeps call order;
+        # an omitted host may be any of them, so it waits for all.
+        self.assertLess(log.index(("start", "b1")), log.index(("end", "a1")))
+        self.assertLess(log.index(("end", "a1")), log.index(("start", "a2")))
+        self.assertLess(log.index(("end", "a2")), log.index(("start", "bound")))
+        self.assertLess(log.index(("end", "b1")), log.index(("start", "bound")))
+
     async def test_reads_still_run_concurrently(self):
         running = 0
         peak = 0

@@ -1590,17 +1590,18 @@ def _resume_note(run_id: str, resume_count: int, by_user: bool = False) -> str:
         # happened, so do not tell the model one did.
         return (
             f"{USER_RESUME_NOTE_HEAD} resume-note:{run_id}:{resume_count} — the user stopped this turn and has "
-            "now asked you to continue it. The transcript above is your own prior work; tool results marked "
-            "\"Tool interrupted when the user stopped the turn\" have an UNKNOWN outcome, so verify their effect "
+            "now asked you to continue it. The transcript above is your own prior work; tool results that "
+            "begin \"Tool interrupted\" have an UNKNOWN outcome, so verify their effect "
             "before repeating them. Any text you were writing when the turn stopped is not shown above. "
             "Do not repeat completed steps; finish the current turn."
         )
     return (
         f"{RESUME_NOTE_HEAD} resume-note:{run_id}:{resume_count} — the service restarted mid-turn. "
         "Continue exactly where you left off: the transcript above is your own prior work, tool results "
-        "marked \"Tool interrupted by server restart.\" stopped with an UNKNOWN outcome — the step may or "
+        "that begin \"Tool interrupted\" stopped with an UNKNOWN outcome — the step may or "
         "may not have completed before the interruption, so verify its effect before repeating it — and "
-        "any new user messages arrive after this one. Do not repeat completed steps; finish the current turn."
+        "any new user messages arrive after this one. The restart cleared which files you have read, so "
+        "read a file again before you edit it. Do not repeat completed steps; finish the current turn."
     )
 
 

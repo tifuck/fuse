@@ -63,6 +63,20 @@ _HOST_MUTATING_TOOLS = frozenset(
 _HOST_READ_TOOLS = frozenset({"read_file", "list_dir", "grep", "glob"})
 
 
+def _host_key(arguments: str) -> str:
+    """The host alias a call names, lowercased; "" when omitted (the bound host)."""
+    try:
+        host = json.loads(arguments or "{}").get("host")
+    except (ValueError, AttributeError, RecursionError):
+        return ""
+    return host.strip().lower() if isinstance(host, str) else ""
+
+
+def _same_host(a: str, b: str) -> bool:
+    # An omitted host is the bound host, which may also be named explicitly.
+    return not a or not b or a == b
+
+
 async def _record_failure(
     *,
     job: ToolJob | None,
@@ -443,10 +457,11 @@ async def run_tools(
             # Independent calls run concurrently: the old phase chain (spawn →
             # join → shell → search) made a 75s foreground spawn or a long
             # join freeze every file/shell/search call in the same step.
-            # Host effects keep call order, though: a write, edit, shell
-            # command, or kill waits for every earlier host call, and a file
-            # read waits for earlier host mutations, so "edit A; edit A; run
-            # tests" in one step behaves as written. Artifact writes keep
+            # Host effects keep call order per host, though: a write, edit,
+            # shell command, or kill waits for every earlier call on the same
+            # host, and a file read waits for earlier mutations there, so
+            # "edit A; edit A; run tests" in one step behaves as written while
+            # one command per host still runs in parallel. Artifact writes keep
             # their own order. Fetches run after this step's searches so a
             # page read sees their result URLs in allowed_urls, bounded by
             # the semaphore. Transcript order comes from jobs[], not
@@ -466,17 +481,18 @@ async def run_tools(
                 await run_one(j)
 
             search_tasks: list[asyncio.Task] = []
-            host_seen: list[tuple[asyncio.Task, bool]] = []
+            host_seen: list[tuple[asyncio.Task, bool, str]] = []
             artifact_seen: list[asyncio.Task] = []
             ordered = [j for j in runnable if j.name != "read_url"] + [j for j in runnable if j.name == "read_url"]
             async with asyncio.TaskGroup() as tg:
                 for j in ordered:
+                    host = _host_key(j.arguments) if j.name in _HOST_MUTATING_TOOLS or j.name in _HOST_READ_TOOLS else ""
                     if j.name == "read_url":
                         deps = list(search_tasks)
                     elif j.name in _HOST_MUTATING_TOOLS:
-                        deps = [t for t, _ in host_seen]
+                        deps = [t for t, _, h in host_seen if _same_host(h, host)]
                     elif j.name in _HOST_READ_TOOLS:
-                        deps = [t for t, mutating in host_seen if mutating]
+                        deps = [t for t, mutating, h in host_seen if mutating and _same_host(h, host)]
                     elif j.name in ARTIFACT_TOOL_IDS:
                         deps = list(artifact_seen)
                     else:
@@ -485,7 +501,7 @@ async def run_tools(
                     if j.name == "web_search":
                         search_tasks.append(task)
                     elif j.name in _HOST_MUTATING_TOOLS or j.name in _HOST_READ_TOOLS:
-                        host_seen.append((task, j.name in _HOST_MUTATING_TOOLS))
+                        host_seen.append((task, j.name in _HOST_MUTATING_TOOLS, host))
                     elif j.name in ARTIFACT_TOOL_IDS:
                         artifact_seen.append(task)
         except asyncio.CancelledError:

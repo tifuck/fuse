@@ -107,6 +107,13 @@ class VaultTest(unittest.TestCase):
             hosts.add_project(1, h["id"], {"name": "proj", "remote_path": "/very/long/path/for/clipping/" + ("x" * 40)})
         text = hosts.catalog_for_prompt(1)
         self.assertLessEqual(len(text), hosts.CATALOG_CHARS)
+        # Clipped on whole lines: no path is cut mid-word.
+        for line in text.splitlines()[1:-1]:
+            self.assertTrue(line.endswith("x" * 40 + ")"), line)
+        # The bound host leads even when it is listed last.
+        bound = hosts.catalog_for_prompt(1, bound_host_id=h["id"])
+        self.assertTrue(bound.splitlines()[2].startswith("- h11 "))
+        self.assertLessEqual(len(bound), hosts.CATALOG_CHARS)
 
     def test_keep_cookie_restores_after_lock(self):
         vault.unlock(1, "password12")

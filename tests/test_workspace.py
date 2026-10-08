@@ -109,8 +109,15 @@ class AgentsLoadingTest(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(name, "AGENTS.md")
                         self.assertEqual(report, {"reason": "loaded"})
                         if len(source.rstrip("\n")) > workspace.AGENTS_MAX:
-                            self.assertEqual(len(body), workspace.AGENTS_MAX)
-                            self.assertTrue(body.endswith("[Project instructions truncated]"))
+                            self.assertLessEqual(len(body), workspace.AGENTS_MAX)
+                            kept, marker = body.rsplit("\n", 1)
+                            self.assertTrue(source.startswith(kept))
+                            # The marker names the first line the model has not seen.
+                            offset = 1 if "\n" not in kept else len(kept.splitlines()) + 1
+                            self.assertEqual(
+                                marker,
+                                f"[Project instructions truncated: read_file AGENTS.md offset={offset} for the rest]",
+                            )
                         else:
                             self.assertEqual(body, source.strip())
                         cached = {}

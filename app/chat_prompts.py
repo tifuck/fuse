@@ -257,7 +257,8 @@ _TASK_METHOD = (
 _PARALLEL = (
     "- Independent tool calls in one step run concurrently (up to 16 per step). Batch independent "
     "reads, greps, globs, and directory listings into one step instead of one per round-trip; host "
-    "writes, edits, and shell commands still run in the order you issue them. Split calls across "
+    "writes, edits, and shell commands on the same host still run in the order you issue them. "
+    "Split calls across "
     "steps only when one needs another's result.\n"
     "- Locate, then read: find where things live with `grep` (output_mode files_with_matches for broad "
     "sweeps) or `glob`, then `read_file` what matters. Read a whole file when you need its structure; "

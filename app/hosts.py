@@ -841,7 +841,9 @@ def catalog_for_prompt(user_id: int, *, clip: bool = True, bound_host_id=None, b
     bundle = list_bundle(user_id)
     lines = []
     bound_line = ""
-    for host in bundle["hosts"]:
+    # The bound host leads so a clipped catalog never drops its roots line.
+    ordered = sorted(bundle["hosts"], key=lambda h: bound_host_id is None or int(h["id"]) != int(bound_host_id))
+    for host in ordered:
         if host["disabled"]:
             continue
         if only_bound and bound_host_id is not None and int(host["id"]) != int(bound_host_id):
@@ -873,8 +875,10 @@ def catalog_for_prompt(user_id: int, *, clip: bool = True, bound_host_id=None, b
     if len(text) <= CATALOG_CHARS:
         return text
     suffix = "\n… (search_tools query hosts for the rest)"
-    keep = max(0, CATALOG_CHARS - len(suffix))
-    return text[:keep].rstrip() + suffix
+    keep = text[:max(0, CATALOG_CHARS - len(suffix))]
+    # Whole lines only: a path cut mid-word reads as a real one.
+    cut = keep.rfind("\n")
+    return (keep[:cut] if cut > 0 else keep).rstrip() + suffix
 
 
 def resolve_project(user_id: int, name: str) -> dict | None:
