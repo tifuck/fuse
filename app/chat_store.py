@@ -204,6 +204,7 @@ from .chat_run_state import (
     request_cancel,
     request_cancel_descendants,
     request_cancel_self,
+    request_cancel_thread_agents,
     resume_run,
     resumed_after_stop,
     row_work_ms,
@@ -215,6 +216,8 @@ from .chat_run_state import (
     steer_turn,
     thread_root_run,
     touch_run,
+    USER_STOPPED,
+    user_stopped,
     wake_candidates,
 )
 

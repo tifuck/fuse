@@ -303,6 +303,68 @@ class HistoryTest(unittest.TestCase):
         self.assertNotIn(old, json.dumps(replay))
         self.assertIn("new partial", json.dumps(replay))
 
+    def _sent_turn(self, run, result, content, snapshot=None):
+        """Finish a run the way the runtime saves it: session tail on the user row."""
+        from app.chat_generation.messages import _inject_session_tail, _session_tail_block
+        if snapshot is not None:
+            request = json.loads(db.fetchone("SELECT request FROM chat_runs WHERE id=?", (run["id"],))[0])
+            request["prompt_snapshot"] = snapshot
+            db.execute("UPDATE chat_runs SET request=? WHERE id=?", (json.dumps(request), run["id"]))
+        rows = _inject_session_tail(list(run["request"]["messages"]), _session_tail_block([]))
+        cid = "call-" + run["id"][:8]
+        rows.extend([{"role": "assistant", "content": "", "tool_calls": [{"id": cid, "type": "function",
+                         "function": {"name": "read_file", "arguments": "{}"}}]},
+                     {"role": "tool", "tool_call_id": cid, "content": result},
+                     {"role": "assistant", "content": content}])
+        store.save_provider_messages(run["id"], rows)
+        store.finish_run(run["id"], {"content": content, "reasoning": ""}, "completed")
+
+    def _retry_last(self, text):
+        view = chats.get_thread(1, self.thread["id"])
+        chats.update_thread(1, view["id"], messages=view["messages"][:-2], expected_revision=view["revision"])
+        return self.start(text)
+
+    def test_retry_replays_the_exact_sent_prefix_and_prompt_snapshot(self):
+        snapshot = {"system": "FROZEN SYSTEM", "tools": []}
+        for text in ("first", "second"):
+            self._sent_turn(self.start(text), f"RESULT_{text}", f"answer {text}", snapshot)
+        third = self.start("third")
+        sent = third["request"]["messages"]
+        self.assertIn("[Fuse session context", sent[0]["content"])
+        self._sent_turn(third, "RESULT_third", "answer third", snapshot)
+        retry = self._retry_last("third")
+        # Retry trims the tail only: the earlier rows (session tails included)
+        # and the frozen system/tools are the bytes already sent.
+        self.assertEqual(retry["request"]["messages"], sent)
+        self.assertEqual(retry["request"].get("prompt_snapshot"), snapshot)
+        self.assertEqual(retry["request"]["history_info"]["trace_fallbacks"], 0)
+        # A second Retry of the same turn reuses the same boundary.
+        self._sent_turn(retry, "RESULT_again", "answer again", snapshot)
+        self.assertEqual(self._retry_last("third")["request"]["messages"], sent)
+
+    def test_retry_keeps_full_results_of_an_earlier_steered_turn(self):
+        run = self.start("original request")
+        store.steer_turn(1, self.thread["id"], "STEERED", "steer-1")
+        source = [*store.get_run(1, run["id"])["request"]["messages"],
+                  {"role": "assistant", "content": "", "tool_calls": [{"id": "read", "type": "function",
+                      "function": {"name": "read_file", "arguments": "{}"}}]},
+                  {"role": "tool", "tool_call_id": "read", "content": "FULL_RESULT_ONE"},
+                  {"role": "user", "content": "STEERED (steer:steer-1)"},
+                  {"role": "assistant", "content": "after steer"}]
+        store.save_provider_messages(run["id"], source)
+        store.finish_run(run["id"], {"content": "after steer", "reasoning": "",
+            "tools": [{"id": "read-ui", "name": "read_file", "status": "done", "output": "short UI"}],
+            "segments": [{"type": "tool", "id": "read-ui"}, {"type": "content", "text": "after steer"}]}, "completed")
+        self._sent_turn(self.start("second"), "R2", "answer second")
+        third = self.start("third")
+        sent = third["request"]["messages"]
+        self.assertTrue(any(row.get("content") == "FULL_RESULT_ONE" for row in sent))
+        self._sent_turn(third, "R3", "answer third")
+        retry = self._retry_last("third")
+        self.assertEqual(retry["request"]["messages"], sent)
+        self.assertEqual(retry["request"]["history_info"]["trace_fallbacks"], 0)
+
+
 
 class OutputAndModelTest(unittest.TestCase):
     def test_recycled_call_ids_are_unique_and_paired_on_wire(self):
@@ -383,6 +445,20 @@ class OutputAndModelTest(unittest.TestCase):
                  "claude_thinking": [{"thinking": "plan", "signature": ""}]}]
         _system, prompts = _messages_to_prompts(rows, "cascade")
         self.assertEqual(prompts[0]["thinking"], "plan")
+
+    def test_devin_signed_reasoning_is_captured_and_replayed(self):
+        from app.chat_generation.parsing import _native_reasoning, _take_thinking
+        from app.sources.devin import _messages_to_prompts
+
+        bucket = []
+        _take_thinking(bucket, [{"content": None}])  # an ordinary delta adds nothing
+        _take_thinking(bucket, [{"devin_signature": "SIG", "devin_signature_type": "T"}])
+        row = {"role": "assistant", "content": "a", **_native_reasoning("plan step", "devin/swe-1", bucket)}
+        self.assertEqual(row["claude_thinking"], [{"thinking": "plan step", "signature": "SIG", "signature_type": "T"}])
+        _system, prompts = _messages_to_prompts(memory.for_model([row], "devin/swe-1"), "cascade")
+        self.assertEqual((prompts[0]["thinking"], prompts[0]["signature"], prompts[0]["signature_type"]), ("plan step", "SIG", "T"))
+        # Another model never receives Devin's reasoning.
+        self.assertNotIn("claude_thinking", memory.for_model([row], "glm-5.3")[0])
 
     def test_native_reasoning_is_model_scoped_and_counted_once(self):
         row = {"role": "assistant", "content": "answer", "reasoning_content": "r" * 400,

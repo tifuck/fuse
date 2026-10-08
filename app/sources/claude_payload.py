@@ -162,6 +162,28 @@ def _mark_cache_breakpoint(block: dict) -> None:
     block["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
 
 
+def _mark_newest_eligible(messages: list[dict], skip=None):
+    """Mark the newest block Anthropic accepts as a breakpoint (never a
+    thinking block, never empty text); returns it, or None."""
+    for block in reversed(messages):
+        content = block.get("content")
+        if not (isinstance(content, list) and content):
+            continue
+        for part in reversed(content):
+            if not isinstance(part, dict):
+                continue
+            kind = str(part.get("type") or "")
+            if kind in ("thinking", "redacted_thinking"):
+                continue
+            if kind == "text" and not str(part.get("text") or "").strip():
+                continue
+            if part is skip:
+                return None
+            _mark_cache_breakpoint(part)
+            return part
+    return None
+
+
 def build_messages_payload(body: dict, model: str) -> dict:
     system: list[dict] = []
     messages: list[dict] = []
@@ -257,8 +279,9 @@ def build_messages_payload(body: dict, model: str) -> dict:
         )
     if tools:
         payload["tools"] = tools
-    # Three breakpoints: the system prefix (the identity line when the client
-    # sent no system prompt), the tool schemas, and the newest history block.
+    # Up to four breakpoints: the system prefix (the identity line when the
+    # client sent no system prompt), the tool schemas, the newest history
+    # block, and the end of the previous request (below).
     # Breakpoint TTLs are allowed to differ per breakpoint (Anthropic only
     # requires longer TTLs to come first); Fuse uses 1h everywhere.
     _mark_cache_breakpoint(payload["system"][-1])
@@ -269,23 +292,17 @@ def build_messages_payload(body: dict, model: str) -> dict:
     # final tool results or the new user turn: each request then reads the
     # previous request's cache entry as a prefix instead of lagging one
     # round behind and re-billing the last turn as fresh input.
-    for block in reversed(messages):
-        content = block.get("content")
-        if not (isinstance(content, list) and content):
-            continue
-        for part in reversed(content):
-            if not isinstance(part, dict):
-                continue
-            kind = str(part.get("type") or "")
-            if kind in ("thinking", "redacted_thinking"):
-                continue
-            if kind == "text" and not str(part.get("text") or "").strip():
-                continue
-            _mark_cache_breakpoint(part)
-            break
-        else:
-            continue
-        break
+    newest = _mark_newest_eligible(messages)
+    # Fourth breakpoint: where the previous request ended, i.e. the message
+    # before the newest assistant turn (the last tool results, or the user
+    # row that started this turn). Anthropic looks back only ~20 blocks from a
+    # breakpoint, and one parallel tool round (thinking, text, 12 calls, 12
+    # results) adds more than that; reading the previous entry here keeps the
+    # conversation cached instead of re-writing it. It is already cached, so
+    # marking it costs a read, never a second write.
+    last_assistant = next((i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") == "assistant"), None)
+    if newest is not None and last_assistant:
+        _mark_newest_eligible(messages[:last_assistant], skip=newest)
     choice = _tool_choice(body.get("tool_choice"), body.get("parallel_tool_calls"))
     effort = _requested_effort(body, model)
     # A forced tool choice is illegal while thinking is on. A client that

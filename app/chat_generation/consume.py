@@ -90,6 +90,7 @@ async def consume_round(result, user, src, upstream: str, requested: str, *, cod
             reasoning = _text_of(message.get("reasoning_content")) or _text_of(message.get("reasoning"))
             _take_calls(calls, message.get("tool_calls"))
             _take_thinking(thinking, message.get("claude_thinking"))
+            _take_thinking(thinking, [message])
         finish = choice.get("finish_reason") if isinstance(choice, dict) else None
         content, reasoning, native, finish = _finalize_assistant_payload(
             content, reasoning, [calls[i] for i in sorted(calls)], finish, coding=coding
@@ -176,6 +177,7 @@ async def consume_round(result, user, src, upstream: str, requested: str, *, cod
                     )
                     _take_calls(calls, delta.get("tool_calls") or message.get("tool_calls"))
                     _take_thinking(thinking, delta.get("claude_thinking") or message.get("claude_thinking"))
+                    _take_thinking(thinking, [delta if delta.get("devin_signature") else message])
                     if choice.get("finish_reason"):
                         finish = choice.get("finish_reason")
                     if calls and not calling:

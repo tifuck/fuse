@@ -103,7 +103,30 @@ class ClaudeParseTest(unittest.TestCase):
             payload["messages"][2]["content"][-1]["cache_control"],
             {"type": "ephemeral", "ttl": "1h"},
         )
-        self.assertNotIn("cache_control", payload["messages"][0]["content"][-1])
+        # The previous request ended at "hi": it carries the read-back marker.
+        self.assertEqual(payload["messages"][0]["content"][-1]["cache_control"], {"type": "ephemeral", "ttl": "1h"})
+
+    def test_parallel_round_keeps_the_previous_request_end_marked(self):
+        calls = [{"id": f"toolu_{i}", "type": "function", "function": {"name": "lookup", "arguments": "{}"}} for i in range(12)]
+        payload = claude_mod.build_messages_payload(
+            {
+                "messages": [
+                    {"role": "system", "content": "sys"},
+                    {"role": "user", "content": "go"},
+                    {"role": "assistant", "content": "working", "claude_thinking": [{"thinking": "t", "signature": "s"}],
+                     "tool_calls": calls},
+                    *({"role": "tool", "tool_call_id": f"toolu_{i}", "content": f"r{i}"} for i in range(12)),
+                ],
+                "tools": [{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}],
+            },
+            "claude-sonnet-4-6",
+        )
+        marked = [part for msg in payload["messages"] for part in msg["content"] if "cache_control" in part]
+        # More than 20 blocks were added since "go", the previous request's
+        # end, so it stays a breakpoint next to the newest block.
+        self.assertEqual([part.get("text") or part.get("tool_use_id") for part in marked], ["go", "toolu_11"])
+        total = len(marked) + sum("cache_control" in b for b in payload["system"]) + sum("cache_control" in t for t in payload["tools"])
+        self.assertLessEqual(total, 4)
 
     def test_breakpoint_walks_back_inside_a_block_array(self):
         payload = claude_mod.build_messages_payload(

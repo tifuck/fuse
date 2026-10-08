@@ -305,7 +305,7 @@ async def chat_cancel(request: Request, run_id: str):
         # Child runs default to self: stopping one subagent must not kill the
         # parent turn and its siblings. Root runs keep the tree default.
         tree = scope == "tree" if run.get("parent_run_id") else scope != "self"
-        await chat_runs.cancel_wait(user["id"], run_id, tree=tree, force=force)
+        await chat_runs.cancel_wait(user["id"], run_id, tree=tree, force=force, by_user=True)
         run = chat_store.get_run(user["id"], run_id) or run
     return JSONResponse({"ok": True, "run": _chat_public_run(run)}, headers={"Cache-Control": "no-store"})
 

@@ -932,6 +932,70 @@ class AgentCapsTest(unittest.TestCase):
         )
         self.assertEqual(len(roots), 2)  # original + wake turn
 
+    def test_user_stopped_subagent_never_wakes_an_idle_thread(self):
+        from app import chat_runs as runs
+        from app import command_jobs
+
+        thread, parent = self._parent()
+        child = store.start_child_run(user_id=1, thread_id=thread["id"], parent_run_id=parent["id"],
+                                      prompt="bg", description="bg", background=True)
+        store.finish_run(parent["id"], {"content": "ok", "tools": []}, "completed")
+        # Agents pane Stop on the subagent alone, after the main turn ended.
+        with patch.object(runs, "cancel"):
+            asyncio.run(runs.cancel_wait(1, child["id"], tree=False, force=True, by_user=True))
+        self.assertEqual(store.get_run(1, child["id"])["status"], "cancelled")
+        with patch.object(runs, "start", new=AsyncMock(return_value=None)), \
+                patch.object(command_jobs, "pending_envelopes", return_value=[]):
+            asyncio.run(runs._wake_parent(1, parent["thread_id"]))
+        roots = db.fetchall("SELECT id FROM chat_runs WHERE thread_id=? AND parent_run_id IS NULL", (parent["thread_id"],))
+        self.assertEqual(len(roots), 1)
+        with patch.object(runs, "schedule_wake") as woken:
+            runs.sweep_wakes()
+        woken.assert_not_called()
+        agents = store.list_thread_agents(1, parent["thread_id"])
+        self.assertEqual(agents[0]["wake_state"], "held")
+        # The report still rides with the user's next message.
+        nxt = store.start_turn(1, thread["id"], "next", chats.get_thread(1, thread["id"])["revision"], "turn-next")["run"]
+        self.assertTrue(store.queue_stranded_reports(1, parent["thread_id"], nxt["id"]))
+
+    def test_kill_subagent_by_the_model_still_reports_to_an_idle_thread(self):
+        from app import chat_runs as runs
+        from app import command_jobs
+
+        thread, parent = self._parent()
+        child = store.start_child_run(user_id=1, thread_id=thread["id"], parent_run_id=parent["id"],
+                                      prompt="bg", description="bg", background=True)
+        store.finish_run(parent["id"], {"content": "ok", "tools": []}, "completed")
+        store.request_cancel_self(1, child["id"])
+        store.abort_active(child["id"], "cancelled")
+        with patch.object(runs, "start", new=AsyncMock(return_value=None)), \
+                patch.object(command_jobs, "pending_envelopes", return_value=[]):
+            asyncio.run(runs._wake_parent(1, parent["thread_id"]))
+        roots = db.fetchall("SELECT id FROM chat_runs WHERE thread_id=? AND parent_run_id IS NULL", (parent["thread_id"],))
+        self.assertEqual(len(roots), 2)
+
+    def test_main_stop_also_stops_earlier_turns_live_subagents(self):
+        from app import chat_runs as runs
+
+        thread, first = self._parent()
+        child = store.start_child_run(user_id=1, thread_id=thread["id"], parent_run_id=first["id"],
+                                      prompt="bg", description="bg", background=True)
+        other = store.start_child_run(user_id=1, thread_id=thread["id"], parent_run_id=first["id"],
+                                      prompt="bg2", description="bg2", background=True)
+        store.finish_run(first["id"], {"content": "ok", "tools": []}, "completed")
+        second = store.start_turn(1, thread["id"], "next", chats.get_thread(1, thread["id"])["revision"], "turn-2")["run"]
+        # A tree cancel without the user (internal callers) leaves other turns alone.
+        with patch.object(runs, "cancel"):
+            asyncio.run(runs.cancel_wait(1, second["id"], force=True))
+        self.assertIn(store.get_run(1, child["id"])["status"], ("queued", "running"))
+        third = store.start_turn(1, thread["id"], "again", chats.get_thread(1, thread["id"])["revision"], "turn-3")["run"]
+        cancelled = []
+        with patch.object(runs, "cancel", side_effect=cancelled.append):
+            asyncio.run(runs.cancel_wait(1, third["id"], force=True, by_user=True))
+        self.assertTrue({child["id"], other["id"]} <= set(cancelled))
+        for ident in (child["id"], other["id"], third["id"]):
+            self.assertEqual(store.get_run(1, ident)["status"], "cancelled")
+
     def test_stop_gate_reads_the_latest_root_within_one_second(self):
         """Two roots started in the same second (a turn failing at once, then
         the queue or a wake starting the next): created_at cannot order them

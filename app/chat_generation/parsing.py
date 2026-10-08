@@ -305,6 +305,11 @@ def _take_thinking(bucket: list, raw) -> None:
         if redacted:
             bucket.append({"redacted_thinking": redacted})
             continue
+        if block.get("devin_signature"):
+            # Devin signs the turn's whole reasoning; the text streams apart.
+            bucket.append({"devin_signature": str(block["devin_signature"]),
+                           "devin_signature_type": str(block.get("devin_signature_type") or "")})
+            continue
         reasoning_item = block.get("openai_reasoning")
         if isinstance(reasoning_item, dict) and reasoning_item.get("encrypted_content"):
             bucket.append({"openai_reasoning": dict(reasoning_item)})
@@ -342,6 +347,18 @@ def _native_reasoning(reasoning, model, thinking=None):
             out["_fuse_reasoning_model"] = model
         return out
     blocks = []
+    if keeps_text:
+        # Devin streams its reasoning as text and signs it once at the end;
+        # replay both as one block so the next request carries what the model
+        # produced (devin_payload reads the signature back from it).
+        signed = next((block for block in thinking or [] if isinstance(block, dict) and block.get("devin_signature")), None)
+        if reasoning or signed:
+            block = {"thinking": str(reasoning or ""), "signature": str((signed or {}).get("devin_signature") or "")}
+            if (signed or {}).get("devin_signature_type"):
+                block["signature_type"] = str(signed["devin_signature_type"])
+            out["claude_thinking"] = [block]
+            out["_fuse_reasoning_model"] = model
+        return out
     for block in thinking or []:
         if not isinstance(block, dict):
             continue

@@ -686,18 +686,25 @@ async def _await_tasks(ids, timeout):
     await asyncio.wait(tasks, timeout=max(0.0, timeout))
 
 
-async def cancel_wait(user_id, run_id, *, tree=True, force=False):
+async def cancel_wait(user_id, run_id, *, tree=True, force=False, by_user=False):
     """Cancel and wait briefly; force-finish anything still active.
 
     force skips the graceful drain entirely (user-explicit "force stop" on a
-    subagent wedged in stopping).
+    subagent wedged in stopping). by_user (the Stop button) marks a subagent
+    stopped on its own so its report never wakes the main agent.
     """
     if tree:
         await durable_call(chat_store.request_cancel, user_id, run_id)
         ids = [run_id, *await asyncio.to_thread(chat_store.descendant_ids, run_id)]
         cancel_tree(run_id)
+        if by_user:
+            # Earlier turns' background subagents live in their own trees.
+            others = await durable_call(chat_store.request_cancel_thread_agents, user_id, run_id)
+            for ident in others:
+                cancel(ident)
+            ids.extend(ident for ident in others if ident not in ids)
     else:
-        ids = await durable_call(chat_store.request_cancel_self, user_id, run_id)
+        ids = await durable_call(chat_store.request_cancel_self, user_id, run_id, by_user)
         for ident in ids:
             cancel(ident)
     await _await_tasks(ids, 0.0 if force else CANCEL_GRACE_SECONDS)
@@ -898,7 +905,9 @@ def sweep_wakes() -> None:
              AND status IN ('completed','failed','cancelled','interrupted')
              AND json_extract(request, '$.agent.background') = 1
              AND COALESCE(json_extract(request, '$.agent.wake_sent'), 0) = 0
-             AND COALESCE(json_extract(request, '$.agent.wake_attempts'), 0) < 2"""
+             AND COALESCE(json_extract(request, '$.agent.wake_attempts'), 0) < 2
+             AND NOT (status='cancelled' AND cancel_requested=?)""",
+        (chat_store.USER_STOPPED,),
     ):
         schedule_wake(row["user_id"], row["thread_id"])
 
@@ -940,7 +949,11 @@ async def _wake_parent(user_id: int, thread_id) -> None:
             return
         # A failed wake turn may retry each child once; after that the report
         # stays in the transcript and list_subagents instead of looping forever.
-        candidates = [item for item in candidates if int(item.get("attempts") or 0) < 2]
+        # A subagent the user stopped by itself is the same hard stop for that
+        # agent: its report rides with the user's next message (chat_runtime
+        # injects stranded reports) and never starts a turn on its own.
+        candidates = [item for item in candidates
+                      if int(item.get("attempts") or 0) < 2 and not item.get("user_stopped")]
         from . import command_jobs
 
         cmd_results = await asyncio.to_thread(command_jobs.pending_envelopes, user_id, thread_id)

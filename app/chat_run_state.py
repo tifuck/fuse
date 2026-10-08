@@ -45,11 +45,28 @@ def resumed_after_stop(agent, stopped_at: str) -> bool:
     return bool(resumed and stopped_at and resumed > stopped_at)
 
 
-def _agent_wake_state(agent, status, stopped_at: str = ""):
+# chat_runs.cancel_requested value for a subagent the user stopped on its own
+# (agents pane Stop). 1 is every other cancellation: a root Stop cascade, the
+# parent's kill_subagent, a finishing parent killing its foreground children.
+USER_STOPPED = 2
+
+
+def user_stopped(status, cancel_requested) -> bool:
+    """A subagent the user stopped by itself. Its report never starts an
+    automated turn; it rides with the user's next message instead."""
+    try:
+        return status == "cancelled" and int(cancel_requested or 0) == USER_STOPPED
+    except (TypeError, ValueError):
+        return False
+
+
+def _agent_wake_state(agent, status, stopped_at: str = "", cancel_requested=0):
     if not isinstance(agent, dict) or not agent.get("background") or status in chat_tx.ACTIVE:
         return ""
     if agent.get("wake_sent"):
         return "delivered"
+    if user_stopped(status, cancel_requested):
+        return "held"
     if stopped_at and not resumed_after_stop(agent, stopped_at):
         # The main agent was stopped: no automated turn will run; the report
         # rides with the user's next message.
@@ -223,7 +240,8 @@ def start_turn(user_id, thread_id, text, expected_revision, command_id, model=No
         prior_meter = state.get("meter") if isinstance(state.get("meter"), dict) else None
         send_type_id = context_meter.source_type_for_model(send_model, prior_meter)
         from . import chat_history
-        request_messages, history_info = chat_history.build(conn, user_id, thread_id, messages, state)
+        history_cutoffs = []
+        request_messages, history_info = chat_history.build(conn, user_id, thread_id, messages, state, cutoffs_out=history_cutoffs)
         prompt_snapshot = history_info.pop("prompt_snapshot", None)
         state["meter"] = context_meter.standing_meter(chat_history.for_model(request_messages, send_model), model=send_model, type_id=send_type_id,
             override=state.get("window_override") or ((prior_meter or {}).get("limit") if send_type_id is None and (prior_meter or {}).get("model") == send_model else None),
@@ -241,6 +259,7 @@ def start_turn(user_id, thread_id, text, expected_revision, command_id, model=No
             "history_info": history_info,
             "history_input_hashes": chat_history.input_hashes(request_messages),
             "history_start_anchor": chat_history.anchors(messages[:-1]),
+            "history_cutoffs": history_cutoffs,
         }
         if prompt_snapshot:
             request["prompt_snapshot"] = prompt_snapshot
@@ -420,7 +439,7 @@ def wake_candidates(user_id, thread_id):
     for offset in range(0, len(wanted), 400):
         batch = wanted[offset:offset + 400]
         rows.update((r["id"], r) for r in db.fetchall(
-            f"SELECT id, status, request, message FROM chat_runs WHERE id IN ({','.join('?' for _ in batch)})",
+            f"SELECT id, status, request, message, cancel_requested FROM chat_runs WHERE id IN ({','.join('?' for _ in batch)})",
             batch,
         ))
     out = []
@@ -442,6 +461,7 @@ def wake_candidates(user_id, thread_id):
             {
                 "id": row["id"],
                 "status": row["status"],
+                "user_stopped": user_stopped(row["status"], row["cancel_requested"]),
                 "attempts": int(agent.get("wake_attempts") or 0),
                 "generation": str(agent.get("delivery_generation") or ""),
                 "user_resumed_at": str(agent.get("user_resumed_at") or ""),
@@ -835,7 +855,7 @@ def list_thread_agents(user_id, thread_id, limit=100):
             "recent": recent,
             "current": current,
             "quiet_s": round(quiet_s, 1),
-            "wake_state": _agent_wake_state(agent, row["status"], stopped_at),
+            "wake_state": _agent_wake_state(agent, row["status"], stopped_at, row["cancel_requested"]),
             "context": chat_views._agent_context_chip(req, agent, row),
             **run_work_fields(row["id"], agent, message),
         }
@@ -986,8 +1006,41 @@ def request_cancel(user_id, run_id):
         return True
 
 
-def request_cancel_self(user_id, run_id):
-    """Cancel one run and its strict descendants only; the rest of the root tree keeps running."""
+def request_cancel_thread_agents(user_id, run_id):
+    """Stop of a main run also stops the thread's other live subagents.
+
+    Background subagents launched by earlier turns belong to those turns'
+    trees, so the tree cancel misses them; after Stop nothing in the
+    conversation may keep generating. Returns the ids flagged. Background
+    commands and monitors are left alone (they never generate)."""
+    row = db.fetchone("SELECT thread_id, parent_run_id FROM chat_runs WHERE id=? AND user_id=?", (run_id, user_id))
+    if row is None or row["parent_run_id"]:
+        return []
+    live = db.fetchall(
+        """SELECT id, parent_run_id, message_id, thread_id, status, cancel_requested FROM chat_runs
+           WHERE user_id=? AND thread_id=? AND parent_run_id IS NOT NULL AND root_run_id<>?
+             AND status IN ('queued','running')""",
+        (user_id, row["thread_id"], run_id),
+    )
+    if not live:
+        return []
+    ts = db.now()
+    with chat_tx.transaction() as conn:
+        for item in live:
+            cur = conn.execute(
+                "UPDATE chat_runs SET cancel_requested=1,cancel_requested_at=?,updated_at=? WHERE id=? AND status IN ('queued','running') AND cancel_requested=0",
+                (ts, ts, item["id"]),
+            )
+            if getattr(cur, "rowcount", 1):
+                chat_tx.event(conn, user_id, "agent.cancel_requested", item["thread_id"], _cancel_event_payload(item))
+    return [item["id"] for item in live]
+
+
+def request_cancel_self(user_id, run_id, by_user=False):
+    """Cancel one run and its strict descendants only; the rest of the root tree keeps running.
+
+    by_user marks the stopped subagents USER_STOPPED so their reports wait
+    for the user's next message instead of waking the main agent."""
     ids = []
     # Lock-free tree read (see request_cancel_descendants): per-row updates
     # re-check liveness, so the scan must not FOR UPDATE the whole tree.
@@ -1022,11 +1075,12 @@ def request_cancel_self(user_id, run_id):
         frontier.extend(child["id"] for child in by_parent.get(current, []))
     if doomed:
         ts = db.now()
+        flag = USER_STOPPED if by_user else 1
         with chat_tx.transaction() as conn:
             for item in doomed:
                 cur = conn.execute(
-                    "UPDATE chat_runs SET cancel_requested=1,cancel_requested_at=?,updated_at=? WHERE id=? AND status IN ('queued','running') AND cancel_requested=0",
-                    (ts, ts, item["id"]),
+                    "UPDATE chat_runs SET cancel_requested=?,cancel_requested_at=?,updated_at=? WHERE id=? AND status IN ('queued','running') AND cancel_requested=0",
+                    (flag, ts, ts, item["id"]),
                 )
                 if getattr(cur, "rowcount", 1):
                     kind = "agent.cancel_requested" if item["parent_run_id"] else "run.cancel_requested"

@@ -187,11 +187,36 @@ def _legacy_turn(run, user_message, assistant):
     return tail
 
 
-def build(conn, user_id, thread_id, messages, state, *, retained=None, model=""):
-    """Return canonical replay rows and provenance for exactly these display rows."""
+def _valid_cutoffs(memory, display_len):
+    provider_len = len(memory.get("messages") or [])
+    return [cut for cut in memory.get("cutoffs", []) if isinstance(cut, dict)
+            and type(cut.get("display")) is int and type(cut.get("provider")) is int
+            and 0 < cut["display"] <= display_len and 0 <= cut["provider"] <= provider_len]
+
+
+def _projected(rows, state):
+    """Compaction projection of display rows; offset 0 only when it kept
+    them as-is, so display indexes still name the same rows."""
+    from . import context_compact as context
+
+    projected = context.project_transcript(rows, state)
+    return projected, (0 if projected == rows else None)
+
+
+def build(conn, user_id, thread_id, messages, state, *, retained=None, model="", cutoffs_out=None):
+    """Return canonical replay rows and provenance for exactly these display rows.
+
+    cutoffs_out, when given, receives the exact display/provider boundaries
+    (a display row index and the provider rows sent before it) that this
+    replay vouches for: inherited ones within the reused prefix plus one per
+    user row appended after it. finalize retains them so a Retry, Edit or
+    Undo that trims the tail reuses the exact bytes already sent.
+    """
     from . import chats, context_compact as context
 
     rows = _retained_display(messages)
+    inherited = []
+    offset = None
     info = {"mode": "full", "recovered_turns": 0, "trace_fallbacks": 0}
     if retained is None and thread_id is not None:
         stored = conn.execute("SELECT retained_history FROM chat_threads WHERE id=? AND user_id=?", (thread_id, user_id)).fetchone()
@@ -207,6 +232,8 @@ def build(conn, user_id, thread_id, messages, state, *, retained=None, model="")
     if (memory.get("version") == 1 and anchor and fingerprint[:len(anchor)] == anchor
             and memory.get("checkpoint", "") == checkpoint_id(state)):
         prefix = _clean(memory.get("messages") or [])
+        inherited = _valid_cutoffs(memory, len(anchor))
+        offset = len(anchor)
         rows = rows[len(anchor):]
         info.update(memory.get("info") or {})
         if isinstance(memory.get("prompt_snapshot"), dict):
@@ -215,24 +242,23 @@ def build(conn, user_id, thread_id, messages, state, *, retained=None, model="")
         # A retry can remove the last steered user/reply pair without changing
         # the preceding tool-rich prefix. Only reuse an explicitly saved exact
         # display/provider boundary; never guess from a text substring.
-        cuts = [cut for cut in memory.get("cutoffs", []) if isinstance(cut, dict)
-                and type(cut.get("display")) is int and type(cut.get("provider")) is int
-                and 0 < cut["display"] <= min(len(anchor), len(fingerprint))
-                and 0 <= cut["provider"] <= len(memory.get("messages") or [])
-                and fingerprint[:cut["display"]] == anchor[:cut["display"]]]
+        cuts = [cut for cut in _valid_cutoffs(memory, min(len(anchor), len(fingerprint)))
+                if fingerprint[:cut["display"]] == anchor[:cut["display"]]]
         if cuts:
             cut = max(cuts, key=lambda item: item["display"])
             prefix = _clean((memory.get("messages") or [])[:cut["provider"]])
+            inherited = [c for c in cuts if c["display"] <= cut["display"] and c["provider"] <= cut["provider"]]
+            offset = cut["display"]
             rows = rows[cut["display"]:]
             info.update(memory.get("info") or {})
             if isinstance(memory.get("prompt_snapshot"), dict):
                 info["prompt_snapshot"] = memory["prompt_snapshot"]
         else:
             prefix = []
-            rows = context.project_transcript(rows, state)
+            rows, offset = _projected(rows, state)
     else:
         prefix = []
-        rows = context.project_transcript(rows, state)
+        rows, offset = _projected(rows, state)
     ids = [row["id"] for row in rows if row.get("role") == "assistant" and row.get("id")]
     runs = {}
     # ID ownership stays user-scoped; duplicates preserve message IDs and can
@@ -244,8 +270,11 @@ def build(conn, user_id, thread_id, messages, state, *, retained=None, model="")
                 "AND message_id IN (" + ",".join("?" for _ in batch) + ") ORDER BY created_at", (user_id, *batch)):
             runs[run["message_id"]] = run
     previous_user = None
-    for row in rows:
+    appended = []
+    for index, row in enumerate(rows):
         if row.get("role") == "user":
+            if offset is not None:
+                appended.append({"display": offset + index, "provider": len(prefix)})
             prefix.append(chats.request_message(row))
             previous_user = row
             continue
@@ -263,6 +292,13 @@ def build(conn, user_id, thread_id, messages, state, *, retained=None, model="")
                 prefix.append(chats.request_message(row))
     if info["trace_fallbacks"]:
         info["mode"] = "recovered"
+    if cutoffs_out is not None:
+        seen = set()
+        for cut in [*inherited, *appended]:
+            key = (cut["display"], cut["provider"])
+            if key not in seen:
+                seen.add(key)
+                cutoffs_out.append({"display": cut["display"], "provider": cut["provider"]})
     return prefix, info
 
 
@@ -331,6 +367,13 @@ def finalize(conn, run, request, display, message):
             pending_boundaries[part["user_message_id"]] = len(source)
             source.append(chats.request_message(user_row))
     cutoffs = []
+    # A start boundary stays exact while every provider row before it is
+    # still the row that was sent (the turn's own user row gains its session
+    # tail; mid-turn compaction rewrites the head and drops them all).
+    cutoffs.extend({"display": cut["display"], "provider": cut["provider"]}
+                   for cut in request.get("history_cutoffs") or []
+                   if isinstance(cut, dict) and type(cut.get("display")) is int
+                   and type(cut.get("provider")) is int and 0 <= cut["provider"] <= boundary)
     for part in (request.get("agent") or {}).get("display_parts") or []:
         position = next((i for i, row in enumerate(display) if row.get("id") == part.get("user_message_id")), None)
         needle = f"(steer:{part.get('steer_id')})"
