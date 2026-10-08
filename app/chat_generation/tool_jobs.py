@@ -26,7 +26,9 @@ CODING_UNLIMITED = 10**9
 
 
 TOOL_RESULT_CHARS = 24_000
-SKILL_RESULT_CHARS = 24_000
+# Above skills.SKILL_BODY_CHARS plus the load header, so a full skill body
+# reaches the model uncut (skills._clip_body marks its own truncation).
+SKILL_RESULT_CHARS = 32_000
 # read_file pages are bounded by workspace._READ_MAX_BYTES (50KB) and end with
 # the "Use offset=N to continue" footer; the safety clip must sit above that
 # budget or the footer is cut off mid-line.
@@ -204,9 +206,10 @@ def apply_skill_preload(
 
 
 def fold_preload_skill(messages: list[dict]) -> list[dict]:
-    """Fold a skill_ preload body into the last user message before dropping tools."""
-    body = ""
-    slug = ""
+    """Fold skill_ preload bodies into the last user message before dropping tools."""
+    slugs: dict[str, str] = {}
+    bodies: dict[str, str] = {}
+    body_order: list[str] = []
     for msg in messages:
         if not isinstance(msg, dict):
             continue
@@ -222,13 +225,21 @@ def fold_preload_skill(messages: list[dict]) -> list[dict]:
                     args = json.loads(fn.get("arguments") or "{}")
                 except (json.JSONDecodeError, ValueError, RecursionError):
                     args = {}
-                if isinstance(args, dict):
-                    slug = str(args.get("name") or slug)
+                slugs[cid] = str(args.get("name") or "") if isinstance(args, dict) else ""
         if msg.get("role") == "tool" and str(msg.get("tool_call_id") or "").startswith("skill_"):
-            body = str(msg.get("content") or "")
-    if not body:
+            cid = str(msg.get("tool_call_id") or "")
+            if cid not in bodies:
+                body_order.append(cid)
+            bodies[cid] = str(msg.get("content") or "")
+    label = ""
+    for cid in body_order:
+        body = bodies.get(cid) or ""
+        if not body:
+            continue
+        slug = slugs.get(cid) or ""
+        label += f"[Skill `{slug}` instructions]\n{body}\n\n" if slug else f"[Skill instructions]\n{body}\n\n"
+    if not label:
         return messages
-    label = f"[Skill `{slug}` instructions]\n{body}\n\n" if slug else f"[Skill instructions]\n{body}\n\n"
     out = []
     last_user = max((i for i, m in enumerate(messages) if isinstance(m, dict) and m.get("role") == "user"), default=-1)
     for i, msg in enumerate(messages):

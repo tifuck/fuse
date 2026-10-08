@@ -378,7 +378,11 @@ async def _compact_current(
         # The child's task arrived as its first user row, which is now in the
         # dropped span; the summary alone would paraphrase scope and report format.
         pinned = ctxmod.pinned_assignment(dropped, kept) if is_child else ""
-        rebuilt = [*system, *ctxmod.continuation(checkpoint["summary"], kept, pinned=pinned)]
+        rebuilt = [
+            *system,
+            *ctxmod.continuation(checkpoint["summary"], kept, pinned=pinned),
+            *ctxmod.retained_skill_rows(source),
+        ]
         after = context_meter.meter_from_messages(rebuilt, model=model, type_id=type_id, tools=tools, override=override, calibration=calibration)
         after["estimated"] = True
         after["standing"] = True

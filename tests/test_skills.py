@@ -261,6 +261,8 @@ class SkillsDbTest(unittest.TestCase):
             skills_index=text,
         )
         self.assertIn("load_skill", coding)
+        self.assertIn("ONCE at the beginning of the", coding)
+        self.assertIn("never call", coding)
         self.assertIn("`one`", coding)
         self.assertIn("skill bodies and supporting files from `load_skill`", coding)
         self.assertNotIn("Do the thing", coding)
@@ -275,8 +277,17 @@ class SkillsDbTest(unittest.TestCase):
         body = "x" * 9000
         self._install("long", body=body + "\n")
         loaded = skills.load(1, "long")
-        self.assertLessEqual(len(loaded), 9000 + 400)
-        self.assertIn("x" * 100, loaded)
+        self.assertIn(body, loaded)
+        self.assertIn("do not call `load_skill` for this skill again", loaded)
+        huge = "y" * (skills.SKILL_BODY_CHARS + 5_000)
+        self._install("huge", body=huge + "\n")
+        clipped = skills.load(1, "huge")
+        self.assertIn("[Fuse: skill content truncated;", clipped)
+        self.assertLessEqual(len(clipped), skills.SKILL_BODY_CHARS + 600)
+        self.assertIn("y" * 100, clipped)
+        self.assertNotIn(huge, clipped)
+        # The full load reaches the model uncut through the runtime clip.
+        self.assertEqual(_tool_result_clip("load_skill", clipped), clipped)
 
     def test_tool_result_clip_both_writers(self):
         from app.chat_runtime import ToolJob
@@ -356,6 +367,29 @@ class SkillsDbTest(unittest.TestCase):
         folded = fold_preload_skill(messages)
         self.assertIn("BODY", folded[0]["content"])
         self.assertIn("demo", folded[0]["content"])
+
+    def test_fold_preload_keeps_every_skill(self):
+        messages = [
+            {"role": "user", "content": "task"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "skill_aaa", "type": "function",
+                     "function": {"name": "load_skill", "arguments": '{"name":"alpha"}'}},
+                    {"id": "skill_bbb", "type": "function",
+                     "function": {"name": "load_skill", "arguments": '{"name":"beta"}'}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "skill_aaa", "content": "ALPHA BODY"},
+            {"role": "tool", "tool_call_id": "skill_bbb", "content": "BETA BODY"},
+        ]
+        folded = fold_preload_skill(messages)
+        content = folded[0]["content"]
+        self.assertIn("`alpha` instructions", content)
+        self.assertIn("ALPHA BODY", content)
+        self.assertIn("`beta` instructions", content)
+        self.assertIn("BETA BODY", content)
 
     def test_reserved_not_invoke(self):
         parsed = skills.parse_invoke(1, None, "/compact please", coding=True)

@@ -539,7 +539,7 @@ def finish_compact(user_id, thread_id, checkpoint, *, command_id, fingerprint, e
         messages = chats.parse_messages(row["messages"])
         from . import chat_history
         if replay is not None:
-            rebuilt = ctxmod.continuation(checkpoint["summary"])
+            rebuilt = [*ctxmod.continuation(checkpoint["summary"]), *ctxmod.retained_skill_rows(replay or [])]
             conn.execute("UPDATE chat_threads SET retained_history=? WHERE id=? AND user_id=?",
                 (chat_history.envelope(messages, rebuilt, state, info=history_info), pk, user_id))
         projected, _info = chat_history.build(conn, user_id, pk, messages, state)

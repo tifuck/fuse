@@ -26,7 +26,9 @@ BUNDLED_DIR = Path(__file__).resolve().parent / "bundled_skills"
 INDEX_CHARS = 2048
 INDEX_MAX = 40
 INDEX_DESC = 160
-SKILL_BODY_CHARS = 8_000
+# SKILL_BODY_CHARS bounds what load_skill returns; SKILL_RESULT_CHARS (tool_jobs)
+# sits above it plus the load header so a full body is never clipped twice.
+SKILL_BODY_CHARS = 24_000
 INDEX_CHAT_CAP = 80
 ORIGINS = frozenset({"bundled", "upload", "github", "skills_sh", "chat"})
 RESERVED = frozenset({"undo", "retry", "redo", "rewind", "init", "compact", "help", "title"})
@@ -268,6 +270,13 @@ def _safe_file(root: Path, file: str) -> Path:
     return target
 
 
+def _clip_body(text: str) -> str:
+    if len(text) <= SKILL_BODY_CHARS:
+        return text
+    marker = f"\n[Fuse: skill content truncated; {len(text)} characters total]"
+    return text[: SKILL_BODY_CHARS - len(marker)] + marker
+
+
 def load(user_id: int, name: str, file: str | None = None) -> str:
     slug = (name or "").strip().lower()
     if not NAME_RE.fullmatch(slug):
@@ -294,7 +303,7 @@ def load(user_id: int, name: str, file: str | None = None) -> str:
     if file:
         rel = (file or "").replace("\\", "/").strip()
         if Path(rel).name.lower() == "skill.md":
-            return guidance + parsed["body"][:SKILL_BODY_CHARS]
+            return guidance + _clip_body(parsed["body"])
         try:
             target = _safe_file(root, rel)
         except SkillError as exc:
@@ -316,19 +325,20 @@ def load(user_id: int, name: str, file: str | None = None) -> str:
                 "Ask for an authorized transfer method if this asset is required."
             )
         header = f"Skill `{slug}` file `{shown}` (origin={origin}).\n"
-        return (guidance + header + text)[:SKILL_BODY_CHARS]
+        return guidance + header + _clip_body(text)
     supporting = _supporting(root)
     lines = [
         guidance.rstrip(),
         f"Skill `{slug}` loaded ({origin_bit}).",
         f"Base: skill://{slug}",
+        "Loaded once per chat — do not call `load_skill` for this skill again unless its body is gone from the conversation.",
     ]
     if supporting:
         lines.append("Supporting files (not loaded; call load_skill with file=… to read one):")
         lines.extend(f"- {p}" for p in supporting)
     else:
         lines.append("No supporting files listed.")
-    body = parsed["body"][:SKILL_BODY_CHARS]
+    body = _clip_body(parsed["body"])
     return "\n".join(lines) + "\n\n" + body
 
 

@@ -919,6 +919,93 @@ class DurableCompactCurrentTest(unittest.IsolatedAsyncioTestCase):
         persisted = apply_cp.call_args.args[2]
         self.assertTrue(persisted["provider"])
 
+    async def test_compaction_never_drops_loaded_skill_rows(self):
+        from unittest.mock import patch
+
+        from starlette.requests import Request as StarletteRequest
+
+        from app.chat_runtime import _compact_current
+
+        skill_pair = [
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "call_s1", "type": "function",
+                 "function": {"name": "load_skill", "arguments": '{"name":"ponytail"}'}}]},
+            {"role": "tool", "tool_call_id": "call_s1", "content": "Skill body stays."},
+        ]
+        current = [{"role": "system", "content": "sys"}, {"role": "user", "content": "go"}, *skill_pair]
+        for i in range(10):
+            current.append({"role": "user", "content": f"q{i} " + "w" * 400})
+            current.append({"role": "assistant", "content": f"a{i} " + "w" * 400})
+
+        async def fake_sum(request, user, model, head, instructions="", **_kwargs):
+            return "handoff"
+
+        request = StarletteRequest(
+            {"type": "http", "method": "POST", "path": "/", "headers": [], "client": ("127.0.0.1", 1)},
+            lambda: None,
+        )
+        with (
+            patch("app.chat_runtime.summarize_conversation", fake_sum),
+            patch("app.chat_store.apply_compaction_checkpoint"),
+        ):
+            rebuilt, _meter, kind = await _compact_current(
+                current, request=request, user={"id": 1}, model="offline", type_id="openai",
+                trigger="auto", thread_id=42, override=2048)
+        self.assertIn(kind, ("summarize", "truncate"))
+        calls = [c for m in rebuilt if m.get("role") == "assistant"
+                 for c in m.get("tool_calls") or []]
+        self.assertEqual([c["function"]["name"] for c in calls], ["load_skill"])
+        results = [m for m in rebuilt if m.get("role") == "tool"]
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["tool_call_id"], calls[0]["id"])
+        self.assertEqual(results[0]["content"], "Skill body stays.")
+
+
+class RetainedSkillRowsTest(unittest.TestCase):
+    @staticmethod
+    def _pair(cid, name, body, file=""):
+        args = '{"name": "%s"%s}' % (name, f', "file": "{file}"' if file else "")
+        return [
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": cid, "type": "function", "function": {"name": "load_skill", "arguments": args}}]},
+            {"role": "tool", "tool_call_id": cid, "content": body},
+        ]
+
+    def test_keeps_one_pair_per_skill_newest_wins(self):
+        messages = [
+            {"role": "user", "content": "go"},
+            *self._pair("c1", "ponytail", "old body"),
+            {"role": "assistant", "content": "mid"},
+            *self._pair("c2", "ponytail", "new body"),
+            *self._pair("c3", "debug", "debug body", file="references/a.md"),
+            *self._pair("c4", "debug", "root body"),
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c5", "type": "function", "function": {"name": "grep", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c5", "content": "grep output"},
+        ]
+        rows = context_compact.retained_skill_rows(messages)
+        self.assertEqual(len(rows), 6)  # ponytail + debug root + debug file=, one pair each
+        for i in range(0, len(rows), 2):
+            call = rows[i]["tool_calls"][0]
+            self.assertEqual(rows[i]["role"], "assistant")
+            self.assertEqual(rows[i + 1]["tool_call_id"], call["id"])
+            self.assertEqual(call["function"]["name"], "load_skill")
+            self.assertTrue(call["id"].startswith("skill_"))
+        bodies = {rows[i + 1]["content"] for i in range(0, len(rows), 2)}
+        self.assertEqual(bodies, {"new body", "debug body", "root body"})
+
+    def test_ignores_unpaired_and_foreign_rows(self):
+        self.assertEqual(context_compact.retained_skill_rows([]), [])
+        self.assertEqual(context_compact.retained_skill_rows([
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "grep", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "out"},
+        ]), [])
+        self.assertEqual(context_compact.retained_skill_rows([
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "load_skill", "arguments": '{"name":"x"}'}}]},
+        ]), [])
+
 
 def _tool_round(i: int, size: int) -> list[dict]:
     return [

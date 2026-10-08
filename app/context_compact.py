@@ -703,6 +703,60 @@ def continuation(summary: str, tail: list[dict] | None = None, *, pinned: str = 
         {"role": "assistant", "content": COMPACT_ACK},
     ]
 
+def retained_skill_rows(messages: list | None) -> list[dict]:
+    """load_skill call/result pairs that compaction must never drop.
+
+    A loaded skill whose body disappears gets reloaded by the model on every
+    later turn; keep one synthetic pair per skill (newest result wins) beside
+    the handoff. `skill_` call ids keep them out of the tool gate and let
+    fold_preload_skill reuse them when a backend rejects tools.
+    """
+    slugs: dict[str, str] = {}
+    arguments: dict[str, str] = {}
+    bodies: dict[str, str] = {}
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "assistant":
+            for call in msg.get("tool_calls") or []:
+                if not isinstance(call, dict):
+                    continue
+                fn = call.get("function") if isinstance(call.get("function"), dict) else {}
+                if fn.get("name") != "load_skill":
+                    continue
+                ident = str(call.get("id") or "")
+                if ident and ident not in arguments:
+                    arguments[ident] = str(fn.get("arguments") or "{}")
+                    try:
+                        parsed = json.loads(arguments[ident] or "{}")
+                    except (json.JSONDecodeError, ValueError, RecursionError):
+                        parsed = {}
+                    slugs[ident] = str(parsed.get("name") or "") if isinstance(parsed, dict) else ""
+        elif msg.get("role") == "tool":
+            ident = str(msg.get("tool_call_id") or "")
+            if ident in arguments and ident not in bodies:
+                bodies[ident] = str(msg.get("content") or "")
+    kept: dict[tuple[str, str], tuple[str, str]] = {}
+    for ident, args_json in arguments.items():
+        if ident not in bodies or not slugs.get(ident):
+            continue
+        try:
+            parsed = json.loads(args_json or "{}")
+        except (json.JSONDecodeError, ValueError, RecursionError):
+            parsed = {}
+        key = (slugs[ident], str(parsed.get("file") or "") if isinstance(parsed, dict) else "")
+        kept[key] = (args_json, bodies[ident])
+    rows: list[dict] = []
+    for index, (args_json, content) in enumerate(kept.values()):
+        call_id = f"skill_keep_{index}"
+        rows.extend([
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": call_id, "type": "function",
+                 "function": {"name": "load_skill", "arguments": args_json}}]},
+            {"role": "tool", "tool_call_id": call_id, "content": content},
+        ])
+    return rows
+
 def split_recent(messages: list | None, budget: int) -> tuple[list[dict], list[dict]]:
     """Keep the newest messages that fit `budget` tokens. The rest is the head."""
     rows = [
