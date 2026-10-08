@@ -30,7 +30,14 @@
   bottom: 100%;
 }
 .chat .chat-agent-live-todos:not([hidden]) { --todo-edge: var(--line); }
-/* The tab and the drawer hover over the transcript, collapsed or open. */
+/* Collapsed, the tab only hovers over the last row. Open, the transcript
+   makes room for the drawer's page (todos.js measures it into --todo-push;
+   the tab is not counted, it stays on the last row), so the chat ends where
+   the list begins. */
+html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty):has(.chat-dock > .chat-live-todos.is-open:not([hidden])) .chat-thread > .chat-live-dock:not([hidden]),
+html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty):has(.chat-dock > .chat-live-todos.is-open:not([hidden])) .chat-thread:not(:has(> .chat-live-dock:not([hidden]))) > .chat-log {
+  padding-bottom: calc(1rem + var(--todo-push, 0px));
+}
 
 /* The sheet: hangs from the anchor line, the tab on top, the page under it. */
 .chat .chat-todo-sheet {
