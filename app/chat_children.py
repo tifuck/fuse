@@ -815,9 +815,68 @@ def mark_followup_display(run_id, followup_ids, message):
             return
         request = json.loads(row["request"] or "{}")
         agent = request.setdefault("agent", {})
+        marked = {
+            ident
+            for part in agent.get("followup_marks") or []
+            if isinstance(part, dict)
+            for ident in part.get("ids") or []
+        }
+        ids = [str(item) for item in followup_ids if str(item) not in marked]
+        if not ids:
+            return
         agent.setdefault("followup_marks", []).append(
-            {"ids": list(followup_ids), "end": chat_views._display_mark(message)})
+            {"ids": ids, "end": chat_views._display_mark(message)})
         conn.execute("UPDATE chat_runs SET request=? WHERE id=?", (chat_tx.dumps(request), run_id))
+
+
+def followup_display_deliveries(run_id: str) -> list[str]:
+    """Follow-up envelopes durable in provider_messages but not yet covered by
+    a display mark — the recovery twin of steer_display_deliveries: a crash or
+    a lost followup.delivered frame between envelope persistence and the mark
+    write would otherwise leave that leg permanently in the old render order."""
+    if not run_id:
+        return []
+    row = db.fetchone("SELECT request,provider_messages FROM chat_runs WHERE id=?", (run_id,))
+    if row is None:
+        return []
+    try:
+        req = json.loads(row["request"] or "{}")
+    except (json.JSONDecodeError, TypeError):
+        req = {}
+    if not isinstance(req, dict):
+        req = {}
+    agent = req.get("agent") if isinstance(req.get("agent"), dict) else {}
+    marked = {
+        ident
+        for part in agent.get("followup_marks") or []
+        if isinstance(part, dict)
+        for ident in part.get("ids") or []
+    }
+    seed = req.get("display_seed") if isinstance(req.get("display_seed"), list) else []
+    # User rows already covered by the seed belong to earlier legs, whose
+    # marks were cleared on requeue; only current-leg envelopes recover.
+    skip_users = sum(1 for m in seed if isinstance(m, dict) and m.get("role") == "user")
+    raw_pm = row["provider_messages"]
+    transcript = raw_pm if isinstance(raw_pm, list) else []
+    if isinstance(raw_pm, str) and raw_pm.strip():
+        try:
+            parsed = json.loads(raw_pm)
+        except (json.JSONDecodeError, TypeError):
+            parsed = None
+        if isinstance(parsed, list):
+            transcript = parsed
+    ids: list[str] = []
+    for item in transcript:
+        if not isinstance(item, dict) or item.get("role") != "user":
+            continue
+        if skip_users:
+            skip_users -= 1
+            continue
+        text = str(item.get("content") or "")
+        if not text.lstrip().startswith(chat_views.FOLLOWUP_FRAME_HEAD):
+            continue
+        ids.extend(re.findall(r"\(followup:([0-9a-f]{1,32})\)", text))
+    return [ident for ident in ids if ident not in marked]
 
 
 def refund_spawn(parent_run_id: str) -> None:

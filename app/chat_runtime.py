@@ -1025,10 +1025,19 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                         }
                     )
                     await persist_jobs()
+                delivered = [
+                    match
+                    for text in followups
+                    for match in re.findall(r"\(followup:([0-9a-f]{1,32})\)", text)
+                ]
+                # Recovery after a crash or a lost frame: envelopes durable in
+                # provider_messages without a display mark re-emit here, so a
+                # follow-up never permanently renders above its whole leg.
+                delivered += store.followup_display_deliveries(str(run_id))
+                if delivered:
                     # The worker marks where in the live leg these landed, so
                     # the panel shows them there instead of above the whole leg.
-                    yield _sse({"fuse": {"event": "followup.delivered", "ids": [
-                        match for text in followups for match in re.findall(r"\(followup:([0-9a-f]{1,32})\)", text)]}})
+                    yield _sse({"fuse": {"event": "followup.delivered", "ids": list(dict.fromkeys(delivered))}})
             # Coding parents are never force-stopped for "last round". Search chats
             # wrap up at MAX_COMPLETIONS; extra_wrap is one text-only round after
             # last-round tools actually ran. dropped_tools always forces text.

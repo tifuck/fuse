@@ -137,6 +137,7 @@ from .chat_children import (
     continue_child_with_followups,
     drop_pending_child_result,
     flag_unconsumed_followups,
+    followup_display_deliveries,
     mark_child_background,
     mark_child_background_if_pending,
     mark_followup_display,
