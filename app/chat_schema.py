@@ -940,6 +940,8 @@ def _parse_tool_traces(raw, *, strict: bool = False, field: str = "tools") -> li
             "max_events",
             "bytes", "http_status",
             "subagent_type", "agent_tool_uses", "agent_tokens",
+            # Bash edit tracking (retired): still accepted so saved threads
+            # load, but nothing writes or renders them any more.
             "edited_files", "edit_diff", "lines_added", "lines_removed", "image",
         }:
             raise ChatValidationError(f"{field}[{index}] contains unsupported fields")

@@ -128,8 +128,6 @@ function ccToolClass(trace) {
     if (name === "list_dir") return { kind: "list" };
     if (name === "search_tools") return { kind: "silent" };
     if (name === "run_terminal_command") {
-      // A call that changed files prints on its own row with its diff (Console).
-      if ((Array.isArray(trace.edited_files)) && trace.edited_files.length) return null;
       if (trace.platform === "windows") return { kind: "bash" };
       const kind = ccShellKind(deps.displayCommand(trace));
       if (kind.isList) return { kind: "list", shell: true };

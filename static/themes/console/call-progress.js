@@ -209,23 +209,20 @@ function consoleOnlyFold(trace, presentation, verbose) {
         const head = exit !== null && exit !== 0 ? `Exit code ${exit}` : deps.ccFlat(trace.error || trace.summary || "failed");
         return deps.ccErrorFold([head, ...(empty ? [] : lines)]);
       }
-      const diff = trace.edit_diff ? deps.consoleDiffHtml(String(trace.edit_diff).replace(/\s+$/, "")) : "";
-      const change = deps.consoleChangeText(Number(trace.lines_added) || 0, Number(trace.lines_removed) || 0);
+      // No file diff here: a working-tree snapshot around the call cannot tell
+      // its edits from another agent's in the same repository.
       const note = deps.consoleTruncationNote(trace);
-      if (empty) return { status: diff ? change || "Updated" : meaning.message || (note ? "" : "(No output)"), preview: diff + note, full: "", keep: Boolean(note) };
+      if (empty) return { status: meaning.message || (note ? "" : "(No output)"), preview: note, full: "", keep: Boolean(note) };
       const show = lines.length === 4 ? 4 : 3;
       const cut = lines.slice(0, show).map((line) => line.length > 400 ? line.slice(0, 399) + "…" : line);
       const hidden = lines.length - cut.length;
       const clipped = hidden > 0 || cut.some((line, i) => line !== lines[i]);
-      // The diff rides the preview while the row is folded. Opening it hides
-      // the preview and shows the body, so the diff moves there. A body that
-      // already is this diff (a `git diff`) needs nothing added.
       const body = clipped ? deps.consoleDetailHtml(trace, false, false) : "";
       return {
         status: "",
         keep: Boolean(note),
-        preview: deps.consoleStdoutHtml(cut) + (hidden > 0 ? `<div class="chat-console-more" data-step-toggle>… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : "") + (body ? "" : diff) + note,
-        full: body + (body && !deps.looksLikeDiff(raw) ? diff : ""),
+        preview: deps.consoleStdoutHtml(cut) + (hidden > 0 ? `<div class="chat-console-more" data-step-toggle>… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : "") + note,
+        full: body,
       };
     }
     if (name === "read_file" && !running && !failed && !interrupted) {

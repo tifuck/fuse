@@ -213,14 +213,10 @@ export function createMerge(ctx) {
     if (trace.summary) rec.summary = String(trace.summary).slice(0, 2000);
     if (trace.description) rec.description = String(trace.description).slice(0, 200);
     if (trace.subagent_type) rec.subagent_type = String(trace.subagent_type).slice(0, 32);
-    for (const key of ["bytes", "http_status", "agent_tool_uses", "agent_tokens", "lines_added", "lines_removed"]) {
+    for (const key of ["bytes", "http_status", "agent_tool_uses", "agent_tokens"]) {
       const n = Number(trace[key]);
       if (trace[key] != null && Number.isInteger(n) && n >= 0) rec[key] = n;
     }
-    if (Array.isArray(trace.edited_files) && trace.edited_files.length) {
-      rec.edited_files = trace.edited_files.filter((f) => typeof f === "string" && f).slice(0, 20).map((f) => f.slice(0, 400));
-    }
-    if (trace.edit_diff) rec.edit_diff = String(trace.edit_diff).slice(0, 12000);
     if (Array.isArray(trace.todos)) rec.todos = transcript.normalizeTodos(trace.todos);
     if (trace.exit_code != null && Number.isFinite(Number(trace.exit_code))) rec.exit_code = Number(trace.exit_code);
     EXECUTION_FIELDS.forEach(key => { if (Object.prototype.hasOwnProperty.call(trace, key)) rec[key] = trace[key]; });
@@ -276,9 +272,6 @@ export function createMerge(ctx) {
       "image",
       "project_root", "platform", "include",
       "source",
-      // Files the call changed (bash edit tracking). Dropped here, they show
-      // up only after a reload — the saved copy carries them.
-      "edited_files", "edit_diff", "lines_added", "lines_removed",
     ];
     fields.forEach((key) => {
       if (event[key] != null && event[key] !== "") rec[key] = event[key];

@@ -454,26 +454,6 @@ def _summary_thread(now):
     ], tools
 
 
-_ROWS_DIFF = """diff --git a/app/config.py b/app/config.py
-index 3d2f2c6..dde7137 100644
---- a/app/config.py
-+++ b/app/config.py
-@@ -12,3 +12,3 @@ class Settings:
--    retries: int = 3
-+    retries: int = 5
-     backoff: float = 0.5
-     timeout_s: int = 10
-diff --git a/package-lock.json b/package-lock.json
-index 1111111..2222222 100644
---- a/package-lock.json
-+++ b/package-lock.json
-@@ -40,2 +40,3 @@
-     "left-pad": "1.3.0",
-+    "nanoid": "5.0.7",
-     "zod": "3.23.8"
-"""
-
-
 def _rows_child_message(i, desc, status):
     """A subagent with real recent calls, for Claude Code's agent rows."""
     root = dict(cwd="/srv/fuse-qa", host="qa-box", platform="posix", project_root="/srv/fuse-qa")
@@ -496,7 +476,7 @@ def _rows_child_message(i, desc, status):
 
 def _rows_thread(now):
     """Claude Code's per-call rows in Console: a thought ending a summary
-    line, a shell call that changed files, sed as Update, Search(...) headers,
+    line, a shell call, sed as Update, Search(...) headers,
     a fetch, a monitor, a background command, an interrupted call, subagents
     started together, and the turn's closing line. The last turn has running
     calls for --live screenshots."""
@@ -535,10 +515,6 @@ def _rows_thread(now):
               subagent_type="general-purpose", model="qa/fixture-model", summary="Finished.", agent_tool_uses=5,
               agent_tokens=24100, agent_work_ms=77000),
     ]
-    tools[4].update(edited_files=["app/config.py"], lines_added=1, lines_removed=1,
-                    edit_diff="\n".join(_ROWS_DIFF.split("\n")[:9]))
-    tools[5].update(edited_files=["package-lock.json"], lines_added=1, lines_removed=0,
-                    edit_diff="\n".join(_ROWS_DIFF.split("\n")[9:]))
     say = lambda text: {"type": "content", "text": text}  # noqa: E731
     tool = lambda ident: {"type": "tool", "id": ident}  # noqa: E731
     segments = [

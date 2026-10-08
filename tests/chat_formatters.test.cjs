@@ -303,7 +303,7 @@ test('"Still running" tracks the command, and a stopped one says it already retu
   assert.match(finished.preview, /so far/);
 });
 
-test('a shell whose output is a diff prints that diff once', () => {
+test('a shell call never prints a file diff it cannot attribute', () => {
   const c = vm.createContext({
     messages: [],
     escapeHtml: (v) => String(v ?? '').replace(/[&<>]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch])),
@@ -317,16 +317,18 @@ test('a shell whose output is a diff prints that diff once', () => {
   const diff = 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -1,3 +1,4 @@\n context\n-old\n+new one\n+new two\n';
   const pres = { running: false, failed: false, interrupted: false };
   const diffs = (html) => (String(html).match(/chat-console-lines is-diff/g) || []).length;
-  const foldOf = (output) => c.consoleOnlyFold({
-    name: 'run_terminal_command', status: 'done', state: 'completed', exit_code: 0, command: 'git diff',
+  // Legacy rows saved a working-tree snapshot diff (edit_diff); it may hold
+  // another agent's edits, so it is never shown.
+  const foldOf = (output, command = 'make') => c.consoleOnlyFold({
+    name: 'run_terminal_command', status: 'done', state: 'completed', exit_code: 0, command,
     output, preview: output.slice(0, 800), edited_files: ['a.js'], lines_added: 2, lines_removed: 1, edit_diff: diff,
   }, pres, false);
-  // Collapsed shows the preview; opened hides it and shows the body.
-  const counts = (output) => { const fold = foldOf(output); return [diffs(fold.preview), diffs(fold.full)]; };
-  assert.deepEqual(counts('a\nb\nc\nd\ne\n'), [0, 1], 'stdout plus a file diff: the diff shows once, in the opened body');
-  assert.deepEqual(counts(diff), [0, 1], 'a git diff is its own output, shown once in the opened body');
-  assert.deepEqual(counts('ok\n'), [1, 0], 'short output keeps the diff in the preview');
-  assert.deepEqual(counts(''), [1, 0], 'no output still shows the diff');
+  const counts = (output, command) => { const fold = foldOf(output, command); return [diffs(fold.preview), diffs(fold.full)]; };
+  assert.deepEqual(counts('a\nb\nc\nd\ne\n'), [0, 0], 'long stdout: no snapshot diff, folded or opened');
+  assert.deepEqual(counts('ok\n'), [0, 0], 'short stdout: no snapshot diff');
+  assert.equal(foldOf('').status, '(No output)', 'no output says so instead of "Updated"');
+  assert.equal(diffs(foldOf('').preview), 0);
+  assert.deepEqual(counts(diff, 'git diff'), [0, 1], 'a git diff is the command\'s own output, shown in the opened body');
 });
 
 test('a multi-file diff names each file so its hunks cannot read as one out-of-order file', () => {
@@ -338,19 +340,6 @@ test('a multi-file diff names each file so its hunks cannot read as one out-of-o
   const html = c.consoleDiffHtml(two);
   assert.match(html, /is-file"><span class="chat-console-nbody">a\.js</, 'first file is named');
   assert.match(html, /is-file"><span class="chat-console-nbody">b\.js</, 'second file is named');
-});
-
-test('a settled tool event carries its edit fields instead of dropping them until reload', () => {
-  const merged = REG.mergeToolEvent(
-    { id: 't1', name: 'run_terminal_command', status: 'running', command: 'make' },
-    { id: 't1', name: 'run_terminal_command', status: 'done',
-      edit_diff: '@@ -1,1 +1,1 @@\n-x\n+y', edited_files: ['a.js'], lines_added: 1, lines_removed: 1 },
-    'done',
-  );
-  assert.match(merged.edit_diff, /\+y/, 'the diff survives the live merge');
-  assert.deepEqual(merged.edited_files, ['a.js']);
-  assert.equal(merged.lines_added, 1);
-  assert.equal(merged.lines_removed, 1);
 });
 
 test('output caps cut on character boundaries and say which slice survived', () => {
