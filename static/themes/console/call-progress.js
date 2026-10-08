@@ -239,19 +239,27 @@ function consoleOnlyFold(trace, presentation, verbose) {
     return null;
   }
 
-function ccInterruptedText(trace) {
+function ccInterruptedText(trace, counts) {
+    // A group line says how many of its calls were cut short when not all were.
+    const head = counts && counts.interrupted < counts.calls ? `${counts.interrupted} of ${counts.calls} interrupted` : "Interrupted";
     const error = String((trace && trace.error) || "").toLowerCase();
     const state = trace ? deps.executionState(trace) : "";
+    if (/connector restarted/.test(error)) {
+      return `${head} · ${trace.host ? `the connector on ${trace.host} restarted` : "the connector restarted"}`;
+    }
+    if (/connection lost/.test(error)) {
+      return `${head} · ${trace.host ? `${trace.host} lost its connection` : "the connection was lost"}`;
+    }
     if (/\b(agent|connector|host) is offline\b|went offline|disconnected/.test(error)) {
-      return `Interrupted · ${trace.host ? `${trace.host} went offline` : "the host went offline"}`;
+      return `${head} · ${trace.host ? `${trace.host} went offline` : "the host went offline"}`;
     }
     if (state === "cancelled" || /cancel/.test(error) || (trace && trace.status === "cancelled")) {
       return trace && trace.termination_confirmed === false && trace.name === "run_terminal_command"
-        ? "Interrupted · stopped; the process may still be running"
-        : "Interrupted · stopped";
+        ? `${head} · stopped; the process may still be running`
+        : `${head} · stopped`;
     }
-    if (state === "lost") return "Interrupted · the result was lost";
-    return "Interrupted · the run ended before it finished";
+    if (state === "lost") return `${head} · the result was lost`;
+    return `${head} · the run ended before it finished`;
   }
 
 function ccGroupErrorText(trace) {

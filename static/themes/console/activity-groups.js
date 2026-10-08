@@ -133,7 +133,8 @@ function ccGroupHtml(group, msg, live, active, openMap, thinking) {
     let latestThought;
     let hint;
     let errored = false;
-    let interrupted = false;
+    let interrupted = 0;
+    let calls = 0;
     let interruptedTrace = null;
     let errorTrace = null;
     let runningSince = 0;
@@ -152,6 +153,7 @@ function ccGroupHtml(group, msg, live, active, openMap, thinking) {
         return;
       }
       latestThought = undefined;
+      calls += 1;
       const trace = item.entry.trace;
       const presentation = deps.toolPresentation(trace, live);
       if (presentation.failed) {
@@ -159,7 +161,7 @@ function ccGroupHtml(group, msg, live, active, openMap, thinking) {
         errorTrace ||= trace;
       }
       if (presentation.interrupted) {
-        interrupted = true;
+        interrupted += 1;
         interruptedTrace ||= trace;
       }
       if (presentation.running && !deps.toolBackground(trace)) {
@@ -266,7 +268,7 @@ function ccGroupHtml(group, msg, live, active, openMap, thinking) {
       `<div class="chat-step-head">` + (group.items.length
         ? `<button type="button" class="chat-step-toggle" data-step-toggle aria-expanded="${open ? "true" : "false"}"><span class="chat-step-label">${label}</span></button>`
         : `<div class="chat-step-toggle"><span class="chat-step-label">${label}</span></div>`) + `</div>` +
-      (interrupted ? hang(`<span class="chat-console-result-text">${deps.escapeHtml((deps.ccInterruptedText(interruptedTrace)))}</span>`, " is-group-note") : "") +
+      (interrupted ? hang(`<span class="chat-console-result-text">${deps.escapeHtml((deps.ccInterruptedText(interruptedTrace, { interrupted, calls })))}</span>`, " is-group-note") : "") +
       // A failing member surfaces on the line too, as its own row reads
       // ("Error: …"), the way an interrupted member's note does above.
       (errored ? hang(`<span class="chat-console-result-text">${deps.escapeHtml((deps.ccGroupErrorText(errorTrace)))}</span>`, " is-group-note") : "") +
