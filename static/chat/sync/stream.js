@@ -188,6 +188,8 @@ export function createStream(ctx) {
         // out-of-order terminal event for a previous run must not kill the
         // current turn's display.
         const isTracked = !S.activeRun || S.activeRun.id === payload.run_id;
+        // A Stop from any tab or device pauses this device's queue for the thread.
+        if (isTracked && event.type === "run.cancelled" && event.thread_id === S.currentId) turns.holdQueueForStop(payload.run_id, true);
         if (isTracked) {
           if (S.compacting) { S.compacting = false; context.syncContextMeter(); }
           S.stoppingRunId = "";

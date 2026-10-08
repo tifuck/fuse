@@ -130,6 +130,48 @@ const out = process.env.QUEUE_UI_ARTIFACTS || '/tmp/opencode/queue-ui-artifacts'
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
       await observer.close();
       if (width === 1440) {
+        // Stop means stop: the queue holds instead of starting a new turn.
+        await send('Queue fixture stop holds the queue');
+        await page.waitForFunction(() => document.body.classList.contains('is-streaming'));
+        await send('Held after stop');
+        await input.fill('');
+        await page.locator('[data-chat-send]').click();
+        await page.waitForFunction(() => !document.body.classList.contains('is-streaming'));
+        await page.waitForTimeout(1500);
+        const isHeldSent = async () => (await read()).messages.some(m => m.role === 'user' && m.content === 'Held after stop');
+        assert.equal(await isHeldSent(), false, 'Stop does not send the queued message');
+        assert.equal(await page.locator('.chat-queue-item').count(), 1);
+        assert.match(await page.locator('.chat-queue-item .chat-queue-state').textContent(), /Stopped/);
+        assert.equal(await page.locator('[data-queue-send]').isEnabled(), true, 'Send now releases a held queue');
+        await page.reload();
+        await page.locator('.chat-queue-item').waitFor();
+        await page.waitForTimeout(1500);
+        assert.equal(await isHeldSent(), false, 'the hold survives a reload');
+        await page.locator('[data-queue-send]').click();
+        await page.waitForFunction(() => [...document.querySelectorAll('.is-user')].some(el => el.textContent.includes('Held after stop')));
+        await page.waitForFunction(() => !document.body.classList.contains('is-streaming') && !document.querySelector('.chat-queue-item'));
+        console.log('PASS Stop holds the queue until Send now');
+
+        // Retry and edit replace the tail. When the server refuses the
+        // shortened transcript (a subagent of the chat still runs, or another
+        // tab changed it), nothing may be sent: no duplicate prompt.
+        const lastPrompt = (await read()).messages.filter(m => m.role === 'user').at(-1).content;
+        const countOf = async text => (await read()).messages.filter(m => m.role === 'user' && m.content === text).length;
+        const before = await countOf(lastPrompt);
+        const refuse = async route => route.request().method() === 'PATCH'
+          ? route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ detail: 'cannot replace messages during an active run' }) })
+          : route.continue();
+        await page.route(`**/chat/threads/${id}`, refuse);
+        await input.fill('/retry');
+        await input.press('Enter');
+        await page.waitForTimeout(300);
+        await input.press('Enter').catch(() => {});
+        await page.waitForTimeout(2500);
+        assert.equal(await countOf(lastPrompt), before, 'a refused Retry sends nothing');
+        assert.equal((await read()).run, null, 'no turn started');
+        await page.unroute(`**/chat/threads/${id}`, refuse);
+        console.log('PASS refused Retry does not duplicate the prompt');
+
         await send('Queue fixture lost acknowledgment');
         await page.waitForFunction(() => document.body.classList.contains('is-streaming'));
         await send('Survive a lost acknowledgment');
@@ -143,6 +185,7 @@ const out = process.env.QUEUE_UI_ARTIFACTS || '/tmp/opencode/queue-ui-artifacts'
         assert.equal((await read()).messages.filter(m => m.role === 'user' && m.content === 'Survive a lost acknowledgment').length, 1);
         await page.waitForFunction(() => !document.body.classList.contains('is-streaming'));
         console.log('PASS lost turn acknowledgment still lands exactly once and retires the queue item');
+
       }
       if (width === 390) {
         await send('Queue fixture attachment priority');

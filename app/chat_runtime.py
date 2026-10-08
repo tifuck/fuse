@@ -740,7 +740,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 {
                     "fuse": {
                         "event": "notice",
-                        "message": "Resumed after server restart.",
+                        "message": "Continued after stop." if agent.get("resume_reason") == "user" else "Resumed after server restart.",
                     }
                 }
             )

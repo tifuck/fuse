@@ -346,7 +346,7 @@ import { createBoot } from './chat/boot.js';
     sidebar,
     traces,
     transcript,
-    turns: { drainQueue: (...args) => turns.drainQueue(...args), renderQueue: (...args) => turns.renderQueue(...args), retireAcceptedQueue: (...args) => turns.retireAcceptedQueue(...args), syncEmptyReplyRetry: (...args) => turns.syncEmptyReplyRetry(...args) },
+    turns: { drainQueue: (...args) => turns.drainQueue(...args), holdQueueForStop: (...args) => turns.holdQueueForStop(...args), renderQueue: (...args) => turns.renderQueue(...args), retireAcceptedQueue: (...args) => turns.retireAcceptedQueue(...args), syncEmptyReplyRetry: (...args) => turns.syncEmptyReplyRetry(...args) },
     ui,
   });
 
@@ -843,7 +843,7 @@ import { createBoot } from './chat/boot.js';
   });
 
     window.addEventListener("storage", (event) => {
-    if (S.currentId && event.key === turns.queueStoreKey()) {
+    if (S.currentId && (event.key === turns.queueStoreKey() || event.key === turns.queueHoldKey())) {
       turns.loadQueue();
       if (!traces.runIsActive(S.activeRun)) turns.drainQueue();
     }

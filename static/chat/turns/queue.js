@@ -4,6 +4,8 @@ import { escapeHtml } from '../core.js';
 import { newSession } from '../state.js';
 
 let queueDraining = false;
+// Held queue item ids per thread, when storage is unavailable.
+const heldMemory = new Map();
 
 export function createQueue(ctx) {
   const { composer, picker, send, sync, traces, transcript, ui } = ctx;
@@ -27,11 +29,60 @@ export function createQueue(ctx) {
     return "fuse.chat.queue." + id;
   }
 
+    // Stop means stop: messages queued when the user stopped a reply wait
+    // for an explicit Send now instead of draining into a new turn. Messages
+    // queued after the Stop are new instructions and send as usual. Held ids
+    // are per thread and outlive reloads; storage is shared by this
+    // browser's tabs.
+    function queueHoldKey(id = S.currentId) {
+    return "fuse.chat.queue.held." + id;
+  }
+
+    function heldIds(id = S.currentId) {
+    if (!id) return new Set();
+    try {
+      const raw = JSON.parse(localStorage.getItem(queueHoldKey(id)) || "[]");
+      return new Set(Array.isArray(raw) ? raw.map(String) : []);
+    } catch (_) {
+      return new Set(heldMemory.get(String(id)) || []);
+    }
+  }
+
+    function setHeldIds(ids, id = S.currentId) {
+    if (!id) return;
+    const list = [...ids].filter((key) => S.queuedTurns.some((item) => item.id === key));
+    if (list.length) heldMemory.set(String(id), list);
+    else heldMemory.delete(String(id));
+    try {
+      if (list.length) localStorage.setItem(queueHoldKey(id), JSON.stringify(list));
+      else localStorage.removeItem(queueHoldKey(id));
+    } catch (_) {}
+  }
+
+    function queueHeld(id = S.currentId) {
+    return heldIds(id).size > 0;
+  }
+
+    // A user Stop of the tracked run holds what is queued now. Send now's own
+    // stop is not a hold, and this tab's Stop already held at click time (its
+    // cancel event must not also hold messages typed while stopping).
+    function holdQueueForStop(runId, fromEvent = false) {
+    if (runId && S.sendNowRuns.has(runId)) return;
+    if (fromEvent && runId && S.locallyStoppedRuns.has(runId)) return;
+    if (!fromEvent && runId) S.locallyStoppedRuns.add(runId);
+    const ids = heldIds();
+    for (const item of S.queuedTurns) if (!item.sending) ids.add(item.id);
+    setHeldIds(ids);
+    renderQueue();
+  }
+
     function persistQueue() {
     if (!S.currentId) return;
     try {
       localStorage.setItem(queueStoreKey(), JSON.stringify(S.queuedTurns));
     } catch (_) {}
+    const held = heldIds();
+    if (held.size) setHeldIds(held);
   }
 
     function loadQueue() {
@@ -68,6 +119,7 @@ export function createQueue(ctx) {
     const focusedId = focused?.closest("[data-queue-id]")?.dataset.queueId;
     const action = focused?.hasAttribute("data-queue-send") ? "data-queue-send" : focused?.hasAttribute("data-queue-edit") ? "data-queue-edit" : "data-queue-cancel";
     const count = S.queuedTurns.length;
+    const held = heldIds();
     const viewport = transcript.captureThreadViewport();
     const queueTop = S.queueListEl.scrollTop;
     S.queueEl.hidden = !count;
@@ -86,9 +138,9 @@ export function createQueue(ctx) {
           `<li class="chat-queue-item${item.immediate ? " is-immediate" : ""}${item.sending ? " is-sending" : ""}" data-queue-index="${index}" data-queue-id="${escapeHtml(item.id)}" aria-busy="${Boolean(item.sending)}">` +
           `<span class="chat-queue-dot" aria-hidden="true"></span>` +
           `<span class="chat-queue-text" title="${escapeHtml(item.text)}">${escapeHtml(item.text || "Attached files")}</span>` +
-          `<span class="chat-queue-state" role="status">${item.sending ? "Sending…" : item.immediate ? "Next" : "Queued"}${item.attachments?.length ? ` · ${item.attachments.length} attached` : ""}</span>` +
+          `<span class="chat-queue-state" role="status">${item.sending ? "Sending…" : item.immediate ? "Next" : held.has(item.id) ? "Stopped" : "Queued"}${item.attachments?.length ? ` · ${item.attachments.length} attached` : ""}</span>` +
           '<span class="chat-queue-actions">' +
-          `<button type="button" class="chat-queue-action" data-queue-send="${index}" title="Stop the current reply and send this message now"${!S.streaming ? " hidden" : ""}${item.sending || item.immediate || !S.streaming ? " disabled" : ""}>Send now</button>` +
+          `<button type="button" class="chat-queue-action" data-queue-send="${index}" title="${S.streaming ? "Stop the current reply and send this message now" : "Send this message now"}"${!S.streaming && !held.has(item.id) ? " hidden" : ""}${item.sending || item.immediate || (!S.streaming && !held.has(item.id)) ? " disabled" : ""}>Send now</button>` +
           `<button type="button" class="chat-queue-action" data-queue-edit="${index}"${item.sending ? " disabled" : ""}>Edit</button>` +
           `<button type="button" class="chat-queue-action" data-queue-cancel="${index}"${item.sending ? " disabled" : ""}>Cancel</button>` +
           "</span></li>",
@@ -143,9 +195,9 @@ export function createQueue(ctx) {
 
     async function drainQueue(opts) {
     if (queueDraining || traces.runIsActive(S.activeRun) || S.streaming || S.sending || S.loading) return;
-    if (!S.queuedTurns.length) return;
-    const item = S.queuedTurns[0];
-    if (item.sending) return;
+    const held = heldIds();
+    const item = S.queuedTurns.find((entry) => !held.has(entry.id));
+    if (!item || item.sending) return;
     item.sending = true;
     renderQueue();
     queueDraining = true;
@@ -201,11 +253,16 @@ export function createQueue(ctx) {
     item.immediate = true;
     S.queuedTurns = [item, ...S.queuedTurns.filter((entry) => entry.id !== item.id)];
     persistQueue();
+    // Send now is the explicit release of this message's Stop hold.
+    const held = heldIds();
+    held.delete(item.id);
+    setHeldIds(held);
     renderQueue();
     if (traces.runIsActive(S.activeRun) || S.streaming) {
       const origin = S.currentId;
       item.sending = true;
       renderQueue();
+      if (S.activeRun?.id) S.sendNowRuns.add(S.activeRun.id);
       await send.stopActiveRun();
       item.sending = false;
       if (origin !== S.currentId) return;
@@ -218,7 +275,10 @@ export function createQueue(ctx) {
     acknowledgeQueuedTurn,
     drainQueue,
     enqueueTurn,
+    holdQueueForStop,
     loadQueue,
+    queueHeld,
+    queueHoldKey,
     parseSlashCommand,
     queueIncomingTurn,
     queueStoreKey,

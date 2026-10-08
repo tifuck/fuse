@@ -932,6 +932,35 @@ class AgentCapsTest(unittest.TestCase):
         )
         self.assertEqual(len(roots), 2)  # original + wake turn
 
+    def test_stop_gate_reads_the_latest_root_within_one_second(self):
+        """Two roots started in the same second (a turn failing at once, then
+        the queue or a wake starting the next): created_at cannot order them
+        and the random ids must not decide which one was stopped."""
+        from app import chat_runs as runs
+        from app import command_jobs
+
+        thread, first = self._parent()
+        child = store.start_child_run(user_id=1, thread_id=thread["id"], parent_run_id=first["id"],
+                                      prompt="bg", description="bg", background=True)
+        store.finish_run(first["id"], {"content": "", "error": "boom", "tools": []}, "failed")
+        store.finish_run(child["id"], {"content": "report", "tools": []}, "completed")
+        current = chats.get_thread(1, thread["id"])
+        second = store.start_turn(1, thread["id"], "Again", current["revision"], "turn-again")["run"]
+        store.finish_run(second["id"], {"content": "", "tools": []}, "cancelled")
+        # Same second, and the stopped run's id sorts first: the old
+        # (created_at DESC, id DESC) order picked the failed run.
+        db.execute("UPDATE chat_runs SET id='0-stopped' WHERE id=?", (second["id"],))
+        db.execute("UPDATE chat_runs SET id='z-failed', root_run_id='z-failed' WHERE id=?", (first["id"],))
+        db.execute("UPDATE chat_runs SET parent_run_id='z-failed', root_run_id='z-failed' WHERE id=?", (child["id"],))
+        db.execute("UPDATE chat_runs SET created_at='2026-10-08T10:00:00Z' WHERE parent_run_id IS NULL AND thread_id=?",
+                   (first["thread_id"],))
+        self.assertEqual(store.thread_root_run(1, first["thread_id"])["id"], "0-stopped")
+        with patch.object(runs, "start", new=AsyncMock(return_value=None)), \
+                patch.object(command_jobs, "pending_envelopes", return_value=[]):
+            asyncio.run(runs._wake_parent(1, first["thread_id"]))
+        roots = db.fetchall("SELECT id FROM chat_runs WHERE thread_id=? AND parent_run_id IS NULL", (first["thread_id"],))
+        self.assertEqual(len(roots), 2, "no wake turn after the user's Stop")
+
     def test_settle_wake_children_acks_delivered_envelope_only(self):
         thread, parent = self._parent()
         child_a = store.start_child_run(

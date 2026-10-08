@@ -59,7 +59,7 @@ export function createSend(ctx) {
     S.messages = S.messages.slice(0, index - 1);
     composer.persist(true);
     context.recountLocalContext();
-    completeTurn(previous.content, (previous.attachments || []).slice(), { undoSnap: snap });
+    completeTurn(previous.content, (previous.attachments || []).slice(), { undoSnap: snap, truncatedTo: index - 1 });
   }
 
     function retryLastTurn() {
@@ -114,6 +114,8 @@ export function createSend(ctx) {
     async function stopActiveRun() {
     const id = S.activeRun?.id;
     if (!id) return;
+    // Hold before the request: its reconcile must not drain the queue.
+    queue.holdQueueForStop(id);
     S.stoppingRunId = id;
     if (S.activeRun) S.activeRun.cancel_requested = true;
     sync.setRunning();
@@ -236,6 +238,13 @@ export function createSend(ctx) {
       const undoSnap = opts && opts.undoSnap ? opts.undoSnap : sidebar.snapshotMessages();
       await sync.flushPending();
       if (gen !== S.generation) return;
+      // Retry and edit replace the tail, then resend. If the server refused
+      // the shortened transcript (a subagent of this chat is still running,
+      // or another tab changed it), the snapshot is back to full length and
+      // sending would append a duplicate turn instead of replacing one.
+      if (opts?.truncatedTo != null && S.messages.length !== opts.truncatedTo) {
+        throw Object.assign(new Error("The chat still has running work or changed elsewhere, so the earlier reply was not replaced. Nothing was sent."), { local: true, notApplied: true });
+      }
       if (!S.currentId) {
         S.pendingCreate ||= sidebar.bindCreatePayload({ ...settings, messages: [], command_id: newSession() });
         const created = await net.api("/chat/threads", { method: "POST", body: JSON.stringify(S.pendingCreate) });
@@ -296,7 +305,14 @@ export function createSend(ctx) {
       return true;
     } catch (error) {
       if (gen !== S.generation) return false;
-      if (error.local) {
+      if (error.notApplied) {
+        if (opts?.restoreDraft && !S.input.value.trim()) {
+          S.input.value = text;
+          S.drafts.set(origin, text);
+          composer.resizeInput();
+        }
+        sync.showFailure(opts?.restoreDraft ? "Edit not applied" : "Retry not applied", error);
+      } else if (error.local) {
         sync.showFailure("Send not confirmed; your draft is retained", error);
       } else if (error.status === 409) {
         sync.setPendingTurn(null);

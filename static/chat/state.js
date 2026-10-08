@@ -390,6 +390,10 @@ function initState() {
   S.pickerPinId = "";
   S.queuedTurns = [];
   S.acceptedQueueCommands = new Set();
+  // Runs stopped by a queue's Send now: their cancellation must not hold the queue.
+  S.sendNowRuns = new Set();
+  // Runs this tab stopped: the Stop click already held the queue.
+  S.locallyStoppedRuns = new Set();
   S.ATTACH_MAX = Number(S.config.limits && S.config.limits.attachments) || 4;
   S.jobsRows = [];
   S.historyMobile = window.matchMedia("(max-width: 800px)");

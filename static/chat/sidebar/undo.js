@@ -304,7 +304,7 @@ export function createUndo(ctx) {
     S.editingIndex = -1;
     composer.persist(true);
     context.recountLocalContext();
-    turns.completeTurn(next, kept, { undoSnap: snap });
+    turns.completeTurn(next, kept, { undoSnap: snap, truncatedTo: index, restoreDraft: true });
   }
 
   return {

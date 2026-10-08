@@ -617,16 +617,31 @@ def settle_wake_children(run_id, child_ids):
 def thread_root_run(user_id, thread_id):
     """Latest root run of a thread with its status."""
     try:
-        row = db.fetchone(
-            """SELECT id, status, request, updated_at, cancel_requested_at FROM chat_runs
+        rows = db.fetchall(
+            """SELECT id, status, request, updated_at, cancel_requested_at, message_id FROM chat_runs
                WHERE user_id=? AND thread_id=? AND parent_run_id IS NULL
-               ORDER BY created_at DESC, id DESC LIMIT 1""",
-            (user_id, thread_id),
+                 AND created_at = (SELECT MAX(created_at) FROM chat_runs
+                                   WHERE user_id=? AND thread_id=? AND parent_run_id IS NULL)""",
+            (user_id, thread_id, user_id, thread_id),
         )
     except Exception:
         return None
-    if row is None:
+    if not rows:
         return None
+    row = rows[0]
+    if len(rows) > 1:
+        # created_at has one-second precision and run ids are random, so two
+        # roots started in the same second (a turn failing at once, then a
+        # queue drain or wake) cannot be ordered by either. The transcript is
+        # authoritative: the later root owns the later assistant message.
+        # Reading the wrong one would let a stopped thread wake again.
+        try:
+            thread = db.fetchone("SELECT messages FROM chat_threads WHERE id=? AND user_id=?", (thread_id, user_id))
+            messages = json.loads(thread["messages"]) if thread else []
+        except (json.JSONDecodeError, TypeError):
+            messages = []
+        position = {str(m.get("id")): i for i, m in enumerate(messages if isinstance(messages, list) else []) if isinstance(m, dict)}
+        row = max(rows, key=lambda r: (position.get(str(r["message_id"]), -1), str(r["id"])))
     try:
         req = json.loads(row["request"])
     except (json.JSONDecodeError, TypeError):
@@ -1140,6 +1155,8 @@ def descendant_ids(run_id):
 
 
 RESUME_NOTICE = "Resumed after server restart from the last saved tool results."
+USER_RESUME_NOTICE = "Continued from the last saved tool results."
+USER_STOP_TOOL_NOTICE = "Tool interrupted when the user stopped the turn; outcome unknown. Verify its effect before repeating it."
 INTERRUPT_NOTICE = "Generation interrupted by server restart."
 STALL_NOTICE = "Generation stalled (no progress from the model)."
 STOP_NOTICE = "Stopped."
@@ -1417,9 +1434,20 @@ def conn_child_status(user_id: int, child_id: str):
 
 
 RESUME_NOTE_HEAD = "[Fuse] Service restart note"
+USER_RESUME_NOTE_HEAD = "[Fuse] Continue note"
 
 
-def _resume_note(run_id: str, resume_count: int) -> str:
+def _resume_note(run_id: str, resume_count: int, by_user: bool = False) -> str:
+    if by_user:
+        # The user stopped this turn and then chose Continue: no restart
+        # happened, so do not tell the model one did.
+        return (
+            f"{USER_RESUME_NOTE_HEAD} resume-note:{run_id}:{resume_count} — the user stopped this turn and has "
+            "now asked you to continue it. The transcript above is your own prior work; tool results marked "
+            "\"Tool interrupted when the user stopped the turn\" have an UNKNOWN outcome, so verify their effect "
+            "before repeating them. Any text you were writing when the turn stopped is not shown above. "
+            "Do not repeat completed steps; finish the current turn."
+        )
     return (
         f"{RESUME_NOTE_HEAD} resume-note:{run_id}:{resume_count} — the service restarted mid-turn. "
         "Continue exactly where you left off: the transcript above is your own prior work, tool results "
@@ -1429,7 +1457,7 @@ def _resume_note(run_id: str, resume_count: int) -> str:
     )
 
 
-def _with_resume_note(messages: list[dict], run_id: str, resume_count: int) -> list[dict]:
+def _with_resume_note(messages: list[dict], run_id: str, resume_count: int, by_user: bool = False) -> list[dict]:
     """Append the continue-where-you-left-off chat message, idempotently.
 
     Two guards keep consecutive restarts from stacking notes:
@@ -1438,7 +1466,7 @@ def _with_resume_note(messages: list[dict], run_id: str, resume_count: int) -> l
       or steer (no model progress since the last injection → nothing to add).
     """
     from . import chat_children
-    note = _resume_note(run_id, resume_count)
+    note = _resume_note(run_id, resume_count, by_user)
     sentinel = f"resume-note:{run_id}:{resume_count}"
     for msg in messages:
         if isinstance(msg, dict) and msg.get("role") == "user":
@@ -1451,7 +1479,7 @@ def _with_resume_note(messages: list[dict], run_id: str, resume_count: int) -> l
         content = str(msg.get("content") or "").strip()
         if not content and not msg.get("tool_calls"):
             continue
-        if msg.get("role") == "user" and (content.startswith(RESUME_NOTE_HEAD) or content.startswith(chat_children.STEER_FRAME_HEAD)):
+        if msg.get("role") == "user" and (content.startswith((RESUME_NOTE_HEAD, USER_RESUME_NOTE_HEAD, chat_children.STEER_FRAME_HEAD))):
             return messages
         break
     return [*messages, {"role": "user", "content": note}]
@@ -1462,8 +1490,11 @@ def _requeue_for_resume(row, messages, allowed=None, *, by_user=False):
 
     allowed = allowed or chat_tx.ACTIVE
     resume_count = int(row["resume_count"] if "resume_count" in row.keys() else 0) + 1
-    sealed = seal_provider_messages(messages)
-    sealed = _with_resume_note(sealed, row["id"], resume_count)
+    if by_user:
+        sealed = seal_provider_messages(messages, notice=USER_STOP_TOOL_NOTICE)
+    else:
+        sealed = seal_provider_messages(messages)
+    sealed = _with_resume_note(sealed, row["id"], resume_count, by_user)
     req = json.loads(row["request"])
     req["messages"] = sealed
     if row["parent_run_id"]:
@@ -1472,6 +1503,7 @@ def _requeue_for_resume(row, messages, allowed=None, *, by_user=False):
     agent = req.get("agent") if isinstance(req.get("agent"), dict) else {}
     agent["skip_sanitize"] = True
     agent["resumed"] = True
+    agent["resume_reason"] = "user" if by_user else "restart"
     # Recovery is a fresh leg: the worker gets the full runtime budget again
     # no matter how long ago the previous leg ran.
     agent["remaining_seconds"] = DEFAULT_REMAINING_SECONDS
@@ -1521,7 +1553,7 @@ def _requeue_for_resume(row, messages, allowed=None, *, by_user=False):
         ]
     message["stopped"] = False
     message.pop("error", None)
-    _append_notice(message, RESUME_NOTICE)
+    _append_notice(message, USER_RESUME_NOTICE if by_user else RESUME_NOTICE)
     for tool in message.get("tools") or []:
         if isinstance(tool, dict) and tool.get("status") in ("running", "progress"):
             tool["status"] = "interrupted"

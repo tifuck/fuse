@@ -242,6 +242,27 @@ class RestartRecoveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resumed["status"], "queued")
         self.assertEqual(resumed["request"]["agent"].get("resumed"), True)
 
+    def test_continue_after_user_stop_does_not_claim_a_restart(self):
+        thread = self.make_thread()
+        run = self.start_run(thread)
+        store.save_turn_progress(run["id"], [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "web_search", "arguments": "{}"}}]},
+        ])
+        db.execute("UPDATE chat_runs SET status='cancelled' WHERE id=?", (run["id"],))
+        resumed = store.resume_run(1, run["id"])
+        sent = resumed["request"]["messages"]
+        note = sent[-1]["content"]
+        self.assertTrue(note.startswith(store.USER_RESUME_NOTE_HEAD))
+        self.assertNotIn("restart", note.lower())
+        self.assertIn("user stopped", sent[-2]["content"], "the unfinished call is sealed with the real cause")
+        self.assertEqual(resumed["request"]["agent"]["resume_reason"], "user")
+        self.assertIn(store.USER_RESUME_NOTICE, resumed["message"]["notice"])
+        self.assertNotIn("server restart", resumed["message"]["notice"])
+        # The guard against stacking notes also recognises the user variant.
+        self.assertIs(store._with_resume_note(sent, run["id"], 9, True), sent)
+
     def test_resume_run_blocked_while_thread_busy(self):
         thread = self.make_thread()
         run = self.start_run(thread)
