@@ -316,6 +316,16 @@ class ApplyReplaceTest(unittest.TestCase):
             workspace._apply_replace("alpha\r\nbeta\r\n", "zzz\nqqq", "x", False)
         self.assertIn("CRLF", ctx.exception.detail)
 
+
+def assume_read(case):
+    """Edits in this class are not about read-before-edit: every file counts as
+    read and unchanged (tests/test_file_ledger.py covers the ledger itself)."""
+    for name in ("lookup", "require_read"):
+        patcher = patch.object(workspace.file_ledger, name, return_value=workspace.file_ledger.Seen(0))
+        patcher.start()
+        case.addCleanup(patcher.stop)
+
+
 class FakeAgent:
     """Scripted _agent_call stand-in for connector-path tests."""
 
@@ -335,6 +345,9 @@ class FakeAgent:
 
 
 class AgentPathTest(unittest.TestCase):
+    def setUp(self):
+        assume_read(self)
+
     def _run(self, coro):
         return asyncio.run(coro)
 
@@ -796,7 +809,7 @@ class AgentPathTest(unittest.TestCase):
                         "/tmp",
                     )
                 )
-        self.assertIn("changed during edit", ctx.exception.detail)
+        self.assertIn("changed since you last read it", ctx.exception.detail)
         self.assertEqual([op for op, _ in fake.calls], ["replace"])
 
     def test_replace_crlf_retry_on_legacy_connector(self):
@@ -1096,6 +1109,9 @@ def make_sftp_pool(sftp):
 
 
 class SFTPPathTest(unittest.TestCase):
+    def setUp(self):
+        assume_read(self)
+
     def _run(self, coro):
         return asyncio.run(coro)
 

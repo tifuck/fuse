@@ -128,7 +128,7 @@ def _crlf_normalize(text: str, old: str, new: str) -> tuple[str, str] | None:
 def _apply_replace(text: str, old: str, new: str, replace_all: bool) -> tuple[str, int]:
     """Exact replacement only; never guess at whitespace-sensitive source edits."""
     if not old:
-        raise WorkspaceError("old_string required")
+        raise WorkspaceError("old_string is empty. Set it to the exact text to replace; use write_file to create a file")
     count = text.count(old)
     if count == 0:
         normalized = _crlf_normalize(text, old, new)
@@ -298,7 +298,7 @@ def _parse_edits(args: dict) -> list[tuple[str, str, bool]]:
         if not isinstance(old, str) or not isinstance(new, str):
             raise WorkspaceError(f"{where}old_string and new_string must be strings")
         if not old:
-            raise WorkspaceError(f"{where}old_string required")
+            raise WorkspaceError(f"{where}old_string is empty. Set it to the exact text to replace; use write_file to create a file")
         if old == new:
             raise WorkspaceError(f"{where}old_string and new_string are identical; nothing to change")
         if "\x00" in old or "\x00" in new:

@@ -209,11 +209,21 @@ class ConnectorReadTest(unittest.IsolatedAsyncioTestCase):
                 await ws._read(1, 2, "h", {"path": "f", "offset": 50}, "/repo")
 
 
+
+def assume_read(case):
+    """Edits in this class are not about read-before-edit: every file counts as
+    read and unchanged (tests/test_file_ledger.py covers the ledger itself)."""
+    for name in ("lookup", "require_read"):
+        patcher = patch.object(ws.file_ledger, name, return_value=ws.file_ledger.Seen(0))
+        patcher.start()
+        case.addCleanup(patcher.stop)
+
+
 # --- write_file / search_replace ----------------------------------------------
 
 class WriteTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        ws._read_ledger.clear()
+        ws.file_ledger.clear()
 
     async def test_new_file_uses_umask_mode_and_reports_created(self):
         sftp = FakeSFTP()
@@ -312,7 +322,8 @@ class WriteTest(unittest.IsolatedAsyncioTestCase):
 
 class ReplaceTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        ws._read_ledger.clear()
+        ws.file_ledger.clear()
+        assume_read(self)
 
     async def test_identical_strings_refused_before_transport(self):
         with patch.object(ws, "_agent_call", new_callable=AsyncMock) as call:
@@ -347,13 +358,6 @@ class ReplaceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("10: TEN", text)
         self.assertIn("7: line7", text)
         self.assertNotIn("6: line6", text)
-
-    async def test_edit_counts_as_read_for_following_write(self):
-        sftp = FakeSFTP({"/repo/a.py": b"a\n"})
-        with patch.object(ws, "_is_agent", return_value=False), sftp_patch(sftp):
-            await ws._replace(1, 2, "h", {"path": "a.py", "old_string": "a", "new_string": "b"}, "/repo", run_id="r")
-            await ws._write(1, 2, "h", {"path": "a.py", "content": "c\n"}, "/repo", run_id="r")
-        self.assertEqual(sftp.files["/repo/a.py"], b"c\n")
 
 
 # --- grep / glob / list ---------------------------------------------------------
@@ -683,7 +687,8 @@ if __name__ == "__main__":
 
 class MultiEditTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        ws._read_ledger.clear()
+        ws.file_ledger.clear()
+        assume_read(self)
 
     async def test_edits_apply_in_order_and_publish_once(self):
         sftp = FakeSFTP({"/repo/a.py": b"alpha\nbeta\ngamma\n"})

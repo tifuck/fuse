@@ -71,7 +71,7 @@ def response(data, identity="same", size=None, eof=True):
 
 def test_connector_read_and_no_ledger():
     call = AsyncMock(return_value={"ok": True, "out": json.dumps(response(raster()))})
-    with patch.object(workspace, "_is_agent", return_value=True), patch.object(workspace, "_agent_call", call), patch.object(workspace, "ledger_note") as ledger:
+    with patch.object(workspace, "_is_agent", return_value=True), patch.object(workspace, "_agent_call", call), patch.object(workspace.file_ledger, "note_read") as ledger:
         text, rec = asyncio.run(workspace._read(1, 2, "box", {"path": "a.png"}, "/work", run_id="test"))
     assert rec["image"]["format"] == "PNG"
     assert rec["image"]["data"] not in text and rec["image"]["data"] not in rec["preview"]
@@ -93,7 +93,7 @@ def test_connector_errors(replies, match):
 
 
 def test_connector_text_and_extensionless():
-    with patch.object(workspace, "_is_agent", return_value=True), patch.object(workspace, "_agent_read_page", AsyncMock(return_value=("hello\r\n", 20))), patch.object(workspace, "ledger_note"):
+    with patch.object(workspace, "_is_agent", return_value=True), patch.object(workspace, "_agent_read_page", AsyncMock(return_value=("hello\r\n", 20))), patch.object(workspace.file_ledger, "note_read"):
         text, rec = asyncio.run(workspace._read(1, 2, "box", {"path": "a.txt"}, "/work"))
         assert text == "From host box:\n1: hello\n\n(End of file — 1 lines.)"
         assert "image" not in rec
@@ -145,7 +145,7 @@ def test_decode_timeout_kills_child():
 
 
 def test_text_with_image_extension_uses_magic():
-    with patch.object(workspace, "_is_agent", return_value=True), patch.object(workspace, "_agent_call", AsyncMock(return_value=response(b"plain text"))), patch.object(workspace, "_agent_read_page", AsyncMock(return_value=("plain text", 20))), patch.object(workspace, "ledger_note"):
+    with patch.object(workspace, "_is_agent", return_value=True), patch.object(workspace, "_agent_call", AsyncMock(return_value=response(b"plain text"))), patch.object(workspace, "_agent_read_page", AsyncMock(return_value=("plain text", 20))), patch.object(workspace.file_ledger, "note_read"):
         text, rec = asyncio.run(workspace._read(1, 2, "box", {"path": "fake.png"}, "/work"))
         assert "1: plain text" in text
         assert "image" not in rec
@@ -166,7 +166,7 @@ def test_frame_rejected_on_text():
 
 @pytest.mark.parametrize("source", ["\u00ff\u00d8\u00ff", "\ufffd\ufffd\ufffd", r"\xff\xd8\xff", r"\u00ff\u00d8\u00ff"])
 def test_extensionless_jpeg_text_encodings(source):
-    with patch.object(workspace, "_is_agent", return_value=True), patch.object(workspace, "_agent_read_page", AsyncMock(return_value=(source, 20))), patch.object(workspace, "_agent_call", AsyncMock(return_value=response(raster("JPEG")))), patch.object(workspace, "ledger_note") as ledger:
+    with patch.object(workspace, "_is_agent", return_value=True), patch.object(workspace, "_agent_read_page", AsyncMock(return_value=(source, 20))), patch.object(workspace, "_agent_call", AsyncMock(return_value=response(raster("JPEG")))), patch.object(workspace.file_ledger, "note_read") as ledger:
         text, rec = asyncio.run(workspace._read(1, 2, "box", {"path": "no-extension"}, "/work"))
         assert rec["image"]["format"] == "JPEG"
         assert "Image: JPEG" in text

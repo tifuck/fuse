@@ -17,7 +17,6 @@ import stat
 import time
 import traceback
 import weakref
-from collections import OrderedDict
 from uuid import uuid4
 
 from . import hosts
@@ -40,6 +39,7 @@ from .workspace_ops.common import (
     _quote_host_path,
     _require,
 )
+from .workspace_ops import file_ledger
 from .workspace_ops.instructions import (
     AGENTS_MAX,
     _agents_cache,
@@ -266,6 +266,48 @@ async def _agent_read_sample(user_id, host_id, path: str) -> str:
     return str(data.get("out") or "")
 
 
+async def _agent_current_digest(user_id, host_id, path: str) -> str | None:
+    """Digest of a connector file as a whole-file read_file sees it: '' when it
+    no longer fits one read page (so it changed), None when it cannot be read."""
+    try:
+        data = await _agent_call(user_id, host_id, "read", {"path": path, "offset": 1, "limit": _READ_MAX_LINES}, 20)
+    except WorkspaceError:
+        return None
+    if not data.get("ok"):
+        return None
+    if data.get("truncated"):
+        return ""
+    return _connector_digest(str(data.get("out") or "")) or ""
+
+
+def _connector_digest(text: str) -> str | None:
+    """Digest of text a whole-file connector read would return verbatim (the
+    read op is raw bytes, up to 2000 lines and one 64 KB frame); None past that."""
+    if (text.endswith("\n[fuse-agent: output truncated]\n") or len(text.encode()) >= _SSH_OUT_MAX - 64
+            or text.count("\n") >= _READ_MAX_LINES):
+        return None
+    return file_ledger.digest(text)
+
+
+async def _agent_require_fresh(user_id, host_id, run_id: str, ledger_path: str, path: str, *,
+                               windows: bool, write: bool) -> None:
+    """Refuse a connector edit of a file this agent has not read, or that
+    changed since: Fuse writes by generation, anything else by content."""
+    if file_ledger.lookup(run_id, host_id, ledger_path, windows=windows) is None:
+        info = await _agent_probe_file(user_id, host_id, path, windows=windows)
+        if info is not None and info.get("kind") == "missing":
+            if write:
+                return
+            raise WorkspaceError(f"{path} does not exist. Use write_file to create it.")
+        if info is not None and info.get("kind") == "dir":
+            raise WorkspaceError(f"{path} is a directory, not a file.")
+    seen = file_ledger.require_read(run_id, host_id, ledger_path, path, windows=windows, write=write)
+    if seen.digest is not None:
+        now = await _agent_current_digest(user_id, host_id, path)
+        if now is not None and now != seen.digest:
+            raise file_ledger.changed_error(path)
+
+
 async def _refine_mutation_error(data: dict, exc: WorkspaceError, user_id, host_id, path: str, *, windows: bool, write: bool) -> WorkspaceError:
     """Explain a connector's generic write/replace failure with a read-only probe.
 
@@ -407,7 +449,7 @@ def _confine(path: str, root: str, *, windows: bool = False) -> str:
         full = posixpath.normpath(posixpath.join(base, raw))
     root_n = posixpath.normpath(base)
     if root_n != "/" and full != root_n and not full.startswith(root_n.rstrip("/") + "/"):
-        raise WorkspaceError("path is outside the project root")
+        raise WorkspaceError(f"{full} is outside the project root {root_n}; use a path inside it")
     if ".." in posixpath.normpath(full).split("/"):
         raise WorkspaceError("path is outside the project root")
     return full
@@ -437,7 +479,7 @@ def _confine_win(path: str, root: str) -> str:
     root_key = root_n.rstrip("\\")
     full_key = ntpath.normpath(full)
     if full_key.lower() != root_key.lower() and not full_key.lower().startswith(root_key.lower() + "\\"):
-        raise WorkspaceError("path is outside the project root")
+        raise WorkspaceError(f"{full_key} is outside the project root {root_n}; use a path inside it")
     if ".." in [p for p in full_key.split("\\") if p]:
         raise WorkspaceError("path is outside the project root")
     return full_key
@@ -520,7 +562,9 @@ def _relax_paths(args: dict, base: str, windows: bool, name: str = "") -> None:
             args[key] = posixpath.normpath(posixpath.join(b, raw))
 
 
-async def execute(name: str, arguments: str, *, user_id: int, bound_host_id=None, bound_cwd="", run_id: str = "", thread_id: int | None = None, on_started=None, gate=None) -> tuple[str, dict]:
+async def execute(name: str, arguments: str, *, user_id: int, bound_host_id=None, bound_cwd="", run_id: str = "", thread_id: int | None = None, on_started=None, gate=None, reader: str = "") -> tuple[str, dict]:
+    """reader names the agent whose reads gate its edits (file_ledger); it
+    defaults to the run."""
     try:
         args = _args(arguments)
     except WorkspaceError as exc:
@@ -605,7 +649,7 @@ async def execute(name: str, arguments: str, *, user_id: int, bound_host_id=None
         elif name == "monitor":
             text, rec = await _monitor(user_id, host_id, alias, args, root, windows=windows, run_id=run_id, thread_id=thread_id, on_started=on_started)
         elif name == "read_file":
-            text, rec = await _read(user_id, host_id, alias, args, root, windows=windows, run_id=run_id)
+            text, rec = await _read(user_id, host_id, alias, args, root, windows=windows, run_id=reader or run_id)
         elif name == "list_dir":
             text, rec = await _list(user_id, host_id, alias, args, root, windows=windows)
         elif name == "grep":
@@ -613,9 +657,9 @@ async def execute(name: str, arguments: str, *, user_id: int, bound_host_id=None
         elif name == "glob":
             text, rec = await _glob(user_id, host_id, alias, args, root, windows=windows)
         elif name == "write_file":
-            text, rec = await _write(user_id, host_id, alias, args, root, windows=windows, run_id=run_id)
+            text, rec = await _write(user_id, host_id, alias, args, root, windows=windows, run_id=reader or run_id)
         elif name == "search_replace":
-            text, rec = await _replace(user_id, host_id, alias, args, root, windows=windows, run_id=run_id)
+            text, rec = await _replace(user_id, host_id, alias, args, root, windows=windows, run_id=reader or run_id)
         else:
             return "Unknown tool.", _error_rec(name, "unknown tool", host=alias, kind="unknown_tool")
     except WorkspaceError as exc:
@@ -1438,6 +1482,8 @@ def _sftp_error(exc, path: str, op: str) -> WorkspaceError:
     if _sftp_missing(exc):
         if op == "write":
             return WorkspaceError(f"parent directory of {path} does not exist")
+        if op == "edit":
+            return WorkspaceError(f"{path}: no such file or directory. Check the path with glob, or use write_file to create it.")
         return WorkspaceError(f"{path}: no such file or directory. Check the path with glob or list_dir")
     if _sftp_denied(exc):
         return WorkspaceError(f"permission denied: {path} ({op})")
@@ -1511,7 +1557,7 @@ async def _sftp_atomic_write(sftp, path: str, content: bytes, *, expected=None):
                 with contextlib.suppress(Exception):
                     await chown(tmp, uid, gid)
         if expected is not None and _sftp_version(await sftp.lstat(path)) != expected:
-            raise WorkspaceError("file changed during edit; read it again before retrying")
+            raise file_ledger.changed_error(path)
         try:
             await sftp.posix_rename(tmp, path)
         except asyncssh.SFTPOpUnsupported:
@@ -1592,61 +1638,6 @@ async def _sftp_read_window(handle, offset: int, limit: int) -> tuple[bytes, boo
             if result.count(b"\n") > limit or len(result) >= _SSH_OUT_MAX:
                 return bytes(result), True
     raise WorkspaceError("read scan exceeds 64 MiB; narrow the file or use grep")
-
-
-# Per-run record of which files the agent has read (and at what version), so
-# write_file never blindly overwrites a file it has not seen or that changed
-# underneath it (another subagent, the user, a build). Bounded; a service
-# restart only means "read it again".
-_LEDGER_RUNS = 512
-_LEDGER_PATHS = 4096
-_read_ledger: "OrderedDict[str, dict]" = OrderedDict()
-
-
-def _ledger_key(host_id, path: str, windows: bool) -> tuple:
-    return (int(host_id), ntpath.normcase(path) if windows else path)
-
-
-def ledger_note(run_id: str, host_id, path: str, version, *, windows: bool = False) -> None:
-    if not run_id or not path:
-        return
-    book = _read_ledger.get(run_id)
-    if book is None:
-        book = {}
-        _read_ledger[run_id] = book
-        while len(_read_ledger) > _LEDGER_RUNS:
-            _read_ledger.popitem(last=False)
-    else:
-        _read_ledger.move_to_end(run_id)
-    key = _ledger_key(host_id, path, windows)
-    book.pop(key, None)
-    book[key] = version
-    while len(book) > _LEDGER_PATHS:
-        book.pop(next(iter(book)))
-
-
-def ledger_lookup(run_id: str, host_id, path: str, *, windows: bool = False) -> tuple[bool, object]:
-    book = _read_ledger.get(run_id or "")
-    if not book:
-        return False, None
-    key = _ledger_key(host_id, path, windows)
-    if key not in book:
-        return False, None
-    return True, book[key]
-
-
-def _not_read_error(path: str) -> WorkspaceError:
-    return WorkspaceError(
-        f"{path} already exists and has not been read in this session. read_file it first "
-        "(to keep unrelated content), then write, or use search_replace for a targeted change"
-    )
-
-
-def _changed_since_read_error(path: str) -> WorkspaceError:
-    return WorkspaceError(
-        f"{path} changed since you last read it (another agent, the user, or a command modified it). "
-        "read_file it again and redo the change against the current content"
-    )
 
 
 def _decode_text(data: bytes) -> str:
@@ -1827,6 +1818,8 @@ async def _read(user_id, host_id, alias, args, root, *, windows: bool = False, m
     chars = _READ_MAX_CHARS if max_chars is None else max_chars
     if _is_agent(user_id, host_id):
         limit = min(limit, _READ_MAX_LINES)
+        ledger_path = _canonical_path(host_id, ledger_path, windows=windows)
+        gen = file_ledger.generation(host_id, ledger_path, windows=windows)
         try:
             source, got_limit = await _agent_read_page(user_id, host_id, path, offset, limit)
         except WorkspaceError as exc:
@@ -1839,8 +1832,8 @@ async def _read(user_id, host_id, alias, args, root, *, windows: bool = False, m
             result = await _image_read(user_id, host_id, alias, path, args, probe=True)
             if result is not None:
                 return result
-        ledger_note(run_id, host_id, _canonical_path(host_id, ledger_path, windows=windows), None, windows=windows)
         if raw:
+            file_ledger.note_read(run_id, host_id, ledger_path, gen=gen, windows=windows)
             body = source[:chars]
             return _label(alias, body), {
                 "name": "read_file",
@@ -1866,6 +1859,11 @@ async def _read(user_id, host_id, alias, args, root, *, windows: bool = False, m
                 total = offset - 1 + len(chunk)
         else:
             total = offset - 1 + len(chunk)
+        # A whole-file read pins its content: the connector reports no stat,
+        # so an edit compares this digest against a fresh read instead.
+        whole = offset == 1 and total is not None
+        file_ledger.note_read(run_id, host_id, ledger_path, gen=gen, windows=windows,
+                              digest=_connector_digest(source) if whole else None)
         body = _read_render(chunk, offset, total=total, more=more, max_chars=chars)
         return _label(alias, body), {
             "name": "read_file",
@@ -1879,6 +1877,10 @@ async def _read(user_id, host_id, alias, args, root, *, windows: bool = False, m
     async with lease as sftp:
         try:
             path = await _sftp_expand_home(sftp, path, int(host_id))
+            # `path` is the SFTP-expanded absolute form: ledger keys must match
+            # what a later write of the same file (absolute or ~/) canonicalizes to.
+            ledger_path = _canonical_path(host_id, path, windows=windows)
+            gen = file_ledger.generation(host_id, ledger_path, windows=windows)
             async with sftp.open(path, "rb") as handle:
                 is_dir = False
                 stat_fn = getattr(handle, "stat", None)
@@ -1908,9 +1910,9 @@ async def _read(user_id, host_id, alias, args, root, *, windows: bool = False, m
     if not raw and isinstance(data, bytes) and (file_images.image_magic(data) or b"\x00" in data):
         return await _image_read(user_id, host_id, alias, path, args)
     text = _decode_text(data) if isinstance(data, bytes) else str(data)
-    # `path` is the SFTP-expanded absolute form: ledger keys must match what a
-    # later write of the same file (absolute or ~/) canonicalizes to.
-    ledger_note(run_id, host_id, _canonical_path(host_id, path, windows=windows), version, windows=windows)
+    whole = offset == 1 and not bytes_truncated
+    file_ledger.note_read(run_id, host_id, ledger_path, gen=gen, version=version, windows=windows,
+                          digest=file_ledger.digest(data) if whole and isinstance(data, bytes) else None)
     lines = text.split("\n")
     if lines and lines[-1] == "":
         lines.pop()
@@ -2314,7 +2316,21 @@ def _serialize_file_mutation(fn):
             lock = asyncio.Lock()
             _mutation_locks[key] = lock
         async with lock:
-            return await fn(user_id, host_id, alias, args, root, windows=windows, **kwargs)
+            try:
+                return await fn(user_id, host_id, alias, args, root, windows=windows, **kwargs)
+            except BaseException as exc:
+                reader = str(kwargs.get("run_id") or "")
+                # The home is known by now: key the ledger as the call did.
+                where = _canonical_path(host_id, path, windows=windows)
+                detail = getattr(exc, "detail", "") if isinstance(exc, WorkspaceError) else ""
+                if not isinstance(exc, WorkspaceError) or "timed out" in detail or "outcome is unknown" in detail:
+                    # Timed out or dropped mid-write: the file may have changed,
+                    # so no agent (the writer included) may edit it unread.
+                    file_ledger.invalidate(reader, host_id, where, windows=windows)
+                elif "changed since you last read it" in detail:
+                    # Told to read again: a blind retry must not slip through.
+                    file_ledger.forget(reader, host_id, where, windows=windows)
+                raise
     return wrapped
 
 
@@ -2331,6 +2347,27 @@ async def _agent_mkdir_parent(user_id, host_id, path: str, *, windows: bool) -> 
     except WorkspaceError:
         return False
     return bool(data.get("ok"))
+
+
+_WRITE_RECHECK_MAX = 1024 * 1024
+
+
+async def _sftp_require_unchanged(sftp, path: str, attrs, seen) -> None:
+    """External changes (shell, editor, build) since this agent's read: by
+    content when the read pinned it, else by size and mtime."""
+    if seen.digest is not None and (getattr(attrs, "size", 0) or 0) <= _WRITE_RECHECK_MAX:
+        try:
+            async with sftp.open(path, "rb") as handle:
+                current = await handle.read(_WRITE_RECHECK_MAX + 1)
+        except Exception as exc:
+            if _sftp_transport_error(exc):
+                raise
+            raise _sftp_error(exc, path, "read") from exc
+        if file_ledger.digest(current if isinstance(current, bytes) else str(current).encode()) != seen.digest:
+            raise file_ledger.changed_error(path)
+        return
+    if seen.version is not None and _content_version(attrs) != seen.version:
+        raise file_ledger.changed_error(path)
 
 
 @_serialize_file_mutation
@@ -2350,19 +2387,20 @@ async def _write(user_id, host_id, alias, args, root, *, windows: bool = False, 
         raise WorkspaceError("content exceeds 400000 UTF-8 bytes; split the write")
     if _is_agent(user_id, host_id):
         existed = None
-        seen, _version = ledger_lookup(run_id, host_id, ledger_path, windows=windows)
-        if not seen:
+        if file_ledger.lookup(run_id, host_id, ledger_path, windows=windows) is None:
             # One read-only stat: refuse to clobber an unread file, and create
             # a missing parent directory up front instead of failing.
             info = await _agent_probe_file(user_id, host_id, path, windows=windows)
             if info is not None:
                 if info.get("kind") == "dir":
-                    raise WorkspaceError("write target is a directory, not a file")
+                    raise WorkspaceError(f"{path} is a directory, not a file. Pass a file path.")
                 existed = info.get("kind") == "file"
                 if existed:
-                    raise _not_read_error(path)
+                    raise file_ledger.not_read_error(path, write=True)
                 if info.get("parent") == "dmiss":
                     await _agent_mkdir_parent(user_id, host_id, path, windows=windows)
+        else:
+            await _agent_require_fresh(user_id, host_id, run_id, ledger_path, path, windows=windows, write=True)
 
         async def attempt() -> dict:
             try:
@@ -2391,7 +2429,7 @@ async def _write(user_id, host_id, alias, args, root, *, windows: bool = False, 
                     )
             else:
                 raise refined
-        ledger_note(run_id, host_id, ledger_path, None, windows=windows)
+        file_ledger.note_write(run_id, host_id, ledger_path, digest=_connector_digest(content), windows=windows)
         verb = "created" if existed is False else "wrote"
         return _label(alias, f"{verb} {path} ({size} bytes)"), {"name": "write_file", "status": "done", "host": alias, "path": path}
     lease = await _sftp(user_id, host_id)
@@ -2407,11 +2445,8 @@ async def _write(user_id, host_id, alias, args, root, *, windows: bool = False, 
                 raise _sftp_error(exc, path, "write") from exc
             attrs = None
         if attrs is not None and stat.S_ISREG(getattr(attrs, "permissions", 0) or 0):
-            seen, version = ledger_lookup(run_id, host_id, ledger_path, windows=windows)
-            if not seen:
-                raise _not_read_error(path)
-            if version is not None and _content_version(attrs) != version:
-                raise _changed_since_read_error(path)
+            seen = file_ledger.require_read(run_id, host_id, ledger_path, path, windows=windows, write=True)
+            await _sftp_require_unchanged(sftp, path, attrs, seen)
         expected = _sftp_version(attrs) if attrs is not None else None
         data = content.encode()
         try:
@@ -2428,7 +2463,7 @@ async def _write(user_id, host_id, alias, args, root, *, windows: bool = False, 
         version = None
         with contextlib.suppress(Exception):
             version = _content_version(await sftp.lstat(path))
-    ledger_note(run_id, host_id, ledger_path, version, windows=windows)
+    file_ledger.note_write(run_id, host_id, ledger_path, version=version, digest=file_ledger.digest(data), windows=windows)
     verb = "created" if attrs is None else "overwrote"
     return _label(alias, f"{verb} {path} ({size} bytes)"), {"name": "write_file", "status": "done", "host": alias, "path": path}
 
@@ -2451,6 +2486,7 @@ async def _replace(user_id, host_id, alias, args, root, *, windows: bool = False
         else:
             old, new, replace_all = edits[0]
             payload.update(old=old, new=new, replace_all=replace_all)
+        await _agent_require_fresh(user_id, host_id, run_id, ledger_path, path, windows=windows, write=False)
         try:
             data = await _agent_call(user_id, host_id, "replace", payload, 45)
         except WorkspaceError as exc:
@@ -2505,7 +2541,8 @@ async def _replace(user_id, host_id, alias, args, root, *, windows: bool = False
                 _replace_preview(path, o, n, 1, start=s)
                 for (o, n, _a), s in zip(edits, starts)
             )[:800]
-            ledger_note(run_id, host_id, ledger_path, None, windows=windows)
+            file_ledger.note_write(run_id, host_id, ledger_path, digest=_connector_digest(fresh) if fresh else None,
+                                   windows=windows)
             head = f"updated {path} ({count} replacement{'s' if count != 1 else ''}"
             head += f" from {len(edits)} edits)" if multi and len(edits) > 1 else ")"
             if snippet:
@@ -2519,7 +2556,18 @@ async def _replace(user_id, host_id, alias, args, root, *, windows: bool = False
             }
         # A failed/uncertain mutation must never be retried as a whole-file write.
         base = _agent_error(data, "replace failed")
-        if "not found" in error and "edit " not in error and not any("\r" in o for o, _n, _a in edits):
+        said = str(data.get("error") or "").strip().rstrip(".")
+        # The connector's terse edit errors, told the way the SSH path tells them.
+        if "file does not exist" in error:
+            base = WorkspaceError(f"{path} does not exist. Use write_file to create it.")
+        elif "changed during edit" in error:
+            base = file_ledger.changed_error(path)
+        elif "regular file" in error:
+            base = WorkspaceError(f"{path} is not a regular file; search_replace edits text files only.")
+        elif "not unique" in error:
+            base = WorkspaceError(f"{said}. Include more surrounding context lines, or pass replace_all=true.",
+                                  extra=dict(getattr(base, "extra", None) or {}))
+        elif "not found" in error and "edit " not in error and not any("\r" in o for o, _n, _a in edits):
             base = WorkspaceError(
                 _NOT_FOUND_HINT + " This file may use CRLF line endings that read_file hides.",
                 extra=dict(getattr(base, "extra", None) or {}),
@@ -2556,6 +2604,10 @@ async def _replace(user_id, host_id, alias, args, root, *, windows: bool = False
             text = data.decode() if isinstance(data, bytes) else str(data)
         except UnicodeDecodeError:
             raise WorkspaceError("file is not UTF-8 text; apply the change with run_terminal_command") from None
+        seen = file_ledger.require_read(run_id, host_id, ledger_path, path, windows=windows)
+        if (file_ledger.digest(data) != seen.digest if seen.digest is not None
+                else seen.version is not None and _content_version(attrs) != seen.version):
+            raise file_ledger.changed_error(path)
         updated = text
         count = 0
         for index, (old, new, replace_all) in enumerate(edits, 1):
@@ -2579,7 +2631,8 @@ async def _replace(user_id, host_id, alias, args, root, *, windows: bool = False
         version = None
         with contextlib.suppress(Exception):
             version = _content_version(await sftp.lstat(path))
-    ledger_note(run_id, host_id, ledger_path, version, windows=windows)
+    file_ledger.note_write(run_id, host_id, ledger_path, version=version, digest=file_ledger.digest(updated.encode()),
+                           windows=windows)
     if len(edits) == 1:
         old, new, _a = edits[0]
         snippet = _edit_snippet(text, updated, old, new)
