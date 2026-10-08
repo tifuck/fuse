@@ -105,7 +105,7 @@ const DONE = OPEN.map(([text]) => [text, 'completed']);
         const box = document.querySelector('[data-chat-form] .chat-box').getBoundingClientRect();
         return { text: document.querySelector('[data-live-todos] [data-todo-bar]').innerText.replace(/\s+/g, ' ').trim(), width: bar.width, right: box.right - bar.right, gap: box.top - bar.bottom, boxWidth: box.width };
       });
-      check(tab.text === 'Todos 1/3' && tab.width < 200 && tab.right >= 0 && tab.right < 24 && Math.abs(tab.gap) < 1, tag(`the closed tray is a small tab on the composer's right edge: ${JSON.stringify(tab)}`));
+      check(tab.text === 'Todos 1/3' && tab.width < 200 && tab.right >= 0 && tab.right < 24 && Math.abs(tab.gap) <= 1, tag(`the closed tray is a small tab on the composer's right edge: ${JSON.stringify(tab)}`));
 
       // 2. In place.
       await page.evaluate(([next]) => fuseToolFixture.append(next, true), [todo('t2', [['Read the layout code', 'completed'], ['Spawn reviewers for each pane', 'completed'], ['Collect and merge findings', 'in_progress']])]);

@@ -13,8 +13,7 @@
   --todo-tab-h: 1.7rem;
   --todo-right: 0.6rem;
   --todo-radius: 7px;
-  --todo-edge: color-mix(in srgb, var(--brass) 55%, var(--line));
-  --todo-page-edge: color-mix(in srgb, var(--mist) 16%, var(--line));
+  --todo-edge: color-mix(in srgb, var(--mist) 16%, var(--line));
   --todo-surface: color-mix(in srgb, var(--ink) 88%, var(--panel));
   display: block;
   position: relative;
@@ -31,10 +30,12 @@
   bottom: 100%;
 }
 .chat .chat-agent-live-todos:not([hidden]) { --todo-edge: var(--line); }
-/* Room under the last line of the transcript so the tab never covers it. */
-html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty):has(.chat-dock > .chat-live-todos:not([hidden])) .chat-thread > .chat-live-dock:not([hidden]),
-html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty):has(.chat-dock > .chat-live-todos:not([hidden])) .chat-thread:not(:has(> .chat-live-dock:not([hidden]))) > .chat-log {
-  padding-bottom: calc(1rem + var(--todo-tab-h, 1.7rem));
+/* Open, the drawer reserves its height — todos.js measures the sheet into
+   --todo-push — so it never covers the transcript. Collapsed, the tab only
+   hovers over the last line. */
+html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty):has(.chat-dock > .chat-live-todos.is-open:not([hidden])) .chat-thread > .chat-live-dock:not([hidden]),
+html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty):has(.chat-dock > .chat-live-todos.is-open:not([hidden])) .chat-thread:not(:has(> .chat-live-dock:not([hidden]))) > .chat-log {
+  padding-bottom: calc(1rem + var(--todo-push, 0px));
 }
 
 /* The sheet: hangs from the anchor line, the tab on top, the page under it. */
@@ -67,7 +68,6 @@ html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty):has(.ch
   animation: chat-todo-in var(--dur-2) var(--ease-snap) both;
   transition: border-color var(--dur-2) ease;
 }
-.chat :is(.chat-live-todos, .chat-agent-live-todos).is-open .chat-todo-bar { border-color: var(--todo-page-edge); }
 @keyframes chat-todo-in {
   from { opacity: 0; transform: translateY(40%); }
   to { opacity: 1; transform: none; }
@@ -170,7 +170,7 @@ html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty):has(.ch
 .chat .chat-todo-clip { min-height: 0; overflow: hidden; }
 .chat .chat-todo-page {
   padding: 0.3rem 0.35rem 0.4rem;
-  border-top: 1px solid var(--todo-page-edge);
+  border-top: 1px solid var(--todo-edge);
   background: var(--todo-surface);
 }
 .chat .chat-todo-rows {

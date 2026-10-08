@@ -140,19 +140,6 @@ function currentActivity(msg, groups, live) {
       else if (counts.done === total) label = `Completed ${total} ${total === 1 ? "action" : "actions"}`;
       else label = `${total} ${total === 1 ? "action" : "actions"} · ${deps.countsLabel(counts)}`;
     }
-    if (live && !stopping) {
-      const executions = new Map();
-      for (const trace of traces) {
-        if (!deps.toolPresentation(trace, true).running) continue;
-        const key = deps.executionIdentity(trace) || trace.id;
-        // A foreground join must not erase its child's background identity.
-        executions.set(key, { background: deps.toolBackground(trace) || Boolean(executions.get(key)?.background) });
-      }
-      if (executions.size > 1) {
-        const background = [...executions.values()].filter(deps.toolBackground).length;
-        label += ` · ${executions.size} active${background ? ` / ${background} background` : ""}`;
-      }
-    }
     return { phase, label, current, live: Boolean(live && !stopping), busy: Boolean(live) };
   }
 
