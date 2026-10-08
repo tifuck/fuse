@@ -111,9 +111,11 @@ const out = process.env.TOOL_UI_ARTIFACTS || '/tmp/opencode/tool-redesign';
       fuseToolFixture.mount([{ tools: [{ id: 'work-job', name: 'run_terminal_command', command_id: 'job-linked', status: 'running', state: 'running', background: true, command: 'npm test', output: 'Parent command output' }] }]);
       fuseToolFixture.work([{ id: 'job-linked', command_id: 'job-linked', state: 'running', command: 'npm test', output: 'Parent command output', background: true }]);
     });
-    // The badge is a bare count; the breakdown is the button's accessible name.
-    assert.equal(await page.locator('.chat-agents-bar [data-agents-count]').textContent(), '1');
-    assert.match(await page.locator('.chat-agents-bar').getAttribute('aria-label'), /1 command/);
+    // The Agents badge counts subagents only; a running command lives in the
+    // strip above the transcript.
+    assert.equal(await page.locator('.chat-agents-bar [data-agents-count]').textContent(), '');
+    assert.equal(await page.locator('.chat-agents-bar').getAttribute('aria-label'), 'Agents');
+    assert.equal(await page.locator('[data-jobs-list]').isVisible(), true, 'the running command shows in the strip');
     await page.locator('[data-agents-close]').click();
     assert.equal(await page.locator('[data-jobs-list]').evaluate(el => el.nextElementSibling.matches('[data-chat-thread]')), true, 'commands stay outside the scrolling transcript');
     await page.locator('[data-show-job="job-linked"]').click();

@@ -4,37 +4,31 @@ function todoLineHtml(text) {
     return `<p class="chat-todo-line" data-todo-line><span class="chat-todo-line-mark" aria-hidden="true"></span><span class="chat-todo-line-text">${deps.escapeHtml(text)}</span></p>`;
   }
 
-function todoPanelHtml(state, { active, expanded }) {
-    const items = state.items;
-    const done = items.filter(deps.todoClosed).length;
-    let rows = items.map((item) => ({ item }));
-    let hiddenDone = 0;
-    let hiddenMore = 0;
-    const folds = items.length > deps.TODO_ROWS;
-    if (folds && !expanded) {
-      for (let i = 0; i < rows.length && rows.length > deps.TODO_ROWS;) {
-        if (deps.todoClosed(rows[i].item)) { rows.splice(i, 1); hiddenDone += 1; } else i += 1;
-      }
-      while (rows.length > deps.TODO_ROWS) {
-        let k = rows.length - 1;
-        while (k > 0 && rows[k].item.status === "in_progress") k -= 1;
-        rows.splice(k, 1);
-        hiddenMore += 1;
-      }
-    }
-    const count = `<span class="chat-todo-count">${done}/${items.length}</span>`;
-    const title = `<span class="chat-todo-title">Todos</span>${count}`;
-    const head = folds
-      ? `<button type="button" class="chat-todo-head" data-todo-toggle aria-expanded="${expanded ? "true" : "false"}">${title}<span class="chat-todo-fold" aria-hidden="true">${expanded ? "less" : "all"}</span></button>`
-      : `<div class="chat-todo-head">${title}</div>`;
-    const dismiss = active ? "" : '<button type="button" class="chat-todo-dismiss" data-todo-dismiss aria-label="Dismiss todo list" title="Dismiss">×</button>';
-    const list = rows.map(({ item }) =>
-      `<li class="chat-todo-row is-${item.status.replace("_", "-")}"><span class="chat-todo-box" aria-hidden="true"></span>` +
-      `<span class="chat-todo-text">${deps.escapeHtml(item.content)}</span></li>`);
-    if (hiddenDone) list.unshift(`<li class="chat-todo-row is-more"><span class="chat-todo-box" aria-hidden="true"></span><span class="chat-todo-text">${hiddenDone} done</span></li>`);
-    if (hiddenMore) list.push(`<li class="chat-todo-row is-more"><span class="chat-todo-box" aria-hidden="true"></span><span class="chat-todo-text">+${hiddenMore} more</span></li>`);
-    return `<div class="chat-todo-bar">${head}${dismiss}</div><ol class="chat-todo-rows" data-todo-list>${list.join("")}</ol>`;
+// The tray's frame is built once so the sheet can slide open and shut and the
+// tab can pulse; only the tab's contents and the rows are repainted. The tab
+// rides on the sheet's top edge, like the tab of a page.
+function todoTrayHtml(listId) {
+    return '<div class="chat-todo-sheet"><div class="chat-todo-bar" data-todo-bar></div>' +
+      `<div class="chat-todo-drawer"><div class="chat-todo-clip"><div class="chat-todo-page"><ol class="chat-todo-rows" id="${listId}" data-todo-list></ol></div></div></div></div>`;
   }
 
-  return { todoLineHtml, todoPanelHtml };
+function todoBarHtml(state, { active, expanded, listId }) {
+    const items = state.items;
+    const done = items.filter(deps.todoClosed).length;
+    const dismiss = active ? "" : '<button type="button" class="chat-todo-dismiss" data-todo-dismiss aria-label="Dismiss todo list" title="Dismiss">×</button>';
+    return (
+      `<button type="button" class="chat-todo-head" data-todo-toggle aria-expanded="${expanded ? "true" : "false"}" aria-controls="${listId}" title="${expanded ? "Hide todos" : "Show todos"}">` +
+      `<span class="chat-todo-title">Todos</span><span class="chat-todo-count" data-todo-count>${done}/${items.length}</span>` +
+      '<svg class="chat-todo-chevron" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M4 10l4-4 4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
+      `</button>${dismiss}`
+    );
+  }
+
+function todoRowsHtml(items) {
+    return items.map((item) =>
+      `<li class="chat-todo-row is-${item.status.replace("_", "-")}"><span class="chat-todo-box" aria-hidden="true"></span>` +
+      `<span class="chat-todo-text" title="${deps.escapeHtml(item.content)}">${deps.escapeHtml(item.content)}</span></li>`).join("");
+  }
+
+  return { todoLineHtml, todoTrayHtml, todoBarHtml, todoRowsHtml };
 }

@@ -121,6 +121,8 @@ export function createSpinners(ctx) {
 
     function currentThreadBusy() {
     if (S.streaming || S.agentsRows.some((row) => agents.agentLive(row.status))) return true;
+    // A live background command, the main agent's or a subagent's, is work too.
+    if (S.jobsThreadId === S.currentId && S.jobsRows.length) return true;
     if (S.agentsLoadedFor === S.currentId) return false;
     return S.serverRunning.get(S.currentId) === true;
   }

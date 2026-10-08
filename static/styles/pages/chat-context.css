@@ -235,7 +235,6 @@
   .chat-bar, .chat-stage { grid-column: 1; }
   .chat-log,
   .chat-live-dock,
-  .chat-live-todos,
   .chat-dock,
   .chat-empty { width: min(var(--chat-col), calc(100% - 1.25rem)); }
   .chat-dock { padding-bottom: max(0.7rem, env(safe-area-inset-bottom)); }

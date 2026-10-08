@@ -100,7 +100,7 @@ html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty) .chat-d
 
 html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty) .chat-thread { min-height: 0; }
 
-html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty) :is(.chat-log, .chat-live-dock, .chat-live-todos) {
+html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty) :is(.chat-log, .chat-live-dock) {
   padding-bottom: 1rem;
 }
 

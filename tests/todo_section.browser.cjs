@@ -1,9 +1,13 @@
 // Todo section suite: todo_write never prints as a transcript row. The list
-// lives in its own section under the status line and above the composer, and
-// it never touches the spinner's words.
+// lives in a tray pinned right above the composer, and it never touches the
+// spinner's words.
 //
-//  1. Placement and the spinner: status line, then the section, then the
-//     composer; the spinner keeps its own verb and state.
+//  1. Placement and the spinner: status line, then the tray, then the
+//     composer box; the spinner keeps its own verb and state. The tray stays
+//     put while the transcript scrolls.
+//  1b. The drawer: closed by default, opens from the bar, at most five rows
+//     tall, scrolled so the item in progress is the top row; an update pulses
+//     the bar and recounts.
 //  2. In place: a later todo_write updates the section, a failed one and an
 //     unrelated call leave it alone, an explicit empty list clears it.
 //  3. When it shows: an unfinished list stays (and can be dismissed); a
@@ -65,7 +69,7 @@ const DONE = OPEN.map(([text]) => [text, 'completed']);
         const box = (sel) => { const el = document.querySelector(sel); return el && !el.hidden ? el.getBoundingClientRect() : null; };
         const dock = box('[data-live-dock]');
         const todos = box('[data-live-todos]');
-        const composer = box('[data-chat-form]');
+        const composer = box('[data-chat-form] .chat-box');
         return {
           dock: dock && [dock.top, dock.bottom], todos: todos && [todos.top, todos.bottom], composer: composer && composer.top,
           verb: document.querySelector('[data-live-dock] .chat-status-verb').textContent,
@@ -84,6 +88,24 @@ const DONE = OPEN.map(([text]) => [text, 'completed']);
       const first = await section();
       check(first.rows.length === 3 && first.rows[1][0] === 'is-in-progress' && first.rows[0][0] === 'is-completed' && first.rows[2][0] === 'is-pending', tag(`rows carry their states ${JSON.stringify(first.rows)}`));
       check(/Todos\s*1\/3/.test(first.text), tag(`head counts finished items: ${first.text}`));
+      const pinned = await page.evaluate(() => {
+        const todos = () => document.querySelector('[data-live-todos]').getBoundingClientRect().top;
+        const before = todos();
+        document.querySelector('[data-chat-thread]').scrollTop = 0;
+        return [before, todos()];
+      });
+      check(Math.abs(pinned[0] - pinned[1]) < 1, tag(`the tray stays pinned while the transcript scrolls: ${pinned}`));
+      const closed = await page.evaluate(() => {
+        const el = document.querySelector('[data-live-todos]');
+        return { open: el.classList.contains('is-open'), expanded: el.querySelector('[data-todo-toggle]').getAttribute('aria-expanded'), drawer: getComputedStyle(el.querySelector('.chat-todo-drawer')).visibility };
+      });
+      check(!closed.open && closed.expanded === 'false' && closed.drawer === 'hidden', tag(`the tray starts closed: ${JSON.stringify(closed)}`));
+      const tab = await page.evaluate(() => {
+        const bar = document.querySelector('[data-live-todos] [data-todo-bar]').getBoundingClientRect();
+        const box = document.querySelector('[data-chat-form] .chat-box').getBoundingClientRect();
+        return { text: document.querySelector('[data-live-todos] [data-todo-bar]').innerText.replace(/\s+/g, ' ').trim(), width: bar.width, right: box.right - bar.right, gap: box.top - bar.bottom, boxWidth: box.width };
+      });
+      check(tab.text === 'Todos 1/3' && tab.width < 200 && tab.right >= 0 && tab.right < 24 && Math.abs(tab.gap) < 1, tag(`the closed tray is a small tab on the composer's right edge: ${JSON.stringify(tab)}`));
 
       // 2. In place.
       await page.evaluate(([next]) => fuseToolFixture.append(next, true), [todo('t2', [['Read the layout code', 'completed'], ['Spawn reviewers for each pane', 'completed'], ['Collect and merge findings', 'in_progress']])]);
@@ -154,14 +176,43 @@ const DONE = OPEN.map(([text]) => [text, 'completed']);
       const cancelled = await page.evaluate(() => document.querySelector('[data-todo-line]')?.textContent.trim());
       check(cancelled === 'Todos · 1/2 done · 1 cancelled', tag(`a cancelled item is counted: ${cancelled}`));
 
-      // Long lists fold, and the head opens them.
+      // 1b. The drawer: the bar opens it, five rows tall, the item in
+      // progress on top; the rest scrolls.
       const long = Array.from({ length: 12 }, (_, i) => [`Item ${i + 1}`, i < 4 ? 'completed' : i === 4 ? 'in_progress' : 'pending']);
       await mount([user, turn([todo('long', long)])], { live: false });
-      const folded = await section();
-      check(folded.rows.length <= 9 && folded.rows.some(([cls]) => cls === 'is-in-progress') && /4 done/.test(folded.text), tag(`a long list folds finished items and keeps the active one: ${folded.rows.length} rows`));
+      check((await section()).rows.length === 12, tag('every item is in the list'));
       await page.locator('[data-live-todos] [data-todo-toggle]').click();
       await frame();
-      check((await section()).rows.length === 12, tag('the head opens the full list'));
+      const drawer = await page.evaluate(() => {
+        const el = document.querySelector('[data-live-todos]');
+        const list = el.querySelector('[data-todo-list]');
+        const rows = [...list.querySelectorAll('.chat-todo-row')];
+        const top = list.getBoundingClientRect().top;
+        const firstVisible = rows.find((row) => row.getBoundingClientRect().bottom > top + 1);
+        return {
+          open: el.classList.contains('is-open'), expanded: el.querySelector('[data-todo-toggle]').getAttribute('aria-expanded'),
+          visible: Math.round(list.clientHeight / rows[0].offsetHeight * 10) / 10, scrolls: list.scrollHeight > list.clientHeight,
+          first: firstVisible && firstVisible.textContent.trim(),
+          under: el.querySelector('.chat-todo-drawer').getBoundingClientRect().top >= el.querySelector('[data-todo-bar]').getBoundingClientRect().bottom - 1,
+          full: Math.abs(el.querySelector('.chat-todo-drawer').getBoundingClientRect().width - document.querySelector('[data-chat-form] .chat-box').getBoundingClientRect().width) < 2,
+        };
+      });
+      check(drawer.open && drawer.expanded === 'true', tag(`the bar opens the drawer: ${JSON.stringify(drawer)}`));
+      check(drawer.visible === 5 && drawer.scrolls, tag(`the drawer shows five rows and scrolls: ${JSON.stringify(drawer)}`));
+      check(drawer.first === 'Item 5', tag(`the item in progress is the top row: ${drawer.first}`));
+      check(drawer.under && drawer.full, tag(`the tab rides on top of a full-width page: ${JSON.stringify(drawer)}`));
+      // An update while open: the bar pulses, the count follows an added task,
+      // and the list follows the item in progress.
+      await page.evaluate(([next]) => fuseToolFixture.append(next, true), [todo('long2', [...long.map(([text], i) => [text, i < 5 ? 'completed' : i === 5 ? 'in_progress' : 'pending']), ['Item 13', 'pending']])]);
+      await frame();
+      const bumped = await page.evaluate(() => {
+        const el = document.querySelector('[data-live-todos]');
+        return { pulse: el.querySelector('[data-todo-bar]').classList.contains('is-updated'), count: el.querySelector('[data-todo-count]').textContent, open: el.classList.contains('is-open') };
+      });
+      check(bumped.pulse && bumped.count === '5/13' && bumped.open, tag(`an update pulses the bar and recounts, the drawer stays open: ${JSON.stringify(bumped)}`));
+      await page.locator('[data-live-todos] [data-todo-toggle]').click();
+      await frame();
+      check(await page.evaluate(() => !document.querySelector('[data-live-todos]').classList.contains('is-open')), tag('the bar closes the drawer again'));
     }
 
     // 5. Isolation: main chat and a subagent, in the same page.

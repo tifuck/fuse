@@ -194,7 +194,7 @@ function agent(id, patch) {
     await page.waitForFunction(() => document.querySelectorAll('[data-agents-list] [data-agent-id]').length === 7);
     let ui = await read();
     assert.equal(ui.count, '4', `badge counts live children (3 running + 1 queued): ${ui.count}`);
-    assert.equal(ui.tabLabel, 'Agents and commands: 4 agents', `tab label names the work: ${ui.tabLabel}`);
+    assert.equal(ui.tabLabel, 'Agents: 4 agents', `tab label names the work: ${ui.tabLabel}`);
     assert.equal(ui.liveLabel, '4 live', `live counter: ${ui.liveLabel}`);
     assert.equal(ui.rows.filter((row) => row.state === 'running').length, 3);
     assert.equal(ui.rows.find((row) => row.id === 'que').state, 'queued');
@@ -208,14 +208,14 @@ function agent(id, patch) {
     setAgent('tate', { status: 'completed', work_live: false });
     await page.waitForFunction(() => document.querySelector('.chat-agents-bar [data-agents-count]')?.textContent === '1');
     ui = await read();
-    assert.equal(ui.tabLabel, 'Agents and commands: 1 agent', `the label stays singular for one: ${ui.tabLabel}`);
+    assert.equal(ui.tabLabel, 'Agents: 1 agent', `the label stays singular for one: ${ui.tabLabel}`);
     assert.equal(ui.liveLabel, '1 live');
     setAgent('kilo', { status: 'completed', work_live: false });
     await page.waitForFunction(() => !document.querySelector('.chat-agents-bar [data-agents-count]')?.textContent);
     ui = await read();
     assert.equal(ui.count, '', 'the badge empties when nothing is live');
     assert.equal(ui.liveHidden, true, 'the live counter hides with no live child');
-    assert.equal(ui.tabLabel, 'Agents and commands');
+    assert.equal(ui.tabLabel, 'Agents');
     assert.equal(ui.rows.filter((row) => row.state === 'running' || row.state === 'queued').length, 0, 'no row stays in the live states');
     // Entries come back when the children run again.
     setAgent('kilo', { status: 'running', work_live: true });

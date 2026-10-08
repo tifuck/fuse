@@ -249,7 +249,6 @@ body.is-chat.is-keyboard .chat-dock {
 }
 .chat-log,
 .chat-live-dock,
-.chat-live-todos,
 .chat-dock,
 .chat-empty {
   width: min(var(--chat-col), calc(100% - 2.75rem));

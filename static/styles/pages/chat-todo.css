@@ -1,104 +1,239 @@
-/* —— Todo section: under the status line, above the composer. ——
-   todo_write never prints as a transcript row; the list lives here and updates
-   in place. The main chat's section is the transcript's last row after the
-   status line, so it takes over the clearance above the composer; a subagent's
-   sits under its own status dock. */
+/* —— Todo tab ——
+   todo_write never prints as a transcript row. Its list hangs off a small tab
+   on the right, sitting on the composer's top edge (a subagent's sits on its
+   status dock), so it stays put while the transcript scrolls behind it. The
+   tab is just "Todos done/total"; it slides the list up over the transcript,
+   five rows tall, scrolled so the item in progress is on top.
+   The section itself is a zero-height anchor line; the tab and the drawer
+   hang above it. */
 .chat-live-todos,
 .chat-agent-live-todos { display: none; }
-.chat-live-todos:not([hidden]),
-.chat-agent-live-todos:not([hidden]) {
+.chat :is(.chat-live-todos, .chat-agent-live-todos):not([hidden]) {
+  --todo-row: calc(var(--console-row, 1.1rem) + 0.42rem);
+  --todo-tab-h: 1.7rem;
+  --todo-right: 0.6rem;
+  --todo-radius: 7px;
+  --todo-edge: color-mix(in srgb, var(--brass) 55%, var(--line));
+  --todo-page-edge: color-mix(in srgb, var(--mist) 16%, var(--line));
+  --todo-surface: color-mix(in srgb, var(--ink) 88%, var(--panel));
   display: block;
+  position: relative;
+  z-index: 6;
   flex: 0 0 auto;
+  height: 0;
   color: var(--mist);
-  font: calc(0.84rem * var(--chat-text-scale, 1))/1.45 var(--sans);
-  animation: chat-todo-in var(--dur-2) var(--ease-snap) both;
+  font: var(--console-type, 0.78rem)/var(--console-leading, 1.4) var(--mono);
 }
-.chat-live-todos:not([hidden]) { margin-top: 0.5rem; }
-.chat:not(.is-empty) .chat-live-todos:not([hidden]) { padding-bottom: calc(var(--dock-h, 7rem) + var(--dock-clearance)); }
-.chat:not(.is-empty) .chat-thread:has(> .chat-live-todos:not([hidden])) > .chat-live-dock { padding-bottom: 0 !important; }
-.chat:not(.is-empty) .chat-thread:has(> .chat-live-todos:not([hidden])):not(:has(> .chat-live-dock:not([hidden]))) > .chat-log { padding-bottom: 0 !important; }
-.chat-agent-live-todos:not([hidden]) {
-  padding: 0.45rem 0.75rem max(0.55rem, env(safe-area-inset-bottom));
-  border-top: 1px solid var(--line);
+.chat .chat-dock > .chat-live-todos:not([hidden]) {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
 }
-.chat-agent-live-dock:not([hidden]):has(+ .chat-agent-live-todos:not([hidden])) { padding-bottom: 0.2rem; border-bottom: 0; }
-.chat-agent-live-dock:not([hidden]) + .chat-agent-live-todos:not([hidden]) { border-top: 0; padding-top: 0; }
-@keyframes chat-todo-in {
-  from { opacity: 0; transform: translateY(0.3rem); }
-  to { opacity: 1; transform: none; }
+.chat .chat-agent-live-todos:not([hidden]) { --todo-edge: var(--line); }
+/* Room under the last line of the transcript so the tab never covers it. */
+html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty):has(.chat-dock > .chat-live-todos:not([hidden])) .chat-thread > .chat-live-dock:not([hidden]),
+html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty):has(.chat-dock > .chat-live-todos:not([hidden])) .chat-thread:not(:has(> .chat-live-dock:not([hidden]))) > .chat-log {
+  padding-bottom: calc(1rem + var(--todo-tab-h, 1.7rem));
 }
-@media (prefers-reduced-motion: reduce) {
-  .chat-live-todos:not([hidden]),
-  .chat-agent-live-todos:not([hidden]) { animation: none; }
+
+/* The sheet: hangs from the anchor line, the tab on top, the page under it. */
+.chat .chat-todo-sheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  pointer-events: none;
 }
-:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-bar {
+.chat .chat-todo-sheet > * { pointer-events: auto; }
+
+/* The tab. */
+.chat .chat-todo-bar {
+  --todo-done: 0%;
+  position: relative;
+  z-index: 1;
+  align-self: flex-end;
+  margin: 0 var(--todo-right) -1px 0;
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  min-height: 1.4em;
+  height: var(--todo-tab-h);
+  overflow: hidden;
+  border: 1px solid var(--todo-edge);
+  border-bottom: 0;
+  border-radius: var(--todo-radius) var(--todo-radius) 0 0;
+  background: var(--todo-surface);
+  animation: chat-todo-in var(--dur-2) var(--ease-snap) both;
+  transition: border-color var(--dur-2) ease;
 }
-:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-head {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 0.5rem;
-  min-width: 0;
+.chat :is(.chat-live-todos, .chat-agent-live-todos).is-open .chat-todo-bar { border-color: var(--todo-page-edge); }
+@keyframes chat-todo-in {
+  from { opacity: 0; transform: translateY(40%); }
+  to { opacity: 1; transform: none; }
+}
+/* Progress: a hairline along the tab's top edge, as wide as the finished share. */
+.chat .chat-todo-bar::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: var(--todo-done);
+  height: 2px;
+  background: var(--brass);
+  transition: width 600ms var(--ease-glide);
+}
+/* An update: a light sweep across the tab, a bright edge that fades, and the
+   count rolls in. */
+.chat .chat-todo-bar::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--brass) 28%, transparent) 50%, transparent);
+  transform: translateX(-100%);
+  pointer-events: none;
+}
+.chat .chat-todo-bar.is-updated { animation: chat-todo-edge 1.4s ease-out; }
+.chat .chat-todo-bar.is-updated::before { animation: chat-todo-sweep 850ms var(--ease-glide); }
+.chat .chat-todo-bar.is-updated .chat-todo-count { animation: chat-todo-count 420ms var(--ease-snap); }
+@keyframes chat-todo-edge {
+  0%, 30% { border-color: var(--brass); box-shadow: 0 0 14px color-mix(in srgb, var(--brass) 30%, transparent); }
+  100% { border-color: var(--todo-edge); box-shadow: none; }
+}
+@keyframes chat-todo-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
+}
+@keyframes chat-todo-count {
+  from { opacity: 0; transform: translateY(0.5em); }
+  to { opacity: 1; transform: none; }
+}
+
+.chat .chat-todo-head {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  height: 100%;
   margin: 0;
-  padding: 0;
+  padding: 0 0.55rem 0 0.65rem;
   border: 0;
   background: none;
-  color: var(--mute);
+  color: inherit;
   font: inherit;
-  font-size: 0.82em;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  cursor: default;
-}
-:is(.chat-live-todos, .chat-agent-live-todos) button.chat-todo-head { cursor: pointer; }
-:is(.chat-live-todos, .chat-agent-live-todos) button.chat-todo-head:hover .chat-todo-fold { color: var(--mist); }
-:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-count {
-  color: var(--brass);
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0;
-}
-:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-fold { color: var(--mute); letter-spacing: 0; text-transform: none; }
-:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-dismiss {
-  margin-left: auto;
-  padding: 0 0.3rem;
-  border: 0;
-  background: none;
-  color: var(--mute);
-  font: inherit;
-  line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
 }
-:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-dismiss:hover { color: var(--mist); }
-:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-rows {
+.chat .chat-todo-head:focus-visible { outline: 2px solid var(--brass); outline-offset: -2px; border-radius: var(--todo-radius) var(--todo-radius) 0 0; }
+.chat .chat-todo-title { font-weight: 600; }
+.chat .chat-todo-count {
+  display: inline-block;
+  color: var(--brass);
+  font-variant-numeric: tabular-nums;
+}
+.chat .chat-todo-chevron {
+  color: var(--mute);
+  transition: transform 320ms var(--ease-glide), color var(--dur-1) ease;
+}
+.chat .chat-todo-head:hover .chat-todo-chevron { color: var(--mist); }
+.chat :is(.chat-live-todos, .chat-agent-live-todos).is-open .chat-todo-chevron { transform: rotate(180deg); }
+.chat .chat-todo-dismiss {
   display: grid;
-  gap: 0.12rem;
-  margin: 0.15rem 0 0;
+  place-items: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  margin: 0 0.2rem 0 -0.25rem;
   padding: 0;
-  list-style: none;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--mute);
+  font: 0.95rem/1 var(--sans);
+  cursor: pointer;
 }
-:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-row {
+.chat .chat-todo-dismiss:hover { color: var(--mist); background: color-mix(in srgb, var(--mist) 8%, transparent); }
+.chat .chat-todo-dismiss:focus-visible { outline: 2px solid var(--brass); outline-offset: -2px; }
+
+/* The page: full width, it grows up out of the composer and carries the tab
+   up on its top edge. Closed, it is zero tall and only the tab shows. */
+.chat .chat-todo-drawer {
   display: grid;
-  grid-template-columns: 1.1rem minmax(0, 1fr);
-  column-gap: 0.45rem;
-  align-items: baseline;
-  min-width: 0;
+  grid-template-rows: 0fr;
+  visibility: hidden;
+  transition: grid-template-rows 360ms var(--ease-glide), visibility 0s linear 360ms;
 }
-:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-text { min-width: 0; overflow-wrap: anywhere; }
-:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-box { color: var(--mute); font-family: var(--mono); text-align: center; }
-:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-box::before { content: "○"; }
-:is(.chat-live-todos, .chat-agent-live-todos) .is-in-progress .chat-todo-box { color: var(--brass); }
-:is(.chat-live-todos, .chat-agent-live-todos) .is-in-progress .chat-todo-box::before { content: "›"; }
-:is(.chat-live-todos, .chat-agent-live-todos) .is-in-progress .chat-todo-text { color: var(--mist); font-weight: 600; }
-:is(.chat-live-todos, .chat-agent-live-todos) .is-completed .chat-todo-box { color: var(--ok); }
-:is(.chat-live-todos, .chat-agent-live-todos) .is-completed .chat-todo-box::before { content: "✓"; }
-:is(.chat-live-todos, .chat-agent-live-todos) .is-cancelled .chat-todo-box::before { content: "×"; }
-:is(.chat-live-todos, .chat-agent-live-todos) :is(.is-completed, .is-cancelled) .chat-todo-text { color: var(--mute); text-decoration: line-through; }
-:is(.chat-live-todos, .chat-agent-live-todos) .is-more .chat-todo-box::before { content: "…"; }
-:is(.chat-live-todos, .chat-agent-live-todos) .is-more .chat-todo-text { color: var(--mute); font-style: italic; }
-:is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-row.is-pending .chat-todo-text { color: var(--mist); }
+.chat :is(.chat-live-todos, .chat-agent-live-todos).is-open .chat-todo-drawer {
+  grid-template-rows: 1fr;
+  visibility: visible;
+  box-shadow: 0 -16px 32px -12px rgb(0 0 0 / 45%);
+  transition-delay: 0s;
+}
+.chat .chat-todo-clip { min-height: 0; overflow: hidden; }
+.chat .chat-todo-page {
+  padding: 0.3rem 0.35rem 0.4rem;
+  border-top: 1px solid var(--todo-page-edge);
+  background: var(--todo-surface);
+}
+.chat .chat-todo-rows {
+  position: relative;
+  display: block;
+  max-height: calc(5 * var(--todo-row));
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+  scrollbar-width: thin;
+}
+.chat .chat-todo-row {
+  display: grid;
+  grid-template-columns: var(--console-col, 0.7rem) minmax(0, 1fr);
+  column-gap: 0.6rem;
+  align-items: center;
+  height: var(--todo-row);
+  padding: 0 0.5rem;
+  border-radius: 5px;
+  transition: background var(--dur-2) ease;
+}
+.chat .chat-todo-row.is-in-progress { background: color-mix(in srgb, var(--brass) 9%, transparent); }
+.chat .chat-todo-text {
+  min-width: 0;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--mute) 30%, var(--mist));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat .chat-todo-row.is-in-progress .chat-todo-text { color: var(--mist); font-weight: 600; }
+.chat .chat-todo-row:is(.is-completed, .is-cancelled) .chat-todo-text { color: var(--mute); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--mute) 60%, transparent); }
+/* Marks are drawn, not typed: a glyph like ☒ is missing from many fonts and
+   prints as a broken box. A ring for open, brass for in progress, a dim dot
+   once done. */
+.chat .chat-todo-box { display: grid; place-items: center; height: 100%; }
+.chat .chat-todo-box::before {
+  content: "";
+  box-sizing: border-box;
+  width: var(--console-dot, 0.38rem);
+  height: var(--console-dot, 0.38rem);
+  border-radius: 50%;
+  background: var(--mute);
+}
+.chat .chat-todo-row.is-pending .chat-todo-box::before { background: none; border: 1px solid var(--mute); }
+.chat .chat-todo-row.is-in-progress .chat-todo-box::before { background: var(--brass); box-shadow: 0 0 0 3px color-mix(in srgb, var(--brass) 22%, transparent); }
+.chat .chat-todo-row.is-completed .chat-todo-box::before { background: var(--call-done, var(--ok)); opacity: 0.7; }
+.chat .chat-todo-row.is-cancelled .chat-todo-box::before { opacity: 0.45; }
+
+@media (max-width: 800px) {
+  .chat :is(.chat-live-todos, .chat-agent-live-todos):not([hidden]) { --todo-tab-h: 2.2rem; --todo-row: 2.1rem; }
+  .chat .chat-todo-dismiss { width: 2rem; height: 2rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat .chat-todo-bar,
+  .chat .chat-todo-bar.is-updated,
+  .chat .chat-todo-bar.is-updated::before,
+  .chat .chat-todo-bar.is-updated .chat-todo-count { animation: none; }
+  .chat .chat-todo-drawer,
+  .chat .chat-todo-bar::after,
+  .chat .chat-todo-chevron { transition: none; }
+}
 
 /* The one line left in the transcript when a list finishes. */
 .chat .chat-todo-line {

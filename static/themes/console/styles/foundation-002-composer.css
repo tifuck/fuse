@@ -9,7 +9,7 @@
 .chat[data-view="console"] .chat-think-body { font-size: calc(0.78rem * var(--chat-text-scale, 1)); line-height: 1.6; }
 
 @media (max-width: 800px) {
-  .chat[data-view="console"] :is(.chat-log, .chat-live-dock, .chat-live-todos) { width: calc(100% - 1rem); }
+  .chat[data-view="console"] :is(.chat-log, .chat-live-dock) { width: calc(100% - 1rem); }
 }
 
 @media (max-width: 800px) {

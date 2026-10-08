@@ -230,7 +230,6 @@ export function createConsoleTheme(runtime) {
     get isSearchTool() { return theme.isSearchTool; },
   }));
   Object.assign(theme, createTodos({
-    get TODO_ROWS() { return runtime.TODO_ROWS; },
     get escapeHtml() { return runtime.escapeHtml; },
     get todoClosed() { return runtime.todoClosed; },
   }));
@@ -487,7 +486,9 @@ export function createConsoleTheme(runtime) {
     syncLiveDock: theme.syncLiveDock,
     syncWorkClocks: theme.syncWorkClocks,
     thinkingPosition: theme.thinkingPosition,
-    todoPanelHtml: theme.todoPanelHtml,
+    todoBarHtml: theme.todoBarHtml,
+    todoRowsHtml: theme.todoRowsHtml,
+    todoTrayHtml: theme.todoTrayHtml,
     toolDetailHtml: theme.toolDetailHtml,
     toolImage: theme.toolImage,
     toolRowLabel: theme.toolRowLabel,

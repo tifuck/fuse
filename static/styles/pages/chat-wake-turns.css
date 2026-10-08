@@ -165,7 +165,7 @@
   .chat-bar::after { content: ""; order: 5; flex: 1 1 100%; height: 0; }
   .chat-project-chip { order: 6; }
   .chat-bar .chat-bar-title { order: 7; flex: 1 1 0; }
-  .chat-log, .chat-live-dock, .chat-live-todos, .chat-dock, .chat-empty {
+  .chat-log, .chat-live-dock, .chat-dock, .chat-empty {
     width: min(var(--chat-col), calc(100% - 1.15rem));
   }
   .chat-log { gap: 1rem; padding: 0.35rem 0 0.6rem; }

@@ -197,44 +197,12 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-ste
   background: var(--call-fail);
 }
 
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-live-todos:not([hidden]) {
-  width: min(100%, var(--chat-col));
-  margin-top: 0.4rem;
-  padding-inline: var(--console-gutter);
-}
-
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos):not([hidden]) {
-  font: var(--console-type)/var(--console-leading) var(--mono);
-}
-
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-agent-live-todos:not([hidden]) { padding-inline: var(--console-gutter); }
-
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-bar { min-height: var(--console-row); padding-left: calc(var(--console-col) + 0.45rem); }
-
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-head {
-  font-size: 1em;
-  letter-spacing: 0;
-  text-transform: none;
-}
-
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-title { color: var(--mist); font-weight: 600; }
-
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-rows { gap: 0; margin: 0; }
-
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-row {
-  grid-template-columns: var(--console-col) minmax(0, 1fr);
-  column-gap: 0.45rem;
-  min-height: var(--console-row);
-}
-
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-box,
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-todo-line-mark {
   display: grid;
   place-items: center;
   height: var(--console-row);
 }
 
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .chat-todo-box::before,
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-todo-line-mark::before {
   content: "";
   box-sizing: border-box;
@@ -242,23 +210,6 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-tod
   height: var(--console-dot);
   border-radius: 50%;
   background: var(--mute);
-}
-
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .is-pending .chat-todo-box::before { background: none; border: 1px solid var(--mute); }
-
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .is-in-progress .chat-todo-box::before { background: var(--brass); }
-
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .is-cancelled .chat-todo-box::before { opacity: 0.45; }
-
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos) .is-more .chat-todo-box::before {
-  content: "…";
-  width: auto;
-  height: auto;
-  border: 0;
-  border-radius: 0;
-  background: none;
-  color: var(--mute);
-  line-height: 1;
 }
 
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-todo-line-mark::before { background: var(--call-done); }

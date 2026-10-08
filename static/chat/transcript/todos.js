@@ -114,6 +114,22 @@ export function createTodos(ctx) {
     return false;
   }
 
+    // The open list keeps the item in progress (else the next open one) as its
+  // top row; finished items above it stay a scroll away.
+  function scrollTodoToCurrent(sec, smooth) {
+    const list = sec.el.querySelector("[data-todo-list]");
+    const row = list && (list.querySelector(".is-in-progress") || list.querySelector(".is-pending"));
+    if (!list) return;
+    const top = row ? row.offsetTop : 0;
+    list.scrollTo({ top, behavior: smooth && !S.reduceMotion.matches ? "smooth" : "auto" });
+  }
+
+    function pulseTodoBar(bar) {
+    bar.classList.remove("is-updated");
+    void bar.offsetWidth;
+    bar.classList.add("is-updated");
+  }
+
     function paintTodoSection(sec, candidate, active, afterResize) {
     const el = sec.el;
     if (!el) return;
@@ -122,18 +138,33 @@ export function createTodos(ctx) {
       if (!el.hidden) {
         el.hidden = true;
         el.replaceChildren();
+        el.classList.remove("is-open");
         sec.sig = "";
         sec.key = "";
+        sec.items = "";
         afterResize();
       }
       return;
     }
-    const sig = `${state.key}|${active}|${sec.expanded}|${JSON.stringify(state.items)}`;
+    const items = JSON.stringify(state.items);
+    const sig = `${state.key}|${active}|${sec.expanded}|${items}`;
     sec.key = state.key;
     if (sig === sec.sig && !el.hidden) return;
+    const changed = Boolean(sec.items) && sec.items !== items;
     sec.sig = sig;
-    el.innerHTML = ui.todoPanelHtml(state, { active, expanded: sec.expanded });
+    sec.items = items;
+    const listId = `chat-todo-list-${el === S.todoSections.main.el ? "main" : "agent"}`;
+    if (!el.querySelector("[data-todo-bar]")) el.innerHTML = ui.todoTrayHtml(listId);
+    const bar = el.querySelector("[data-todo-bar]");
+    const refocus = bar.contains(document.activeElement) && document.activeElement.matches("[data-todo-toggle]");
+    bar.innerHTML = ui.todoBarHtml(state, { active, expanded: sec.expanded, listId });
+    if (refocus) bar.querySelector("[data-todo-toggle]").focus({ preventScroll: true });
+    bar.style.setProperty("--todo-done", `${Math.round((state.items.filter(todoClosed).length / state.items.length) * 100)}%`);
+    el.querySelector("[data-todo-list]").innerHTML = ui.todoRowsHtml(state.items);
+    el.classList.toggle("is-open", sec.expanded);
     el.hidden = false;
+    if (changed) pulseTodoBar(bar);
+    if (sec.expanded) scrollTodoToCurrent(sec, changed);
     afterResize();
   }
 
@@ -188,7 +219,7 @@ export function createTodos(ctx) {
       scheduleTodoSync();
     } else if (event.target.closest("[data-todo-toggle]")) {
       sec.expanded = !sec.expanded;
-      scheduleTodoSync();
+      syncTodoSections();
     }
   }
 

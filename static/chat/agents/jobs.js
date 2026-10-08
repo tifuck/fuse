@@ -127,6 +127,7 @@ export function createJobs(ctx) {
       const data = await net.api("/chat/threads/" + encodeURIComponent(tid) + "/jobs");
       if (tid !== S.currentId || gen !== S.generation) return;
       S.jobsRows = Array.isArray(data.jobs) ? data.jobs : [];
+      S.jobsThreadId = tid;
       renderJobsList();
       live.syncAgentsUi();
       (Array.isArray(data.recent) ? data.recent : []).forEach((job) => S.completedJobs.set(String(job.id), job));

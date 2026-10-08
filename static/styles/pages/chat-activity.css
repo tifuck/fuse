@@ -5,7 +5,7 @@ body.is-chat .topbar { flex-shrink: 0; }
 @keyframes chat-search-enter { from { opacity: 0; transform: translateY(-0.35rem); } to { opacity: 1; transform: none; } }
 .chat-bar .btn { height: 2.5rem; border-color: transparent; color: var(--chat-secondary); }
 .chat-thread { min-width: 0; flex: 1 1 0; scrollbar-width: thin; scroll-padding-block: 1.25rem 1.5rem; transition: flex-grow calc(var(--dur-3) + 80ms) var(--ease-glide); }
-.chat-log, .chat-live-dock, .chat-live-todos, .chat-dock, .chat-empty { width: min(var(--chat-col), calc(100% - 4rem)); }
+.chat-log, .chat-live-dock, .chat-dock, .chat-empty { width: min(var(--chat-col), calc(100% - 4rem)); }
 .chat-log { gap: 2.6rem; padding: 2rem 0 4.5rem; }
 .chat-assistant { gap: 1rem; min-width: 0; }
 .chat-flow { display: flex; flex-direction: column; gap: inherit; min-width: 0; }

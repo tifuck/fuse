@@ -370,11 +370,10 @@ function initState() {
   S.activitySeq = 0;
   S.consoleSpinTimer = 0;
   S.consoleSpinFrame = 0;
-  S.TODO_ROWS = 8;
   S.todoDismissedKeys = null;
   S.todoSections = {
-    main: { el: S.root.querySelector("[data-live-todos]"), sig: "", expanded: false, shownKey: "", lingerUntil: 0, timer: 0, key: "" },
-    agent: { el: S.root.querySelector("[data-agent-live-todos]"), sig: "", expanded: false, shownKey: "", lingerUntil: 0, timer: 0, key: "" },
+    main: { el: S.root.querySelector("[data-live-todos]"), sig: "", items: "", expanded: false, shownKey: "", lingerUntil: 0, timer: 0, key: "" },
+    agent: { el: S.root.querySelector("[data-agent-live-todos]"), sig: "", items: "", expanded: false, shownKey: "", lingerUntil: 0, timer: 0, key: "" },
   };
   S.toolGestureOwner = null;
   S.pendingFullPaint = false;

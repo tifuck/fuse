@@ -222,9 +222,7 @@ export function createLive(ctx) {
     sidebar.syncCurrentThreadBusy();
     const { live } = agentRowsSorted();
     const liveCount = live.length;
-    const commandCount = S.jobsRows.length;
-    const workCount = liveCount + commandCount;
-    const workLabel = [liveCount ? `${liveCount} agent${liveCount === 1 ? "" : "s"}` : "", commandCount ? `${commandCount} command${commandCount === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ");
+    const workLabel = liveCount ? `${liveCount} agent${liveCount === 1 ? "" : "s"}` : "";
     if (S.agentsPanel) S.agentsPanel.hidden = !S.agentsOpen;
     if (S.agentsBackdrop) S.agentsBackdrop.hidden = !(S.agentsOpen && window.matchMedia("(max-width: 800px)").matches);
     S.root.classList.toggle("is-agents", S.agentsOpen);
@@ -240,14 +238,13 @@ export function createLive(ctx) {
     if (S.agentViewEl) S.agentViewEl.hidden = !S.agentViewId;
     for (const tab of S.agentsTabs) {
       tab.setAttribute("aria-expanded", S.agentsOpen ? "true" : "false");
-      tab.classList.toggle("is-live", workCount > 0);
-      tab.title = workLabel || "Agents and background commands";
-      tab.setAttribute("aria-label", workLabel ? `Agents and commands: ${workLabel}` : "Agents and commands");
+      tab.classList.toggle("is-live", liveCount > 0);
+      tab.title = workLabel || "Agents";
+      tab.setAttribute("aria-label", workLabel ? `Agents: ${workLabel}` : "Agents");
       const countEl = tab.querySelector("[data-agents-count]");
       if (countEl) {
-        // The badge is a count only; the breakdown lives in the title so the
-        // badge keeps a fixed footprint inside the button.
-        const next = workCount ? String(workCount) : "";
+        // Live subagents only: background commands have their own strip.
+        const next = liveCount ? String(liveCount) : "";
         if (next && countEl.textContent !== next) {
           countEl.classList.remove("is-bump");
           void countEl.offsetWidth;

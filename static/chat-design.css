@@ -1354,29 +1354,29 @@ body.is-chat .chat-view-menu { border-color: var(--line); }
   overflow: auto;
   overscroll-behavior: contain;
   flex: 0 0 auto;
-  padding: 0.25rem 0.5rem;
+  padding: 0.1rem 0.5rem 0.15rem;
   border: 0;
   border-bottom: 1px solid var(--line);
   background: var(--ink);
   scrollbar-width: thin;
 }
 .chat .chat-stage > .chat-command-strip { margin-top: var(--chat-bar-h); }
-.chat .chat-stage:has(> .chat-command-strip:not([hidden])) > .chat-thread { padding-top: 0.45rem; }
-.chat .chat-command-strip .chat-jobs-row { border-radius: 0; grid-template-columns: 0.5rem minmax(0, 1fr) 6ch 1.75rem; min-height: 2rem; padding-block: 0; }
-.chat .chat-command-strip .chat-jobs-row + .chat-jobs-row { border-top: 1px solid var(--line); }
-.chat .chat-command-strip .chat-jobs-output-link { flex-direction: row; align-items: center; gap: 0.75rem; }
+.chat .chat-stage:has(> .chat-command-strip:not([hidden])) > .chat-thread { padding-top: 0.35rem; }
+.chat .chat-command-strip .chat-work-head { align-items: center; justify-content: flex-start; gap: 0.45rem; min-height: 1.35rem; margin: 0 0.5rem; }
+.chat .chat-command-strip .chat-work-head span { color: var(--mute); font: 600 0.6875rem/1.2 var(--sans); letter-spacing: 0; }
+.chat .chat-command-strip .chat-work-head small { color: var(--brass); font-variant-numeric: tabular-nums; }
+.chat .chat-command-strip .chat-jobs-row { border-radius: 4px; grid-template-columns: 0.5rem minmax(0, 1fr) 6ch 1.5rem; column-gap: 0.55rem; min-height: 1.65rem; padding-block: 0; }
+.chat .chat-command-strip .chat-jobs-row + .chat-jobs-row { border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent); border-radius: 0; }
+.chat .chat-command-strip .chat-jobs-output-link { flex-direction: row; align-items: center; gap: 0.6rem; }
 .chat .chat-command-strip .chat-jobs-cmd { flex: 1; }
-.chat .chat-command-strip .chat-jobs-meta { max-width: 28%; }
+.chat .chat-command-strip .chat-jobs-meta { flex: 0 1 auto; max-width: 32%; }
 .chat .chat-command-strip .chat-agents-dot { align-self: center; margin: 0; }
-.chat .chat-command-strip .chat-agents-time { align-self: center; }
-.chat .chat-command-strip .chat-jobs-kill { align-self: center; width: 1.75rem; height: 1.75rem; padding: 0; border: 0; background: none; font-size: 1.1rem; }
+.chat .chat-command-strip .chat-agents-time { align-self: center; line-height: 1.4; }
+.chat .chat-command-strip .chat-jobs-kill { align-self: center; display: grid; place-items: center; width: 1.5rem; height: 1.5rem; padding: 0; border: 0; border-radius: 4px; background: none; font-size: 1rem; line-height: 1; }
+.chat .chat-command-strip .chat-jobs-kill:hover { background: color-mix(in srgb, var(--fault) 14%, transparent); }
 .chat .chat-command-strip :is(.chat-jobs-kill, .chat-jobs-output-link):focus-visible { outline: 2px solid var(--brass); outline-offset: -2px; }
 @media (max-width: 800px) {
-  .chat .chat-command-strip .chat-jobs-row { min-height: 2.75rem; grid-template-columns: 0.5rem minmax(0, 1fr) 6ch 2.75rem; }
-  .chat .chat-command-strip .chat-jobs-kill { width: 2.75rem; height: 2.75rem; }
+  .chat .chat-command-strip .chat-jobs-row { min-height: 2.4rem; grid-template-columns: 0.5rem minmax(0, 1fr) 6ch 2.4rem; }
+  .chat .chat-command-strip .chat-jobs-kill { width: 2.4rem; height: 2.4rem; }
 }
 
-/* —— Todo section. —— */
-/* Marks are drawn, not typed: a glyph like ☒ is missing from many fonts and
-   prints as a broken box. They are the call rows' dots: a ring for open, solid
-   brass for the item in progress, a dim dot once done. */

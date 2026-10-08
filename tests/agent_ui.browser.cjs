@@ -37,7 +37,7 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       await page.waitForFunction(() => document.querySelector('[data-step="tool-open-child"]').textContent.includes('Update while disclosing'));
       assert.match(await row.innerText(), /Update while disclosing/, 'deferred paint applies the latest reconciled output');
       await page.evaluate(() => fuseToolFixture.todo.openAgent('fixture-child'));
-      const panel = page.getByRole('dialog', { name: 'Agents and commands', exact: true });
+      const panel = page.getByRole('dialog', { name: 'Agents', exact: true });
       await panel.getByText('Existing child transcript loaded.', { exact: true }).waitFor();
       assert.equal(requests, 1, 'Open action makes exactly one request');
       assert.equal(await panel.locator('.chat-agents-copy').isVisible(), false, 'child replaces the overview heading');

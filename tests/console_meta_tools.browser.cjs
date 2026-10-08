@@ -262,11 +262,12 @@ const turn = (trace, live) => ({
       await mount({ id: 'm-todo', name: 'todo_write', status: 'running', todos: [{ id: '1', content: 'Pin the meta rows', status: 'in_progress' }] }, true);
       assert.equal(await rowOf('m-todo').count(), 0, `${tag} a running todo_write printed a row`);
       await page.locator('[data-live-todos]').filter({ hasText: 'Pin the meta rows' }).waitFor({ state: 'attached' });
-      assert.match(await page.locator('[data-live-todos]').innerText(), /0\/1[\s\S]*Pin the meta rows/, `${tag} a running todo shows its item as unfinished`);
+      // The tab shows the count; the item sits in the closed drawer, out of innerText.
+      assert.match(await page.locator('[data-live-todos]').textContent(), /0\/1[\s\S]*Pin the meta rows/, `${tag} a running todo shows its item as unfinished`);
       await send({ event: 'tool', id: 'm-todo', name: 'todo_write', status: 'done', todos: [{ id: '1', content: 'Pin the meta rows', status: 'completed' }] });
       await paint();
       assert.equal(await rowOf('m-todo').count(), 0, `${tag} a settled todo_write printed a row`);
-      let section = await page.locator('[data-live-todos]').innerText();
+      let section = await page.locator('[data-live-todos]').textContent();
       assert.match(section, /Pin the meta rows/, `${tag} settled todo section: ${section}`);
       await send({ event: 'tool', id: 'm-todo', name: 'todo_write', status: 'error', error: 'todos[0].content is required' });
       await paint();
