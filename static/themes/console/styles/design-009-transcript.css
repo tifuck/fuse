@@ -75,6 +75,11 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-perm-card-grant 
 .chat .chat-console-nline.is-bare,
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-nline.is-bare { grid-template-columns: max-content minmax(0, 1fr); }
 
+.chat .chat-console-nline.is-file .chat-console-nbody { color: var(--mute); }
+
+.chat .chat-console-nline.is-file,
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-nline.is-file { grid-template-columns: minmax(0, 1fr); }
+
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-out.is-structured .chat-kv-row { font: var(--console-type)/var(--console-leading) var(--mono); padding: 0; }
 
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-tool-md.chat-md { display: block; }

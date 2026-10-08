@@ -329,6 +329,30 @@ test('a shell whose output is a diff prints that diff once', () => {
   assert.deepEqual(counts(''), [1, 0], 'no output still shows the diff');
 });
 
+test('a multi-file diff names each file so its hunks cannot read as one out-of-order file', () => {
+  const c = vm.createContext({ escapeHtml: (v) => String(v ?? '') });
+  load('consoleDiffHtml', c);
+  const one = 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -1,1 +1,1 @@\n-x\n+y\n';
+  assert.doesNotMatch(c.consoleDiffHtml(one), /is-file/, 'a single file needs no label');
+  const two = one + 'diff --git a/b.js b/b.js\n--- a/b.js\n+++ b/b.js\n@@ -50,1 +50,1 @@\n-p\n+q\n';
+  const html = c.consoleDiffHtml(two);
+  assert.match(html, /is-file"><span class="chat-console-nbody">a\.js</, 'first file is named');
+  assert.match(html, /is-file"><span class="chat-console-nbody">b\.js</, 'second file is named');
+});
+
+test('a settled tool event carries its edit fields instead of dropping them until reload', () => {
+  const merged = REG.mergeToolEvent(
+    { id: 't1', name: 'run_terminal_command', status: 'running', command: 'make' },
+    { id: 't1', name: 'run_terminal_command', status: 'done',
+      edit_diff: '@@ -1,1 +1,1 @@\n-x\n+y', edited_files: ['a.js'], lines_added: 1, lines_removed: 1 },
+    'done',
+  );
+  assert.match(merged.edit_diff, /\+y/, 'the diff survives the live merge');
+  assert.deepEqual(merged.edited_files, ['a.js']);
+  assert.equal(merged.lines_added, 1);
+  assert.equal(merged.lines_removed, 1);
+});
+
 test('output caps cut on character boundaries and say which slice survived', () => {
   const c = vm.createContext({});
   c.escapeHtml = (v) => String(v ?? '');

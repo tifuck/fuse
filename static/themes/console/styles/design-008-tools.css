@@ -286,7 +286,10 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-con
 }
 
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-hang:not(.is-expanded) .chat-console-out,
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-hang:not(.is-expanded) .chat-console-preview + .chat-console-out {
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-hang:not(.is-expanded) .chat-console-preview + .chat-console-out,
+/* The folded row shows only its preview; the body's other roots (error-fold
+   output, an edit diff riding the body) wait for the open like .chat-console-out. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-hang:not(.is-expanded) .chat-console-hang-body > .chat-console-lines {
   display: none;
 }
 

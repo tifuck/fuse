@@ -3,10 +3,21 @@ export function create(deps) {
 function consoleDiffHtml(text, { limit, numbers = true } = {}) {
     // A trailing newline is the end of the last line, not an empty row.
     const lines = String(text || "").replace(/\n+$/, "").split("\n");
+    // A multi-file diff names each file as it changes; without the labels the
+    // stacked hunks read as one file with out-of-order line numbers.
+    const fileName = (line) => (line.match(/^diff --git a\/\S+ b\/(.+)$/) || line.match(/^\+\+\+ b\/(.+)$/) || [])[1];
+    const multi = new Set(lines.map(fileName).filter((name) => name && name !== "/dev/null")).size > 1;
     let oldN = 0;
     let newN = 0;
+    let file = "";
     const rows = [];
     lines.forEach((line) => {
+      const named = fileName(line);
+      if (named && named !== "/dev/null") {
+        if (multi && named !== file) rows.push({ kind: "file", text: named });
+        file = named;
+        return;
+      }
       const hunk = line.match(/^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)/);
       if (hunk) {
         oldN = Number(hunk[1]);
@@ -29,8 +40,9 @@ function consoleDiffHtml(text, { limit, numbers = true } = {}) {
     });
     if (!rows.length) return "";
     const cap = Number.isFinite(limit) ? Math.min(limit, rows.length) : rows.length;
-    const width = String(Math.max(...rows.map((row) => row.n), 1)).length;
+    const width = String(Math.max(1, ...rows.filter((row) => row.kind !== "file").map((row) => row.n))).length;
     const table = rows.slice(0, cap).map((row) => {
+      if (row.kind === "file") return `<div class="chat-console-nline is-file"><span class="chat-console-nbody">${deps.escapeHtml(row.text)}</span></div>`;
       const mark = row.kind === "del" ? "-" : row.kind === "add" ? "+" : " ";
       const gutter = numbers ? `<span class="chat-console-n">${String(row.n).padStart(width, " ")}</span>` : "";
       return `<div class="chat-console-nline is-${row.kind}${numbers ? "" : " is-bare"}">${gutter}<span class="chat-console-mark">${mark}</span><span class="chat-console-nbody">${deps.escapeHtml(row.text)}</span></div>`;

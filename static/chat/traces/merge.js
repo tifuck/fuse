@@ -276,6 +276,9 @@ export function createMerge(ctx) {
       "image",
       "project_root", "platform", "include",
       "source",
+      // Files the call changed (bash edit tracking). Dropped here, they show
+      // up only after a reload — the saved copy carries them.
+      "edited_files", "edit_diff", "lines_added", "lines_removed",
     ];
     fields.forEach((key) => {
       if (event[key] != null && event[key] !== "") rec[key] = event[key];
