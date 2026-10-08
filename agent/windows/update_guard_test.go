@@ -32,6 +32,27 @@ func TestUpdateSingleFlight(t *testing.T) {
 	endUpdate()
 }
 
+func TestUpdateFetchURLRequiresHTTPS(t *testing.T) {
+	base := "https://f.example"
+	if got, ok := updateFetchURL(base, "https://cdn.example/x.exe"); !ok || got != "https://cdn.example/x.exe" {
+		t.Fatalf("absolute https refused: %q %v", got, ok)
+	}
+	if got, ok := updateFetchURL(base, "/agent/dist/x.exe"); !ok || got != base+"/agent/dist/x.exe" {
+		t.Fatalf("relative join broken: %q %v", got, ok)
+	}
+	if got, ok := updateFetchURL(base, "agent/dist/x.exe"); !ok || got != base+"/agent/dist/x.exe" {
+		t.Fatalf("bare join broken: %q %v", got, ok)
+	}
+	for _, ref := range []string{"http://evil.example/x", "//evil.example/x", "httpx", ""} {
+		if got, ok := updateFetchURL(base, ref); ok {
+			t.Fatalf("non-https accepted: %q -> %q", ref, got)
+		}
+	}
+	if got, ok := updateFetchURL("http://f.example", "/agent/dist/x.exe"); ok {
+		t.Fatalf("non-https base accepted: %q", got)
+	}
+}
+
 // Cross-process ownership: the anchor is kernel-locked (flock/LockFileEx on
 // the open handle, never unlinked), a second updater is refused while held,
 // ownership transfers on release, and release is idempotent.

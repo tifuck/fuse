@@ -1796,3 +1796,55 @@ class AgentCapsTest(unittest.TestCase):
         store.finish_run(child["id"], {"content": "done", "tools": []}, "cancelled")
         self.assertFalse(store.continue_child_with_followups(child["id"], ["keep going"]))
         self.assertEqual(store.get_run(1, child["id"])["status"], "cancelled")
+
+
+class ListAgentsJsonFitTest(unittest.TestCase):
+    """The list_subagents tool result must stay parseable JSON at any size."""
+
+    def test_fit_list_json_never_slices_mid_token(self):
+        from app import agents
+
+        payload = {
+            "live": [
+                {"id": f"live-{i}", "description": "d" * 200, "status": "running", "summary": "s" * 300}
+                for i in range(8)
+            ],
+            "finished": [
+                {"id": f"done-{i}", "description": "e" * 200, "status": "completed", "summary": "t" * 300}
+                for i in range(40)
+            ],
+            "omitted_finished": 0,
+        }
+        text = agents._fit_list_json(payload)
+        self.assertLessEqual(len(text), 6000)
+        parsed = json.loads(text)
+        self.assertEqual([item["id"] for item in parsed["live"]], [f"live-{i}" for i in range(8)])
+        self.assertGreaterEqual(payload["omitted_finished"], 8)
+
+    def test_fit_list_json_bare_fallback(self):
+        from app import agents
+
+        huge = [
+            {"id": f"live-{i}", "description": "x" * 2000, "status": "running", "summary": "y" * 2000}
+            for i in range(8)
+        ]
+        text = agents._fit_list_json({"live": huge, "finished": [], "omitted_finished": 0})
+        parsed = json.loads(text)
+        self.assertIn("note", parsed)
+        self.assertEqual(parsed["live"], [f"live-{i}" for i in range(8)])
+
+
+class CatalogSearchCapTest(unittest.TestCase):
+    """search() must cap loaded extras, not raw name slots."""
+
+    def test_always_on_names_do_not_consume_extra_slots(self):
+        from app import agent_catalog
+
+        real = list(agent_catalog.WORKSPACE_NAMES) + ["create_artifact", "update_artifact", "propose_skill"]
+        names = list(agent_catalog.ALWAYS_ON_CODING) + list(agent_catalog.SPAWN_NAMES) + real
+        found = agent_catalog.search(names=names)
+        loaded = [s["function"]["name"] for s in found]
+        # The old code sliced wanted[:MAX_EXTRA] before dropping always-on
+        # names, so the 9 placeholders starved all but 4 of the real tools.
+        self.assertEqual(loaded, real)
+        self.assertLessEqual(len(found), agent_catalog.MAX_EXTRA)

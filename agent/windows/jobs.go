@@ -198,12 +198,16 @@ func clipOut(s string) string {
 }
 
 func (s *session) sendRes(id string, ok bool, exit int, out, err, errorText string) {
-	s.sendResFull(id, ok, exit, out, err, errorText, false)
+	// Non-exec ops (and exec failures that never started a process) leave no
+	// remote process tree behind.
+	s.sendResFull(id, ok, exit, out, err, errorText, false, true)
 }
 
-func (s *session) sendResFull(id string, ok bool, exit int, out, err, errorText string, timedOut bool) {
+func (s *session) sendResFull(id string, ok bool, exit int, out, err, errorText string, timedOut bool, confirmed bool) {
 	res := jobRes{V: 1, T: "res", ID: id, OK: ok, Exit: exit, Out: clipOut(out), Err: clipOut(err), Timeout: timedOut}
-	res.TerminationConfirmed = true // runExec has returned after Wait (or never started)
+	// confirmed says the remote process tree is known dead. A kill without a
+	// job object only reaches the shell, so its descendants may survive.
+	res.TerminationConfirmed = confirmed
 	res.Truncated = len(out) > outCap || len(err) > outCap
 	if errorText != "" {
 		res.Error = errorText
@@ -263,7 +267,7 @@ func (h *jobHub) run(s *session, msg map[string]any) {
 			onOut = func(p []byte) { s.sendChunk(id, "out", string(p)) }
 			onErr = func(p []byte) { s.sendChunk(id, "err", string(p)) }
 		}
-		out, errb, code, runErr, timedOut := runExec(expandHome(cwd), cmd, timeout, cancel, nil, onOut, onErr)
+		out, errb, code, runErr, timedOut, confirmed := runExec(expandHome(cwd), cmd, timeout, cancel, nil, onOut, onErr)
 		if runErr != nil {
 			s.sendRes(id, false, 1, "", "", "exec failed")
 			return
@@ -288,7 +292,7 @@ func (h *jobHub) run(s *session, msg map[string]any) {
 				errText = fmt.Sprintf("exit %d", code)
 			}
 		}
-		s.sendResFull(id, code == 0, code, out, errb, errText, timedOut)
+		s.sendResFull(id, code == 0, code, out, errb, errText, timedOut, confirmed)
 	case "read_binary":
 		offset, offsetOK := binaryInt(msg, "offset", 0, 0, binaryFileMax)
 		limit, limitOK := binaryInt(msg, "limit", binaryChunkMax, 1, binaryChunkMax)
@@ -383,10 +387,10 @@ func (h *jobHub) run(s *session, msg map[string]any) {
 			return
 		}
 		s.sendRes(id, true, 0, msgOut, "", "")
-	case "kill":
-		h.cancel(jsonStr(msg, "id", ""))
-		s.sendRes(id, true, 0, "cancelled", "", "")
 	default:
+		// op=kill is intentionally gone: it read its target from "id", which is
+		// the job's own id - it could only ever cancel itself. Cancellation
+		// arrives as the "cancel" frame in session.go (jobs.c mirrors this).
 		s.sendRes(id, false, 1, "", "", "unknown op")
 	}
 }

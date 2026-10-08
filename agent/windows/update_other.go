@@ -3,8 +3,8 @@
 package main
 
 import (
-	"fmt"
 	"os"
+	"syscall"
 )
 
 // POSIX has no delayed move/start script: the rename onto the binary is
@@ -17,7 +17,10 @@ func swapAndRelaunch(self, neu, cfgPath string, lock *os.File) error {
 	if err := os.Rename(neu, self); err != nil {
 		return err
 	}
-	return fmt.Errorf("relaunch is Windows-only")
+	// Exec replaces this process with the new binary; returning an error here
+	// would make maybeUpdate resume job intake on the old code with the on-disk
+	// binary already swapped.
+	return syscall.Exec(self, os.Args, os.Environ())
 }
 
 // doSwap is the Windows helper subcommand; not reachable on POSIX.

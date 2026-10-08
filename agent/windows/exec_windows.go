@@ -55,12 +55,12 @@ func (w *streamWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func runExec(cwd, cmd string, timeoutMS int, cancel <-chan struct{}, setKill func(func()), onOut, onErr func([]byte)) (string, string, int, error, bool) {
+func runExec(cwd, cmd string, timeoutMS int, cancel <-chan struct{}, setKill func(func()), onOut, onErr func([]byte)) (string, string, int, error, bool, bool) {
 	if timeoutMS <= 0 {
 		timeoutMS = 30000
 	}
 	if _, err := os.Stat(cwd); err != nil {
-		return "", fmt.Sprintf("fuse-agent: chdir %s: %v\n", cwd, err), 127, nil, false
+		return "", fmt.Sprintf("fuse-agent: chdir %s: %v\n", cwd, err), 127, nil, false, true
 	}
 	ctx, cancelFn := context.WithTimeout(context.Background(), time.Duration(timeoutMS)*time.Millisecond)
 	defer cancelFn()
@@ -78,7 +78,7 @@ func runExec(cwd, cmd string, timeoutMS int, cancel <-chan struct{}, setKill fun
 	preamble := "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; $OutputEncoding = [Console]::OutputEncoding; $ErrorActionPreference = 'Continue'\n"
 	stdin, err := ps.StdinPipe()
 	if err != nil {
-		return "", "", 1, err, false
+		return "", "", 1, err, false, true
 	}
 	var stdout, stderr bytes.Buffer
 	outW := &streamWriter{on: onOut, cap: outCap}
@@ -108,7 +108,7 @@ func runExec(cwd, cmd string, timeoutMS int, cancel <-chan struct{}, setKill fun
 		if job != 0 {
 			windows.CloseHandle(job)
 		}
-		return "", "", 1, err, false
+		return "", "", 1, err, false, true
 	}
 	if job != 0 && ps.Process != nil {
 		assigned := false
@@ -144,13 +144,16 @@ func runExec(cwd, cmd string, timeoutMS int, cancel <-chan struct{}, setKill fun
 	var waitErr error
 	timedOut := false
 	cancelled := false
+	killed := false
 	select {
 	case <-cancel:
 		kill()
+		killed = true
 		waitErr = <-done
 		cancelled = true
 	case <-ctx.Done():
 		kill()
+		killed = true
 		waitErr = <-done
 		timedOut = ctx.Err() == context.DeadlineExceeded
 	case waitErr = <-done:
@@ -178,5 +181,10 @@ func runExec(cwd, cmd string, timeoutMS int, cancel <-chan struct{}, setKill fun
 	if errW.n > outCap {
 		stderr.WriteString("\n[fuse-agent: output truncated]\n")
 	}
-	return stdout.String(), stderr.String(), code, nil, timedOut
+	// Termination is confirmed when no kill ran (the shell exited on its own),
+	// or when the job object covered the tree: closing its handle above reaped
+	// every descendant. A kill that fell back to Process.Kill only reached
+	// powershell, so its descendants may still be running.
+	confirmed := !killed || job != 0
+	return stdout.String(), stderr.String(), code, nil, timedOut, confirmed
 }

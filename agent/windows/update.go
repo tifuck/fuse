@@ -48,6 +48,32 @@ func httpGet(url string) ([]byte, error) {
 
 const updateEvery = time.Hour
 
+// updateFetchURL resolves the manifest's binary reference to its download URL.
+// Absolute URLs must already be https - the manifest's own checksum travels the
+// same channel, so a plain-http fetch could be MITM'd into a payload whose hash
+// the tampered manifest vouches for (the C client refuses http outright).
+// Relative references join the configured base.
+func updateFetchURL(base, ref string) (string, bool) {
+	if ref == "" {
+		return "", false
+	}
+	if strings.HasPrefix(ref, "https://") {
+		return ref, true
+	}
+	// Any other absolute spelling (http://, //host, bare "http..." that the
+	// old prefix heuristic would have fetched) is refused.
+	if strings.Contains(ref, "://") || strings.HasPrefix(ref, "//") || strings.HasPrefix(ref, "http") {
+		return "", false
+	}
+	if !strings.HasPrefix(base, "https://") {
+		return "", false
+	}
+	if !strings.HasPrefix(ref, "/") {
+		ref = "/" + ref
+	}
+	return base + ref, true
+}
+
 func parseVersion(s string) (major, minor, patch int, ok bool) {
 	parts := strings.Split(strings.TrimSpace(s), ".")
 	if len(parts) == 0 || len(parts) > 3 {
@@ -172,6 +198,13 @@ func maybeUpdate(cfg *agentConfig, force bool, admit func() (hold func(), ok boo
 	}
 	defer endUpdate()
 	base := strings.TrimRight(cfg.URL, "/")
+	if strings.HasPrefix(base, "wss://") {
+		base = "https://" + strings.TrimPrefix(base, "wss://")
+	}
+	if !strings.HasPrefix(base, "https://") {
+		log.Printf("fuse-agent: update refused; https is required")
+		return
+	}
 	body, err := httpGet(base + "/agent/v1/manifest")
 	if err != nil {
 		return
@@ -187,18 +220,14 @@ func maybeUpdate(cfg *agentConfig, force bool, admit func() (hold func(), ok boo
 	if !ok || bin.SHA256 == "" {
 		return
 	}
-	path := bin.Path
-	if path == "" && bin.URL != "" {
-		path = bin.URL
+	ref := bin.Path
+	if ref == "" && bin.URL != "" {
+		ref = bin.URL
 	}
-	if path == "" {
+	path, ok := updateFetchURL(base, ref)
+	if !ok {
+		log.Printf("fuse-agent: update refused; download URL is not https")
 		return
-	}
-	if !strings.HasPrefix(path, "http") {
-		if !strings.HasPrefix(path, "/") {
-			path = "/" + path
-		}
-		path = base + path
 	}
 	data, err := httpGet(path)
 	if err != nil {

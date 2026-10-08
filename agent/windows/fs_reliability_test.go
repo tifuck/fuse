@@ -135,6 +135,68 @@ func TestGrepLiteralIncludeNarrowsToFileInRoot(t *testing.T) {
 	}
 }
 
+func TestGrepIncludeRejectsEscapes(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("hit\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	parent := filepath.Dir(dir)
+	if err := os.WriteFile(filepath.Join(parent, "outside.txt"), []byte("hit\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(filepath.Join(parent, "outside.txt"))
+	// Literal-include narrowing must not walk outside the searched root.
+	for _, include := range []string{
+		`..\outside.txt`, "../outside.txt", "/etc/passwd", `C:\secret.txt`, "~/.ssh/id_rsa", ".",
+	} {
+		if out, err := grepDirOptions(dir, "hit", include, 10); err == nil {
+			t.Fatalf("include %q escaped the root: %q", include, out)
+		}
+	}
+	// An in-root literal still narrows to that file.
+	out, err := grepDirOptions(dir, "hit", "secret.txt", 10)
+	if err != nil || !strings.Contains(out, "secret.txt") {
+		t.Fatalf("in-root include broken: %q %v", out, err)
+	}
+}
+
+func TestWriteInPlaceRestoresOnWriteFailure(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "f.txt")
+	if err := os.WriteFile(p, []byte("original content"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	saved := openInPlaceFile
+	openInPlaceFile = func(string) (inPlaceFile, error) { return failingFile{}, nil }
+	defer func() { openInPlaceFile = saved }()
+	if err := writeInPlace(p, "new body that is longer", 400000); err == nil {
+		t.Fatal("expected write failure")
+	}
+	if b, _ := os.ReadFile(p); string(b) != "original content" {
+		t.Fatalf("original destroyed by failed fallback write: %q", b)
+	}
+}
+
+type failingFile struct{}
+
+func (failingFile) WriteString(string) (int, error)    { return 0, os.ErrClosed }
+func (failingFile) WriteAt([]byte, int64) (int, error) { return 0, os.ErrClosed }
+func (failingFile) Truncate(int64) error               { return nil }
+func (failingFile) Sync() error                        { return nil }
+func (failingFile) Close() error                       { return nil }
+
+func TestWriteTruncatesTailOfShorterContent(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "f.txt")
+	if err := os.WriteFile(p, []byte("long original body"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeInPlace(p, "short", 400000); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(p); string(b) != "short" {
+		t.Fatalf("stale tail kept: %q", b)
+	}
+}
+
 func TestGrepSearchesSymlinkNamedAsRoot(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "real.py")

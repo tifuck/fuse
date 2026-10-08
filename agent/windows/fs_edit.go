@@ -46,7 +46,7 @@ func writeFileAtomicLimit(path, content string, max int) error {
 	if err != nil {
 		// Directory not writable but the file is: rewrite the file itself.
 		if exists && os.IsPermission(err) {
-			return writeInPlace(path, content)
+			return writeInPlace(path, content, max)
 		}
 		return err
 	}
@@ -77,14 +77,46 @@ func writeFileAtomicLimit(path, content string, max int) error {
 	return nil
 }
 
+// inPlaceFile is the write handle writeInPlace needs; the var is a seam so
+// tests can force a mid-write failure and pin the restore path.
+type inPlaceFile interface {
+	io.WriterAt
+	WriteString(string) (int, error)
+	Truncate(int64) error
+	Sync() error
+	Close() error
+}
+
+var openInPlaceFile = func(path string) (inPlaceFile, error) {
+	return os.OpenFile(path, os.O_WRONLY, 0)
+}
+
 // writeInPlace rewrites an existing regular file without replacing it (same
-// file identity, attributes and ACLs). Not atomic; only a fallback.
-func writeInPlace(path, content string) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0)
+// file identity, attributes and ACLs). Not atomic; only a fallback. The file
+// is never truncated before the new bytes land, and a failed write puts the
+// old body back (when it fit the caller's ceiling), so a partial write cannot
+// destroy the original.
+func writeInPlace(path, content string, max int) error {
+	var orig []byte
+	restorable := false
+	if rf, err := os.Open(path); err == nil {
+		orig, _ = io.ReadAll(io.LimitReader(rf, int64(max)+1))
+		rf.Close()
+		restorable = len(orig) <= max
+	}
+	f, err := openInPlaceFile(path)
 	if err != nil {
 		return err
 	}
 	if _, err := f.WriteString(content); err != nil {
+		if restorable {
+			_, _ = f.WriteAt(orig, 0)
+			_ = f.Truncate(int64(len(orig)))
+		}
+		f.Close()
+		return err
+	}
+	if err := f.Truncate(int64(len(content))); err != nil {
 		f.Close()
 		return err
 	}

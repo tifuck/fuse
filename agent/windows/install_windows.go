@@ -74,11 +74,20 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	if err := os.Rename(tmp, dst); err != nil {
-		_ = os.Remove(dst)
-		if err2 := os.Rename(tmp, dst); err2 != nil {
+		// Keep the previous binary until the new one is in place: removing it
+		// first left nothing behind when the second rename also failed.
+		bak := dst + ".old"
+		_ = os.Remove(bak)
+		if err2 := os.Rename(dst, bak); err2 != nil {
 			os.Remove(tmp)
 			return err
 		}
+		if err2 := os.Rename(tmp, dst); err2 != nil {
+			_ = os.Rename(bak, dst) // restore
+			os.Remove(tmp)
+			return err2
+		}
+		_ = os.Remove(bak)
 	}
 	return nil
 }

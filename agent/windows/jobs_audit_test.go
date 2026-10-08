@@ -19,6 +19,35 @@ func TestResultCarriesExplicitFalseTruncation(t *testing.T) {
 	}
 }
 
+func TestKillOpIsUnknownAndCancelFrameStillWorks(t *testing.T) {
+	// op=kill read its target from "id" - the message's own job id - so it
+	// could only cancel itself and lied "cancelled". It must now fall through
+	// to "unknown op"; real cancellation is the "cancel" frame (jobs.cancel).
+	h := newJobHub()
+	h.live["killer"] = &liveJob{id: "killer", cancel: make(chan struct{})}
+	s := &session{}
+	h.run(s, map[string]any{"id": "killer", "op": "kill", "target": "victim"})
+	if len(s.results) != 1 || s.results[0].OK || s.results[0].Error != "unknown op" {
+		t.Fatalf("kill op must report unknown op: %+v", s.results)
+	}
+	h.live["victim"] = &liveJob{id: "victim", cancel: make(chan struct{})}
+	h.cancel("victim")
+	select {
+	case <-h.live["victim"].cancel:
+	default:
+		t.Fatal("cancel frame path broken")
+	}
+}
+
+func TestTerminationConfirmedIsNotForced(t *testing.T) {
+	s := &session{}
+	s.sendResFull("a", true, 0, "ok", "", "", false, false)
+	s.sendResFull("b", true, 0, "ok", "", "", false, true)
+	if s.results[0].TerminationConfirmed || !s.results[1].TerminationConfirmed {
+		t.Fatalf("confirmed flag ignored: %+v", s.results)
+	}
+}
+
 func TestResultsSurviveOfflineAndFailedFlush(t *testing.T) {
 	s := &session{}
 	s.sendRes("first", true, 0, "retained", "", "")

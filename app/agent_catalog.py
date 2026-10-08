@@ -914,13 +914,19 @@ def search(query: str = "", names: list[str] | None = None) -> list[dict]:
             if q in blob or any(part in blob for part in parts):
                 if name not in wanted:
                     wanted.append(name)
+    # Cap extra tools by schemas actually returned: slicing the raw list first
+    # let always-on and schema-less names eat load slots and starve real
+    # requests (apply_load counts only non-always loaded extras).
     out = []
-    for name in wanted[:MAX_EXTRA]:
+    for name in wanted:
         if name in _ALWAYS:
             continue
         item = schema(name)
-        if item:
-            out.append(item)
+        if item is None:
+            continue
+        if len(out) >= MAX_EXTRA:
+            break
+        out.append(item)
     return out
 
 

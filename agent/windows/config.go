@@ -63,5 +63,11 @@ func saveConfig(cfg *agentConfig) error {
 	if err := os.WriteFile(tmp, []byte(body), 0600); err != nil {
 		return err
 	}
+	// Windows mode bits are meaningless: restrict the token file's DACL to the
+	// writer, the previous owner, SYSTEM and Administrators before publishing.
+	if err := hardenSecretFile(tmp, cfg.Path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
 	return os.Rename(tmp, cfg.Path)
 }

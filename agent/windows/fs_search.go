@@ -80,6 +80,28 @@ func expandBraces(pattern string) []string {
 	return out
 }
 
+// includeOK rejects include spellings that would let the literal-file
+// narrowing below read outside the searched root: `..` segments, absolute,
+// drive/UNC and home-relative paths, and ".". Mirrors the server-side guard
+// in app/workspace_ops/search_cmds.py (_grep_include_arg).
+func includeOK(s string) bool {
+	if s == "" || s == "." {
+		return false
+	}
+	if s[0] == '/' || s[0] == '\\' || s[0] == '~' {
+		return false
+	}
+	if len(s) >= 2 && s[1] == ':' {
+		return false
+	}
+	for _, part := range strings.FieldsFunc(s, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if part == ".." {
+			return false
+		}
+	}
+	return true
+}
+
 // matchAny matches rel against every brace alternative of pattern.
 func matchAny(pattern, rel string) (bool, error) {
 	for _, alt := range expandBraces(pattern) {
@@ -244,10 +266,16 @@ func grepDirMode(root, pattern, include string, maxMatches int, opt grepOpts) (s
 	if maxMatches < 1 || maxMatches > 200 {
 		maxMatches = 200
 	}
+	if include != "" && !includeOK(include) {
+		return "", fmt.Errorf("include must stay inside the searched path; use a glob like *.py")
+	}
 	// A plain file name (no wildcards) that sits directly in root means
 	// "search that file", the same rule the Linux path applies.
 	if include != "" && !strings.ContainsAny(include, "*?[]{}") {
 		candidate := filepath.Join(root, filepath.FromSlash(strings.ReplaceAll(include, `\`, "/")))
+		if rel, err := filepath.Rel(root, candidate); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return "", fmt.Errorf("include must stay inside the searched path; use a glob like *.py")
+		}
 		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() {
 			root, include = candidate, ""
 		}

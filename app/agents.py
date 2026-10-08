@@ -916,9 +916,31 @@ async def list_agents(*, user_id: int, thread_id, scope_run_id: str | None = Non
         payload["failed_ids"] = failed_ids
     if len(finished) > len(shown):
         payload["omitted_finished"] = len(finished) - len(shown)
-    text = json.dumps(payload, ensure_ascii=False)[:6000]
+    text = _fit_list_json(payload)
     return text, {
         "name": "list_subagents",
         "status": "done",
         "preview": f"{len(live)} live, {len(shown)} finished",
     }
+
+
+def _fit_list_json(payload: dict, limit: int = 6000) -> str:
+    """Serialize within limit by dropping finished entries (never live ones)
+    before falling back to a bare id list - a hard string slice would cut the
+    JSON mid-token and the model could not parse the tool result."""
+    def dump() -> str:
+        return json.dumps(payload, ensure_ascii=False)
+
+    text = dump()
+    while len(text) > limit and payload.get("finished"):
+        payload["finished"].pop()
+        payload["omitted_finished"] = int(payload.get("omitted_finished") or 0) + 1
+        text = dump()
+    if len(text) <= limit:
+        return text
+    bare = {
+        "live": [item["id"] for item in payload.get("live") or []],
+        "finished": [item["id"] for item in payload.get("finished") or []],
+        "note": "subagent list too large; use get_subagent_output with an id",
+    }
+    return json.dumps(bare, ensure_ascii=False)

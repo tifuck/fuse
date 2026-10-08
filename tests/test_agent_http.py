@@ -15,7 +15,7 @@ os.environ.setdefault("APP_SECRET", "z" * 32)
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.agent_http import router, install_ps1, BINARIES, _SAFE_BIN
+from app.agent_http import router, install_script, install_ps1, BINARIES, _SAFE_BIN, _sha256
 
 
 class AgentHttpTest(unittest.TestCase):
@@ -58,6 +58,37 @@ class AgentHttpTest(unittest.TestCase):
         ):
             res = self.client.get("/i/not-a-code.ps1")
         self.assertEqual(res.status_code, 404)
+
+    def test_trailing_newline_code_not_baked(self):
+        # `$` alone would accept "fuse_abcdefgh\n" and bake a broken default.
+        with patch("app.agent_http._origin", return_value="https://example.test"):
+            sh = install_script("fuse_abcdefgh\n")
+            ps = install_ps1("fuse_abcdefgh\n")
+        self.assertNotIn("fuse_abcdefgh", sh)
+        self.assertNotIn("fuse_abcdefgh", ps)
+        with patch("app.agent_http._origin", return_value="https://example.test"), patch(
+            "app.agent_http.limiter.allow", return_value=True
+        ):
+            res = self.client.get("/i/fuse_abcdefgh%0a")
+        self.assertEqual(res.status_code, 404)
+
+    def test_sha256_cached_until_file_changes(self):
+        import hashlib
+        import time
+
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "bin"
+            p.write_bytes(b"payload-one")
+            with patch("app.agent_http.hashlib.sha256", wraps=hashlib.sha256) as spy:
+                a = _sha256(p)
+                b = _sha256(p)
+                self.assertEqual(a, b)
+                self.assertEqual(spy.call_count, 1)
+                p.write_bytes(b"payload-two-longs")
+                os.utime(p, (time.time() + 5, time.time() + 5))
+                c = _sha256(p)
+                self.assertEqual(spy.call_count, 2)
+                self.assertNotEqual(a, c)
 
 
 if __name__ == "__main__":

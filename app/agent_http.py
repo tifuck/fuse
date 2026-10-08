@@ -38,12 +38,26 @@ def agent_version() -> str:
     return text.splitlines()[0].strip() or "0.0.0"
 
 
+_SHA_CACHE: dict[tuple[str, int, int], str] = {}
+
+
 def _sha256(path: Path) -> str:
+    st = path.stat()
+    key = (str(path), st.st_size, st.st_mtime_ns)
+    hit = _SHA_CACHE.get(key)
+    if hit is not None:
+        return hit
     digest = hashlib.sha256()
     with path.open("rb") as fh:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
             digest.update(chunk)
-    return digest.hexdigest()
+    out = digest.hexdigest()
+    # Bound the cache: dist holds a handful of binaries; stale keys die with
+    # the (size, mtime) tuple.
+    if len(_SHA_CACHE) > 64:
+        _SHA_CACHE.clear()
+    _SHA_CACHE[key] = out
+    return out
 
 
 def _origin() -> str:
@@ -70,7 +84,9 @@ def manifest_payload() -> dict:
 
 def install_script(code: str = "") -> str:
     origin = _origin()
-    baked = code if _CODE_RE.match(code or "") else ""
+    # fullmatch: `$` alone would accept a trailing newline and bake a broken
+    # (multi-line) default into the script.
+    baked = code if _CODE_RE.fullmatch(code or "") else ""
     return f"""#!/bin/sh
 set -eu
 # Fuse connector installer. HTTPS only. Pairing code is single-use.
@@ -126,7 +142,7 @@ exec "$TMP/fuse-agent" install --url "$BASE" --code "$CODE"
 
 def install_ps1(code: str = "") -> str:
     origin = _origin()
-    baked = code if _CODE_RE.match(code or "") else ""
+    baked = code if _CODE_RE.fullmatch(code or "") else ""
     return f"""# Fuse connector installer. HTTPS only. Pairing code is single-use.
 $ErrorActionPreference = 'Stop'
 $Base = '{origin}'
@@ -248,7 +264,7 @@ async def install_with_code(code: str, request: Request):
     if raw.endswith(".ps1"):
         ps1 = True
         raw = raw[:-4]
-    if not _CODE_RE.match(raw):
+    if not _CODE_RE.fullmatch(raw):
         raise HTTPException(404, "not found")
     body = install_ps1(raw) if ps1 else install_script(raw)
     return PlainTextResponse(body, media_type="text/plain; charset=utf-8")
