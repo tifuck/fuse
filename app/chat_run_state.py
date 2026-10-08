@@ -157,7 +157,8 @@ def touch_run(run_id: str) -> None:
 
 def start_turn(user_id, thread_id, text, expected_revision, command_id, model=None, tools=None, context=None,
                 attachments=None, reasoning_effort=None, auto_title=False, invoke_skill=None, auto=False,
-                scheduled=False, coding_override=None, command_receipt_ids=None):
+                scheduled=False, coding_override=None, command_receipt_ids=None, replace_from=None,
+                schedule_id=None, schedule_manual=False, auto_resumed_at=""):
     from . import chat_children
     from . import chats
 
@@ -172,15 +173,22 @@ def start_turn(user_id, thread_id, text, expected_revision, command_id, model=No
     if context is not None:
         context = chats.clip_context(context, strict=True)
     reasoning_effort = chats.parse_reasoning_effort(reasoning_effort, strict=True)
+    if replace_from is not None:
+        if type(replace_from) is not int or replace_from < 0:
+            raise chats.ChatValidationError("replace_from must be a non-negative integer")
+        if expected_revision is None:
+            raise chats.ChatValidationError("expected_revision is required for replacement")
     with chat_tx.transaction() as conn:
         pk = chats.resolve_thread_pk(user_id, thread_id, conn)
         attachment_identity = [{k: att[k] for k in ("name", "mime", "kind", "data")} for att in attachments]
         legacy = ["turn", thread_id, text, expected_revision, model, tools, context, attachment_identity, reasoning_effort, invoke_skill]
         identity = ["turn_v2", pk if pk is not None else thread_id, text, model, tools, context, attachment_identity, reasoning_effort, invoke_skill]
+        if replace_from is not None:
+            identity.extend(["replace_from", replace_from])
         old = conn.execute("SELECT fingerprint FROM chat_commands WHERE user_id=? AND command_id=?", (user_id, command_id)).fetchone()
         # Original retry payloads from before this change remain valid. New
         # receipts identify intent, not the revision refreshed after a lost ACK.
-        if old and old["fingerprint"] == hashlib.sha256(chat_tx.dumps(legacy).encode()).hexdigest():
+        if replace_from is None and old and old["fingerprint"] == hashlib.sha256(chat_tx.dumps(legacy).encode()).hexdigest():
             identity = legacy
         fingerprint, previous = chat_tx.command(conn, user_id, command_id, identity)
         if previous is not None:
@@ -194,6 +202,16 @@ def start_turn(user_id, thread_id, text, expected_revision, command_id, model=No
         if row is None:
             raise chats.ChatValidationError("chat not found", 404)
         chat_tx.check_revision(row["revision"], expected_revision)
+        if scheduled and schedule_id is not None:
+            schedule = conn.execute("SELECT enabled,paused FROM chat_schedules WHERE id=? AND user_id=?", (schedule_id, user_id)).fetchone()
+            if schedule is None or (not schedule_manual and (not schedule["enabled"] or schedule["paused"])):
+                raise chats.ChatValidationError("schedule stopped or unavailable", 409)
+        elif auto and automatic_stop_guard(conn, user_id, thread_id, resumed_at=auto_resumed_at):
+            raise chats.ChatValidationError("conversation stopped; explicit resume required", 409)
+        if replace_from is not None and conn.execute(
+            "SELECT 1 FROM chat_runs WHERE thread_id=? AND status IN ('queued','running')", (thread_id,)
+        ).fetchone():
+            raise chats.ChatValidationError("cannot replace messages during an active run", 409)
         if conn.execute(
             """SELECT 1 FROM chat_runs WHERE thread_id=? AND status IN ('queued','running')
                AND parent_run_id IS NULL""",
@@ -211,6 +229,11 @@ def start_turn(user_id, thread_id, text, expected_revision, command_id, model=No
         ).fetchone()[0] >= 32:
             raise chats.ChatValidationError("chat generation capacity reached; try again shortly", 429)
         messages = chats.parse_messages(row["messages"])
+        original_messages = messages
+        if replace_from is not None:
+            if replace_from >= len(messages) or messages[replace_from].get("role") != "user":
+                raise chats.ChatValidationError("replace_from must target an existing user message")
+            messages = messages[:replace_from]
         if len(messages) + 2 > chats.MSG_MAX:
             raise chats.ChatValidationError("chat message limit reached", 413)
         incoming = {"role": "user", "content": text}
@@ -236,6 +259,8 @@ def start_turn(user_id, thread_id, text, expected_revision, command_id, model=No
             coding = bool(settings_row.get("agent_coding")) or is_project
 
         state = ctxmod.parse_state(row["compaction"] if "compaction" in row.keys() else None)
+        if replace_from is not None:
+            state = ctxmod.invalidate_edited_checkpoints(state, original_messages, original_messages[:replace_from])
         send_model = model if model is not None else row["model"]
         prior_meter = state.get("meter") if isinstance(state.get("meter"), dict) else None
         send_type_id = context_meter.source_type_for_model(send_model, prior_meter)
@@ -634,6 +659,48 @@ def settle_wake_children(run_id, child_ids):
             conn.execute("UPDATE chat_runs SET request=? WHERE id=?", (chat_tx.dumps(creq), cid))
 
 
+def automatic_stop_guard(conn, user_id, thread_id, *, parent_run_id=None, resumed_at=""):
+    """Durable Stop intent, checked inside the caller's admission transaction.
+
+    A thread is stopped when its latest root run carries a user Stop (the
+    cancel flag outlives the run: request_cancel writes it even on a root that
+    already finished), or when a walked ancestor did. A user resume after the
+    stop (user_resumed_at, or the requeued run's cleared flag) is explicit
+    intent and lifts the guard. The chat_runs reads lock those rows on
+    MariaDB, so this cannot interleave with a concurrent Stop on them.
+    """
+    roots = conn.execute(
+        "SELECT id,message_id,status,cancel_requested,cancel_requested_at,updated_at,created_at FROM chat_runs WHERE thread_id=? AND user_id=? AND parent_run_id IS NULL",
+        (thread_id, user_id),
+    ).fetchall()
+    if roots:
+        thread = conn.execute("SELECT messages FROM chat_threads WHERE id=? AND user_id=?", (thread_id, user_id)).fetchone()
+        try:
+            messages = json.loads((thread or {"messages": None})["messages"] or "[]")
+        except (json.JSONDecodeError, TypeError):
+            messages = []
+        positions = {m.get("id"): i for i, m in enumerate(messages) if isinstance(m, dict)}
+        latest = max(roots, key=lambda r: (r["created_at"], positions.get(r["message_id"], -1), r["id"]))
+        if _run_stopped(latest, resumed_at):
+            return True
+    seen = set()
+    while parent_run_id and parent_run_id not in seen:
+        seen.add(parent_run_id)
+        parent = conn.execute("SELECT parent_run_id,status,cancel_requested,cancel_requested_at,updated_at FROM chat_runs WHERE id=? AND user_id=?", (parent_run_id, user_id)).fetchone()
+        if parent is None:
+            return True
+        if _run_stopped(parent, resumed_at):
+            return True
+        parent_run_id = parent["parent_run_id"]
+    return False
+
+
+def _run_stopped(row, resumed_at: str) -> bool:
+    if not (row["cancel_requested"] or row["status"] == "cancelled"):
+        return False
+    return not resumed_after_stop({"user_resumed_at": resumed_at}, row["cancel_requested_at"] or row["updated_at"])
+
+
 def thread_root_run(user_id, thread_id, *, include_request=True):
     """Latest root run of a thread with its status."""
     try:
@@ -994,15 +1061,35 @@ def finish_run(run_id, message, status):
 
 def request_cancel(user_id, run_id):
     with chat_tx.transaction() as conn:
-        row = conn.execute("SELECT * FROM chat_runs WHERE id=? AND user_id=? AND status IN ('queued','running')", (run_id, user_id)).fetchone()
+        row = conn.execute("SELECT * FROM chat_runs WHERE id=? AND user_id=?", (run_id, user_id)).fetchone()
         if row is None:
             return False
+        if row["parent_run_id"] and row["status"] not in chat_tx.ACTIVE:
+            return False
         root = row["root_run_id"] if "root_run_id" in row.keys() and row["root_run_id"] else row["id"]
+        ts = db.now()
+        if not row["parent_run_id"]:
+            # A root Stop is durable thread intent and must outlive the run it
+            # stopped: the flag on a root that already finished is what
+            # automatic_stop_guard reads to keep a just-completed child from
+            # requeueing or waking the thread, and the continuity schedules
+            # bound to this thread pause instead of restarting it. The run row
+            # is locked (FOR UPDATE on MariaDB), so this cannot interleave with
+            # an admission check on the same root.
+            flagged = conn.execute(
+                "UPDATE chat_runs SET cancel_requested=1,cancel_requested_at=? WHERE id=? AND cancel_requested=0",
+                (ts, run_id),
+            ).rowcount
+            conn.execute(
+                "UPDATE chat_schedules SET paused=1,updated_at=? WHERE user_id=? AND thread_id=? AND fresh_each_fire=0",
+                (ts, user_id, row["thread_id"]),
+            )
+            if flagged and row["status"] in chat_tx.ACTIVE:
+                chat_tx.event(conn, user_id, "run.cancel_requested", row["thread_id"], _cancel_event_payload(row))
         targets = conn.execute(
             "SELECT * FROM chat_runs WHERE user_id=? AND status IN ('queued','running') AND (id=? OR root_run_id=?)",
             (user_id, run_id, root),
         ).fetchall()
-        ts = db.now()
         for item in targets:
             if item["cancel_requested"]:
                 continue

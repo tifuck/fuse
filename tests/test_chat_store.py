@@ -220,13 +220,28 @@ class ChatStoreTest(unittest.TestCase):
 
     def test_cancel_is_durable_and_idempotent(self):
         run = self.turn()["run"]
+        child = store.start_child_run(
+            user_id=1, thread_id=run["thread_id"], parent_run_id=run["id"],
+            prompt="child", description="child",
+        )
         self.assertTrue(store.request_cancel(1, run["id"]))
         last = store.cursor(1)
         self.assertTrue(store.request_cancel(1, run["id"]))
         self.assertEqual(last, store.cursor(1))
         self.assertTrue(store.get_run(1, run["id"])["cancel_requested"])
         store.finish_run(run["id"], {"content": "", "stopped": True}, "cancelled")
-        self.assertFalse(store.request_cancel(1, run["id"]))
+        # A Stop that lands after the root finished still records durable
+        # thread intent (automatic_stop_guard) instead of silently no-op'ing;
+        # it is idempotent and emits no duplicate events. A finished child
+        # keeps refusing: agents-pane Stop only targets live subagents.
+        last = store.cursor(1)
+        self.assertTrue(store.request_cancel(1, run["id"]))
+        self.assertEqual(last, store.cursor(1))
+        self.assertTrue(store.get_run(1, run["id"])["cancel_requested"])
+        store.finish_run(child["id"], {"content": "done"}, "cancelled")
+        # A finished child keeps refusing: agents-pane Stop only targets
+        # live subagents, and its report must not be re-marked.
+        self.assertFalse(store.request_cancel(1, child["id"]))
 
     def test_bounded_history_rejects_turn_without_truncation(self):
         thread = chats.create_thread(1, messages=[{"role": "user", "content": str(i)} for i in range(chats.MSG_MAX)])
@@ -783,6 +798,7 @@ class ChatStoreTest(unittest.TestCase):
         messages = [
             {"id": "a", "role": "user", "content": "one"},
             {"id": "b", "role": "assistant", "content": "ok"},
+            {"id": "c", "role": "user", "content": "two"},
         ]
         chats.update_thread(1, thread["id"], messages=messages, expected_revision=thread["revision"])
         # A concurrent prune (e.g. from an in-flight run) lands between the
@@ -795,7 +811,8 @@ class ChatStoreTest(unittest.TestCase):
         with store.transaction() as conn:
             conn.execute("UPDATE chat_threads SET compaction=? WHERE id=?",
                          (ctxmod.dump_state(state), thread_pk))
-        trimmed = [{"id": "a", "role": "user", "content": "one"}]
+        trimmed = [{"id": "a", "role": "user", "content": "one"},
+                   {"id": "b", "role": "assistant", "content": "ok"}]
         got = chats.update_thread(
             1, thread["id"], messages=trimmed,
             expected_revision=chats.get_thread(1, thread["id"])["revision"], command_id="del-keep-cp",
@@ -804,6 +821,7 @@ class ChatStoreTest(unittest.TestCase):
             db.fetchone("SELECT compaction FROM chat_threads WHERE id=?", (thread_pk,))["compaction"]
         )
         self.assertEqual(len(stored["checkpoints"]), 1)
+        self.assertEqual(stored["checkpoints"][0]["through_message_id"], "b")
         self.assertEqual(got["compaction"]["meter"]["scope"], "transcript")
 
     def test_thread_meter_estimates_transcript_not_billed_usage(self):

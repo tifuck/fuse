@@ -41,11 +41,23 @@ class MergeToolArgsTest(unittest.TestCase):
     def test_short_suffix_repeat_appends(self):
         # A suffix repeat is NOT treated as redelivery: dropping it would
         # corrupt commands containing repeated braces/quotes (e.g. "}}").
-        # Only an EXACT duplicate of the whole accumulator is redelivery.
         self.assertEqual(_merge_tool_args('{"command": "ls"}', 'ls"}'), '{"command": "ls"}ls"}')
 
-    def test_exact_duplicate_delta_is_redelivery(self):
-        self.assertEqual(_merge_tool_args('{"command": "ls', '{"command": "ls'), '{"command": "ls')
+    def test_equal_fragments_are_not_assumed_to_be_redelivery(self):
+        self.assertEqual(_merge_tool_args("{", "{"), "{{")
+        self.assertEqual(_merge_tool_args("abc", "abc"), "abcabc")
+
+    def test_complete_object_redelivery_and_replacement(self):
+        self.assertEqual(_merge_tool_args('{"x":1}', '{"x":1}'), '{"x":1}')
+        self.assertEqual(_merge_tool_args('{"x":1}', '{"x":2}'), '{"x":2}')
+
+    def test_prefix_delta_inside_command_is_preserved(self):
+        book = _ToolBook()
+        book.add(_frame(tid="run", name="run_terminal_command"))
+        for chunk in ['{"command":"echo ', '{', 'x}"}']:
+            book.add(_frame(args=chunk))
+        args = book.openai_calls()[0]["function"]["arguments"]
+        self.assertEqual(json.loads(args), {"command": "echo {x}"})
 
     def test_plain_deltas_concatenate(self):
         self.assertEqual(_merge_tool_args('{"command": "echo ', 'hi"}'), '{"command": "echo hi"}')

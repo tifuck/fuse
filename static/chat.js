@@ -466,9 +466,25 @@ import { createBoot } from './chat/boot.js';
 
     S.root.querySelector("[data-sync-retry]").addEventListener("click", () => {
     if (!net.requireLive()) return;
-    if (S.pendingTurn && S.pendingTurn.id === S.currentId) turns.completeTurn(S.pendingTurn.body.text);
+    if (S.pendingTurn && S.pendingTurn.id === S.currentId) turns.completeTurn(S.pendingTurn.body.text, S.pendingTurn.body.attachments || [], { truncatedTo: S.pendingTurn.body.replace_from, undoSnap: S.pendingTurn.undoSnap });
     else picker.setHint("Open the chat with the unconfirmed send to retry it.", true);
   });
+
+    const discardPending = document.createElement('button');
+    discardPending.type = 'button';
+    discardPending.dataset.pendingDiscard = '';
+    discardPending.hidden = true;
+    discardPending.textContent = 'Review unconfirmed sends';
+    discardPending.addEventListener('click', async () => {
+      for (const pending of [...S.pendingTurns.values()]) {
+        if (await sidebar.askConfirm(`Discard the unconfirmed send in chat ${pending.id}? It may already have been accepted; check the chat before sending again.\n\n${pending.body.text.slice(0, 240)}`, { confirmLabel: 'Discard' })) {
+          S.pendingTurns.delete(String(pending.id));
+        }
+      }
+      sync.setPendingTurn(S.pendingTurn);
+      sync.syncStatus();
+    });
+    S.root.querySelector('.chat-sync')?.append(discardPending);
 
     window.addEventListener("online", () => sync.connectSync());
 
@@ -479,7 +495,7 @@ import { createBoot } from './chat/boot.js';
     document.addEventListener("visibilitychange", () => { if (!document.hidden && !net.isLive()) sync.connectSync(); });
 
     window.addEventListener("beforeunload", (event) => {
-    if (S.dirty || S.memoryDirty || S.pendingTurn || S.pendingCreate) { event.preventDefault(); event.returnValue = ""; }
+    if (S.dirty || S.memoryDirty || S.pendingTurns.size || S.pendingCreate) { event.preventDefault(); event.returnValue = ""; }
   });
 
     window.fuseSpinDebug = {
@@ -846,7 +862,7 @@ import { createBoot } from './chat/boot.js';
   });
 
     window.addEventListener("storage", (event) => {
-    if (S.currentId && (event.key === turns.queueStoreKey() || event.key === turns.queueHoldKey())) {
+    if (S.currentId && (event.key === turns.queueStoreKey() || event.key?.startsWith(turns.queueStoreKey() + '.item.') || event.key === turns.queueHoldKey() || event.key?.startsWith(turns.queueHoldKey() + '.'))) {
       turns.loadQueue();
       if (!traces.runIsActive(S.activeRun)) turns.drainQueue();
     }

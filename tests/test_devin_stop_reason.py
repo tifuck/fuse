@@ -90,6 +90,7 @@ class DevinStopReasonTest(unittest.IsolatedAsyncioTestCase):
     async def _stream_finish(self, frames: list[bytes]) -> str:
         collected: dict = {}
         chunks = []
+        frames = [*frames, bytes([proto.CONNECT_END_STREAM]) + struct.pack(">I", 2) + b"{}"]
         async for chunk in devin_stream._stream_sse(_FakeResp(frames), _FakeClient(), collected, "test-model"):
             chunks.append(chunk)
         finishes = _finishes(chunks)
@@ -139,6 +140,7 @@ class DevinStopReasonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(finish, "stop")
 
     async def _collect_finish(self, frames: list[bytes]) -> str:
+        frames = [*frames, bytes([proto.CONNECT_END_STREAM]) + struct.pack(">I", 2) + b"{}"]
         obj, _usage, _trailer = await devin_stream._collect_completion(_FakeResp(frames), "test-model")
         return obj["choices"][0]["finish_reason"]
 
@@ -164,6 +166,26 @@ class DevinStopReasonTest(unittest.IsolatedAsyncioTestCase):
             "test-model",
         )
         self.assertEqual(trailer, "an internal error occurred (trace ID: t)")
+
+    async def test_incomplete_streams_never_release_tools(self):
+        from unittest.mock import patch
+
+        tool = {"tool_calls": [{"id": "run", "name": "run_terminal_command",
+                                "arguments_json": '{"command":"echo safe"}'}]}
+        end = bytes([proto.CONNECT_END_STREAM]) + struct.pack(">I", 2) + b"{}"
+        for tail in (b"", b"\x00\x00", end + b"\x00", bytes([proto.CONNECT_END_STREAM]) + struct.pack(">I", 1) + b"x"):
+            with self.subTest(tail=tail), patch.object(proto, "decode_get_chat_message", return_value=tool):
+                frames = [proto.connect_frame(b"tool", compressed=False), tail]
+                collected = {}
+                chunks = [chunk async for chunk in devin_stream._stream_sse(
+                    _FakeResp(frames), _FakeClient(), collected, "test-model")]
+                self.assertEqual(collected["stream_status"], "failed")
+                self.assertNotIn(b'"tool_calls"', b"".join(chunks))
+                self.assertNotIn(b"[DONE]", b"".join(chunks))
+                self.assertIn(b'"error"', b"".join(chunks))
+                obj, _, error = await devin_stream._collect_completion(_FakeResp(frames), "test-model")
+                self.assertTrue(error)
+                self.assertNotIn("choices", obj)
 
     async def test_collect_clean_trailer_is_empty(self):
         obj, _usage, trailer = await devin_stream._collect_completion(

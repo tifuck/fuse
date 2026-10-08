@@ -79,6 +79,17 @@ export function createThreads(ctx) {
     const at = ids.indexOf(String(id));
     const next = at < 0 ? "" : (ids[at + 1] ?? ids[at - 1] ?? "");
     undo.dropHistoryStacks(id);
+    // A deleted/inaccessible thread resolves its unconfirmed send and its
+    // queued messages outright: neither can ever be retried.
+    if (S.pendingTurns.delete(String(id))) sync.setPendingTurn(S.pendingTurn);
+    try {
+      const gone = (key) => key === turns.queueStoreKey(id) || (key || "").startsWith(turns.queueStoreKey(id) + ".") ||
+        key === turns.queueHoldKey(id) || (key || "").startsWith(turns.queueHoldKey(id) + ".");
+      for (let i = localStorage.length - 1; i >= 0; i -= 1) {
+        const key = localStorage.key(i);
+        if (gone(key)) localStorage.removeItem(key);
+      }
+    } catch (_) {}
     dropThread(id);
     if (S.currentId !== id) { if (known) render.renderHistory(); return; }
     if (!known) return;

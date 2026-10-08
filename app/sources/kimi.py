@@ -1080,6 +1080,10 @@ class KimiSource:
                     failover.served()
                     return self._stream_result(stream, usage, cred, session_id, model, attempts)
                 last = ChatResult(status=status, body=obj, usage=usage, credential_id=cred["id"], model=model)
+                if usage.get("failure_phase") in ("request_sent", "response_received"):
+                    last.response_headers = response_headers
+                    last.attempts = attempts
+                    return last
                 if status == 401:
                     if _capability_denial(obj):
                         # The coding endpoint answers a model/context beyond

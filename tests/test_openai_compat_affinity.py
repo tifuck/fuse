@@ -120,6 +120,28 @@ def test_stream_binds_only_after_successful_completion(upstream, ending):
     assert len(seen) == 2
 
 
+@pytest.mark.parametrize("raw", [b"not-json", b"[]", b"{}", b'{"choices":[{}]}', b'{"choices":[{"message":null}]}'])
+def test_invalid_success_does_not_resubmit_generation(upstream, raw):
+    source, pins, seen, replies, _ = upstream
+    replies.append(httpx.Response(200, content=raw))
+    result = asyncio.run(source().chat({"model": "m"}, session_id="fx:session-a"))
+    assert result.status == 502
+    assert result.body["error"]["failure_phase"] == "response_received"
+    assert result.body["error"]["retryable"] is False
+    assert result.usage["failure_phase"] == "response_received"
+    assert result.attempts == []
+    assert pins == {}
+    assert len(seen) == 1
+
+
+def test_auth_rejection_still_rotates(upstream):
+    source, _, seen, replies, _ = upstream
+    replies.append(httpx.Response(401, json={"error": "rejected"}))
+    result = asyncio.run(source().chat({"model": "m"}))
+    assert result.status == 200
+    assert len(seen) == 2
+
+
 def test_failed_response_does_not_bind_or_fail_over(upstream):
     source, pins, seen, replies, _ = upstream
     replies.append(httpx.Response(429, json={"error": "busy"}))

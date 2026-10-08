@@ -50,6 +50,91 @@ class OllamaToolsTest(unittest.TestCase):
         self.assertEqual(msgs[1]["tool_call_id"], "call_9")
 
 
+class _FakeResp:
+    def __init__(self, lines: list[str]):
+        self._lines = lines
+
+    async def aiter_lines(self):
+        for line in self._lines:
+            yield line
+
+    async def aclose(self):
+        pass
+
+
+class OllamaStreamToolIdentityTest(unittest.IsolatedAsyncioTestCase):
+    """Streamed tool calls keep stable OpenAI identities across native chunks."""
+
+    async def _deltas(self, *native_chunks: dict) -> list[dict]:
+        lines = [json.dumps(c) for c in native_chunks]
+        out = []
+        async for chunk in ollama_mod._stream(_FakeResp(lines), "m"):
+            data = chunk.decode()[len("data: "):].strip()
+            if not data or data == "[DONE]":
+                continue
+            obj = json.loads(data)
+            if obj.get("choices"):
+                delta = obj["choices"][0].get("delta") or {}
+                if delta.get("tool_calls"):
+                    out.extend(delta["tool_calls"])
+        return out
+
+    async def test_distinct_native_indexes_never_merge(self):
+        deltas = await self._deltas(
+            {"message": {"role": "assistant", "tool_calls": [
+                {"function": {"name": "first", "index": 0, "arguments": {"a": 1}}}], "content": ""}},
+            {"message": {"tool_calls": [
+                {"function": {"name": "second", "index": 1, "arguments": {"b": 2}}}], "content": ""}},
+            {"done": True, "message": {}},
+        )
+        self.assertEqual([d["index"] for d in deltas], [0, 1])
+        self.assertNotEqual(deltas[0]["id"], deltas[1]["id"])
+        self.assertEqual(deltas[0]["function"]["arguments"], '{"a": 1}')
+        self.assertEqual(deltas[1]["function"]["arguments"], '{"b": 2}')
+
+    async def test_same_native_index_is_one_call_across_chunks(self):
+        deltas = await self._deltas(
+            {"message": {"tool_calls": [
+                {"function": {"name": "frag", "index": 0, "arguments": '{"q":'}}], "content": ""}},
+            {"message": {"tool_calls": [
+                {"function": {"index": 0, "arguments": '"x"}'}}], "content": ""}},
+            {"done": True, "message": {}},
+        )
+        self.assertEqual([d["index"] for d in deltas], [0, 0])
+        # Continuation fragments identify by index only (OpenAI delta shape);
+        # a second id would look like a new call to index-keyed consumers.
+        self.assertNotIn("id", deltas[1])
+        self.assertIn("name", deltas[0]["function"])
+        self.assertNotIn("name", deltas[1]["function"])
+
+    async def test_indexless_calls_get_distinct_indexes(self):
+        # Old behavior: every chunk restarted at 0, so downstream keyed on
+        # index concatenated two different calls into "firstsecond".
+        deltas = await self._deltas(
+            {"message": {"tool_calls": [{"function": {"name": "first", "arguments": "first"}}], "content": ""}},
+            {"message": {"tool_calls": [{"function": {"name": "second", "arguments": "second"}}], "content": ""}},
+            {"done": True, "message": {}},
+        )
+        self.assertEqual([d["index"] for d in deltas], [0, 1])
+        self.assertEqual([d["function"]["arguments"] for d in deltas], ["first", "second"])
+
+    async def test_done_frame_tool_calls_are_not_dropped(self):
+        lines = [
+            json.dumps({"message": {"role": "assistant", "content": ""}}),
+            json.dumps({"done": True, "message": {"tool_calls": [
+                {"function": {"name": "last", "arguments": {"z": 9}}}]},
+                "prompt_eval_count": 1, "eval_count": 2}),
+        ]
+        chunks = [json.loads(c.decode()[len("data: "):].strip())
+                  async for c in ollama_mod._stream(_FakeResp(lines), "m")
+                  if c.decode()[len("data: "):].strip() not in ("", "[DONE]")]
+        finish = [c for c in chunks if c.get("choices") and c["choices"][0].get("finish_reason")]
+        self.assertEqual(finish[0]["choices"][0]["finish_reason"], "tool_calls")
+        tool_deltas = [d for c in chunks if c.get("choices")
+                       for d in c["choices"][0].get("delta", {}).get("tool_calls") or []]
+        self.assertEqual(tool_deltas[0]["function"]["name"], "last")
+
+
 class OllamaAccessClassifyTest(unittest.TestCase):
     """A reworded 403 paywall must never strike auth on a valid key."""
 

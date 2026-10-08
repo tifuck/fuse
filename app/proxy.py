@@ -266,6 +266,12 @@ def _error_object(status: int, raw: bytes) -> dict:
     return {"error": {"message": scrub_secrets(text)[:500] or f"upstream returned HTTP {status}"}}
 
 
+def _chat_failure(status: int, message: str, phase: str) -> tuple:
+    return status, {"error": {
+        "message": message, "failure_phase": phase, "retryable": phase == "pre_generation",
+    }}, None, {"failure_phase": phase}, {}
+
+
 async def openai_chat(
     client: httpx.AsyncClient,
     url: str,
@@ -292,11 +298,13 @@ async def openai_chat(
         except httpx.TimeoutException as exc:
             if close_client:
                 await client.aclose()
-            return 504, {"error": {"message": f"upstream timeout ({type(exc).__name__})"}}, None, {}, {}
+            return _chat_failure(504, f"upstream timeout ({type(exc).__name__})",
+                                 "pre_generation" if isinstance(exc, (httpx.ConnectTimeout, httpx.PoolTimeout)) else "request_sent")
         except httpx.HTTPError as exc:
             if close_client:
                 await client.aclose()
-            return 502, {"error": {"message": f"upstream transport failure ({type(exc).__name__})"}}, None, {}, {}
+            return _chat_failure(502, f"upstream transport failure ({type(exc).__name__})",
+                                 "pre_generation" if isinstance(exc, httpx.ConnectError) else "request_sent")
         if resp.status_code != 200:
             safe_headers = {}
             if resp.headers.get("retry-after"):
@@ -373,9 +381,11 @@ async def openai_chat(
         try:
             resp = await client.post(url, json=payload, headers=headers)
         except httpx.TimeoutException as exc:
-            return 504, {"error": {"message": f"upstream timeout ({type(exc).__name__})"}}, None, {}, {}
+            return _chat_failure(504, f"upstream timeout ({type(exc).__name__})",
+                                 "pre_generation" if isinstance(exc, (httpx.ConnectTimeout, httpx.PoolTimeout)) else "request_sent")
         except httpx.HTTPError as exc:
-            return 502, {"error": {"message": f"upstream transport failure ({type(exc).__name__})"}}, None, {}, {}
+            return _chat_failure(502, f"upstream transport failure ({type(exc).__name__})",
+                                 "pre_generation" if isinstance(exc, httpx.ConnectError) else "request_sent")
         if resp.status_code != 200:
             safe_headers = {}
             if resp.headers.get("retry-after"):
@@ -384,18 +394,18 @@ async def openai_chat(
         try:
             obj = resp.json()
         except ValueError:
-            return 502, {"error": {"message": "upstream returned non-JSON data"}}, None, {}, {}
+            return _chat_failure(502, "upstream returned non-JSON data", "response_received")
         if not isinstance(obj, dict):
-            return 502, {"error": {"message": "upstream returned an invalid JSON schema"}}, None, {}, {}
+            return _chat_failure(502, "upstream returned an invalid JSON schema", "response_received")
         if resp.status_code == 200:
             choices = obj.get("choices")
             if not isinstance(choices, list) or not choices or not all(isinstance(choice, dict) for choice in choices):
-                return 502, {"error": {"message": "upstream response has invalid choices"}}, None, {}, {}
+                return _chat_failure(502, "upstream response has invalid choices", "response_received")
             if any(
-                "message" in choice and not isinstance(choice.get("message"), dict)
+                not isinstance(choice.get("message"), dict)
                 for choice in choices
             ):
-                return 502, {"error": {"message": "upstream response has an invalid message"}}, None, {}, {}
+                return _chat_failure(502, "upstream response has an invalid message", "response_received")
         usage = usage_from_obj(obj, reasoning_separate=reasoning_separate)
         safe_headers = {}
         if resp.headers.get("retry-after"):

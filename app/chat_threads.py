@@ -645,6 +645,7 @@ def _update_thread(conn, row, *, title, model, archived, pinned, messages, conte
         from . import context_compact as ctxmod, hosts, context_meter
 
         state = ctxmod.parse_state(row["compaction"] if "compaction" in row.keys() else None)
+        state = ctxmod.invalidate_edited_checkpoints(state, parse_messages(row["messages"]), msgs)
         previous = state.get("meter") or {}
         from . import chat_history
         replay, _history_info = chat_history.build(conn, row["user_id"], row["id"], msgs, state)

@@ -92,30 +92,19 @@ def _debug_tool_call(cid: str, msg: dict, tc: dict) -> None:
 
 
 def _merge_tool_args(prev: str, incoming: str) -> str:
-    """Merge one streamed tool-arguments chunk into the accumulator.
+    """Append token deltas; only complete object snapshots can supersede them.
 
-    Devin streams arguments as token-sized append deltas. A delta can be
-    valid standalone JSON (a bare digit like "2" parses as a JSON number!),
-    so validity must NEVER trigger replacement — that wiped the accumulator
-    mid-command and produced tail fragments like '100"}'. Only true
-    snapshot/redelivery relations may replace; everything else appends.
+    Prefix overlap alone is not evidence of redelivery: braces and repeated
+    tokens inside executable strings must survive unchanged.
     """
     if not incoming:
         return prev
     if not prev:
         return incoming
-    if incoming == prev:
-        return prev
-    if _json_object(prev) is not None and _json_object(incoming) is not None:
-        # Two standalone objects can only be a snapshot resend superseding
-        # the accumulation; appending would corrupt ('}{}' is not JSON).
-        # Streaming deltas are fragments or non-objects (digits), so they
-        # still take the append paths below.
+    if _json_object(incoming) is not None and (
+        _json_object(prev) is not None or incoming.startswith(prev)
+    ):
         return incoming
-    if incoming.startswith(prev):
-        return incoming
-    if prev.startswith(incoming):
-        return prev
     return prev + incoming
 
 
@@ -246,6 +235,23 @@ def _chunk(cid: str, created: int, model: str, delta: dict, finish=None) -> byte
     )
 
 
+def _connect_error(payload: bytes) -> str:
+    if not payload.strip():
+        return ""
+    try:
+        trailer = json.loads(payload)
+    except (ValueError, UnicodeDecodeError):
+        return "invalid Devin Connect trailer"
+    if not isinstance(trailer, dict):
+        return "invalid Devin Connect trailer"
+    error = trailer.get("error")
+    if error is not None:
+        if not isinstance(error, dict) or not error.get("code"):
+            return "invalid Devin Connect trailer error"
+        return str(error.get("message") or error["code"])
+    return ""
+
+
 async def _stream_sse(resp, client, collected: dict, model: str, uid: str = ""):
     cid = _completion_id()
     created = int(time.time())
@@ -257,6 +263,7 @@ async def _stream_sse(resp, client, collected: dict, model: str, uid: str = ""):
     book = _ToolBook()
     stop = 0
     stop_terminal = False
+    ended = False
     raw_usage: dict = {}
     try:
         async for chunk in resp.aiter_bytes():
@@ -264,22 +271,16 @@ async def _stream_sse(resp, client, collected: dict, model: str, uid: str = ""):
             frames, pending = proto.iter_connect_frames(pending)
             for flag, payload in frames:
                 if flag & proto.CONNECT_END_STREAM:
-                    trailer = payload.decode("utf-8", errors="replace").strip()
-                    if trailer:
-                        try:
-                            parsed = json.loads(trailer)
-                        except json.JSONDecodeError:
-                            parsed = None
-                        err = (parsed or {}).get("error") if isinstance(parsed, dict) else None
-                        if isinstance(err, dict) and err.get("code"):
-                            msg = str(err.get("message") or err.get("code"))
-                            collected["stream_status"] = "failed"
-                            collected["trailer_error"] = msg
-                            kind = sku_error_kind(msg)
-                            if kind:
-                                note_sku_failure(uid, kind)
-                            yield _sse({"error": {"message": msg}})
-                            return
+                    ended = True
+                    error = _connect_error(payload)
+                    if error:
+                        collected["stream_status"] = "failed"
+                        collected["trailer_error"] = error
+                        kind = sku_error_kind(error)
+                        if kind:
+                            note_sku_failure(uid, kind)
+                        yield _sse({"error": {"message": error}})
+                        return
                     continue
                 msg = proto.decode_get_chat_message(payload)
                 if msg.get("delta_thinking"):
@@ -315,6 +316,10 @@ async def _stream_sse(resp, client, collected: dict, model: str, uid: str = ""):
                 if msg.get("stop_reason"):
                     stop = msg["stop_reason"]
                     stop_terminal = True
+        if pending or not (ended or stop_terminal):
+            collected["stream_status"] = "failed"
+            yield _sse({"error": {"message": "incomplete Devin Connect response"}})
+            return
         calls = book.openai_calls()
         terminal_stop = stop if stop_terminal else 0
         # STOP_MAX_TOKENS is NOT a truncation signal on this backend:
@@ -397,6 +402,7 @@ async def _collect_completion(resp, model: str) -> tuple[dict, dict, str]:
     book = _ToolBook()
     stop = 0
     stop_terminal = False
+    ended = False
     usage: dict = {}
     raw_usage: dict = {}
     trailer_error = ""
@@ -405,19 +411,12 @@ async def _collect_completion(resp, model: str) -> tuple[dict, dict, str]:
         frames, pending = proto.iter_connect_frames(pending)
         for flag, payload in frames:
             if flag & proto.CONNECT_END_STREAM:
+                ended = True
                 # Connect end-stream trailers carry structured errors
                 # ("an internal error occurred (trace ID: ...)", version
                 # gates). Swallowing them made failed completions look
                 # like empty 200s.
-                trailer = payload.decode("utf-8", errors="replace").strip()
-                if trailer:
-                    try:
-                        parsed = json.loads(trailer)
-                    except json.JSONDecodeError:
-                        parsed = None
-                    err = (parsed or {}).get("error") if isinstance(parsed, dict) else None
-                    if isinstance(err, dict) and err.get("code"):
-                        trailer_error = str(err.get("message") or err.get("code"))
+                trailer_error = trailer_error or _connect_error(payload)
                 continue
             msg = proto.decode_get_chat_message(payload)
             if msg.get("delta_text"):
@@ -444,6 +443,10 @@ async def _collect_completion(resp, model: str) -> tuple[dict, dict, str]:
             if msg.get("stop_reason"):
                 stop = msg["stop_reason"]
                 stop_terminal = True
+    if pending or not (ended or stop_terminal):
+        trailer_error = trailer_error or "incomplete Devin Connect response"
+    if trailer_error:
+        return {"error": {"message": trailer_error}}, usage, trailer_error
     terminal_stop = stop if stop_terminal else 0
     # See _stream_sse: STOP_MAX_TOKENS terminally is a normal end of turn.
     finish = (

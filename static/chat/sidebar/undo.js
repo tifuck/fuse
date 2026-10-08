@@ -42,6 +42,7 @@ export function createUndo(ctx) {
     function saveHistoryStacks() {
     if (!S.currentId) return;
     const key = historyKey(S.currentId);
+    const revision = S.historyRevision;
     clearTimeout(historyWrites.get(key));
     const undo = S.undoStack.slice(-12), redo = S.redoStack.slice(-12);
     // Persistence is best effort; never serialize twelve multi-megabyte
@@ -60,7 +61,7 @@ export function createUndo(ctx) {
           }
           return "[" + rows.join(",") + "]";
         };
-        sessionStorage.setItem(key, '{"u":' + bounded(undo) + ',"r":' + bounded(redo) + '}');
+        sessionStorage.setItem(key, '{"revision":' + JSON.stringify(revision ?? null) + ',"u":' + bounded(undo) + ',"r":' + bounded(redo) + '}');
       } catch (_) {}
     }, 250));
   }
@@ -77,11 +78,15 @@ export function createUndo(ctx) {
     S.redoStack = [];
     composer.closeSlash();
     turns.closeRewind();
+    S.historyRevision = S.serverRevision;
     if (!S.currentId) return;
     try {
       const raw = sessionStorage.getItem(historyKey(S.currentId));
       if (!raw) return;
       const data = JSON.parse(raw);
+      // A stored revision gate only stacks this code saved. Legacy entries
+      // carry none: keep them and let the restore lineage rule constrain use.
+      if (data.revision != null && data.revision !== S.serverRevision) { dropHistoryStacks(S.currentId); return; }
       if (Array.isArray(data.u)) S.undoStack = data.u.filter(Array.isArray).map(cloneTranscript).slice(-12);
       if (Array.isArray(data.r)) S.redoStack = data.r.filter(Array.isArray).map(cloneTranscript).slice(-12);
     } catch (_) {
@@ -94,29 +99,51 @@ export function createUndo(ctx) {
     return cloneTranscript(traces.serialMessages());
   }
 
+    // A snapshot may only be restored onto a transcript it still describes.
+    // Each pushed snapshot carries the message ids this tab had acknowledged
+    // at push time (`_fuseKnownIds`, non-enumerable, in-memory only): undo
+    // applies while nothing unknown arrived since (another tab's turns, a
+    // replacement run), so a stale snapshot can never delete newer turns.
+    // Loaded snapshots have no tag; for them the target must contain every
+    // live row in order (restore) or be a prefix of the live ids (tail
+    // truncation) — both already gated by the historyRevision freshness check.
+    const lineageIds = (list) => list.map((msg) => msg.id || "");
+    const isPrefixOf = (prefix, full) => prefix.length <= full.length && prefix.every((id, i) => full[i] === id);
+    const isSubsequenceOf = (inner, outer) => {
+      if (inner.length > outer.length) return false;
+      let i = 0;
+      for (const id of outer) if (i < inner.length && id === inner[i]) i += 1;
+      return i === inner.length;
+    };
+    const tagKnownIds = (snap) => {
+      if (!Array.isArray(snap)) return snap;
+      try {
+        Object.defineProperty(snap, "_fuseKnownIds", {
+          value: lineageIds(traces.serialMessages()), enumerable: false,
+        });
+      } catch (_) {}
+      return snap;
+    };
+    const knownIdsOf = (snap) => {
+      const known = snap && snap._fuseKnownIds;
+      return Array.isArray(known) ? known : null;
+    };
+    const restorable = (snap, currentIds) => {
+      const known = knownIdsOf(snap);
+      if (known) return isSubsequenceOf(currentIds, known);
+      // No provenance tag (loaded stack, already gated by historyRevision):
+      // the target must either contain every live row (restore) or be a
+      // prefix of it (tail truncation).
+      const targetIds = lineageIds(snap);
+      return isSubsequenceOf(currentIds, targetIds) || isPrefixOf(targetIds, currentIds);
+    };
+
     function rememberUndo(snap) {
     if (!snap) return;
-    S.undoStack.push(snap);
+    S.undoStack.push(tagKnownIds(snap));
     if (S.undoStack.length > 40) S.undoStack.shift();
     S.redoStack = [];
     saveHistoryStacks();
-  }
-
-    function applyTranscript(next, hint) {
-    S.messages = Array.isArray(next)
-      ? next.map((msg) => ({
-          ...msg,
-          attachments: Array.isArray(msg.attachments) ? msg.attachments.slice() : [],
-          tools: Array.isArray(msg.tools) ? msg.tools.slice() : [],
-          segments: Array.isArray(msg.segments) ? msg.segments.map((part) => ({ ...part })) : undefined,
-        }))
-      : [];
-    S.editingIndex = -1;
-    composer.persist(true);
-    transcript.paint();
-    context.recountLocalContext();
-    artifacts.rememberLatestArtifact();
-    if (hint) picker.setHint(hint);
   }
 
     async function undoConversation(times = 1) {
@@ -147,8 +174,15 @@ export function createUndo(ctx) {
       for (let i = 0; i < times; i += 1) {
         if (gen !== S.generation || origin !== S.currentId || traces.runIsActive(S.activeRun)) break;
         const current = snapshotMessages();
+        const currentIds = lineageIds(current);
         const stacked = S.undoStack.length > 0;
         const previous = stacked ? S.undoStack.at(-1) : dropLastTurn(current);
+        if (stacked && !restorable(previous, currentIds)) {
+          S.undoStack.pop();
+          saveHistoryStacks();
+          picker.setHint("History changed elsewhere; that undo point is no longer valid.", true);
+          break;
+        }
         if (!stacked && previous.length === current.length) break;
         const retained = new Set(previous.map(msg => msg.id));
         const removed = current.findLast(msg => msg.role === "user" && !msg.auto && !retained.has(msg.id));
@@ -161,9 +195,12 @@ export function createUndo(ctx) {
         const updated = await task;
         if (gen !== S.generation || origin !== S.currentId) break;
         if (stacked) S.undoStack.pop();
-        S.redoStack.push(current);
-        saveHistoryStacks();
         sync.acceptThread(updated);
+        // Tag after acceptance: the ids this operation produced are known, so
+        // its own inverse stays eligible while anything foreign still refuses.
+        S.redoStack.push(tagKnownIds(current));
+        S.historyRevision = S.serverRevision;
+        saveHistoryStacks();
         context.recountLocalContext();
         if (removed) restored = removed.content || "";
         picker.setHint(previous.length ? "Undid last turn." : "Conversation cleared.");
@@ -197,16 +234,45 @@ export function createUndo(ctx) {
     }
   }
 
-    function redoConversation() {
-    if (traces.runIsActive(S.activeRun) || S.sending) return;
+    async function redoConversation() {
+    if (traces.runIsActive(S.activeRun) || S.sending || S.loading || S.partialTranscript) return;
     if (!net.requireLive()) return;
+    await sync.flushPending();
     if (!S.redoStack.length) {
       picker.setHint("Nothing to redo.");
       return;
     }
-    S.undoStack.push(snapshotMessages());
-    saveHistoryStacks();
-    applyTranscript(S.redoStack.pop(), "Redid.");
+    const origin = S.currentId, gen = S.generation;
+    const current = snapshotMessages(), next = S.redoStack.at(-1);
+    if (!restorable(next, lineageIds(current))) {
+      S.redoStack.pop();
+      saveHistoryStacks();
+      picker.setHint("History changed elsewhere; that redo point is no longer valid.", true);
+      return;
+    }
+    S.sending = true;
+    try {
+      const updated = await net.api('/chat/threads/' + origin, { method: 'PATCH', body: JSON.stringify({
+        messages: next, expected_revision: S.serverRevision, command_id: newSession(),
+      }) });
+      if (origin !== S.currentId || gen !== S.generation) return;
+      sync.acceptThread(updated);
+      // Tag after acceptance (see undoConversation): the redo's own output
+      // must count as known for its inverse undo.
+      S.undoStack.push(tagKnownIds(current));
+      S.redoStack.pop();
+      S.historyRevision = S.serverRevision;
+      saveHistoryStacks();
+      picker.setHint('Redid.');
+    } catch (error) {
+      if (origin === S.currentId && gen === S.generation) {
+        await sync.reconcileThread().catch(() => {});
+        sync.showFailure('Redo was not confirmed', error);
+      }
+    } finally {
+      S.sending = false;
+      composer.syncComposer();
+    }
   }
 
     function mutateTranscript(fn, hint) {
@@ -300,10 +366,7 @@ export function createUndo(ctx) {
       return;
     }
     const snap = snapshotMessages();
-    S.messages = S.messages.slice(0, index);
     S.editingIndex = -1;
-    composer.persist(true);
-    context.recountLocalContext();
     turns.completeTurn(next, kept, { undoSnap: snap, truncatedTo: index, restoreDraft: true });
   }
 

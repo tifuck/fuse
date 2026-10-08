@@ -7,7 +7,15 @@ export function createPersist(ctx) {
     function setPendingTurn(value) {
     S.pendingTurn = value;
     try {
-      if (value) sessionStorage.setItem(S.STORE_PENDING_TURN, JSON.stringify(value));
+      // The full undo snapshot makes an uncertain-ACK retry restorable after
+      // a reload, but a multi-megabyte transcript must not evict the whole
+      // sessionStorage store: past the cap the retry falls back to a fresh
+      // snapshot of the untouched transcript.
+      const rows = [...S.pendingTurns.values()].map((entry) => {
+        if (!entry.undoSnap || JSON.stringify(entry.undoSnap).length <= 262144) return entry;
+        return { ...entry, undoSnap: undefined };
+      });
+      if (rows.length) sessionStorage.setItem(S.STORE_PENDING_TURN, JSON.stringify(rows));
       else sessionStorage.removeItem(S.STORE_PENDING_TURN);
     } catch (_) {}
   }
@@ -82,6 +90,7 @@ export function createPersist(ctx) {
       } else {
         const updated = await net.api("/chat/threads/" + targetId, { method: "PATCH", body: JSON.stringify(payload) });
         if (expectedGeneration !== S.generation || S.currentId !== targetId) return;
+        if (S.historyRevision === S.serverRevision) S.historyRevision = updated.revision;
         S.serverRevision = updated.revision;
         S.pendingSave = null;
         sidebar.upsertLocal(updated);

@@ -238,6 +238,27 @@ def latest_checkpoint(state: dict, messages: list | None) -> dict | None:
             return checkpoint
     return None
 
+def invalidate_edited_checkpoints(state: dict, before: list[dict], after: list[dict]) -> dict:
+    from .chat_history import anchors
+
+    original, updated = anchors(before), anchors(after)
+    if updated[:len(original)] == original:
+        return state
+    unchanged = 0
+    for old, new in zip(original, updated):
+        if old != new:
+            break
+        unchanged += 1
+    positions = {msg.get("id"): index for index, msg in enumerate(before) if msg.get("id")}
+    kept = []
+    for checkpoint in state.get("checkpoints") or []:
+        boundary = positions.get(checkpoint.get("through_message_id"))
+        # Provider-only indexes do not establish a display edit boundary.
+        if not checkpoint.get("provider") and boundary is not None and boundary < unchanged:
+            kept.append(checkpoint)
+    return {**state, "checkpoints": kept}
+
+
 def project_transcript(messages: list | None, state: dict | None) -> list[dict]:
     """Durable user/assistant transcript → messages sent to the model."""
     rows = [msg for msg in (messages or []) if isinstance(msg, dict) and msg.get("role") in ("user", "assistant")]

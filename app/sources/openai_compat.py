@@ -161,6 +161,9 @@ class OpenAICompatSource:
                 model=model,
                 response_headers=response_headers,
             )
+            if usage.get("failure_phase") in ("request_sent", "response_received"):
+                last.attempts = attempts
+                return last
             # Rotate only what cannot have generated output upstream: an auth
             # rejection is credential-specific and a 5xx arrived before any
             # tokens. 429 stays terminal (callers must see the rate limit) and

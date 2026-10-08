@@ -168,6 +168,43 @@ class ProxyErrorPropagationTest(unittest.TestCase):
         status, *_ = self._call(handler, False)
         self.assertEqual(status, 502)
 
+    def test_invalid_success_body_marks_response_phase(self):
+        for stream in (False,):
+            status, obj, _s, usage, _h = self._call(
+                lambda req: httpx.Response(200, text="not json"), stream
+            )
+            self.assertEqual(status, 502)
+            self.assertEqual(obj["error"]["failure_phase"], "response_received")
+            self.assertFalse(obj["error"]["retryable"])
+            self.assertEqual(usage["failure_phase"], "response_received")
+
+    def test_invalid_choices_schema_marks_response_phase(self):
+        for raw in (b"[]", b"{}", b'{"choices":[{}]}'):
+            status, obj, _s, usage, _h = self._call(
+                lambda req, raw=raw: httpx.Response(200, content=raw), False
+            )
+            self.assertEqual(status, 502)
+            self.assertEqual(usage["failure_phase"], "response_received")
+            self.assertFalse(obj["error"]["retryable"])
+
+    def test_connect_refusal_is_pre_generation(self):
+        def handler(req):
+            raise httpx.ConnectError("refused")
+
+        status, obj, _s, usage, _h = self._call(handler, False)
+        self.assertEqual(status, 502)
+        self.assertEqual(usage["failure_phase"], "pre_generation")
+        self.assertTrue(obj["error"]["retryable"])
+
+    def test_read_timeout_is_request_sent_not_pre_generation(self):
+        def handler(req):
+            raise httpx.ReadTimeout("late")
+
+        status, obj, _s, usage, _h = self._call(handler, False)
+        self.assertEqual(status, 504)
+        self.assertEqual(usage["failure_phase"], "request_sent")
+        self.assertFalse(obj["error"]["retryable"])
+
 
 class ResumableFailureClassificationTest(unittest.TestCase):
     """Local adapter crashes must not spend the provider resume budget."""

@@ -419,7 +419,7 @@ class ResumeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(retry[: len(calls[1]["messages"])], calls[1]["messages"])
         self.assertEqual(objects[-1], "[DONE]")
 
-    async def test_prompt_snapshot_survives_turns_restart_and_live_instruction_edits(self):
+    async def test_prompt_snapshot_survives_turns_restart_and_incidental_prompt_changes(self):
         thread = chats.create_thread(1, model="offline", tools=["web_search"])
         sent = []
 
@@ -449,10 +449,54 @@ class ResumeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent[2]["messages"][:len(sent[1]["messages"])], sent[1]["messages"])
         self.assertEqual(sent[2]["tools"], sent[1]["tools"])
 
+    async def test_explicit_settings_refresh_prompt_without_rewriting_history(self):
+        sent = []
+
+        async def invoke(request, user, body, **_kwargs):
+            sent.append(json.loads(json.dumps(body)))
+            return user, src(), "offline", "offline", ok_result()
+
+        def echo_prompt(**kwargs):
+            return "|".join((kwargs["instructions"], kwargs["profile"], kwargs["thread_context"]))
+
+        for field in ("instructions", "profile", "thread_context"):
+            with self.subTest(field=field):
+                sent.clear()
+                chats.set_user_context(1, instructions="", profile="")
+                thread = chats.create_thread(1, model="offline", tools=[])
+                run = store.start_turn(1, thread["id"], "first", thread["revision"], None)["run"]
+                with patch.object(runtime, "build_system_prompt", side_effect=echo_prompt):
+                    await self.stream_turn(invoke, run["request"], frozen_context=run["request"])
+                store.finish_run(run["id"], {"content": "final answer", "reasoning": ""}, "completed")
+                view = chats.get_thread(1, thread["id"])
+                original = sent[0]
+                replacement = "CURRENT_SETTING_" + field
+                if field == "thread_context":
+                    view = chats.update_thread(1, thread["id"], context=replacement, expected_revision=view["revision"])
+                else:
+                    chats.set_user_context(1, **{field: replacement})
+                next_run = store.start_turn(1, thread["id"], "second", view["revision"], None)["run"]
+                with patch.object(runtime, "build_system_prompt", side_effect=echo_prompt):
+                    await self.stream_turn(invoke, next_run["request"], frozen_context=next_run["request"])
+                updated = sent[1]
+                self.assertIn(replacement, updated["messages"][0]["content"])
+                self.assertNotIn(replacement, original["messages"][0]["content"])
+                # Only the system row changes; the already-sent conversation replays byte-identical.
+                self.assertEqual(updated["messages"][1:len(original["messages"])], original["messages"][1:])
+                store.finish_run(next_run["id"], {"content": "final answer", "reasoning": ""}, "completed")
+                view = chats.get_thread(1, thread["id"])
+                third = store.start_turn(1, thread["id"], "third", view["revision"], None)["run"]
+                with patch.object(runtime, "build_system_prompt", side_effect=echo_prompt):
+                    await self.stream_turn(invoke, third["request"], frozen_context=third["request"])
+                self.assertEqual(sent[2]["messages"][:len(updated["messages"])], updated["messages"])
+                store.finish_run(third["id"], {"content": "final answer", "reasoning": ""}, "completed")
+
     async def test_compaction_is_the_only_automatic_prompt_refresh(self):
         sent = []
         calls = 0
-        old = {"system": "old system", "tools": []}
+        prefs = chats.get_user_context(1)
+        old = {"system": "old system", "tools": [], "context": {
+            "instructions": prefs["instructions"], "profile": prefs["profile"], "thread_context": ""}}
 
         async def invoke(request, user, body, **_kwargs):
             nonlocal calls

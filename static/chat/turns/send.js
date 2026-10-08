@@ -56,9 +56,7 @@ export function createSend(ctx) {
     if (index < S.messages.length - 1) return;
     const previous = S.messages[index - 1];
     const snap = sidebar.snapshotMessages();
-    S.messages = S.messages.slice(0, index - 1);
-    composer.persist(true);
-    context.recountLocalContext();
+
     completeTurn(previous.content, (previous.attachments || []).slice(), { undoSnap: snap, truncatedTo: index - 1 });
   }
 
@@ -238,13 +236,7 @@ export function createSend(ctx) {
       const undoSnap = opts && opts.undoSnap ? opts.undoSnap : sidebar.snapshotMessages();
       await sync.flushPending();
       if (gen !== S.generation) return;
-      // Retry and edit replace the tail, then resend. If the server refused
-      // the shortened transcript (a subagent of this chat is still running,
-      // or another tab changed it), the snapshot is back to full length and
-      // sending would append a duplicate turn instead of replacing one.
-      if (opts?.truncatedTo != null && S.messages.length !== opts.truncatedTo) {
-        throw Object.assign(new Error("The chat still has running work or changed elsewhere, so the earlier reply was not replaced. Nothing was sent."), { local: true, notApplied: true });
-      }
+
       if (!S.currentId) {
         S.pendingCreate ||= sidebar.bindCreatePayload({ ...settings, messages: [], command_id: newSession() });
         const created = await net.api("/chat/threads", { method: "POST", body: JSON.stringify(S.pendingCreate) });
@@ -256,11 +248,12 @@ export function createSend(ctx) {
         sidebar.upsertLocal(created);
         sync.setThreadUrl(S.currentId);
       }
-      if (S.pendingTurn && (S.pendingTurn.id !== S.currentId || S.pendingTurn.body.text !== text)) {
+      if (S.pendingTurn && (S.pendingTurn.id !== S.currentId || S.pendingTurn.body.text !== text || (opts?.truncatedTo != null && S.pendingTurn.body.replace_from !== opts.truncatedTo))) {
         throw Object.assign(new Error("A previous send is unconfirmed. Retry its original text before sending another message."), { local: true });
       }
       if (!S.pendingTurn) sync.setPendingTurn({
         id: S.currentId,
+        undoSnap,
         body: {
           text,
           attachments,
@@ -269,11 +262,13 @@ export function createSend(ctx) {
           tools: panels.enabledTools(),
           context: S.threadContext,
           expected_revision: S.serverRevision,
+          ...(opts?.truncatedTo != null ? { replace_from: opts.truncatedTo } : {}),
           command_id: (opts && opts.commandId) || newSession(),
           ...(opts && opts.invoke_skill ? { invoke_skill: opts.invoke_skill } : {}),
         },
       });
-      const data = await net.api("/chat/threads/" + S.pendingTurn.id + "/turns", { method: "POST", body: JSON.stringify(S.pendingTurn.body) });
+      const request = S.pendingTurn;
+      const data = await net.api("/chat/threads/" + request.id + "/turns", { method: "POST", body: JSON.stringify(request.body) });
       if (opts?.queueId) queue.acknowledgeQueuedTurn(origin, opts.queueId);
       if (gen !== S.generation) return;
       sync.setPendingTurn(null);
@@ -299,20 +294,22 @@ export function createSend(ctx) {
       }
       pending.remove();
       sync.acceptThread(data.thread);
-      sidebar.rememberUndo(undoSnap);
+      sidebar.rememberUndo(request.undoSnap || undoSnap);
       // The acknowledgment is already a consistent snapshot. Subsequent
       // progress is replayed by the socket from its independent cursor.
       return true;
     } catch (error) {
       if (gen !== S.generation) return false;
-      if (error.notApplied) {
-        if (opts?.restoreDraft && !S.input.value.trim()) {
-          S.input.value = text;
-          S.drafts.set(origin, text);
-          composer.resizeInput();
-        }
-        sync.showFailure(opts?.restoreDraft ? "Edit not applied" : "Retry not applied", error);
-      } else if (error.local) {
+      if (opts?.undoSnap && !S.input.value.trim() && !S.pendingAttachments.length) {
+        // The transcript was never truncated, so a failed replacement only
+        // needs its text (and files) back in the composer to try again.
+        S.input.value = text;
+        S.drafts.set(origin, text);
+        S.pendingAttachments = attachments;
+        composer.renderAttachList();
+        composer.resizeInput();
+      }
+      if (error.local) {
         sync.showFailure("Send not confirmed; your draft is retained", error);
       } else if (error.status === 409) {
         sync.setPendingTurn(null);

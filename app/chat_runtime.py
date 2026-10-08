@@ -645,15 +645,20 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
         allow_spawn=allow_spawn,
         project_session=project_session,
     )
+    prompt_context = {"instructions": prefs["instructions"], "profile": prefs["profile"],
+                      "thread_context": thread_context}
     schemas = copy.deepcopy(prompt_snapshot.get("tools", candidate_schemas))
-    if not (agent.get("resumed") or agent.get("followup_continuation")) and schemas != candidate_schemas:
-        # Retain the cached prefix unless this turn changes advertised capabilities.
+    if not (agent.get("resumed") or agent.get("followup_continuation")) and (
+        schemas != candidate_schemas or prompt_snapshot.get("context") != prompt_context
+    ):
+        # Explicit settings changes take effect on the next turn. Resumes keep
+        # the exact prefix; incidental catalog changes wait until compaction.
         schemas = copy.deepcopy(candidate_schemas)
         system = candidate_system
         work[0] = {"role": "system", "content": system}
-        prompt_snapshot.update(system=system, tools=copy.deepcopy(schemas))
+        prompt_snapshot.update(system=system, tools=copy.deepcopy(schemas), context=prompt_context)
     if "system" not in prompt_snapshot:
-        prompt_snapshot = {"system": system, "tools": copy.deepcopy(schemas)}
+        prompt_snapshot = {"system": system, "tools": copy.deepcopy(schemas), "context": prompt_context}
     if schemas:
         payload["tools"] = schemas
         payload["tool_choice"] = "auto"
@@ -689,7 +694,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             else:
                 transcript.insert(0, {"role": "system", "content": candidate_system})
             current_messages = transcript
-            prompt_snapshot = {"system": candidate_system, "tools": copy.deepcopy(candidate_schemas)}
+            prompt_snapshot = {"system": candidate_system, "tools": copy.deepcopy(candidate_schemas), "context": prompt_context}
             if candidate_schemas:
                 current["tools"] = copy.deepcopy(candidate_schemas)
             else:

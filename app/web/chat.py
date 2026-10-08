@@ -178,6 +178,7 @@ async def chat_turn(request: Request, thread_id: str):
         "attachments",
         "reasoning_effort",
         "invoke_skill",
+        "replace_from",
     }:
         raise HTTPException(422, "Unsupported turn fields")
     pk = await asyncio.to_thread(_chat_thread_pk, user, thread_id)
@@ -196,6 +197,7 @@ async def chat_turn(request: Request, thread_id: str):
             reasoning_effort=raw.get("reasoning_effort"),
             auto_title=True,
             invoke_skill=raw.get("invoke_skill"),
+            replace_from=raw.get("replace_from"),
         )
     except chats.ChatValidationError as exc:
         raise _chat_validation_error(exc) from None

@@ -1,5 +1,6 @@
 // HTTP/session transport: csrf, api, thread snapshots, stream reads, vault unlock.
 import { S } from './state.js';
+import { readQueue } from './turns/queue-store.js';
 
 const VAULT_WHAT = "Unlock machines to use SSH. Your account password unwraps those secrets here — chat still works without it.";
 
@@ -152,7 +153,7 @@ export function createNet(ctx) {
   // reports which of them the server already accepted (accepted_queue_ids).
   function queuedParam(id) {
     try {
-      const items = JSON.parse(localStorage.getItem(turns.queueStoreKey(id)) || "[]");
+      const items = readQueue(id);
       const ids = Array.isArray(items) ? items.map((item) => item && item.id).filter((v) => typeof v === "string" && v).slice(0, 64) : [];
       return ids.length ? "&queued=" + encodeURIComponent(ids.join(",")) : "";
     } catch (_) {

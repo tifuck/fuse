@@ -88,21 +88,40 @@ def to_ollama(messages: list) -> list:
     return out
 
 
-def to_openai_tools(calls: list, include_index=False) -> list:
+def to_openai_tools(calls: list, include_index=False, *, state: dict | None = None) -> list:
     out = []
-    for i, tc in enumerate(calls):
+    if state is None:
+        state = {}
+    for tc in calls:
         fn = tc.get("function", {})
         args = fn.get("arguments")
         args_str = args if isinstance(args, str) else json.dumps(args or {})
         raw_id = tc.get("id")
-        call_id = raw_id if isinstance(raw_id, str) and raw_id.strip() else f"ollama_{i}"
+        native_index = fn.get("index", tc.get("index"))
+        if isinstance(native_index, bool) or not isinstance(native_index, int) or native_index < 0:
+            native_index = None
+        identity = ("index", native_index) if native_index is not None else (
+            ("id", raw_id) if isinstance(raw_id, str) and raw_id.strip() else ("call", len(state))
+        )
+        previous = state.get(identity)
+        index = previous[0] if previous else (native_index if native_index is not None else max(
+            (value[0] for value in state.values()), default=-1
+        ) + 1)
+        call_id = previous[1] if previous else (
+            raw_id if isinstance(raw_id, str) and raw_id.strip() else f"ollama_{index}"
+        )
+        state[identity] = (index, call_id)
         call = {
             "id": call_id,
             "type": "function",
             "function": {"name": fn.get("name", ""), "arguments": args_str},
         }
         if include_index:
-            call["index"] = i
+            call["index"] = index
+            if previous:
+                call.pop("id")
+                call.pop("type")
+                call["function"].pop("name")
         out.append(call)
     return out
 
@@ -511,6 +530,7 @@ async def _stream(resp: httpx.Response, model: str, client: httpx.AsyncClient | 
     created = int(uuid.uuid4().int % 10**10)
     first = True
     saw_tools = False
+    tool_state: dict = {}
     usage = {}
     completed = False
     try:
@@ -532,7 +552,7 @@ async def _stream(resp: httpx.Response, model: str, client: httpx.AsyncClient | 
                 delta["reasoning_content"] = message["thinking"]
             if message.get("tool_calls"):
                 saw_tools = True
-                delta["tool_calls"] = to_openai_tools(message["tool_calls"], include_index=True)
+                delta["tool_calls"] = to_openai_tools(message["tool_calls"], include_index=True, state=tool_state)
             if first:
                 first = False
                 delta["role"] = "assistant"
@@ -544,6 +564,8 @@ async def _stream(resp: httpx.Response, model: str, client: httpx.AsyncClient | 
                 "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
             }
             if chunk.get("done"):
+                if delta.get("content") or delta.get("reasoning_content") or delta.get("tool_calls"):
+                    yield f"data: {json.dumps(payload)}\n\n".encode()
                 usage = {
                     "prompt_tokens": chunk.get("prompt_eval_count", 0),
                     "completion_tokens": chunk.get("eval_count", 0),

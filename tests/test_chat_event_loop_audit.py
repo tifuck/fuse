@@ -51,7 +51,8 @@ def test_start_turn_off_loop_and_run_start_on_loop(monkeypatch, route_mocks):
         off_loop()
         assert args == (7, 11, "hello", 4, "turn-command")
         assert kwargs == {"model": "offline", "tools": [], "context": "context", "attachments": [],
-                          "reasoning_effort": "low", "auto_title": True, "invoke_skill": "skill"}
+                          "reasoning_effort": "low", "auto_title": True, "invoke_skill": "skill",
+                          "replace_from": None}
         calls.append("commit")
         return result
 

@@ -906,6 +906,7 @@ async def _fire(schedule: dict, fire: dict, *, consume_slot: bool) -> None:
                 model=schedule["model"], tools=schedule["tools"],
                 reasoning_effort=schedule["reasoning_effort"] or None,
                 auto_title=False, auto=True, scheduled=True, coding_override=coding_override,
+                schedule_id=schedule["id"], schedule_manual=slot.startswith("manual:"),
             )
         except chats.ChatValidationError as exc:
             if exc.status_code == 409:
@@ -1104,6 +1105,7 @@ async def tick() -> float:
                 (item["id"], slot),
             ).fetchone()
             fire_id = str(uuid4())
+            fire_status = "queued"
             if existing:
                 fire_d = dict(existing)
                 if fire_row_retryable(fire_d, item):
@@ -1115,6 +1117,10 @@ async def tick() -> float:
                         (db.now(), existing["id"]),
                     )
                     fire_id = fire_d.get("fire_id") or fire_id
+                    # Keep the pre-retry status (e.g. vault_locked): _fire's
+                    # grace exemption for a locked one-shot depends on seeing
+                    # it, and the row was just overwritten to 'queued'.
+                    fire_status = fire_d.get("status") or "queued"
                 else:
                     if item.get("next_fire_at") == slot:
                         if item["recur_kind"] == "once":
@@ -1136,7 +1142,7 @@ async def tick() -> float:
                     (item["id"], item["user_id"], slot, fire_id, db.now()),
                 )
             conn.execute("UPDATE chat_schedules SET firing_at=? WHERE id=?", (iso_utc(now), item["id"]))
-            claimed.append((item, {"slot_key": slot, "fire_id": fire_id, "status": "queued", "run_id": None}))
+            claimed.append((item, {"slot_key": slot, "fire_id": fire_id, "status": fire_status, "run_id": None}))
     for item, fire in claimed:
         _inflight_enter(item["id"])
         try:

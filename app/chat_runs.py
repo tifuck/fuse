@@ -924,7 +924,9 @@ def sweep_wakes() -> None:
     """Retry durable reports whose wake was deferred by generation capacity."""
     if _stopping:
         return
-    for row in db.fetchall(
+    from . import command_jobs
+
+    rows = list(db.fetchall(
         """SELECT user_id,thread_id,
                   MAX(COALESCE(json_extract(request, '$.agent.user_resumed_at'), '')) AS resumed_at
            FROM chat_runs
@@ -936,15 +938,23 @@ def sweep_wakes() -> None:
              AND NOT (status='cancelled' AND cancel_requested=?)
            GROUP BY user_id,thread_id""",
         (chat_store.USER_STOPPED,),
-    ):
-        root = chat_store.thread_root_run(row["user_id"], row["thread_id"], include_request=False)
+    ))
+    # Command-only wakes (a finished background command or a fired monitor on
+    # a thread with no wake-pending subagents) have no chat_runs row, so the
+    # subagent scan alone never redelivers them after a capacity deferral.
+    threads = {(row["user_id"], row["thread_id"]): row["resumed_at"] for row in rows}
+    for row in command_jobs.pending_wake_threads():
+        key = (row["user_id"], row["thread_id"])
+        threads[key] = max(threads.get(key, ""), row.get("resumed_at") or "")
+    for (user_id, thread_id), resumed_at in threads.items():
+        root = chat_store.thread_root_run(user_id, thread_id, include_request=False)
         if root is None or root["status"] in chat_store.ACTIVE:
             continue
         if root.get("stopped_at") and not chat_store.resumed_after_stop(
-            {"user_resumed_at": row["resumed_at"]}, root["stopped_at"]
+            {"user_resumed_at": resumed_at}, root["stopped_at"]
         ):
             continue
-        schedule_wake(row["user_id"], row["thread_id"])
+        schedule_wake(user_id, thread_id)
 
 
 async def wait_for_run(run_id: str, timeout: float) -> None:
@@ -1057,11 +1067,14 @@ async def _wake_parent(user_id: int, thread_id) -> None:
             closing += " Use spawn_subagent with task_id=<id> to continue a child from its saved transcript."
         lines.append(closing)
         text = "\n".join(lines)
+        # A subagent resumed after the thread's Stop is explicit intent to
+        # carry on; its user_resumed_at is what the admission guard checks.
+        resumed_at = max((str(item.get("user_resumed_at") or "") for item in candidates), default="")
         try:
             result = await durable_call(
                 chat_store.start_turn,
                 user_id, thread_id, text, revision, f"wake-{uuid4().hex[:12]}",
-                auto=True,
+                auto=True, auto_resumed_at=resumed_at,
                 command_receipt_ids=[item["id"] for item in cmd_results],
             )
         except chats.ChatValidationError as exc:

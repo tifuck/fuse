@@ -152,16 +152,18 @@ const out = process.env.QUEUE_UI_ARTIFACTS || '/tmp/opencode/queue-ui-artifacts'
         await page.waitForFunction(() => !document.body.classList.contains('is-streaming') && !document.querySelector('.chat-queue-item'));
         console.log('PASS Stop holds the queue until Send now');
 
-        // Retry and edit replace the tail. When the server refuses the
-        // shortened transcript (a subagent of the chat still runs, or another
-        // tab changed it), nothing may be sent: no duplicate prompt.
+        // Retry and edit replace the tail atomically via replace_from on the
+        // turn POST. When the server refuses the replacement (a subagent of
+        // the chat still runs, or another tab changed the transcript), nothing
+        // may be sent: no duplicate prompt, no turn started, transcript intact.
         const lastPrompt = (await read()).messages.filter(m => m.role === 'user').at(-1).content;
         const countOf = async text => (await read()).messages.filter(m => m.role === 'user' && m.content === text).length;
         const before = await countOf(lastPrompt);
-        const refuse = async route => route.request().method() === 'PATCH'
+        const beforeRows = (await read()).messages.length;
+        const refuse = async route => route.request().method() === 'POST'
           ? route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ detail: 'cannot replace messages during an active run' }) })
           : route.continue();
-        await page.route(`**/chat/threads/${id}`, refuse);
+        await page.route(`**/chat/threads/${id}/turns`, refuse);
         await input.fill('/retry');
         await input.press('Enter');
         await page.waitForTimeout(300);
@@ -169,7 +171,8 @@ const out = process.env.QUEUE_UI_ARTIFACTS || '/tmp/opencode/queue-ui-artifacts'
         await page.waitForTimeout(2500);
         assert.equal(await countOf(lastPrompt), before, 'a refused Retry sends nothing');
         assert.equal((await read()).run, null, 'no turn started');
-        await page.unroute(`**/chat/threads/${id}`, refuse);
+        assert.equal((await read()).messages.length, beforeRows, 'transcript was not truncated');
+        await page.unroute(`**/chat/threads/${id}/turns`, refuse);
         console.log('PASS refused Retry does not duplicate the prompt');
 
         await send('Queue fixture lost acknowledgment');

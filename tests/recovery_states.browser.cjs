@@ -43,6 +43,10 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
     };
   });
   const states = p => p.evaluate(() => [...document.querySelectorAll('[data-chat-log] [data-state]')].map(el => el.dataset.state));
+  const storedTurn = p => p.evaluate(() => {
+    const raw = JSON.parse(sessionStorage.getItem('fuse.chat.pendingTurn'));
+    return Array.isArray(raw) ? raw[0] : raw;
+  });
   const box = async (p, selector) => p.locator(selector).evaluate(el => {
     const r = el.getBoundingClientRect();
     return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: innerWidth, height: innerHeight, sheet: el.classList.contains('is-sheet') };
@@ -63,14 +67,14 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       assert.equal(await p.locator('[data-chat-input]').inputValue(), 'Send that the socket drops', 'the draft survives the drop');
       assert.match(after.hint, /Can't connect to the backend/);
       const id = new URL(p.url()).searchParams.get('t');
-      const stored = await p.evaluate(() => JSON.parse(sessionStorage.getItem('fuse.chat.pendingTurn')));
+      const stored = await storedTurn(p);
       assert.equal(stored.id, id, 'the unconfirmed send is remembered for this thread');
       assert.equal(stored.body.text, 'Send that the socket drops');
       await p.unroute('**/turns');
       await p.reload();
       await p.locator('[data-sync-label]').filter({ hasText: 'Send unconfirmed' }).waitFor({ state: 'attached' });
       await p.waitForFunction(id => new URL(location.href).searchParams.get('t') === id, id);
-      const restored = await p.evaluate(() => JSON.parse(sessionStorage.getItem('fuse.chat.pendingTurn')));
+      const restored = await storedTurn(p);
       assert.equal(restored.body.text, 'Send that the socket drops', 'the unconfirmed send survives the reload');
       assert.equal(await p.locator('[data-sync-label]').innerText(), 'Send unconfirmed. Retry safely.');
       assert.equal(await p.locator('[data-chat-input]').inputValue(), '', 'the draft is not pasted back; the retry owns it');

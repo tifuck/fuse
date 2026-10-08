@@ -301,7 +301,8 @@ export function createStream(ctx) {
             S.syncState = "live";
             S.syncLabel = "Live sync";
             status.syncStatus();
-            persist.flushPending().catch(() => {});
+            await persist.flushPending().catch(() => {});
+            if (epoch === S.syncEpoch && net.isLive()) turns.drainQueue();
           }
         }).catch((error) => { status.syncFailure(error); if (epoch === S.syncEpoch) ws.close(); });
       };

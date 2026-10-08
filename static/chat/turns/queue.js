@@ -2,6 +2,7 @@
 import { S } from '../state.js';
 import { escapeHtml } from '../core.js';
 import { newSession } from '../state.js';
+import { readQueue, writeQueueItem, deleteQueueItem } from './queue-store.js';
 
 let queueDraining = false;
 // Held queue item ids per thread, when storage is unavailable.
@@ -19,8 +20,10 @@ export function createQueue(ctx) {
     function retireAcceptedQueue() {
     const pending = S.queuedTurns.filter((item) => !S.acceptedQueueCommands.has(item.id) && !S.acceptedQueueCommands.has(item.id + ":turn"));
     if (pending.length !== S.queuedTurns.length) {
+      for (const item of S.queuedTurns) if (!pending.includes(item)) {
+        try { deleteQueueItem(S.currentId, item.id); } catch (_) {}
+      }
       S.queuedTurns = pending;
-      persistQueue();
       renderQueue();
     }
   }
@@ -42,21 +45,17 @@ export function createQueue(ctx) {
     if (!id) return new Set();
     try {
       const raw = JSON.parse(localStorage.getItem(queueHoldKey(id)) || "[]");
-      return new Set(Array.isArray(raw) ? raw.map(String) : []);
+      const ids = new Set(Array.isArray(raw) ? raw.map(String) : []);
+      for (const key of ids) localStorage.setItem(queueHoldKey(id) + '.' + key, '1');
+      localStorage.removeItem(queueHoldKey(id));
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key?.startsWith(queueHoldKey(id) + '.')) ids.add(key.slice(queueHoldKey(id).length + 1));
+      }
+      return ids;
     } catch (_) {
       return new Set(heldMemory.get(String(id)) || []);
     }
-  }
-
-    function setHeldIds(ids, id = S.currentId) {
-    if (!id) return;
-    const list = [...ids].filter((key) => S.queuedTurns.some((item) => item.id === key));
-    if (list.length) heldMemory.set(String(id), list);
-    else heldMemory.delete(String(id));
-    try {
-      if (list.length) localStorage.setItem(queueHoldKey(id), JSON.stringify(list));
-      else localStorage.removeItem(queueHoldKey(id));
-    } catch (_) {}
   }
 
     function queueHeld(id = S.currentId) {
@@ -66,31 +65,65 @@ export function createQueue(ctx) {
     // A user Stop of the tracked run holds what is queued now. Send now's own
     // stop is not a hold, and this tab's Stop already held at click time (its
     // cancel event must not also hold messages typed while stopping).
+    // The stop-cause marker is how tabs share why a run ended: 'stop' means a
+    // user Stop whose queued messages must hold, 'send-now' means Send now
+    // interrupted the run and must not hold. It is timestamped so stale
+    // markers can be swept without touching a run another tab just stopped.
+    const CAUSE_TTL = 60 * 60 * 1000;
+
+    function causeOf(runId) {
+    if (!runId) return "";
+    try {
+      const raw = localStorage.getItem('fuse.chat.queue.cancel.' + runId) || "";
+      const [kind, at] = raw.split(':');
+      if (kind === 'stop' || kind === 'send-now') {
+        if (!at || Date.now() - Number(at) < CAUSE_TTL) return kind;
+        localStorage.removeItem('fuse.chat.queue.cancel.' + runId);
+      }
+    } catch (_) {}
+    return "";
+  }
+
+    function markCause(runId, kind) {
+    try { localStorage.setItem('fuse.chat.queue.cancel.' + runId, kind + ':' + Date.now()); } catch (_) {}
+  }
+
+    function sweepCauses() {
+    try {
+      for (let i = localStorage.length - 1; i >= 0; i -= 1) {
+        const key = localStorage.key(i);
+        if (key?.startsWith('fuse.chat.queue.cancel.')) causeOf(key.slice('fuse.chat.queue.cancel.'.length));
+      }
+    } catch (_) {}
+  }
+
     function holdQueueForStop(runId, fromEvent = false) {
-    if (runId && S.sendNowRuns.has(runId)) return;
-    if (fromEvent && runId && S.locallyStoppedRuns.has(runId)) return;
-    if (!fromEvent && runId) S.locallyStoppedRuns.add(runId);
+    const cause = causeOf(runId);
+    if (runId && (S.sendNowRuns.has(runId) || cause === 'send-now')) return;
+    if (fromEvent && runId && (S.locallyStoppedRuns.has(runId) || cause === 'stop')) return;
+    if (runId) {
+      S.locallyStoppedRuns.add(runId);
+      markCause(runId, 'stop');
+    }
+    try { S.queuedTurns = readQueue(S.currentId); } catch (_) {}
     const ids = heldIds();
     for (const item of S.queuedTurns) if (!item.sending) ids.add(item.id);
-    setHeldIds(ids);
+    heldMemory.set(String(S.currentId), [...ids]);
+    try { for (const id of ids) localStorage.setItem(queueHoldKey() + '.' + id, '1'); } catch (_) {}
     renderQueue();
   }
 
-    function persistQueue() {
-    if (!S.currentId) return;
-    try {
-      localStorage.setItem(queueStoreKey(), JSON.stringify(S.queuedTurns));
-    } catch (_) {}
-    const held = heldIds();
-    if (held.size) setHeldIds(held);
+    function persistQueue(item) {
+    if (!S.currentId || !item) return;
+    try { writeQueueItem(S.currentId, item); } catch (_) {}
   }
 
     function loadQueue() {
     S.queuedTurns = [];
     if (!S.currentId) return renderQueue();
     try {
-      const raw = localStorage.getItem(queueStoreKey());
-      const items = raw ? JSON.parse(raw) : [];
+      const items = readQueue(S.currentId);
+      sweepCauses();
       if (Array.isArray(items))
         S.queuedTurns = items
           .filter((item) => item && typeof item.text === "string")
@@ -103,14 +136,9 @@ export function createQueue(ctx) {
     function acknowledgeQueuedTurn(origin, id) {
     if (origin === S.currentId) {
       S.queuedTurns = S.queuedTurns.filter((entry) => entry.id !== id);
-      persistQueue();
       renderQueue();
-    } else {
-      try {
-        const saved = JSON.parse(localStorage.getItem(queueStoreKey(origin)) || "[]");
-        localStorage.setItem(queueStoreKey(origin), JSON.stringify(saved.filter((entry) => entry.id !== id)));
-      } catch (_) {}
     }
+    try { deleteQueueItem(origin, id); } catch (_) {}
   }
 
     function renderQueue() {
@@ -140,7 +168,7 @@ export function createQueue(ctx) {
           `<span class="chat-queue-text" title="${escapeHtml(item.text)}">${escapeHtml(item.text || "Attached files")}</span>` +
           `<span class="chat-queue-state" role="status">${item.sending ? "Sending…" : item.immediate ? "Next" : held.has(item.id) ? "Stopped" : "Queued"}${item.attachments?.length ? ` · ${item.attachments.length} attached` : ""}</span>` +
           '<span class="chat-queue-actions">' +
-          `<button type="button" class="chat-queue-action" data-queue-send="${index}" title="${S.streaming ? "Stop the current reply and send this message now" : "Send this message now"}"${!S.streaming && !held.has(item.id) ? " hidden" : ""}${item.sending || item.immediate || (!S.streaming && !held.has(item.id)) ? " disabled" : ""}>Send now</button>` +
+          `<button type="button" class="chat-queue-action" data-queue-send="${index}" title="${S.streaming ? "Stop the current reply and send this message now" : "Send this message now"}"${!S.streaming && !held.has(item.id) ? " hidden" : ""}${item.sending || (!S.streaming && !held.has(item.id)) ? " disabled" : ""}>Send now</button>` +
           `<button type="button" class="chat-queue-action" data-queue-edit="${index}"${item.sending ? " disabled" : ""}>Edit</button>` +
           `<button type="button" class="chat-queue-action" data-queue-cancel="${index}"${item.sending ? " disabled" : ""}>Cancel</button>` +
           "</span></li>",
@@ -174,22 +202,24 @@ export function createQueue(ctx) {
     function enqueueTurn(text, attachments, opts) {
     const trimmed = String(text || "").trim();
     if (!trimmed && !(attachments && attachments.length)) return false;
-    S.queuedTurns.push({
+    const item = {
+      created: Date.now(),
       id: newSession(),
       text: trimmed,
       attachments: (attachments || []).slice(),
       immediate: Boolean(opts && opts.immediate),
       sending: false,
-    });
-    persistQueue();
+    };
+    S.queuedTurns.push(item);
+    persistQueue(item);
     renderQueue();
     return true;
   }
 
     function removeQueuedTurn(index) {
     if (index < 0 || index >= S.queuedTurns.length) return;
-    S.queuedTurns.splice(index, 1);
-    persistQueue();
+    const [item] = S.queuedTurns.splice(index, 1);
+    try { deleteQueueItem(S.currentId, item.id); } catch (_) {}
     renderQueue();
   }
 
@@ -209,6 +239,8 @@ export function createQueue(ctx) {
         composer.scheduleFitChatBar();
       } else {
         item.sending = false;
+        item.immediate = false;
+        persistQueue(item);
         renderQueue();
       }
     } catch (_) {
@@ -251,18 +283,23 @@ export function createQueue(ctx) {
     // streaming until its next tool boundary, so the session the user just
     // replaced went on producing tokens and late tool calls.
     item.immediate = true;
+    item.priority = Date.now();
     S.queuedTurns = [item, ...S.queuedTurns.filter((entry) => entry.id !== item.id)];
-    persistQueue();
+    persistQueue(item);
     // Send now is the explicit release of this message's Stop hold.
     const held = heldIds();
     held.delete(item.id);
-    setHeldIds(held);
+    heldMemory.set(String(S.currentId), [...held]);
+    try { localStorage.removeItem(queueHoldKey() + '.' + item.id); } catch (_) {}
     renderQueue();
     if (traces.runIsActive(S.activeRun) || S.streaming) {
       const origin = S.currentId;
       item.sending = true;
       renderQueue();
-      if (S.activeRun?.id) S.sendNowRuns.add(S.activeRun.id);
+      if (S.activeRun?.id) {
+        S.sendNowRuns.add(S.activeRun.id);
+        markCause(S.activeRun.id, 'send-now');
+      }
       await send.stopActiveRun();
       item.sending = false;
       if (origin !== S.currentId) return;

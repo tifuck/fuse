@@ -383,8 +383,8 @@ def queue_followup(run_id: str, text: str) -> bool:
 def take_followups(run_id: str) -> list[str]:
     """Peek queued follow-ups. Delivery is acknowledged by save_turn_progress
     once the follow-up text is durable in provider_messages — same crash
-    contract as take_child_results. Terminal drains still clear leftovers
-    so the finalizer can report unconsumed follow-ups."""
+    contract as take_child_results. Terminal queues remain durable until the
+    continuation or unconsumed report commits."""
     if not run_id:
         return []
     row = db.fetchone("SELECT id,status,request,provider_messages FROM chat_runs WHERE id=?", (run_id,))
@@ -405,29 +405,6 @@ def take_followups(run_id: str) -> list[str]:
         chat_views.followup_text(item) for item in pending
         if chat_views.followup_text(item) and not chat_views._followup_delivered(item, transcript)
     ]
-    if row["status"] not in chat_tx.ACTIVE:
-        with chat_tx.transaction() as conn:
-            current = conn.execute("SELECT id,status,request FROM chat_runs WHERE id=?", (run_id,)).fetchone()
-            if current is None:
-                return leftover
-            if current["status"] in chat_tx.ACTIVE:
-                # Re-queued since the first read (resume/follow-up continuation):
-                # its queue is live again and may hold fresh follow-ups.
-                return leftover
-            try:
-                creq = json.loads(current["request"] or "{}")
-            except (json.JSONDecodeError, TypeError):
-                return leftover
-            if not isinstance(creq, dict):
-                return leftover
-            cagent = creq.get("agent") if isinstance(creq.get("agent"), dict) else {}
-            cagent["pending_followups"] = []
-            creq["agent"] = cagent
-            conn.execute(
-                "UPDATE chat_runs SET request=?,updated_at=? WHERE id=?",
-                (chat_tx.dumps(creq), db.now(), run_id),
-            )
-        return leftover
     return leftover
 
 
@@ -438,8 +415,8 @@ def continue_child_with_followups(run_id: str, followups: list) -> bool:
     the follow-ups become one new user message on the sealed provider
     transcript and the SAME run id is re-queued, so the child keeps working
     instead of reporting 'unconsumed follow-up' to the parent. The run row is
-    terminal when called (post-finish); pending_followups must already be
-    drained by take_followups so the continued run cannot re-deliver them.
+    terminal when called (post-finish); the durable queue is consumed in the
+    same transaction that commits the continuation.
     """
     texts = [chat_views.followup_text(t) for t in (followups or []) if chat_views.followup_text(t)]
     if not texts:
@@ -462,10 +439,19 @@ def continue_child_with_followups(run_id: str, followups: list) -> bool:
         if not isinstance(req, dict):
             req = {}
         agent = req.get("agent") if isinstance(req.get("agent"), dict) else {}
-        pending = agent.get("pending_followups")
-        if isinstance(pending, list) and any(chat_views.followup_text(t) for t in pending):
-            # Not drained yet: the wake envelope path owns the report.
+        if chat_run_state.automatic_stop_guard(
+            conn, row["user_id"], row["thread_id"], parent_run_id=row["parent_run_id"],
+            resumed_at=str(agent.get("user_resumed_at") or ""),
+        ):
             return False
+        pending = agent.get("pending_followups")
+        if isinstance(pending, list):
+            undelivered = [chat_views.followup_text(t) for t in pending
+                           if chat_views.followup_text(t) and not chat_views._followup_delivered(t, row["provider_messages"] or "")]
+            if not undelivered:
+                # The queued follow-ups were already delivered into the sealed
+                # transcript (or the queue is gone): nothing to continue with.
+                return False
         messages = None
         raw_pm = row["provider_messages"] or ""
         if raw_pm:
@@ -565,10 +551,10 @@ def flag_unconsumed_followups(run_id: str, followups: list) -> None:
     )
     with chat_tx.transaction() as conn:
         row = conn.execute(
-            "SELECT id,user_id,thread_id,message_id,message,request FROM chat_runs WHERE id=?",
+            "SELECT id,user_id,thread_id,message_id,message,request,status FROM chat_runs WHERE id=?",
             (run_id,),
         ).fetchone()
-        if row is None:
+        if row is None or row["status"] not in chat_tx.TERMINAL:
             return
         try:
             message = json.loads(row["message"] or "{}")
@@ -591,6 +577,7 @@ def flag_unconsumed_followups(run_id: str, followups: list) -> None:
         # Stopped/failed writeups ignore message content; keep the list where
         # child_writeup reports it for every terminal status.
         agent["unconsumed_followups"] = texts[:8]
+        agent["pending_followups"] = []
         req["agent"] = agent
         conn.execute(
             "UPDATE chat_runs SET message=?,request=?,updated_at=? WHERE id=?",

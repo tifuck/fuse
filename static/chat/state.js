@@ -180,6 +180,7 @@ function initState() {
   S.streaming = false;
   S.activeRun = null;
   S.serverRevision = 0;
+  S.historyRevision = 0;
   S.contextRevision = Number(S.config.context?.revision || 0);
   S.contextEdit = 0;
   S.contextSaving = null;
@@ -189,10 +190,20 @@ function initState() {
   S.healRunId = "";
   S.stoppingRunId = "";
   S.STORE_PENDING_TURN = "fuse.chat.pendingTurn";
-  S.pendingTurn = null;
+  S.pendingTurns = new Map();
+  Object.defineProperty(S, 'pendingTurn', {
+    configurable: true,
+    get: () => S.pendingTurns.get(String(S.currentId)) || null,
+    set: value => {
+      if (value) S.pendingTurns.set(String(value.id), value);
+      else S.pendingTurns.delete(String(S.currentId));
+    },
+  });
     try {
     const saved = JSON.parse(sessionStorage.getItem(S.STORE_PENDING_TURN) || "null");
-    if (saved && saved.id && typeof saved.body?.text === "string" && saved.body.command_id) S.pendingTurn = saved;
+    for (const item of Array.isArray(saved) ? saved : [saved]) {
+      if (item?.id && typeof item.body?.text === 'string' && item.body.command_id) S.pendingTurn = item;
+    }
   } catch (_) {}
   S.pendingCreate = null;
   S.pendingProject = null;

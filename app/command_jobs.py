@@ -930,6 +930,25 @@ def notification(rec: dict) -> str:
     return "\n".join(lines)
 
 
+def pending_wake_threads() -> list[dict]:
+    """Lightweight discovery for command-only capacity-deferred wakes."""
+    ensure_schema()
+    threads = {(row["user_id"], row["thread_id"]) for row in db.fetchall(
+        "SELECT DISTINCT user_id,thread_id FROM command_jobs WHERE thread_id IS NOT NULL AND notify=1"
+        " AND delivered=0 AND status IN ('completed','timed_out','cancelled','interrupted','lost')"
+        " AND NOT EXISTS (SELECT 1 FROM chat_runs r WHERE r.id=command_jobs.run_id AND r.parent_run_id IS NOT NULL)"
+    )}
+    for rec in list(_live.values()):
+        if not rec.get("thread_id") or not _is_monitor(rec) or rec.get("status") in TERMINAL:
+            continue
+        if _child_run_state(rec.get("run_id")) is not None:
+            continue
+        acked = int(rec.get("delivered_event_seq") or 0)
+        if any(not isinstance(item, dict) or int(item.get("seq") or 0) > acked for item in rec.get("pending_events") or []):
+            threads.add((rec["user_id"], rec["thread_id"]))
+    return [{"user_id": uid, "thread_id": tid, "resumed_at": ""} for uid, tid in threads]
+
+
 def pending_envelopes(user_id: int, thread_id: int) -> list[dict]:
     """Undelivered terminal results and live monitor events (peek; wake builds text from these)."""
     ensure_schema()

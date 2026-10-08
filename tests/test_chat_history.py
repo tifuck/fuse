@@ -135,6 +135,44 @@ class HistoryTest(unittest.TestCase):
         self.assertTrue(any(row.get("content") == result for row in replay))
         self.assertFalse(any(row.get("content") == "Accepted but not delivered" for row in replay))
 
+    def test_deleting_rows_before_a_compaction_boundary_drops_the_stale_summary(self):
+        first = self.start("question one")
+        self.complete(first, result="SECRET_RESULT_" + "x" * 4000, content="answer one")
+        second = self.start("question two")
+        self.complete(second, content="answer two")
+        view = chats.get_thread(1, self.thread["id"])
+        # A display checkpoint through the LAST row summarizes everything before it.
+        cp = context.make_checkpoint(
+            summary="STALE_SUMMARY mentioning question one and SECRET_RESULT",
+            strategy="summarize", trigger="manual",
+            through_message_id=view["messages"][-1]["id"],
+        )
+        store.apply_compaction_checkpoint(1, view["id"], cp)
+        probe = self.start("after compact")
+        self.assertIn("STALE_SUMMARY", json.dumps(probe["request"]["messages"]))
+        store.finish_run(probe["id"], {"content": "done", "reasoning": ""}, "completed")
+
+        # Deleting a pre-boundary turn while the boundary row survives must not
+        # keep replaying the deleted contents via the stale summary.
+        view = chats.get_thread(1, view["id"])
+        kept = view["messages"][2:]
+        chats.update_thread(1, view["id"], messages=kept, expected_revision=view["revision"])
+        probe = self.start("after edit")
+        replay = json.dumps(probe["request"]["messages"])
+        self.assertNotIn("STALE_SUMMARY", replay)
+        self.assertNotIn("question one", replay)
+        self.assertIn("question two", replay)
+        store.finish_run(probe["id"], {"content": "done", "reasoning": ""}, "completed")
+
+        # A pure append after the boundary keeps the checkpoint.
+        view = chats.get_thread(1, view["id"])
+        store.apply_compaction_checkpoint(1, view["id"], context.make_checkpoint(
+            summary="SECOND_SUMMARY", strategy="summarize", trigger="manual",
+            through_message_id=view["messages"][-1]["id"]))
+        probe = self.start("tail append")
+        self.assertIn("SECOND_SUMMARY", json.dumps(probe["request"]["messages"]))
+        store.finish_run(probe["id"], {"content": "done", "reasoning": ""}, "completed")
+
     def test_edit_does_not_resurrect_old_assistant_or_deleted_turn(self):
         first = self.start("first question")
         self.complete(first, result="FIRST_TOOL", content="first answer")

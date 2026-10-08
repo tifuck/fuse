@@ -33,11 +33,13 @@ export function createStatus(ctx) {
     if (bar) {
       bar.dataset.syncState = state;
       bar.classList.toggle("is-fault", fault);
-      const hideSync = !fault && S.pendingTurn?.id !== S.currentId && state !== "disconnected" && state !== "session";
+      const hideSync = !fault && !S.pendingTurns.size && S.pendingTurn?.id !== S.currentId && state !== "disconnected" && state !== "session";
       bar.hidden = hideSync;
     }
     const retry = S.root.querySelector("[data-sync-retry]");
     if (retry) retry.hidden = !(live && S.pendingTurn?.id === S.currentId);
+    const discard = S.root.querySelector('[data-pending-discard]');
+    if (discard) discard.hidden = !S.pendingTurns.size;
     composer.syncComposer();
   }
 
