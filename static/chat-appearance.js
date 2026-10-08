@@ -43,19 +43,6 @@
     mandala: { label: "Mandala", hint: "Glyph rosette · multicolor" },
     spiral: { label: "Spiral", hint: "Cyclic automaton · multicolor" },
     riso: { label: "Riso", hint: "Halftone inks · multicolor" },
-    alpine: { label: "Alpine Dawn", hint: "Snow peaks · dawn lake" },
-    fjord: { label: "Aurora Fjord", hint: "Aurora · cabin · fjord" },
-    reef: { label: "Deep Reef", hint: "Light shafts · kelp · fish" },
-    desert: { label: "Desert Night", hint: "Milky way · meteors" },
-    earthrise: { label: "Earthrise", hint: "Earth over the moon" },
-    kyoto: { label: "Kyoto Dusk", hint: "Pagoda · cherry · lantern" },
-    marine: { label: "Marine Drive", hint: "Bay lamps at night" },
-    forest: { label: "Misty Forest", hint: "Pine ridges · fog · beams" },
-    coast: { label: "Night Coast", hint: "Lighthouse · moonlit sea" },
-    sunset: { label: "Ocean Sunset", hint: "Headland · lit cloud · sea" },
-    storm: { label: "Storm Plains", hint: "Thunderhead · wheat field" },
-    taj: { label: "Taj Dawn", hint: "Taj mahal · mirror pool" },
-    varanasi: { label: "Varanasi Ghats", hint: "Ganga aarti · diyas" },
   };
   // Saved choices from retired backdrops map to their nearest replacement
   // instead of silently switching the wallpaper off.

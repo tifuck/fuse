@@ -7,8 +7,8 @@
    scene, animating while hovered. */
 
 /* The drawing lives in ./backdrops/: kits (env/color/noise/kit/pixel/botany/space),
-   one file per scene plus the ascii.rest adapter, the registry in scenes.js, and
-   the runner, picker previews and sync in engine.js. Load this entry as a module:
+   one module per scene family, the registry in scenes.js, and the runner, picker
+   previews and sync in engine.js. Load this entry as a module:
    <script type="module" src="/static/chat-backdrop.js?v=N"></script>
    Chunk map and extraction record: backdrop-manifest.json in the snapshot parent. */
 
