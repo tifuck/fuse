@@ -71,7 +71,7 @@ int run_exec(const char *cwd, const char *cmd, int timeout_ms, char *out, size_t
     clock_gettime(CLOCK_MONOTONIC, &start);
     int status = 0, done = 0, killed = 0, by_timeout = 0;
     int out_clipped = 0, err_clipped = 0;
-    long kill_ms = 0;
+    long kill_ms = 0, reap_ms = 0;
     while (done < 2) {
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
@@ -101,12 +101,22 @@ int run_exec(const char *cwd, const char *cmd, int timeout_ms, char *out, size_t
             if (err_len) *err_len = e;
             return 0;
         }
-        struct pollfd pfd[2] = {{outp[0], POLLIN, 0}, {errp[0], POLLIN, 0}};
-        poll(pfd, 2, 100);
+        /* Streamed output waits for queue room instead of being dropped: the
+         * child blocks on its full pipe until the session drains, while the
+         * timeout and cancel above still apply. Polling a readable pipe while
+         * held would spin, so sleep instead. */
+        int held = stream && !out_has_room();
+        if (held) {
+            poll(NULL, 0, 20);
+        } else {
+            struct pollfd pfd[2] = {{outp[0], POLLIN, 0}, {errp[0], POLLIN, 0}};
+            poll(pfd, 2, 100);
+        }
         char tmp[2048];
         ssize_t k;
-        for (int reads = 0; reads < 64 && (k = read(outp[0], tmp, sizeof(tmp))) > 0; reads++) {
+        for (int reads = 0; !held && reads < 64 && (k = read(outp[0], tmp, sizeof(tmp))) > 0; reads++) {
             if (stream && send_chunk(job_id, "out", tmp, (size_t)k) != 0) out_clipped = 1;
+            if (stream && !out_has_room()) held = 1;
             if (o + (size_t)k >= ocap) { out_clipped = 1; k = (ssize_t)(ocap - 1 - o); }
             if (k > 0 && !stream) {
                 memcpy(out + o, tmp, (size_t)k);
@@ -114,8 +124,9 @@ int run_exec(const char *cwd, const char *cmd, int timeout_ms, char *out, size_t
                 out[o] = 0;
             }
         }
-        for (int reads = 0; reads < 64 && (k = read(errp[0], tmp, sizeof(tmp))) > 0; reads++) {
+        for (int reads = 0; !held && reads < 64 && (k = read(errp[0], tmp, sizeof(tmp))) > 0; reads++) {
             if (stream && send_chunk(job_id, "err", tmp, (size_t)k) != 0) err_clipped = 1;
+            if (stream && !out_has_room()) held = 1;
             if (e + (size_t)k >= ecap) { err_clipped = 1; k = (ssize_t)(ecap - 1 - e); }
             if (k > 0 && !stream) {
                 memcpy(errb + e, tmp, (size_t)k);
@@ -123,12 +134,24 @@ int run_exec(const char *cwd, const char *cmd, int timeout_ms, char *out, size_t
                 errb[e] = 0;
             }
         }
-        if (done) { done = 2; continue; } /* final bounded drain after reap */
+        if (done) {
+            /* Final bounded drain after reap. Output held back for queue room
+             * is waited for, up to 10 s, then flagged rather than lost. */
+            if (!held) done = 2;
+            else if (elapsed - reap_ms >= 10000) {
+                out_clipped = err_clipped = 1;
+                done = 2;
+            }
+            continue;
+        }
         pthread_mutex_lock(&g_job_mu);
         pid_t w = waitpid(pid, &status, WNOHANG);
         if (w == pid && job) job->pid = 0; /* do not signal a re-used pid after reap */
         pthread_mutex_unlock(&g_job_mu);
-        if (w == pid) done = 1;
+        if (w == pid) {
+            done = 1;
+            reap_ms = elapsed;
+        }
     }
     close(outp[0]);
     close(errp[0]);

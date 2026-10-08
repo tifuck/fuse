@@ -11,7 +11,12 @@ static void *terminal(void *unused) {
 }
 
 int main(void) {
-    for (int i = 0; i < OUT_QMAX; i++)
+    /* Streaming exec stops reading while the queue is within the reserve. */
+    assert(out_has_room());
+    for (int i = 0; i < OUT_QMAX - OUT_STREAM_RESERVE; i++)
+        assert(send_chunk("job", "out", "x", 1) == 0);
+    assert(!out_has_room());
+    for (int i = OUT_QMAX - OUT_STREAM_RESERVE; i < OUT_QMAX; i++)
         assert(send_chunk("job", "out", "x", 1) == 0);
     assert(send_chunk("job", "out", "lost", 4) == -1);
     pthread_t producer;

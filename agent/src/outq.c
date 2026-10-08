@@ -74,6 +74,13 @@ int out_flush(struct tls *t) {
     }
 }
 
+int out_has_room(void) {
+    pthread_mutex_lock(&g_out_mu);
+    int room = g_out_n < OUT_QMAX - OUT_STREAM_RESERVE;
+    pthread_mutex_unlock(&g_out_mu);
+    return room;
+}
+
 int send_chunk(const char *id, const char *stream, const char *data, size_t n) {
     if (!data || !n) return 0;
     cJSON *o = cJSON_CreateObject();

@@ -2,7 +2,11 @@
 #define FUSE_OUTQ_H
 
 /* Outbound frame queue: worker threads enqueue, the session loop drains.
- * Reliable producers (terminal results) block for space; chunks drop. */
+ * Reliable producers (terminal results) block for space; chunks drop, so
+ * streaming exec checks out_has_room() and stops reading until it is true. */
+
+/* Slots streamed output leaves free for results and other jobs' frames. */
+#define OUT_STREAM_RESERVE 16
 
 #include <pthread.h>
 
@@ -23,6 +27,7 @@ extern pthread_cond_t g_out_space;
 
 int out_enqueue(int opcode, const unsigned char *data, size_t n);
 int out_flush(struct tls *t);
+int out_has_room(void);
 int send_chunk(const char *id, const char *stream, const char *data, size_t n);
 void send_res_tmo_len(struct tls *t, const char *id, int ok, int exit_code,
                       const char *out, size_t out_len, const char *err, size_t err_len,
