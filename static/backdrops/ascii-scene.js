@@ -48,7 +48,9 @@ export function asciiScene(meta, make) {
       s.atlas.width = s.pw * 32;
       s.atlas.height = s.ph * 32;
       s.slots.clear();
-      s.font = `${w / 0.6}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
+      // Keep the original tone and coverage, but use fine dots on large cells.
+      s.subdivisions = Math.max(1, Math.ceil(span / 3));
+      s.font = `${(w / s.subdivisions) / 0.6}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
       s.full = true;
     },
     // One atlas slot per (character, colour); drawn on first use.
@@ -64,7 +66,11 @@ export function asciiScene(meta, make) {
       c.textAlign = "center";
       c.textBaseline = "middle";
       c.fillStyle = palette[index] || palette[0];
-      c.fillText(String.fromCharCode(code), x + s.sw / 2, y + s.sh / 2);
+      for (let row = 0; row < s.subdivisions; row += 1) {
+        for (let col = 0; col < s.subdivisions; col += 1) {
+          c.fillText(String.fromCharCode(code), x + (col + 0.5) * s.sw / s.subdivisions, y + (row + 0.5) * s.sh / s.subdivisions);
+        }
+      }
       s.slots.set(key, slot);
       return slot;
     },
