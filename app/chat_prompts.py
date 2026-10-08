@@ -303,12 +303,20 @@ _WAIT = (
 )
 # Explore children cannot load monitor (agent_catalog.EXPLORE_TOOLS).
 _WAIT_VS_HOOK = (
-    _WAIT + " "
-    "A later condition (log line, ERROR/Traceback, READY, WS frame) uses `monitor` — matching "
-    "stdout/WS lines arrive as `<monitor_event>` while you keep working; do not start another watch. "
-    "`<monitor_result>` means that watch ended (timeout, max events, kill). Load via `search_tools` "
-    "query `shell` if `monitor` is not already loaded. Line-buffer pipes (`grep --line-buffered`). "
-    "Filter tightly. Stop with `kill_command`."
+    _WAIT + "\n"
+    "- Waiting for a condition (a service answering, a host reconnecting or updating, a file or row "
+    "appearing, a deploy or rollout finishing, a log line) is a `monitor`, never `sleep N` or a re-run "
+    "check. Make the command print one marker line when the condition holds and match only that: "
+    "`until curl -sf localhost:8080/health >/dev/null 2>&1; do sleep 2; done; echo READY` with pattern "
+    "`^READY$`. For a log, match success and failure together so a crash cannot leave you waiting: "
+    "`tail -n0 -F app.log | grep --line-buffered -E 'Started|ERROR|Traceback'`. Only stdout lines are "
+    "events, so keep the check itself quiet. Set `timeout` to the longest you would wait (max 30 min). "
+    "Then keep working, or end your turn if nothing else is left: the event wakes you. "
+    "`<monitor_event>` carries the matching lines; it is one watch per condition, so do not start "
+    "another while it runs. `<monitor_result>` ends the watch: state=\"completed\" is the normal end "
+    "(the marker fired, which reads `reached max_events`, or the command exited); \"timed_out\" means the "
+    "condition never held, so find out why before re-arming; \"cancelled\" means it was stopped. Load "
+    "via `search_tools` query `shell` if `monitor` is not loaded; stop a watch with `kill_command`."
 )
 _RISKY_TARGETS = (
     "deleting files you did not create, `git reset --hard`, `git checkout -- .`, `git clean`, "

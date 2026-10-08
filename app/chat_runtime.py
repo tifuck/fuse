@@ -976,9 +976,10 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                         "[Fuse] AUTOMATED EVENT — not written by the user. Background results:\n\n"
                         + "\n\n".join(injected)
                         + "\n\nThese are for you, not the user, and not independent verification. "
-                        "A <monitor_event> means the watch fired — do not start another; kill or wait. "
-                        "A <monitor_result state=\"timed_out\"> means the watch ended; re-arm only if the user still wants it. "
-                        "Do not re-arm a firehose auto-stop."
+                        "A <monitor_event> means the watched condition matched: act on it, and do not start another watch for it. "
+                        "A <monitor_result> means that watch ended: state=\"completed\" is the normal end; "
+                        "\"timed_out\" means the condition never held, so find out why and re-arm only if you still need it. "
+                        "Do not re-arm a firehose auto-stop; narrow the pattern instead."
                     )
                     # Delivery receipts commit with the retained transcript.
                     # No thread bubble or notice is emitted: the hand-off is

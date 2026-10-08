@@ -447,6 +447,10 @@ class CodingPromptTest(unittest.TestCase):
             self.assertIn("`monitor`", text)
             self.assertIn("never sleep or poll", text)
             self.assertIn("<monitor_event>", text)
+            # Waiting on a condition is a monitor on a marker line, never sleep.
+            self.assertIn("echo READY` with pattern `^READY$`", text)
+            self.assertIn("the event wakes you", text)
+            self.assertIn("find out why before re-arming", text)
             if kwargs.get("loaded_tools"):
                 self.assertIn("Loaded tools: run_terminal_command", text)
                 self.assertIn("Call them directly without `search_tools`", text)
@@ -468,11 +472,17 @@ class CodingPromptTest(unittest.TestCase):
         # (agent_catalog.EXPLORE_TOOLS), so it is not offered one.
         self.assertIn("never sleep or poll", explore)
         self.assertNotIn("`monitor`", explore)
+        self.assertNotIn("echo READY", explore)
         plan = build_system_prompt(
             instructions="", profile="", thread_context="", tools=["web_search"],
             coding=True, subagent=True, subagent_type="plan",
         )
         self.assertNotIn("`monitor`", plan)
+        from app.agent_catalog import SCHEMAS
+
+        monitor = SCHEMAS["monitor"]["function"]["description"]
+        self.assertIn("echo READY`, pattern ^READY$", monitor)
+        self.assertIn("state=\"completed\" is the normal end", monitor)
         chat = build_system_prompt(instructions="", profile="", thread_context="", tools=["web_search"])
         self.assertNotIn("not shell with ls/find/rg/grep/cat/sed", chat)
 

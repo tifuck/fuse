@@ -1042,8 +1042,9 @@ async def _wake_parent(user_id: int, thread_id) -> None:
         if live_monitor:
             opener = (
                 "AUTOMATED EVENT - not written by the user. A watch fired or background work reported. "
-                "These are not new user requests. A <monitor_event> means the condition matched; do not start another watch. "
-                "A <monitor_result> means that watch ended."
+                "These are not new user requests. A <monitor_event> means the watched condition matched: act on it, "
+                "and do not start another watch for it. A <monitor_result> means that watch ended: state=\"completed\" "
+                "is the normal end; \"timed_out\" means the condition never held, so find out why before re-arming."
             )
         else:
             opener = (
