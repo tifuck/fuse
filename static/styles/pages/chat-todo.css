@@ -30,13 +30,7 @@
   bottom: 100%;
 }
 .chat .chat-agent-live-todos:not([hidden]) { --todo-edge: var(--line); }
-/* Open, the drawer reserves its height — todos.js measures the sheet into
-   --todo-push — so it never covers the transcript. Collapsed, the tab only
-   hovers over the last line. */
-html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty):has(.chat-dock > .chat-live-todos.is-open:not([hidden])) .chat-thread > .chat-live-dock:not([hidden]),
-html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty):has(.chat-dock > .chat-live-todos.is-open:not([hidden])) .chat-thread:not(:has(> .chat-live-dock:not([hidden]))) > .chat-log {
-  padding-bottom: calc(1rem + var(--todo-push, 0px));
-}
+/* The tab and the drawer hover over the transcript, collapsed or open. */
 
 /* The sheet: hangs from the anchor line, the tab on top, the page under it. */
 .chat .chat-todo-sheet {

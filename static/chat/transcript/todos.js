@@ -135,20 +135,6 @@ export function createTodos(ctx) {
     bar.classList.add("is-updated");
   }
 
-    // The open drawer must not cover the transcript: its measured height goes
-    // into --todo-push, which chat-todo.css pads the thread with. Collapsed,
-    // the tab only hovers.
-  function syncTodoPush(sec, el, expanded) {
-    if (sec !== S.todoSections.main) return;
-    let push = "0px";
-    if (expanded) {
-      const bar = el.querySelector(".chat-todo-bar");
-      const page = el.querySelector(".chat-todo-page");
-      if (bar && page) push = `${bar.offsetHeight + page.offsetHeight}px`;
-    }
-    S.root.style.setProperty("--todo-push", push);
-  }
-
     function paintTodoSection(sec, candidate, active, afterResize) {
     const el = sec.el;
     if (!el) return;
@@ -161,7 +147,6 @@ export function createTodos(ctx) {
         sec.sig = "";
         sec.key = "";
         sec.items = "";
-        syncTodoPush(sec, el, false);
         afterResize();
       }
       return;
@@ -185,7 +170,6 @@ export function createTodos(ctx) {
     el.hidden = false;
     if (changed) pulseTodoBar(bar);
     fitTodoList(sec, sec.expanded, changed);
-    syncTodoPush(sec, el, sec.expanded);
     afterResize();
   }
 
