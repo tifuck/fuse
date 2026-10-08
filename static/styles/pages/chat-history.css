@@ -337,23 +337,22 @@
 }
 .chat-history-item .chat-run-spin { width: 1.6rem; justify-items: start; }
 .chat-history-item .chat-run-spin .cas-face { width: 0.82rem; height: 0.82rem; }
-.chat-history-item > button.open { padding-right: 3.25rem; }
-.chat-history-list .chat-history-item:is(:hover, :focus-within, .is-menu) > button.open { padding-right: 3.25rem; }
+.chat-history-indicator {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+}
+.chat-history-item.is-project .chat-history-indicator.is-folder { margin-top: 0.2rem; }
 .chat-history-unread-dot {
   position: absolute;
-  top: 50%;
-  right: 2.5rem;
-  width: 6px;
-  height: 6px;
-  transform: translateY(-50%);
+  top: -2px;
+  right: -2px;
+  width: 5px;
+  height: 5px;
   border-radius: 50% !important;
   background: var(--ok);
   pointer-events: none;
-}
-@media (hover: none), (max-width: 800px) {
-  .chat-history-list .chat-history-item > button.open,
-  .chat-history-list .chat-history-item:is(:hover, :focus-within, .is-menu) > button.open { padding-right: 1.25rem; }
-  .chat-history-unread-dot { right: 3rem; }
 }
 .chat-history-item.is-unread .chat-history-name { color: var(--mist); }
 .chat-history-sep {

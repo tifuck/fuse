@@ -148,9 +148,11 @@ export function createRender(ctx) {
     const chip = searchingChip(item);
     const meta =
       project && !grouped ? projects.projectMeta(item.project_name || "Project", item.host_alias) : "";
-    const lead =
-      (running ? spinners.runSpinMarkup("h-" + item.id) : spinners.ageChip(item)) +
-      (project ? projects.projectIcon({ color: item.project_color, logo_url: item.project_logo_url }) : "");
+    const dot = unread ? '<span class="chat-history-unread-dot" role="img" aria-label="Unread activity"></span>' : "";
+    const age = running ? spinners.runSpinMarkup("h-" + item.id) : spinners.ageChip(item);
+    const lead = project
+      ? age + `<span class="chat-history-indicator is-folder">${projects.projectIcon({ color: item.project_color, logo_url: item.project_logo_url })}${dot}</span>`
+      : `<span class="chat-history-indicator">${age}${dot}</span>`;
     const groupedClass = project && grouped ? " is-grouped" : "";
     const runningClass = running ? " is-running" : "";
     const busy = running ? ' aria-busy="true"' : "";
@@ -159,8 +161,7 @@ export function createRender(ctx) {
     const scheduledClass = item.schedule_id ? " is-task" : "";
     const pinClass = item.pinned ? " is-pinned" : "";
     const unreadClass = unread ? " is-unread" : "";
-    const dot = unread ? '<span class="chat-history-unread-dot" title="New activity"></span>' : "";
-    return `<div class="chat-history-item${on}${twoLine ? " has-snip" : ""}${project ? " is-project" : ""}${groupedClass}${runningClass}${scheduledClass}${pinClass}${unreadClass}" data-thread="${escapeHtml(String(item.id))}"${busy}><button type="button" class="open" title="${title}">${working}<span class="chat-history-title">${dot}${lead}<span class="chat-history-copy"><span class="chat-history-name">${title}</span>${meta}${snip}</span></span>${chip}</button><button type="button" class="more" aria-label="Chat actions">⋯</button></div>`;
+    return `<div class="chat-history-item${on}${twoLine ? " has-snip" : ""}${project ? " is-project" : ""}${groupedClass}${runningClass}${scheduledClass}${pinClass}${unreadClass}" data-thread="${escapeHtml(String(item.id))}"${busy}><button type="button" class="open" title="${title}">${working}<span class="chat-history-title">${lead}<span class="chat-history-copy"><span class="chat-history-name">${title}</span>${meta}${snip}</span></span>${chip}</button><button type="button" class="more" aria-label="Chat actions">⋯</button></div>`;
   }
 
     function searchingChip(item) {
