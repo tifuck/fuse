@@ -1338,6 +1338,48 @@ class AgentCapsTest(unittest.TestCase):
         rows = store.list_thread_agents(1, parent["thread_id"])
         self.assertTrue(rows)
 
+    def test_child_display_places_followup_where_it_was_delivered(self):
+        from app import chat_views
+
+        mark = {"content": 9, "reasoning": 0, "tools": 1, "permissions": 0, "segments": 2, "tail": 9}
+        view = {
+            "id": "r",
+            "status": "running",
+            "message_id": "m",
+            "message": {
+                "content": "read it. now tests",
+                "reasoning": "",
+                "tools": [{"id": "c1", "name": "read_file", "status": "done"},
+                          {"id": "c2", "name": "grep", "status": "running"}],
+                "segments": [{"type": "tool", "id": "c1"}, {"type": "content", "text": "read it. "},
+                             {"type": "tool", "id": "c2"}, {"type": "content", "text": "now tests"}],
+            },
+            "request": {
+                "model": "t",
+                "display_seed": [{"role": "user", "content": "inspect"}],
+                "agent": {"followup_marks": [{"ids": ["abc123"], "end": mark}]},
+            },
+            "provider_messages": [
+                {"role": "user", "content": "inspect"},
+                {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": "c1", "content": "x"},
+                {"role": "user", "content": "[Fuse] Follow-up from the parent — not written by the end user.\n\n(followup:abc123) also tests"},
+            ],
+        }
+        hist, live_start = chat_views._child_display(view)
+        # The leg's output before delivery sits above the follow-up, not below it.
+        self.assertEqual([item["role"] for item in hist], ["user", "assistant", "user"])
+        self.assertEqual(hist[1]["content"], "read it. ")
+        self.assertEqual([tool["id"] for tool in hist[1]["tools"]], ["c1"])
+        self.assertTrue(hist[2]["fromParent"])
+        self.assertEqual(hist[2]["content"], "also tests")
+        self.assertEqual(live_start, mark)
+        tail = chat_views._display_slice(view["message"], live_start)
+        self.assertEqual(tail["content"], "now tests")
+        self.assertEqual([tool["id"] for tool in tail["tools"]], ["c2"])
+        self.assertEqual(chat_views._utf16_mark({"content": "😀ab", "segments": []}, {"content": 2})["content"], 3)
+
     def test_child_display_resume_keeps_prior_tools_before_prompt(self):
         view = {
             "status": "queued",

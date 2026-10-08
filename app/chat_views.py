@@ -126,6 +126,12 @@ def child_display_messages(run: dict, *, include_current: bool = False) -> list[
     Does not include the live `run.message` bubble by default — the side panel
     paints that separately so SSE progress can update it in place.
     """
+    return _child_display(run, include_current=include_current)[0]
+
+
+def _child_display(run: dict, *, include_current: bool = False) -> tuple[list[dict], dict]:
+    """History rows plus the live-leg mark the live bubble starts at: output
+    before a delivered parent follow-up is history shown above that follow-up."""
     from . import chats as chats_mod
 
     req = run.get("request") if isinstance(run.get("request"), dict) else {}
@@ -170,6 +176,16 @@ def child_display_messages(run: dict, *, include_current: bool = False) -> list[
             transcript = transcript[cut:]
     current_id = str(run.get("message_id") or "")
     current = run.get("message") if isinstance(run.get("message"), dict) else {}
+    leg_splits: dict[int, dict] = {}
+    live_start: dict = {}
+    if isinstance(display_seed, list):
+        marks = (req.get("agent") or {}).get("followup_marks") or []
+        for item in followups:
+            text = _provider_text(item.get("content"))
+            mark = next((m for m in marks if any(f"(followup:{i})" in text for i in m.get("ids") or [])), None)
+            if mark and item in transcript:
+                leg_splits[id(item)] = _display_slice(current, live_start, mark["end"])
+                live_start = mark["end"]
     current_text = str(current.get("content") or "").strip()
     current_tools = current.get("tools") if isinstance(current.get("tools"), list) else []
     live = str(run.get("status") or "") in chat_tx.ACTIVE
@@ -274,6 +290,17 @@ def child_display_messages(run: dict, *, include_current: bool = False) -> list[
                 "noActions": True,
             })
             continue
+        split = leg_splits.get(id(item))
+        if split and any(split.get(key) for key in ("content", "reasoning", "tools")):
+            out.append({
+                "id": f"agent-hist-{n}-leg",
+                "role": "assistant",
+                "content": str(split.get("content") or "")[: chats_mod.CONTENT_MAX],
+                "reasoning": str(split.get("reasoning") or ""),
+                "tools": split.get("tools") or [],
+                "segments": split.get("segments") or [],
+                "noActions": True,
+            })
         is_followup = text.lstrip().startswith(FOLLOWUP_FRAME_HEAD)
         out.append({
             "id": f"agent-hist-{n}",
@@ -338,7 +365,7 @@ def child_display_messages(run: dict, *, include_current: bool = False) -> list[
     for item in out:
         if run.get("id") and str(item.get("id", "")).startswith("agent-hist-"):
             item["id"] = str(run["id"]) + ":" + item["id"]
-    return out
+    return out, live_start
 
 
 def child_context_meter(run: dict) -> dict | None:
@@ -540,6 +567,23 @@ def _project_thread_messages(messages, projected, request):
                 present.add(part["id"])
     hidden = {part["id"] for part in (request.get("agent") or {}).get("display_parts") or [] if part.get("hidden")}
     return [projected.get(msg["id"], msg) for msg in messages if msg["id"] not in hidden]
+
+
+def _utf16_mark(message, mark):
+    """A display mark with text offsets in UTF-16 units, as browsers slice."""
+    message = message if isinstance(message, dict) else {}
+
+    def units(text, count):
+        return len(str(text or "")[:count].encode("utf-16-le")) // 2
+
+    out = dict(mark)
+    for key in ("content", "reasoning"):
+        out[key] = units(message.get(key), mark.get(key, 0))
+    segments = message.get("segments") or []
+    index = mark.get("segments", 0) - 1
+    if 0 <= index < len(segments) and isinstance(segments[index], dict):
+        out["tail"] = units(segments[index].get("text"), mark.get("tail", 0))
+    return out
 
 
 def _display_slice(message, start, end=None):
@@ -1058,7 +1102,8 @@ def get_run_snapshot(user_id, run_id):
                 run["event_cursor"] = stamped
         settle_spawn_traces(conn, user_id, [run["message"]])
         settle_command_traces(conn, user_id, run["thread_id"], [run["message"]])
-        run["display_messages"] = child_display_messages(run, include_current=False)
+        run["display_messages"], live_start = _child_display(run)
+        run["live_start"] = _utf16_mark(run.get("message"), live_start) if live_start else None
         settle_spawn_traces(conn, user_id, run["display_messages"])
         settle_command_traces(conn, user_id, run["thread_id"], run["display_messages"])
         return run

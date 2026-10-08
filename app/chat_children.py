@@ -508,6 +508,7 @@ def continue_child_with_followups(run_id: str, followups: list) -> bool:
         req["display_seed"] = sealed
         agent["pending_followups"] = []
         agent["unconsumed_followups"] = []
+        agent.pop("followup_marks", None)
         agent["background"] = True
         agent["followup_continuation"] = True
         agent["delivery_generation"] = uuid4().hex
@@ -799,6 +800,23 @@ def seal_steer_display(run_id, steer_ids):
             ident = part.get("steer_id")
             if ident in ids and chat_tx._json_needle(f"(steer:{ident})") in (row["provider_messages"] or ""):
                 part["awaiting_delivery"] = False
+        conn.execute("UPDATE chat_runs SET request=? WHERE id=?", (chat_tx.dumps(request), run_id))
+
+
+def mark_followup_display(run_id, followup_ids, message):
+    """Record where in the live leg delivered parent follow-ups landed.
+
+    Called by the worker after flushing pre-delivery output, before new tokens."""
+    if not followup_ids:
+        return
+    with chat_tx.transaction() as conn:
+        row = conn.execute("SELECT request,status FROM chat_runs WHERE id=?", (run_id,)).fetchone()
+        if row is None or row["status"] not in chat_tx.ACTIVE:
+            return
+        request = json.loads(row["request"] or "{}")
+        agent = request.setdefault("agent", {})
+        agent.setdefault("followup_marks", []).append(
+            {"ids": list(followup_ids), "end": chat_views._display_mark(message)})
         conn.execute("UPDATE chat_runs SET request=? WHERE id=?", (chat_tx.dumps(request), run_id))
 
 

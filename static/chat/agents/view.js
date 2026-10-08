@@ -57,6 +57,26 @@ export function createView(ctx) {
     );
   }
 
+    // Mirrors chat_views._display_slice with only a start mark (UTF-16 offsets).
+  function liveLegTail(msg, start) {
+    const first = (start.segments || 0) - 1;
+    const segments = Array.isArray(msg.segments) ? msg.segments.flatMap((seg, index) => {
+      if (index < first) return [];
+      const part = { ...seg };
+      if (index === first) {
+        if (!("text" in part)) return [];
+        part.text = part.text.slice(start.tail || 0);
+      }
+      return !("text" in part) || part.text ? [part] : [];
+    }) : undefined;
+    return {
+      content: (msg.content || "").slice(start.content || 0),
+      reasoning: (msg.reasoning || "").slice(start.reasoning || 0),
+      tools: (msg.tools || []).slice(start.tools || 0),
+      segments,
+    };
+  }
+
     function syncAgentMeter(run) {
     if (!S.agentMeterEl) return;
     const meter = run && run.compaction && run.compaction.meter;
@@ -164,6 +184,8 @@ export function createView(ctx) {
     });
     // Before compaction prunes the traces: the list the child works from.
     transcript.latestTodoState(S.agentMsgState);
+    // Output before the last delivered parent follow-up is history above it.
+    if (S.agentRun.live_start) Object.assign(S.agentMsgState, liveLegTail(S.agentMsgState, S.agentRun.live_start));
     const seed = Array.isArray(S.agentRun.messages) ? S.agentRun.messages : [];
     // A subagent's own background-command handoffs fold into step rows here
     // exactly as the thread's auto wake rows do, instead of a raw report blob.
