@@ -98,7 +98,7 @@ def test_rotation_contention_locks_final_merge():
     def tx():
         yield conn
 
-    with patch.object(token_store.db, "fetchone", return_value=row), patch.object(token_store.db, "tx", tx), patch.object(token_store.accounts, "cred_extra", return_value={"refresh_token": "old"}), patch.object(token_store, "encrypt", side_effect=lambda value: value):
+    with patch.object(token_store.db, "fetchone", return_value=row), patch.object(token_store.db, "tx", tx), patch.object(token_store.accounts, "cred_extra", side_effect=lambda *_a, **_k: {"refresh_token": "old"}), patch.object(token_store, "encrypt", side_effect=lambda value: value):
         assert token_store.persist_rotated(lambda *a: False, 1, "old", "secret", {}, {"refresh_token": "new"})
     assert "FOR UPDATE" in conn.execute.call_args_list[0].args[0]
     assert '"refresh_token": "new"' in conn.execute.call_args.args[1][1]
