@@ -247,7 +247,9 @@ test('agent list rejects reads overtaken by lifecycle events and schedules a rep
   assert.equal(c.agentsRows[0].status, 'completed');
 });
 
-test('a wait trace cannot change the background classification of its child', () => {
+// f944324 removed the 'N active / N background' suffix: the spinner must
+// never talk about subagents or workers, with or without a running join.
+test('the status line never counts concurrent or background executions', () => {
   const c = world();
   Object.assign(c, { activeRun: { message_id: 'message', activity: { phase: 'tools' } },
     runIsStopping: () => false, groupTraces: () => [], lastCurrentTrace: () => null,
@@ -258,7 +260,10 @@ test('a wait trace cannot change the background classification of its child', ()
     { id: 'other', name: 'spawn_subagent', child_id: 'other-child', status: 'done', execution_status: 'running', background: true },
     { id: 'wait', name: 'get_subagent_output', child_id: 'child', status: 'running' },
   ];
-  assert.match(c.currentActivity({ id: 'message', tools }, [], true).label, /2 active \/ 2 background/);
-  tools[2].status = 'done';
-  assert.match(c.currentActivity({ id: 'message', tools }, [], true).label, /2 active \/ 2 background/);
+  for (const status of ['running', 'done']) {
+    tools[2].status = status;
+    const label = c.currentActivity({ id: 'message', tools }, [], true).label;
+    assert.equal(label, 'working');
+    assert.doesNotMatch(label, /active|background/);
+  }
 });

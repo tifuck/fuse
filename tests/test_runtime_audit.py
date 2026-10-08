@@ -317,7 +317,10 @@ class StoreTest(unittest.TestCase):
         recovered = store.get_run(1, child["id"])
         self.assertEqual(recovered["status"], "queued")
         self.assertEqual(recovered["message"]["reasoning"], "thought")
-        self.assertEqual(recovered["message"]["segments"], message["segments"])
+        # Recovery keeps the saved reasoning/content order and anchors the
+        # resume notice as a marker after it (not in the reply footer).
+        self.assertEqual(recovered["message"]["segments"], message["segments"] + [
+            {"type": "marker", "kind": "resume", "text": store.RESUME_NOTICE}])
         events = store.events_after(1, cursor)
         # The parent thread is republished too, so its sidebar keeps showing
         # work while the child runs.
