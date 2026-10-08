@@ -63,9 +63,10 @@ git merge-base --is-ancestor "$PROD_BRANCH" FETCH_HEAD || die "$DEV_BRANCH is no
 [ "$(git rev-parse HEAD)" = "$(git rev-parse FETCH_HEAD)" ] && die "nothing to promote"
 
 BEFORE="$(git rev-parse --short HEAD)"
-# Check before the merge: after it, production would already run the new code
-# on any crash restart (Restart=on-failure) with venv deps still missing.
-if ! cmp -s "$DEV/requirements.txt" "$PROD/requirements.txt"; then
+# Check before the merge: production's venv must already satisfy dev's
+# requirements, so a crash restart (Restart=on-failure) cannot come up on
+# code whose deps are missing. The merge brings the requirements file itself.
+if "$PROD/venv/bin/python" -m pip install --dry-run -r "$DEV/requirements.txt" 2>&1 | grep -q "Would install"; then
   die "requirements.txt changed; install it into $PROD/venv before promoting"
 fi
 "$PROD/backup-db.sh"
