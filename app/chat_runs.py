@@ -33,6 +33,8 @@ FORCE_CANCEL_SECONDS = 15.0
 STALL_IDLE_SECONDS = chat_store.STALL_IDLE_SECONDS
 logger = logging.getLogger(__name__)
 _tasks: dict[str, asyncio.Task] = {}
+_worker_loop: asyncio.AbstractEventLoop | None = None
+_starting: dict[str, asyncio.Future] = {}
 _iterators: dict[str, object] = {}
 _cancelled: set[str] = set()
 # In-process cancellation wakeups, keyed by run id. The HTTP Stop path and
@@ -574,10 +576,12 @@ def _pin_coding_run(user, run):
         agent["vault_unlocked"] = False
 
 
-async def start(request: Request, user, run):
+async def start(request: Request, user, run, *, previous_task=None):
     """Schedule once, returning the local task (or None for a terminal run)."""
+    global _worker_loop
+    _worker_loop = asyncio.get_running_loop()
     existing = _tasks.get(run["id"])
-    if existing is not None:
+    if existing is not None and existing is not previous_task:
         if not existing.done():
             return existing
         # A completed/cancelled registry entry is not a worker. Reclaim it
@@ -588,27 +592,36 @@ async def start(request: Request, user, run):
             pass
         if _tasks.get(run["id"]) is existing:
             _tasks.pop(run["id"], None)
-    current = chat_store.get_run(user["id"], run["id"])
-    if current is None or current["status"] != "queued":
-        return None
-    if _stopping:
-        chat_store.finish_run(current["id"], {**current["message"], "stopped": True}, "interrupted")
-        return None
-    if not current["cancel_requested"]:
-        _cancelled.discard(current["id"])
-    _pin_coding_run(user, current)
-    scope = dict(request.scope)
-    scope["headers"] = list(scope.get("headers", []))
-    scope["session"] = copy.deepcopy(scope.get("session", {}))
-    scope["state"] = dict(scope.get("state", {}))
+    pending = _starting.get(run["id"])
+    if pending is not None:
+        return await asyncio.shield(pending)
+    pending = _starting[run["id"]] = _worker_loop.create_future()
+    task = None
+    try:
+        current = await asyncio.to_thread(chat_store.get_run, user["id"], run["id"])
+        if current is None or current["status"] != "queued":
+            return None
+        if _stopping:
+            await durable_call(chat_store.finish_run, current["id"], {**current["message"], "stopped": True}, "interrupted")
+            return None
+        if not current["cancel_requested"]:
+            _cancelled.discard(current["id"])
+        _pin_coding_run(user, current)
+        scope = dict(request.scope)
+        scope["headers"] = list(scope.get("headers", []))
+        scope["session"] = copy.deepcopy(scope.get("session", {}))
+        scope["state"] = dict(scope.get("state", {}))
 
-    async def receive():
-        await asyncio.Future()
+        async def receive():
+            await asyncio.Future()
 
-    detached = Request(scope, receive=receive)
-    task = asyncio.create_task(_run(detached, dict(user), current), name=f"chat-run-{current['id']}")
-    _tasks[current["id"]] = task
-    return task
+        detached = Request(scope, receive=receive)
+        task = asyncio.create_task(_run(detached, dict(user), current), name=f"chat-run-{current['id']}")
+        _tasks[current["id"]] = task
+        return task
+    finally:
+        _starting.pop(run["id"], None)
+        pending.set_result(task)
 
 
 def _iso_age(ts) -> float:
@@ -646,6 +659,16 @@ def cancel(run_id):
     If no live worker owns the run, finish it immediately so Stop cannot hang
     on a phantom queued/running row.
     """
+    task = _tasks.get(run_id)
+    if task is not None and not task.done():
+        loop = task.get_loop()
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+        if current_loop is not loop:
+            loop.call_soon_threadsafe(cancel, run_id)
+            return
     _cancelled.add(run_id)
     _signal_cancel(run_id)
     try:
@@ -799,7 +822,7 @@ def reap_orphans(user_id=None):
 def _reap_one(row):
     ident = row["id"]
     task = _tasks.get(ident)
-    live = task is not None and not task.done()
+    live = (task is not None and not task.done()) or ident in _starting
     if not live and ident in _unsettled:
         _settle_unsettled(row)
         return
@@ -873,6 +896,8 @@ def schedule_wake(user_id: int, thread_id) -> None:
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
+        if _worker_loop is not None and not _worker_loop.is_closed():
+            _worker_loop.call_soon_threadsafe(schedule_wake, user_id, thread_id)
         return
     key = (user_id, thread_id)
     if key in _wake_tasks:
@@ -900,15 +925,25 @@ def sweep_wakes() -> None:
     if _stopping:
         return
     for row in db.fetchall(
-        """SELECT DISTINCT user_id,thread_id FROM chat_runs
+        """SELECT user_id,thread_id,
+                  MAX(COALESCE(json_extract(request, '$.agent.user_resumed_at'), '')) AS resumed_at
+           FROM chat_runs
            WHERE parent_run_id IS NOT NULL
              AND status IN ('completed','failed','cancelled','interrupted')
              AND json_extract(request, '$.agent.background') = 1
              AND COALESCE(json_extract(request, '$.agent.wake_sent'), 0) = 0
              AND COALESCE(json_extract(request, '$.agent.wake_attempts'), 0) < 2
-             AND NOT (status='cancelled' AND cancel_requested=?)""",
+             AND NOT (status='cancelled' AND cancel_requested=?)
+           GROUP BY user_id,thread_id""",
         (chat_store.USER_STOPPED,),
     ):
+        root = chat_store.thread_root_run(row["user_id"], row["thread_id"], include_request=False)
+        if root is None or root["status"] in chat_store.ACTIVE:
+            continue
+        if root.get("stopped_at") and not chat_store.resumed_after_stop(
+            {"user_resumed_at": row["resumed_at"]}, root["stopped_at"]
+        ):
+            continue
         schedule_wake(row["user_id"], row["thread_id"])
 
 
@@ -935,7 +970,7 @@ async def _wake_parent(user_id: int, thread_id) -> None:
         if root is None or root["status"] in chat_store.ACTIVE:
             return
         candidates = await asyncio.to_thread(chat_store.wake_candidates, user_id, thread_id)
-        if root["status"] == "cancelled" and not any(
+        if root.get("stopped_at") and not any(
             chat_store.resumed_after_stop(item, root.get("stopped_at") or "") for item in candidates
         ):
             # A hard user stop is final: no automated turn may restart the
@@ -1285,6 +1320,10 @@ async def _run(request, user, run):
                         await flush()
                         await asyncio.to_thread(chat_store.seal_steer_display, ident, delivery.get("ids") or [])
                         continue
+                    if isinstance(delivery, dict) and delivery.get("event") == "followup.delivered":
+                        await flush()
+                        await asyncio.to_thread(chat_store.mark_followup_display, ident, delivery.get("ids") or [], output.stored())
+                        continue
                     had_usage = isinstance(output.message.get("usage"), dict)
                     output.apply(obj)
                     pending.append(obj)
@@ -1477,6 +1516,8 @@ async def _run(request, user, run):
                 # announces a state that is not durable.
                 return
             current = await asyncio.to_thread(chat_store.get_run, user["id"], ident)
+            if current and current["status"] in chat_store.TERMINAL:
+                status = current["status"]
             if not parent and status in chat_store.TERMINAL and current is not None:
                 # Follow-ups that raced the finish line were never consumed.
                 # A completed child simply continues (same run id, seamless
@@ -1581,19 +1622,23 @@ async def _run(request, user, run):
                     logger.warning("Chat iterator cleanup did not finish for %s", ident)
             if _iterators.get(ident) is iterator:
                 _iterators.pop(ident, None)
-            if _tasks.get(ident) is task:
-                _tasks.pop(ident, None)
             _cancelled.discard(ident)
             _cancel_signals.pop(ident, None)
-            current = await asyncio.to_thread(chat_store.get_run, user["id"], ident)
-            if current and current["status"] == "queued" and not _stopping:
-                await start(request, user, current)
+            try:
+                current = await asyncio.to_thread(chat_store.get_run, user["id"], ident)
+                if current and current["status"] == "queued" and not _stopping:
+                    await start(request, user, current, previous_task=task)
+            finally:
+                if _tasks.get(ident) is task:
+                    _tasks.pop(ident, None)
 
 
 async def resume_queued(user_id=None):
     """Launch queued runs (root and child, including those re-queued after recover_runs)."""
     if _stopping:
         return
+    global _worker_loop
+    _worker_loop = asyncio.get_running_loop()
     from . import accounts
 
     if user_id is None:

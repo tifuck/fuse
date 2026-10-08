@@ -105,6 +105,224 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         task = await runs.start(self.request, self.user, run)
         return task, mock
 
+    async def test_stop_during_terminal_commit_cannot_wake_thread(self):
+        run = self.turn()
+        child = store.start_child_run(
+            user_id=1, thread_id=run["thread_id"], parent_run_id=run["id"],
+            prompt="background work", description="background", background=True,
+        )
+        finish = store.finish_run
+
+        def stop_at_commit(ident, message, status):
+            if ident == run["id"]:
+                store.request_cancel(1, ident)
+                finish(child["id"], {"content": "Stopped report"}, "cancelled")
+            return finish(ident, message, status)
+
+        async def gen():
+            yield frame({"choices": [{"delta": {"content": "Done"}}]})
+            yield b"data: [DONE]\n\n"
+
+        with patch.object(store, "finish_run", side_effect=stop_at_commit), \
+             patch.object(runs, "schedule_wake"):
+            task, _ = await self.launch(run, gen())
+            await task
+        result = store.get_run(1, run["id"])
+        self.assertEqual(result["status"], "cancelled")
+        self.assertTrue(result["message"]["stopped"])
+        self.assertEqual(result["message"]["status"], "cancelled")
+        with patch.object(runs, "start", new_callable=AsyncMock) as start:
+            await runs._wake_parent(1, run["thread_id"])
+            start.assert_not_called()
+        self.assertEqual(len(db.fetchall("SELECT id FROM chat_runs WHERE parent_run_id IS NULL")), 1)
+        events = store.events_after(1, 0)
+        self.assertTrue(any(e["type"] == "run.cancelled" for e in events))
+        self.assertFalse(any(e["type"] == "run.completed" for e in events))
+
+    async def test_stopped_wake_sweeps_do_not_load_reports_or_schedule_wakes(self):
+        run = self.turn()
+        child = store.start_child_run(
+            user_id=1, thread_id=run["thread_id"], parent_run_id=run["id"],
+            prompt="background work", description="background", background=True,
+        )
+        store.request_cancel(1, run["id"])
+        store.finish_run(run["id"], {"content": "Stopped"}, "completed")
+        store.finish_run(child["id"], {"content": "Undelivered report"}, "cancelled")
+        with patch.object(runs, "schedule_wake") as wake, \
+             patch.object(store, "wake_candidates", wraps=store.wake_candidates) as candidates, \
+             patch.object(db, "fetchall", wraps=db.fetchall) as fetch:
+            for _ in range(5):
+                runs.sweep_wakes()
+            wake.assert_not_called()
+            candidates.assert_not_called()
+            self.assertFalse(any("message," in str(call.args[0]) for call in fetch.call_args_list))
+        self.assertEqual(store.wake_candidates(1, run["thread_id"])[0]["id"], child["id"])
+        self.assertEqual(store.get_run(1, child["id"])["message"]["content"], "Undelivered report")
+        # Reports stay undelivered, and a later user turn releases the hold.
+        thread = chats.get_thread(1, run["thread_id"])
+        next_run = store.start_turn(1, run["thread_id"], "Continue", thread["revision"], None)["run"]
+        store.finish_run(next_run["id"], {"content": "Continued"}, "completed")
+        with patch.object(runs, "schedule_wake") as wake:
+            runs.sweep_wakes()
+            wake.assert_called_once_with(1, run["thread_id"])
+
+    async def test_explicit_child_resume_after_stop_can_wake(self):
+        run = self.turn()
+        child = store.start_child_run(
+            user_id=1, thread_id=run["thread_id"], parent_run_id=run["id"],
+            prompt="background work", description="background", background=True,
+        )
+        store.request_cancel(1, run["id"])
+        store.finish_run(run["id"], {"content": "Stopped"}, "cancelled")
+        store.finish_run(child["id"], {"content": "Resumed report"}, "completed")
+        request = store.get_run(1, child["id"])["request"]
+        request["agent"]["user_resumed_at"] = "9999-01-01T00:00:00Z"
+        db.execute("UPDATE chat_runs SET request=?,cancel_requested=0,status='completed' WHERE id=?",
+                   (json.dumps(request), child["id"]))
+        with patch.object(runs, "schedule_wake") as wake:
+            runs.sweep_wakes()
+            wake.assert_called_once_with(1, run["thread_id"])
+        with patch.object(runs, "start", new_callable=AsyncMock) as start:
+            await runs._wake_parent(1, run["thread_id"])
+            start.assert_awaited_once()
+
+    async def test_continuation_handoff_keeps_owner_during_database_read(self):
+        run = self.turn()
+        reads = []
+        get_run = store.get_run
+        calls = 0
+
+        def read_with_reaper(user_id, ident):
+            result = get_run(user_id, ident)
+            if result and result["status"] == "queued" and (result["request"].get("agent") or {}).get("followup_continuation"):
+                owner = runs._tasks.get(ident)
+                reads.append((owner, owner is not None and not owner.done()))
+                runs.reap_orphans(user_id)
+                result = get_run(user_id, ident)
+            return result
+
+        async def mocked(request, user, raw, *, frozen_context):
+            nonlocal calls
+            calls += 1
+            async def gen():
+                if calls == 1:
+                    store.save_turn_progress(run["id"], [{"role": "user", "content": "Hello"},
+                        {"role": "assistant", "content": "First reply"}])
+                    store.steer_turn(1, run["thread_id"], "Follow up", "handoff-steer")
+                else:
+                    steers = store.take_steers(run["id"])
+                    store.save_turn_progress(run["id"], raw["messages"] + [store.steer_message(item) for item in steers])
+                yield frame({"choices": [{"delta": {"content": "reply"}}]})
+                yield b"data: [DONE]\n\n"
+            return StreamingResponse(gen())
+
+        with patch.object(runtime, "stream_dashboard_chat", side_effect=mocked), \
+             patch.object(store, "get_run", side_effect=read_with_reaper), \
+             patch.object(runs, "schedule_wake"):
+            task = await runs.start(self.request, self.user, run)
+            await task
+            continuation = runs._tasks.get(run["id"])
+            self.assertIsNotNone(continuation)
+            self.assertIsNot(continuation, task)
+            await continuation
+        self.assertTrue(reads)
+        self.assertTrue(any(owner is task for owner, _ in reads))
+        self.assertTrue(all(live for _, live in reads))
+        result = store.get_run(1, run["id"])
+        self.assertEqual(calls, 2)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["resume_count"], 0)
+        self.assertNotIn("server restart", result["message"].get("notice", ""))
+        self.assertFalse((result["request"].get("agent") or {}).get("resumed"))
+
+    async def test_child_followup_handoff_does_not_spend_restart_budget(self):
+        parent = self.turn()
+        child = store.start_child_run(
+            user_id=1, thread_id=parent["thread_id"], parent_run_id=parent["id"],
+            prompt="work", description="child", background=True,
+        )
+        reads = []
+        calls = 0
+        get_run = store.get_run
+
+        def read_with_reaper(user_id, ident):
+            row = get_run(user_id, ident)
+            if row and ident == child["id"] and row["status"] == "queued" and (row["request"].get("agent") or {}).get("followup_continuation"):
+                owner = runs._tasks.get(ident)
+                reads.append(owner is not None and not owner.done())
+                runs.reap_orphans(user_id)
+                row = get_run(user_id, ident)
+            return row
+
+        async def mocked(request, user, raw, *, frozen_context):
+            nonlocal calls
+            calls += 1
+            async def gen():
+                if calls == 1:
+                    store.save_turn_progress(child["id"], [{"role": "user", "content": "work"},
+                        {"role": "assistant", "content": "report"}])
+                    self.assertTrue(store.queue_followup(child["id"], "more work"))
+                yield frame({"choices": [{"delta": {"content": "report"}}]})
+                yield b"data: [DONE]\n\n"
+            return StreamingResponse(gen())
+
+        # The parent need not own a worker for this child-only handoff test.
+        store.finish_run(parent["id"], {"content": "Waiting"}, "completed")
+        with patch.object(runtime, "stream_dashboard_chat", side_effect=mocked), \
+             patch.object(store, "get_run", side_effect=read_with_reaper), \
+             patch.object(runs, "schedule_wake"):
+            task = await runs.start(self.request, self.user, child)
+            await task
+            continuation = runs._tasks.get(child["id"])
+            self.assertIsNotNone(continuation)
+            await continuation
+        self.assertTrue(reads)
+        self.assertTrue(all(reads))
+        result = get_run(1, child["id"])
+        self.assertEqual(calls, 2)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["resume_count"], 0)
+        self.assertFalse(result["request"]["agent"].get("resumed"))
+
+    async def test_worker_start_offloads_read_and_reserves_ownership(self):
+        import threading
+        run = self.turn()
+        loop_thread = threading.get_ident()
+        get_run = store.get_run
+        reads = []
+
+        def read_with_reaper(user_id, ident):
+            reads.append(threading.get_ident())
+            runs.reap_orphans(user_id)
+            return get_run(user_id, ident)
+
+        async def gen():
+            yield frame({"choices": [{"delta": {"content": "reply"}}]})
+            yield b"data: [DONE]\n\n"
+
+        with patch.object(runtime, "stream_dashboard_chat", new_callable=AsyncMock,
+                          return_value=StreamingResponse(gen())), \
+             patch.object(store, "get_run", side_effect=read_with_reaper), \
+             patch.object(runs, "schedule_wake"):
+            first, second = await asyncio.gather(
+                runs.start(self.request, self.user, run), runs.start(self.request, self.user, run))
+            self.assertIsNotNone(first)
+            self.assertIs(first, second)
+            await first
+        self.assertTrue(reads)
+        self.assertNotIn(loop_thread, reads)
+        self.assertEqual(get_run(1, run["id"])["status"], "completed")
+
+    async def test_wakes_from_maintenance_thread_reach_event_loop(self):
+        runs._worker_loop = asyncio.get_running_loop()
+        reached = asyncio.Event()
+        async def wake_parent(user_id, thread_id):
+            reached.set()
+        with patch.object(runs, "_wake_parent", side_effect=wake_parent) as wake:
+            await asyncio.to_thread(runs.schedule_wake, 1, "off-thread")
+            await asyncio.wait_for(reached.wait(), 2)
+            wake.assert_awaited_once_with(1, "off-thread")
+
     async def test_split_frames_reasoning_tools_replay_and_idempotence(self):
         run = self.turn()
         objects = [

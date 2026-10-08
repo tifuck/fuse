@@ -646,6 +646,12 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
         project_session=project_session,
     )
     schemas = copy.deepcopy(prompt_snapshot.get("tools", candidate_schemas))
+    if not (agent.get("resumed") or agent.get("followup_continuation")) and schemas != candidate_schemas:
+        # Retain the cached prefix unless this turn changes advertised capabilities.
+        schemas = copy.deepcopy(candidate_schemas)
+        system = candidate_system
+        work[0] = {"role": "system", "content": system}
+        prompt_snapshot.update(system=system, tools=copy.deepcopy(schemas))
     if "system" not in prompt_snapshot:
         prompt_snapshot = {"system": system, "tools": copy.deepcopy(schemas)}
     if schemas:
@@ -748,7 +754,6 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
         last_round_usage: dict = {}
         summary: dict | None = None
         compacted_this_turn = False
-        final_text = ""
         stored_meter = agent.get("meter") if is_child and isinstance(agent.get("meter"), dict) else None
         if not stored_meter:
             stored_meter = ((thread or {}).get("compaction") or {}).get("meter") if isinstance(thread, dict) else None
@@ -1029,6 +1034,10 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                         }
                     )
                     await persist_jobs()
+                    # The worker marks where in the live leg these landed, so
+                    # the panel shows them there instead of above the whole leg.
+                    yield _sse({"fuse": {"event": "followup.delivered", "ids": [
+                        match for text in followups for match in re.findall(r"\(followup:([0-9a-f]{1,32})\)", text)]}})
             # Coding parents are never force-stopped for "last round". Search chats
             # wrap up at MAX_COMPLETIONS; extra_wrap is one text-only round after
             # last-round tools actually ran. dropped_tools always forces text.
@@ -1358,8 +1367,6 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 yield _sse({"usage": total_usage, "choices": []})
             calibration = context_meter.prompt_calibration(summary.get("usage"), request_estimate,
                 model=model, type_id=src_type or src_type_guess) or calibration
-            if summary.get("content"):
-                final_text = str(summary.get("content") or "")
             diag["reasoning"] = str(summary.get("reasoning") or "")[:2_000]
             # The prompt that just returned covers send["messages"], not the reply.
             _note_anchor(summary.get("usage"), send["messages"])
@@ -1767,7 +1774,9 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 if same_calls == STATIONARITY_NUDGE:
                     transcript.append({"role": "user", "content": _STATIONARITY_NUDGE})
             completion_i += 1
-        if final_text:
+        final_text = str((summary or {}).get("content") or "")
+        final_reasoning = _native_reasoning((summary or {}).get("reasoning"), model, (summary or {}).get("thinking"))
+        if not (summary or {}).get("calls") and (final_text or final_reasoning):
             last = transcript[-1] if transcript else None
             if not (
                 isinstance(last, dict)
@@ -1775,9 +1784,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 and not last.get("tool_calls")
                 and str(last.get("content") or "").strip() == str(final_text).strip()
             ):
-                transcript.append({"role": "assistant", "content": final_text,
-                    **(_native_reasoning((summary or {}).get("reasoning"), model, (summary or {}).get("thinking"))
-                       if (summary or {}).get("content") == final_text else {})})
+                transcript.append({"role": "assistant", "content": final_text, **final_reasoning})
         await persist_jobs()
         if total_usage:
             yield _sse({"usage": total_usage, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})

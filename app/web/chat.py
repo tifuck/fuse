@@ -180,9 +180,10 @@ async def chat_turn(request: Request, thread_id: str):
         "invoke_skill",
     }:
         raise HTTPException(422, "Unsupported turn fields")
-    pk = _chat_thread_pk(user, thread_id)
+    pk = await asyncio.to_thread(_chat_thread_pk, user, thread_id)
     try:
-        result = chat_store.start_turn(
+        result = await asyncio.to_thread(
+            chat_store.start_turn,
             user["id"],
             pk,
             raw.get("text"),
@@ -284,6 +285,7 @@ async def chat_run_get(request: Request, run_id: str):
             "activity": agent.get("activity"),
             "parent_description": parent_description,
             "messages": seed,
+            "live_start": run.get("live_start"),
             "compaction": {"meter": meter} if meter else None,
             **chat_store.run_work_fields(run["id"], agent, run.get("message")),
         },
@@ -715,7 +717,7 @@ async def chat_thread_patch(request: Request, thread_id: str):
     if "tools" in raw:
         kwargs["tools"] = raw["tools"]
     try:
-        thread = chats.update_thread(user["id"], thread_id, **kwargs)
+        thread = await asyncio.to_thread(chats.update_thread, user["id"], thread_id, **kwargs)
     except chats.ChatValidationError as exc:
         raise _chat_validation_error(exc) from None
     if not thread:

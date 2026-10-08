@@ -634,11 +634,14 @@ def settle_wake_children(run_id, child_ids):
             conn.execute("UPDATE chat_runs SET request=? WHERE id=?", (chat_tx.dumps(creq), cid))
 
 
-def thread_root_run(user_id, thread_id):
+def thread_root_run(user_id, thread_id, *, include_request=True):
     """Latest root run of a thread with its status."""
     try:
+        columns = "id, status, cancel_requested, updated_at, cancel_requested_at, message_id"
+        if include_request:
+            columns += ", request"
         rows = db.fetchall(
-            """SELECT id, status, request, updated_at, cancel_requested_at, message_id FROM chat_runs
+            f"""SELECT {columns} FROM chat_runs
                WHERE user_id=? AND thread_id=? AND parent_run_id IS NULL
                  AND created_at = (SELECT MAX(created_at) FROM chat_runs
                                    WHERE user_id=? AND thread_id=? AND parent_run_id IS NULL)""",
@@ -663,12 +666,12 @@ def thread_root_run(user_id, thread_id):
         position = {str(m.get("id")): i for i, m in enumerate(messages if isinstance(messages, list) else []) if isinstance(m, dict)}
         row = max(rows, key=lambda r: (position.get(str(r["message_id"]), -1), str(r["id"])))
     try:
-        req = json.loads(row["request"])
+        req = json.loads(row["request"]) if include_request else {}
     except (json.JSONDecodeError, TypeError):
         req = {}
     agent = req.get("agent") if isinstance(req, dict) and isinstance(req.get("agent"), dict) else {}
     stopped_at = ""
-    if row["status"] == "cancelled":
+    if row["status"] == "cancelled" or row["cancel_requested"]:
         stopped_at = str(row["cancel_requested_at"] or row["updated_at"] or "")
     return {"id": row["id"], "status": row["status"], "wake": bool(agent.get("wake")), "stopped_at": stopped_at}
 
@@ -896,6 +899,9 @@ def finish_run(run_id, message, status):
         if row is None or row["status"] not in chat_tx.ACTIVE:
             return
         message = chat_views._message(message, row["message_id"])
+        if row["cancel_requested"]:
+            status = "cancelled"
+            message.update(status=status, stopped=True)
         request = json.loads(row["request"])
         chat_views._advance_steer_display(request, message)
         child = bool(row["parent_run_id"] if "parent_run_id" in row.keys() else None)

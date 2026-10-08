@@ -40,15 +40,15 @@ async def _maintenance_loop(app: FastAPI):
     while True:
         await asyncio.sleep(_REFRESH_INTERVAL)
         try:
-            chat_store.prune_events()
+            await asyncio.to_thread(chat_store.prune_events)
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("Chat event prune failed")
         try:
-            chat_runs.reap_orphans()
+            await asyncio.to_thread(chat_runs.reap_orphans)
             await chat_runs.resume_queued()
-            chat_runs.sweep_wakes()
+            await asyncio.to_thread(chat_runs.sweep_wakes)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -203,7 +203,7 @@ async def lifespan(app: FastAPI):
         await bootstrap()
         start_pools()
         await chat_runs.resume_queued()
-        chat_runs.sweep_wakes()
+        await asyncio.to_thread(chat_runs.sweep_wakes)
         from . import schedules as schedules_mod
 
         schedules_mod.recover()
