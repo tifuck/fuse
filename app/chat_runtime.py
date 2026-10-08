@@ -166,9 +166,17 @@ _LENGTH_CONTINUE = (
 )
 _TOOL_CONTINUE = (
     "[Fuse] Your previous response was cut off in the middle of a tool call's JSON "
-    "arguments, so that tool call was discarded and NOT executed. Do not continue the "
-    "broken text mid-string. Re-issue that tool call in full: the complete tool name and "
-    "the entire arguments object as one valid JSON value. Server-added notice, not user input."
+    "arguments (usually the output token limit), so that tool call was discarded and NOT "
+    "executed. Do not continue the broken text mid-string. Re-issue it as one complete "
+    "call whose arguments are a single valid JSON object. If the arguments were large "
+    "(for example a whole file), the same call will be cut off again: split the work into "
+    "smaller calls instead, such as writing a shorter first part and adding the rest with "
+    "follow-up edits. Server-added notice, not user input."
+)
+_TRUNCATED_CALL_FAILURE = (
+    "The model's tool call was cut off by its output limit {n} times in a row, so Fuse "
+    "stopped instead of sending the same request again. Ask it to make the change in "
+    "smaller pieces (for example, write the file in parts)."
 )
 _STATIONARITY_NUDGE = (
     "[Fuse] You have repeated the same tool calls several times with the same arguments. "
@@ -1133,6 +1141,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                             is_child,
                             {"error": {"message": str(exc.detail), "code": exc.status_code}},
                             exc.status_code,
+                            attempts=MAX_RESUME_RETRIES - resumes_left,
                         )
                     )
                     _snap = _live_meter(); yield _sse(context_meter.context_event(_snap, phase="end")); _persist_meter(_snap)
@@ -1260,7 +1269,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     async for frame in _heartbeat_sleep(delay):
                         yield frame
                     continue
-                yield _sse(_exhausted_provider_error(is_child, result.body, result.status))
+                yield _sse(_exhausted_provider_error(is_child, result.body, result.status, attempts=MAX_RESUME_RETRIES - resumes_left))
                 _snap = _live_meter(); yield _sse(context_meter.context_event(_snap, phase="end")); _persist_meter(_snap)
                 yield b"data: [DONE]\n\n"
                 return
@@ -1334,7 +1343,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     current_messages = transcript
                     await persist_jobs()
                     continue
-                yield _sse(_exhausted_provider_error(is_child, {"error": {"message": err_msg, "code": 502}}))
+                yield _sse(_exhausted_provider_error(is_child, {"error": {"message": err_msg, "code": 502}}, attempts=MAX_RESUME_RETRIES - resumes_left))
                 _snap = _live_meter(); yield _sse(context_meter.context_event(_snap, phase="end")); _persist_meter(_snap)
                 yield b"data: [DONE]\n\n"
                 return
@@ -1396,10 +1405,14 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     current_messages = transcript
                     await persist_jobs()
                     continue
-                yield _sse(_exhausted_provider_error(is_child, raw_err))
+                yield _sse(_exhausted_provider_error(is_child, raw_err, attempts=MAX_RESUME_RETRIES - resumes_left))
                 _snap = _live_meter(); yield _sse(context_meter.context_event(_snap, phase="end")); _persist_meter(_snap)
                 yield b"data: [DONE]\n\n"
                 return
+            # The round came back intact: the retry budget is per step, so a
+            # long turn is not killed by unrelated blips hours apart.
+            resumes_left = MAX_RESUME_RETRIES
+            idle_stalls = 0
             raw_calls = summary.get("calls") or []
             for c in raw_calls:
                 if isinstance(c, dict) and not ((c.get("function") or {}).get("name")):
@@ -1480,6 +1493,21 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 completion_i += 1
                 extra_wrap = False
                 continue
+            if incomplete_calls and not extra_wrap and not dropped_tools:
+                # Salvages are spent and nothing runnable came back. Re-sending
+                # the unchanged transcript would repeat the same cut-off call
+                # forever (coding turns have no round cap), burning quota.
+                partial = str(summary.get("content") or "")
+                if partial:
+                    transcript.append({"role": "assistant", "content": partial, **_native_reasoning(summary.get("reasoning"), model, summary.get("thinking"))})
+                await persist_jobs()
+                message = _TRUNCATED_CALL_FAILURE.format(n=length_salvages + 1)
+                if is_child:
+                    message = "Subagent stopped: " + message[0].lower() + message[1:]
+                yield _sse(_error_obj(502, {"error": {"message": message}}))
+                _snap = _live_meter(); yield _sse(context_meter.context_event(_snap, phase="end")); _persist_meter(_snap)
+                yield b"data: [DONE]\n\n"
+                return
             if force and calls and not is_child and not coding:
                 # Last search round still produced tools (often XML). Run them,
                 # then take one extra text-only wrap-up round.
@@ -1563,6 +1591,10 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                         yield _sse({"fuse": item})
             if jobs:
                 tools_ran = True
+                if not truncated_calls:
+                    # A clean tool round ends a run of cut-off calls; a later
+                    # large write gets its own salvage attempts.
+                    length_salvages = 0
                 tool_msgs = _tool_messages(jobs, content=str(summary.get("content") or ""))
                 tool_msgs[0].update(_native_reasoning(summary.get("reasoning"), model, summary.get("thinking")))
                 transcript = transcript + tool_msgs

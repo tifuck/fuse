@@ -211,6 +211,13 @@ class SpecialTokenAndXmlTest(unittest.TestCase):
                 [{"function": {"name": "web_search", "arguments": '{"query":"x"}'}}]
             )
         )
+        # "" is a complete no-argument call (the runner executes it as {}),
+        # not a cut-off one; nor is the oversize marker, which the runner
+        # refuses with its own split-the-work message.
+        self.assertFalse(calls_incomplete([{"function": {"name": "list_subagents", "arguments": ""}}]))
+        from app.chat_generation.parsing import _ARG_OVERFLOW
+
+        self.assertFalse(calls_incomplete([{"function": {"name": "write_file", "arguments": _ARG_OVERFLOW}}]))
         self.assertEqual(
             round_signature(
                 [{"function": {"name": "web_search", "arguments": '{"q":"a"}'}}]
@@ -748,6 +755,35 @@ class LoopTest(unittest.IsolatedAsyncioTestCase):
             "the truncated call must be called out for re-issue",
         )
         self.assertIn(b"done", body)
+
+    async def test_oversized_arguments_get_split_message_not_reissue_loop(self):
+        from app.chat_generation.parsing import _ARG_OVERFLOW
+
+        payloads = []
+
+        async def invoke(request, user, payload, **_kwargs):
+            payloads.append([dict(m) for m in payload["messages"]])
+            if len(payloads) == 1:
+                return user, FakeSrc("llama"), "m", "m", FakeResult(200, {"choices": [{"message": {
+                    "role": "assistant", "content": "", "tool_calls": [
+                        {"id": "big", "function": {"name": "web_search", "arguments": _ARG_OVERFLOW}}]},
+                    "finish_reason": "tool_calls"}]})
+            return user, FakeSrc("llama"), "m", "m", FakeResult(
+                200, {"choices": [{"message": {"content": "done"}, "finish_reason": "stop"}]})
+
+        from app.chat_runs import internal_request
+
+        raw = {"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "tools": ["web_search"]}
+        # A connected request: the harness's disconnecting one cancels tools
+        # before the argument check runs.
+        with patch("app.chat_runtime.api.invoke_chat", invoke), patch(
+            "app.chat_runtime.api._safe_record_usage", lambda *a, **k: None
+        ), patch("app.chat_runtime.chats.get_user_context", return_value={"instructions": "", "profile": ""}):
+            resp = await stream_dashboard_chat(internal_request(1), {"id": 1, "key_id": None}, raw)
+            body = b"".join([chunk async for chunk in resp.body_iterator])
+        self.assertNotIn(b"came back truncated", body, "oversize is not a cut-off call")
+        tool_rows = [m for m in payloads[1] if m.get("role") == "tool"]
+        self.assertTrue(tool_rows and "split the work" in tool_rows[0]["content"], tool_rows)
 
     async def test_stream_exception_resume_folds_seen_partial_text(self):
         payloads = []

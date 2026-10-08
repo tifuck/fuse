@@ -150,6 +150,7 @@ import { createBoot } from './chat/boot.js';
     get redoStack() { return S.redoStack; },
     get reduceMotion() { return S.reduceMotion; },
     get restoreDisclosures() { return transcript.restoreDisclosures; },
+    get continueAssistant() { return turns.continueAssistant; },
     get retryAssistant() { return turns.retryAssistant; },
     get rewindTo() { return sidebar.rewindTo; },
     get root() { return S.root; },

@@ -23,7 +23,7 @@ from fastapi import Request
 from .. import chats
 from ..chat_tools import ARTIFACT_TOOL_IDS
 
-from .parsing import _ARG_LIMIT_FILE
+from .parsing import _ARG_LIMIT_FILE, _ARG_OVERFLOW
 from .stream import _SENTINEL, HEARTBEAT_S
 from .tool_jobs import ToolJob, _redact_tool_args, _running_event, jobs_from_calls
 
@@ -206,10 +206,17 @@ async def run_tools(
                 # as an empty dict, so e.g. get_subagent_output ran with no id
                 # and the model kept retrying mid-JSON fragments forever.
                 # Refuse execution and hand the model a corrective signal.
-                job.text = (
-                    "[Fuse] This tool call was NOT executed: its JSON arguments were truncated "
-                    "or invalid. Re-issue the complete tool call with the full arguments object."
-                )
+                if raw_args == _ARG_OVERFLOW:
+                    job.text = (
+                        "[Fuse] This tool call was NOT executed: its arguments exceeded the "
+                        f"{_ARG_LIMIT_FILE}-character limit. Do not re-send it unchanged; split the "
+                        "work into smaller calls (for example, write the file in parts)."
+                    )
+                else:
+                    job.text = (
+                        "[Fuse] This tool call was NOT executed: its JSON arguments were truncated "
+                        "or invalid. Re-issue the complete tool call with the full arguments object."
+                    )
                 job.trace = {
                     "name": job.name,
                     "status": "error",

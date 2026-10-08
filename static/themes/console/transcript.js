@@ -47,6 +47,18 @@ function visibleAssistantError(msg) {
     return String(msg.error).replace(/\s+/g, " ").trim();
   }
 
+function syncNotices(article, lines, live) {
+    const box = article.querySelector("[data-notice]");
+    if (!box) return;
+    const key = lines.join("\n") + "\0" + (live ? 1 : 0);
+    if (box._key === key) return;
+    box._key = key;
+    box.hidden = !lines.length;
+    box.classList.toggle("is-live", Boolean(live));
+    box.innerHTML = lines.map((line, i) =>
+      `<li class="chat-notice-line${live && i === lines.length - 1 ? " is-current" : ""}">${deps.escapeHtml(line)}</li>`).join("");
+  }
+
 function updateAssistant(article, msg, live) {
     // Off-screen historical responses are hydrated from the latest message
     // object when they enter the viewport, rather than on every sync event.
@@ -65,7 +77,11 @@ function updateAssistant(article, msg, live) {
     const traces = Array.isArray(msg.tools) ? msg.tools : [];
     const hasMarker = Array.isArray(msg.segments) && msg.segments.some((part) => part && part.type === "marker");
     const errText = visibleAssistantError(msg);
-    const hasOutput = Boolean((msg.content || "").trim() || (msg.reasoning || "").trim() || errText || traces.length || msg.permissions?.length || hasMarker);
+    const noticeLines = String(msg.notice || "").split("\n").map((line) => line.trim()).filter(Boolean);
+    // Status lines alone keep a turn visible only while it is live (a retry
+    // wait before any output) or failed; a finished empty continuation stays
+    // hidden as before.
+    const hasOutput = Boolean((msg.content || "").trim() || (msg.reasoning || "").trim() || errText || (noticeLines.length && (live || errText)) || traces.length || msg.permissions?.length || hasMarker);
     article.hidden = !hasOutput;
     const sourceMap = new Map();
     traces.forEach((trace) => {
@@ -318,6 +334,23 @@ function updateAssistant(article, msg, live) {
     } else {
       err.hidden = true;
       err.textContent = "";
+    }
+    syncNotices(article, noticeLines, live);
+    // A failed final turn can pick up where it stopped: Continue keeps the
+    // work already done (the failed run's history is retained), unlike Retry,
+    // which discards the turn and replays the prompt from scratch.
+    const errActions = article.querySelector("[data-err-actions]");
+    if (errActions) {
+      const last = deps.messages[deps.messages.length - 1] === msg || (msg.id && deps.messages.at(-1)?.id === msg.id);
+      errActions.hidden = !(errText && !live && last);
+      const button = errActions.querySelector("[data-continue]");
+      if (button && !button._bound) {
+        button._bound = true;
+        button.addEventListener("click", (event) => {
+          event.preventDefault();
+          deps.continueAssistant?.();
+        });
+      }
     }
     const usageBits = deps.formatTurnMeta(msg);
     const turnLine = (!live) && hasOutput ? deps.ccTurnLineHtml(msg, msg === deps.messages[deps.messages.length - 1]) : "";

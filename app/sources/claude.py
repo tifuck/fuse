@@ -814,13 +814,22 @@ class ClaudeSource:
                     last.attempts = attempts
                     return last
                 if status != 200:
+                    # Keep Anthropic's reason (rate limit, overload) and its
+                    # Retry-After: the chat loop backs off on it and the user
+                    # sees why the request failed, not just a status code.
+                    try:
+                        detail = _error_message((await resp.aread()).decode("utf-8", errors="replace"))
+                    except Exception:
+                        detail = ""
+                    retry_after = str(resp.headers.get("retry-after") or "").strip()
                     await resp.aclose()
                     await client.aclose()
                     last = ChatResult(
                         status=status,
-                        body={"error": {"message": f"Claude request failed ({status})"}},
+                        body={"error": {"message": f"Claude request failed ({status})" + (f": {detail[:300]}" if detail else "")}},
                         credential_id=cred["id"],
                         model=fuse_id(upstream),
+                        response_headers={"Retry-After": retry_after} if retry_after else {},
                     )
                     if status == 401:
                         if auth_failure_confirmed(cred["id"]):

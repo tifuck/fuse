@@ -177,6 +177,17 @@ class ResumableClassificationTest(unittest.TestCase):
         )
 
 
+    def test_child_failure_reports_the_retries_actually_made(self):
+        frame = runtime._exhausted_provider_error(
+            True, {"error": {"message": "invalid api key", "code": 401}}, 401, attempts=0)
+        msg = frame["error"]["message"]
+        self.assertIn("experienced difficulties", msg.lower())
+        self.assertNotIn("retries", msg, "a definitive failure made no retries and must not claim any")
+        frame = runtime._exhausted_provider_error(
+            True, {"error": {"message": "overloaded", "code": 503}}, 503, attempts=2)
+        self.assertIn("after 2 retries", frame["error"]["message"])
+
+
 class ApplyResumeStateTest(unittest.TestCase):
     def test_partial_text_appends_assistant_then_note(self):
         messages = [{"role": "user", "content": "hi"}]
@@ -557,6 +568,70 @@ class ResumeTest(unittest.IsolatedAsyncioTestCase):
         objects = await self.stream_turn(fake_invoke)
         self.assertEqual(len(calls), runtime.MAX_RESUME_RETRIES + 1)
         self.assertTrue(any(isinstance(o, dict) and o.get("error") for o in objects))
+        self.assertEqual(objects[-1], "[DONE]")
+
+    async def test_resume_budget_is_per_step_not_per_turn(self):
+        """Transient failures hours apart in a long turn must not add up: each
+        step gets the full budget once a round comes back intact."""
+        calls = []
+        failures = runtime.MAX_RESUME_RETRIES + 2
+
+        async def fake_invoke(request, user, body, **_kwargs):
+            calls.append(body)
+            n = len(calls)
+            if n % 2 == 1 and n < failures * 2:
+                return user, src(), "m", "m", SimpleNamespace(
+                    status=503, body={"error": {"message": "overloaded"}},
+                    stream=None, usage={}, credential_id=None, attempts=[],
+                )
+            if n < failures * 2:
+                return user, src(), "m", "m", SimpleNamespace(
+                    status=200, stream=None, usage={}, credential_id=None, attempts=[],
+                    body={"choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [
+                        {"id": f"c{n}", "function": {"name": "web_search", "arguments": json.dumps({"query": str(n)})}}]},
+                        "finish_reason": "tool_calls"}]},
+                )
+            return user, src(), "m", "m", ok_result("all done")
+
+        async def fake_tools(run_calls, **_kwargs):
+            yield [runtime.ToolJob(0, run_calls[0]["id"], "web_search", run_calls[0]["function"]["arguments"],
+                                   "ts", text="hits", done=True)]
+
+        raw = {"model": "offline", "messages": [{"role": "user", "content": "hi"}],
+               "tools": ["web_search"], "agent": {"coding": True}}
+        with patch.object(runtime, "_run_tools", fake_tools):
+            objects = await self.stream_turn(fake_invoke, raw)
+        self.assertFalse(any(isinstance(o, dict) and o.get("error") for o in objects),
+                         "separated transient failures must not exhaust the turn")
+        self.assertTrue(all("attempt 1 of" in n for n in notices(objects) if "Provider error" in n),
+                        "each step's first failure starts the backoff over")
+        self.assertEqual(objects[-1], "[DONE]")
+
+    async def test_truncated_tool_call_stops_after_salvages(self):
+        """A call cut off by the output limit every time must not loop: after the
+        salvage attempts the turn fails with an explanation instead of
+        re-sending the identical request (coding turns have no round cap)."""
+        calls = []
+
+        async def fake_invoke(request, user, body, **_kwargs):
+            calls.append(body)
+            if len(calls) > 20:
+                raise AssertionError("identical truncated request re-sent without bound")
+            return user, src(), "m", "m", SimpleNamespace(
+                status=200, stream=None, usage={}, credential_id=None, attempts=[],
+                body={"choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "w", "function": {"name": "web_search", "arguments": '{"query":"unterminated'}}]},
+                    "finish_reason": "length"}]},
+            )
+
+        raw = {"model": "offline", "messages": [{"role": "user", "content": "hi"}],
+               "tools": ["web_search"], "agent": {"coding": True}}
+        objects = await self.stream_turn(fake_invoke, raw)
+        self.assertEqual(len(calls), runtime.MAX_LENGTH_SALVAGES + 1)
+        errors = [o["error"]["message"] for o in objects if isinstance(o, dict) and isinstance(o.get("error"), dict)]
+        self.assertTrue(errors and "cut off" in errors[-1], errors)
+        self.assertIn("smaller", calls[-1]["messages"][-1]["content"],
+                      "the re-issue note must steer away from repeating the same oversized call")
         self.assertEqual(objects[-1], "[DONE]")
 
     async def test_ollama_account_unavailable_403_recovers_invisibly(self):

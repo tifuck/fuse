@@ -401,6 +401,7 @@ export function createConsoleTheme(runtime) {
     get ccTurnLineHtml() { return theme.ccTurnLineHtml; },
     get compactionMarkHtml() { return theme.compactionMarkHtml; },
     get consoleActivityEntriesHtml() { return theme.consoleActivityEntriesHtml; },
+    get continueAssistant() { return runtime.continueAssistant; },
     get escapeHtml() { return runtime.escapeHtml; },
     get followThinking() { return theme.followThinking; },
     get formatTurnMeta() { return runtime.formatTurnMeta; },

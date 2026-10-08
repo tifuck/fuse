@@ -287,3 +287,52 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-ste
   animation: none;
 }
 
+
+/* Fuse status (provider retries, cut-off tool calls, limits): server notices,
+   not model tool calls, so they never use the tool-row grid. A rule-led mono
+   list under the reply; the newest line stays bright while the turn is live. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-notice {
+  list-style: none;
+  margin: 0.35rem 0 0;
+  padding: 0.1rem 0 0.1rem 0.7rem;
+  border-left: 2px solid color-mix(in srgb, var(--status-live) 55%, var(--line));
+  color: var(--mute);
+  font-family: var(--mono);
+  font-size: calc(0.78rem * var(--chat-text-scale, 1));
+  line-height: 1.5;
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-notice[hidden],
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-error-actions[hidden] {
+  display: none !important;
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-notice-line {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-notice.is-live .chat-notice-line:not(.is-current) {
+  opacity: 0.7;
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-notice-line.is-current {
+  color: var(--mist);
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-notice + .chat-error:not([hidden]) {
+  margin-top: 0.45rem;
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-error-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.45rem;
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-error-continue {
+  padding: 0.3rem 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--mist);
+  font: inherit;
+  font-size: calc(0.84rem * var(--chat-text-scale, 1));
+  cursor: pointer;
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-error-continue:hover {
+  border-color: color-mix(in srgb, var(--mist) 35%, var(--line));
+}

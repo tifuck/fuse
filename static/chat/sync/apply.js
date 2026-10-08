@@ -3,14 +3,17 @@ import { S } from '../state.js';
 import { newSession, resolveListedModel } from '../state.js';
 import { deltaParts, messageRunLive, splitThink, untimed } from '../core.js';
 
-function ensureSteerSegments(msg) {
-  if (!msg || !Array.isArray(msg.tools) || !Array.isArray(msg.segments)) return;
-  for (const trace of msg.tools) {
-    if (trace && trace.name === "fuse-steer" && trace.id &&
-        !msg.segments.some((part) => part && part.type === "tool" && part.id === trace.id)) {
-      msg.segments.push({ type: "tool", id: trace.id });
-    }
-  }
+// Server notices (provider retries, cut-off tool calls, limits) are Fuse
+// status, not model tool calls. They live in msg.notice exactly as the run
+// worker stores them (chat_runs.Output.apply), so the live view and a reload
+// render the same lines in the same place.
+const NOTICE_MAX = 2000;
+function addNotice(msg, line) {
+  const lines = String(msg.notice || "").split("\n").map((s) => s.trim()).filter(Boolean);
+  const lower = line.toLowerCase();
+  if (lines.some((s) => s.toLowerCase() === lower || s.toLowerCase().startsWith(lower + " \u00d7"))) return;
+  lines.push(line);
+  msg.notice = lines.join("\n").slice(0, NOTICE_MAX);
 }
 
 export function createApply(ctx) {
@@ -229,13 +232,7 @@ export function createApply(ctx) {
     if (!msg || !payload) return;
     if (Array.isArray(payload.tools)) {
       const prior = new Map((msg.tools || []).map((trace) => [trace.id, trace]));
-      // fuse-steer rows are client-rendered server notices, not model tools —
-      // the server snapshot never contains them, so a replace would wipe them.
-      const steers = (msg.tools || []).filter((trace) => trace && trace.name === "fuse-steer");
       msg.tools = payload.tools.map((trace) => traces.mergeToolEvent(prior.get(trace.id), trace, trace.status));
-      for (const steer of steers) {
-        if (!msg.tools.some((trace) => trace.id === steer.id)) msg.tools.push(steer);
-      }
       const started = msg.tools.findLast(trace => trace.status === "running" && prior.get(trace.id)?.status !== "running");
       if (started) {
         msg._activity = { phase: "tools", tool_id: started.id };
@@ -256,7 +253,6 @@ export function createApply(ctx) {
         const prior = finished.get(trace.id);
         if (prior && prior.child_id === trace.child_id && ["running", "progress", "queued"].includes(trace.status)) Object.assign(trace, prior);
       });
-      ensureSteerSegments(msg);
       delete msg._raw;
       delete msg._reason;
       return;
@@ -343,7 +339,6 @@ export function createApply(ctx) {
           }
         }
       }
-      ensureSteerSegments(msg);
       msg.elapsedMs = event.elapsedMs;
       if (typeof event.endedAt === "string" && event.endedAt) msg.endedAt = event.endedAt;
       msg.usage = event.usage;
@@ -387,16 +382,7 @@ export function createApply(ctx) {
         }
         return;
       }
-      if (line) {
-        // Steers render as inline flow items (like tool rows) at the point
-        // they happened — never as a banner pinned under the message.
-        if (!Array.isArray(msg.tools)) msg.tools = [];
-        const id = "steer-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
-        msg.tools.push({ id, name: "fuse-steer", status: "done", summary: line });
-        if (Array.isArray(msg.segments) && !msg.segments.some((part) => part.type === "tool" && part.id === id)) {
-          msg.segments.push({ type: "tool", id });
-        }
-      }
+      if (line) addNotice(msg, line);
       return;
     }
     if (event.event === "artifact" && event.identifier) {

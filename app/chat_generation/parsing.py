@@ -207,7 +207,14 @@ def _finalize_assistant_payload(content, reasoning, calls, finish, *, coding: bo
 
 
 def calls_incomplete(calls: list) -> bool:
-    """True when any tool call has empty or truncated JSON arguments."""
+    """True when any tool call has truncated JSON arguments.
+
+    Empty arguments are a complete no-argument call (some OpenAI-compatible
+    providers send "" instead of "{}"); the tool runner executes them as {}.
+    The oversize marker is not a truncation either: the runner refuses it
+    with its own corrective message, and asking for a full re-issue would
+    only reproduce the same oversized call.
+    """
     for call in calls or []:
         if not isinstance(call, dict):
             return True
@@ -215,8 +222,8 @@ def calls_incomplete(calls: list) -> bool:
         if not fn.get("name"):
             return True
         raw = fn.get("arguments")
-        if raw is None or (isinstance(raw, str) and not raw.strip()):
-            return True
+        if raw is None or (isinstance(raw, str) and (not raw.strip() or raw == _ARG_OVERFLOW)):
+            continue
         if isinstance(raw, str):
             try:
                 json.loads(raw)

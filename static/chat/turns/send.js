@@ -81,6 +81,19 @@ export function createSend(ctx) {
     retryAssistant(index);
   }
 
+    // Picks a failed final turn back up. The failed run's provider history
+    // (tool calls and results) is retained, so the model sees the work it
+    // already did; Retry instead drops the turn and replays the prompt.
+    function continueAssistant() {
+    if (traces.runIsActive(S.activeRun) || S.sending) {
+      picker.setHint("Wait for the current reply to finish.", true);
+      return;
+    }
+    const last = S.messages.at(-1);
+    if (last?.role !== "assistant" || !last.error) return;
+    completeTurn("Continue from where you stopped. The previous attempt ended with an error; do not redo work that already completed.", []);
+  }
+
     function syncEmptyReplyRetry() {
     const last = S.messages.at(-1);
     const empty = last?.role === "assistant" && !((last.content || "").trim() || (last.reasoning || "").trim() || last.error || last.tools?.length || last.permissions?.length);
@@ -311,6 +324,7 @@ export function createSend(ctx) {
     closeRewind,
     completeTurn,
     openRewind,
+    continueAssistant,
     retryAssistant,
     retryLastTurn,
     send,

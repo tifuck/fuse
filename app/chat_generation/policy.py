@@ -85,7 +85,7 @@ _PROVIDER_CONTENT_ERROR = re.compile(
 
 
 _CHILD_PROVIDER_FAILURE = (
-    "The subagent experienced difficulties talking to the model after {attempts} retries"
+    "The subagent experienced difficulties talking to the model{attempts}"
     "{detail}. No further work was done after that failure. Continue the parent task "
     "without this child's results, or spawn_subagent again with task_id to continue "
     "this subagent."
@@ -238,14 +238,21 @@ def _as_error_frame(raw, fallback_status: int = 502) -> dict:
     return _error_obj(code or fallback_status, {"error": {"message": msg or "upstream error"}})
 
 
-def _exhausted_provider_error(is_child: bool, raw, fallback_status: int = 502) -> dict:
-    """Wire error after the resume budget is spent. Children get a parent-facing wrap."""
+def _exhausted_provider_error(is_child: bool, raw, fallback_status: int = 502, *, attempts: int | None = None) -> dict:
+    """Wire error after the resume budget is spent, or for a definitive failure.
+
+    `attempts` is how many retries this step actually made; a definitive
+    failure (auth, plan gating) made none and must not claim otherwise.
+    Children get a parent-facing wrap.
+    """
     frame = _as_error_frame(raw, fallback_status)
     if not is_child:
         return frame
     _code, msg = _error_code_and_message(frame)
     detail = f" ({msg})" if msg else ""
-    wrapped = _CHILD_PROVIDER_FAILURE.format(attempts=MAX_RESUME_RETRIES, detail=detail)
+    tried = MAX_RESUME_RETRIES if attempts is None else max(0, int(attempts))
+    wrapped = _CHILD_PROVIDER_FAILURE.format(
+        attempts=f" after {tried} {'retry' if tried == 1 else 'retries'}" if tried else "", detail=detail)
     return _error_obj(_code or fallback_status or 503, {"error": {"message": wrapped}})
 
 

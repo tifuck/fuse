@@ -28,7 +28,9 @@ function renderAssistant(msg, live) {
       '<div class="chat-assistant">' +
       '<div class="chat-flow" data-flow></div>' +
       '<details class="chat-citations" data-citations hidden><summary><span class="chat-source-badge" data-source-count></span></summary><div data-source-grid></div></details>' +
+      '<ul class="chat-notice" data-notice role="status" aria-label="Fuse status" hidden></ul>' +
       '<p class="chat-error" data-err hidden></p>' +
+      '<div class="chat-error-actions" data-err-actions hidden><button type="button" class="chat-error-continue" data-continue>Continue</button></div>' +
       '<div class="chat-foot" data-foot hidden><span class="chat-foot-meta" data-meta></span><div class="chat-msg-actions" data-actions-host></div></div>' +
       "</div>";
     article.addEventListener("click", (event) => {

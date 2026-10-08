@@ -22,6 +22,14 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
         fuseToolFixture.mountThread(failedRows);
       });
       assert.equal(await page.locator('[data-err]:visible').count(), 1, 'final failure is visible');
+      assert.equal(await page.locator('[data-continue]:visible').count(), 1, 'a failed final turn offers Continue');
+      // Provider retries are Fuse status lines, never tool rows.
+      await page.evaluate(() => fuseToolFixture.mountThread([failedRows[0], { ...failedRows[1],
+        notice: 'Provider error (503) — retrying this step in 2s (attempt 1 of 4).\nProvider error (503) — retrying this step in 6s (attempt 2 of 4).' }]));
+      assert.equal(await page.locator('[data-notice]:visible .chat-notice-line').count(), 2, 'retry notices render as status lines');
+      assert.equal(await page.locator('[data-tool="fuse-steer"]').count(), 0, 'notices are not tool rows');
+      assert.equal(await page.locator('[data-err]:visible').count(), 1, 'final error still shows under the notices');
+      await page.evaluate(() => fuseToolFixture.mountThread(failedRows));
       await page.evaluate(() => {
         // The accepted snapshot adds a user message before output arrives.
         fuseToolFixture.mountThread([...failedRows, { role: 'user', content: 'Try another model' }, { role: 'assistant' }], { live: true });
@@ -55,10 +63,12 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       await page.waitForFunction(() => fuseToolFixture.snapshot().length === 2);
 
       assert.equal(await page.locator('[data-err]:visible').count(), 1, 'reload retains unresolved error');
+      assert.equal(await page.locator('[data-continue]:visible').count(), 1, 'reload keeps Continue on the failed final turn');
       await page.locator('[data-chat-input]').fill('Next accepted message');
       await page.locator('[data-chat-send]').click();
       await page.waitForFunction(() => fuseToolFixture.snapshot().some(row => row.role === 'user' && row.content === 'Next accepted message'));
       assert.equal(await page.locator('[data-err]:visible').count(), 0, 'HTTP acknowledgment updates existing error node');
+      assert.equal(await page.locator('[data-continue]:visible').count(), 0, 'Continue leaves with the error');
       await page.waitForFunction(() => !fuseToolFixture.runInfo());
       await page.reload();
       await page.waitForFunction(() => fuseToolFixture.snapshot().length === 4);
