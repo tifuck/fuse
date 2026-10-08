@@ -114,14 +114,19 @@ export function createTodos(ctx) {
     return false;
   }
 
-    // The open list keeps the item in progress (else the next open one) as its
-  // top row; finished items above it stay a scroll away.
-  function scrollTodoToCurrent(sec, smooth) {
+    // The list shows five rows from the item in progress (else the next open
+  // one); finished items above it stay a scroll away. Rows wrap, so the window
+  // is as tall as those five rows actually are.
+  function fitTodoList(sec, scroll, smooth) {
     const list = sec.el.querySelector("[data-todo-list]");
-    const row = list && (list.querySelector(".is-in-progress") || list.querySelector(".is-pending"));
     if (!list) return;
-    const top = row ? row.offsetTop : 0;
-    list.scrollTo({ top, behavior: smooth && !S.reduceMotion.matches ? "smooth" : "auto" });
+    const rows = [...list.children];
+    const current = rows.findIndex((row) => row.classList.contains("is-in-progress"));
+    const at = current >= 0 ? current : Math.max(0, rows.findIndex((row) => row.classList.contains("is-pending")));
+    const start = Math.max(0, Math.min(at, rows.length - 5));
+    const shown = rows.slice(start, start + 5);
+    list.style.maxHeight = shown.length ? `${shown.reduce((sum, row) => sum + row.offsetHeight, 0)}px` : "";
+    if (scroll) list.scrollTo({ top: rows[at] ? rows[at].offsetTop : 0, behavior: smooth && !S.reduceMotion.matches ? "smooth" : "auto" });
   }
 
     function pulseTodoBar(bar) {
@@ -164,7 +169,7 @@ export function createTodos(ctx) {
     el.classList.toggle("is-open", sec.expanded);
     el.hidden = false;
     if (changed) pulseTodoBar(bar);
-    if (sec.expanded) scrollTodoToCurrent(sec, changed);
+    fitTodoList(sec, sec.expanded, changed);
     afterResize();
   }
 

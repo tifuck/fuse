@@ -9,7 +9,7 @@
 .chat-live-todos,
 .chat-agent-live-todos { display: none; }
 .chat :is(.chat-live-todos, .chat-agent-live-todos):not([hidden]) {
-  --todo-row: calc(var(--console-row, 1.1rem) + 0.42rem);
+  --todo-row: calc(var(--console-row, 1.1rem) + 0.24rem);
   --todo-tab-h: 1.7rem;
   --todo-right: 0.6rem;
   --todo-radius: 7px;
@@ -188,26 +188,24 @@ html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty):has(.ch
   display: grid;
   grid-template-columns: var(--console-col, 0.7rem) minmax(0, 1fr);
   column-gap: 0.6rem;
-  align-items: center;
-  height: var(--todo-row);
-  padding: 0 0.5rem;
+  align-items: start;
+  min-height: var(--todo-row);
+  padding: 0.12rem 0.5rem;
   border-radius: 5px;
   transition: background var(--dur-2) ease;
 }
 .chat .chat-todo-row.is-in-progress { background: color-mix(in srgb, var(--brass) 9%, transparent); }
 .chat .chat-todo-text {
   min-width: 0;
-  overflow: hidden;
   color: color-mix(in srgb, var(--mute) 30%, var(--mist));
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 .chat .chat-todo-row.is-in-progress .chat-todo-text { color: var(--mist); font-weight: 600; }
 .chat .chat-todo-row:is(.is-completed, .is-cancelled) .chat-todo-text { color: var(--mute); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--mute) 60%, transparent); }
 /* Marks are drawn, not typed: a glyph like ☒ is missing from many fonts and
    prints as a broken box. A ring for open, brass for in progress, a dim dot
    once done. */
-.chat .chat-todo-box { display: grid; place-items: center; height: 100%; }
+.chat .chat-todo-box { display: grid; place-items: center; height: var(--console-row, 1.1rem); }
 .chat .chat-todo-box::before {
   content: "";
   box-sizing: border-box;
@@ -222,7 +220,8 @@ html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty):has(.ch
 .chat .chat-todo-row.is-cancelled .chat-todo-box::before { opacity: 0.45; }
 
 @media (max-width: 800px) {
-  .chat :is(.chat-live-todos, .chat-agent-live-todos):not([hidden]) { --todo-tab-h: 2.2rem; --todo-row: 2.1rem; }
+  .chat :is(.chat-live-todos, .chat-agent-live-todos):not([hidden]) { --todo-tab-h: 2.2rem; --todo-row: 1.75rem; }
+  .chat .chat-todo-row { padding-block: 0.22rem; }
   .chat .chat-todo-dismiss { width: 2rem; height: 2rem; }
 }
 @media (prefers-reduced-motion: reduce) {

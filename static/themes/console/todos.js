@@ -27,7 +27,7 @@ function todoBarHtml(state, { active, expanded, listId }) {
 function todoRowsHtml(items) {
     return items.map((item) =>
       `<li class="chat-todo-row is-${item.status.replace("_", "-")}"><span class="chat-todo-box" aria-hidden="true"></span>` +
-      `<span class="chat-todo-text" title="${deps.escapeHtml(item.content)}">${deps.escapeHtml(item.content)}</span></li>`).join("");
+      `<span class="chat-todo-text">${deps.escapeHtml(item.content)}</span></li>`).join("");
   }
 
   return { todoLineHtml, todoTrayHtml, todoBarHtml, todoRowsHtml };
