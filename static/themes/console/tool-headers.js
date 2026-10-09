@@ -30,6 +30,7 @@ function consoleVerb(name, trace) {
     if (name === "scratch") return "Scratch";
     if (name === "create_artifact" || name === "update_artifact") return "Artifact";
     if (name === "search_tools") return "Tools";
+    if (name === "read_transcript") return "Transcript";
     return "Tool";
   }
 

@@ -545,6 +545,7 @@ import { createBoot } from './chat/boot.js';
     kill_subagent: "Subagent",
     list_subagents: "Agents",
     search_models: "Models",
+    read_transcript: "Transcript",
   };
 
     Object.values(S.todoSections).forEach((sec) => sec.el && sec.el.addEventListener("click", transcript.onTodoClick));

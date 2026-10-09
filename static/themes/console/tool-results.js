@@ -375,6 +375,10 @@ function consoleResultLine(trace, presentation) {
     // The settled skill load carries its outcome on the call line ("Loaded
     // the ponytail skill"); there is no second sub-line left to print.
     if (name === "load_skill") return "";
+    if (name === "read_transcript") {
+      const range = deps.transcriptRange(trace);
+      return range ? `Read ${range}` : (preview || "Read transcript");
+    }
     if (name === "propose_skill") return preview ? `Proposed skill ${preview}` : "Proposed skill";
     if (name === "search_tools") {
       if (String(trace.query || "") === "hosts") return "Listed connected hosts";

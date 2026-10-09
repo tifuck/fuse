@@ -91,6 +91,8 @@ const TOOLS = [
     trace: { status: 'done', title: 'Sales dashboard', identifier: 'art-1', version: 3, visibility: 'private', call_duration_ms: DUR } },
   { name: 'update_artifact', verb: 'Artifact', subject: 'Sales dashboard', clock: true, disclosure: false,
     trace: { status: 'done', title: 'Sales dashboard', identifier: 'art-1', version: 4, visibility: 'public', call_duration_ms: DUR } },
+  { name: 'read_transcript', verb: 'Transcript', subject: '4 messages', clock: true, disclosure: true,
+    trace: { status: 'done', preview: 'messages 1-4 of 4', output: '1. user: hi\n2. assistant: hello\n3. user: again\n4. assistant: (empty)', call_duration_ms: DUR } },
   { name: 'scratch', verb: 'Scratch', subject: 'Write brief', clock: true, disclosure: true,
     trace: { status: 'done', description: 'Write brief', preview: '1 slots', output: SLOTS, call_duration_ms: DUR } },
   { name: 'frobnicate', verb: 'Tool', subject: 'odd', clock: true, disclosure: false,

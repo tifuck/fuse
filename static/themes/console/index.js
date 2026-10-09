@@ -269,6 +269,7 @@ export function createConsoleTheme(runtime) {
     get shortToolText() { return theme.shortToolText; },
     get structuredToolHtml() { return theme.structuredToolHtml; },
     get toolAction() { return theme.toolAction; },
+    get transcriptRange() { return theme.transcriptRange; },
     get toolBackground() { return runtime.toolBackground; },
     get toolHeadHtml() { return theme.toolHeadHtml; },
     get toolIcon() { return theme.toolIcon; },

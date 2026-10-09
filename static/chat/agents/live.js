@@ -72,6 +72,7 @@ const AGENT_ACTIVITY_LABELS = {
   create_artifact: "artifact",
   update_artifact: "artifact",
   search_tools: "tools",
+  read_transcript: "transcript",
 };
 
 function agentActivitySummary(row) {

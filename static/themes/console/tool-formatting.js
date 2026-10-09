@@ -92,6 +92,7 @@ function toolSubject(trace) {
     }
     if (name === "create_artifact" || name === "update_artifact") return trace.title || "artifact";
     if (name === "load_skill") return [trace.preview || "skill", trace.path ? compactPath(trace.path, trace) : ""].filter(Boolean).join(" / ");
+    if (name === "read_transcript") return transcriptRange(trace) || toolText(trace.preview || "", 90);
     if (name === "fuse-steer") return trace.summary || "New instruction";
     return toolText(trace.query || trace.description || trace.title || trace.preview || trace.path || "", 140);
   }
@@ -100,7 +101,7 @@ function toolAction(trace) {
     const labels = { read_file: "Read", list_dir: "List", grep: "Grep", glob: "Glob", write_file: "Write", search_replace: "Edit",
       run_terminal_command: "Shell", get_command_output: "Output", kill_command: "Stop", monitor: "Watch", spawn_subagent: "Agent",
       get_subagent_output: "Result", kill_subagent: "Stop", list_subagents: "Agents", search_models: "Models", search_tools: "Tools",
-      load_skill: "Skill", propose_skill: "Draft", todo_write: "Tasks", scratch: "Scratch", read_url: "Page", web_search: "Search", search: "Search",
+      load_skill: "Skill", propose_skill: "Draft", todo_write: "Tasks", scratch: "Scratch", read_transcript: "Transcript", read_url: "Page", web_search: "Search", search: "Search",
       create_artifact: "Create", update_artifact: "Update", "fuse-steer": "Notice" };
     return labels[trace.name] || String(trace.name || "Tool").replaceAll("_", " ");
   }
@@ -266,6 +267,13 @@ function webResultsHtml(results, limit = 8) {
     return `<div class="chat-web-list">${rows.slice(0, limit).join("")}</div>${extra}`;
   }
 
+function transcriptRange(trace) {
+    const text = String((trace && trace.preview) || "");
+    const range = text.match(/messages (\d+)-(\d+) of (\d+)/);
+    if (range) return range[1] === "1" && range[2] === range[3] ? `${range[3]} messages` : `messages ${range[1]}–${range[2]} of ${range[3]}`;
+    return "";
+  }
+
 function consoleArgText(value, cap = 90) {
     return toolText(String(value || "").trim(), cap);
   }
@@ -324,6 +332,8 @@ function consoleCallHtml(trace, presentation, full = false) {
       inner = consoleArgText(scratchAction(trace), 90);
     } else if (name === "create_artifact" || name === "update_artifact") {
       inner = consoleArgText(trace.title || "artifact", 80);
+    } else if (name === "read_transcript") {
+      inner = consoleArgText(transcriptRange(trace), 90);
     } else if (name === "load_skill") {
       // The skill row reads as its outcome sentence ("Loaded the ponytail
       // skill"). The name keeps its cap and ellipsis; failures keep the
@@ -462,6 +472,7 @@ const TOOL_ICON = {
     propose_skill: "skill",
     todo_write: "todo",
     scratch: "scratch",
+    read_transcript: "read",
     spawn_subagent: "agent",
     get_subagent_output: "await",
     kill_subagent: "stop",
@@ -528,5 +539,5 @@ function searchQueries(trace) {
     return [];
   }
 
-  return { isSearchTool, stackSpec, stackKey, toolIcon, shortToolPath, compactPath, displayCommand, toolSubject, toolAction, pageHost, stripPreview, relatedTrace, agentDescriptionFor, commandFor, commandOrigin, agentSubject, toolText, shortToolText, cleanToolOutput, splitNumberedLines, fileBodyHtml, kvListHtml, structuredToolHtml, webResultsHtml, consoleArgText, consoleCallHtml, scratchAction, consoleOutputText, consoleMatchCount, consoleLineCount, consoleLangForPath, consoleNumberedHtml, STEP_ICONS, TOOL_ICON, STACK, visibleTraces, groupTraces, normErr, failNoteHtml, stepOpenAt, searchCountFor, searchQueries };
+  return { isSearchTool, stackSpec, stackKey, toolIcon, shortToolPath, compactPath, displayCommand, toolSubject, toolAction, pageHost, stripPreview, relatedTrace, agentDescriptionFor, commandFor, commandOrigin, agentSubject, toolText, shortToolText, cleanToolOutput, splitNumberedLines, fileBodyHtml, kvListHtml, structuredToolHtml, webResultsHtml, transcriptRange, consoleArgText, consoleCallHtml, scratchAction, consoleOutputText, consoleMatchCount, consoleLineCount, consoleLangForPath, consoleNumberedHtml, STEP_ICONS, TOOL_ICON, STACK, visibleTraces, groupTraces, normErr, failNoteHtml, stepOpenAt, searchCountFor, searchQueries };
 }

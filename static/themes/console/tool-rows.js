@@ -227,6 +227,7 @@ const TOOL_KIND = {
     kill_subagent: "agent",
     list_subagents: "agent",
     search_models: "search",
+    read_transcript: "read",
   };
 
   return { toolImage, toolImageHtml, toolDetailHtml, detailSectionHtml, toolRowLabel, toolStepHtml, TOOL_KIND };

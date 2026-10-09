@@ -447,6 +447,7 @@ const CC_CALL_NAMES = {
     read_file: "Read", grep: "Search", glob: "Search", list_dir: "List", run_terminal_command: "Bash",
     search_replace: "Update", write_file: "Write", read_url: "Fetch", web_search: "Web Search",
     spawn_subagent: "Agent", monitor: "Monitor", get_command_output: "Wait", kill_command: "Stop Task",
+    read_transcript: "Transcript",
   };
 
 const CC_TURN_VERBS = ["Baked", "Brewed", "Churned", "Cogitated", "Cooked", "Crunched", "Sautéed", "Worked"];

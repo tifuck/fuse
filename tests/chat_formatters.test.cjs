@@ -279,6 +279,9 @@ test('a Wait names the command it waits on, else the job', () => {
   assert.equal(plain({ name: 'get_command_output', child_id: 'job-7' }), 'Wait(npm test)');
   assert.equal(plain({ name: 'get_command_output', job_id: 'job-9' }), 'Wait(job job-9)');
   assert.equal(plain({ name: 'get_command_output' }), 'Wait(command)');
+  assert.equal(plain({ name: 'read_transcript', preview: 'messages 1-4 of 4' }), 'Transcript(4 messages)');
+  assert.equal(plain({ name: 'read_transcript', preview: 'messages 51-80 of 200' }), 'Transcript(messages 51–80 of 200)');
+  assert.equal(c.consoleVerb('read_transcript'), 'Transcript');
   assert.equal(c.commandFor({ name: 'get_command_output', command_id: 'job-7' }), 'npm test');
   assert.equal(c.commandOrigin({ name: 'get_command_output' }), null);
 });

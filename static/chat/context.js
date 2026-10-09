@@ -27,6 +27,7 @@ const TOOL_FAMILIES = {
   load_skill: "skills",
   propose_skill: "skills",
   todo_write: "todos",
+  read_transcript: "transcript",
 };
 
 function estimateChars(text) {
