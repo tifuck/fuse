@@ -2,9 +2,10 @@
 
 True / False come from the provider's own catalog when it reports them
 (OpenRouter, Codex, Kimi, llama.cpp /props), else from the rules below.
-None means unknown: images are sent within the request budget. False strips
-them only from the outgoing copy, so saved chats keep every image and a later
-switch back to an image model sees them again.
+None means unknown: images are sent. False strips them only from the outgoing
+copy, so saved chats keep every image and a later switch back to an image
+model sees them again. Fuse sets no image budget of its own; images leave a
+request only when the provider itself refuses it (see `shed`).
 """
 from __future__ import annotations
 
@@ -13,9 +14,16 @@ import json
 import re
 
 OMITTED = "[Image omitted: this model cannot view images. It stays in the chat for image-capable models.]"
-BUDGET_OMITTED = "[Image omitted from this request to fit the image budget. Pixels remain in saved history; re-read the file if visual inspection is needed now.]"
-MAX_REQUEST_IMAGES = 16
-MAX_REQUEST_IMAGE_CHARS = 4 * ((20 * 1024 * 1024 + 2) // 3)
+LIMIT_OMITTED = ("[Image omitted: the provider refused a request carrying this many images. "
+                 "Newer images were kept. Pixels remain in saved history.]")
+# Provider refusals that name images or the request size. Dropping the oldest
+# images is the only change that can make such a request acceptable.
+_IMAGE_REFUSAL = re.compile(
+    r"too many (images|image|media|attachments)|images?\b.{0,80}\b(exceed|limit|maximum|max\b|too (large|big|many))"
+    r"|(exceed|limit|maximum|max\b).{0,80}\bimages?\b|request.{0,20}too large|request_too_large"
+    r"|payload too large|entity too large",
+    re.I | re.S,
+)
 
 _seen: dict[tuple[str, str], bool] = {}
 
@@ -83,7 +91,8 @@ def _image_part(part) -> bool:
 
 def prepare(messages, type_id: str, model: str, *, user_id: int | None = None, snapshot: dict | None = None) -> tuple[list, int]:
     """Outgoing copy: Responses `input_image` becomes `image_url` (what every
-    adapter reads); text-only or over-budget images become explicit notes.
+    adapter reads); images a text-only model cannot read, or that `shed`
+    dropped after a provider refusal, become explicit notes.
 
     A server-owned snapshot freezes each image's admission per resolved route.
     Persist it with the original transcript; discard it at compaction. It must
@@ -99,7 +108,6 @@ def prepare(messages, type_id: str, model: str, *, user_id: int | None = None, s
         route = json.dumps([type_id, model], separators=(",", ":"))
         decisions = snapshot.setdefault(route, {})
     admitted = {}
-    count = size = 0
     for mi in range(len(messages)):
         content = messages[mi].get("content") if isinstance(messages[mi], dict) else None
         if not isinstance(content, list):
@@ -108,20 +116,14 @@ def prepare(messages, type_id: str, model: str, *, user_id: int | None = None, s
             part = content[pi]
             if not _image_part(part):
                 continue
-            image = part.get("image_url")
-            url = image.get("url") if isinstance(image, dict) else image
-            chars = len(url) if isinstance(url, str) and url.startswith("data:") else 0
             digest = hashlib.sha256(json.dumps(part, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
             key = f"{mi}:{pi}:{digest}"
             decision = decisions.get(key)
-            if decision is None:
-                decision = ("capability" if strip else "budget" if
-                            count >= MAX_REQUEST_IMAGES or size + chars > MAX_REQUEST_IMAGE_CHARS else "admit")
+            # "budget" was the retired Fuse-side image cap: re-admit it.
+            if decision is None or decision == "budget":
+                decision = "capability" if strip else "admit"
                 decisions[key] = decision
             admitted[mi, pi] = decision
-            if decision == "admit":
-                count += 1
-                size += chars
     out, omitted = [], 0
     for mi, msg in enumerate(messages):
         content = msg.get("content") if isinstance(msg, dict) else None
@@ -134,7 +136,7 @@ def prepare(messages, type_id: str, model: str, *, user_id: int | None = None, s
                 parts.append(part)
             elif admitted[mi, pi] != "admit":
                 omitted += 1
-                parts.append({"type": "text", "text": OMITTED if admitted[mi, pi] == "capability" else BUDGET_OMITTED})
+                parts.append({"type": "text", "text": OMITTED if admitted[mi, pi] == "capability" else LIMIT_OMITTED})
             elif part["type"] == "input_image":
                 image = part.get("image_url")
                 image = image if isinstance(image, dict) else {"url": image}
@@ -149,3 +151,26 @@ def prepare(messages, type_id: str, model: str, *, user_id: int | None = None, s
             )
         out.append({**msg, "content": parts})
     return out, omitted
+
+
+def image_refusal(status: int, message: str) -> bool:
+    """A provider rejected the request for its images or its size."""
+    return status == 413 or (400 <= status < 500 and bool(_IMAGE_REFUSAL.search(message or "")))
+
+
+def shed(snapshot: dict, type_id: str, model: str) -> int:
+    """After a provider refusal, drop the older half of the images this route
+    admitted. The decision is frozen in the snapshot like any other, so later
+    rounds keep the same prefix. Returns how many images were dropped."""
+    route = json.dumps([type_id, model], separators=(",", ":"))
+    decisions = snapshot.get(route) or {}
+
+    def order(key):
+        mi, pi, _ = key.split(":", 2)
+        return int(mi), int(pi)
+
+    kept = sorted((k for k, v in decisions.items() if v == "admit"), key=order)
+    drop = kept[:(len(kept) + 1) // 2]
+    for key in drop:
+        decisions[key] = "limit"
+    return len(drop)

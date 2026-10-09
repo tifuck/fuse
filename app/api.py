@@ -558,27 +558,53 @@ async def _invoke_chat(request: Request, user, body: dict, *, cheap_reasoning: b
     if cheap_reasoning:
         _set_cheap_reasoning(body, src.type_id, model, user["id"])
     body["model"] = upstream
-    body["messages"], omitted = model_caps.prepare(body["messages"], src.type_id, upstream,
-                                                   user_id=user["id"], snapshot=image_snapshot)
+    original = body["messages"]
+    images = image_snapshot if image_snapshot is not None else {}
+    body["messages"], omitted = model_caps.prepare(original, src.type_id, upstream,
+                                                   user_id=user["id"], snapshot=images)
     if prepared is not None:
         await prepared()
     session_id = None
     if src.type_id in POOL_TYPES or src.type_id in ("openai", "ollama", "openrouter"):
         session_id = session_id_from(request.headers, body, user_id=user["id"], model=upstream)
-    try:
-        result = await _run_chat(src, body, user["id"], session_id=session_id)
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        logger.exception("Source invocation failed provider=%s", src.type_id)
-        result = ChatResult(
-            status=502,
-            body={"error": {"message": f"upstream request failed ({type(exc).__name__})"}},
-            model=upstream,
-        )
-    _record_attempts(result, user, src, upstream, requested)
+    shed_total = 0
+    while True:
+        try:
+            result = await _run_chat(src, body, user["id"], session_id=session_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("Source invocation failed provider=%s", src.type_id)
+            result = ChatResult(
+                status=502,
+                body={"error": {"message": f"upstream request failed ({type(exc).__name__})"}},
+                model=upstream,
+            )
+        _record_attempts(result, user, src, upstream, requested)
+        if result.status == 200 or not model_caps.image_refusal(result.status, _error_message(result.body)):
+            break
+        # The provider refused this many images (Fuse sets no cap): drop the
+        # older half, freeze that in the snapshot, and retry until it fits.
+        shed = model_caps.shed(images, src.type_id, upstream)
+        if not shed:
+            break
+        shed_total += shed
+        logger.warning("Provider refused images provider=%s model=%s status=%s; dropped %s older image(s)",
+                       src.type_id, upstream, result.status, shed)
+        _safe_record_usage(user["id"], src.source_id, result.credential_id, upstream, result.usage,
+                           key_id=user.get("key_id"), provider=src.type_id, requested_model=requested,
+                           request_status="failed", count_request=False)
+        body["messages"], omitted = model_caps.prepare(original, src.type_id, upstream,
+                                                       user_id=user["id"], snapshot=images)
+        if prepared is not None:
+            await prepared()
+    headers = {}
     if omitted:
-        result.response_headers = {**result.response_headers, "X-Fuse-Images-Omitted": str(omitted)}
+        headers["X-Fuse-Images-Omitted"] = str(omitted)
+    if shed_total:
+        headers["X-Fuse-Images-Shed"] = str(shed_total)
+    if headers:
+        result.response_headers = {**result.response_headers, **headers}
     return user, src, upstream, requested, result
 
 
@@ -609,7 +635,7 @@ async def dispatch_chat(request: Request, user, body: dict):
         response.headers.update(result.response_headers)
         return response
     key_id = user.get("key_id")
-    omitted = {k: v for k, v in result.response_headers.items() if k == "X-Fuse-Images-Omitted"}
+    omitted = {k: v for k, v in result.response_headers.items() if k in ("X-Fuse-Images-Omitted", "X-Fuse-Images-Shed")}
     if result.stream is not None:
         return StreamingResponse(
             _tap(

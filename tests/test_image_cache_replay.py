@@ -101,18 +101,75 @@ def test_client_snapshot_cannot_override_admission_or_leak(routed):
     assert "prompt_snapshot" not in sent[-1] and "image_snapshot" not in sent[-1]
 
 
-def test_budget_admission_remains_append_only(monkeypatch):
-    monkeypatch.setattr(model_caps, "MAX_REQUEST_IMAGES", 1)
+def test_no_image_budget_and_retired_budget_decisions_are_readmitted(monkeypatch):
     monkeypatch.setattr(model_caps, "image_input", lambda *a, **k: True)
+    rows = [image(str(i)) for i in range(60)]
     snapshot = {}
-    first, _ = model_caps.prepare([image()], "openai", "eye", snapshot=snapshot)
-    rows, omitted = model_caps.prepare([image(), image("two")], "openai", "eye", snapshot=snapshot)
-    assert rows[:1] == first and omitted == 1
-    assert model_caps.BUDGET_OMITTED in rows[1]["content"]
-    monkeypatch.setattr(model_caps, "MAX_REQUEST_IMAGES", 2)
-    replay, omitted = model_caps.prepare([image(), image("two"), image("three")], "openai", "eye", snapshot=snapshot)
-    assert replay[:2] == rows and omitted == 1
-    assert isinstance(replay[2]["content"], list)
+    out, omitted = model_caps.prepare(rows, "openai", "eye", snapshot=snapshot)
+    assert omitted == 0 and out == rows
+    route = next(iter(snapshot.values()))
+    for key in list(route)[1:]:
+        route[key] = "budget"  # saved by the retired 16-image cap
+    out, omitted = model_caps.prepare(rows, "openai", "eye", snapshot=snapshot)
+    assert omitted == 0 and out == rows
+    assert set(route.values()) == {"admit"}
+
+
+@pytest.mark.parametrize("status,message", [
+    (400, "too many images and documents: 101 > 100"),
+    (413, "Request exceeds the maximum size"),
+    (400, "Too many images in request. Max is 500."),
+])
+def test_provider_image_refusal_sheds_oldest_and_retries(routed, monkeypatch, status, message):
+    route, sent = routed
+    checkpoints = []
+
+    async def chat(body, **kwargs):
+        sent.append(copy.deepcopy(body))
+        kept = sum(isinstance(m["content"], list) for m in body["messages"])
+        if kept > 3:
+            return ChatResult(status=status, body={"error": {"message": message}}, model=body["model"])
+        return ChatResult(status=200, body={}, model=body["model"])
+
+    async def pick(*args, **kwargs):
+        return SimpleNamespace(type_id="openai", source_id=1, chat=chat), "eye"
+
+    async def persist():
+        checkpoints.append(len(sent))
+
+    monkeypatch.setattr(api, "pick", pick)
+    monkeypatch.setattr(api, "_safe_record_usage", lambda *a, **k: True)
+    rows = [image(str(i)) for i in range(10)]
+    snapshot = {}
+    *_, result = invoke(rows, snapshot, persist)
+    assert result.status == 200
+    assert [sum(isinstance(m["content"], list) for m in b["messages"]) for b in sent] == [10, 5, 2]
+    assert checkpoints == [0, 1, 2]  # every new admission is durable before it is sent
+    final = sent[-1]["messages"]
+    assert model_caps.LIMIT_OMITTED in final[0]["content"]
+    assert isinstance(final[-1]["content"], list)  # newest images survive
+    assert result.response_headers["X-Fuse-Images-Shed"] == "8"
+    sent.clear()
+    invoke(rows + [image("new")], snapshot)
+    assert sent[0]["messages"][:10] == final  # the shed decision stays frozen
+
+
+def test_unrelated_refusal_and_text_only_request_do_not_retry(routed, monkeypatch):
+    _, sent = routed
+
+    async def chat(body, **kwargs):
+        sent.append(body)
+        return ChatResult(status=400, body={"error": {"message": "invalid tool schema"}}, model=body["model"])
+
+    async def pick(*args, **kwargs):
+        return SimpleNamespace(type_id="openai", source_id=1, chat=chat), "eye"
+
+    monkeypatch.setattr(api, "pick", pick)
+    *_, result = invoke([image()], {})
+    assert result.status == 400 and len(sent) == 1
+    sent.clear()
+    *_, result = invoke([{"role": "user", "content": "no images"}], {})
+    assert len(sent) == 1
 
 
 def test_runtime_persists_admission_before_dispatch(monkeypatch, routed):
@@ -126,6 +183,7 @@ def test_runtime_persists_admission_before_dispatch(monkeypatch, routed):
     monkeypatch.setattr(chat_store, "take_child_results", lambda *a: [])
     monkeypatch.setattr(chat_store, "take_followups", lambda *a: [])
     monkeypatch.setattr(chat_store, "steer_display_deliveries", lambda *a: [])
+    monkeypatch.setattr(chat_store, "followup_display_deliveries", lambda *a: [])
     monkeypatch.setattr("app.context_meter.should_auto_compact", lambda *a, **k: False)
     monkeypatch.setattr(api, "_safe_record_usage", lambda *a, **k: True)
 
