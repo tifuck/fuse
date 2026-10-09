@@ -219,6 +219,7 @@ export function createConsoleTheme(runtime) {
     get toolImageHtml() { return theme.toolImageHtml; },
     get toolPresentation() { return runtime.toolPresentation; },
     get toolText() { return theme.toolText; },
+    get transcriptRange() { return theme.transcriptRange; },
     get webResultsHtml() { return theme.webResultsHtml; },
   }));
   Object.assign(theme, createToolHeaders({
@@ -269,7 +270,6 @@ export function createConsoleTheme(runtime) {
     get shortToolText() { return theme.shortToolText; },
     get structuredToolHtml() { return theme.structuredToolHtml; },
     get toolAction() { return theme.toolAction; },
-    get transcriptRange() { return theme.transcriptRange; },
     get toolBackground() { return runtime.toolBackground; },
     get toolHeadHtml() { return theme.toolHeadHtml; },
     get toolIcon() { return theme.toolIcon; },
