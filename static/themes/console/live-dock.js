@@ -105,6 +105,11 @@ function currentActivity(msg, groups, live) {
     } else if (live && activity?.phase === "tools") {
       phase = "working";
       label = ("working");
+    } else if (live && activity?.phase === "calling") {
+      // The model is writing a tool call; the stream names it before its
+      // arguments finish, long before the call starts running.
+      phase = "calling";
+      label = activity.tool ? deps.consoleVerb(activity.tool, { name: activity.tool }).toLowerCase() : "calling";
     } else if (live) {
       if (last && last.type === "reasoning") {
         phase = "thinking";
@@ -140,7 +145,8 @@ function currentActivity(msg, groups, live) {
       else if (counts.done === total) label = `Completed ${total} ${total === 1 ? "action" : "actions"}`;
       else label = `${total} ${total === 1 ? "action" : "actions"} · ${deps.countsLabel(counts)}`;
     }
-    return { phase, label, current, live: Boolean(live && !stopping), busy: Boolean(live) };
+    const tool = phase === "calling" ? String(activity.tool || "") : "";
+    return { phase, label, current, tool, live: Boolean(live && !stopping), busy: Boolean(live) };
   }
 
 function activityKind(msg, groups, live) {
@@ -151,6 +157,7 @@ function activityKind(msg, groups, live) {
     if (status.phase === "building") return "building";
     if (status.phase === "writing") return "writing";
     if (status.phase === "thinking") return "thinking";
+    if (status.phase === "calling") return deps.isSearchTool(status.tool) ? "searching" : "working";
     if (status.phase === "starting" || status.phase === "stopping") return "waiting";
     if (status.current) return "working";
     return "waiting";

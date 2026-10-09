@@ -68,6 +68,24 @@ def drop_tool_xml(text: str) -> tuple[str, str]:
     return visible, ""
 
 
+_TOOL_XML_NAME = re.compile(
+    r"<function\s*=\s*([A-Za-z][\w.-]*)|<invoke\s+name\s*=\s*[\"']([^\"']+)|\"name\"\s*:\s*\"([^\"]+)\"",
+    re.I,
+)
+
+
+def tool_xml_start(text: str, start: int = 0) -> int:
+    """Offset of the first <tool_call> opener at or after start, or -1."""
+    match = _TOOL_XML_OPEN.search(text or "", max(0, start))
+    return match.start() if match else -1
+
+
+def tool_xml_name(text: str, at: int) -> str:
+    """Tool name written so far in the XML call opened at `at`, or ""."""
+    match = _TOOL_XML_NAME.search((text or "")[at : at + 600])
+    return next((group for group in match.groups() if group), "")[:64] if match else ""
+
+
 def _xml_param_value(raw: str):
     text = (raw or "").strip()
     if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":

@@ -1169,6 +1169,9 @@ def agent_current_activity(message, activity=None, status="running"):
             if trace.get("background") and (trace.get("child_id") or trace.get("command_id")) and trace.get("name") not in ("get_subagent_output", "get_command_output"):
                 continue
             return str(trace.get("name") or "working")
+    if activity.get("phase") == "calling":
+        # Writing a tool call: name it now rather than "thinking" until it runs.
+        return str(activity.get("tool") or "calling")[:64]
     segments = message.get("segments") or []
     last = next((part for part in reversed(segments) if isinstance(part, dict) and (part.get("type") == "tool" or str(part.get("text") or "").strip())), {})
     if last.get("type") == "reasoning":

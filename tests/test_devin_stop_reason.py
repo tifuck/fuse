@@ -241,5 +241,38 @@ class DevinSkuTrailerHealthTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(devin_mod.sku_dead("glm-5-2"))
 
 
+def _tool_frame(tid: str, name: str, args: str) -> bytes:
+    e = proto.ProtoEncoder()
+    e.message(6, lambda t: (t.string(1, tid), t.string(2, name) if name else None, t.string(3, args) if args else None))
+    return proto.connect_frame(e.finish(), compressed=False)
+
+
+class ToolCallHintTest(unittest.IsolatedAsyncioTestCase):
+    async def test_names_tool_call_while_its_arguments_stream(self):
+        # Devin emits calls whole at the end; the hint names the call (and one
+        # empty delta wakes the consumer) as soon as its header arrives.
+        hints: dict = {}
+        frames = [
+            _frame(text="Looking."),
+            _tool_frame("t1", "grep", '{"pattern":'),
+            _tool_frame("t1", "", '"x"}'),
+            _frame(stop=STOP_FUNCTION_CALL),
+            bytes([proto.CONNECT_END_STREAM]) + struct.pack(">I", 2) + b"{}",
+        ]
+        seen = []
+        async for chunk in devin_stream._stream_sse(_FakeResp(frames), _FakeClient(), {}, "m", hints=hints):
+            seen.append((hints.get("tool_call"), json.loads(chunk.decode()[len("data: "):]) if chunk.startswith(b"data: {") else None))
+        # The closing finish_reason chunk also has an empty delta; it is not a wake.
+        deltas = [(hint, obj["choices"][0]["delta"]) for hint, obj in seen
+                  if obj and obj.get("choices") and not obj["choices"][0].get("finish_reason")]
+        wakes = [i for i, (hint, delta) in enumerate(deltas) if delta == {}]
+        calls = [i for i, (hint, delta) in enumerate(deltas) if "tool_calls" in delta]
+        self.assertEqual(len(wakes), 1)
+        self.assertEqual(deltas[wakes[0]][0], "grep")
+        self.assertEqual(deltas[wakes[0] - 1][0], None)
+        self.assertLess(wakes[0], calls[0])
+        self.assertEqual(deltas[calls[0]][1]["tool_calls"][0]["function"], {"name": "grep", "arguments": '{"pattern":"x"}'})
+
+
 if __name__ == "__main__":
     unittest.main()

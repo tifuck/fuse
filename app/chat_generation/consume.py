@@ -17,6 +17,8 @@ from .parsing import (
     _finalize_assistant_payload,
     _take_calls,
     _take_thinking,
+    tool_xml_name,
+    tool_xml_start,
 )
 from .policy import _error_obj, _provider_error_content
 from .stream import (
@@ -30,6 +32,15 @@ from .stream import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _calling_name(calls: dict, hints) -> str:
+    """Name of the newest tool call the model has started writing."""
+    for index in sorted(calls, reverse=True):
+        name = (calls[index].get("function") or {}).get("name")
+        if name:
+            return str(name)
+    return str((hints or {}).get("tool_call") or "") if isinstance(hints, dict) else ""
 
 
 def _add_usage(total: dict, extra: dict | None) -> dict:
@@ -131,7 +142,12 @@ async def consume_round(result, user, src, upstream: str, requested: str, *, cod
     )
     buf = b""
     terminal = False
-    calling = False
+    # Announced name of the tool call being written ("" until known), so the
+    # status line can name it while its arguments still stream.
+    calling = None
+    hints = getattr(result.stream, "hints", None)
+    xml_at = -1
+    xml_scan = 0
     held_out: list[dict] = []
     try:
         async for kind, payload in _paced_chunks(
@@ -180,11 +196,6 @@ async def consume_round(result, user, src, upstream: str, requested: str, *, cod
                     _take_thinking(thinking, [delta if delta.get("devin_signature") else message])
                     if choice.get("finish_reason"):
                         finish = choice.get("finish_reason")
-                    if calls and not calling:
-                        # The model has moved on to writing a tool call: any
-                        # thought before it is finished, not still streaming.
-                        calling = True
-                        yield ("out", {"fuse": {"event": "activity", "phase": "calling"}})
                 safe = _client_obj(obj, hide_tool_calls=False)
                 if safe:
                     candidate = (content or "").strip()
@@ -195,6 +206,21 @@ async def consume_round(result, user, src, upstream: str, requested: str, *, cod
                             yield ("out", pending)
                         held_out.clear()
                         yield ("out", safe)
+            if xml_at < 0 and len(content) > xml_scan:
+                # Text-format calls (Qwen/Hermes/GLM <tool_call>) carry no
+                # tool_calls delta; the opener is the first sign of one.
+                xml_at = tool_xml_start(content, xml_scan - 16)
+                xml_scan = len(content)
+            name = _calling_name(calls, hints) or (tool_xml_name(content, xml_at) if xml_at >= 0 else "")
+            if (calls or name or xml_at >= 0) and name != calling:
+                # The model has moved on to writing a tool call: any thought
+                # before it is finished, not still streaming. Each new name is
+                # announced as soon as it is known, before its arguments end.
+                calling = name
+                event = {"event": "activity", "phase": "calling"}
+                if name:
+                    event["tool"] = name
+                yield ("out", {"fuse": event})
             if terminal or error:
                 # The round is over. A proxy that keeps the socket open after
                 # [DONE] (or its terminal error frame) must not trip the gap

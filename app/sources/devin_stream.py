@@ -252,7 +252,7 @@ def _connect_error(payload: bytes) -> str:
     return ""
 
 
-async def _stream_sse(resp, client, collected: dict, model: str, uid: str = ""):
+async def _stream_sse(resp, client, collected: dict, model: str, uid: str = "", hints: dict | None = None):
     cid = _completion_id()
     created = int(time.time())
     pending = b""
@@ -309,7 +309,13 @@ async def _stream_sse(resp, client, collected: dict, model: str, uid: str = ""):
                         stop_terminal = False
                     if _devin_debug():
                         _debug_tool_call(cid, msg, tc)
-                    book.add(tc)
+                    rec, _ = book.add(tc)
+                    if hints is not None and rec.get("name") and hints.get("tool_call") != rec["name"]:
+                        # Calls are only emitted whole at the end; tell the
+                        # consumer which tool is being written now, and wake
+                        # it with an empty delta (valid for /v1 clients too).
+                        hints["tool_call"] = rec["name"]
+                        yield _chunk(cid, created, model, {})
                 if msg.get("usage"):
                     raw_usage = _merge_usage_frame(raw_usage, msg["usage"])
                     collected.update(_openai_usage(raw_usage))

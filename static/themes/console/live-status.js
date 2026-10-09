@@ -121,6 +121,8 @@ function ccSpinnerState(status) {
     else if (status.phase === "stopping") state = "stopping";
     else if (status.current) state = deps.executionState(status.current) === "cancelling" ? "cancelling"
       : deps.isSearchTool(status.current.name) ? "searching the web" : CC_SPINNER_STATES[status.current.name] || "running tool";
+    else if (status.phase === "calling") state = !status.tool ? "calling tool"
+      : deps.isSearchTool(status.tool) ? "searching the web" : CC_SPINNER_STATES[status.tool] || `calling ${status.tool}`;
     else if (status.phase === "waiting" || status.phase === "starting") state = "waiting";
     else if (status.phase === "working") state = "working";
     return [state, ...extra].filter(Boolean).join(" · ");
@@ -142,7 +144,10 @@ function formatConsoleLiveStatus(msg, groups, opts) {
       if (n) tokenText = `↑ ${formatConsoleCount(n)} tokens`;
     }
     const thought = ccThinkingState(msg, status.phase === "thinking");
-    const state = status.phase === "thinking" ? thought : thought || ccSpinnerState(status);
+    // A tool call being written or run replaces the "thought for Ns" flash at
+    // once: that is the newer activity.
+    const state = status.phase === "thinking" ? thought
+      : status.phase === "calling" || status.current ? ccSpinnerState(status) : thought || ccSpinnerState(status);
     // Claude Code shows the clock once there is something else to show, or
     // after 16s.
     const clock = tokenText || state || seconds > 16 ? deps.ccDuration(seconds * 1000) : "";

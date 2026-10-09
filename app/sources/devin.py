@@ -628,7 +628,8 @@ class DevinSource:
                     # would hand the wrapper a different dict and the
                     # completion status (and pin bind) would never be seen.
                     return self._stream_result_wrap(
-                        result.stream, result.usage if isinstance(result.usage, dict) else {}, cred, session_id, model, attempts
+                        result.stream, result.usage if isinstance(result.usage, dict) else {}, cred, session_id, model, attempts,
+                        hints=result.hints,
                     )
                 last = result
                 if result.status == 401:
@@ -714,12 +715,14 @@ class DevinSource:
             )
         collected: dict = {}
         if want_stream:
+            hints: dict = {}
             result = ChatResult(
                 status=200,
-                stream=_stream_sse(resp, client, collected, model, model_uid),
+                stream=_stream_sse(resp, client, collected, model, model_uid, hints),
                 usage=collected,
                 credential_id=cred["id"],
                 model=model,
+                hints=hints,
             )
             result.attempts = attempts
             return result
@@ -740,7 +743,7 @@ class DevinSource:
             )
         return ChatResult(status=200, body=obj, usage=usage, credential_id=cred["id"], model=model)
 
-    def _stream_result_wrap(self, stream, collected, cred, session_id, model, attempts) -> ChatResult:
+    def _stream_result_wrap(self, stream, collected, cred, session_id, model, attempts, hints=None) -> ChatResult:
         cid = cred["id"]
 
         async def _bind_on_finish():
@@ -765,7 +768,7 @@ class DevinSource:
                         affinity_safe=not quota_hit,
                     )
 
-        wrapped = UsageStream(_bind_on_finish(), collected, on_close=lambda: release(cid))
+        wrapped = UsageStream(_bind_on_finish(), collected, on_close=lambda: release(cid), hints=hints)
         result = ChatResult(status=200, stream=wrapped, credential_id=cid, model=model)
         result.attempts = attempts
         return result

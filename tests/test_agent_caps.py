@@ -122,6 +122,11 @@ class AgentCapsTest(unittest.TestCase):
         event = next(e for e in reversed(store.events_after(1, 0)) if e["type"] == "agent.progress")
         self.assertEqual(_downgrade_progress(event, None)["payload"]["current"], "writing")
         self.assertEqual(store.agent_current_activity(message, status="completed"), "")
+        # A tool call being written is named at once, not "thinking".
+        thought = {"segments": [{"type": "reasoning", "text": "plan"}]}
+        self.assertEqual(store.agent_current_activity(thought, {"phase": "calling", "tool": "grep"}), "grep")
+        self.assertEqual(store.agent_current_activity(thought, {"phase": "calling"}), "calling")
+        self.assertEqual(store.agent_current_activity(thought, {"phase": "model"}), "thinking")
 
     def test_empty_completed_leg_does_not_reuse_old_report_or_tool_preamble(self):
         old = {"role": "assistant", "content": "Report from previous leg"}

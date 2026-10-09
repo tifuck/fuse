@@ -92,7 +92,7 @@ body.is-chat .topbar { flex-shrink: 0; }
 }
 :is(.chat-live-dock, .chat-agent-live-dock)[data-phase="thinking"] { --phase-tint: var(--reason); --status-tempo: 2.6s; }
 :is(.chat-live-dock, .chat-agent-live-dock)[data-phase="writing"] { --phase-tint: var(--brass); --status-tempo: 1.8s; }
-:is(.chat-live-dock, .chat-agent-live-dock):is([data-phase="searching"], [data-phase="reading"], [data-phase="building"], [data-phase="spawning"], [data-phase="working"]) {
+:is(.chat-live-dock, .chat-agent-live-dock):is([data-phase="searching"], [data-phase="reading"], [data-phase="building"], [data-phase="spawning"], [data-phase="working"], [data-phase="calling"]) {
   --phase-tint: var(--steel);
   --status-tempo: 2s;
 }

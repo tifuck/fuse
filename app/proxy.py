@@ -185,9 +185,12 @@ class UsageStream:
     reject arbitrary attributes, so ChatResult.stream cannot hang usage on gen itself.
     """
 
-    def __init__(self, agen, usage: dict, on_close=None):
+    def __init__(self, agen, usage: dict, on_close=None, hints: dict | None = None):
         self._agen = agen
         self.usage = usage
+        # Live non-usage signals from a translating source, e.g. the name of a
+        # tool call it is still assembling ("tool_call"). Never billed.
+        self.hints = hints if hints is not None else {}
         self._on_close = on_close
         self._closed = False
 

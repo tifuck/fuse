@@ -232,6 +232,17 @@ class ConsumeReasoningTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["reasoning"], "think more")
         self.assertEqual(summary["finish"], "tool_calls")
 
+    async def _outs(self, stream, result=None):
+        result = result or FakeResult(stream=stream)
+        with patch("app.chat_runtime.api._tap", lambda s, *a, **k: s), patch(
+            "app.chat_runtime.api._safe_record_usage", lambda *a, **k: None
+        ):
+            return [payload async for kind, payload in _consume_round(result, {"id": 1}, FakeSrc(), "up", "req") if kind == "out"]
+
+    @staticmethod
+    def _calling(outs):
+        return [(i, o["fuse"]) for i, o in enumerate(outs) if (o.get("fuse") or {}).get("phase") == "calling"]
+
     async def test_stream_marks_thought_finished_when_tool_call_starts(self):
         async def stream(with_call):
             yield b'data: {"choices":[{"delta":{"reasoning_content":"think"}}]}\n\n'
@@ -241,20 +252,58 @@ class ConsumeReasoningTest(unittest.IsolatedAsyncioTestCase):
             yield b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
             yield b"data: [DONE]\n\n"
 
-        calling = {"fuse": {"event": "activity", "phase": "calling"}}
-        for with_call in (True, False):
-            result = FakeResult(stream=stream(with_call))
-            with patch("app.chat_runtime.api._tap", lambda s, *a, **k: s), patch(
-                "app.chat_runtime.api._safe_record_usage", lambda *a, **k: None
-            ):
-                outs = [payload async for kind, payload in _consume_round(result, {"id": 1}, FakeSrc(), "up", "req") if kind == "out"]
-            if not with_call:
-                self.assertNotIn(calling, outs)
-                continue
-            self.assertEqual(outs.count(calling), 1)
-            at = outs.index(calling)
-            self.assertIn("reasoning_content", outs[at - 1]["choices"][0]["delta"])
-            self.assertIn("tool_calls", outs[at + 1]["choices"][0]["delta"])
+        self.assertEqual(self._calling(await self._outs(stream(False))), [])
+        outs = await self._outs(stream(True))
+        calling = self._calling(outs)
+        # Named as soon as the header arrives, before its arguments finish.
+        self.assertEqual([event for _, event in calling], [{"event": "activity", "phase": "calling", "tool": "web_search"}])
+        at = calling[0][0]
+        self.assertIn("tool_calls", outs[at - 1]["choices"][0]["delta"])
+        self.assertEqual(outs[at + 1]["choices"][0]["delta"]["tool_calls"][0]["function"], {"arguments": '":1}'})
+
+    async def test_stream_names_each_new_tool_call(self):
+        async def stream():
+            yield b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read_file","arguments":""}}]}}]}\n\n'
+            yield b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}\n\n'
+            yield b'data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"c2","function":{"name":"web_search","arguments":"{}"}}]}}]}\n\n'
+            yield b'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n'
+            yield b"data: [DONE]\n\n"
+
+        tools = [event.get("tool") for _, event in self._calling(await self._outs(stream()))]
+        self.assertEqual(tools, ["read_file", "web_search"])
+
+    async def test_stream_detects_text_format_tool_call_before_it_closes(self):
+        async def stream():
+            yield b'data: {"choices":[{"delta":{"content":"Let me look. <tool_"}}]}\n\n'
+            yield b'data: {"choices":[{"delta":{"content":"call>\\n<function=grep>\\n<parameter=pattern>x"}}]}\n\n'
+            yield b'data: {"choices":[{"delta":{"content":"</parameter>\\n</function>\\n</tool_call>"}}]}\n\n'
+            yield b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+            yield b"data: [DONE]\n\n"
+
+        outs = await self._outs(stream())
+        calling = self._calling(outs)
+        # The opener split across frames is still found, and named on the
+        # same frame, before the closing tag streams.
+        self.assertEqual([event.get("tool") for _, event in calling], ["grep"])
+        self.assertEqual(calling[0][0], 2)
+
+    async def test_stream_reads_tool_name_hint_from_translating_source(self):
+        from app.proxy import UsageStream
+
+        hints = {}
+
+        async def stream():
+            yield b'data: {"choices":[{"delta":{"reasoning_content":"plan"}}]}\n\n'
+            hints["tool_call"] = "run_terminal_command"
+            yield b'data: {"choices":[{"delta":{}}]}\n\n'
+            yield b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"run_terminal_command","arguments":"{}"}}]}}]}\n\n'
+            yield b'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n'
+            yield b"data: [DONE]\n\n"
+
+        outs = await self._outs(None, FakeResult(stream=UsageStream(stream(), {}, hints=hints)))
+        calling = self._calling(outs)
+        self.assertEqual([event.get("tool") for _, event in calling], ["run_terminal_command"])
+        self.assertEqual(calling[0][0], 2)
 
 
 async def _drain_tools(calls, **kwargs):

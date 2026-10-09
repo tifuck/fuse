@@ -19,6 +19,8 @@ class ChatResult:
     # Response headers that are safe to expose to the caller. Sources must not
     # place upstream authentication or identifying headers here.
     response_headers: dict[str, str] = field(default_factory=dict)
+    # Live stream hints the source fills while streaming (see UsageStream.hints).
+    hints: dict = field(default_factory=dict)
 
 
 class Source(Protocol):

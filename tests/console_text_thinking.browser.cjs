@@ -128,6 +128,16 @@ function snap() {
     s = await snapNow();
     check(s.labels.join('|') === 'Thought for 6s', `a landed thought reads "Thought for" with its own duration, not the page's tick: ${s.labels}`);
     check(s.clocks.length === 0, `the landed thought keeps no live clock: ${s.clocks}`);
+    // The dock leaves "thinking" the moment a call starts streaming, and
+    // names the tool once the stream has, before its arguments finish.
+    check(s.dock.phase === 'calling' && s.dock.meta.includes('· calling tool') && !/thinking|thought for/.test(s.dock.meta),
+      `an unnamed call being written reads "calling tool": ${JSON.stringify(s.dock)}`);
+    await drive({}, { phase: 'calling', tool: 'web_search' });
+    s = await snapNow();
+    check(s.dock.meta.includes('· searching the web') && s.dock.meta.includes('↓ '), `a search call being written reads "searching the web" with down tokens: ${s.dock.meta}`);
+    await drive({}, { phase: 'calling', tool: 'read_file' });
+    s = await snapNow();
+    check(s.dock.meta.endsWith('· reading)'), `the dock follows the newest call's name: ${s.dock.meta}`);
 
     // tools: the call stands alone, ticking; dock flips to up tokens.
     await drive({ tools: [read], segments: [think('Plan the retry audit.', 6505), T(read)] }, { phase: 'tools', tool_id: read.id });
