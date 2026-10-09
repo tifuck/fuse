@@ -455,6 +455,12 @@ class CodingPromptTest(unittest.TestCase):
             self.assertIn("echo $! > /tmp/fuse/job.pid", text)
             self.assertIn("with pattern `^DONE`", text)
             self.assertIn("run the check once by hand", text)
+            # A job you start reports its own exit; a bare `cmd &` dies of SIGPIPE.
+            self.assertIn("`<command_result>` brings its exit code", text)
+            self.assertIn("dies of SIGPIPE", text)
+            # Job output must not reach the status file (curl's meter fires it at once).
+            self.assertIn('echo "exit=$?" > /tmp/fuse/job.status', text)
+            self.assertIn("Silence is not success", text)
             self.assertIn("the event wakes you", text)
             if kwargs.get("loaded_tools"):
                 self.assertIn("Loaded tools: run_terminal_command", text)
@@ -493,6 +499,10 @@ class CodingPromptTest(unittest.TestCase):
         self.assertIn("pgrep -f '[c]url'", monitor)
         self.assertIn("kill -0 <pid>", monitor)
         self.assertIn("Run the check once by hand right after arming", monitor)
+        self.assertIn("Silence is not success", monitor)
+        self.assertIn("its <command_result> carries the exit code", monitor)
+        self.assertIn("(8 within 2 s) is auto-stopped", monitor)
+        self.assertNotIn("echo OK || echo FAIL) > /tmp/fuse/job.status 2>&1", monitor)
         self.assertIn("state=\"completed\" is the normal end", monitor)
         self.assertIn("find out why before re-arming", monitor)
         self.assertNotIn("reached max_events`", monitor)
