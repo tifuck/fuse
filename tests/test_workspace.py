@@ -412,6 +412,32 @@ class HostRootTest(unittest.TestCase):
         self.assertEqual(workspace._shell_prefix("$HOME"), 'cd "$HOME"')
         self.assertEqual(workspace._shell_prefix("~"), 'cd "$HOME"')
 
+    def test_home_paths_resolve_without_home_env(self):
+        # Connectors before ensure_home_env run commands with HOME unset: the
+        # existence probe saw "$HOME"/x as /x and called an existing file
+        # missing ("does not exist. Use write_file to create it.").
+        import pwd
+        import subprocess
+
+        home = pwd.getpwuid(os.getuid()).pw_dir
+        with tempfile.TemporaryDirectory(dir=home) as tmp:
+            rel = os.path.relpath(tmp, home)
+            Path(tmp, "index x.html").write_text("hi")
+            env = {k: v for k, v in os.environ.items() if k != "HOME"}
+
+            def run(cmd: str) -> list[str]:
+                out = subprocess.run(["/bin/bash", "--noprofile", "--norc", "-c", cmd],
+                                     env=env, capture_output=True, text=True, timeout=10).stdout
+                return out.split()
+
+            probe = workspace._probe_cmd(f"~/{rel}/index x.html", windows=False)
+            self.assertEqual(run(probe)[0], "2")
+            probe = workspace._probe_cmd(f"$HOME/{rel}/missing.html", windows=False)
+            self.assertEqual(run(probe)[0], "missing")
+            self.assertEqual(run(f"p={workspace._quote_host_path('~')}; echo \"$p\""), [home])
+            self.assertEqual(workspace._quote_host_path("~/a b"), "~/'a b'")
+            self.assertEqual(workspace._quote_host_path("/srv/a b"), "'/srv/a b'")
+
 
 class ResolveTest(unittest.TestCase):
     def test_reserved_and_unbound(self):

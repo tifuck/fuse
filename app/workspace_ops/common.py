@@ -65,9 +65,16 @@ def _int_arg(args: dict, key: str, default: int, lo: int, hi: int) -> int:
 
 
 def _quote_host_path(path: str) -> str:
+    # An unquoted ~ and not "$HOME": connectors before the ensure_home_env
+    # release run commands from a system unit with HOME unset, where "$HOME"
+    # is empty (~/x probed as /x, reported missing) but bash still expands ~
+    # from the passwd entry. Wherever HOME is set the two are identical.
     for home in ("~", "$HOME"):
-        if path == home or path.startswith(home + "/"):
-            return '"$HOME"' + shlex.quote(path[len(home):])
+        if path == home:
+            return "~"
+        if path.startswith(home + "/"):
+            rest = path[len(home) + 1:]
+            return "~/" + shlex.quote(rest) if rest else "~/"
     return shlex.quote(path)
 
 
