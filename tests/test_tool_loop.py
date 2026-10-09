@@ -605,6 +605,37 @@ class LoopTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn(b"Adjusted answer", body)
         self.assertIn(b"steer.delivered", body)
 
+    async def test_background_results_reach_model_and_mark_delivery_point(self):
+        # One drain hands queued results to the model as one framed message
+        # and tells the run worker where in the reply they landed.
+        payloads = []
+        envelope = (
+            '<task id="kid-1" state="completed">\n<summary>Audit parsing</summary>\n'
+            "<task_result>\nTwo bugs.\n</task_result>\n</task>\ntask_id: kid-1 (pass task_id to continue this subagent)"
+        )
+
+        async def invoke(request, user, payload, **_kwargs):
+            payloads.append(dict(payload))
+            return user, FakeSrc("llama"), "m", "m", FakeResult(
+                200, {"choices": [{"message": {"content": "Read the report"}, "finish_reason": "stop"}]})
+
+        with patch("app.chat_store.take_child_results", side_effect=[[envelope], [envelope]]), \
+             patch("app.chat_store.take_steers", return_value=[]), \
+             patch("app.chat_store.steer_display_deliveries", return_value=[]), \
+             patch("app.chat_store.close_steer_window", return_value=True), \
+             patch("app.chat_store.save_turn_progress"):
+            body, _ = await self._run_raw(invoke, {"model": "test-model", "run_id": "run-1", "tools": [],
+                                                  "messages": [{"role": "user", "content": "Start"}]})
+        sent = [m for m in payloads[0]["messages"] if "AUTOMATED EVENT" in str(m.get("content"))]
+        self.assertEqual(len(sent), 1)
+        self.assertIn("Two bugs.", sent[0]["content"])
+        events = [json.loads(line[6:]) for line in body.decode().split("\n") if line.startswith("data: {")]
+        deliveries = [e["fuse"] for e in events if (e.get("fuse") or {}).get("event") == "delivery"]
+        # Delivered once, although the peek still returned it the next round.
+        self.assertEqual(len(deliveries), 1)
+        self.assertIn('<task id="kid-1"', deliveries[0]["text"])
+        self.assertNotIn("Subagent report, not a user instruction", deliveries[0]["text"])
+
     async def test_coding_parent_never_sends_tool_choice_none(self):
         payloads = []
         rounds = {"n": 0}

@@ -313,11 +313,60 @@ function consoleMonitorEventHtml(trace, key) {
     );
   }
 
+// A delivered subagent report, worded as Claude Code words its notification:
+// Agent "<description>" finished / failed: <error> / was stopped. The first
+// lines of the report sit under it; the rest opens in place, and the name
+// opens the agent's pane.
+function consoleAgentNoticeHtml(trace, key) {
+    const label = deps.ccFlat(trace.description) || "subagent";
+    const stopped = trace.status === "interrupted";
+    const failed = trace.status === "error";
+    const head = stopped ? `Agent "${label}" was stopped`
+      : failed ? `Agent "${label}" failed: ${deps.ccClip(deps.ccFlat(trace.error).replace(/^Subagent failed:\s*/i, "") || "Unknown error", 160)}`
+      : `Agent "${label}" finished`;
+    const tone = stopped ? "gold" : failed ? "red" : "green";
+    const body = failed ? "" : String(trace.summary || "").replace(/\r\n?/g, "\n").replace(/^\s*\n|\s+$/g, "");
+    const lines = body ? body.split("\n") : [];
+    // The preview is the report's first lines of text; the whole report,
+    // blank lines included, opens in place.
+    const filled = lines.filter((line) => line.trim());
+    const show = filled.length === 3 ? 3 : 2;
+    const hidden = Math.max(0, filled.length - show);
+    const branch = `<span class="chat-console-branch" aria-hidden="true">└</span>`;
+    const text = (rows) => `<div class="chat-console-report">${rows.map((line) => `<div>${deps.escapeHtml(line) || " "}</div>`).join("")}</div>`;
+    const open = trace.child_id
+      ? `<button type="button" class="chat-step-open" data-open-agent="${deps.escapeHtml(trace.child_id)}" aria-label="Open agent">Open<span class="chat-open-target">&nbsp;agent ↗</span></button>`
+      : "";
+    const headText = `<span class="chat-console-notice-text">${deps.escapeHtml(head)}</span>`;
+    const preview = lines.length
+      ? `<div class="chat-console-hang is-expanded${hidden ? " is-event-preview" : ""}">${branch}<div class="chat-console-hang-body">${text(filled.slice(0, show))}` +
+        (hidden ? `<div class="chat-console-dim is-event-more" data-step-toggle>… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : "") + `</div></div>`
+      : "";
+    const headHtml = hidden
+      ? `<div class="chat-step-head"><button type="button" class="chat-step-toggle chat-console-notice-text" data-step-toggle aria-expanded="false">${deps.escapeHtml(head)}</button>${open}</div>`
+      : `<div class="chat-step-head">${headText}${open}</div>`;
+    const reveal = hidden
+      ? `<div class="chat-step-reveal"><div class="chat-step-reveal-inner"><div class="chat-console-hang is-expanded">${branch}<div class="chat-console-hang-body">${text(lines)}</div></div></div></div>`
+      : "";
+    return (
+      `<li class="chat-step is-console-notice is-agent-report is-${tone}${hidden ? " is-event" : ""}" data-agent-report="${deps.escapeHtml(trace.child_id || "")}"${hidden ? ` data-step="${deps.escapeHtml(key)}"` : ""}>` +
+      `<span class="chat-step-node" aria-hidden="true"></span>` +
+      `<div class="chat-step-main">${headHtml}${preview}${reveal}</div></li>`
+    );
+  }
+
+// Result rows for background work handed to the main agent: a wake turn's
+// message (msg.autoSteps) or a delivery segment inside a reply. Every
+// delivery renders through here, so the same result always looks the same.
 function consoleAutoStepsHtml(msg) {
     const traces = msg.autoSteps || [];
     const out = [];
     for (let i = 0; i < traces.length; i += 1) {
       const trace = traces[i];
+      if (trace.agentReport) {
+        out.push(consoleAgentNoticeHtml(trace, "wake-" + (msg.id || "") + "-" + i));
+        continue;
+      }
       if (trace.name === "monitor" && trace.backgroundResult && trace.status === "running") {
         out.push(consoleMonitorEventHtml(trace, "wake-" + (msg.id || "") + "-" + i));
         continue;
@@ -452,5 +501,5 @@ const CC_CALL_NAMES = {
 
 const CC_TURN_VERBS = ["Baked", "Brewed", "Churned", "Cogitated", "Cooked", "Crunched", "Sautéed", "Worked"];
 
-  return { ccCallClockHtml, ccCallName, ccCallSummary, ccCallKind, ccCountsText, ccAgentLastCall, ccCallLine, ccAgentProgressHtml, ccAgentType, ccAgentDoneText, consoleOnlyFold, ccInterruptedText, ccGroupErrorText, ccCleanBackgroundEnd, consoleMonitorEventHtml, consoleAutoStepsHtml, ccAgentsGroupHtml, ccTurnVerb, ccDoneAt, ccStillRunningText, ccStillRunningCount, CC_CALL_NAMES, CC_TURN_VERBS };
+  return { ccCallClockHtml, ccCallName, ccCallSummary, ccCallKind, ccCountsText, ccAgentLastCall, ccCallLine, ccAgentProgressHtml, ccAgentType, ccAgentDoneText, consoleOnlyFold, ccInterruptedText, ccGroupErrorText, ccCleanBackgroundEnd, consoleMonitorEventHtml, consoleAgentNoticeHtml, consoleAutoStepsHtml, ccAgentsGroupHtml, ccTurnVerb, ccDoneAt, ccStillRunningText, ccStillRunningCount, CC_CALL_NAMES, CC_TURN_VERBS };
 }

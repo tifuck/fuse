@@ -687,7 +687,8 @@ def final_report_text(message: dict) -> str:
     for part in segments:
         if not isinstance(part, dict):
             continue
-        if part.get("type") == "tool":
+        if part.get("type") in ("tool", "delivery"):
+            # Prose before a call or a delivered result is working narration.
             tail = []
         elif part.get("type") == "content":
             tail.append(str(part.get("text") or ""))

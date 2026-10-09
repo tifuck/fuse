@@ -12,7 +12,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from . import api, artifacts, chats, context_compact as ctxmod, context_meter
-from .chat_generation import metadata, policy, tool_runner
+from .chat_generation import inbox, metadata, policy, tool_runner
 from .chat_tools import execute_tool, openai_tools, parse_tool_names
 from .config import settings
 from .proxy import merge_usage, usage_from_obj
@@ -85,7 +85,6 @@ from .chat_generation.tool_jobs import (
     TOOL_RESULT_CHARS,
     ToolJob,
     _coding_completion_limit,
-    _command_result_ids,
     _completion_start_index,
     _is_preload_tool,
     _provider_snapshot,
@@ -931,72 +930,27 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     break
 
             if run_id:
-                # Children drain too: a nested parent must see its own
-                # grandchildren's results, not just the root.
-                injected = store.take_child_results(str(run_id))
-                if injected:
-                    injected = [t for t in injected if t not in delivered_local]
-                    delivered_local.update(injected)
-                if injected:
-                    # Command/monitor envelopes queued into pending_child_results
-                    # carry <command_result> / <monitor_event> / <monitor_result>
-                    # markers; their delivery receipt commits with the transcript.
-                    command_delivery_ids.extend(_command_result_ids(injected))
-                if not injected and not is_child and thread_id:
-                    # Terminal results of commands that finished while no run
-                    # was generating (owner idle or service restarted), plus
-                    # subagent reports stranded by a hard user stop or
-                    # exhausted wake retries: they ride with the user's next
-                    # turn instead of starting an automated one. Stashing via
-                    # queue_child_result keeps the save_turn_progress
-                    # acknowledgment (and the agent panel's delivered state)
-                    # on the same path as live injection.
-                    try:
-                        from . import command_jobs
-
-                        pending_commands = command_jobs.pending_envelopes(user["id"], int(thread_id))
-                        command_delivery_ids = [item["id"] for item in pending_commands]
-                        injected = [item["envelope"] for item in pending_commands]
-                    except Exception:
-                        logger.debug("thread command result inject skipped", exc_info=True)
-                    try:
-                        # An automated wake turn already carries its reports in
-                        # its seed; they stay candidates until that turn
-                        # completes, so they must not be injected again.
-                        injected.extend(store.queue_stranded_reports(
-                            user["id"], int(thread_id), str(run_id), current_messages,
-                        ))
-                    except Exception:
-                        logger.debug("thread subagent result inject skipped", exc_info=True)
-                if injected:
-                    block = (
-                        "[Fuse] AUTOMATED EVENT — not written by the user. Background results:\n\n"
-                        + "\n\n".join(injected)
-                        + "\n\nThese are for you, not the user, and not independent verification. "
-                        "A <monitor_event> means the watched condition matched: act on it, and do not start another watch for it. "
-                        "A <monitor_result> means that watch ended: state=\"completed\" is the normal end; "
-                        "\"timed_out\" means the condition never held, so find out why and re-arm only if you still need it. "
-                        "Do not re-arm a firehose auto-stop; narrow the pattern instead."
-                    )
+                # One drain for everything that arrived while this run worked
+                # (chat_generation.inbox): background results, user steers on
+                # a root, parent follow-ups on a subagent.
+                box = inbox.drain(
+                    store, run_id=str(run_id), is_child=is_child, user_id=user["id"],
+                    thread_id=thread_id, transcript=current_messages, delivered_local=delivered_local,
+                )
+                command_delivery_ids.extend(box.command_ids)
+                if box.results:
                     # Delivery receipts commit with the retained transcript.
-                    # No thread bubble or notice is emitted: the hand-off is
-                    # provider-side only (the wake banner exists solely for the
-                    # idle-thread path) and the UI stays as-is by design.
-                    transcript.append({"role": "user", "content": block})
+                    transcript.append(inbox.results_message(box.results))
                     await persist_jobs()
                     command_delivery_ids = []
-                steered = store.take_steers(str(run_id)) if not is_child else []
-                if steered:
-                    steered = [
-                        item
-                        for item in steered
-                        if f"(steer:{item.get('id')})" not in delivered_local
-                    ]
-                    delivered_local.update(f"(steer:{item.get('id')})" for item in steered)
-                if steered:
+                    # The user sees the hand-off where it happened: the run
+                    # worker records a delivery segment at this point of the
+                    # reply, rendered like a wake turn's result rows.
+                    yield _sse({"fuse": {"event": "delivery", "text": inbox.display_text(box.results)}})
+                if box.steers:
                     # User steers are real chat messages (already visible in
                     # the thread); they land here at the next tool boundary.
-                    for item in steered:
+                    for item in box.steers:
                         transcript.append(store.steer_message(item))
                     await persist_jobs()
                     # A new user instruction gets a real response budget, not
@@ -1006,41 +960,29 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     stall_fails = same_calls = length_salvages = empty_retries = 0
                     last_call_sig = None
                     budgets.update(search_queries=0, fetches=0, fetch_attempts=0)
-                delivered_ids = list(dict.fromkeys([item["id"] for item in steered] + store.steer_display_deliveries(str(run_id))))
-                if delivered_ids:
-                    # The worker flushes all preceding tokens before sealing
-                    # the visible split; only the next response belongs below it.
-                    yield _sse({"fuse": {"event": "steer.delivered", "ids": delivered_ids}})
-            if run_id and is_child:
-                followups = store.take_followups(str(run_id))
-                if followups:
-                    followups = [t for t in followups if t not in delivered_local]
-                    delivered_local.update(followups)
-                if followups:
-                    transcript.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "[Fuse] Follow-up from the parent — not written by the end user. "
-                                "Stay in the assigned task and host/cwd unless this follow-up changes them:\n\n"
-                                + "\n\n".join(followups)
-                            ),
-                        }
-                    )
-                    await persist_jobs()
-                delivered = [
-                    match
-                    for text in followups
-                    for match in re.findall(r"\(followup:([0-9a-f]{1,32})\)", text)
-                ]
-                # Recovery after a crash or a lost frame: envelopes durable in
-                # provider_messages without a display mark re-emit here, so a
-                # follow-up never permanently renders above its whole leg.
-                delivered += store.followup_display_deliveries(str(run_id))
-                if delivered:
-                    # The worker marks where in the live leg these landed, so
-                    # the panel shows them there instead of above the whole leg.
-                    yield _sse({"fuse": {"event": "followup.delivered", "ids": list(dict.fromkeys(delivered))}})
+                if not is_child:
+                    delivered_ids = list(dict.fromkeys([item["id"] for item in box.steers] + store.steer_display_deliveries(str(run_id))))
+                    if delivered_ids:
+                        # The worker flushes all preceding tokens before sealing
+                        # the visible split; only the next response belongs below it.
+                        yield _sse({"fuse": {"event": "steer.delivered", "ids": delivered_ids}})
+                else:
+                    if box.followups:
+                        transcript.append(inbox.followup_message(box.followups))
+                        await persist_jobs()
+                    delivered = [
+                        match
+                        for text in box.followups
+                        for match in re.findall(r"\(followup:([0-9a-f]{1,32})\)", text)
+                    ]
+                    # Recovery after a crash or a lost frame: envelopes durable in
+                    # provider_messages without a display mark re-emit here, so a
+                    # follow-up never permanently renders above its whole leg.
+                    delivered += store.followup_display_deliveries(str(run_id))
+                    if delivered:
+                        # The worker marks where in the live leg these landed, so
+                        # the panel shows them there instead of above the whole leg.
+                        yield _sse({"fuse": {"event": "followup.delivered", "ids": list(dict.fromkeys(delivered))}})
             # Coding parents are never force-stopped for "last round". Search chats
             # wrap up at MAX_COMPLETIONS; extra_wrap is one text-only round after
             # last-round tools actually ran. dropped_tools always forces text.

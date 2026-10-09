@@ -55,6 +55,14 @@ function markerBlockHtml(block) {
     return deps.compactionMarkHtml(block.text, block.summary);
   }
 
+// Background results handed to the model mid-reply: the same rows a wake
+// turn shows for them (consoleAutoStepsHtml), at the point they landed.
+function deliveryBlockHtml(block, msg) {
+    const steps = deps.consoleAutoStepsHtml({ id: `${msg.id || ""}-d${block.segmentIndex}`, autoSteps: deps.deliveryTraces(block.text) });
+    return `<div class="chat-auto-steps is-delivery" data-delivery="${block.segmentIndex}" role="group" aria-label="Background results"${steps ? "" : " hidden"}>` +
+      `<ol class="chat-timeline">${steps}</ol></div>`;
+  }
+
 function visibleAssistantError(msg) {
     if (!msg.error) return "";
     const index = deps.messages.findIndex(item => item === msg || (msg.id && item.id === msg.id));
@@ -91,7 +99,7 @@ function updateAssistant(article, msg, live) {
     const meta = article.querySelector("[data-meta]");
     const traces = Array.isArray(msg.tools) ? msg.tools : [];
     const isNotice = (part) => part && part.type === "marker" && part.kind === "notice";
-    const hasMarker = Array.isArray(msg.segments) && msg.segments.some((part) => part && part.type === "marker" && !isNotice(part));
+    const hasMarker = Array.isArray(msg.segments) && msg.segments.some((part) => part && ((part.type === "marker" && !isNotice(part)) || part.type === "delivery"));
     const errText = visibleAssistantError(msg);
     const segments = deps.assistantSegments(msg);
     // A run notice is status for the step it interrupted: shown while nothing
@@ -138,6 +146,7 @@ function updateAssistant(article, msg, live) {
       if (part.type === "marker") {
         return [{ type: "marker", segmentIndex, text: part.text || "", kind: part.kind || "compaction", summary: part.summary || "" }];
       }
+      if (part.type === "delivery") return part.text ? [{ type: "delivery", segmentIndex, text: part.text }] : [];
       if (part.type === "tool") {
         const found = toolById.get(part.id);
         if (!found) return [];
@@ -173,6 +182,10 @@ function updateAssistant(article, msg, live) {
         blocks.push({ kind: "todos", text: part.text });
         return;
       }
+      if (part.type === "delivery") {
+        blocks.push({ kind: "delivery", text: part.text, segmentIndex: part.segmentIndex });
+        return;
+      }
       if (part.type === "notice") {
         const last = blocks[blocks.length - 1];
         if (last && last.kind === "notices") last.lines.push(part.text);
@@ -193,6 +206,7 @@ function updateAssistant(article, msg, live) {
     // handled per block by the settled/tail markdown streamer below.
     const structure = segments.map((part) => part?.type === "marker"
       ? `marker:${part.kind || ""}:${part.text || ""}:${part.summary || ""}`
+      : part?.type === "delivery" ? `delivery:${String(part.text || "").length}`
       : `${part?.type || ""}:${part.id || ""}`).join("|");
     const permSig = (msg.permissions || []).map((p) => `${p.id}:${p.status}`).join("|");
     const traceById = new Map(traces.map((trace) => [trace && trace.id, trace]));
@@ -212,6 +226,7 @@ function updateAssistant(article, msg, live) {
       }
       if (block.kind === "marker") return `m:${block.markerKind}:${block.text}:${block.summary || ""}`;
       if (block.kind === "todos") return `o:${block.text}`;
+      if (block.kind === "delivery") return `d:${block.segmentIndex}:${block.text.length}`;
       if (block.kind === "notices") return `n:${Boolean(live)}:${block.lines.join("\n")}`;
       if (block.kind === "permission") return `p:${block.entries[0] && block.entries[0].perm && block.entries[0].perm.id}`;
       return `c:${blockIndex}`;
@@ -232,6 +247,7 @@ function updateAssistant(article, msg, live) {
           const html = block.kind === "permission"
             ? deps.permissionCardHtml(block.entries[0].perm, msg)
             : block.kind === "todos" ? deps.todoLineHtml(block.text)
+            : block.kind === "delivery" ? deliveryBlockHtml(block, msg)
             : block.kind === "notices" ? noticeBlockHtml(block.lines, live) : markerBlockHtml(block);
           if (node.outerHTML === html) { node._blockSig = next; return; }
           const fresh = document.createElement("template");
@@ -272,6 +288,7 @@ function updateAssistant(article, msg, live) {
           return markerBlockHtml(block);
         }
         if (block.kind === "todos") return deps.todoLineHtml(block.text);
+        if (block.kind === "delivery") return deliveryBlockHtml(block, msg);
         if (block.kind === "notices") return noticeBlockHtml(block.lines, live);
         if (block.kind === "content") {
           const text = block.entries.map((entry) => entry.text).join("");

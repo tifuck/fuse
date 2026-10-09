@@ -575,6 +575,83 @@ def _rows_thread(now):
     return messages, subs, tools + live_tools
 
 
+def _delivery_thread(now):
+    """Background results handed to the main agent: reports delivered mid-reply
+    (delivery segments, one quoting "</task>"), a failed report, a finished
+    command and a monitor event in the same reply, then a wake turn that
+    delivers a report and a stopped agent while the thread was idle. Both
+    paths must render the same rows."""
+    from app.chat_generation.inbox import display_text
+    from app.chat_views import render_task_output
+
+    subs = [("Audit chat generation logic", "completed"), ("Audit context and usage math", "completed"),
+            ("Audit search and pool logic", "failed"), ("Audit workspace and schedules", "completed"),
+            ("Audit retention sweep", "cancelled")]
+    cids = [_mid() for _ in subs]
+    reports = {
+        0: "SLICE: app/chat_generation/\n\n1. parsing.py: an XML `600` timeout is read as seconds, so the wait is 10 minutes.\n"
+           "2. consume.py: the steer usage slice keeps the cumulative total for the first part.\n"
+           "3. stream.py: a retry notice survives a resumed stream.\n\nTESTS: throwaway probes only.\nBLOCKERS: none",
+        1: "SLICE: context_meter / pricing\n\nThe envelope parser stops at the first </task> it sees, so a quoted tag cuts a report.\n"
+           "BLOCKERS: none",
+        2: "Subagent failed: Upstream returned 502 after 3 retries",
+        3: "SLICE: workspace_ops, schedules\n\nNo wrong results found; cron next-run math holds across DST.",
+        4: "Subagent was stopped before it finished.",
+    }
+
+    def envelope(i, state):
+        return render_task_output(child_id=cids[i], state=state, text=reports[i], description=subs[i][0])
+
+    command = ('<command_result id="qad000000001" state="completed">\nhost: qa-box command: python -m pytest -q tests/test_parsing.py\n'
+               "description: Run the parsing tests\nexit_code: 0\nduration_ms: 41000\noutput_chars: 19\noutput_chars_exact: true\n\n"
+               "38 passed in 40.2s\n</command_result>")
+    event = ('<monitor_event id="qad000000002" seq="1">\nhost: qa-box command: tail -n0 -F /var/log/fuse-qa/worker.log\n'
+             "description: errors in worker.log\n\nERROR retry budget exhausted for job 4411\n</monitor_event>")
+    root = dict(cwd="/srv/fuse-qa", host="qa-box", platform="posix", project_root="/srv/fuse-qa")
+    tools = [
+        *[_tool(f"td_s{i}", "spawn_subagent", description=desc, preview=desc, child_id=cid, subagent_type="explore",
+                background=True, model="qa/fixture-model", summary="Background task started")
+          for i, ((desc, _), cid) in enumerate(zip(subs[:4], cids))],
+        _tool("td_0", "grep", pattern="def parse_timeout", path="/srv/fuse-qa/app", output="app/parsing.py:41:def parse_timeout\n", **root),
+        _tool("td_1", "read_file", path="/srv/fuse-qa/app/parsing.py", output="41: def parse_timeout(raw):\n", **root),
+        _command("td_2", "qad000000001", "python -m pytest -q tests/test_parsing.py", "", background=True,
+                 description="Run the parsing tests"),
+        _tool("td_3", "read_file", path="/srv/fuse-qa/app/consume.py", output="1: x\n", **root),
+    ]
+    segments = [
+        {"type": "content", "text": "Splitting the audit across four slices.\n\n"},
+        *[{"type": "tool", "id": f"td_s{i}"} for i in range(4)],
+        {"type": "content", "text": "\n\nWhile they run, I'll check the parser myself.\n\n"},
+        {"type": "tool", "id": "td_0"}, {"type": "tool", "id": "td_1"},
+        {"type": "delivery", "text": display_text([envelope(0, "completed"), envelope(1, "completed")])},
+        {"type": "content", "text": "\n\nTwo slices are back. Running the parser tests in the background to confirm the timeout claim.\n\n"},
+        {"type": "tool", "id": "td_2"},
+        {"type": "delivery", "text": display_text([envelope(2, "failed")])},
+        {"type": "tool", "id": "td_3"},
+        {"type": "delivery", "text": display_text([command, event])},
+        {"type": "content", "text": "\n\nThe search slice failed upstream; the parser tests pass, and the worker log shows a retry budget error."},
+    ]
+    assistant = {
+        "id": _mid(), "role": "assistant", "content": "".join(s["text"] for s in segments if s["type"] == "content"),
+        "reasoning": "", "error": "", "model": "qa/fixture-model", "elapsedMs": 712000,
+        "endedAt": _iso(now - timedelta(minutes=2)), "stopped": False,
+        "usage": {"prompt_tokens": 61000, "completion_tokens": 3100, "total_tokens": 64100},
+        "tools": tools, "segments": segments,
+    }
+    wake = ("AUTOMATED EVENT - not written by the user. Background work you started earlier has finished. "
+            "These are child reports, finished commands, or errors — not new user requests.\n\n"
+            + envelope(3, "completed") + "\n\n" + envelope(4, "cancelled")
+            + "\n\nSummarize relevant findings without repeating full reports.")
+    messages = [
+        {"id": _mid(), "role": "user", "content": "Audit the codebase for logic bugs. Fan out.", "reasoning": "", "error": ""},
+        assistant,
+        {"id": _mid(), "role": "user", "content": wake, "reasoning": "", "error": "", "auto": True},
+        {"id": _mid(), "role": "assistant", "content": "The workspace slice found nothing; the retention audit was stopped.",
+         "reasoning": "", "error": "", "model": "qa/fixture-model", "elapsedMs": 2100},
+    ]
+    return messages, list(zip(subs, cids)), tools
+
+
 def _child_message(desc, status):
     tools = [
         _tool("ts_0_0", "read_file", path="/srv/fuse-qa/static/chat.css", cwd="/srv/fuse-qa", host="qa-box",
@@ -810,6 +887,18 @@ def _seed(uid: int):
         # Running calls are only drawn running by --live; no job row backs them.
         _insert_commands(conn, uid, rtid, rroot, [t for t in row_tools if t.get("state") != "running"], ts)
     print(f"claude code rows thread: https://127.0.0.1:8089/chat?t={rows_view['id']}")
+
+    delivery, delivery_subs, delivery_tools = _delivery_thread(now)
+    delivery_view = chats.create_thread(uid, title=FIXTURE_PREFIX + "Report delivery", model="qa/fixture-model", messages=delivery)
+    dtid = chats.resolve_thread_pk(uid, delivery_view["id"])
+    droot = _mid()
+    with db.tx() as conn:
+        _insert_root(conn, uid, dtid, droot, delivery[1], ts, dumps)
+        _insert_children(conn, uid, dtid, droot, delivery_subs, now, dumps,
+                         lambda i, desc, status: _child_message(desc, "failed" if status == "failed" else
+                                                                "interrupted" if status == "cancelled" else "completed"))
+        _insert_commands(conn, uid, dtid, droot, delivery_tools, ts)
+    print(f"report delivery thread: https://127.0.0.1:8089/chat?t={delivery_view['id']}")
 
     heavy, spawns = _heavy_thread()
     heavy_view = chats.create_thread(uid, title=FIXTURE_PREFIX + "Heavy transcript", model="qa/fixture-model", messages=heavy)

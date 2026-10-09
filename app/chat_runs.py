@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 
 from fastapi import Request
 
-from . import chat_runtime, chat_store, chats, db
+from . import chat_runtime, chat_schema, chat_store, chats, db
 from .async_work import durable_call
 
 FLUSH_SECONDS = 0.2
@@ -321,6 +321,24 @@ class Output:
                         msg.setdefault("segments", []).append({"type": "marker", "kind": "prune" if marker.startswith("Context pruned") else "compaction", "text": marker})
                 elif line:
                     msg["segments"] = _with_notice(msg.get("segments") or [], line)
+            if kind == "delivery" and isinstance(event.get("text"), str) and event["text"].strip():
+                # Background results handed to the model at this point of the
+                # reply (chat_generation.inbox). The next text or call starts
+                # its own segment below it.
+                segments = msg.setdefault("segments", [])
+                text = event["text"]
+                last = segments[-1] if segments else None
+                count = sum(1 for part in segments if part.get("type") == "delivery")
+                if last is None or last.get("type") != "delivery":
+                    last = next((part for part in reversed(segments) if part.get("type") == "delivery"), None) \
+                        if count >= chat_schema.DELIVERY_SEGMENTS_MAX else None
+                if last is not None:
+                    # Back-to-back arrivals (or a reply already holding the
+                    # cap) share one segment; whole items only, never cut.
+                    if len(last["text"]) + 1 + len(text) <= chat_schema.DELIVERY_TEXT_MAX:
+                        last["text"] = last["text"] + "\n" + text
+                elif len(segments) < chats.SEGMENT_MAX - 1:
+                    segments.append({"type": "delivery", "text": text[: chat_schema.DELIVERY_TEXT_MAX]})
             if kind == "activity" and event.get("phase") == "model":
                 self._reset_stream_round()
             if kind == "tool":
@@ -532,6 +550,11 @@ def _segments_patch(old, new):
             continue
         if before.get("type") in ("tool", "permission"):
             if before.get("id") != after.get("id"):
+                return replace_from(index)
+            continue
+        if before.get("type") == "delivery":
+            # Written once; never streamed as a text delta.
+            if before.get("text") != after.get("text"):
                 return replace_from(index)
             continue
         prior, current = before.get("text", ""), after.get("text", "")

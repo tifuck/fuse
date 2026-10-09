@@ -7,7 +7,7 @@ import re
 from uuid import uuid4
 import threading
 
-from . import db, chat_tx, chat_views, chat_run_state
+from . import db, chat_tx, chat_views, chat_run_state, run_inbox
 
 logger = logging.getLogger(__name__)
 
@@ -36,12 +36,14 @@ class SpawnCapError(Exception):
         self.detail = detail
 
 
-def queue_child_result(parent_run_id: str, envelope: str, child_id: str | None = None) -> bool:
+def queue_child_result(parent_run_id: str, envelope: str, child_id: str | None = None, *, notify: bool = True) -> bool:
     """If the parent is still generating, stash a result for the next parent round (OpenCode inject).
 
     Does not mark wake_sent; delivery is acknowledged by save_turn_progress
     once the envelope is durable in the parent transcript, so a parent that
-    finishes first still wakes.
+    finishes first still wakes. notify=False is for a result the parent is
+    receiving inline as a tool result (a join or foreground spawn): it must
+    not cut short the parent's other waits as if something new arrived.
     """
     if not parent_run_id or not envelope:
         return False
@@ -76,13 +78,15 @@ def queue_child_result(parent_run_id: str, envelope: str, child_id: str | None =
                 "UPDATE chat_runs SET request=?,updated_at=? WHERE id=?",
                 (chat_tx.dumps(req), db.now(), parent_run_id),
             )
-            return True
     except Exception:
         logger.warning(
             "queue_child_result failed for parent %s child %s",
             parent_run_id, child_id, exc_info=True,
         )
         return False
+    if notify:
+        run_inbox.arrived(parent_run_id, str(child_id or ""))
+    return True
 
 
 def drop_pending_child_result(parent_run_id: str, child_id: str) -> None:
@@ -377,7 +381,8 @@ def queue_followup(run_id: str, text: str) -> bool:
             row["thread_id"],
             {"run_id": run_id, "child_id": run_id, "status": row["status"]},
         )
-        return True
+    run_inbox.arrived(run_id, "followup")
+    return True
 
 
 def take_followups(run_id: str) -> list[str]:
@@ -713,7 +718,8 @@ def queue_steer(run_id: str, steer_id: str, text: str) -> bool:
             "UPDATE chat_runs SET request=?,updated_at=? WHERE id=?",
             (chat_tx.dumps(req), db.now(), run_id),
         )
-        return True
+    run_inbox.arrived(run_id, f"steer:{steer_id}")
+    return True
 
 
 def take_steers(run_id: str) -> list[dict]:

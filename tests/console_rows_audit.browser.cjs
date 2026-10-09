@@ -320,20 +320,20 @@ function scenarios() {
     return { rows: [user(body, { auto: true })], truth: { exec: { bg10: 'completed' } },
       has: ['Background command "npm test" completed'], lacks: ['background results', 'monitor event'] };
   });
-  add('a report envelope labels as a subagent report and is not folded into a command row', () => {
+  add('a report envelope renders as an agent notice, not a command row or a raw chip', () => {
     const body = '<task id="kid-1" state="completed">\nThe panes check out.\n</task>';
     return { rows: [user(body, { auto: true })], truth: {},
-      has: ['Automated · background subagent report', 'The panes check out.'], lacks: ['background command result', 'Monitor event'] };
+      has: ['Agent "subagent" finished', 'The panes check out.'], lacks: ['Automated · background subagent report', 'background command', 'Monitor event'] };
   });
   add('a scheduled run is not mistaken for a background result', () => {
     return { rows: [user('[Fuse] SCHEDULED RUN\nCheck the backups.', { auto: true })], truth: {},
       has: ['Automated · scheduled run'], lacks: ['background command', 'monitor event'] };
   });
-  add('command and report envelopes together label as background results', () => {
+  add('command and report envelopes together render one row each', () => {
     const body = env('command_result', 'bg11', 'state="completed"', 'host: qa-box command: npm test\nexit_code: 0\nduration_ms: 1000\noutput_chars: 2\noutput_chars_exact: true', 'ok') +
       '\n<task id="kid-2" state="completed">\nReport.\n</task>';
-    return { rows: [user(body, { auto: true })], truth: {},
-      has: ['Automated · background results'], lacks: ['Background command "npm test"'] };
+    return { rows: [user(body, { auto: true })], truth: { exec: { bg11: 'completed' } },
+      has: ['Background command "npm test" completed', 'Agent "subagent" finished'], lacks: ['Automated · background results'] };
   });
 
   // —— A subagent's own background-command handoffs, in its pane ——

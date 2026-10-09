@@ -1305,8 +1305,13 @@ def _acknowledge(rec: dict) -> None:
     _mark_delivered([str(rec["id"])])
 
 
-async def join(job_id: str, user_id: int, wait_s: float, *, thread_id=None) -> tuple[str, dict]:
-    """Wait for a job up to wait_s; returns a terminal or running envelope."""
+async def join(job_id: str, user_id: int, wait_s: float, *, thread_id=None, run_id=None) -> tuple[str, dict]:
+    """Wait for a job up to wait_s; returns a terminal or running envelope.
+
+    With run_id, the wait also ends when anything else arrives in that run's
+    inbox (run_inbox): the trace then carries early_return so the caller can
+    say why it is still running.
+    """
     rec = _get_scoped(str(job_id or ""), int(user_id), thread_id)
     if rec is None:
         return _NOT_FOUND, {
@@ -1317,14 +1322,17 @@ async def join(job_id: str, user_id: int, wait_s: float, *, thread_id=None) -> t
         }
     inspect_only = _is_monitor(rec) and rec.get("status") not in TERMINAL
     wait_for = 0.0 if inspect_only else wait_s
+    arrival = ""
     if rec.get("status") not in TERMINAL and wait_for > 0:
         fut = rec.get("future")
         if fut is not None and not fut.done():
-            try:
-                await asyncio.wait_for(asyncio.shield(fut), timeout=max(0.0, wait_for))
-            except asyncio.TimeoutError:
-                pass
-            # CancelledError propagates: Stop must interrupt the join.
+            from . import run_inbox
+
+            # Never cancels the job; CancelledError propagates: Stop must
+            # interrupt the join.
+            _finished, arrival = await run_inbox.wait_or_arrival(
+                asyncio.shield(fut), wait_for, run_id, ignore={str(rec["id"])}
+            )
     if rec.get("status") in TERMINAL:
         # An explicit join is a delivery; suppress the automatic notification.
         _acknowledge(rec)
@@ -1336,6 +1344,8 @@ async def join(job_id: str, user_id: int, wait_s: float, *, thread_id=None) -> t
     # row shows how long this wait itself will sit before it gives up.
     if not inspect_only and wait_for > 0:
         trace["timeout_ms"] = int(wait_for * 1000)
+    if arrival:
+        trace["early_return"] = True
     return text, trace
 
 

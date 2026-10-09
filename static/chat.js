@@ -96,6 +96,7 @@ import { createBoot } from './chat/boot.js';
     set consoleSpinTimer(value) { S.consoleSpinTimer = value; },
     get copyText() { return sidebar.copyText; },
     get countsLabel() { return traces.countsLabel; },
+    get deliveryTraces() { return traces.deliveryTraces; },
     get currentRunSpin() { return sidebar.currentRunSpin; },
     get detailProbe() { return S.detailProbe; },
     get editingFiles() { return S.editingFiles; },

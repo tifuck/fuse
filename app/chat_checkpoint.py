@@ -768,7 +768,7 @@ def save_turn_progress(run_id, messages, loaded_tools=None, extra=None):
         for cid in delivered_children:
             if not cid:
                 continue
-            crow = conn.execute("SELECT status,request FROM chat_runs WHERE id=?", (cid,)).fetchone()
+            crow = conn.execute("SELECT user_id,thread_id,status,request FROM chat_runs WHERE id=?", (cid,)).fetchone()
             if crow is None or crow["status"] not in chat_tx.TERMINAL:
                 # A re-spawned child (new leg in flight) keeps wake_sent=0;
                 # that leg owes a fresh report and must still wake the thread.
@@ -787,3 +787,7 @@ def save_turn_progress(run_id, messages, loaded_tools=None, extra=None):
             cagent["wake_sent"] = True
             creq["agent"] = cagent
             conn.execute("UPDATE chat_runs SET request=? WHERE id=?", (chat_tx.dumps(creq), cid))
+            # Open agent rows drop "Report pending delivery" now, not on the
+            # next unrelated refresh.
+            chat_tx.event(conn, crow["user_id"], "agent.delivered", crow["thread_id"],
+                          {"run_id": cid, "child_id": cid, "status": crow["status"], "wake_state": "delivered"})

@@ -7,7 +7,7 @@ import logging
 import re
 import time
 
-from . import chat_runs, chat_store
+from . import chat_runs, chat_store, run_inbox
 from .async_work import durable_call
 from .chat_store import SpawnCapError
 from .hosts import host_by_alias
@@ -685,10 +685,16 @@ async def spawn(
             background=True,
         )
     if task is not None:
-        done_set, _pending = await asyncio.wait({task}, timeout=FOREGROUND_BUDGET_S)
-        if task not in done_set:
+        finished, arrival = await run_inbox.wait_or_arrival(
+            task, FOREGROUND_BUDGET_S, parent_run_id, ignore={child["id"]}
+        )
+        if not finished:
+            # Out of foreground budget, or other results arrived for the
+            # parent: either way the child carries on and reports later.
             await _hand_off(user["id"], parent_run_id, child["id"], description)
             text = _envelope(child, fallback_id=child["id"], description=description, running=True)
+            if arrival:
+                text = f"{run_inbox.EARLY_RETURN_NOTE}\n{text}"
             return text, _spawn_rec(
                 status="running",
                 summary="Background task started",
@@ -715,7 +721,7 @@ async def spawn(
             # Returning a tool result is not durable delivery. Keep a receipt
             # pending until save_turn_progress saves this exact envelope.
             await durable_call(chat_store.mark_child_background, child["id"])
-            await durable_call(chat_store.queue_child_result, parent_run_id, _envelope(done, description=description), child_id=child["id"])
+            await durable_call(chat_store.queue_child_result, parent_run_id, _envelope(done, description=description), child_id=child["id"], notify=False)
     text = _envelope(done, fallback_id=child["id"], description=description)
     work = {"agent_work_ms": _work_ms(done)} if done and done.get("status") in chat_store.TERMINAL else {}
     return text, _spawn_rec(
@@ -768,6 +774,7 @@ async def get_output(*, user_id: int, arguments: str, thread_id=None, parent_run
     deadline = time.monotonic() + wait
     row = None
     misses = 0
+    early = ""
     while True:
         row = await asyncio.to_thread(chat_store.resolve_child_run,
             user_id,
@@ -793,7 +800,7 @@ async def get_output(*, user_id: int, arguments: str, thread_id=None, parent_run
             text = _envelope(row)
             if parent_run_id:
                 await durable_call(chat_store.mark_child_background, child_id)
-                await durable_call(chat_store.queue_child_result, str(parent_run_id), text, child_id=child_id)
+                await durable_call(chat_store.queue_child_result, str(parent_run_id), text, child_id=child_id, notify=False)
             status = "done" if row["status"] == "completed" else "error"
             if row["status"] in ("cancelled", "interrupted"):
                 status = "interrupted"
@@ -807,12 +814,18 @@ async def get_output(*, user_id: int, arguments: str, thread_id=None, parent_run
                 "preview": summary[:800],
             }
         remaining = deadline - time.monotonic()
-        if remaining <= 0:
+        if remaining <= 0 or early:
             break
-        await chat_runs.wait_for_run(child_id, remaining)
+        # Other results arriving for the caller end the join early so the
+        # model sees them now; this child keeps running and reports later.
+        _finished, early = await run_inbox.wait_or_arrival(
+            chat_runs.wait_for_run(child_id, remaining), remaining, parent_run_id, ignore={child_id}
+        )
     if row is None:
         return "subagent not found", {"name": "get_subagent_output", "status": "error", "error": "not found", "child_id": child_id}
     text = _envelope(row, fallback_id=child_id, running=True)
+    if early:
+        text = f"{run_inbox.EARLY_RETURN_NOTE}\n{text}"
     return text, {
         "name": "get_subagent_output",
         "status": "running",

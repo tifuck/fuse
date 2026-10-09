@@ -224,16 +224,89 @@ function wakeStepTrace(result) {
   return trace;
 }
 
+// Background results in delivery order: subagent reports (<task>), finished
+// commands and monitor events. One parser serves a wake turn's message and a
+// mid-reply `delivery` segment, so both render the same rows. A report may
+// quote "</task>" itself, so a task ends at its own "</task>" + "task_id: <id>"
+// line when present (app/chat_generation/inbox.envelope_items does the same).
+function envelopeItems(text) {
+  const source = String(text || "");
+  const start = /<(task|command_result|monitor_event|monitor_result) id="([^"]*)"[^>]*>/g;
+  const out = [];
+  let match;
+  while ((match = start.exec(source))) {
+    const [opening, tag, id] = match;
+    const close = `</${tag}>`;
+    const from = match.index + opening.length;
+    let end = -1;
+    if (tag === "task") {
+      const anchor = source.indexOf(`${close}\ntask_id: ${id}`, from);
+      if (anchor >= 0) {
+        const lineEnd = source.indexOf("\n", anchor + close.length + 1);
+        end = lineEnd < 0 ? source.length : lineEnd;
+      }
+    }
+    if (end < 0) {
+      const found = source.indexOf(close, from);
+      if (found < 0) break;
+      end = found + close.length;
+    }
+    out.push({ tag, id, text: source.slice(match.index, end) });
+    start.lastIndex = end;
+  }
+  return out;
+}
+
+function parseTaskReport(item) {
+  const text = item.text;
+  const attr = (text.match(/^<task [^>]*\bstate="([^"]*)"/) || [])[1] || "";
+  const description = ((text.match(/<summary>([\s\S]*?)<\/summary>/) || [])[1] || "").trim();
+  const body = text.match(/<(task_result|task_error)>\n?([\s\S]*?)\n?<\/\1>/);
+  // Older envelopes carry the report bare inside <task>.
+  const bare = () => text.replace(/^<task [^>]*>/, "").replace(/<\/task>[\s\S]*$/, "")
+    .replace(/<(summary|task_generation)>[\s\S]*?<\/\1>/g, "").trim();
+  return { id: item.id, state: attr, description, report: body ? body[2].trim() : bare(), failed: Boolean(body && body[1] === "task_error") };
+}
+
+// A delivered subagent report, as a row: the child's id opens its pane.
+function reportStepTrace(report) {
+  const state = report.state || "completed";
+  const stopped = ["cancelled", "interrupted"].includes(state);
+  const failed = !stopped && (report.failed || state === "error");
+  return {
+    name: "spawn_subagent",
+    agentReport: true,
+    backgroundResult: true,
+    child_id: report.id,
+    description: report.description,
+    state,
+    status: stopped ? "interrupted" : failed ? "error" : "done",
+    summary: report.report,
+    error: failed ? (report.report.split("\n").find((line) => line.trim()) || "failed").trim() : "",
+  };
+}
+
+function deliveryItems(text) {
+  return envelopeItems(text).map((item) => item.tag === "task"
+    ? { kind: "task", report: parseTaskReport(item) }
+    : { kind: "command", result: parseCommandResults(item.text)[0] }).filter((item) => item.report || item.result);
+}
+
+function deliveryTraces(text) {
+  return deliveryItems(text).map((item) => item.kind === "task" ? reportStepTrace(item.report) : wakeStepTrace(item.result));
+}
+
 function foldAutoCommandResults(rows) {
   rows.forEach((msg, index) => {
     if (msg.role !== "user" || !msg.auto) return;
     const text = String(msg.content || "");
-    if ((!text.includes("<command_result") && !text.includes("<monitor_")) || text.includes("<task id=")) {
+    const items = deliveryItems(text);
+    if (!items.length) {
       msg.autoSteps = null;
       return;
     }
-    const results = parseCommandResults(text);
-    msg.autoSteps = results.length ? results.map(wakeStepTrace) : null;
+    msg.autoSteps = items.map((item) => item.kind === "task" ? reportStepTrace(item.report) : wakeStepTrace(item.result));
+    const results = items.map((item) => item.kind === "command" ? item.result : null);
     const findTrace = (id) => {
       for (const name of ["run_terminal_command", "get_command_output", "monitor"]) {
         for (let i = 0; i < index; i++) {
@@ -246,6 +319,7 @@ function foldAutoCommandResults(rows) {
       return null;
     };
     results.forEach((result, i) => {
+      if (!result) return;
       const trace = findTrace(result.id);
       if (!trace) return;
       applyCommandResult(trace, result);
@@ -254,4 +328,4 @@ function foldAutoCommandResults(rows) {
   });
 }
 
-export { EXECUTION_FIELDS, SETTLED_TOOL_STATUS, applyCommandResult, autoEventLabel, childBackedTool, countsLabel, executionIdentity, executionPending, executionState, foldAutoCommandResults, isCodeOutputTool, isShellExecTool, mapAgentToolStatus, parseCommandResults, runIsActive, shellExitCode, shellExitOnly, toolBackground, toolFailed, toolIsCurrent, toolKey, wakeStepTrace };
+export { EXECUTION_FIELDS, SETTLED_TOOL_STATUS, applyCommandResult, autoEventLabel, childBackedTool, countsLabel, deliveryTraces, envelopeItems, executionIdentity, executionPending, executionState, foldAutoCommandResults, isCodeOutputTool, isShellExecTool, mapAgentToolStatus, parseCommandResults, runIsActive, shellExitCode, shellExitOnly, toolBackground, toolFailed, toolIsCurrent, toolKey, wakeStepTrace };

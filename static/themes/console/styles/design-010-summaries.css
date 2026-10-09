@@ -252,3 +252,38 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-cli
   display: none !important;
 }
 
+
+/* A subagent report handed to the main agent (a wake turn or a delivery
+   inside a reply): Claude Code's `Agent "…" finished` line, the report's
+   first lines under it, and a quiet link that opens the agent's pane. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-agent-report > .chat-step-main > .chat-step-head {
+  display: block;
+  min-height: 0;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-agent-report > .chat-step-main > .chat-step-head > .chat-step-open {
+  display: inline;
+  margin-left: 0.6rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: color-mix(in srgb, var(--mist) 58%, var(--ink));
+  font: inherit;
+  max-width: none;
+  cursor: pointer;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-agent-report > .chat-step-main > .chat-step-head > .chat-step-open:is(:hover, :focus-visible) {
+  color: var(--brass);
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-agent-report .chat-console-report {
+  color: color-mix(in srgb, var(--mist) 58%, var(--ink));
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Results delivered mid-reply use the wake turn's rows, in the reply's flow. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-auto-steps.is-delivery { margin: 0; }
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-auto-steps.is-delivery .chat-timeline { padding: 0; }

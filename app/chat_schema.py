@@ -32,6 +32,11 @@ NOTICE_MAX = 2_000
 # "notice" markers are run status (provider retries, cut-off calls, limits) at
 # the point they happened; the client shows them only until later output.
 MARKER_KINDS = ("compaction", "prune", "resume", "notice")
+# A delivery segment: background results handed to the model mid-reply.
+DELIVERY_TEXT_MAX = 64_000
+# Deliveries share SEGMENT_MAX with calls and text; past this many in one
+# reply, new results join the last delivery segment instead.
+DELIVERY_SEGMENTS_MAX = 48
 USAGE_MAX = 32_000
 ATTACH_MAX = 4
 ATTACH_NAME_MAX = 200
@@ -718,11 +723,23 @@ def _parse_segments(raw, tools, *, strict: bool = False, field: str = "segments"
     totals = {"content": 0, "reasoning": 0}
     out = []
     for index, item in enumerate(raw[:SEGMENT_MAX]):
-        if not isinstance(item, dict) or item.get("type") not in ("content", "reasoning", "tool", "permission", "marker"):
+        if not isinstance(item, dict) or item.get("type") not in ("content", "reasoning", "tool", "permission", "marker", "delivery"):
             if strict:
                 raise ChatValidationError(f"{field}[{index}] is invalid")
             continue
         kind = item["type"]
+        if kind == "delivery":
+            # Background results handed to the model mid-reply: the result
+            # envelopes, clipped for display (chat_generation.inbox).
+            if strict and set(item) - {"type", "text"}:
+                raise ChatValidationError(f"{field}[{index}] contains unsupported fields")
+            if strict:
+                text = _text(item.get("text"), f"{field}[{index}].text", DELIVERY_TEXT_MAX)
+            else:
+                text = _legacy_text(item.get("text"), DELIVERY_TEXT_MAX)
+            if text.strip():
+                out.append({"type": "delivery", "text": text})
+            continue
         if kind == "marker":
             allowed = {"type", "kind", "text", "summary"}
         elif kind == "reasoning":
@@ -808,6 +825,11 @@ def align_segments(segments, content, reasoning) -> list[dict]:
             ident = part.get("id")
             if isinstance(ident, str) and ident:
                 out.append({"type": kind, "id": ident})
+            continue
+        if kind == "delivery":
+            text = part.get("text") if isinstance(part.get("text"), str) else ""
+            if text.strip():
+                out.append({"type": "delivery", "text": text[:DELIVERY_TEXT_MAX]})
             continue
         if kind not in ("content", "reasoning"):
             continue

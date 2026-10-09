@@ -323,21 +323,51 @@ const taskEnvelope = (id, body) => [
         { role: 'assistant', content: 'Docs shipped.', elapsedMs: 3000, endedAt: new Date().toISOString() },
       ];
       await page.evaluate((rows) => { fuseToolFixture.mountThread(rows); }, rows);
-      const chips = await page.evaluate(() => [...document.querySelectorAll('.chat-auto-chip')].map((el) => ({
-        label: el.querySelector('.chat-auto-label')?.textContent || '',
-        expanded: el.getAttribute('aria-expanded'),
+      // The wake row is the same agent notice a mid-reply delivery shows.
+      const notices = await page.evaluate(() => [...document.querySelectorAll('.chat-step.is-agent-report')].map((el) => ({
+        text: el.querySelector('.chat-console-notice-text')?.textContent || '',
+        open: el.querySelector('[data-open-agent]')?.getAttribute('data-open-agent') || '',
       })));
-      assert.equal(chips.length, 1, `exactly one wake row | ${JSON.stringify(chips)}`);
-      assert.equal(chips[0].label, 'Automated · background subagent report', `wake row label | ${JSON.stringify(chips)}`);
+      assert.equal(notices.length, 1, `exactly one wake row | ${JSON.stringify(notices)}`);
+      assert.equal(notices[0].text, 'Agent "Ship the docs" finished', `wake row text | ${JSON.stringify(notices)}`);
+      assert.equal(notices[0].open, 'w1', `the row opens its agent | ${JSON.stringify(notices)}`);
+      assert.equal(await page.locator('.chat-auto-chip').count(), 0, 'no raw chip for a report');
       const group = await readGroup('[data-step="agents-w1"]');
       assert.equal(group.rows[0].sub, '', `the reported child drops its running line | ${JSON.stringify(group)}`);
       assert.ok(group.rows[1].sub.includes('Running in the background'), `the other child still shows running | ${JSON.stringify(group)}`);
       assert.ok(!group.text.includes('WAKE_REPORT_BODY'), `the group carries no report body | ${JSON.stringify(group)}`);
-      // The envelope exists once in the DOM (the wake row's collapsed reveal);
-      // the visible transcript shows the report at most once.
-      assert.equal(await domCount('WAKE_REPORT_BODY'), 1, 'envelope copy count (the wake row reveal)');
+      // A one-line report is the notice's preview, with no reveal copy; the
+      // visible transcript shows the report at most once.
+      assert.equal(await domCount('WAKE_REPORT_BODY'), 1, 'report copy count (the notice preview)');
       assert.ok((await visibleCount('WAKE_REPORT_BODY')) <= 1, 'report visible at most once');
       console.log('PASS background subagent report wake row');
+    }
+
+    // —— 5b. A report delivered mid-reply: the same notice, where it landed ——
+    {
+      const long = ['MID_REPORT_FIRST', '', 'second line', 'third line', 'MID_REPORT_LAST'].join('\n');
+      const rows = [
+        { role: 'user', content: 'Audit.' },
+        { role: 'assistant', content: 'Checking.\n\nTwo back.', elapsedMs: 4000, endedAt: new Date().toISOString(), tools: [],
+          segments: [
+            { type: 'content', text: 'Checking.' },
+            { type: 'delivery', text: taskEnvelope('w3', long).split('\n').slice(1).join('\n') },
+            { type: 'content', text: '\n\nTwo back.' },
+          ] },
+      ];
+      await page.evaluate((rows) => { fuseToolFixture.mountThread(rows); }, rows);
+      const order = await page.evaluate(() => [...document.querySelector('.chat-turn.is-assistant [data-flow]').children]
+        .map((el) => el.matches('[data-delivery]') ? 'delivery' : el.textContent.trim().slice(0, 9)));
+      assert.deepEqual(order, ['Checking.', 'delivery', 'Two back.'], `the delivery sits between the texts | ${JSON.stringify(order)}`);
+      const row = page.locator('[data-delivery] .chat-step.is-agent-report');
+      assert.equal(await row.count(), 1);
+      assert.equal((await row.locator('.chat-console-notice-text').first().textContent()).trim(), 'Agent "Ship the docs" finished');
+      assert.equal(await row.locator('[data-open-agent="w3"]').count(), 1, 'the delivery row opens its agent');
+      assert.ok(!(await visibleCount('MID_REPORT_LAST')), 'only the first lines show until opened');
+      await row.locator('.chat-step-toggle').click();
+      await page.waitForFunction(() => document.querySelector('[data-delivery] .chat-step-reveal.is-open'));
+      assert.ok(await visibleCount('MID_REPORT_LAST'), 'opening shows the whole report');
+      console.log('PASS report delivered mid-reply');
     }
 
     // —— 6. Phones: no horizontal overflow ——

@@ -8,7 +8,7 @@ import json
 import time
 from uuid import uuid4
 
-from . import db, chat_tx, chat_views, chat_checkpoint
+from . import db, chat_tx, chat_views, chat_checkpoint, run_inbox
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +137,10 @@ def steer_turn(user_id, thread_id, text, command_id, attachments=None):
         chats.unarchive_on_activity(conn, row, db.now())
         chat_tx.remember(conn, user_id, command_id, fingerprint, {"thread_id": pk, "message_id": user_message.get("id")})
         chat_tx.thread_event(conn, user_id, pk, transcript_changed=True)
-        return {"idempotent": False, "thread": chat_views.thread_view(conn, user_id, pk)}
+        result = {"idempotent": False, "thread": chat_views.thread_view(conn, user_id, pk)}
+    # Committed: a wait the run is blocked in returns so the steer lands now.
+    run_inbox.arrived(run["id"], f"steer:{command_id}")
+    return result
 
 
 def touch_run(run_id: str) -> None:
@@ -564,7 +567,7 @@ def mark_wake_sent(run_ids, pending_guard_run: str | None = None):
         for run_id in ids:
             if run_id in guarded:
                 continue
-            row = conn.execute("SELECT status,request FROM chat_runs WHERE id=?", (run_id,)).fetchone()
+            row = conn.execute("SELECT user_id,thread_id,status,request FROM chat_runs WHERE id=?", (run_id,)).fetchone()
             if row is None or row["status"] not in chat_tx.TERMINAL:
                 continue
             try:
@@ -584,6 +587,8 @@ def mark_wake_sent(run_ids, pending_guard_run: str | None = None):
             agent["wake_sent"] = True
             req["agent"] = agent
             conn.execute("UPDATE chat_runs SET request=? WHERE id=?", (chat_tx.dumps(req), run_id))
+            chat_tx.event(conn, row["user_id"], "agent.delivered", row["thread_id"],
+                          {"run_id": run_id, "child_id": run_id, "status": row["status"], "wake_state": "delivered"})
 
 
 def bump_wake_attempts(run_ids):

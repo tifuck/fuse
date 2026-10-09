@@ -570,7 +570,7 @@ async def execute(name: str, arguments: str, *, user_id: int, bound_host_id=None
     except WorkspaceError as exc:
         return exc.detail, _error_rec(name, exc.detail, kind="invalid_arguments")
     if name == "get_command_output":
-        return await _job_output(user_id, args, thread_id=thread_id)
+        return await _job_output(user_id, args, thread_id=thread_id, run_id=run_id)
     mode = hosts.settings_for(user_id).get("permission_mode") or "project"
     if mode == "read_only" and name in ("write_file", "search_replace", "run_terminal_command", "monitor", "kill_command"):
         msg = "permission mode is read_only"
@@ -1001,23 +1001,37 @@ async def _shell(user_id, host_id, alias, args, root, *, windows: bool = False, 
         await asyncio.to_thread(command_jobs.mark_notified, rec)
         return command_jobs.render(rec)
     try:
-        text, trace = await command_jobs.join(rec["id"], user_id, wait_ms / 1000)
+        text, trace = await command_jobs.join(rec["id"], user_id, wait_ms / 1000, run_id=run_id or None)
     except asyncio.CancelledError:
         command_jobs.kill(rec["id"], user_id)
         raise
     if trace.get("status") == "running":
+        early = bool(trace.get("early_return"))
         # Moved, not killed: the background limit is 30 minutes from now, and
-        # the result arrives on its own. A bare `sleep` stops instead.
+        # the result arrives on its own. A bare `sleep` stops instead: it was
+        # only a wait, and an arrival is what it was waiting for.
         if _is_sleep_command(command):
             command_jobs.kill(rec["id"], user_id)
-            return command_jobs.render(rec)
+            text, trace = command_jobs.render(rec)
+            if early:
+                from .run_inbox import EARLY_RETURN_NOTE
+
+                text = f"Sleep stopped early. {EARLY_RETURN_NOTE}\n{text}"
+            return text, trace
         command_jobs.arm_background(rec)
         await asyncio.to_thread(command_jobs.mark_notified, rec)
         text, trace = command_jobs.render(rec)
-        moved = (
-            f"Command did not complete within its {wait_ms // 1000}s timeout "
-            "and was moved to the background."
-        )
+        if early:
+            moved = (
+                "Background results arrived for you (delivered in the next message), so this "
+                "command was moved to the background before its timeout. Its result arrives on "
+                "its own when it exits; do not re-run it."
+            )
+        else:
+            moved = (
+                f"Command did not complete within its {wait_ms // 1000}s timeout "
+                "and was moved to the background."
+            )
         return f"{moved}\n{text}", trace
     # Completed inside the foreground wait: report it as the shell call itself
     # (join() renders both paths as get_command_output, which the dashboard
@@ -1274,7 +1288,7 @@ async def _monitor(user_id, host_id, alias, args, root, *, windows: bool = False
     return command_jobs.render(rec, tool="monitor")
 
 
-async def _job_output(user_id: int, args: dict, *, thread_id: int | None = None) -> tuple[str, dict]:
+async def _job_output(user_id: int, args: dict, *, thread_id: int | None = None, run_id: str = "") -> tuple[str, dict]:
     from . import command_jobs
 
     job_id = str(args.get("id") or args.get("child_id") or "")
@@ -1284,7 +1298,12 @@ async def _job_output(user_id: int, args: dict, *, thread_id: int | None = None)
         wait = min(max(int(timeout_ms), 0), 600_000) / 1000 if timeout_ms is not None else 600
     except (TypeError, ValueError, OverflowError):
         wait = 600
-    return await command_jobs.join(job_id, user_id, wait, thread_id=thread_id)
+    text, trace = await command_jobs.join(job_id, user_id, wait, thread_id=thread_id, run_id=run_id or None)
+    if trace.pop("early_return", False):
+        from .run_inbox import EARLY_RETURN_NOTE
+
+        text = f"{EARLY_RETURN_NOTE}\n{text}"
+    return text, trace
 
 
 def _job_kill(user_id: int, args: dict, *, thread_id: int | None = None) -> tuple[str, dict]:

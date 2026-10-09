@@ -292,7 +292,8 @@ _SHELL = (
 )
 _WAIT = (
     "- Waiting: never sleep or poll. A command runs in the foreground (2 min unless you pass "
-    "`timeout`, up to 10 min) and moves to the background on its own if it is still going — "
+    "`timeout`, up to 10 min) and moves to the background on its own if it is still going, or "
+    "sooner when background results or a user message arrive for you — "
     "you get `<command_result>` when it exits, so do not re-run it and do not poll it. "
     "Set `timeout` up front when you expect longer than 2 minutes. Use `background: true` only "
     "when you do not need the result to continue.\n"

@@ -204,7 +204,7 @@ test('a wake step keeps a monitor event live and a killed command interrupted', 
   assert.equal(failed.error, 'gave up');
 });
 
-test('folding skips task digests, unmatched ids, and a row that is not an auto handoff', () => {
+test('folding skips unmatched ids and a row that is not an auto handoff', () => {
   const c = world();
   for (const name of ['parseCommandResults', 'wakeStepTrace', 'foldAutoCommandResults']) load(name, c);
   const command = { name: 'run_terminal_command', child_id: 'job-1', command: 'npm test', description: 'Run tests', status: 'running' };
@@ -212,17 +212,35 @@ test('folding skips task digests, unmatched ids, and a row that is not an auto h
     { role: 'user', auto: true, content: 'hello' },
     { role: 'assistant', content: '', tools: [command, { name: 'grep', child_id: 'job-1' }] },
     { role: 'user', content: '<command_result id="job-1" state="completed">\nexit_code: 0\n</command_result>' },
-    { role: 'user', auto: true, content: '<command_result id="job-1" state="completed">\nexit_code: 0\n</command_result>\n<task id="c1"></task>' },
     { role: 'user', auto: true, content: '<command_result id="unknown" state="completed">\nexit_code: 1\nerror: exit 1\n</command_result>' },
   ];
   c.foldAutoCommandResults(rows);
   assert.equal(rows[0].autoSteps, null);
   assert.equal(rows[2].autoSteps, undefined, 'a plain user row is not a handoff');
-  assert.equal(rows[3].autoSteps, null, 'a task digest is a report, not command steps');
-  assert.equal(command.status, 'running', 'an unmatched or skipped envelope never touches the command');
-  assert.equal(rows[4].autoSteps.length, 1);
-  assert.equal(rows[4].autoSteps[0].status, 'done', 'exit 1 still completed');
-  assert.equal(rows[4].autoSteps[0].description, '', 'no matching command, so no description to copy');
+  assert.equal(command.status, 'running', 'an unmatched envelope never touches the command');
+  assert.equal(rows[3].autoSteps.length, 1);
+  assert.equal(rows[3].autoSteps[0].status, 'done', 'exit 1 still completed');
+  assert.equal(rows[3].autoSteps[0].description, '', 'no matching command, so no description to copy');
+});
+
+test('a handoff with reports and a command folds every result in order', () => {
+  // Deliberate: reports used to keep the whole handoff a raw chip. Every
+  // delivered result now renders as its own row, as it does mid-reply.
+  const c = world();
+  for (const name of ['parseCommandResults', 'wakeStepTrace', 'foldAutoCommandResults']) load(name, c);
+  const command = { name: 'run_terminal_command', child_id: 'job-1', command: 'npm test', description: 'Run tests', status: 'running' };
+  const report = '<task id="c1" state="completed">\n<summary>Audit</summary>\n<task_result>\nQuotes </task> safely.\n</task_result>\n</task>\ntask_id: c1 (pass task_id to continue this subagent)';
+  const rows = [
+    { role: 'assistant', content: '', tools: [command] },
+    { role: 'user', auto: true, content: `${report}\n<command_result id="job-1" state="completed">\nexit_code: 0\n</command_result>\n<task id="c2" state="cancelled">\nbare report\n</task>` },
+  ];
+  c.foldAutoCommandResults(rows);
+  const steps = rows[1].autoSteps;
+  assert.deepEqual(steps.map((s) => [s.name, s.status]), [['spawn_subagent', 'done'], ['run_terminal_command', 'done'], ['spawn_subagent', 'interrupted']]);
+  assert.equal(steps[0].summary, 'Quotes </task> safely.', 'a quoted close tag does not cut the report');
+  assert.equal(steps[0].description, 'Audit');
+  assert.equal(steps[2].summary, 'bare report', 'a legacy envelope keeps its bare report');
+  assert.equal(command.status, 'done', 'the command result still settles its call');
 });
 
 test('applying a result keeps killed output and refuses to revive a settled call', () => {
