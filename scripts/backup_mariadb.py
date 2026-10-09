@@ -29,8 +29,11 @@ def backup(directory):
     with tempfile.NamedTemporaryFile(mode="w", prefix="fuse-db-", suffix=".cnf") as auth:
         auth.write(config)
         auth.flush()
+        # The client's default packet is smaller than our largest rows (chat_runs);
+        # past it the server drops the connection mid-table (error 2013).
         proc = subprocess.Popen(["mariadb-dump", f"--defaults-extra-file={auth.name}",
-            "--single-transaction", "--quick", "--hex-blob", "--skip-lock-tables", parsed.path.strip("/")], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            "--single-transaction", "--quick", "--hex-blob", "--skip-lock-tables", "--max-allowed-packet=1G",
+            parsed.path.strip("/")], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         # Drain stderr concurrently: unread, a full pipe would block the dump
         # mid-stream and stall the stdout copy loop below.
         stderr_buf = []
