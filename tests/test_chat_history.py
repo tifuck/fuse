@@ -402,6 +402,29 @@ class HistoryTest(unittest.TestCase):
         self.assertEqual(retry["request"]["messages"], sent)
         self.assertEqual(retry["request"]["history_info"]["trace_fallbacks"], 0)
 
+    def test_turn_after_a_steered_turn_extends_its_exact_provider_rows(self):
+        # The display splits a steered reply into frozen part, steer and
+        # continuation; the next turn must still replay the provider rows that
+        # were sent, in order, rather than rebuilding them from display rows.
+        run = self.start("original request")
+        store.steer_turn(1, self.thread["id"], "STEERED", "steer-1")
+        source = [*store.get_run(1, run["id"])["request"]["messages"],
+                  {"role": "assistant", "content": "checking", "tool_calls": [{"id": "read", "type": "function",
+                      "function": {"name": "read_file", "arguments": "{}"}}]},
+                  {"role": "tool", "tool_call_id": "read", "content": "FULL_RESULT_ONE"},
+                  {"role": "user", "content": "STEERED (steer:steer-1)"},
+                  {"role": "assistant", "content": "after steer"}]
+        store.save_provider_messages(run["id"], source)
+        store.finish_run(run["id"], {"content": "checkingafter steer", "reasoning": "",
+            "tools": [{"id": "read-ui", "name": "read_file", "status": "done", "output": "short UI"}],
+            "segments": [{"type": "content", "text": "checking"}, {"type": "tool", "id": "read-ui"},
+                         {"type": "content", "text": "after steer"}]}, "completed")
+        nxt = self.start("next")
+        sent = nxt["request"]["messages"]
+        self.assertEqual(sent[:len(source)], source)
+        self.assertEqual(sent[len(source):], [chats.request_message({"role": "user", "content": "next"})])
+        self.assertEqual(nxt["request"]["history_info"]["trace_fallbacks"], 0)
+
 
 
 class OutputAndModelTest(unittest.TestCase):

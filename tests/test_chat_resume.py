@@ -449,6 +449,81 @@ class ResumeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent[2]["messages"][:len(sent[1]["messages"])], sent[1]["messages"])
         self.assertEqual(sent[2]["tools"], sent[1]["tools"])
 
+    async def test_wake_turn_keeps_the_cached_tools_and_system_prefix(self):
+        # A wake turn (auto=True) between two user turns of a coding chat must
+        # not change the tool list: tools lead every provider's cached prefix,
+        # and a changed list also re-renders the system row. Skill authoring is
+        # refused at execution on automated turns, not by hiding the schema.
+        db.execute("INSERT OR REPLACE INTO user_agent_settings(user_id, agent_coding) VALUES(1, 1)")
+        thread = chats.create_thread(1, model="offline", tools=["web_search"])
+        sent = []
+
+        async def invoke(request, user, body, **_kwargs):
+            sent.append(json.loads(json.dumps(body)))
+            return user, src(), "offline", "offline", ok_result()
+
+        system = iter(["first system", "wake system", "third system"])
+        for auto in (False, True, False):
+            view = chats.get_thread(1, thread["id"])
+            run = store.start_turn(1, thread["id"], "wake event" if auto else "go", view["revision"], None, auto=auto)["run"]
+            self.assertEqual(bool(run["request"]["agent"].get("auto")), auto)
+            with patch.object(runtime, "build_system_prompt", return_value=next(system)):
+                await self.stream_turn(invoke, run["request"], frozen_context=chats.get_user_context(1))
+            store.finish_run(run["id"], {"content": "final answer", "reasoning": ""}, "completed")
+        names = [[t["function"]["name"] for t in body["tools"]] for body in sent]
+        self.assertIn("propose_skill", names[0])
+        self.assertEqual(sent[1]["tools"], sent[0]["tools"])
+        self.assertEqual(sent[2]["tools"], sent[0]["tools"])
+        for earlier, later in zip(sent, sent[1:]):
+            self.assertEqual(later["messages"][:len(earlier["messages"])], earlier["messages"])
+        self.assertEqual(sent[2]["messages"][0]["content"], "first system")
+
+    async def test_next_turn_replays_tool_rounds_reasoning_and_session_tail_verbatim(self):
+        # Every request extends the previous one: within a turn (tool round,
+        # final answer) and across turns (the retained transcript, including
+        # the earlier turn's session tail and native reasoning).
+        thread = chats.create_thread(1, model="glm-5.3-flash", tools=["web_search"])
+        sent = []
+
+        async def invoke(request, user, body, **_kwargs):
+            sent.append(json.loads(json.dumps(body)))
+            if len(sent) == 1:
+                return user, src(), "offline", "offline", stream_result([
+                    frame({"choices": [{"delta": {"reasoning_content": "plan the search"}}]}),
+                    frame({"choices": [{"delta": {"content": "Looking it up."}}]}),
+                    frame({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1",
+                        "function": {"name": "web_search", "arguments": "{\"query\":\"q\"}"}}]}, "finish_reason": "tool_calls"}]}),
+                    b"data: [DONE]\n\n",
+                ])
+            return user, src(), "offline", "offline", ok_result("answer %d" % len(sent))
+
+        async def fake_tools(*args, **kwargs):
+            yield [SimpleNamespace(orig_index=0, call_id="c1", name="web_search", arguments="{\"query\":\"q\"}",
+                event_id="ts_0_0", text="result body", trace={"id": "ts_0_0", "status": "done"}, done=True)]
+
+        with patch.object(runtime, "_run_tools", fake_tools):
+            for text in ("first", "second"):
+                view = chats.get_thread(1, thread["id"])
+                run = store.start_turn(1, thread["id"], text, view["revision"], None)["run"]
+                await self.stream_turn(invoke, run["request"], frozen_context=chats.get_user_context(1))
+                saved = store.get_run(1, run["id"])
+                final = saved["message"] if isinstance(saved.get("message"), dict) else {}
+                store.finish_run(run["id"], {"content": final.get("content") or ("answer %d" % len(sent)),
+                                             "reasoning": final.get("reasoning") or "",
+                                             "tools": final.get("tools") or []}, "completed")
+        self.assertEqual(len(sent), 3)
+        tool_round, first_answer, second_turn = sent
+        self.assertEqual(first_answer["messages"][:len(tool_round["messages"])], tool_round["messages"])
+        self.assertIn("[Fuse session context", json.dumps(first_answer["messages"][1]))
+        # The earlier turn's last request, then its final answer, then the new user row.
+        self.assertEqual(second_turn["messages"][:len(first_answer["messages"])], first_answer["messages"])
+        self.assertEqual(second_turn["messages"][len(first_answer["messages"])]["role"], "assistant")
+        self.assertEqual(second_turn["messages"][-1]["role"], "user")
+        self.assertEqual(second_turn["tools"], tool_round["tools"])
+        # GLM replays its native reasoning; it must ride along unchanged.
+        call_row = next(m for m in second_turn["messages"] if m.get("tool_calls"))
+        self.assertEqual(call_row["reasoning_content"], "plan the search")
+
     async def test_explicit_settings_refresh_prompt_without_rewriting_history(self):
         sent = []
 
