@@ -99,7 +99,6 @@ from .chat_generation.tool_jobs import (
     jobs_from_calls,
 )
 from .chat_generation.tool_runner import (
-    MAX_CALLS_CODING,
     MAX_CALLS_PER_ROUND,
     _record_failure,
 )
@@ -123,8 +122,6 @@ MAX_COMPLETIONS = 6
 # Consecutive failed tool calls (parent and child). A real audit may run
 # dozens of successful rounds; this only trips when calls fail back-to-back.
 STALL_FAIL_CALLS = 20
-MAX_SEARCH_QUERIES_PER_TURN = 16
-MAX_FETCHES_PER_TURN = 6
 
 
 MAX_LENGTH_SALVAGES = 2

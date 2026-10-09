@@ -30,8 +30,7 @@ from .tool_jobs import ToolJob, _redact_tool_args, _running_event, jobs_from_cal
 logger = logging.getLogger(__name__)
 
 
-MAX_CALLS_PER_ROUND = 8
-MAX_CALLS_CODING = 16
+MAX_CALLS_PER_ROUND = 32
 
 
 FETCH_CONCURRENCY = 4
@@ -52,6 +51,7 @@ _DURATION_SUFFIX_TOOLS = frozenset(
         "load_skill",
         "search_tools",
         "search_models",
+        "read_transcript",
     }
 )
 
@@ -419,7 +419,7 @@ async def run_tools(
             return "fetch"
         if name in ARTIFACT_TOOL_IDS:
             return "artifact"
-        if name in ("search_tools", "load_skill", "todo_write", "scratch", "propose_skill", "search_models"):
+        if name in ("search_tools", "load_skill", "todo_write", "scratch", "propose_skill", "search_models", "read_transcript"):
             return "meta"
         if name == "spawn_subagent":
             return "spawn"
@@ -429,9 +429,10 @@ async def run_tools(
 
     async def worker():
         try:
-            call_cap = MAX_CALLS_CODING if coding else MAX_CALLS_PER_ROUND
+            # Coding steps are uncapped; only chat replies keep a per-step cap.
+            call_cap = None if coding else MAX_CALLS_PER_ROUND
             for j in jobs:
-                if j.orig_index >= call_cap:
+                if call_cap is not None and j.orig_index >= call_cap:
                     extra = "Too many tool calls in one step; extra calls were ignored."
                     j.text = extra
                     j.trace = {
@@ -453,7 +454,7 @@ async def run_tools(
                     emit({"event": "tool", **j.trace})
                     continue
             await persist_now()
-            runnable = [j for j in jobs if j.orig_index < call_cap]
+            runnable = jobs if call_cap is None else [j for j in jobs if j.orig_index < call_cap]
             # Independent calls run concurrently: the old phase chain (spawn →
             # join → shell → search) made a 75s foreground spawn or a long
             # join freeze every file/shell/search call in the same step.

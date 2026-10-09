@@ -1007,6 +1007,35 @@ class RetainedSkillRowsTest(unittest.TestCase):
         ]), [])
 
 
+class ContinuationSystemRowTest(unittest.TestCase):
+    """Compaction must not carry (or need to carry) a system row: the request
+    path re-prepends the system prompt, which is what keeps project AGENTS.md
+    in the conversation after a handoff."""
+
+    def test_continuation_has_no_system_row(self):
+        rows = context_compact.continuation("did the work")
+        self.assertEqual([r["role"] for r in rows], ["user", "assistant"])
+        self.assertTrue(rows[0]["content"].startswith(context_compact.COMPACT_PREAMBLE))
+
+    def test_project_instructions_survive_compaction_via_system_prompt(self):
+        from app.chat_prompts import build_system_prompt
+
+        agents = "# rules\n- run tests with `make test`"
+        rebuilt = context_compact.continuation("did the work")
+        system = build_system_prompt(
+            instructions="", profile="", thread_context="", tools=["web_search"],
+            coding=True, project_session=True,
+            project_agents=agents, project_agents_name="AGENTS.md",
+        )
+        work = [{"role": "system", "content": system}, *rebuilt]
+        self.assertIn("make test", work[0]["content"])
+        self.assertIn("AGENTS.md", work[0]["content"])
+        self.assertTrue(work[1]["content"].startswith(context_compact.COMPACT_PREAMBLE))
+
+    def test_preamble_points_at_transcript_tool(self):
+        self.assertIn("read_transcript", context_compact.COMPACT_PREAMBLE)
+
+
 def _tool_round(i: int, size: int) -> list[dict]:
     return [
         {"role": "assistant", "content": "", "tool_calls": [

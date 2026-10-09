@@ -35,7 +35,7 @@ class OpenaiToolsLockTest(unittest.TestCase):
         ]
         self.assertEqual(
             names,
-            ["web_search", "read_url", "search_tools", "load_skill", "todo_write", "scratch"],
+            ["web_search", "read_url", "search_tools", "load_skill", "todo_write", "scratch", "read_transcript"],
         )
         self.assertNotIn("create_artifact", names)
         self.assertNotIn("read_file", names)
@@ -80,7 +80,7 @@ class OpenaiToolsLockTest(unittest.TestCase):
         overflow = {"type": "function", "function": {"name": "audit_extra", "parameters": {"type": "object", "properties": {}}}}
         with patch.dict(agent_catalog.SCHEMAS, {"audit_extra": overflow}):
             names = [s["function"]["name"] for s in openai_tools([], coding=True, extra=[*extra, "audit_extra"])]
-        always = {"search_tools", "load_skill", "todo_write", "scratch"}
+        always = {"search_tools", "load_skill", "todo_write", "scratch", "read_transcript"}
         extras = [n for n in names if n not in always]
         self.assertEqual(extras, extra)
         self.assertNotIn("audit_extra", names)

@@ -371,6 +371,20 @@ class RuntimeHookTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["tool_name"], "web_search")
 
+    async def test_coding_steps_have_no_call_cap(self):
+        async def fake_execute(name, arguments, **kwargs):
+            return "", {"name": name, "status": "done"}
+
+        calls = [
+            {"id": f"call_{i}", "type": "function", "function": {"name": "grep", "arguments": "{}"}}
+            for i in range(MAX_CALLS_PER_ROUND + 5)
+        ]
+        with patch("app.chat_runtime.execute_tool", fake_execute):
+            jobs = await _drain_tools(calls, diag=self._diag(), coding=True)
+        self.assertEqual(len(jobs), MAX_CALLS_PER_ROUND + 5)
+        self.assertTrue(all(j.trace.get("status") != "error" for j in jobs))
+        self.assertEqual(len(tool_failures.recent(kind="over_call_cap")), 0)
+
     async def test_unknown_tool_trace_is_recorded(self):
         async def fake_execute(name, arguments, **kwargs):
             return "Unknown tool.", {"name": name, "status": "error", "kind": "unknown_tool", "error": "unknown tool"}
