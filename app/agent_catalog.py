@@ -4,7 +4,10 @@ from __future__ import annotations
 import json
 import re
 
-ALWAYS_ON_CODING = ("search_tools", "load_skill", "todo_write", "scratch", "read_transcript")
+# read_transcript is disabled, not removed: True re-advertises it and lets calls run.
+READ_TRANSCRIPT_ENABLED = False
+ALWAYS_ON_CODING = ("search_tools", "load_skill", "todo_write", "scratch",
+                    *(("read_transcript",) if READ_TRANSCRIPT_ENABLED else ()))
 WORKSPACE_NAMES = (
     "read_file",
     "list_dir",
@@ -871,6 +874,10 @@ SCHEMAS = {
         },
     },
 }
+# Kept but unregistered while disabled: nothing advertises, searches, or loads it.
+READ_TRANSCRIPT_SCHEMA = SCHEMAS.pop("read_transcript")
+if READ_TRANSCRIPT_ENABLED:
+    SCHEMAS["read_transcript"] = READ_TRANSCRIPT_SCHEMA
 
 SKILLS: dict[str, str] = {}
 

@@ -16,8 +16,8 @@ _TMP = tempfile.mkdtemp(prefix="fuse-xcript-")
 os.environ.setdefault("DATABASE_PATH", str(Path(_TMP) / "xcript.db"))
 os.environ.setdefault("APP_SECRET", "x" * 32)
 
-from app import chats, db  # noqa: E402
-from app.chat_tools import execute_tool  # noqa: E402
+from app import agent_catalog, chats, db  # noqa: E402
+from app.chat_tools import execute_tool, openai_tools  # noqa: E402
 
 db.settings.database_path = str(Path(_TMP) / "xcript.db")
 db._conn = None
@@ -36,6 +36,10 @@ class ReadTranscriptTest(unittest.IsolatedAsyncioTestCase):
         started = patch.object(db, "connect", return_value=self.conn)
         started.start()
         self.addCleanup(started.stop)
+        # The tool is disabled; these pin the kept handler for when it is re-enabled.
+        enabled = patch.object(agent_catalog, "READ_TRANSCRIPT_ENABLED", True)
+        enabled.start()
+        self.addCleanup(enabled.stop)
         for uid in (1, 2):
             db.execute(
                 "INSERT INTO users(id,email,password_hash,created_at) VALUES(?,?,?,?)",
@@ -111,3 +115,23 @@ class ReadTranscriptTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("Unknown tool", body)
         self.assertEqual(rec["status"], "error")
+
+
+class ReadTranscriptDisabledTest(unittest.IsolatedAsyncioTestCase):
+    def test_not_advertised_or_loadable(self):
+        self.assertFalse(agent_catalog.READ_TRANSCRIPT_ENABLED)
+        self.assertNotIn("read_transcript", agent_catalog.ALWAYS_ON_CODING)
+        self.assertIsNone(agent_catalog.schema("read_transcript"))
+        names = [s["function"]["name"] for s in openai_tools(["web_search"], coding=True, project_session=True)]
+        self.assertNotIn("read_transcript", names)
+        found = agent_catalog.search("transcript", ["read_transcript"])
+        self.assertEqual([s["function"]["name"] for s in found], [])
+        self.assertEqual(agent_catalog.READ_TRANSCRIPT_SCHEMA["function"]["name"], "read_transcript")
+
+    async def test_call_is_unknown_tool(self):
+        body, rec = await execute_tool(
+            "read_transcript", "{}", user_id=1, allowed_urls=set(), coding=True, thread_id=1,
+        )
+        self.assertIn("Unknown tool", body)
+        self.assertEqual(rec["status"], "error")
+        self.assertEqual(rec["kind"], "unknown_tool")

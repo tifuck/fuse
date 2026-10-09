@@ -1032,8 +1032,9 @@ class ContinuationSystemRowTest(unittest.TestCase):
         self.assertIn("AGENTS.md", work[0]["content"])
         self.assertTrue(work[1]["content"].startswith(context_compact.COMPACT_PREAMBLE))
 
-    def test_preamble_points_at_transcript_tool(self):
-        self.assertIn("read_transcript", context_compact.COMPACT_PREAMBLE)
+    def test_preamble_does_not_point_at_disabled_transcript_tool(self):
+        self.assertNotIn("read_transcript", context_compact.COMPACT_PREAMBLE)
+        self.assertNotIn("Fuse thread", context_compact.COMPACT_PREAMBLE)
 
 
 def _tool_round(i: int, size: int) -> list[dict]:

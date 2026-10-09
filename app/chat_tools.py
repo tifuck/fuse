@@ -861,6 +861,8 @@ async def execute_tool(
                 rec["kind"] = "unknown_skill"
             return body, rec
         if name == "read_transcript":
+            if not agent_catalog.READ_TRANSCRIPT_ENABLED:
+                return unknown_tool_reply(name, arguments, coding=True)
             from . import chats as chats_mod
             from . import context_compact as ctxmod
             from . import db
