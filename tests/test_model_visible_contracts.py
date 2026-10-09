@@ -111,6 +111,23 @@ class ModelVisibleContractsTest(unittest.TestCase):
         self.assertIn("spawn_subagent", scratch["description"])
         self.assertIn("scratch", spawn["parameters"]["properties"])
 
+    def test_schema_bounds_stay_grammar_safe(self):
+        # llama.cpp compiles schemas into a grammar; a {0,200000} repetition
+        # fails with "failed to parse grammar" as soon as the tool is loaded.
+        def bounds(node):
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    if key in ("maxLength", "maxItems"):
+                        yield value
+                    yield from bounds(value)
+            elif isinstance(node, list):
+                for value in node:
+                    yield from bounds(value)
+
+        for name, schema in {**SCHEMAS, **agent_catalog.SCHEMAS}.items():
+            for value in bounds(schema):
+                self.assertLessEqual(value, 8000, name)
+
     def test_quote_freshness_is_not_asserted_by_wrapper(self):
         result = pack_search([QueryResult(
             query="bitcoin price",

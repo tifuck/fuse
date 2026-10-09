@@ -536,12 +536,10 @@ SCHEMAS = {
                     "old_string": {
                         "type": "string",
                         "minLength": 1,
-                        "maxLength": 200000,
                         "description": "Exact text to replace. Required unless edits is given.",
                     },
                     "new_string": {
                         "type": "string",
-                        "maxLength": 200000,
                         "description": "Replacement text. Required unless edits is given.",
                     },
                     "replace_all": {"type": "boolean"},
@@ -553,8 +551,8 @@ SCHEMAS = {
                         "items": {
                             "type": "object",
                             "properties": {
-                                "old_string": {"type": "string", "minLength": 1, "maxLength": 200000},
-                                "new_string": {"type": "string", "maxLength": 200000},
+                                "old_string": {"type": "string", "minLength": 1},
+                                "new_string": {"type": "string"},
                                 "replace_all": {"type": "boolean"},
                             },
                             "required": ["old_string", "new_string"],
