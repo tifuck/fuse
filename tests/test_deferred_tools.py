@@ -449,6 +449,12 @@ class CodingPromptTest(unittest.TestCase):
             self.assertIn("<monitor_event>", text)
             # Waiting on a condition is a monitor on a marker line, never sleep.
             self.assertIn("echo READY` with pattern `^READY$`", text)
+            # A process-name check matches the watcher's own `bash -c` line.
+            self.assertIn("Process-name checks match themselves", text)
+            self.assertIn("pgrep -f '[c]url.*Q6_K'", text)
+            self.assertIn("echo $! > /tmp/fuse/job.pid", text)
+            self.assertIn("with pattern `^DONE`", text)
+            self.assertIn("run the check once by hand", text)
             self.assertIn("the event wakes you", text)
             if kwargs.get("loaded_tools"):
                 self.assertIn("Loaded tools: run_terminal_command", text)
@@ -472,6 +478,8 @@ class CodingPromptTest(unittest.TestCase):
         self.assertIn("never sleep or poll", explore)
         self.assertNotIn("`monitor`", explore)
         self.assertNotIn("echo READY", explore)
+        # Explore still runs foreground waits, so it gets the self-match rule.
+        self.assertIn("Process-name checks match themselves", explore)
         plan = build_system_prompt(
             instructions="", profile="", thread_context="", tools=["web_search"],
             coding=True, subagent=True, subagent_type="plan",
@@ -481,6 +489,10 @@ class CodingPromptTest(unittest.TestCase):
 
         monitor = SCHEMAS["monitor"]["function"]["description"]
         self.assertIn("echo READY`, pattern ^READY$", monitor)
+        self.assertIn("the watcher's own shell matches it", monitor)
+        self.assertIn("pgrep -f '[c]url'", monitor)
+        self.assertIn("kill -0 <pid>", monitor)
+        self.assertIn("Run the check once by hand right after arming", monitor)
         self.assertIn("state=\"completed\" is the normal end", monitor)
         self.assertIn("find out why before re-arming", monitor)
         self.assertNotIn("reached max_events`", monitor)
