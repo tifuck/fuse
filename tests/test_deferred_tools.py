@@ -447,14 +447,18 @@ class CodingPromptTest(unittest.TestCase):
             self.assertIn("`monitor`", text)
             self.assertIn("never sleep or poll", text)
             self.assertIn("<monitor_event>", text)
-            # Waiting on a condition is a monitor on a marker line, never sleep.
-            self.assertIn("echo READY` with pattern `^READY$`", text)
+            # One notification is one (background) command that exits when the
+            # condition holds; a monitor is only for one event per occurrence.
+            self.assertIn("Pick the wait by how many notifications you need", text)
+            self.assertIn("`until curl -sf localhost:8080/health >/dev/null 2>&1; do sleep 1; done`", text)
+            self.assertIn("One notification per occurrence is a `monitor`, never a single event", text)
+            self.assertNotIn("echo READY", text)
             # A process-name check matches the watcher's own `bash -c` line.
             self.assertIn("Process-name checks match themselves", text)
             self.assertIn("pgrep -f '[c]url.*Q6_K'", text)
             self.assertIn("echo $! > /tmp/fuse/job.pid", text)
-            self.assertIn("with pattern `^DONE`", text)
-            self.assertIn("run the check once by hand", text)
+            self.assertIn("until [ -s /tmp/fuse/job.status ]", text)
+            self.assertIn("run its check once by hand", text)
             # A job you start reports its own exit; a bare `cmd &` dies of SIGPIPE.
             self.assertIn("`<command_result>` brings its exit code", text)
             self.assertIn("dies of SIGPIPE", text)
@@ -484,6 +488,8 @@ class CodingPromptTest(unittest.TestCase):
         self.assertIn("never sleep or poll", explore)
         self.assertNotIn("`monitor`", explore)
         self.assertNotIn("echo READY", explore)
+        # Explore's waits are background commands, which it can run.
+        self.assertIn("Pick the wait by how many notifications you need", explore)
         # Explore still runs foreground waits, so it gets the self-match rule.
         self.assertIn("Process-name checks match themselves", explore)
         plan = build_system_prompt(
@@ -494,13 +500,17 @@ class CodingPromptTest(unittest.TestCase):
         from app.agent_catalog import SCHEMAS
 
         monitor = SCHEMAS["monitor"]["function"]["description"]
-        self.assertIn("echo READY`, pattern ^READY$", monitor)
+        self.assertIn("is not a monitor: use run_terminal_command with background: true", monitor)
+        self.assertIn("if this crashed right now, would my filter emit anything?", monitor)
+        self.assertIn("Events are not user replies", monitor)
+        self.assertIn("re-arm on each expiry", monitor)
+        self.assertNotIn("echo READY", monitor)
         self.assertIn("the watcher's own shell matches it", monitor)
         self.assertIn("pgrep -f '[c]url'", monitor)
         self.assertIn("kill -0 <pid>", monitor)
         self.assertIn("Run the check once by hand right after arming", monitor)
         self.assertIn("Silence is not success", monitor)
-        self.assertIn("its <command_result> carries the exit code", monitor)
+        self.assertIn("<command_result> is the notification and carries the exit code", monitor)
         self.assertIn("(8 within 2 s) is auto-stopped", monitor)
         self.assertNotIn("echo OK || echo FAIL) > /tmp/fuse/job.status 2>&1", monitor)
         self.assertIn("state=\"completed\" is the normal end", monitor)
