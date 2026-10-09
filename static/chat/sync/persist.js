@@ -102,7 +102,8 @@ export function createPersist(ctx) {
       const transcriptSent = Boolean(payload.messages) || !S.transcriptDirty;
       if (S.revision !== savedRevision) queueSave();
       else if (transcriptSent) { S.dirty = false; S.transcriptDirty = false; }
-      if (!S.dirty) picker.defaultHint();
+      // Only a save error is this save's to clear; other toasts keep their time.
+      if (!S.dirty) picker.releaseHint("save");
       status.syncStatus();
     } catch (error) {
       if (expectedGeneration !== S.generation) throw error;
@@ -124,7 +125,7 @@ export function createPersist(ctx) {
       }
       S.dirty = true;
       if (net.isTransportError(error)) net.markDisconnected();
-      else status.showFailure("Chat was not saved", error);
+      else status.showFailure("Chat was not saved", error, "save");
       throw error;
     }
   }

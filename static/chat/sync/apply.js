@@ -18,7 +18,13 @@ export function createApply(ctx) {
         method: "POST",
         body: JSON.stringify({ command_id: newSession() }),
       });
-      if (data && data.started) picker.setHint("Regenerating title\u2026", false, 6000);
+      if (data && data.started) {
+        // Held until the title lands (thread.updated) or fails (title.failed),
+        // with a backstop for a regenerated title identical to the old one.
+        const key = "title:" + S.currentId;
+        picker.holdHint(key, "Regenerating title\u2026");
+        window.setTimeout(() => picker.releaseHint(key), 30000);
+      }
       else if (data?.busy) picker.setHint("Title generation is already running.");
     } catch (error) {
       if (error && error.status === 429) picker.setHint(error.message || "Title regeneration limit reached. Try again later.", true);
@@ -32,7 +38,7 @@ export function createApply(ctx) {
     if (!S.currentId || !S.messages.length || !net.requireLive()) return;
     try {
       await net.api("/chat/threads/" + S.currentId + "/recap", { method: "POST", body: "{}" });
-      picker.setHint("Recap queued; generates once background work finishes.", false, 6000);
+      picker.setHint("Recap queued; generates once background work finishes.");
     } catch (error) { status.showFailure("Could not request a recap", error); }
   }
 

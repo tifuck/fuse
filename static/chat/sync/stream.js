@@ -25,6 +25,7 @@ export function createStream(ctx) {
         sidebar.threadGone(payload.id || event.thread_id);
       } else {
         const prior = sidebar.threadById(payload.id);
+        if (prior && payload.title && payload.title !== prior.title) picker.releaseHint("title:" + payload.id);
         if (!prior || payload.revision >= prior.revision) sidebar.upsertLocal(payload);
         if (event.thread_id === S.currentId && event.id > S.viewCursor) {
           await persist.flushSave().catch(() => {});
@@ -170,8 +171,9 @@ export function createStream(ctx) {
         if (S.activeRun && S.activeRun.id === payload.run_id) {
           S.stoppingRunId = payload.run_id || S.stoppingRunId;
           S.activeRun.cancel_requested = true;
+          // A Stop from another tab or device shows here too.
+          picker.holdHint("stop:" + payload.run_id, "Stopping…");
           status.setRunning();
-          picker.setHint("Stopping…");
         }
         S.viewCursor = event.id;
         S.threadWatermark = event.id;

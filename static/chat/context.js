@@ -131,7 +131,7 @@ export function createContext(ctx) {
     function warnTextOnlyModel() {
     const model = currentModel();
     if (model && model.image === false && chatHasImages()) {
-      picker.setHint(model.name + " can't view images. They'll be skipped and kept for image models.", false, 6000);
+      picker.setHint(model.name + " can't view images. They'll be skipped and kept for image models.");
     }
   }
 
@@ -454,14 +454,14 @@ export function createContext(ctx) {
       return;
     }
     if (traces.runIsActive(S.activeRun) || S.sending) {
-      picker.setHint("Wait for this reply to finish, then compact.");
+      picker.setHint("Wait for this reply to finish, then compact.", true);
       return;
     }
     if (!net.requireLive()) return;
     S.compactingRequest = true;
     syncContextMeter();
     closeContextPop();
-    picker.setHint("Compacting context · summarizing " + formatTokens(contextSnapshot().used) + " tokens, this can take a few minutes…", false, 0);
+    picker.holdHint("compact", "Compacting context · summarizing " + formatTokens(contextSnapshot().used) + " tokens, this can take a few minutes…");
     try {
       const data = await net.api("/chat/threads/" + S.currentId + "/compact", {
         method: "POST",
@@ -478,10 +478,10 @@ export function createContext(ctx) {
         syncContextMeter();
       }
       if (data && data.compacted === false) {
-        picker.setHint("Not enough history to compact yet.", false, 6000);
+        picker.releaseHint("compact", "Not enough history to compact yet.");
       } else {
         const meter = (data && data.thread && data.thread.compaction && data.thread.compaction.meter) || contextSnapshot();
-        picker.setHint("Context compacted · " + formatTokens(meter.used) + " / " + formatTokens(meter.limit) + " tokens.", false, 8000);
+        picker.releaseHint("compact", "Context compacted · " + formatTokens(meter.used) + " / " + formatTokens(meter.limit) + " tokens.");
         S.contextWarned = false;
         S.contextAlertHidden = false;
         hideContextAlert();

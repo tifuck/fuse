@@ -6,9 +6,11 @@ let renderedRunState = "";
 
 export function createStatus(ctx) {
   const { apply, composer, net, picker, sidebar, traces, transcript, turns, ui } = ctx;
-    function showFailure(action, error) {
+    // `key` lets the action that failed clear its own error once it recovers.
+    function showFailure(action, error, key) {
     const message = (error && error.message) || "Request failed.";
-    picker.setHint(`${action}: ${message}`, true);
+    if (key) picker.holdHint(key, `${action}: ${message}`, true, null);
+    else picker.setHint(`${action}: ${message}`, true);
   }
 
     function syncStatus() {
@@ -74,6 +76,9 @@ export function createStatus(ctx) {
     composer.syncComposer();
     ui.syncLiveDock();
     turns.renderQueue();
+    // "Stopping…" leaves the moment its run is no longer active.
+    const held = picker.heldHint();
+    if (held.startsWith("stop:") && !(traces.runIsActive(S.activeRun) && S.activeRun.id === held.slice(5))) picker.releaseHint(held);
   }
 
     function notifyTurnDone(threadId, payload, type) {

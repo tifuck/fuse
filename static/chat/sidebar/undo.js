@@ -332,7 +332,7 @@ export function createUndo(ctx) {
     const merged = kept.concat(fresh);
     S.pendingAttachments = merged.slice(0, S.ATTACH_MAX);
     if (merged.length > S.ATTACH_MAX) {
-      picker.setHint("Up to " + S.ATTACH_MAX + " attachments stay in the composer; some were left out.", true, 4000);
+      picker.setHint("Up to " + S.ATTACH_MAX + " attachments stay in the composer; some were left out.", true);
     }
     S.input.value = text;
     composer.renderAttachList();
@@ -367,7 +367,7 @@ export function createUndo(ctx) {
     }
     const snap = snapshotMessages();
     S.editingIndex = -1;
-    turns.completeTurn(next, kept, { undoSnap: snap, truncatedTo: index, restoreDraft: true });
+    turns.completeTurn(next, kept, { undoSnap: snap, truncatedTo: index, restoreDraft: true, progress: "Sending edit…" });
   }
 
   return {

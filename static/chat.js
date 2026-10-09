@@ -261,7 +261,7 @@ import { createBoot } from './chat/boot.js';
 
   const context = createContext({
     net,
-    picker: { setHint: (...args) => picker.setHint(...args) },
+    picker: { holdHint: (...args) => picker.holdHint(...args), releaseHint: (...args) => picker.releaseHint(...args), setHint: (...args) => picker.setHint(...args) },
     sync: { acceptThread: (...args) => sync.acceptThread(...args), showFailure: (...args) => sync.showFailure(...args) },
     traces,
     ui,
@@ -1356,9 +1356,10 @@ import { createBoot } from './chat/boot.js';
     S.agentStopBtn.addEventListener("click", async () => {
       if (!S.agentViewId || !S.agentRun) return;
       if (!(await sidebar.askConfirm("Stop this subagent? Its children stop too; the main agent keeps running.", { confirmLabel: "Stop", danger: true }))) return;
+      // Held until the pane sees the subagent finish (agents/live.js).
+      picker.holdHint("agent-stop:" + S.agentViewId, "Stopping subagent…");
       try {
         await net.api("/chat/runs/" + encodeURIComponent(S.agentViewId) + "/cancel?scope=self", { method: "POST", body: "{}" });
-        picker.setHint("Stopped subagent.");
         await agents.pollAgentView();
         agents.refreshAgents();
       } catch (error) {
@@ -1370,9 +1371,9 @@ import { createBoot } from './chat/boot.js';
     S.agentForceBtn.addEventListener("click", async () => {
       if (!S.agentViewId || !S.agentRun) return;
       if (!(await sidebar.askConfirm("Force stop this subagent now? It is wedged in stopping; force-finalize its state.", { confirmLabel: "Force stop", danger: true }))) return;
+      picker.holdHint("agent-stop:" + S.agentViewId, "Force-stopping subagent…");
       try {
         await net.api("/chat/runs/" + encodeURIComponent(S.agentViewId) + "/cancel?scope=self&force=1", { method: "POST", body: "{}" });
-        picker.setHint("Force-stopped subagent.");
         await agents.pollAgentView();
         agents.refreshAgents();
       } catch (error) {

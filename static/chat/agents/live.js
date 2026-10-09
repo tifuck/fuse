@@ -154,7 +154,18 @@ export function createLive(ctx) {
     FuseChatDOM.reconcile(S.agentsListEl, html);
   }
 
+    // "Stopping subagent…" (chat.js) leaves once the pane shows that subagent
+  // finished, or quietly when the pane moves off it.
+    function syncAgentStopHint() {
+    const held = picker.heldHint();
+    if (!held.startsWith("agent-stop:")) return;
+    const id = held.slice("agent-stop:".length);
+    if (S.agentViewId !== id) picker.releaseHint(held);
+    else if (S.agentRun?.id === id && !agentLive(S.agentRun.status)) picker.releaseHint(held, "Stopped subagent.");
+  }
+
     function renderAgentHead() {
+    syncAgentStopHint();
     if (!S.agentViewId || !S.agentRun) return;
     if (S.agentTitleEl) S.agentTitleEl.textContent = S.agentRun.description || "Subagent";
     if (S.agentStatusEl) {
@@ -172,6 +183,7 @@ export function createLive(ctx) {
   }
 
     function syncAgentLiveDock() {
+    syncAgentStopHint();
     transcript.scheduleTodoSync();
     if (!S.agentLiveDock) return;
     const stalled = Boolean(S.agentRun && agentIsStalled(S.agentRun));

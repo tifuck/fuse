@@ -57,7 +57,7 @@ export function createSend(ctx) {
     const previous = S.messages[index - 1];
     const snap = sidebar.snapshotMessages();
 
-    completeTurn(previous.content, (previous.attachments || []).slice(), { undoSnap: snap, truncatedTo: index - 1 });
+    completeTurn(previous.content, (previous.attachments || []).slice(), { undoSnap: snap, truncatedTo: index - 1, progress: "Retrying…" });
   }
 
     function retryLastTurn() {
@@ -89,7 +89,7 @@ export function createSend(ctx) {
     }
     const last = S.messages.at(-1);
     if (last?.role !== "assistant" || !last.error) return;
-    completeTurn("Continue from where you stopped. The previous attempt ended with an error; do not redo work that already completed.", []);
+    completeTurn("Continue from where you stopped. The previous attempt ended with an error; do not redo work that already completed.", [], { progress: "Continuing…" });
   }
 
     function syncEmptyReplyRetry() {
@@ -116,8 +116,9 @@ export function createSend(ctx) {
     queue.holdQueueForStop(id);
     S.stoppingRunId = id;
     if (S.activeRun) S.activeRun.cancel_requested = true;
+    // Held until the run leaves the active state (status.setRunning).
+    picker.holdHint("stop:" + id, "Stopping…");
     sync.setRunning();
-    picker.setHint("Stopping…");
     try {
       const data = await net.api("/chat/runs/" + encodeURIComponent(id) + "/cancel", { method: "POST", body: "{}" });
       sync.applyCancelResult(data, id);
@@ -196,6 +197,9 @@ export function createSend(ctx) {
     const origin = S.currentId;
     const settings = { model: S.modelId, tools: panels.enabledTools(), context: S.threadContext };
     S.sending = true;
+    // Retry, edit and continue replace history, so they say so until the
+    // replacement turn is accepted; the live status line takes over from there.
+    if (opts?.progress) picker.holdHint("turn", opts.progress);
     // Only composer sends own the composer. Edits and retries carry their own
     // text and must not overwrite an unrelated draft.
     if (!opts?.queueId && usedPending && !opts?.undoSnap) {
@@ -325,6 +329,7 @@ export function createSend(ctx) {
       return false;
     } finally {
       pending.remove();
+      if (opts?.progress) picker.releaseHint("turn");
       // `sending` is global, not per thread: a navigation away mid-send must
       // still release it or every send/open/new-chat control stays locked.
       S.sending = false;

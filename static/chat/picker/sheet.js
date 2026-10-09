@@ -4,11 +4,25 @@ import { S } from '../state.js';
 const PICKER_CHEV =
   '<svg class="chat-picker-chev" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M3.5 6l4.5 4.5L12.5 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
+// A held toast leaves this soon at the earliest, so a fast action never
+// flashes one in and out within a frame or two.
+const HINT_MIN_HELD_MS = 500;
+
+// Unheld toasts stay long enough to read: about 45ms per character on top of
+// a base, never under 2.2s (4.5s for a fault) or over 8s.
+function hintMs(text, fault) {
+  return Math.min(8000, Math.max(fault ? 4500 : 2200, 1600 + String(text).length * 45));
+}
+
 export function createSheet(ctx) {
   const { composer, context, list, overlays, perms, sidebar } = ctx;
+    // The one toast above the composer. A plain hint reports something that
+  // already happened and times out; holdHint ties it to an action in flight.
     function setHint(text, fault, duration) {
     if (!S.hint) return;
     window.clearTimeout(S.hintTimer);
+    window.clearTimeout(S.hintReleaseTimer);
+    S.hintKey = "";
     if (S.hintFrame) {
       window.cancelAnimationFrame(S.hintFrame);
       S.hintFrame = 0;
@@ -31,8 +45,35 @@ export function createSheet(ctx) {
       S.hint.classList.add("is-on");
     });
     if (duration === 0) return;
-    const ms = duration != null ? duration : fault ? 4500 : 2200;
+    const ms = duration != null ? duration : hintMs(text, fault);
     S.hintTimer = window.setTimeout(() => setHint(""), ms);
+  }
+
+    // A toast owned by `key` (e.g. "stop:<run id>"). It stays until
+  // releaseHint(key) or until any other toast replaces it. Pass duration null
+  // for a keyed toast that also times out normally.
+    function holdHint(key, text, fault = false, duration = 0) {
+    if (S.hintKey === key && S.hint?.textContent === text) return;
+    setHint(text, fault, duration);
+    S.hintKey = key;
+    S.hintHeldAt = Date.now();
+  }
+
+    // Ends a held toast: hides it, or swaps in `text` as a normal timed hint.
+  // A no-op once something else owns the toast.
+    function releaseHint(key, text, fault) {
+    if (!key || S.hintKey !== key) return;
+    window.clearTimeout(S.hintReleaseTimer);
+    const wait = HINT_MIN_HELD_MS - (Date.now() - S.hintHeldAt);
+    if (wait > 0) {
+      S.hintReleaseTimer = window.setTimeout(() => releaseHint(key, text, fault), wait);
+      return;
+    }
+    setHint(text || "", fault);
+  }
+
+    function heldHint() {
+    return S.hintKey || "";
   }
 
     function defaultHint() {
@@ -213,8 +254,11 @@ export function createSheet(ctx) {
   return {
     closePicker,
     defaultHint,
+    heldHint,
+    holdHint,
     innerScrolls,
     placePicker,
+    releaseHint,
     renderPickerButton,
     setHint,
   };

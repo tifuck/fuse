@@ -315,6 +315,9 @@ function initState() {
   S.projectAgentsOk = false;
   S.hintTimer = 0;
   S.hintFrame = 0;
+  S.hintKey = "";
+  S.hintHeldAt = 0;
+  S.hintReleaseTimer = 0;
   S.ignoreScroll = false;
   S.artifactOpen = false;
   S.artifactMode = "preview";
