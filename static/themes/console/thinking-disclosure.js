@@ -90,15 +90,9 @@ function syncThinkingMode(li, msg, animate = false) {
     const previousMode = li.dataset.thinkMode;
     const key = li.dataset.step;
     const choice = msg.stepOpen?.[key];
-    const live = li.classList.contains("is-live-think");
-    const mode = choice === true ? "expanded" : choice === false ? "collapsed" : live ? "tail" : "collapsed";
+    const mode = choice === true ? "expanded" : "collapsed";
     li.dataset.thinkMode = mode;
-    li.classList.toggle("is-console-expanded", mode === "expanded");
     li.querySelectorAll(":scope > .chat-step-main > .chat-step-head [data-step-toggle]").forEach(button => button.setAttribute("aria-expanded", String(mode !== "collapsed")));
-    const size = li.querySelector("[data-think-size]");
-    size.hidden = !live || mode === "collapsed";
-    size.textContent = (mode === "expanded" ? "hide" : "stream");
-    size.setAttribute("aria-label", (mode === "expanded" ? "Hide thinking stream" : "Show thinking stream"));
     const peek = li.querySelector("[data-reason-preview]");
     peek.tabIndex = mode === "collapsed" ? -1 : 0;
     windowEl.inert = mode === "collapsed";

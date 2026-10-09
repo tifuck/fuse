@@ -133,9 +133,9 @@ function renderAssistant(msg, live) {
       if (!li) return;
       const reveal = li.querySelector(":scope > .chat-step-main > .chat-step-reveal");
       const hang = li.querySelector(":scope > .chat-step-main .chat-console-hang");
-      const isThink = li.classList.contains("is-think");
+      const isThink = li.hasAttribute("data-think-mode");
       const isConsoleCall = li.classList.contains("is-console-call");
-      const isConsoleGroup = li.classList.contains("is-console-group");
+      const isConsoleGroup = !isThink && li.classList.contains("is-console-group");
       if (!reveal && !isThink && !isConsoleCall && !isConsoleGroup) return;
       if (isThink && li.dataset.thinkMode !== "collapsed" && String(window.getSelection() || "").trim()) return;
       event.preventDefault();
@@ -163,9 +163,12 @@ function renderAssistant(msg, live) {
         consoleGroupOpenKeys(li, msg).forEach((key) => { msg.stepOpen[key] = open; });
       }
       if (isThink) {
-        deps.syncThinkingMode(li, msg, true);
+        // A live thought opens in place so a pinned transcript stays on its last line.
+        const liveThink = li.classList.contains("is-live-think");
+        deps.syncThinkingMode(li, msg, !liveThink);
         const peek = li.querySelector("[data-reason-preview]");
-        if (open && li.classList.contains("is-live-think")) {
+        if (open && liveThink) {
+          deps.snapThread();
           peek._thinking.follow = true;
           deps.followThinking(peek, true);
         } else if (open) {

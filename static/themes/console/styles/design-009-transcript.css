@@ -264,6 +264,26 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-con
 
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-thought code { color: inherit; }
 
+/* Live thinking: the line toggles a window capped at ten lines that follows the stream. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-live-think > .chat-step-main > .chat-think-window { display: none; }
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-live-think[data-think-mode="expanded"] > .chat-step-main > .chat-think-window {
+  display: block;
+  margin: 0.2rem 0 0.1rem;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-think-peek {
+  max-height: calc(var(--console-row) * 10);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  padding-left: 0.6rem;
+  border-left: 1px solid color-mix(in srgb, var(--mist) 16%, transparent);
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-live-think > .chat-step-main > .chat-step-head > .chat-step-toggle:hover .chat-step-label { color: var(--mist); }
+
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-call.is-console-expanded > .chat-step-main > .chat-step-head .chat-step-label {
   padding-left: var(--console-hang, 0);
   text-indent: calc(-1 * var(--console-hang, 0));

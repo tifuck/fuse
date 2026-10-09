@@ -42,7 +42,8 @@ export function createReveal(ctx) {
     const control = event.target.closest?.("[data-step-toggle], [data-think-size], [data-activity-summary], .chat-step-open, [data-open-agent], [data-agent-id]");
     if (!control) return;
     flushToolGesture();
-    if (S.log.contains(control)) follow.pauseThreadFollow();
+    // Opening the live thought (the newest line) keeps a pinned reader pinned.
+    if (S.log.contains(control) && !control.closest(".is-live-think")) follow.pauseThreadFollow();
     S.toolGestureOwner = control.closest(".chat-turn") || S.agentsListEl;
   }
 

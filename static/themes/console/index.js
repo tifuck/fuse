@@ -287,6 +287,7 @@ export function createConsoleTheme(runtime) {
     get restoreDisclosures() { return runtime.restoreDisclosures; },
     get saveDisclosures() { return runtime.saveDisclosures; },
     get setToolReveal() { return runtime.setToolReveal; },
+    get snapThread() { return runtime.snapThread; },
     get stopThinkingFollow() { return theme.stopThinkingFollow; },
     get syncThinkingMode() { return theme.syncThinkingMode; },
     get updateAssistant() { return theme.updateAssistant; },
