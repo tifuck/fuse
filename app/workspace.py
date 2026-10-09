@@ -1837,6 +1837,7 @@ async def _read(user_id, host_id, alias, args, root, *, windows: bool = False, m
     chars = _READ_MAX_CHARS if max_chars is None else max_chars
     if _is_agent(user_id, host_id):
         limit = min(limit, _READ_MAX_LINES)
+        await _agent_learn_home(user_id, host_id, path)
         ledger_path = _canonical_path(host_id, ledger_path, windows=windows)
         gen = file_ledger.generation(host_id, ledger_path, windows=windows)
         try:
@@ -2315,14 +2316,36 @@ _mutation_locks: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
 
 def _canonical_path(host_id, path: str, *, windows: bool) -> str:
     """Same file, same key: ~/x and /home/u/x collide once the home is known."""
-    if windows:
-        return ntpath.normcase(path)
     home = _host_homes.get(int(host_id))
+    if windows:
+        if home and re.match(r"^[A-Za-z]:\\", home) and (path == "~" or path.startswith("~\\")):
+            path = home.rstrip("\\") + path[1:]
+        return ntpath.normcase(path)
     if home:
         for prefix in ("~", "$HOME"):
             if path == prefix or path.startswith(prefix + "/"):
                 return home + path[len(prefix):]
     return path
+
+
+async def _agent_learn_home(user_id, host_id, path: str) -> None:
+    """Connectors never go through SFTP, so learn their home from the browse
+    op (once per host) before keying a ~ path: otherwise a read of ~/x and an
+    edit of /home/u/x are two files to the ledger and the edit is refused as
+    unread."""
+    if not path.startswith("~") or int(host_id) in _host_homes:
+        return
+    try:
+        data = await _agent_call(user_id, host_id, "browse", {"path": "~"}, 10)
+    except WorkspaceError:
+        return  # transport trouble: try again on the next call
+    home = ""
+    if data.get("ok"):
+        with contextlib.suppress(ValueError, TypeError, AttributeError):
+            home = str(json.loads(data.get("out") or "").get("home") or "")
+    home = home.rstrip("/\\")
+    # A connector without browse caches "" so it is not asked every call.
+    _host_homes[int(host_id)] = home if home.startswith("/") or re.match(r"^[A-Za-z]:\\", home) else ""
 
 
 def _serialize_file_mutation(fn):
@@ -2406,6 +2429,8 @@ async def _write(user_id, host_id, alias, args, root, *, windows: bool = False, 
         raise WorkspaceError("content exceeds 400000 UTF-8 bytes; split the write")
     if _is_agent(user_id, host_id):
         existed = None
+        await _agent_learn_home(user_id, host_id, path)
+        ledger_path = _canonical_path(host_id, path, windows=windows)
         if file_ledger.lookup(run_id, host_id, ledger_path, windows=windows) is None:
             # One read-only stat: refuse to clobber an unread file, and create
             # a missing parent directory up front instead of failing.
@@ -2497,6 +2522,8 @@ async def _replace(user_id, host_id, alias, args, root, *, windows: bool = False
     edits = _parse_edits(args)
     multi = "edits" in args
     if _is_agent(user_id, host_id):
+        await _agent_learn_home(user_id, host_id, path)
+        ledger_path = _canonical_path(host_id, path, windows=windows)
         if multi and len(edits) > 1 and not _connector_supports(user_id, host_id, "multi_edit"):
             raise _outdated_connector(user_id, host_id, "Several edits in one call")
         payload: dict = {"path": path}

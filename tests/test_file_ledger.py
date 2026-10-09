@@ -143,7 +143,8 @@ class ConnectorLedgerTest(unittest.IsolatedAsyncioTestCase):
         L.clear()
         self.text = "one\ntwo\n"
         self.calls = []
-        for p in (patch.object(ws, "_is_agent", return_value=True), patch.object(ws, "_agent_call", self.call)):
+        for p in (patch.object(ws, "_is_agent", return_value=True), patch.object(ws, "_agent_call", self.call),
+                  patch.dict(ws._host_homes, clear=True)):
             p.start()
             self.addCleanup(p.stop)
 
@@ -163,6 +164,8 @@ class ConnectorLedgerTest(unittest.IsolatedAsyncioTestCase):
             return {"ok": True, "out": "wrote"}
         if op == "exec":
             return {"ok": True, "exit": 0, "out": f"{len(self.text)}\nw\ndw\n"}
+        if op == "browse":
+            return {"ok": True, "out": '{"path": "/home/u", "home": "/home/u", "entries": []}'}
         raise AssertionError(op)
 
     async def test_unread_edit_is_refused(self):
@@ -188,6 +191,31 @@ class ConnectorLedgerTest(unittest.IsolatedAsyncioTestCase):
         await ws._replace(1, 2, "h", edit("TWO", "2", "/w/a.py"), "/w", run_id="A")
         with self.assertRaisesRegex(ws.WorkspaceError, "another agent edited it"):
             await ws._replace(1, 2, "h", edit("two", "2", "/w/a.py"), "/w", run_id="B")
+
+    async def test_home_and_absolute_spellings_share_one_record(self):
+        # Connectors never expand ~ over SFTP: without the home, a read of
+        # ~/a.py and an edit of /home/u/a.py were two files to the ledger.
+        await ws._read(1, 2, "h", {"path": "~/a.py"}, "", run_id="A")
+        await ws._replace(1, 2, "h", edit("one", "1", "/home/u/a.py"), "", run_id="A")
+        await ws._replace(1, 2, "h", edit("two", "2", "~/a.py"), "", run_id="A")
+        self.assertEqual(self.text, "1\n2\n")
+        self.assertEqual(self.calls.count("browse"), 1)
+
+    async def test_own_new_file_and_failed_edit_keep_the_read(self):
+        self.text = ""
+
+        async def missing_until_written(_u, _h, op, args, seconds=30):
+            if op == "exec" and not self.text:
+                return {"ok": True, "exit": 0, "out": "missing\nna\ndw\n"}
+            return await self.call(_u, _h, op, args, seconds)
+
+        with patch.object(ws, "_agent_call", missing_until_written):
+            await ws._write(1, 2, "h", {"path": "/w/new.py", "content": "one\ntwo\n"}, "/w", run_id="A")
+        with self.assertRaisesRegex(ws.WorkspaceError, "not found"):
+            await ws._replace(1, 2, "h", edit("three", "3", "/w/new.py"), "/w", run_id="A")
+        await ws._replace(1, 2, "h", edit("two", "2", "/w/new.py"), "/w", run_id="A")
+        await ws._write(1, 2, "h", {"path": "/w/new.py", "content": "1\n2\n"}, "/w", run_id="A")
+        self.assertEqual(self.text, "1\n2\n")
 
     async def test_connector_errors_are_actionable(self):
         await ws._read(1, 2, "h", {"path": "/w/a.py"}, "/w", run_id="A")
