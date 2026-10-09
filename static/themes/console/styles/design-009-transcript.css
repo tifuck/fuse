@@ -278,8 +278,6 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-con
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
-  padding-left: 0.6rem;
-  border-left: 1px solid color-mix(in srgb, var(--mist) 16%, transparent);
 }
 
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-live-think > .chat-step-main > .chat-step-head > .chat-step-toggle:hover .chat-step-label { color: var(--mist); }
