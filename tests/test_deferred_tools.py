@@ -114,7 +114,11 @@ class SearchToolsTest(unittest.IsolatedAsyncioTestCase):
         data = json.loads(packed)
         self.assertEqual(data["loaded"], list(agent_catalog.PACKS["workspace"]))
         self.assertEqual(data["already_loaded"], [])
-        self.assertNotIn("tools", data)  # Schemas belong in the next request, not duplicated in results.
+        # The request's tool list is frozen mid-turn (cache prefix), so the
+        # loaded schemas reach the model in this result, complete and unclipped.
+        self.assertEqual([t["name"] for t in data["tools"]], list(agent_catalog.PACKS["workspace"]))
+        self.assertEqual(data["tools"], [agent_catalog.schema(n)["function"] for n in agent_catalog.PACKS["workspace"]])
+        self.assertNotIn("note", data)
         self.assertIn("run_terminal_command", loaded)
         self.assertIn("read_file", loaded)
         self.assertIn("kill_command", loaded)

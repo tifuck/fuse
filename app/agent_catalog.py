@@ -79,7 +79,7 @@ SCHEMAS = {
             "description": (
                 "Load extra tools into this turn (files, shell, artifacts). "
                 "Request query workspace, shell, or artifact (or names) before using unloaded tools; "
-                "loaded tools join the tool list on the next step. "
+                "the result carries the loaded tools' schemas and they are callable on the next step. "
                 "query workspace loads file tools plus shell (run_terminal_command, get_command_output, kill_command, monitor); prefer file tools over shell listing/search. "
                 "Skip tools already available in this chat and call them directly. "
                 "query hosts returns host catalog data; query skills lists model-invocable enabled skills. "
@@ -1026,6 +1026,11 @@ def load_skill(name: str, user_id: int | None = None, file: str | None = None) -
     return skills_mod.load(user_id, name, file=file)
 
 
+# A search_tools result that carries schemas: the whole workspace pack
+# (~19.5k chars) fits, under the generic TOOL_RESULT_CHARS clip.
+SCHEMA_RESULT_CHARS = 22_000
+
+
 def _json_clip(payload: dict, limit: int = 6000) -> str:
     text = json.dumps(payload, ensure_ascii=False)
     if len(text) <= limit:
@@ -1059,10 +1064,15 @@ def pack_search_result(found: list[dict], *, added: list[str], note: str = "", i
         "loaded": added,
         "already_loaded": already,
         "usage": (
-            "Loaded tools join the tool list on the next step; call them directly then. "
-            "In a bound project session, omit host to use that machine; otherwise pass host=<alias>."
+            "These tools are callable now; their schemas are in `tools` below. The request's "
+            "tool list stays fixed for the rest of the turn so the prompt cache holds, so read "
+            "parameters from here. In a bound project session, omit host to use that machine; "
+            "otherwise pass host=<alias>."
         ),
+        # The advertised tool list is frozen mid-turn (it leads the cached
+        # prefix), so the schema reaches the model as appended tool output.
+        "tools": [item["function"] for item in found],
     }
     if note:
         payload["note"] = note
-    return _json_clip(payload)
+    return _json_clip(payload, SCHEMA_RESULT_CHARS)

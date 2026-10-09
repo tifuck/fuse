@@ -324,6 +324,20 @@ class SkillsDbTest(unittest.TestCase):
         self.assertIsNone(event2)
         self.assertEqual(len([m for m in again if m.get("role") == "tool"]), 1)
 
+    def test_preload_keeps_the_session_tail(self):
+        from app.chat_generation.messages import _inject_session_tail, _session_tail_block
+
+        self._install("ponytail", body="Ponytail body here.\n")
+        tail = _session_tail_block(["- art_1: Report (private, v1) https://x"], vault_locked=True)
+        messages = _inject_session_tail(
+            [{"role": "system", "content": "sys"}, {"role": "user", "content": "/ponytail restyle"}], tail)
+        out, _event = apply_skill_preload(
+            messages, user_id=1, run_id="abcd1234ffff", invoke={"name": "ponytail", "arguments": "restyle"}
+        )
+        user = [m for m in out if m["role"] == "user"][-1]
+        # The command becomes the task; date, artifacts and vault state stay.
+        self.assertEqual(user["content"], "restyle" + tail)
+
     def test_preload_keeps_non_text_parts(self):
         self._install("ponytail", body="Ponytail body here.\n")
         png = (

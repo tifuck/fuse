@@ -186,11 +186,15 @@ def apply_skill_preload(
     out.extend(pair)
     task = str((invoke or {}).get("arguments") or "").strip() or "Follow the loaded skill."
     from ..chat_prompts import _replace_user_text
+    from .messages import session_tail_of
 
     for i in range(len(out) - 1, -1, -1):
         if out[i].get("role") == "user":
             rewritten = dict(out[i])
-            rewritten["content"] = _replace_user_text(rewritten.get("content"), task)
+            # The command text becomes the task; the turn's session tail (date,
+            # artifacts, vault state) stays on the row.
+            tail = session_tail_of(rewritten.get("content"))
+            rewritten["content"] = _replace_user_text(rewritten.get("content"), task + tail)
             out[i] = rewritten
             break
     event = {
@@ -300,11 +304,14 @@ def _command_result_ids(envelopes: list[str]) -> list[str]:
     return monitor_mod.envelope_receipts(envelopes)
 
 
-def _provider_snapshot(messages: list[dict], jobs: list[ToolJob] | None = None, *, reasoning="", model="", thinking=None) -> list[dict]:
+def _provider_snapshot(messages: list[dict], jobs: list[ToolJob] | None = None, *, content="", reasoning="", model="",
+                       thinking=None) -> list[dict]:
     out = [m for m in messages if isinstance(m, dict) and m.get("role") != "system"]
     if not jobs:
         return out
-    assistant = _tool_messages(jobs)[0]
+    # The same assistant row the round appends once its tools finish: text
+    # written before the calls stays ahead of them if the run resumes here.
+    assistant = _tool_messages(jobs, content=content)[0]
     assistant.update(_native_reasoning(reasoning, model, thinking))
     tools = [
         {"role": "tool", "tool_call_id": j.call_id, "content": _tool_result_clip(j.name, j.text or "")}

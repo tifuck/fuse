@@ -717,6 +717,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 await durable_call(store.save_turn_progress,
                     run_id,
                     _provider_snapshot(current_messages, jobs,
+                        content=str((summary or {}).get("content") or "") if jobs else "",
                         reasoning=(summary or {}).get("reasoning") if jobs else "", model=model,
                         thinking=(summary or {}).get("thinking") if jobs else None),
                     loaded_tools=list(loaded_tools),

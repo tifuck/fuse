@@ -524,6 +524,36 @@ class ResumeTest(unittest.IsolatedAsyncioTestCase):
         call_row = next(m for m in second_turn["messages"] if m.get("tool_calls"))
         self.assertEqual(call_row["reasoning_content"], "plan the search")
 
+    async def test_mid_tool_checkpoint_keeps_text_written_before_the_calls(self):
+        # A crash while tools run resumes from this checkpoint; the model's
+        # text before its calls must stay on the call row, ahead of results.
+        thread = chats.create_thread(1, model="offline", tools=["web_search"])
+        run = store.start_turn(1, thread["id"], "first", thread["revision"], None)["run"]
+        checkpoints = []
+
+        async def invoke(request, user, body, **_kwargs):
+            if any(m.get("role") == "tool" for m in body["messages"]):
+                return user, src(), "offline", "offline", ok_result("done")
+            return user, src(), "offline", "offline", stream_result([
+                frame({"choices": [{"delta": {"content": "Looking it up."}}]}),
+                frame({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1",
+                    "function": {"name": "web_search", "arguments": "{}"}}]}, "finish_reason": "tool_calls"}]}),
+                b"data: [DONE]\n\n",
+            ])
+
+        async def fake_tools(calls, **kwargs):
+            running = runtime.jobs_from_calls(calls, 0)
+            await kwargs["persist"](running)
+            checkpoints.append(json.loads(db.fetchone(
+                "SELECT provider_messages FROM chat_runs WHERE id=?", (run["id"],))[0]))
+            yield [SimpleNamespace(orig_index=0, call_id="c1", name="web_search", arguments="{}",
+                event_id="ts_0_0", text="hits", trace={"id": "ts_0_0", "status": "done"}, done=True)]
+
+        with patch.object(runtime, "_run_tools", fake_tools):
+            await self.stream_turn(invoke, run["request"], frozen_context=chats.get_user_context(1))
+        call_row = next(m for m in checkpoints[0] if m.get("tool_calls"))
+        self.assertEqual(call_row["content"], "Looking it up.")
+
     async def test_explicit_settings_refresh_prompt_without_rewriting_history(self):
         sent = []
 
