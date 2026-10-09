@@ -46,6 +46,20 @@ class TodoTraceTest(unittest.TestCase):
         self.assertEqual(saved["todos"][1]["id"], "2")
         self.assertEqual(saved["todos"][1]["content"], "Two")
 
+    def test_finished_read_transcript_trace_is_kept(self):
+        # A dropped done trace left the saved running one in place: the row
+        # ticked "Running…" forever, then read "Interrupted" after the run.
+        saved = chats._parse_tool_traces(
+            [{"name": "read_transcript", "status": "done", "id": "ts_0_0", "preview": "messages 1-4 of 4"}],
+        )
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0]["status"], "done")
+        self.assertEqual(saved[0]["preview"], "messages 1-4 of 4")
+        strict = chats._parse_tool_traces(
+            [{"name": "read_transcript", "status": "done", "preview": "messages 1-4 of 4"}], strict=True,
+        )
+        self.assertEqual(strict[0]["status"], "done")
+
 
 class ReplacePreviewTest(unittest.TestCase):
     def test_unified_diff_preview_with_start_line(self):

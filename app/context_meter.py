@@ -430,6 +430,7 @@ _TOOL_FAMILY = {
     "load_skill": "skills",
     "todo_write": "todos",
     "scratch": "scratch",
+    "read_transcript": "transcript",
 }
 
 
