@@ -29,6 +29,9 @@ AUTO_CONTENT_MAX = ASSISTANT_CONTENT_MAX + 8192
 CONTEXT_MAX = 4_000
 ERROR_MAX = 4_000
 NOTICE_MAX = 2_000
+# "notice" markers are run status (provider retries, cut-off calls, limits) at
+# the point they happened; the client shows them only until later output.
+MARKER_KINDS = ("compaction", "prune", "resume", "notice")
 USAGE_MAX = 32_000
 ATTACH_MAX = 4
 ATTACH_NAME_MAX = 200
@@ -739,7 +742,7 @@ def _parse_segments(raw, tools, *, strict: bool = False, field: str = "segments"
             out.append({"type": "permission", "id": ident})
             continue
         if kind == "marker":
-            mark = item.get("kind") if item.get("kind") in ("compaction", "prune", "resume") else "compaction"
+            mark = item.get("kind") if item.get("kind") in MARKER_KINDS else "compaction"
             if strict:
                 text = _text(item.get("text"), f"{field}[{index}].text", 400)
             else:
@@ -793,7 +796,7 @@ def align_segments(segments, content, reasoning) -> list[dict]:
         kind = part.get("type")
         if kind == "marker":
             text = part.get("text") if isinstance(part.get("text"), str) else ""
-            mark = part.get("kind") if part.get("kind") in ("compaction", "prune", "resume") else "compaction"
+            mark = part.get("kind") if part.get("kind") in MARKER_KINDS else "compaction"
             if text:
                 row = {"type": "marker", "kind": mark, "text": text[:400]}
                 summary = part.get("summary") if isinstance(part.get("summary"), str) else ""

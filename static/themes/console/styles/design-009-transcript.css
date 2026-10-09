@@ -290,7 +290,8 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-ste
 
 /* Fuse status (provider retries, cut-off tool calls, limits): server notices,
    not model tool calls, so they never use the tool-row grid. A rule-led mono
-   list under the reply; the newest line stays bright while the turn is live. */
+   list where the step stalled (end-of-turn status sits under the reply); the
+   newest line stays bright while the turn is live. */
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-notice {
   list-style: none;
   margin: 0.35rem 0 0;

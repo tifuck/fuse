@@ -40,6 +40,14 @@ function activityBlockHtml(entries, msg, live, blockIndex, showElapsed, turnLive
     );
   }
 
+// Run notices (provider retries, cut-off calls, limits) sit where they
+// happened; only a trailing run of them is passed in, newest line bright.
+function noticeBlockHtml(lines, live) {
+    return `<ul class="chat-notice${live ? " is-live" : ""}" data-run-notice role="status" aria-label="Fuse status">` +
+      lines.map((line, i) => `<li class="chat-notice-line${live && i === lines.length - 1 ? " is-current" : ""}">${deps.escapeHtml(line)}</li>`).join("") +
+      "</ul>";
+  }
+
 function markerBlockHtml(block) {
     if (block.markerKind === "resume") {
       return `<p class="chat-notice" data-resume-marker role="status">${deps.escapeHtml(block.text)}</p>`;
@@ -82,13 +90,23 @@ function updateAssistant(article, msg, live) {
     const foot = article.querySelector("[data-foot]");
     const meta = article.querySelector("[data-meta]");
     const traces = Array.isArray(msg.tools) ? msg.tools : [];
-    const hasMarker = Array.isArray(msg.segments) && msg.segments.some((part) => part && part.type === "marker");
+    const isNotice = (part) => part && part.type === "marker" && part.kind === "notice";
+    const hasMarker = Array.isArray(msg.segments) && msg.segments.some((part) => part && part.type === "marker" && !isNotice(part));
     const errText = visibleAssistantError(msg);
-    const noticeLines = String(msg.notice || "").split("\n").map((line) => line.trim()).filter(Boolean);
-    // Status lines alone keep a turn visible only while it is live (a retry
-    // wait before any output) or failed; a finished empty continuation stays
-    // hidden as before.
-    const hasOutput = Boolean((msg.content || "").trim() || (msg.reasoning || "").trim() || errText || (noticeLines.length && (live || errText)) || traces.length || msg.permissions?.length || hasMarker);
+    const segments = deps.assistantSegments(msg);
+    // A run notice is status for the step it interrupted: shown while nothing
+    // has followed it in a live turn, or beside the failure it ended in.
+    let noticeFrom = segments.length;
+    while (noticeFrom && isNotice(segments[noticeFrom - 1])) noticeFrom -= 1;
+    const showNotices = Boolean(live || errText);
+    const runNotices = showNotices ? segments.slice(noticeFrom).map((part) => part.text || "").filter(Boolean) : [];
+    // msg.notice holds end-of-turn status (Stopped, interrupted, stalled).
+    // Older messages also kept every retry line there, so it shows only on a
+    // turn that is live or did not finish cleanly.
+    const noticeLines = live || errText || msg.stopped
+      ? String(msg.notice || "").split("\n").map((line) => line.trim()).filter(Boolean)
+      : [];
+    const hasOutput = Boolean((msg.content || "").trim() || (msg.reasoning || "").trim() || errText || (noticeLines.length && live) || runNotices.length || traces.length || msg.permissions?.length || hasMarker);
     article.hidden = !hasOutput;
     const sourceMap = new Map();
     traces.forEach((trace) => {
@@ -111,12 +129,12 @@ function updateAssistant(article, msg, live) {
       article.querySelector("[data-source-count]").textContent = `${sources.length} ${sources.length === 1 ? "source" : "sources"}`;
     }
     const catalog = sources.map((row) => row.url);
-    const segments = deps.assistantSegments(msg);
     const toolById = new Map(traces.map((trace, index) => [trace.id, { trace, index }]));
     const permById = new Map((msg.permissions || []).map((perm) => [perm.id, perm]));
     const settleLines = deps.todoSettleLines(msg);
     const normalized = segments.flatMap((part, segmentIndex) => {
       if (!part || !part.type) return [];
+      if (isNotice(part)) return showNotices && segmentIndex >= noticeFrom && part.text ? [{ type: "notice", segmentIndex, text: part.text }] : [];
       if (part.type === "marker") {
         return [{ type: "marker", segmentIndex, text: part.text || "", kind: part.kind || "compaction", summary: part.summary || "" }];
       }
@@ -155,6 +173,12 @@ function updateAssistant(article, msg, live) {
         blocks.push({ kind: "todos", text: part.text });
         return;
       }
+      if (part.type === "notice") {
+        const last = blocks[blocks.length - 1];
+        if (last && last.kind === "notices") last.lines.push(part.text);
+        else blocks.push({ kind: "notices", lines: [part.text] });
+        return;
+      }
       const kind = part.type === "content" ? "content" : "activity";
       const last = blocks[blocks.length - 1];
       if (last && last.kind === kind) last.entries.push(part);
@@ -188,12 +212,13 @@ function updateAssistant(article, msg, live) {
       }
       if (block.kind === "marker") return `m:${block.markerKind}:${block.text}:${block.summary || ""}`;
       if (block.kind === "todos") return `o:${block.text}`;
+      if (block.kind === "notices") return `n:${Boolean(live)}:${block.lines.join("\n")}`;
       if (block.kind === "permission") return `p:${block.entries[0] && block.entries[0].perm && block.entries[0].perm.id}`;
       return `c:${blockIndex}`;
     };
     // showThinking changes which blocks exist without changing the segment
     // structure, so it belongs to the shape: a toggle must reach the rebuild.
-    const sig = `${Boolean(live)}|${"console"}|${deps.showThinking}|${liveKind}|${structure}|${permSig}|${[...settleLines.keys()].join(",")}`;
+    const sig = `${Boolean(live)}|${"console"}|${deps.showThinking}|${liveKind}|${structure}|${permSig}|${[...settleLines.keys()].join(",")}|${runNotices.length}`;
     let reasoningPositions = null;
     const sameShape = flow._sig === sig && flow.childElementCount === blocks.length;
     if (sameShape) {
@@ -206,7 +231,8 @@ function updateAssistant(article, msg, live) {
         if (block.kind !== "activity") {
           const html = block.kind === "permission"
             ? deps.permissionCardHtml(block.entries[0].perm, msg)
-            : block.kind === "todos" ? deps.todoLineHtml(block.text) : markerBlockHtml(block);
+            : block.kind === "todos" ? deps.todoLineHtml(block.text)
+            : block.kind === "notices" ? noticeBlockHtml(block.lines, live) : markerBlockHtml(block);
           if (node.outerHTML === html) { node._blockSig = next; return; }
           const fresh = document.createElement("template");
           fresh.innerHTML = html;
@@ -246,6 +272,7 @@ function updateAssistant(article, msg, live) {
           return markerBlockHtml(block);
         }
         if (block.kind === "todos") return deps.todoLineHtml(block.text);
+        if (block.kind === "notices") return noticeBlockHtml(block.lines, live);
         if (block.kind === "content") {
           const text = block.entries.map((entry) => entry.text).join("");
           const writing = live && blockIndex === blocks.length - 1;

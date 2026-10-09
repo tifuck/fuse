@@ -3,19 +3,6 @@ import { S } from '../state.js';
 import { newSession, resolveListedModel } from '../state.js';
 import { deltaParts, messageRunLive, splitThink, untimed } from '../core.js';
 
-// Server notices (provider retries, cut-off tool calls, limits) are Fuse
-// status, not model tool calls. They live in msg.notice exactly as the run
-// worker stores them (chat_runs.Output.apply), so the live view and a reload
-// render the same lines in the same place.
-const NOTICE_MAX = 2000;
-function addNotice(msg, line) {
-  const lines = String(msg.notice || "").split("\n").map((s) => s.trim()).filter(Boolean);
-  const lower = line.toLowerCase();
-  if (lines.some((s) => s.toLowerCase() === lower || s.toLowerCase().startsWith(lower + " \u00d7"))) return;
-  lines.push(line);
-  msg.notice = lines.join("\n").slice(0, NOTICE_MAX);
-}
-
 export function createApply(ctx) {
   const { agents, artifacts, composer, context, net, panels, perms, persist, picker, sidebar, status, traces, transcript, turns, ui } = ctx;
     async function runTitleRegen() {
@@ -382,7 +369,10 @@ export function createApply(ctx) {
         }
         return;
       }
-      if (line) addNotice(msg, line);
+      // Run notices (provider retries, cut-off calls, limits) are "notice"
+      // marker segments placed by the run worker (chat_runs.Output.apply) and
+      // arrive in the message.patch ahead of this event; mirroring them here
+      // would fork the segment list from the server's.
       return;
     }
     if (event.event === "artifact" && event.identifier) {

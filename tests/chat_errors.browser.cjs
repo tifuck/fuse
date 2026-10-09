@@ -23,12 +23,25 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       });
       assert.equal(await page.locator('[data-err]:visible').count(), 1, 'final failure is visible');
       assert.equal(await page.locator('[data-continue]:visible').count(), 1, 'a failed final turn offers Continue');
-      // Provider retries are Fuse status lines, never tool rows.
-      await page.evaluate(() => fuseToolFixture.mountThread([failedRows[0], { ...failedRows[1],
-        notice: 'Provider error (503) — retrying this step in 2s (attempt 1 of 4).\nProvider error (503) — retrying this step in 6s (attempt 2 of 4).' }]));
-      assert.equal(await page.locator('[data-notice]:visible .chat-notice-line').count(), 2, 'retry notices render as status lines');
+      // Provider retries are Fuse status lines in the timeline, never tool rows.
+      await page.evaluate(() => {
+        window.retryNotices = [1, 2].map(n => ({ type: 'marker', kind: 'notice', text: `Provider error (503) — retrying this step in ${n * 2}s (attempt ${n} of 4).` }));
+        fuseToolFixture.mountThread([failedRows[0], { ...failedRows[1], segments: retryNotices }]);
+      });
+      assert.equal(await page.locator('[data-flow] [data-run-notice]:visible .chat-notice-line').count(), 2, 'retry notices render as status lines in the flow');
       assert.equal(await page.locator('[data-tool="fuse-steer"]').count(), 0, 'notices are not tool rows');
       assert.equal(await page.locator('[data-err]:visible').count(), 1, 'final error still shows under the notices');
+      // Live: the retries show while waiting; the reply that recovers replaces them.
+      await page.evaluate(() => fuseToolFixture.mountThread([failedRows[0], { role: 'assistant', content: '', segments: retryNotices }], { live: true, phase: 'model' }));
+      assert.equal(await page.locator('[data-run-notice]:visible .chat-notice-line').count(), 2, 'live retry wait shows its notices');
+      await page.evaluate(() => fuseToolFixture.stream(1, { content: 'Recovered reply', segments: [{ type: 'content', text: 'Recovered reply' }] }));
+      assert.equal(await page.locator('[data-content-block]').textContent(), 'Recovered reply');
+      assert.equal(await page.locator('[data-run-notice]').count(), 0, 'streamed output supersedes the retry notices');
+      // Notices left behind a finished reply (or older rows that kept them in msg.notice) stay hidden.
+      await page.evaluate(() => fuseToolFixture.mountThread([failedRows[0], { role: 'assistant', content: 'Done', notice: retryNotices[0].text,
+        segments: [{ type: 'content', text: 'Done' }, ...retryNotices] }]));
+      assert.equal(await page.locator('[data-run-notice]').count(), 0, 'finished reply hides trailing notices');
+      assert.equal(await page.locator('[data-notice]:visible').count(), 0, 'finished reply hides legacy footer retries');
       await page.evaluate(() => fuseToolFixture.mountThread(failedRows));
       await page.evaluate(() => {
         // The accepted snapshot adds a user message before output arrives.

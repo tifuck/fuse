@@ -319,11 +319,8 @@ class Output:
                         self.fold_handoff(handoff.strip(), marker)
                     elif not any(part.get("type") == "marker" and part.get("text") == marker for part in msg.get("segments") or []):
                         msg.setdefault("segments", []).append({"type": "marker", "kind": "prune" if marker.startswith("Context pruned") else "compaction", "text": marker})
-                else:
-                    lines = [s.strip() for s in msg.get("notice", "").splitlines() if s.strip()]
-                    if line and not any(s.lower() == line.lower() or s.lower().startswith(line.lower() + " \u00d7") for s in lines):
-                        lines.append(line)
-                    msg["notice"] = "\n".join(lines)[:chats.NOTICE_MAX]
+                elif line:
+                    msg["segments"] = _with_notice(msg.get("segments") or [], line)
             if kind == "activity" and event.get("phase") == "model":
                 self._reset_stream_round()
             if kind == "tool":
@@ -434,9 +431,16 @@ class Output:
         choice = (obj.get("choices") or [{}])[0]
         delta, message = choice.get("delta") or {}, choice.get("message") or {}
         content = _take(delta.get("content")) or ("" if choice.get("delta") is not None else _take(message.get("content")))
+        reasoning = [_take(delta.get(key)) or _take(message.get(key)) or _take(obj.get(key))
+                     for key in ("reasoning_content", "reasoning", "thinking", "reasoning_text")]
+        if content or any(reasoning):
+            # Output supersedes a retry notice. Dropping it before appending
+            # lets a resumed stream continue the same text segment.
+            while msg["segments"] and _is_notice(msg["segments"][-1]):
+                msg["segments"].pop()
         pending = self._remove_pending()
-        for key in ("reasoning_content", "reasoning", "thinking", "reasoning_text"):
-            self._append_text("reasoning", _take(delta.get(key)) or _take(message.get(key)) or _take(obj.get(key)), "native")
+        for text in reasoning:
+            self._append_text("reasoning", text, "native")
         self._append_content(content, pending)
         self._ensure_aggregates()
         if max(len(msg["content"]), len(msg["reasoning"])) > chats.ASSISTANT_CONTENT_MAX:
@@ -482,6 +486,27 @@ class Output:
         msg["reasoning"] = chats._legacy_text(chat_runtime.strip_special_tokens(msg["reasoning"]), chats.ASSISTANT_CONTENT_MAX)
         msg["segments"] = chats.align_segments(msg["segments"], msg["content"], msg["reasoning"])
         return msg
+
+
+def _is_notice(part):
+    return part.get("type") == "marker" and part.get("kind") == "notice"
+
+
+def _with_notice(segments, line):
+    """Append a run notice where it happened in the turn.
+
+    Only the trailing run of notices is ever shown; earlier ones were
+    superseded by output, so they are dropped here to keep a long turn's
+    retries from filling SEGMENT_MAX.
+    """
+    tail = len(segments)
+    while tail and _is_notice(segments[tail - 1]):
+        tail -= 1
+    if any(str(part.get("text") or "").lower() == line.lower() for part in segments[tail:]):
+        return segments
+    return [part for part in segments[:tail] if not _is_notice(part)] + segments[tail:] + [
+        {"type": "marker", "kind": "notice", "text": line}
+    ]
 
 
 def _segments_patch(old, new):
@@ -1428,6 +1453,7 @@ async def _run(request, user, run):
                 output.message["stopped"] = True
             output.message["status"] = status
             if status == "interrupted":
+                output.message["stopped"] = True
                 output.message["notice"] = "Generation interrupted by server shutdown."
             kept = []
             for tool in output.message["tools"]:

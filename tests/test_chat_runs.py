@@ -355,7 +355,9 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(msg["content"], "caf\u00e9")
         self.assertEqual(msg["reasoning"], "explicit\nwhy")
         self.assertEqual(msg["tools"][0]["status"], "done")
-        self.assertEqual(msg["notice"], "A notice")
+        self.assertFalse(msg.get("notice"))
+        self.assertEqual(msg["segments"][-1], {"type": "marker", "kind": "notice", "text": "A notice"})
+        self.assertEqual(sum(part.get("kind") == "notice" for part in msg["segments"]), 1)
         replay = runs.Output(run)
         for event in store.events_after(1, 0):
             if event["type"] == "run.progress":
@@ -380,7 +382,7 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
                     else:
                         replay.apply(obj)
         for key in ("content", "reasoning", "tools", "segments", "notice", "usage"):
-            self.assertEqual(replay.stored()[key], msg[key])
+            self.assertEqual(replay.stored().get(key), msg.get(key))
         self.assertIsNone(await runs.start(self.request, self.user, run))
         self.assertEqual(mock.call_count, 1)
 
@@ -660,6 +662,26 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("<tool_call>", stored["content"])
         self.assertIn("After.", stored["content"])
         self.assertNotIn("<|eos|>", stored["content"])
+
+    def test_run_notices_sit_in_place_until_output_supersedes_them(self):
+        output = runs.Output(self.turn())
+        notice = lambda text: {"fuse": {"event": "notice", "message": text}}
+        output.apply({"choices": [{"delta": {"content": "Hello wor"}}]})
+        output.apply(notice("Provider stream interrupted — resuming in 2s (attempt 1 of 4)."))
+        output.apply(notice("Provider stream interrupted — resuming in 6s (attempt 2 of 4)."))
+        self.assertEqual([part.get("kind") for part in output.message["segments"]], [None, "notice", "notice"])
+        # The resumed stream continues the same text; the notices are gone.
+        output.apply({"choices": [{"delta": {"content": "ld."}}]})
+        stored = output.stored()
+        self.assertEqual(stored["content"], "Hello world.")
+        self.assertEqual(stored["segments"], [{"type": "content", "text": "Hello world."}])
+        output.apply({"fuse": {"event": "tool", "id": "t1", "name": "read_file", "status": "running", "path": "a"}})
+        output.apply(notice("Provider error (500) — retrying this step in 2s (attempt 1 of 4)."))
+        output.apply({"fuse": {"event": "tool", "id": "t2", "name": "read_file", "status": "running", "path": "b"}})
+        # A notice superseded by a tool row is dropped when the next one lands.
+        output.apply(notice("Provider error (500) — retrying this step in 2s (attempt 1 of 4)."))
+        self.assertEqual([part.get("kind") or part["type"] for part in output.stored()["segments"]],
+                         ["content", "tool", "tool", "notice"])
 
     async def test_output_preserves_chronological_segments(self):
         output = runs.Output(self.turn())
