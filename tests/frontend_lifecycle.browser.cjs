@@ -26,7 +26,7 @@ const out = process.env.FRONTEND_LIFECYCLE_ARTIFACTS || '/tmp/opencode/frontend-
       }], true));
       const label = page.locator('[data-live-dock-label]');
       assert.match(await label.textContent(), /thinking/, 'fresh reasoning outranks an older pending poll');
-      assert.equal(await page.locator('[data-step="cgroup-think-2"].is-running').count(), 1, 'latest thinking stays live after earlier answer text');
+      assert.equal(await page.locator('[data-step="think-2"].is-running').count(), 1, 'latest thinking stays live after earlier answer text');
       assert.equal(await page.locator('[data-step="tool-poll"]').getAttribute('data-state'), 'running', 'background lifecycle remains independent of model activity');
       await page.evaluate(() => fuseToolFixture.stream(0, { segments: [{ type: 'reasoning', text: 'Plan' }, { type: 'tool', id: 'poll' }] }));
       assert.doesNotMatch(await label.textContent(), /thinking/, 'new poll outranks earlier reasoning');

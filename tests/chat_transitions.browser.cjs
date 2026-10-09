@@ -103,7 +103,7 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       // and the UI must still render that split cleanly.
       await send('Queue fixture thinking-step slow-steer');
       await page.waitForFunction(() => fuseToolFixture.runInfo()?.status === 'running');
-      await page.locator('[data-chat-log] > article:last-child [data-step^="cgroup-think-"]').waitFor();
+      await page.locator('[data-chat-log] > article:last-child :is([data-step^="cgroup-think-"], [data-step^="think-"])').waitFor();
       const accepted = page.waitForResponse(r => r.url().endsWith('/steer') && r.request().method() === 'POST');
       await page.evaluate(() => {
         const id = new URL(location.href).searchParams.get('t');

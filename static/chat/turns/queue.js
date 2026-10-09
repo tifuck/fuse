@@ -145,7 +145,7 @@ export function createQueue(ctx) {
     if (!S.queueEl || !S.queueListEl) return;
     const focused = S.queueListEl.contains(document.activeElement) ? document.activeElement : null;
     const focusedId = focused?.closest("[data-queue-id]")?.dataset.queueId;
-    const action = focused?.hasAttribute("data-queue-send") ? "data-queue-send" : focused?.hasAttribute("data-queue-edit") ? "data-queue-edit" : "data-queue-cancel";
+    const action = focused?.hasAttribute("data-queue-send") ? "data-queue-send" : focused?.hasAttribute("data-queue-edit") ? "data-queue-edit" : focused?.hasAttribute("data-queue-more") ? "data-queue-more" : "data-queue-cancel";
     const count = S.queuedTurns.length;
     const held = heldIds();
     const viewport = transcript.captureThreadViewport();
@@ -160,19 +160,29 @@ export function createQueue(ctx) {
       composer.scheduleFitChatBar();
       return;
     }
+    if (!S.queuedTurns.some((item) => item.id === S.queueMenuId && !item.sending)) S.queueMenuId = "";
+    // One line per message: the header says "Queued", so a row names only an
+    // exceptional state. Edit and Cancel live behind the row's ⋮ menu.
     const html = S.queuedTurns
-      .map(
-        (item, index) =>
-          `<li class="chat-queue-item${item.immediate ? " is-immediate" : ""}${item.sending ? " is-sending" : ""}" data-queue-index="${index}" data-queue-id="${escapeHtml(item.id)}" aria-busy="${Boolean(item.sending)}">` +
+      .map((item, index) => {
+        const state = [item.sending ? "Sending…" : item.immediate ? "Next" : held.has(item.id) ? "Stopped" : "",
+          item.attachments?.length ? `${item.attachments.length} attached` : ""].filter(Boolean).join(" · ");
+        const open = item.id === S.queueMenuId;
+        const off = item.sending ? " disabled" : "";
+        return `<li class="chat-queue-item${item.immediate ? " is-immediate" : ""}${item.sending ? " is-sending" : ""}" data-queue-index="${index}" data-queue-id="${escapeHtml(item.id)}" aria-busy="${Boolean(item.sending)}">` +
           `<span class="chat-queue-dot" aria-hidden="true"></span>` +
           `<span class="chat-queue-text" title="${escapeHtml(item.text)}">${escapeHtml(item.text || "Attached files")}</span>` +
-          `<span class="chat-queue-state" role="status">${item.sending ? "Sending…" : item.immediate ? "Next" : held.has(item.id) ? "Stopped" : "Queued"}${item.attachments?.length ? ` · ${item.attachments.length} attached` : ""}</span>` +
+          `<span class="chat-queue-state" role="status">${state}</span>` +
           '<span class="chat-queue-actions">' +
           `<button type="button" class="chat-queue-action" data-queue-send="${index}" title="${S.streaming ? "Stop the current reply and send this message now" : "Send this message now"}"${!S.streaming && !held.has(item.id) ? " hidden" : ""}${item.sending || (!S.streaming && !held.has(item.id)) ? " disabled" : ""}>Send now</button>` +
-          `<button type="button" class="chat-queue-action" data-queue-edit="${index}"${item.sending ? " disabled" : ""}>Edit</button>` +
-          `<button type="button" class="chat-queue-action" data-queue-cancel="${index}"${item.sending ? " disabled" : ""}>Cancel</button>` +
-          "</span></li>",
-      )
+          '<span class="chat-queue-more-wrap">' +
+          `<button type="button" class="chat-queue-more" data-queue-more="${index}" aria-haspopup="menu" aria-expanded="${open}" aria-label="More actions" title="Edit or cancel"${off}>` +
+          '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="3.5" r="1.3" fill="currentColor"/><circle cx="8" cy="8" r="1.3" fill="currentColor"/><circle cx="8" cy="12.5" r="1.3" fill="currentColor"/></svg></button>' +
+          `<span class="chat-queue-menu" role="menu"${open ? "" : " hidden"}>` +
+          `<button type="button" class="chat-queue-action" role="menuitem" data-queue-edit="${index}"${off}>Edit</button>` +
+          `<button type="button" class="chat-queue-action" role="menuitem" data-queue-cancel="${index}"${off}>Cancel</button>` +
+          "</span></span></span></li>";
+      })
       .join("");
     const template = document.createElement("template");
     template.innerHTML = html;

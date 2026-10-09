@@ -285,7 +285,7 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       assert.equal(queued.stop, true);
       assert.equal(queued.items.length, 1);
       assert.equal(queued.items[0].text, 'Queued while the turn streams', 'the message is not silently lost');
-      assert.equal(queued.items[0].state, 'Queued', 'a send during streaming queues by design');
+      assert.equal(queued.items[0].state, '', 'a send during streaming queues by design; the Queued header names it, not the row');
       assert.equal(queued.items[0].busy, 'false');
       assert.equal(queued.items[0].sendNow, true, 'Send now stays available while the run streams');
       assert.equal(posts.filter(path => path.endsWith('/steer')).length, 0, 'queueing does not steer the live run');

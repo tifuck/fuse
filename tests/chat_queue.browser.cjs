@@ -33,11 +33,23 @@ const out = process.env.QUEUE_UI_ARTIFACTS || '/tmp/opencode/queue-ui-artifacts'
       const initial = await read();
       const runId = initial.run.id;
       await send('Edit this queued instruction');
+      // One line per message: Edit and Cancel sit behind the row's ⋮ menu.
+      assert.equal(await page.locator('[data-queue-edit]').isVisible(), false, 'Edit waits behind the menu');
+      assert.equal(await page.locator('.chat-queue-state').textContent(), '', 'the header says Queued; the row does not');
+      const item = await page.locator('.chat-queue-item').boundingBox();
+      const text = await page.locator('.chat-queue-text').boundingBox();
+      const sendNow = await page.locator('[data-queue-send]').boundingBox();
+      assert.ok(Math.abs((sendNow.y + sendNow.height / 2) - (text.y + text.height / 2)) < 4 && item.height < 40, `one row per message at ${width}px`);
+      await page.locator('[data-queue-more]').click();
       await page.locator('[data-queue-edit]').click();
       assert.equal(await input.inputValue(), 'Edit this queued instruction');
       assert.equal(await queue.isVisible(), false);
       await input.fill('Cancel this instruction');
       await page.locator('[data-chat-send]').click();
+      await page.locator('[data-queue-more]').click();
+      await page.keyboard.press('Escape');
+      assert.equal(await page.locator('[data-queue-cancel]').isVisible(), false, 'Escape closes the menu');
+      await page.locator('[data-queue-more]').click();
       await page.locator('[data-queue-cancel]').click();
       assert.equal(await queue.isVisible(), false);
       await send('Queue fixture send now target');
@@ -64,7 +76,7 @@ const out = process.env.QUEUE_UI_ARTIFACTS || '/tmp/opencode/queue-ui-artifacts'
       const sendingItem = page.locator('.chat-queue-item').first();
       assert.equal(await sendingItem.getAttribute('aria-busy'), 'true');
       assert.match(await sendingItem.locator('.chat-queue-state').textContent(), /Sending/);
-      assert.equal(await sendingItem.locator('button:disabled').count(), 3, 'all actions are disabled during submission');
+      assert.equal(await sendingItem.locator('button:disabled').count(), 4, 'all actions (Send now, the menu, Edit, Cancel) are disabled during submission');
       assert.equal(await input.inputValue(), 'An unsent draft must survive');
       releaseStop();
       await page.waitForFunction(() => document.querySelector('[data-chat-log]').textContent.includes('Queue fixture send now target'));

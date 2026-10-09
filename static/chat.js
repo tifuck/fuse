@@ -872,6 +872,15 @@ import { createBoot } from './chat/boot.js';
 
     if (S.queueListEl)
     S.queueListEl.addEventListener("click", (event) => {
+      const moreBtnEl = event.target.closest("[data-queue-more]");
+      if (moreBtnEl) {
+        const item = S.queuedTurns[Number(moreBtnEl.getAttribute("data-queue-more"))];
+        S.queueMenuId = item && S.queueMenuId !== item.id ? item.id : "";
+        turns.renderQueue();
+        if (S.queueMenuId) S.queueListEl.querySelector(`[data-queue-id="${CSS.escape(S.queueMenuId)}"] [data-queue-edit]`)?.focus({ preventScroll: true });
+        return;
+      }
+      if (event.target.closest("[data-queue-edit], [data-queue-cancel]")) S.queueMenuId = "";
       const sendBtnEl = event.target.closest("[data-queue-send]");
       const editBtnEl = event.target.closest("[data-queue-edit]");
       const undoBtnEl = event.target.closest("[data-queue-cancel]");
@@ -902,6 +911,9 @@ import { createBoot } from './chat/boot.js';
         if (!S.queuedTurns[index]?.sending) turns.removeQueuedTurn(index);
       }
     });
+    const closeQueueMenu = () => { if (S.queueMenuId) { S.queueMenuId = ""; turns.renderQueue(); } };
+    document.addEventListener("pointerdown", (event) => { if (!event.target.closest?.(".chat-queue-more-wrap")) closeQueueMenu(); });
+    document.addEventListener("keydown", (event) => { if (event.key === "Escape" && S.queueMenuId) closeQueueMenu(); });
 
     function clearChatState({ keepList = false } = {}) {
     const stayOnList = keepList && S.historyMobile.matches && S.root.classList.contains("is-history");
