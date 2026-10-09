@@ -1036,6 +1036,26 @@ class ContinuationSystemRowTest(unittest.TestCase):
         self.assertNotIn("read_transcript", context_compact.COMPACT_PREAMBLE)
         self.assertNotIn("Fuse thread", context_compact.COMPACT_PREAMBLE)
 
+    def test_saved_retired_notices_replay_as_the_current_one(self):
+        from app import chat_history
+
+        current = context_compact.COMPACT_PREAMBLE
+        cut = current.index("The handoff is lossy")
+        for sentence in context_compact._RETIRED_PREAMBLE_SENTENCES:
+            saved = current[:cut] + sentence + current[cut:] + "did the work"
+            sent = chat_history.for_model([{"role": "user", "content": saved}], "m")[0]["content"]
+            self.assertEqual(sent, current + "did the work")
+            payload = context_compact.summarize_payload([{"role": "user", "content": saved},
+                                                         {"role": "assistant", "content": context_compact.COMPACT_ACK}])
+            self.assertEqual(payload[0]["content"], current + "did the work")
+        # Only compaction notices are rewritten, and saved rows are left as they are.
+        quoted = {"role": "user", "content": "why does it say: " + context_compact._RETIRED_PREAMBLE_SENTENCES[1]}
+        self.assertEqual(chat_history.for_model([quoted], "m")[0], quoted)
+        saved_row = {"role": "user", "content": current[:cut] + context_compact._RETIRED_PREAMBLE_SENTENCES[0] + current[cut:]}
+        before = dict(saved_row)
+        chat_history.for_model([saved_row], "m")
+        self.assertEqual(saved_row, before)
+
 
 def _tool_round(i: int, size: int) -> list[dict]:
     return [

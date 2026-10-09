@@ -54,6 +54,26 @@ COMPACT_PREAMBLE = (
     "Resume directly \u2014 do not acknowledge the summary, do not recap what was happening, do not preface with "
     "\"I'll continue\" or similar. Pick up the last task as if the break never happened.\n\n"
 )
+# Sentences earlier notices carried, still saved in compacted threads' history.
+# Both point at transcript recovery the model cannot do, so replay drops them;
+# without either, an old notice is byte-identical to COMPACT_PREAMBLE.
+_RETIRED_PREAMBLE_SENTENCES = (
+    "If you need specific details from before compaction (like exact code snippets, error messages, "
+    "or content you generated), read the full transcript in the Fuse thread. ",
+    "If you need specific details from before compaction (like exact code snippets, error messages, "
+    "or content you generated), page them back with the `read_transcript` tool (coding sessions; "
+    "plain chats cannot recover them). ",
+)
+
+
+def scrub_retired_preamble(text: str) -> str:
+    if not text.startswith("[Compacted conversation]"):
+        return text
+    for sentence in _RETIRED_PREAMBLE_SENTENCES:
+        text = text.replace(sentence, "", 1)
+    return text
+
+
 # Subagent handoffs carry the parent's assignment verbatim after the summary.
 # The summary is lossy; the assignment (scope, report format) must not be.
 PIN_HEADER = "\n\n[Pinned assignment, verbatim from the parent. Still in force.]\n"
@@ -879,6 +899,9 @@ def summarize_payload(messages: list[dict], *, instructions: str = "", limit: in
         if isinstance(msg, dict) and msg.get("role") in ("system", "user", "assistant", "tool")
     ]
     body = fit_summary_messages(rows, limit, tools=tools)
+    for msg in body:
+        if msg.get("role") == "user" and isinstance(msg.get("content"), str):
+            msg["content"] = scrub_retired_preamble(msg["content"])
     body.append({"role": "user", "content": compact_instruction(instructions, prior_handoff(rows))})
     return body
 

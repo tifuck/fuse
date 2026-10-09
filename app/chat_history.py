@@ -44,12 +44,16 @@ def checkpoint_id(state):
 
 def for_model(messages, model):
     """Only replay native reasoning to the exact model that produced it."""
+    from .context_compact import scrub_retired_preamble
+
     out = []
     for original in messages:
         row = {k: v for k, v in original.items() if not k.startswith("_fuse_")}
         if original.get("_fuse_reasoning_model") != model:
             row.pop("reasoning_content", None)
             row.pop("claude_thinking", None)
+        if row.get("role") == "user" and isinstance(row.get("content"), str):
+            row["content"] = scrub_retired_preamble(row["content"])
         out.append(row)
     # Some backends recycle tool-call IDs across requests. Full replay must
     # keep every call/result pair unambiguous without mutating saved history.
