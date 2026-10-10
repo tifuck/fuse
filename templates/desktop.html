@@ -1,66 +1,59 @@
 {% extends "base.html" %}
 {% block title %}Desktop · Fuse{% endblock %}
 {% block page_title %}Desktop app{% endblock %}
-{% block page_lead %}<p>Run Fuse in its own window with no browser chrome. The app is a thin wrapper around this site — every site update lands in it instantly, and the wrapper updates itself.</p>{% endblock %}
+{% block page_lead %}<p>Fuse in its own window. Site changes show up instantly and the app updates itself.</p>{% endblock %}
 {% block body %}
-<div class="stack-y">
-  <div class="catalog-grid is-platforms">
-    <article class="panel catalog-family">
-      <div class="section-heading">
-        <h2>Windows</h2>
-        <span class="usage-sub">10 / 11 · 64-bit</span>
-      </div>
-      {% if win_url %}
-      <a class="btn sm" href="{{ win_url }}" download>Download {{ win_url.rsplit('/', 1)[-1] }}</a>
-      <p class="usage-note">Unsigned installer — if SmartScreen appears, choose More info → Run anyway. Installs per-user, no admin required.</p>
-      {% else %}
-      <p class="empty">No Windows build packaged yet.</p>
-      {% endif %}
-    </article>
-    <article class="panel catalog-family">
-      <div class="section-heading">
-        <h2>macOS</h2>
-        <span class="usage-sub">Apple Silicon / Intel</span>
-      </div>
-      {% if mac_url %}
-      <a class="btn sm" href="{{ mac_url }}" download>Download {{ mac_url.rsplit('/', 1)[-1] }}</a>
-      <p class="usage-note">Unsigned — first launch needs right-click → Open. Auto-update requires a Developer ID certificate.</p>
-      {% else %}
-      <p class="empty">macOS builds are produced by CI (.github/workflows/desktop.yml) — not packaged yet.</p>
-      {% endif %}
-    </article>
-    <article class="panel catalog-family">
-      <div class="section-heading">
-        <h2>Linux</h2>
-        <span class="usage-sub">x86_64</span>
-      </div>
-      {% if appimage_url %}
-      <a class="btn sm" href="{{ appimage_url }}" download>Download {{ appimage_url.rsplit('/', 1)[-1] }}</a>
-      <p class="usage-note">Portable — chmod +x and run. This flavor auto-updates in the background.</p>
-      {% else %}
-      <p class="empty">No AppImage packaged yet.</p>
-      {% endif %}
-      {% if deb_url %}
-      <a class="btn sm ghost" href="{{ deb_url }}" download>{{ deb_url.rsplit('/', 1)[-1] }}</a>
-      <p class="usage-note">Debian/Ubuntu package — updates by reinstalling a newer version.</p>
-      {% endif %}
-    </article>
-  </div>
-
-  <section class="panel docs-panel">
-    <div class="section-heading">
-      <h2>Updates</h2>
-      <span class="usage-sub">automatic</span>
+{% set ready = builds | selectattr('url') | list %}
+<div class="dl-page" data-desktop>
+  <section class="dl-hero">
+    <svg class="dl-mark" viewBox="0 0 512 512" aria-hidden="true"><g fill="currentColor"><rect x="168" y="136" width="66" height="240" rx="16"/><rect x="168" y="136" width="196" height="66" rx="16"/><rect x="168" y="252" width="152" height="58" rx="16"/></g><circle cx="398" cy="164" r="22" fill="var(--steel)"/></svg>
+    <div class="dl-hero-copy">
+      <h2>Fuse Desktop{% if latest %} <span>v{{ latest }}</span>{% endif %}</h2>
+      <p>The same site in a dedicated window: no tabs, no address bar, its own place in the dock and taskbar.</p>
     </div>
-    <p class="usage-note">The desktop app checks this server on launch, downloads new wrapper versions silently, and swaps them in the next time you quit. You never need to reinstall for site changes — chat, models, and settings are always the live site.</p>
+    <div class="dl-hero-action">
+      {% if ready %}
+      <a class="btn" data-dl-primary href="{{ ready[0].url }}" download>Download for {{ ready[0].label }}</a>
+      <span class="dl-hero-file" data-dl-primary-file>{{ ready[0].file }}</span>
+      {% else %}
+      <span class="dl-none">No builds published yet.</span>
+      {% endif %}
+    </div>
   </section>
 
-  <section class="panel docs-panel">
-    <div class="section-heading">
-      <h2>No install? Use the PWA</h2>
-      <span class="usage-sub">mobile &amp; desktop</span>
-    </div>
-    <p class="usage-note">The site is an installable app too. In Chrome, Edge, or Brave choose <strong>Install app</strong> (Safari: <strong>Add to Dock</strong>, Android: menu → Install app) and it launches full-screen with no address bar — the same zero-maintenance experience without downloading anything.</p>
+  <section class="dl-list" aria-labelledby="dl-list-title">
+    <header class="dl-list-head">
+      <h2 id="dl-list-title">All platforms</h2>
+    </header>
+    <ul>
+      {% for b in builds %}
+      <li class="dl-row{% if not b.url %} is-missing{% endif %}" data-dl-build="{{ b.key }}"{% if b.url %} data-dl-url="{{ b.url }}" data-dl-file="{{ b.file }}" data-dl-label="{{ b.label }}"{% endif %}>
+        <div class="dl-row-name"><strong>{{ b.label }}</strong><span>{{ b.detail }}</span></div>
+        <p class="dl-row-note">{{ b.note if b.url else 'Not packaged yet.' }}</p>
+        <div class="dl-row-get">
+          {% if b.url %}
+          <span class="dl-row-ver">v{{ b.version }}</span>
+          <a class="btn ghost sm" href="{{ b.url }}" download>Download</a>
+          {% else %}
+          <span class="dl-row-ver">—</span>
+          {% endif %}
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+
+  <section class="dl-alt" aria-labelledby="dl-alt-title">
+    <h2 id="dl-alt-title">No install needed</h2>
+    <ol>
+      <li><b>Chrome, Edge, Brave</b><span>Install app in the address bar or menu</span></li>
+      <li><b>Safari on Mac</b><span>File, then Add to Dock</span></li>
+      <li><b>iPhone and iPad</b><span>Share, then Add to Home Screen</span></li>
+      <li><b>Android</b><span>Menu, then Install app</span></li>
+    </ol>
   </section>
 </div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/desktop.js?v=1"></script>
 {% endblock %}

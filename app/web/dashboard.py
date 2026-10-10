@@ -261,20 +261,34 @@ def _latest_release(suffix: str) -> str | None:
     return f"/desktop/{max(names, key=_release_key)}" if names else None
 
 
+_DESKTOP_BUILDS = (
+    # key, label, detail, file suffix, one-line install note
+    ("windows", "Windows", "10 and 11, 64-bit installer", ".exe",
+     "Unsigned: if SmartScreen appears, choose More info, then Run anyway. No admin needed."),
+    ("mac", "macOS", "Apple Silicon and Intel", ".dmg",
+     "Unsigned: open it the first time with right-click, then Open."),
+    ("linux", "Linux AppImage", "x86_64, portable", ".AppImage",
+     "chmod +x the file and run it. Updates itself."),
+    ("deb", "Linux .deb", "Debian and Ubuntu", ".deb",
+     "Install with your package manager. Update by installing a newer one."),
+)
+
+
 @router.get("/download", response_class=HTMLResponse)
 async def desktop_app(request: Request):
     user, redir = require_user(request)
     if redir:
         return redir
-    return render(
-        request,
-        "desktop.html",
-        user,
-        win_url=_latest_release(".exe"),
-        mac_url=_latest_release(".dmg"),
-        appimage_url=_latest_release(".AppImage"),
-        deb_url=_latest_release(".deb"),
-    )
+    builds = []
+    for key, label, detail, suffix, note in _DESKTOP_BUILDS:
+        url = _latest_release(suffix)
+        name = url.rsplit("/", 1)[-1] if url else ""
+        version = ".".join(re.findall(r"\d+", name)[:3]) if name else ""
+        builds.append({"key": key, "label": label, "detail": detail, "note": note,
+                       "url": url, "file": name, "version": version})
+    versions = [b["version"] for b in builds if b["version"]]
+    latest = max(versions, key=lambda v: tuple(int(x) for x in v.split("."))) if versions else ""
+    return render(request, "desktop.html", user, builds=builds, latest=latest)
 
 
 @router.get("/docs", response_class=HTMLResponse)
