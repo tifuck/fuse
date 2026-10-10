@@ -326,8 +326,8 @@ function initState() {
   S.artifactMode = "preview";
   S.currentArtifact = null;
   S.skillsOpen = false;
-  S.showThinking = true;
-    try { S.showThinking = localStorage.getItem(S.STORE_THINKING) !== "hidden"; } catch (_) {}
+  S.showThinking = false;
+    try { S.showThinking = localStorage.getItem(S.STORE_THINKING) === "shown"; } catch (_) {}
   S.artifactSourceLoaded = "";
   S.agentsOpen = false;
   S.agentsRows = [];
