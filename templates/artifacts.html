@@ -3,84 +3,72 @@
 {% block page_title %}Artifacts{% endblock %}
 {% block page_lead %}<p>Pages, charts and dashboards made in chat. Share gives a secret link; nothing is listed publicly.</p>{% endblock %}
 {% block body %}
-<div class="stack-y artifacts-page">
+<div class="art-page">
   {% if error %}<p class="callout fault" role="alert">{{ error }}</p>{% endif %}
   {% if notice %}<p class="callout ok">{{ notice }}</p>{% endif %}
 
-  <section class="panel">
-    <div class="section-heading">
-      <h2>Active · {{ items|length }}</h2>
-    </div>
-    {% if items %}
-    <ul class="artifact-grid">
-      {% for item in items %}
-      <li class="panel artifact-card">
-        <div class="artifact-card-head">
-          <a class="artifact-card-title" href="{{ item.url }}">{{ item.title }}</a>
-          <span class="badge {% if item.visibility == 'public' %}on{% else %}off{% endif %}">{{ item.visibility }}</span>
-        </div>
-        <p class="artifact-card-meta">
-          <span>v{{ item.version }}</span>
-          <span>{{ item.updated_at }}</span>
-          {% if item.thread_id %}
-          <a href="/chat?t={{ item.thread_id }}&amp;a={{ item.identifier }}">Open original chat</a>
-          {% endif %}
-        </p>
-        <div class="row-actions artifact-card-actions">
-          <a class="btn ghost sm" href="{{ item.url }}">View</a>
-          {% if item.visibility == 'public' %}
-          <button type="button" class="btn ghost sm copy" data-copy="{{ item.share_url }}" title="Copy public link">Copy link</button>
-          <form method="post" action="{{ item.url }}/visibility">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <input type="hidden" name="visibility" value="private">
-            <button class="btn ghost sm" type="submit">Hide</button>
-          </form>
-          {% else %}
-          <form method="post" action="{{ item.url }}/visibility">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <input type="hidden" name="visibility" value="public">
-            <button class="btn ghost sm" type="submit">Share</button>
-          </form>
-          {% endif %}
-          <form method="post" action="{{ item.url }}/archive">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button class="btn ghost sm" type="submit">Archive</button>
-          </form>
-          <form method="post" action="{{ item.url }}/delete" data-confirm="Delete “{{ item.title }}”? This cannot be undone.">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button class="btn danger sm" type="submit">Delete</button>
-          </form>
-        </div>
-      </li>
-      {% endfor %}
-    </ul>
-    {% else %}
-    <p class="empty">No active artifacts. In chat, ask for a chart, dashboard, or interactive page. The model will create one here.</p>
-    {% endif %}
-  </section>
+  {% if items %}
+  <ul class="art-list" aria-label="Artifacts">
+    <li class="art-row art-head" aria-hidden="true"><span>Artifact</span><span>Access</span><span>Updated</span><span></span></li>
+    {% for item in items %}
+    <li class="art-row">
+      <div class="art-name">
+        <a class="artifact-card-title" href="{{ item.url }}">{{ item.title }}</a>
+        <span class="art-meta">v{{ item.version }}{% if item.thread_id %} · <a href="/chat?t={{ item.thread_id }}&amp;a={{ item.identifier }}">open its chat</a>{% endif %}</span>
+      </div>
+      <span class="art-access">{% if item.visibility == 'public' %}<span class="badge on">Shared</span>{% else %}<span class="badge off">Private</span>{% endif %}</span>
+      <span class="art-when">{{ item.updated_at }}</span>
+      <div class="row-actions art-actions">
+        <a class="btn ghost sm" href="{{ item.url }}">View</a>
+        {% if item.visibility == 'public' %}
+        <button type="button" class="btn ghost sm copy" data-copy="{{ item.share_url }}" title="Copy the secret link">Copy link</button>
+        <form method="post" action="{{ item.url }}/visibility">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="visibility" value="private">
+          <button class="btn ghost sm" type="submit">Unshare</button>
+        </form>
+        {% else %}
+        <form method="post" action="{{ item.url }}/visibility">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="visibility" value="public">
+          <button class="btn ghost sm" type="submit">Share</button>
+        </form>
+        {% endif %}
+        <form method="post" action="{{ item.url }}/archive">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="btn ghost sm" type="submit" title="Hide it from everyone until restored">Archive</button>
+        </form>
+        <form method="post" action="{{ item.url }}/delete" data-confirm="Delete “{{ item.title }}”? This cannot be undone.">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="btn danger sm" type="submit">Delete</button>
+        </form>
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <div class="art-empty">
+    <p>No artifacts yet. Ask for a chart, a dashboard or an interactive page in chat and it lands here.</p>
+    <a class="btn sm" href="/chat">Open chat</a>
+  </div>
+  {% endif %}
 
   {% if archived %}
-  <section class="panel">
-    <div class="section-heading">
-      <h2>Archived · {{ archived|length }}</h2>
-    </div>
-    <p class="usage-sub">Archived artifacts are hidden from everyone, including you. Restore to view them again, or delete them permanently.</p>
-    <ul class="artifact-grid">
+  <details class="art-archived">
+    <summary>Archived <span>{{ archived|length }}</span><small>Hidden from everyone until restored.</small></summary>
+    <ul class="art-list">
       {% for item in archived %}
-      <li class="panel artifact-card is-archived">
-        <div class="artifact-card-head">
+      <li class="art-row is-archived">
+        <div class="art-name">
           <span class="artifact-card-title">{{ item.title }}</span>
-          <span class="badge held">archived</span>
+          <span class="art-meta">v{{ item.version }} · was {{ 'shared' if item.visibility == 'public' else 'private' }}</span>
         </div>
-        <p class="artifact-card-meta">
-          <span>v{{ item.version }}</span>
-          <span>{{ item.updated_at }}</span>
-          <span>was {{ item.visibility }}</span>
-        </p>
-        <div class="row-actions artifact-card-actions">
+        <span class="art-access"><span class="badge held">Archived</span></span>
+        <span class="art-when">{{ item.updated_at }}</span>
+        <div class="row-actions art-actions">
           <form method="post" action="{{ item.url }}/restore">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button class="btn sm" type="submit">Restore</button>
+            <button class="btn ghost sm" type="submit">Restore</button>
           </form>
           <form method="post" action="{{ item.url }}/delete" data-confirm="Delete “{{ item.title }}”? This cannot be undone.">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -90,7 +78,7 @@
       </li>
       {% endfor %}
     </ul>
-  </section>
+  </details>
   {% endif %}
 </div>
 {% endblock %}

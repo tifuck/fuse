@@ -26,7 +26,7 @@
     </div>
   </div>
   <div class="probe-out hidden" {% if llama %}id="probe-{{ llama['id'] }}"{% endif %}></div>
-  <p class="aside">OpenAI-compatible llama.cpp (or a local Ollama /v1). Use the LAN IP of that box, not 127.0.0.1 — Fuse is a different host. HTTPS with a self-signed cert needs the skip-verify box (same as curl -k).</p>
+  <p class="aside">A llama.cpp or local Ollama <code>/v1</code>. Use the box's LAN address; tick skip-verify for a self-signed certificate.</p>
   <form method="post" action="/admin/sources/llama" class="stack">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label>Base URL
@@ -62,7 +62,7 @@
     </div>
   </div>
   <div class="probe-out hidden" {% if ollama %}id="probe-{{ ollama['id'] }}"{% endif %}></div>
-  <p class="aside">Keys rotate per request. HTTP 402 “requires a subscription” is a paid model — the key stays. Real out-of-usage (weekly/session 429) cools it. Only unpaid-accessible models are advertised on /v1/models.</p>
+  <p class="aside">Keys rotate per request; a key that runs out (429) cools down. Only models these keys can call are listed.</p>
   <p class="usage-sub">{{ ollama_total }} key{{ 's' if ollama_total != 1 else '' }} · {{ ollama_ready }} ready · {{ ollama_cooling }} cooling · {{ ollama_problem }} problem{% if ollama_catalog %} · {{ ollama_catalog.free|length }} free · {{ ollama_catalog.gated|length }} paid hidden{% endif %}</p>
   {% if ollama_keys %}
   <div class="table-wrap">
@@ -141,7 +141,7 @@
     </div>
   </div>
   <div class="probe-out hidden" {% if openrouter %}id="probe-{{ openrouter['id'] }}"{% endif %}></div>
-  <p class="aside">There is no site-wide OpenRouter key. Each user adds their own key on <a href="/sources">Sources</a>. Test checks the catalog; it does not send a completion.</p>
+  <p class="aside">No site-wide key: each user adds their own on <a href="/sources">Sources</a>. Test reads the catalog only.</p>
   <p class="usage-sub">{{ openrouter_user_count }} personal key{{ 's' if openrouter_user_count != 1 else '' }} on Sources</p>
   <form method="post" action="/admin/sources/openrouter" class="stack">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -158,7 +158,7 @@
     <div><p class="eyebrow">Experiential Labs</p><h2>Personal keys only</h2></div>
     <span class="badge {{ 'on' if explabs and explabs['enabled'] else 'off' }}">{{ 'On' if explabs and explabs['enabled'] else 'Off' }}</span>
   </div>
-  <p class="aside">Each user adds their own key on <a href="/sources">Sources</a>. There is no shared key. Only explicit <code>explabs/…</code> model selections use this provider; pool requests never fall back here.</p>
+  <p class="aside">No shared key: each user adds their own on <a href="/sources">Sources</a>. Only <code>explabs/…</code> models use it.</p>
   <p class="usage-sub">{{ explabs_user_count }} personal key{{ 's' if explabs_user_count != 1 else '' }} on Sources</p>
   <form method="post" action="/admin/sources/explabs" class="stack">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -203,7 +203,7 @@
 
 <section class="panel" id="compat">
   <h2>Add OpenAI-compatible</h2>
-  <p class="aside">Optional extra upstream. Llama, Ollama, OpenRouter, and Experiential Labs are above — do not add them here.</p>
+  <p class="aside">Any other OpenAI-compatible upstream. The providers above have their own tabs.</p>
   <form method="post" action="/admin/sources" class="stack">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="type" value="openai">

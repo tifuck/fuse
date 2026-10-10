@@ -292,3 +292,23 @@
 .error-grid code { color: var(--fault); font-size: 0.72rem; }
 .error-grid span { color: var(--mute); font-size: 0.78rem; }
 
+
+/* Console: body copy at the scale of every other page; on phones the three
+   overview facts read as one compact list instead of three tall cards. */
+.docs-panel .usage-note { font-size: 0.8rem; line-height: 1.6; }
+@media (max-width: 720px) {
+  .api-docs .catalog-metrics { gap: 0; border: 1px solid var(--line); background: var(--panel); }
+  .api-docs .catalog-metrics .metric-card {
+    display: grid;
+    grid-template-columns: 6rem minmax(0, 1fr);
+    align-items: baseline;
+    gap: 0.1rem 0.75rem;
+    padding: 0.6rem 0.8rem;
+    border: 0;
+    border-top: 1px solid var(--line);
+  }
+  .api-docs .catalog-metrics .metric-card:first-child { border-top: 0; }
+  .api-docs .catalog-metrics .metric-card > :not(.metric-label) { grid-column: 2; margin: 0; }
+  .api-docs .catalog-metrics .metric-value,
+  .api-docs .catalog-metrics .metric-value.is-text { font-size: 0.9rem; overflow-wrap: anywhere; }
+}

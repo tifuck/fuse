@@ -14,27 +14,22 @@
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <header class="set-head">
     <h2>Who can use donated accounts</h2>
-    <p><strong>Share</strong> routes eligible users across every linked account of that type; off means each user only uses accounts they linked. Users can opt out of sharing when it is on, but cannot opt in when it is off. <strong>Open access</strong> lets any registered user use the pool without linking an account.</p>
+    <p><strong>Shared</strong>: users route across every linked account of the type (each can opt out). <strong>Open</strong>: anyone may use it without linking one.</p>
   </header>
-  {% for kind in pool_kinds %}
-  {% set policy = pool_policies[kind] %}
-  <div class="set-row">
-    <div class="set-label">
-      <strong>{{ pool_labels[kind] }}</strong>
-      <span>{{ pool_counts[kind] }} linked account{{ 's' if pool_counts[kind] != 1 else '' }}</span>
-    </div>
-    <div class="set-control">
-      <label class="check">
-        <input type="checkbox" name="{{ kind }}_pool_shared" value="1"{% if policy.pool_shared %} checked{% endif %}>
-        Share linked accounts across users
-      </label>
-      <label class="check">
-        <input type="checkbox" name="{{ kind }}_open_access" value="1"{% if policy.open_access %} checked{% endif %}>
-        Open access — no linked account required
-      </label>
-    </div>
-  </div>
-  {% endfor %}
+  <table class="pool-matrix">
+    <thead><tr><th scope="col">Pool</th><th scope="col">Linked</th><th scope="col">Shared</th><th scope="col">Open</th></tr></thead>
+    <tbody>
+    {% for kind in pool_kinds %}
+    {% set policy = pool_policies[kind] %}
+    <tr>
+      <th scope="row">{{ pool_labels[kind] }}</th>
+      <td class="num">{{ pool_counts[kind] }}</td>
+      <td><label class="check"><input type="checkbox" name="{{ kind }}_pool_shared" value="1"{% if policy.pool_shared %} checked{% endif %}><span class="visually-hidden">Share {{ pool_labels[kind] }} linked accounts across users</span></label></td>
+      <td><label class="check"><input type="checkbox" name="{{ kind }}_open_access" value="1"{% if policy.open_access %} checked{% endif %}><span class="visually-hidden">Open {{ pool_labels[kind] }} to everyone</span></label></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
   <div class="set-foot">
     <button type="submit" class="btn">Save pool access</button>
   </div>
@@ -43,7 +38,7 @@
 <section class="panel set" id="guards">
   <header class="set-head">
     <h2>Off-site usage guards</h2>
-    <p>Pull a donated account out of the pool for 24 hours when its provider quota rises without Fuse traffic, which means the owner is using it elsewhere. Turning a guard off releases every held account of that type.</p>
+    <p>Pull an account out for 24 hours when its quota rises without Fuse traffic (its owner is using it elsewhere). Turning a guard off releases held accounts.</p>
   </header>
   <form method="post" action="/admin/sources/grok" class="set-row">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

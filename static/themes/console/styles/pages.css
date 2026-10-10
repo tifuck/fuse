@@ -342,3 +342,12 @@ html[data-chat-console="true"] body.is-settings .settings-scroll { scroll-paddin
 /* Descriptions run the width of their box. Fixed ch caps made text stop
    wrapping halfway across wide panels. */
 html[data-chat-console="true"] body.is-settings .settings-shell :is(.settings-lead, .usage-sub, .usage-note, .uz-note, .aside, .lede, .set-head p, .set-label span, .provider-meta p) { max-width: none; }
+html[data-chat-console="true"] body.is-settings .settings-shell .docs-panel .usage-note { font-size: 0.8rem; line-height: 1.6; }
+@media (max-width: 720px) {
+  html[data-chat-console="true"] body.is-settings .settings-shell .api-docs .catalog-metrics .metric-card { border: 0; border-top: 1px solid var(--line); background: transparent; }
+  html[data-chat-console="true"] body.is-settings .settings-shell .api-docs .catalog-metrics .metric-card:first-child { border-top: 0; }
+}
+/* Panel descriptions (admin Providers and friends) at the sheet scale, with
+   room before the first field. */
+html[data-chat-console="true"] body.is-settings .settings-shell .panel > .aside { margin: 0.35rem 0 0.85rem; color: var(--mute); font-size: 0.78rem; line-height: 1.55; }
+html[data-chat-console="true"] body.is-settings .settings-shell .empty { font-size: 0.8rem; }
