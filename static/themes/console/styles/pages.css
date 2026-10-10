@@ -179,7 +179,7 @@ html[data-chat-console="true"] body:is(.is-settings, .is-chat) :is(.settings-she
 }
 
 /* —— Badges, chips, pills: square tags —— */
-html[data-chat-console="true"] body.is-settings .settings-shell :is(.badge, .pill, .hosts-chip, .set-state, .sched-pill, .uz-tag, .fp-badge) {
+html[data-chat-console="true"] body.is-settings .settings-shell :is(.badge, .pill, .hosts-chip, .set-state, .uz-tag, .fp-badge) {
   height: auto;
   min-height: 1.25rem;
   padding: 0.05rem 0.4rem;
