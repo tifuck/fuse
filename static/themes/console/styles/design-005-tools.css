@@ -172,7 +172,7 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-pen
 }
 
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] {
-  --chat-col: 160rem;
+  --chat-col: 100%;
   --console-gutter: 0.75rem;
   --tool-row: calc(1.2rem * var(--chat-text-scale, 1));
 }

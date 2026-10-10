@@ -71,7 +71,6 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-think:no
   overflow-wrap: anywhere;
   word-break: break-word;
   max-height: none;
-  max-width: 95ch;
   line-height: 1.65;
 }
 

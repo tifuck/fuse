@@ -31,7 +31,6 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-recap {
   display: flex;
   align-items: flex-start;
   gap: 0.5em;
-  max-width: 72rem;
   margin: 0.6rem 0 0.2rem;
   color: color-mix(in srgb, var(--mute) 85%, var(--ink));
   font-size: calc(0.88rem * var(--chat-text-scale, 1));
@@ -153,7 +152,7 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] {
   max-height: none;
 }
 
-html[data-chat-console="true"] .chat[data-view="console"] { --chat-col: 160rem; --dock-overhang: 0; }
+html[data-chat-console="true"] .chat[data-view="console"] { --chat-col: 100%; --dock-overhang: 0; }
 
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] { letter-spacing: 0; }
 
