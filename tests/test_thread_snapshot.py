@@ -75,7 +75,9 @@ def test_versioned_static_assets_are_immutable(monkeypatch):
 
     monkeypatch.setattr(settings, "static_immutable", True)
     assert headers(b"v=3")["cache-control"] == "public, max-age=31536000, immutable"
-    assert "cache-control" not in headers(b"")
-    assert "cache-control" not in headers(b"xv=3")
+    # Unversioned internal modules must revalidate, or a heuristically cached
+    # copy can mismatch a newer versioned entry script.
+    assert headers(b"")["cache-control"] == "no-cache"
+    assert headers(b"xv=3")["cache-control"] == "no-cache"
     monkeypatch.setattr(settings, "static_immutable", False)
-    assert "cache-control" not in headers(b"v=3")
+    assert headers(b"v=3")["cache-control"] == "no-cache"

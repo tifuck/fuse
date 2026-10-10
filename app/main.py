@@ -327,12 +327,20 @@ _VERSIONED = re.compile(rb"(?:^|&)v=[^&]")
 
 class VersionedStaticFiles(StaticFiles):
     """Versioned assets (?v=N, raised on every change by promote-dev.sh) are
-    cached without revalidation; unversioned ones keep the default validators."""
+    cached without revalidation. Everything else must revalidate: without a
+    Cache-Control header browsers cache heuristically (a fraction of the file's
+    age), so a phone could pair a new versioned chat.js with hours-old internal
+    modules it never re-requested, and the mismatched module graph failed at
+    init (the chat sidebar went dead)."""
 
     async def get_response(self, path, scope):
         response = await super().get_response(path, scope)
-        if settings.static_immutable and response.status_code == 200 and _VERSIONED.search(scope.get("query_string", b"")):
+        if response.status_code not in (200, 304):
+            return response
+        if settings.static_immutable and _VERSIONED.search(scope.get("query_string", b"")):
             response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        else:
+            response.headers["Cache-Control"] = "no-cache"
         return response
 
 
