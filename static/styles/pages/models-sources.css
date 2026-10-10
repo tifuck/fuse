@@ -216,3 +216,54 @@
 .sources-page .stack-y > .pool-head { margin-top: 1.35rem; }
 .sources-page .stack-y > .pool-head + * { margin-top: calc(0.4rem - var(--gap)); }
 
+
+/* —— Sources › Subscriptions ——
+   One block per provider: name and route on the left, the pool's live usage
+   gauge, then the switches and this provider's Link action. */
+.sources-note { margin: 0; color: var(--mute); font-size: 0.76rem; }
+.sources-page .pool-head {
+  display: grid;
+  grid-template-columns: minmax(10rem, 14rem) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.6rem 1.25rem;
+  margin: 0.5rem 0 0;
+  padding: 0.7rem 0 0.6rem;
+  border-top: 1px solid var(--line);
+}
+.sources-page .pool-head .section-heading { flex-direction: column; align-items: flex-start; gap: 0.15rem; margin: 0; }
+.sources-page .pool-head .section-heading h2 { display: flex; align-items: center; gap: 0.45rem; margin: 0; font: 600 0.9rem/1.3 var(--mono); }
+.sources-page .pool-head .provider-logo { width: 1rem; height: 1rem; }
+.sources-page .pool-head .section-heading .usage-sub { font-size: 0.68rem; }
+.sources-page .pool-head > .pool-gauge:nth-of-type(2) { grid-column: 2; }
+.pool-gauge {
+  display: grid;
+  grid-template-columns: 3.75rem auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.3rem 0.85rem;
+  min-width: 0;
+  max-width: 34rem;
+  font: 0.7rem/1.3 var(--mono);
+}
+.pool-gauge + .pool-gauge { grid-column: 2; margin-top: 0.35rem; }
+.pool-gauge-label { grid-column: 1 / -1; color: var(--mute); font-size: 0.6rem; letter-spacing: 0.08em; text-transform: uppercase; }
+.pool-gauge-pct { grid-row: span 2; color: var(--mist); font: 600 0.9rem/1 var(--mono); }
+.pool-gauge .usage-meter { grid-column: 2 / -1; margin: 0; }
+.pool-gauge-count { grid-column: 2; color: var(--mute); white-space: nowrap; }
+.pool-gauge-state { grid-column: 3; margin: 0; white-space: nowrap; }
+.sources-page .pool-controls { justify-content: flex-end; margin: 0; padding: 0; gap: 0.35rem 0.6rem; }
+.sources-page .pool-controls form { margin: 0; }
+@media (max-width: 1100px) {
+  .sources-page .pool-head { grid-template-columns: minmax(0, 1fr) auto; }
+  .sources-page .pool-head .pool-gauge { grid-column: 1 / -1; grid-row: 2; }
+  .sources-page .pool-head .pool-gauge + .pool-gauge { grid-row: 3; }
+  .sources-page .pool-controls { grid-column: 2; grid-row: 1; }
+}
+@media (max-width: 720px) {
+  .sources-page .pool-head { grid-template-columns: minmax(0, 1fr); }
+  .sources-page .pool-head > * { grid-column: 1 !important; grid-row: auto !important; }
+  .sources-page .pool-controls { justify-content: flex-start; }
+  .pool-gauge { max-width: none; }
+}
+/* "Add a … account" under an empty pool: one quiet line, not a box. */
+.sources-page section > .panel:has(> .empty:only-child) { padding: 0.55rem 0.85rem; background: transparent; border-style: dashed; }
+.sources-page section > .panel > .empty:only-child { font-size: 0.76rem; }
