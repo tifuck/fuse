@@ -771,6 +771,63 @@ if (docsJump) {
   }
 }
 
+// Section tabs: a .settings-jump nav of #anchors becomes real tabs, so a page
+// with several long sections (Settings, admin Providers and Pools) shows one at
+// a time instead of scrolling the whole shell to an anchor. A section belongs
+// to a tab by its id or by data-section="<id>". The open tab survives a form
+// post (sessionStorage per path) and is linkable (#id).
+document.querySelectorAll("nav.settings-jump").forEach((nav) => {
+  const links = Array.from(nav.querySelectorAll('a[href^="#"]'));
+  if (!links.length) return;
+  const ids = links.map((a) => a.getAttribute("href").slice(1));
+  const scope = nav.parentElement;
+  const members = (id) => Array.from(scope.querySelectorAll(`#${CSS.escape(id)}, [data-section="${id}"]`));
+  if (!ids.every((id) => members(id).length)) return;
+  const key = "fuse.tabs." + location.pathname;
+  nav.setAttribute("role", "tablist");
+  links.forEach((a) => {
+    a.setAttribute("role", "tab");
+    a.setAttribute("aria-controls", a.getAttribute("href").slice(1));
+  });
+  function show(id, push) {
+    if (!ids.includes(id)) id = ids[0];
+    links.forEach((a) => {
+      const on = a.getAttribute("href") === "#" + id;
+      a.classList.toggle("on", on);
+      a.setAttribute("aria-selected", on ? "true" : "false");
+      a.tabIndex = on ? 0 : -1;
+    });
+    ids.forEach((other) => members(other).forEach((el) => { el.hidden = other !== id; }));
+    try { sessionStorage.setItem(key, id); } catch (_) {}
+    if (push) history.replaceState(null, "", "#" + id);
+    const scroller = nav.closest(".settings-scroll");
+    if (scroller && push) scroller.scrollTop = 0;
+    document.dispatchEvent(new CustomEvent("fuse-section-tab", { detail: { id } }));
+  }
+  nav.addEventListener("click", (event) => {
+    const a = event.target.closest('a[href^="#"]');
+    if (!a) return;
+    event.preventDefault();
+    show(a.getAttribute("href").slice(1), true);
+    a.focus();
+  });
+  nav.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+    const i = links.indexOf(document.activeElement);
+    if (i < 0) return;
+    event.preventDefault();
+    const next = links[(i + (event.key === "ArrowRight" ? 1 : links.length - 1)) % links.length];
+    show(next.getAttribute("href").slice(1), true);
+    next.focus();
+  });
+  let start = location.hash.slice(1);
+  if (!ids.includes(start)) {
+    try { start = sessionStorage.getItem(key) || ""; } catch (_) { start = ""; }
+  }
+  show(start, false);
+  window.addEventListener("hashchange", () => { if (ids.includes(location.hash.slice(1))) show(location.hash.slice(1), false); });
+});
+
 document.querySelectorAll("[data-page-tabs]").forEach((nav) => {
   const root = nav.closest("[data-tab-root]") || document;
   nav.querySelectorAll("[data-tab]").forEach((button) => {

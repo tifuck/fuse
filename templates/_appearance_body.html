@@ -1,0 +1,109 @@
+{#- The Appearance controls. One copy for the chat Appearance sheet and the
+    Settings › Appearance tab; chat-appearance.js binds them by their data
+    attributes wherever they are. Set appearance_recaps=false where recaps
+    already have their own control (Settings › Chat defaults). -#}
+<section class="ap-section" aria-label="Thinking">
+  <div class="ap-body ap-switches">
+    <label class="ap-switch">
+      <input type="checkbox" role="switch" data-thinking-toggle>
+      <span class="ap-switch-copy"><span>Show thinking</span><small>Off hides thoughts, as Claude Code does; the status line still says when it is thinking. Also /thinking.</small></span>
+    </label>
+  </div>
+</section>
+<section class="ap-section" aria-labelledby="ap-h-theme">
+  <div class="ap-intro">
+    <h2 id="ap-h-theme">Theme</h2>
+    <p>Every surface follows it, this window included.</p>
+  </div>
+  <div class="ap-body">
+    <div class="ap-themes" data-chat-theme-swatches></div>
+    <div class="ap-custom" data-chat-custom hidden>
+      <label class="ap-color">
+        <input type="color" data-chat-custom-ink value="#121212" aria-label="Background color">
+        <span>Background</span>
+      </label>
+      <label class="ap-color">
+        <input type="color" data-chat-custom-brass value="#c5df88" aria-label="Accent color">
+        <span>Accent</span>
+      </label>
+      <p class="ap-note">Surfaces and text colors are derived from these two.</p>
+    </div>
+  </div>
+</section>
+<section class="ap-section" aria-labelledby="ap-h-backdrop">
+  <div class="ap-intro">
+    <h2 id="ap-h-backdrop">Backdrop</h2>
+    <p>A moving field behind the transcript.</p>
+  </div>
+  <div class="ap-body">
+    <div class="ap-backdrops" data-chat-backdrop-swatches></div>
+    <div class="ap-slider" data-chat-backdrop-strength-wrap hidden>
+      <label for="chat-backdrop-strength">Intensity</label>
+      <input id="chat-backdrop-strength" class="ap-range" data-chat-backdrop-strength type="range" min="12" max="55" step="1" value="28">
+      <output for="chat-backdrop-strength" data-chat-backdrop-strength-value>28%</output>
+    </div>
+  </div>
+</section>
+<section class="ap-section" aria-labelledby="ap-h-type">
+  <div class="ap-intro">
+    <h2 id="ap-h-type">Type</h2>
+    <p>Choose your reading font and text size.</p>
+  </div>
+  <div class="ap-body">
+    <div class="ap-slider">
+      <label for="chat-text-size">Text size</label>
+      <div class="ap-stepper">
+        <button type="button" class="ap-step" data-size-step="-1" aria-label="Decrease text size">
+          <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M3.5 8h9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </button>
+        <input id="chat-text-size" class="ap-range" data-chat-size type="range" min="30" max="130" step="5" value="100">
+        <button type="button" class="ap-step" data-size-step="1" aria-label="Increase text size">
+          <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <output for="chat-text-size" data-chat-size-value>100%</output>
+    </div>
+    <div class="ap-fontbar">
+      <p class="ap-scope">Font</p>
+      <div class="ap-filters" role="group" aria-label="Filter fonts" data-chat-font-filters>
+        <button type="button" data-chat-font-filter="all" aria-pressed="true">All</button>
+        <button type="button" data-chat-font-filter="sans" aria-pressed="false">Sans</button>
+        <button type="button" data-chat-font-filter="serif" aria-pressed="false">Serif</button>
+        <button type="button" data-chat-font-filter="mono" aria-pressed="false">Mono</button>
+      </div>
+    </div>
+    <p class="ap-sample" data-chat-font-sample aria-live="polite">The handler is async now, and the dev server is running on :5173.</p>
+    <div class="ap-fonts" data-chat-font-grid role="radiogroup" aria-label="Font"></div>
+  </div>
+</section>
+<section class="ap-section" aria-labelledby="ap-h-composer">
+  <div class="ap-intro">
+    <h2 id="ap-h-composer">Composer</h2>
+    <p>Slash commands always stay on.</p>
+  </div>
+  <div class="ap-body ap-switches">
+    {% if appearance_recaps is not defined or appearance_recaps %}
+    <label class="ap-switch">
+      <input type="checkbox" role="switch" data-recaps-toggle>
+      <span class="ap-switch-copy"><span>Automatic recaps</span><small>Account-wide. Summarize longer work as soon as it and its background work finish.</small></span>
+    </label>
+    {% endif %}
+    <label class="ap-switch">
+      <input type="checkbox" role="switch" data-composer-pref="spell" checked>
+      <span class="ap-switch-copy"><span>Spell check</span><small>Uses an on-device English dictionary.</small></span>
+    </label>
+    <label class="ap-switch">
+      <input type="checkbox" role="switch" data-composer-pref="palettes" checked>
+      <span class="ap-switch-copy"><span>Mentions and paths</span><small>Suggest agents after @ and files as you type a path.</small></span>
+    </label>
+    <label class="ap-switch">
+      <input type="checkbox" role="switch" data-composer-pref="history" checked>
+      <span class="ap-switch-copy"><span>Earlier-prompt history</span><small>Press ↑ in an empty box to reuse an earlier prompt.</small></span>
+    </label>
+    <label class="ap-switch">
+      <input type="checkbox" role="switch" data-composer-pref="dial" checked>
+      <span class="ap-switch-copy"><span>Quick dial</span><small>Phones only. A movable button that fans out Retry, Undo, Rewind, Agents and New chat.</small></span>
+    </label>
+  </div>
+</section>
+

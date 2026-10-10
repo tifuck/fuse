@@ -131,6 +131,18 @@
     });
   }
 
+  // Appearance tab: the same controls as chat's Appearance sheet, bound by
+  // chat-appearance.js. Show thinking is chat's own preference (chat/state.js
+  // reads the same key), so it is mirrored here.
+  const thinking = root.querySelector("[data-thinking-toggle]");
+  if (thinking) {
+    const STORE_THINKING = "fuse.chat.thinking.v1";
+    try { thinking.checked = localStorage.getItem(STORE_THINKING) === "shown"; } catch (_) {}
+    thinking.addEventListener("change", () => {
+      try { localStorage.setItem(STORE_THINKING, thinking.checked ? "shown" : "hidden"); } catch (_) {}
+    });
+  }
+
   const bell = root.querySelector("[data-notif-toggle]");
   const state = root.querySelector("[data-notif-state]");
   if (bell && state) {

@@ -553,7 +553,9 @@
   };
 
   document.addEventListener("DOMContentLoaded", () => {
-    const root = document.querySelector("[data-chat]");
+    // Bind wherever the controls are: chat's Appearance sheet or Settings ›
+    // Appearance. Other pages only apply the saved look.
+    const root = document.querySelector("[data-chat], [data-chat-theme-swatches]");
     const sizeRange = document.querySelector("[data-chat-size]");
     const fontGrid = document.querySelector("[data-chat-font-grid]");
     if (!root) {

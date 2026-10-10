@@ -149,7 +149,9 @@
 /* Settings sections: one panel per concern, a short description under the
    heading, then rows of label + help beside the control. Rows stack on
    narrow screens. */
-.set-page { display: flex; flex-direction: column; gap: 0.85rem; max-width: 60rem; }
+.set-page { display: flex; flex-direction: column; gap: 0.85rem; }
+.set-page > .settings-jump { margin-bottom: 0.1rem; }
+.set[hidden] { display: none; }
 body.is-settings .panel.set { padding: 0; }
 .set { scroll-margin-top: 0.75rem; }
 .set-head { padding: 0.9rem 1.1rem 0.8rem; }
@@ -157,8 +159,8 @@ body.is-settings .panel.set { padding: 0; }
 .set-head p { margin: 0.3rem 0 0; max-width: 68ch; color: var(--mute); font-size: 0.82rem; line-height: 1.45; }
 .set-row {
   display: grid;
-  grid-template-columns: minmax(11rem, 17rem) minmax(0, 1fr);
-  gap: 0.55rem 1.5rem;
+  grid-template-columns: minmax(12rem, 19rem) minmax(0, 46rem);
+  gap: 0.55rem 2rem;
   padding: 0.9rem 1.1rem;
   border-top: 1px solid var(--line);
 }
@@ -223,3 +225,19 @@ body.is-settings .page-head { display: none; }
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
 }
 
+
+/* Settings › Appearance: the chat Appearance sheet's sections, laid flat in
+   the panel (chat-appearance.js binds them). */
+.set-appearance {
+  --ap-ui: var(--mono);
+  --ap-card: color-mix(in srgb, var(--ink) 55%, var(--panel));
+  --ap-hover: color-mix(in srgb, var(--mist) 5%, var(--ap-card));
+  --ap-ring: color-mix(in srgb, var(--brass) 70%, var(--line));
+}
+.set-appearance-body { padding: 0 1.1rem 0.4rem; }
+.set-appearance-body .ap-section:first-child { border-top: 0; }
+.set-appearance :is(button, input, label) { font-family: inherit; }
+html[data-chat-console="true"] body.is-settings .set-appearance :is(.ap-switch input[type="checkbox"]::after, .ap-color input[type="color"]::-webkit-color-swatch, .ap-range::-webkit-slider-runnable-track, .ap-range::-webkit-slider-thumb) { border-radius: 0; }
+@media (max-width: 720px) {
+  .set-appearance-body { padding: 0 0.9rem 0.3rem; }
+}

@@ -91,7 +91,6 @@ html[data-chat-console="true"] body.is-settings .settings-scroll > .settings-too
 html[data-chat-console="true"] body.is-settings .settings-scroll > main { flex: 1 0 100%; min-width: 0; }
 html[data-chat-console="true"] body.is-settings .settings-lead {
   margin: 0 0 1rem;
-  max-width: 88ch;
   color: var(--mute);
   font-size: 0.78rem;
   line-height: 1.55;
@@ -221,7 +220,9 @@ html[data-chat-console="true"] body.is-settings .settings-jump a {
   color: var(--mute);
   font: 0.78rem/1 var(--mono);
 }
-html[data-chat-console="true"] body.is-settings .settings-jump a:hover { color: var(--brass); background: color-mix(in srgb, var(--brass) 12%, transparent); }
+html[data-chat-console="true"] body.is-settings .settings-jump a:hover { color: var(--mist); background: var(--raise); }
+html[data-chat-console="true"] body.is-settings .settings-jump a.on { color: var(--brass); background: color-mix(in srgb, var(--brass) 12%, transparent); }
+html[data-chat-console="true"] body.is-settings .settings-jump a:focus-visible { outline: 1px solid var(--brass); outline-offset: -1px; }
 
 /* —— Tables —— */
 html[data-chat-console="true"] body.is-settings .settings-shell .log { font-size: 0.8rem; }
@@ -329,3 +330,15 @@ html[data-chat-console="true"] body.is-settings .settings-tools .head-actions { 
 html[data-chat-console="true"] body.is-settings .settings-shell .section-heading { align-items: flex-start; text-align: left; }
 /* Tags keep their own width when a stacked row stretches its cells. */
 html[data-chat-console="true"] body.is-settings .settings-shell .badge { width: fit-content; justify-self: start; align-self: center; }
+
+/* Only .settings-scroll scrolls. The shell around it is clipped, not hidden:
+   an overflow:hidden box can still be scrolled by anchor jumps and
+   scrollIntoView, which slid the rail and header off the top and left an
+   empty band under them (Settings › Appearance, API reference contents). */
+html[data-chat-console="true"] body.is-settings,
+html[data-chat-console="true"] body.is-settings :is(.stage, .stage-inner, .settings-shell, .settings-stage) { overflow: clip; }
+html[data-chat-console="true"] body.is-settings .settings-scroll { scroll-padding-top: 0.75rem; }
+
+/* Descriptions run the width of their box. Fixed ch caps made text stop
+   wrapping halfway across wide panels. */
+html[data-chat-console="true"] body.is-settings .settings-shell :is(.settings-lead, .usage-sub, .usage-note, .uz-note, .aside, .lede, .set-head p, .set-label span, .provider-meta p) { max-width: none; }
