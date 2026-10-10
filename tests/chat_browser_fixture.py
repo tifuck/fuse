@@ -186,10 +186,12 @@ async def sidebar_scheduled(thread_id: str):
         pk = chats.resolve_thread_pk(1, thread_id)
         if pk is None:
             raise HTTPException(404, "no thread")
-        row = db.fetchone("SELECT revision FROM chat_threads WHERE id=? AND user_id=1", (pk,))
+        row = db.fetchone("SELECT revision,schedule_id FROM chat_threads WHERE id=? AND user_id=1", (pk,))
+        # schedule_id as app/schedules.py passes it: a schedule fire is gated
+        # by its own enabled/paused state, not by an earlier Stop in the chat.
         return chat_store.start_turn(
             1, pk, "Scheduled sidebar check", row["revision"], "scheduled-sidebar",
-            auto_title=False, auto=True, scheduled=True,
+            auto_title=False, auto=True, scheduled=True, schedule_id=row["schedule_id"],
         )
 
     result = await asyncio.to_thread(fire)
