@@ -47,35 +47,48 @@
     machine.hidden = bundle.hosts.length < 2;
   }
 
+  function machineState(host) {
+    if (!host) return { cls: "", label: "" };
+    if (host.online === true) return { cls: "is-on", label: "online" };
+    if (host.online === false) return { cls: "is-off", label: "offline" };
+    return { cls: "", label: "" };
+  }
+
+  // One Console row per project: what it is and where (name, folder), which
+  // machine and whether it is up, how much work it holds, and the two
+  // actions. The whole name cell opens the latest chat.
   function card(p) {
     const key = `${p.host_id}:${p.id}`;
     const host = hostOf(p);
     const sessions = Number(p.sessions || 0);
     const when = ago(p.last_active_at || p.updated_at);
-    const meta = [
-      esc(p.host_alias || (host && host.alias) || "machine"),
-      sessions ? `${sessions} chat${sessions === 1 ? "" : "s"}` : "No chats yet",
-      when ? `Active ${esc(when)}` : "",
-    ].filter(Boolean);
+    const alias = p.host_alias || (host && host.alias) || "machine";
+    const state = machineState(host);
     const badges =
-      (p.permission_mode === "read_only" ? '<span class="badge off">Read-only</span>' : "") +
       (p.running ? '<span class="badge cool">Working</span>' : "") +
-      (host && host.online === false ? '<span class="badge off">Offline</span>' : "");
+      (p.permission_mode === "read_only" ? '<span class="badge off">Read-only</span>' : "") +
+      (p.archived ? '<span class="badge off">Archived</span>' : "");
     return (
-      `<li class="panel proj-card${p.archived ? " is-archived" : ""}" data-proj="${esc(key)}">` +
+      `<li class="proj-row${p.archived ? " is-archived" : ""}" data-proj="${esc(key)}">` +
       `<button type="button" class="proj-open" data-proj-open="${esc(key)}" title="${p.thread_id ? "Open the latest chat" : "Start a chat"} in ${esc(p.name)}">` +
-      P.icon(p, { size: 40, className: "proj-card-icon" }) +
-      `<span class="proj-card-text"><span class="proj-card-name">${esc(p.name)}</span>` +
-      `<span class="proj-card-path">${esc(p.remote_path)}</span>` +
-      `<span class="proj-card-meta">${meta.map((m) => `<span>${m}</span>`).join("")}</span></span></button>` +
-      `<div class="proj-card-foot"><span class="proj-badges">${badges}</span>` +
+      P.icon(p, { size: 20, className: "proj-card-icon" }) +
+      `<span class="proj-card-text"><span class="proj-card-title"><span class="proj-card-name">${esc(p.name)}</span>${badges}</span>` +
+      `<span class="proj-card-path">${esc(p.remote_path)}</span></span></button>` +
+      `<span class="proj-cell proj-host" title="${esc(alias)}${state.label ? " · " + state.label : ""}"><i class="proj-dot ${state.cls}" aria-hidden="true"></i><span>${esc(alias)}</span>${state.label ? `<span class="visually-hidden">, ${state.label}</span>` : ""}</span>` +
+      `<span class="proj-cell proj-chats">${sessions ? `${sessions}<span class="proj-unit"> chat${sessions === 1 ? "" : "s"}</span>` : '<span class="proj-none">none</span>'}</span>` +
+      `<span class="proj-cell proj-when">${when ? esc(when) : '<span class="proj-none">—</span>'}</span>` +
+      `<span class="proj-actions">` +
       (p.archived
         ? `<button type="button" class="btn ghost sm" data-proj-restore="${esc(key)}">Unarchive</button>`
         : `<button type="button" class="btn ghost sm" data-proj-chat="${esc(key)}">New chat</button>`) +
-      `<button type="button" class="proj-more" data-proj-more="${esc(key)}" aria-label="Actions for ${esc(p.name)}" aria-haspopup="menu">⋯</button>` +
-      `</div></li>`
+      `<button type="button" class="proj-more" data-proj-more="${esc(key)}" aria-label="Actions for ${esc(p.name)}" aria-haspopup="menu" aria-expanded="false">` +
+      `<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="3.5" cy="8" r="1.2" fill="currentColor"/><circle cx="8" cy="8" r="1.2" fill="currentColor"/><circle cx="12.5" cy="8" r="1.2" fill="currentColor"/></svg></button>` +
+      `</span></li>`
     );
   }
+
+  const HEAD =
+    '<li class="proj-row proj-head" aria-hidden="true"><span>Project</span><span>Machine</span><span>Chats</span><span>Last active</span><span></span></li>';
 
   function paint() {
     closeMenu();
@@ -98,7 +111,7 @@
       .filter((p) => !q || [p.name, p.remote_path, p.host_alias].some((v) => String(v || "").toLowerCase().includes(q)))
       .sort((a, b) => String(b.last_active_at || b.updated_at || "").localeCompare(String(a.last_active_at || a.updated_at || "")));
     if (items.length) {
-      grid.innerHTML = items.map(card).join("");
+      grid.innerHTML = HEAD + items.map(card).join("");
       return;
     }
     let empty;

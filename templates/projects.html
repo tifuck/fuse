@@ -23,10 +23,10 @@
     </label>
   </div>
   <p class="callout fault" data-proj-error role="alert" hidden></p>
-  <ul class="proj-grid" data-proj-grid aria-live="polite"></ul>
+  <ul class="proj-list" data-proj-grid aria-live="polite" aria-label="Projects"></ul>
 </div>
 <script type="application/json" id="projects-config">{{ projects_bundle | tojson }}</script>
 {% endblock %}
 {% block scripts %}
-<script src="/static/projects.js?v=2"></script>
+<script src="/static/projects.js?v=3"></script>
 {% endblock %}

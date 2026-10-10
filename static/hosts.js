@@ -40,6 +40,8 @@
   }
 
   const list = root.querySelector("[data-host-list]");
+  const detail = root.querySelector("[data-host-detail]");
+  const layout = root.querySelector("[data-hosts-layout]");
   const wizard = root.querySelector("[data-wizard]");
   const empty = root.querySelector("[data-empty]");
   const wizardError = root.querySelector("[data-wizard-error]");
@@ -151,7 +153,14 @@
       '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
   };
 
-  const openCards = new Set();
+  // The machine whose detail pane is showing. Defaults to the first machine,
+  // so the page always reads as list + detail.
+  let selectedId = null;
+
+  function currentHost() {
+    const hosts = bundle.hosts || [];
+    return hosts.find((h) => Number(h.id) === Number(selectedId)) || hosts[0] || null;
+  }
 
   function isAgent(host) {
     return host.auth_type === "agent" || host.kind === "agent";
@@ -180,7 +189,7 @@
     return (
       `<li class="hosts-proj${p.archived ? " is-archived" : ""}" data-project-row="${host.id}:${p.id}">` +
       `<button type="button" class="hosts-proj-open" data-open-project="${host.id}:${p.id}" title="Start a new chat for ${esc(p.name)}">` +
-      `<span class="hosts-proj-name">${icon}${esc(p.name)}${ro}${archived}</span>` +
+      `<span class="hosts-proj-name">${icon}<span class="hosts-proj-label">${esc(p.name)}</span>${ro}${archived}</span>` +
       `<span class="hosts-proj-path">${esc(p.remote_path)}</span>` +
       `<span class="hosts-proj-go">New chat →</span>` +
       `</button>` +
@@ -231,10 +240,42 @@
     return `<dl class="hosts-facts">${cells}</dl>`;
   }
 
-  function hostDrawer(host) {
+  function statusLine(host) {
+    const stamp = host.last_ok_at || host.last_seen_at;
+    const when = stamp ? relWhen(stamp) : "";
+    if (isAgent(host)) {
+      if (host.online) return "Online" + (when ? ` · seen ${when}` : "");
+      return when ? `Offline · last seen ${when}` : "Offline · never connected";
+    }
+    if (!host.pinned) return "Not trusted yet";
+    if (host.last_error) return "Last check failed" + (when ? ` · ok ${when}` : "");
+    return host.last_ok_at ? `Reachable · checked ${when}` : "Trusted · not checked yet";
+  }
+
+  // The selected machine: who it is and whether it is up, what it holds
+  // (projects), how Fuse reaches it (facts), and what you can do.
+  function hostPane(host) {
     const agent = isAgent(host);
     const projects = host.projects || [];
+    const st = hostStatus(host);
+    const testing = Number(testingId) === Number(host.id);
     const parts = [];
+
+    parts.push(
+      `<header class="hosts-pane-head">` +
+      `<div class="hosts-pane-id">` +
+      `<p class="hosts-pane-kicker">${agent ? "Connector machine" : "SSH machine"}</p>` +
+      `<h2>${esc(host.alias)}</h2>` +
+      `<p class="hosts-pane-status is-${st}"><span class="hosts-dot is-${st}" aria-hidden="true"></span>${esc(statusLine(host))}</p>` +
+      `</div>` +
+      `<div class="hosts-drawer-actions">` +
+      `<button type="button" class="btn sm ghost" data-test="${host.id}"${testing ? " disabled" : ""}>${testing ? "Testing…" : "Test"}</button>` +
+      (agent ? "" : host.pinned ? `<button type="button" class="btn sm ghost" data-probe="${host.id}">Re-trust</button>` : "") +
+      `<button type="button" class="btn sm ghost" data-edit-host="${host.id}">Edit</button>` +
+      `<button type="button" class="btn sm danger" data-del-host="${host.id}">Remove</button>` +
+      `</div>` +
+      `</header>`
+    );
 
     if (!agent && !host.pinned) {
       parts.push(
@@ -248,53 +289,40 @@
       parts.push(`<p class="callout fault">${esc(host.last_error)}</p>`);
     }
 
-    parts.push(
-      `<div class="hosts-sub"><h3>Projects</h3>` +
-      `<button type="button" class="btn sm ghost" data-add-project="${host.id}">+ Add project</button>` +
-      `</div>`
-    );
-    if (projects.length) {
-      parts.push(`<ul class="hosts-proj-list">${projects.map((p) => projectRow(host, p)).join("")}</ul>`);
-    } else {
-      parts.push(`<p class="hosts-empty-proj">No projects yet. Add a folder to start working on it in chat.</p>`);
-    }
-
     parts.push(hostFacts(host));
 
-    const testing = Number(testingId) === Number(host.id);
     parts.push(
-      `<div class="hosts-drawer-actions">` +
-      `<button type="button" class="btn sm ghost" data-test="${host.id}"${testing ? " disabled" : ""}>${testing ? "Testing…" : "Test"}</button>` +
-      (agent ? "" : host.pinned ? `<button type="button" class="btn sm ghost" data-probe="${host.id}">Re-trust</button>` : "") +
-      `<button type="button" class="btn sm ghost" data-edit-host="${host.id}">Edit</button>` +
-      `<button type="button" class="btn sm ghost" data-del-host="${host.id}">Remove</button>` +
-      `</div>`
+      `<section class="hosts-projects" aria-label="Projects on ${esc(host.alias)}">` +
+      `<div class="hosts-sub"><h3>Projects <span>${projects.length}</span></h3>` +
+      `<button type="button" class="btn sm ghost" data-add-project="${host.id}">+ Add project</button>` +
+      `</div>` +
+      (projects.length
+        ? `<ul class="hosts-proj-list">${projects.map((p) => projectRow(host, p)).join("")}</ul>`
+        : `<p class="hosts-empty-proj">No projects yet. Add a folder on this machine to start working on it in chat.</p>`) +
+      `</section>`
     );
-    return `<div class="hosts-drawer">${parts.join("")}</div>`;
+    return `<article class="hosts-pane hosts-drawer" data-detail-host-id="${host.id}">${parts.join("")}</article>`;
   }
 
   function hostRow(host) {
     const agent = isAgent(host);
     const st = hostStatus(host);
-    const open = openCards.has(host.id);
+    const current = currentHost();
+    const on = Boolean(current && Number(current.id) === Number(host.id));
     const n = (host.projects || []).length;
-    const addr = agent
-      ? `connector · ${host.username}@${host.hostname}`
-      : `${host.username}@${host.hostname}:${host.port}`;
+    const addr = agent ? `${host.username}@${host.hostname}` : `${host.username}@${host.hostname}:${host.port}`;
     const stamp = host.last_ok_at || host.last_seen_at;
     return (
-      `<article class="panel hosts-row${open ? " is-open" : ""}" data-host-id="${host.id}" data-kind="${agent ? "agent" : "ssh"}">` +
-      `<button type="button" class="hosts-row-head" data-toggle-card="${host.id}" aria-expanded="${open}" title="${esc(statusTitle(host))}">` +
+      `<article class="hosts-row${on ? " is-on" : ""}" data-host-id="${host.id}" data-kind="${agent ? "agent" : "ssh"}">` +
+      `<button type="button" class="hosts-row-head" data-toggle-card="${host.id}" aria-pressed="${on}" title="${esc(statusTitle(host))}">` +
       `<span class="hosts-dot is-${st}" aria-hidden="true"></span>` +
-      `<span class="hosts-row-name"><b>${esc(host.alias)}</b><span class="hosts-chip">${agent ? "connector" : "ssh"}</span></span>` +
-      `<span class="hosts-row-addr">${esc(addr)}</span>` +
+      `<span class="hosts-row-name"><b>${esc(host.alias)}</b></span>` +
+      `<span class="hosts-row-meta"><span class="hosts-chip">${agent ? "connector" : "ssh"}</span><span class="hosts-row-addr">${esc(addr)}</span></span>` +
       `<span class="hosts-row-side">` +
       `<span>${n} project${n === 1 ? "" : "s"}</span>` +
       (stamp ? `<span class="hosts-when">${esc(relWhen(stamp))}</span>` : "") +
-      ICON.chev +
       `</span>` +
       `</button>` +
-      (open ? hostDrawer(host) : "") +
       `</article>`
     );
   }
@@ -446,7 +474,15 @@
       btn.hidden = wizardOpen || connectorOpen;
     });
     if (empty) empty.hidden = hosts.length > 0 || pending.length > 0 || wizardOpen || connectorOpen;
-    list.innerHTML = hosts.map(hostRow).join("");
+    list.innerHTML = hosts.length
+      ? `<p class="hosts-list-head">Machines <span>${hosts.length}</span></p>` + hosts.map(hostRow).join("")
+      : "";
+    if (layout) layout.classList.toggle("is-solo", !hosts.length);
+    const current = currentHost();
+    if (detail) {
+      detail.hidden = wizardOpen || connectorOpen || !current;
+      detail.innerHTML = detail.hidden ? "" : hostPane(current);
+    }
     if (connectorOpen && activePairing && installLine && activePairing.install) {
       installLine.textContent = activePairing.install;
     }
@@ -928,15 +964,16 @@
     const browseUse = event.target.closest("[data-browse-use]");
     try {
       if (toggle) {
-        const id = Number(toggle.getAttribute("data-toggle-card"));
-        if (openCards.has(id)) openCards.delete(id);
-        else openCards.add(id);
+        selectedId = Number(toggle.getAttribute("data-toggle-card"));
+        if (wizard && !wizard.hidden) closeWizard();
         paint();
+        // Stacked layout: bring the detail into view under the list.
+        if (detail && window.matchMedia("(max-width: 900px)").matches) detail.scrollIntoView({ block: "start", behavior: "smooth" });
         return;
       }
       if (addBtn) {
         const host = findHost(addBtn.getAttribute("data-add-project"));
-        openCards.add(Number(addBtn.getAttribute("data-add-project")));
+        selectedId = Number(addBtn.getAttribute("data-add-project"));
         await editProject(host, null);
         return;
       }

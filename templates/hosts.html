@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Machines · Fuse{% endblock %}
 {% block page_title %}Machines{% endblock %}
-{% block page_lead %}<p>Connect a machine, then add project folders and open them from chat. All your projects are also listed under <a href="/projects">Projects</a>. Connector machines phone home over HTTPS; SSH still works if the box allows it. What chats may do here is under <a href="/settings#agents">Settings › Coding agents</a>.</p>{% endblock %}
+{% block page_lead %}<p>Computers Fuse can work on. Connect one, add project folders on it, then open them from chat. Connectors phone home over HTTPS, no inbound SSH needed. All projects are also under <a href="/projects">Projects</a>; what chats may do is under <a href="/settings#agents">Settings › Coding agents</a>.</p>{% endblock %}
 {% block page_actions %}
 <button type="button" class="btn sm" data-wizard-start data-hosts-add>Add a machine</button>
 {% endblock %}
@@ -10,11 +10,18 @@
   <div class="hosts-workspace" data-workspace>
     <p class="callout fault" data-page-error hidden></p>
 
-    <section class="panel hosts-empty" data-empty hidden>
-      <div class="section-heading"><h2>Add a machine</h2></div>
-      <p class="usage-sub">Run one command on the machine. It phones home over HTTPS. No inbound SSH. Then add project folders and open them in chat.</p>
-      <button type="button" class="btn sm" data-wizard-start>Start</button>
+    <section class="hosts-empty" data-empty hidden>
+      <ol class="hosts-empty-steps">
+        <li><b>Run one command</b><span>on the machine. It installs the connector and signs in with a one-time code.</span></li>
+        <li><b>Add a project</b><span>Pick a folder on that machine.</span></li>
+        <li><b>Open it in chat</b><span>Agents read, edit and run commands there.</span></li>
+      </ol>
+      <button type="button" class="btn sm" data-wizard-start>Connect a machine</button>
     </section>
+
+    <div class="hosts-layout" data-hosts-layout>
+      <nav class="hosts-list" data-host-list aria-label="Machines"></nav>
+      <div class="hosts-main">
 
     <section class="panel hosts-connector" data-connector hidden>
       <div class="section-heading"><h2>Run this on the machine</h2></div>
@@ -140,8 +147,9 @@
       </div>
     </section>
 
-    <div data-host-list class="stack-y"></div>
-
+        <div class="hosts-detail" data-host-detail hidden></div>
+      </div>
+    </div>
   </div>
 
   <dialog class="modal" data-edit-host-modal aria-labelledby="edit-host-title">
@@ -188,5 +196,5 @@
 <script type="application/json" id="hosts-config">{{ hosts_bundle | tojson }}</script>
 {% endblock %}
 {% block scripts %}
-<script src="/static/hosts.js?v=25"></script>
+<script src="/static/hosts.js?v=26"></script>
 {% endblock %}

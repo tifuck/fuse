@@ -1,0 +1,323 @@
+/* Console pages: every page outside /chat (Tasks, Artifacts, Skills,
+   Projects, Machines, Usage, Models, Sources, API, Settings, Admin) wears the
+   chat page's Console skin. The rail is the chat sidebar, the header is the
+   chat header line, and surfaces are the chat sheets: hard corners, hairline
+   rules, mono type, an accent bar on the current row, and accent-tinted
+   tabs. Colours come only from theme tokens, so a saved theme or custom
+   background and accent repaint these pages like chat. No backdrop here.
+
+   Scope: body.is-settings (the settings shell from base.html). Dialogs and
+   toasts that also open on chat are squared for both. Loaded last in
+   design.css, so it settles the older page stylesheets. */
+
+/* —— Hard corners: one rule, like chat's. Spinners keep their circle. —— */
+html[data-chat-console="true"] body.is-settings :is(.settings-shell, .settings-shell *):not(.spin):not([class*="spinner"]):not(.chat-run-spin),
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) :is(dialog.modal, dialog.modal *, .fp-dialog, .fp-dialog *, .fuse-toast, .fuse-toast *, .fuse-vault, .fuse-vault *):not(.spin),
+html[data-chat-console="true"] body.is-settings .user-dock-menu,
+html[data-chat-console="true"] body.is-settings .user-dock-menu * {
+  border-radius: 0;
+}
+html[data-chat-console="true"] body.is-settings .settings-shell :is(input[type="range"]::-webkit-slider-thumb, input[type="range"]::-webkit-slider-runnable-track) { border-radius: 0; }
+
+/* —— Ground —— */
+html[data-chat-console="true"] body.is-settings :is(.settings-stage, .settings-scroll) { background: var(--ink); }
+html[data-chat-console="true"] body.is-settings .settings-shell { letter-spacing: 0; font-family: var(--mono); }
+
+/* —— Rail = chat sidebar —— */
+html[data-chat-console="true"] body.is-settings .settings-shell .app-rail {
+  background: var(--ink);
+  border-right: 1px solid var(--line);
+  font-family: var(--mono);
+}
+html[data-chat-console="true"] body.is-settings .app-rail .chat-history-head { height: 2.25rem; min-height: 2.25rem; }
+html[data-chat-console="true"] body.is-settings .app-rail .chat-brand-word { font: 600 1.05rem/1 var(--mono); letter-spacing: -0.04em; }
+html[data-chat-console="true"] body.is-settings .settings-shell .app-rail-nav { gap: 0; padding: 0.35rem 0.5rem 0.85rem; }
+html[data-chat-console="true"] body.is-settings .settings-shell .app-rail-label {
+  margin: 0.85rem 0.6rem 0.3rem;
+  color: var(--mute);
+  font: 0.62rem/1.3 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+html[data-chat-console="true"] body.is-settings .settings-shell .app-rail-label:first-child { margin-top: 0.35rem; }
+html[data-chat-console="true"] body.is-settings .settings-shell .app-rail-nav a {
+  display: flex;
+  align-items: center;
+  min-height: 2.05rem;
+  padding: 0 0.6rem;
+  color: color-mix(in srgb, var(--mist) 76%, var(--mute));
+  background: none;
+  font: 0.82rem/1.3 var(--mono);
+  text-decoration: none;
+}
+html[data-chat-console="true"] body.is-settings .settings-shell .app-rail-nav a:hover {
+  color: var(--mist);
+  background: color-mix(in srgb, var(--mist) 5%, transparent);
+}
+html[data-chat-console="true"] body.is-settings .settings-shell .app-rail-nav a.on {
+  color: var(--mist);
+  background: linear-gradient(90deg, var(--brass) 2px, color-mix(in srgb, var(--brass) 9%, transparent) 2px);
+}
+html[data-chat-console="true"] body.is-settings .settings-shell .app-rail-nav a:focus-visible { outline: 1px solid var(--brass); outline-offset: -1px; }
+
+/* —— Header line = chat header —— */
+html[data-chat-console="true"] body.is-settings .settings-bar.chat-bar {
+  height: 2.25rem;
+  padding: 0 1.35rem 0 1rem;
+  background: color-mix(in srgb, var(--ink) 92%, var(--panel));
+  border-bottom: 1px solid var(--line);
+  font: 0.68rem/1.3 var(--mono);
+}
+html[data-chat-console="true"] body.is-settings .settings-bar .chat-bar-title {
+  color: var(--mist);
+  font: 0.72rem/1.3 var(--mono);
+  font-weight: 400;
+  letter-spacing: 0.01em;
+}
+html[data-chat-console="true"] body.is-settings .settings-bar .chat-history-toggle { height: 1.75rem; min-width: 1.75rem; padding: 0 0.35rem; border: 0; }
+
+/* —— Page head: the lead and the page's actions share one row, like a sheet
+   head; content runs the full width below it. —— */
+html[data-chat-console="true"] body.is-settings .settings-scroll {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  align-content: flex-start;
+  column-gap: 1.25rem;
+  padding: 1.1rem 1.35rem 2.5rem;
+}
+html[data-chat-console="true"] body.is-settings .settings-scroll > .settings-lead { flex: 1 1 30rem; }
+html[data-chat-console="true"] body.is-settings .settings-scroll > .settings-tools { flex: 0 1 auto; margin-left: auto; justify-content: flex-end; }
+html[data-chat-console="true"] body.is-settings .settings-scroll > main { flex: 1 0 100%; min-width: 0; }
+html[data-chat-console="true"] body.is-settings .settings-lead {
+  margin: 0 0 1rem;
+  max-width: 88ch;
+  color: var(--mute);
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+html[data-chat-console="true"] body.is-settings .settings-tools { margin: 0 0 1rem; }
+html[data-chat-console="true"] body.is-settings .settings-lead a,
+html[data-chat-console="true"] body.is-settings .settings-scroll .usage-sub a,
+html[data-chat-console="true"] body.is-settings .set-head p a {
+  color: var(--mist);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--brass) 55%, transparent);
+  text-underline-offset: 0.2em;
+}
+html[data-chat-console="true"] body.is-settings .settings-lead a:hover { color: var(--brass); }
+@media (max-width: 720px) {
+  html[data-chat-console="true"] body.is-settings .settings-scroll { padding: 0.85rem 0.85rem 2rem; }
+  html[data-chat-console="true"] body.is-settings .settings-scroll > .settings-tools { margin-left: 0; justify-content: flex-start; }
+  html[data-chat-console="true"] body.is-settings .settings-lead { margin-bottom: 0.75rem; }
+}
+
+/* —— Surfaces = chat sheets —— */
+html[data-chat-console="true"] body.is-settings .settings-shell :is(.panel, .metric-card, .uz-card) {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  box-shadow: none;
+}
+html[data-chat-console="true"] body.is-settings .settings-shell .panel h2,
+html[data-chat-console="true"] body.is-settings .settings-shell .section-heading h2,
+html[data-chat-console="true"] body.is-settings .settings-shell .uz-card-head h2 {
+  font: 600 0.9rem/1.4 var(--mono);
+  letter-spacing: -0.01em;
+}
+html[data-chat-console="true"] body.is-settings .settings-shell :is(.usage-sub, .uz-sub, .set-head p, .set-label span) { color: var(--mute); font-size: 0.75rem; line-height: 1.5; }
+html[data-chat-console="true"] body.is-settings .settings-shell :is(.metric-label, .eyebrow, .uz-label, .hosts-os-label) {
+  color: var(--mute);
+  font: 0.62rem/1.3 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+html[data-chat-console="true"] body.is-settings .settings-shell .stack-y { gap: 0.85rem; }
+
+/* —— Controls = chat sheet controls —— */
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) :is(.settings-shell, dialog.modal, .fp-dialog) .btn {
+  font-family: var(--mono);
+  letter-spacing: 0;
+  box-shadow: none;
+}
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) :is(.settings-shell, dialog.modal, .fp-dialog) .btn:not(.ghost):not(.danger):not(.is-done) {
+  background: var(--brass);
+  color: var(--on-brass, var(--ink));
+}
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) :is(.settings-shell, dialog.modal, .fp-dialog) .btn.ghost { background: transparent; border-color: var(--line); color: var(--mist); }
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) :is(.settings-shell, dialog.modal, .fp-dialog) .btn.ghost:hover { background: color-mix(in srgb, var(--mist) 6%, transparent); border-color: color-mix(in srgb, var(--mist) 22%, transparent); }
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) :is(.settings-shell, dialog.modal, .fp-dialog) .btn.sm { height: 1.9rem; padding: 0 0.7rem; font-size: 0.78rem; }
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) :is(.settings-shell, dialog.modal, .fp-dialog) :is(input:where(:not([type="checkbox"], [type="radio"], [type="range"], [type="color"])), select, textarea) {
+  background-color: var(--raise);
+  border: 1px solid var(--line);
+  color: var(--mist);
+  font-family: var(--mono);
+  font-size: 0.82rem;
+}
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) :is(.settings-shell, dialog.modal, .fp-dialog) :is(input:where(:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"])), select) { min-height: 2.15rem; padding: 0.4rem 0.65rem; }
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) :is(.settings-shell, dialog.modal, .fp-dialog) select { padding-right: 1.8rem; }
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) :is(.settings-shell, dialog.modal, .fp-dialog) textarea { padding: 0.6rem 0.7rem; line-height: 1.55; }
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) :is(.settings-shell, dialog.modal, .fp-dialog) :is(input, select, textarea):focus { border-color: var(--brass); outline: none; }
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) :is(.settings-shell, dialog.modal, .fp-dialog) input[type="file"] { padding: 0.3rem; font-size: 0.78rem; }
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) :is(.settings-shell, dialog.modal, .fp-dialog) input[type="file"]::file-selector-button {
+  margin-right: 0.6rem;
+  padding: 0.3rem 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--panel);
+  color: var(--mist);
+  font: 0.75rem var(--mono);
+  cursor: pointer;
+}
+html[data-chat-console="true"] body.is-settings .settings-shell input[type="checkbox"] { accent-color: var(--brass); }
+
+/* Field labels read like the chat sheets' ("SEARCH SKILLS.SH"). */
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) :is(.settings-shell, dialog.modal) :is(.hosts-field, .bugreport-field, .fp-field):not(.check):not(.hosts-check):not(:has(> input[type="checkbox"])) > span:first-child {
+  color: var(--mute);
+  font: 0.66rem/1.4 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* —— Badges, chips, pills: square tags —— */
+html[data-chat-console="true"] body.is-settings .settings-shell :is(.badge, .pill, .hosts-chip, .set-state, .sched-pill, .uz-tag, .fp-badge) {
+  height: auto;
+  min-height: 1.25rem;
+  padding: 0.05rem 0.4rem;
+  font: 0.6rem/1.5 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* —— Tabs and segmented controls = chat Context tabs —— */
+html[data-chat-console="true"] body.is-settings .settings-shell :is(.usage-tabs, .uz-seg, .interval, .proj-tabs, .or-seg, .pool-controls) {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  gap: 0.25rem;
+}
+html[data-chat-console="true"] body.is-settings .settings-shell :is(.usage-tabs, .uz-seg, .interval, .proj-tabs, .or-seg) :is(a, button) {
+  height: 1.9rem;
+  padding: 0 0.7rem;
+  border: 0;
+  background: none;
+  color: var(--mute);
+  font: 0.78rem/1 var(--mono);
+  box-shadow: none;
+}
+html[data-chat-console="true"] body.is-settings .settings-shell :is(.usage-tabs, .uz-seg, .interval, .proj-tabs, .or-seg) :is(a, button):hover { color: var(--mist); background: var(--raise); }
+html[data-chat-console="true"] body.is-settings .settings-shell :is(.usage-tabs, .uz-seg, .interval, .proj-tabs, .or-seg) :is(a, button):is(.on, .is-on, [aria-selected="true"], [aria-pressed="true"], [aria-current="page"], [aria-current="true"]) {
+  color: var(--brass);
+  background: color-mix(in srgb, var(--brass) 12%, transparent);
+  border: 0;
+  box-shadow: none;
+}
+
+/* Settings jump links read as tabs too. */
+html[data-chat-console="true"] body.is-settings .settings-jump { gap: 0.25rem; }
+html[data-chat-console="true"] body.is-settings .settings-jump a {
+  height: 1.9rem;
+  padding: 0 0.7rem;
+  border: 0;
+  color: var(--mute);
+  font: 0.78rem/1 var(--mono);
+}
+html[data-chat-console="true"] body.is-settings .settings-jump a:hover { color: var(--brass); background: color-mix(in srgb, var(--brass) 12%, transparent); }
+
+/* —— Tables —— */
+html[data-chat-console="true"] body.is-settings .settings-shell .log { font-size: 0.8rem; }
+html[data-chat-console="true"] body.is-settings .settings-shell .log th { font: 0.62rem/1.3 var(--mono); letter-spacing: 0.08em; }
+html[data-chat-console="true"] body.is-settings .settings-shell .log tbody tr:hover td { background: color-mix(in srgb, var(--mist) 4%, transparent); }
+
+/* —— Code, notes —— */
+html[data-chat-console="true"] body.is-settings .settings-shell :is(.code-chip, .code-block, .hosts-install, .hosts-fingerprint) { background: var(--ink); border: 1px solid var(--line); }
+html[data-chat-console="true"] body.is-settings .settings-shell .callout { font-size: 0.8rem; }
+
+/* —— Dialogs = chat sheets (both pages) —— */
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) dialog.modal {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  box-shadow: 0 24px 64px rgb(0 0 0 / 50%);
+  font-family: var(--mono);
+}
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) dialog.modal::backdrop { background: rgb(8 10 9 / 55%); }
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) dialog.modal .modal-shell { padding: 0; }
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) dialog.modal .modal-shell > :not(.modal-head) { margin-left: 1.15rem; margin-right: 1.15rem; }
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) dialog.modal .modal-shell > :not(.modal-head):first-child { margin-top: 1rem; }
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) dialog.modal .modal-shell > :last-child { margin-bottom: 1.1rem; }
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) dialog.modal .modal-head {
+  align-items: center;
+  min-height: 3.25rem;
+  margin: 0 0 1rem;
+  padding: 0.7rem 0.85rem 0.7rem 1.15rem;
+  border-bottom: 1px solid var(--line);
+}
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) dialog.modal .modal-head h2 { margin: 0.15rem 0 0; font: 600 1rem/1.4 var(--mono); letter-spacing: -0.02em; }
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) dialog.modal .modal-head .metric-label { color: var(--mute); font: 0.62rem/1.3 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; margin: 0; }
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) dialog.modal-confirm .modal-shell > .aside { margin-top: 1.1rem; }
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) dialog.modal .modal-actions { justify-content: flex-end; }
+
+/* —— Account menu (rail footer) —— */
+html[data-chat-console="true"] body.is-settings .user-dock-menu { background: var(--ink); border: 1px solid var(--line); box-shadow: none; }
+
+/* Inputs that sit inside their own framed control keep a bare field. */
+html[data-chat-console="true"] body.is-settings .settings-shell :is(.proj-search, .skills-find) input[type="search"] {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background-color: transparent;
+}
+
+/* Page-head action groups (Sources): a quiet label, then the choices. */
+html[data-chat-console="true"] body.is-settings .settings-tools .head-actions { align-items: center; gap: 0.3rem; }
+html[data-chat-console="true"] body.is-settings .settings-tools .head-actions form { margin: 0; display: flex; }
+html[data-chat-console="true"] body.is-settings .head-actions-label {
+  margin-right: 0.3rem;
+  color: var(--mute);
+  font: 0.62rem/1.3 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* —— Tables (Tasks, Usage, Sources, Keys, Admin) —— */
+html[data-chat-console="true"] body.is-settings .settings-shell :is(.sched-table, .uz-table, .source-table, .param-table, .ml-table, .keys-table) th {
+  color: var(--mute);
+  font: 500 0.62rem/1.3 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+html[data-chat-console="true"] body.is-settings .settings-shell :is(.sched-table, .source-table, .param-table, .ml-table, .keys-table) td { font-size: 0.78rem; }
+html[data-chat-console="true"] body.is-settings .settings-shell .sched-table tbody tr.is-open { background: linear-gradient(90deg, var(--brass) 2px, color-mix(in srgb, var(--brass) 9%, transparent) 2px); }
+html[data-chat-console="true"] body.is-settings .settings-shell .sched-table tbody tr:hover { background: color-mix(in srgb, var(--mist) 4%, transparent); }
+
+/* Lists of current rows: chat's accent bar marks the current one. */
+html[data-chat-console="true"] body.is-settings .docs-toc a.on {
+  color: var(--mist);
+  background: linear-gradient(90deg, var(--brass) 2px, color-mix(in srgb, var(--brass) 9%, transparent) 2px);
+}
+
+/* Card grids keep their columns packed instead of leaving tall gaps. */
+html[data-chat-console="true"] body.is-settings .catalog-grid:has(> .catalog-family:nth-child(3)) {
+  display: block;
+  columns: 2 24rem;
+  column-gap: 1rem;
+}
+html[data-chat-console="true"] body.is-settings .catalog-grid:has(> .catalog-family:nth-child(3)) > .catalog-family {
+  display: block;
+  margin: 0 0 1rem;
+  break-inside: avoid;
+}
+html[data-chat-console="true"] body.is-settings .catalog-grid.is-platforms { display: grid; columns: auto; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: 1rem; }
+html[data-chat-console="true"] body.is-settings .catalog-grid.is-platforms > .catalog-family { margin: 0; }
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) .user-dock-nav a.on {
+  color: var(--mist);
+  background: linear-gradient(90deg, var(--brass) 2px, color-mix(in srgb, var(--brass) 9%, transparent) 2px);
+}
+
+/* Form labels and plain buttons at the chat sheets' scale. */
+html[data-chat-console="true"] body.is-settings .settings-shell label:not(.check):not(.pool-switch):not(.skills-toggle):not(.proj-search):not(.skills-find):not(.proj-machine):not(.hosts-check) {
+  color: var(--mute);
+  font-size: 0.75rem;
+}
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) :is(.settings-shell, dialog.modal) .btn:not(.sm) { height: 2.05rem; padding: 0 0.85rem; font-size: 0.8rem; }
+/* Long single-line fields in stacked forms stop at a readable width. */
+html[data-chat-console="true"] body.is-settings .settings-shell form.stack :is(input:where(:not([type="checkbox"], [type="radio"])), select) { max-width: 44rem; }

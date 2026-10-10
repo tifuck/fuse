@@ -268,8 +268,9 @@
     if (window.FuseBackdrop) window.FuseBackdrop.sync(scene, scene && !scene.hidden ? backdrop : "none");
   }
 
+  // Only chat draws a backdrop; every other page keeps a solid theme ground.
   function ensureScene() {
-    if (!document.body) return null;
+    if (!document.body || !document.body.classList.contains("is-chat")) return null;
     let el = document.querySelector("[data-chat-scene]");
     if (!el) {
       el = document.createElement("div");
@@ -277,7 +278,7 @@
       el.dataset.chatScene = "";
       el.setAttribute("aria-hidden", "true");
       el.innerHTML = SCENE_MARKUP;
-      const stage = document.querySelector("body.is-chat .stage, body.is-settings .stage");
+      const stage = document.querySelector("body.is-chat .stage");
       if (stage) document.body.insertBefore(el, stage);
       else document.body.prepend(el);
     } else if (!el.querySelector("canvas[data-chat-scene-fx]") || !el.querySelector("[data-chat-scene-veil]")) {

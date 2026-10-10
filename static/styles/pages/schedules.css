@@ -155,3 +155,12 @@ dialog[data-sched-modal] input[type="checkbox"] {
   margin-right: 0.4rem;
   vertical-align: middle;
 }
+
+/* Tasks list: the table is the frame's whole body; the empty line centres. */
+.sched-table-wrap { padding: 0; overflow: hidden; }
+.sched-table-wrap .sched-table th:first-child,
+.sched-table-wrap .sched-table td:first-child { padding-left: 1rem; }
+.sched-table-wrap .sched-table th { padding-top: 0.6rem; padding-bottom: 0.55rem; background: color-mix(in srgb, var(--ink) 55%, var(--panel)); }
+.sched-table-wrap .sched-table tbody tr:last-child td { border-bottom: 0; }
+.sched-empty { margin: 0; padding: 2.5rem 1rem; color: var(--mute); font-size: 0.8rem; text-align: center; }
+.sched-empty b { color: var(--mist); font-weight: 600; }

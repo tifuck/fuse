@@ -133,11 +133,21 @@ test('retired backdrops migrate to their replacement', () => {
   }
 });
 
+test('only chat draws the backdrop; other pages keep a solid theme ground', () => {
+  const css = readFileSync(resolve(__dirname, '../static/chat-design.css'), 'utf8');
+  const base = readFileSync(resolve(__dirname, '../templates/base.html'), 'utf8');
+  const js = readFileSync(resolve(__dirname, '../static/chat-appearance.js'), 'utf8');
+  assert.doesNotMatch(css, /data-chat-backdrop="none"\]\) body\.is-settings/);
+  assert.doesNotMatch(base, /chat-backdrop\.js/);
+  assert.match(base, /\{% if is_chat %\}\s*<div class="chat-scene"/);
+  assert.match(js, /classList\.contains\("is-chat"\)\) return null/);
+});
+
 test('backdrop wallpaper is a scene layer, not an opaque plate', () => {
   const css = readFileSync(resolve(__dirname, '../static/chat-design.css'), 'utf8');
   const js = readFileSync(resolve(__dirname, '../static/chat-appearance.js'), 'utf8');
   assert.match(css, /\.chat-scene\[data-kind\] \[data-chat-scene-wash\]/);
-  assert.match(css, /html\[data-chat-backdrop\]:not\(\[data-chat-backdrop="none"\]\) body\.is-chat :is\(\.stage, \.stage-inner, main, \.chat, \.chat-stage, \.chat-thread\),[^{]*\{\s*background:\s*transparent/);
+  assert.match(css, /html\[data-chat-backdrop\]:not\(\[data-chat-backdrop="none"\]\) body\.is-chat :is\(\.stage, \.stage-inner, main, \.chat, \.chat-stage, \.chat-thread\)[^{]*\{\s*background:\s*transparent/);
   assert.match(css, /html\[data-chat-backdrop\]:not\(\[data-chat-backdrop="none"\]\) body\.is-chat \.chat \.chat-dock \{\s*background:\s*transparent/);
   assert.doesNotMatch(css, /chat-stage, \.chat-thread\) \{\s*background:\s*color-mix\(in srgb, var\(--ink\) 82%/);
   assert.doesNotMatch(css, /chat-scene-bubbles/);

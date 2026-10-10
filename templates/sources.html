@@ -4,15 +4,16 @@
 {% block page_lead %}<p>Link your own subscriptions to unlock their models, or add a personal OpenRouter or Experiential Labs key. Linked subscriptions join a shared pool when the server allows it; personal keys are never shared. See what each unlocks on <a href="/models">Models</a>.</p>{% endblock %}
 {% block page_actions %}
 <div class="head-actions">
-  <button type="button" class="btn sm" data-dialog-open="grok-connect-dialog">{{ 'Continue x.ai' if pending else 'Add x.ai' }}</button>
-  <button type="button" class="btn sm" data-dialog-open="openai-connect-dialog">{{ 'Continue OpenAI' if chatgpt_pending else 'Add OpenAI' }}</button>
-  <button type="button" class="btn sm ghost" data-dialog-open="zai-add-dialog">Add Z.AI</button>
-  <button type="button" class="btn sm" data-dialog-open="kimi-connect-dialog">{{ 'Continue Kimi' if kimi_pending else 'Add Kimi' }}</button>
-  <button type="button" class="btn sm" data-dialog-open="mimo-connect-dialog">{{ 'Continue Xiaomi' if mimo_pending else 'Add Xiaomi' }}</button>
-  <button type="button" class="btn sm" data-dialog-open="claude-connect-dialog">{{ 'Continue Claude' if claude_pending else 'Add Claude' }}</button>
+  <span class="head-actions-label">Link</span>
+  <button type="button" class="btn sm{{ '' if pending else ' ghost' }}" data-dialog-open="grok-connect-dialog">{{ 'Continue x.ai' if pending else 'x.ai' }}</button>
+  <button type="button" class="btn sm{{ '' if chatgpt_pending else ' ghost' }}" data-dialog-open="openai-connect-dialog">{{ 'Continue OpenAI' if chatgpt_pending else 'OpenAI' }}</button>
+  <button type="button" class="btn sm ghost" data-dialog-open="zai-add-dialog">Z.AI</button>
+  <button type="button" class="btn sm{{ '' if kimi_pending else ' ghost' }}" data-dialog-open="kimi-connect-dialog">{{ 'Continue Kimi' if kimi_pending else 'Kimi' }}</button>
+  <button type="button" class="btn sm{{ '' if mimo_pending else ' ghost' }}" data-dialog-open="mimo-connect-dialog">{{ 'Continue Xiaomi' if mimo_pending else 'Xiaomi' }}</button>
+  <button type="button" class="btn sm{{ '' if claude_pending else ' ghost' }}" data-dialog-open="claude-connect-dialog">{{ 'Continue Claude' if claude_pending else 'Claude' }}</button>
   <form method="post" action="/sources/devin/start">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <button type="submit" class="btn sm">{{ 'Continue Devin' if devin_pending else 'Add Devin' }}</button>
+    <button type="submit" class="btn sm{{ '' if devin_pending else ' ghost' }}">{{ 'Continue Devin' if devin_pending else 'Devin' }}</button>
   </form>
 </div>
 {% endblock %}

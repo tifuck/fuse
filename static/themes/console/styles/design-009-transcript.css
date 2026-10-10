@@ -88,7 +88,22 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-too
 
 html:is( [data-chat-console="true"]) .chat-view-menu { --ap-ui: var(--mono); }
 
-html:is( [data-chat-console="true"]) .chat-view-menu :is( .ap-theme, .ap-backdrop, .ap-font, .ap-color, .ap-step, .ap-sample, .ap-filters, .ap-filters button, .ap-theme-art) { border-radius: 2px; }
+/* Appearance is a Console sheet like Context and Skills: hard corners on the
+   sheet and on every card, swatch, switch and slider inside it. */
+html:is( [data-chat-console="true"]) :is(.chat-view-menu, .chat-view-menu *),
+html:is( [data-chat-console="true"]) .chat-view-menu :is(.ap-switch input[type="checkbox"]::after, .ap-color input[type="color"]::-webkit-color-swatch, .ap-range::-webkit-slider-runnable-track, .ap-range::-webkit-slider-thumb) { border-radius: 0; }
+html:is( [data-chat-console="true"]) .chat-view-menu .ap-range::-moz-range-track,
+html:is( [data-chat-console="true"]) .chat-view-menu .ap-range::-moz-range-progress,
+html:is( [data-chat-console="true"]) .chat-view-menu .ap-range::-moz-range-thumb { border-radius: 0; }
+/* Same head, ground and edge as the Context and Skills sheets. */
+html:is( [data-chat-console="true"]) .chat-view-menu { background: var(--panel); border: 1px solid var(--line); box-shadow: 0 24px 64px rgb(0 0 0 / 50%); }
+html:is( [data-chat-console="true"]) .chat-view-menu .chat-view-sheet-head { min-height: 3.25rem; padding: 0.7rem 0.85rem 0.7rem 1.15rem; }
+html:is( [data-chat-console="true"]) .chat-view-menu .chat-view-sheet-heading { min-width: 0; }
+html:is( [data-chat-console="true"]) .chat-view-menu .chat-view-sheet-title { font: 600 1rem/1.5 var(--ap-ui); letter-spacing: -0.02em; }
+html:is( [data-chat-console="true"]) .chat-view-menu .chat-view-sheet-sub { display: block; margin-top: 0.2rem; color: var(--mute); font-size: 0.78rem; line-height: 1.4; }
+@media (max-width: 800px) {
+  html:is( [data-chat-console="true"]) .chat-view-menu .chat-view-sheet-sub { display: none; }
+}
 
 .chat .chat-step:not(.is-console-expanded) .chat-console-val wbr { display: none; }
 

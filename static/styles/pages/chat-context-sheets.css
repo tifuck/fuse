@@ -323,9 +323,10 @@
     line-height: 1.45;
   }
   .chat-sheet .skills-row {
-    grid-template-columns: minmax(0, 1fr) 5.75rem;
-    gap: 0.55rem 0.7rem;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.35rem 0.7rem;
   }
+  .chat-sheet .skills-row-actions { grid-column: 2; }
   .chat-sheet .skills-desc {
     font-size: 0.8rem;
     -webkit-line-clamp: 4;

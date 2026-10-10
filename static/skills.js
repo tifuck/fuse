@@ -65,16 +65,46 @@
     return ORIGIN[origin] || origin || "bundled";
   }
 
+  // Optional page-only controls: an All / On / Off filter and a text filter.
+  // The chat Skills sheet renders the same list without them.
+  const filterTabs = Array.from(root.querySelectorAll("[data-skill-filter]"));
+  const findInput = root.querySelector("[data-skill-find]");
+  let filter = "all";
+
+  function paintCounts(items) {
+    const on = items.filter((s) => s.enabled).length;
+    const counts = { all: items.length, on, off: items.length - on };
+    root.querySelectorAll("[data-skill-count]").forEach((el) => {
+      el.textContent = String(counts[el.getAttribute("data-skill-count")] || 0);
+    });
+    filterTabs.forEach((tab) => {
+      const isOn = tab.getAttribute("data-skill-filter") === filter;
+      tab.classList.toggle("is-on", isOn);
+      tab.setAttribute("aria-selected", String(isOn));
+    });
+  }
+
   function renderList() {
     const items = bundle.skills || [];
     list.innerHTML = "";
     empty.hidden = items.length > 0;
-    items.forEach((skill) => {
+    paintCounts(items);
+    const q = findInput ? (findInput.value || "").trim().toLowerCase() : "";
+    const shown = items
+      .filter((s) => filter === "all" || Boolean(s.enabled) === (filter === "on"))
+      .filter((s) => !q || [s.slug, s.description, originLabel(s.origin)].some((v) => String(v || "").toLowerCase().includes(q)));
+    if (items.length && !shown.length) {
+      const none = document.createElement("p");
+      none.className = "skills-none";
+      none.textContent = q ? "No skills match." : filter === "on" ? "No skills are on." : "Every skill is on.";
+      list.append(none);
+    }
+    shown.forEach((skill) => {
       const row = document.createElement("div");
-      row.className = "skills-row";
+      row.className = "skills-row" + (skill.enabled ? " is-enabled" : "");
       const slug = document.createElement("code");
       slug.className = "skills-slug";
-      slug.textContent = skill.slug;
+      slug.textContent = "/" + skill.slug;
       const desc = document.createElement("p");
       desc.className = "skills-desc";
       desc.textContent = skill.description || "";
@@ -83,8 +113,10 @@
       badge.textContent = originLabel(skill.origin);
       const toggle = document.createElement("label");
       toggle.className = "skills-toggle";
+      toggle.title = skill.enabled ? "On: loads in coding chats" : "Off: costs no tokens";
       const box = document.createElement("input");
       box.type = "checkbox";
+      box.setAttribute("role", "switch");
       box.checked = Boolean(skill.enabled);
       box.addEventListener("change", async () => {
         showErr(pageError, "");
@@ -100,12 +132,15 @@
           showErr(pageError, err.message);
         }
       });
+      const track = document.createElement("span");
+      track.className = "skills-switch";
+      track.setAttribute("aria-hidden", "true");
       const lab = document.createElement("span");
-      lab.textContent = "On";
-      toggle.append(box, lab);
+      lab.className = "visually-hidden";
+      lab.textContent = "Enable " + skill.slug;
+      toggle.append(box, track, lab);
       const actions = document.createElement("div");
       actions.className = "skills-row-actions";
-      actions.append(toggle);
       if (skill.can_remove && skill.origin !== "bundled") {
         const del = document.createElement("button");
         del.type = "button";
@@ -129,10 +164,18 @@
       const copy = document.createElement("div");
       copy.className = "skills-row-copy";
       copy.append(meta, desc);
-      row.append(copy, actions);
+      row.append(toggle, copy, actions);
       list.append(row);
     });
   }
+
+  filterTabs.forEach((tab) => {
+    tab.addEventListener("click", () => {
+      filter = tab.getAttribute("data-skill-filter") || "all";
+      renderList();
+    });
+  });
+  findInput?.addEventListener("input", renderList);
 
   function hitKey(hit) {
     return hit.id || (hit.source ? hit.source + "/" + (hit.skillId || "") : "");
@@ -216,7 +259,13 @@
           showErr(searchError, err.message);
         }
       });
-      row.append(name, src, installs, link, btn);
+      const info = document.createElement("div");
+      info.className = "skills-hit-copy";
+      const sub = document.createElement("span");
+      sub.className = "skills-hit-meta";
+      sub.append(src, installs, link);
+      info.append(name, sub);
+      row.append(info, btn);
       searchResults.append(row);
     });
   }

@@ -768,12 +768,10 @@ html[data-chat-theme="ivory"] .chat .chat-code { border-color: var(--line); }
 /* Per-view reading font: chat-appearance.js resolves --chat-view-font from the
    user's saved choice or each view's own default before first paint. */
 .chat .chat-turn > .chat-bubble { font-family: var(--chat-view-font, inherit); }
-html[data-chat-backdrop]:not([data-chat-backdrop="none"]) body.is-chat :is(.stage, .stage-inner, main, .chat, .chat-stage, .chat-thread),
-html[data-chat-backdrop]:not([data-chat-backdrop="none"]) body.is-settings :is(.stage, .stage-inner, .settings-shell, .settings-stage, .settings-scroll) {
+html[data-chat-backdrop]:not([data-chat-backdrop="none"]) body.is-chat :is(.stage, .stage-inner, main, .chat, .chat-stage, .chat-thread) {
   background: transparent;
 }
-html[data-chat-backdrop]:not([data-chat-backdrop="none"]) body.is-chat .chat .chat-bar,
-html[data-chat-backdrop]:not([data-chat-backdrop="none"]) body.is-settings .settings-bar {
+html[data-chat-backdrop]:not([data-chat-backdrop="none"]) body.is-chat .chat .chat-bar {
   background: color-mix(in srgb, var(--panel) 56%, transparent);
   border-bottom-color: color-mix(in srgb, var(--line) 70%, transparent);
   -webkit-backdrop-filter: blur(18px) saturate(124%);
@@ -788,8 +786,7 @@ html[data-chat-backdrop]:not([data-chat-backdrop="none"]) body.is-chat .chat .ch
   height: 1.35rem;
   background: linear-gradient(180deg, color-mix(in srgb, var(--ink) 32%, transparent) 0%, transparent 100%);
 }
-html[data-chat-backdrop]:not([data-chat-backdrop="none"]) body.is-chat .chat .chat-history,
-html[data-chat-backdrop]:not([data-chat-backdrop="none"]) body.is-settings .settings-shell .app-rail {
+html[data-chat-backdrop]:not([data-chat-backdrop="none"]) body.is-chat .chat .chat-history {
   background: color-mix(in srgb, var(--panel) 82%, transparent);
   -webkit-backdrop-filter: blur(16px) saturate(120%);
   backdrop-filter: blur(16px) saturate(120%);
@@ -800,17 +797,14 @@ html[data-chat-backdrop]:not([data-chat-backdrop="none"]) body.is-chat .chat .ch
   backdrop-filter: blur(18px) saturate(124%);
 }
 @media (max-width: 800px) {
-  html[data-chat-backdrop]:not([data-chat-backdrop="none"]) body.is-chat .chat .chat-history,
-  html[data-chat-backdrop]:not([data-chat-backdrop="none"]) body.is-settings .settings-shell .app-rail {
+  html[data-chat-backdrop]:not([data-chat-backdrop="none"]) body.is-chat .chat .chat-history {
     background: color-mix(in srgb, var(--ink) 88%, transparent);
   }
 }
 @media (prefers-reduced-transparency: reduce) {
   html[data-chat-backdrop]:not([data-chat-backdrop="none"]) body.is-chat .chat .chat-box,
   html[data-chat-backdrop]:not([data-chat-backdrop="none"]) body.is-chat .chat .chat-bar,
-  html[data-chat-backdrop]:not([data-chat-backdrop="none"]) body.is-chat .chat .chat-history,
-  html[data-chat-backdrop]:not([data-chat-backdrop="none"]) body.is-settings .settings-bar,
-  html[data-chat-backdrop]:not([data-chat-backdrop="none"]) body.is-settings .settings-shell .app-rail {
+  html[data-chat-backdrop]:not([data-chat-backdrop="none"]) body.is-chat .chat .chat-history {
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
     background: color-mix(in srgb, var(--panel) 94%, var(--ink));

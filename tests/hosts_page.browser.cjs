@@ -71,6 +71,8 @@ const BUNDLE = { uid: 1, hosts: HOSTS, pending: [], base: origin, settings: { ag
 
   const overflow = () => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   const card = id => page.locator(`[data-host-id="${id}"]`);
+  // The selected machine's detail pane (list + detail layout).
+  const pane = id => page.locator(`[data-detail-host-id="${id}"]`);
   const rowsOf = () => page.locator('[data-host-id]').evaluateAll(nodes => nodes.map(node => ({
     id: node.getAttribute('data-host-id'),
     kind: node.getAttribute('data-kind'),
@@ -184,12 +186,14 @@ const BUNDLE = { uid: 1, hosts: HOSTS, pending: [], base: origin, settings: { ag
     assert.ok(onlineWhen.length > 0, `online row should show when it last checked in: ${onlineWhen}`);
     console.log('PASS status dots, chips, counts, order');
 
+    assert.equal(await pane(11).count(), 1, 'the first machine is selected by default');
     await card(11).locator('[data-toggle-card]').click();
-    const readOnly = card(11).locator('.hosts-proj', { hasText: 'api' }).first();
+    assert.equal(await card(11).getAttribute('class'), 'hosts-row is-on', 'the selected row carries is-on');
+    const readOnly = pane(11).locator('.hosts-proj', { hasText: 'api' }).first();
     await readOnly.waitFor();
     assert.match(await readOnly.innerText(), /read-only/i, 'read-only project shows its badge');
     assert.doesNotMatch(await readOnly.innerText(), /archived/i, 'the live project is not marked archived');
-    const archived = card(11).locator('.hosts-proj', { hasText: 'old-api' });
+    const archived = pane(11).locator('.hosts-proj', { hasText: 'old-api' });
     assert.match(await archived.innerText(), /archived/i, 'archived project shows its badge');
     assert.match(await archived.getAttribute('class'), /is-archived/, 'archived row carries is-archived');
     const pathBox = await readOnly.locator('.hosts-proj-path').evaluate(el => ({
@@ -200,20 +204,23 @@ const BUNDLE = { uid: 1, hosts: HOSTS, pending: [], base: origin, settings: { ag
     assert.equal(pathBox.title, null, `path exposes its full text as a title: ${JSON.stringify(pathBox)}`);
     assert.ok(pathBox.width > 0 && pathBox.width < 1200, `path row wider than the page: ${JSON.stringify(pathBox)}`);
     await card(12).locator('[data-toggle-card]').click();
-    assert.match(await card(12).locator('.hosts-empty-proj').innerText(), /No projects yet/, 'zero projects gets the empty line');
-    assert.equal(await card(12).locator('[data-project-row]').count(), 0, 'the empty line is not an empty project row');
+    assert.equal(await pane(11).count(), 0, 'selecting another machine replaces the pane');
+    assert.match(await pane(12).locator('.hosts-empty-proj').innerText(), /No projects yet/, 'zero projects gets the empty line');
+    assert.equal(await pane(12).locator('[data-project-row]').count(), 0, 'the empty line is not an empty project row');
+    assert.match(await pane(12).locator('.hosts-pane-status').innerText(), /Offline · never connected/, 'a never-seen connector says so');
     await card(13).locator('[data-toggle-card]').click();
-    assert.match(await card(13).locator('.hosts-warn').innerText(), /Not trusted yet/, 'untrusted drawer warns');
-    assert.equal((await card(13).locator('[data-probe]').innerText()).trim(), 'Trust machine', 'untrusted action is Trust machine');
+    assert.match(await pane(13).locator('.hosts-warn').innerText(), /Not trusted yet/, 'untrusted pane warns');
+    assert.equal((await pane(13).locator('.hosts-warn [data-probe]').innerText()).trim(), 'Trust machine', 'untrusted action is Trust machine');
     await card(14).locator('[data-toggle-card]').click();
-    assert.equal((await card(14).locator('.hosts-drawer > .callout.fault').innerText()).trim(), 'connection timed out', 'drawer shows the last check error');
-    const addr = card(14).locator('.hosts-facts dd.is-trunc').first();
+    assert.equal((await pane(14).locator(':scope > .callout.fault').innerText()).trim(), 'connection timed out', 'pane shows the last check error');
+    const addr = pane(14).locator('.hosts-facts dd.is-trunc').first();
     const addrText = (await addr.innerText()).trim();
     assert.match(addrText, /deploy@long\.example:22/, `address ${addrText}`);
-    assert.match(await card(14).locator('.hosts-facts').innerText(), /ssh-ed25519 SHA256:fixture/, 'fingerprint is shown in full in the drawer');
-    console.log('PASS drawer projects, empty, warning, error, truncation');
+    assert.match(await pane(14).locator('.hosts-facts').innerText(), /ssh-ed25519 SHA256:fixture/, 'fingerprint is shown in full in the pane');
+    console.log('PASS detail pane projects, empty, warning, error, truncation');
 
-    await card(11).locator('[data-edit-host]').click();
+    await card(11).locator('[data-toggle-card]').click();
+    await pane(11).locator('[data-edit-host]').click();
     const dialog = page.locator('[data-edit-host-modal]');
     await dialog.waitFor({ state: 'visible' });
     const portState = await dialog.locator('[data-port-field]').evaluate(el => ({ hidden: el.hidden, shown: !!(el.offsetWidth || el.offsetHeight) }));
@@ -232,7 +239,8 @@ const BUNDLE = { uid: 1, hosts: HOSTS, pending: [], base: origin, settings: { ag
     assert.equal((await card(11).locator('.hosts-row-name b').innerText()).trim(), 'online-box', 'a failed save does not rename the row');
     await dialog.locator('[data-dialog-close]').first().click();
     await dialog.waitFor({ state: 'hidden' });
-    await card(13).locator('[data-edit-host]').click();
+    await card(13).locator('[data-toggle-card]').click();
+    await pane(13).locator('[data-edit-host]').click();
     await dialog.waitFor({ state: 'visible' });
     assert.equal(await dialog.locator('[data-port-field]').evaluate(el => el.hidden), false, 'SSH edit keeps the port attribute visible');
     assert.equal(await dialog.locator('[name="port"]').inputValue(), '22');
@@ -242,36 +250,38 @@ const BUNDLE = { uid: 1, hosts: HOSTS, pending: [], base: origin, settings: { ag
 
     let release;
     holdTest = new Promise(resolve => { release = resolve; });
-    await card(12).locator('[data-test]').click();
+    await card(12).locator('[data-toggle-card]').click();
+    await pane(12).locator('[data-test]').click();
     await page.waitForFunction(() => {
-      const button = document.querySelector('[data-host-id="12"] [data-test]');
+      const button = document.querySelector('[data-detail-host-id="12"] [data-test]');
       return button && button.disabled && button.textContent === 'Testing…';
     });
     assert.match(await page.locator('.fuse-toast').innerText(), /quiet-box[\s\S]*Testing connection/, 'pending toast names the machine');
     release();
     holdTest = null;
     await page.waitForFunction(() => {
-      const button = document.querySelector('[data-host-id="12"] [data-test]');
+      const button = document.querySelector('[data-detail-host-id="12"] [data-test]');
       return button && !button.disabled && button.textContent === 'Test';
     });
     failTest = true;
-    await card(12).locator('[data-test]').click();
+    await pane(12).locator('[data-test]').click();
     await page.locator('.fuse-toast').filter({ hasText: 'Test fixture failed' }).waitFor();
     const toast = await page.locator('.fuse-toast').innerText();
     assert.match(toast, /quiet-box/, `failed toast names the machine: ${toast}`);
     assert.match(toast, /Test fixture failed/, `failed toast quotes the API: ${toast}`);
     await page.waitForFunction(() => {
-      const button = document.querySelector('[data-host-id="12"] [data-test]');
+      const button = document.querySelector('[data-detail-host-id="12"] [data-test]');
       return button && !button.disabled && button.textContent === 'Test';
     });
     failTest = false;
     console.log('PASS test pending and failure');
 
     failProbe = true;
-    await card(13).locator('[data-probe]').click();
+    await card(13).locator('[data-toggle-card]').click();
+    await pane(13).locator('.hosts-warn [data-probe]').click();
     await page.locator('[data-page-error]').waitFor({ state: 'visible' });
     assert.equal((await page.locator('[data-page-error]').innerText()).trim(), 'Probe fixture failed', 'probe 500 uses the page error');
-    assert.equal(await card(13).locator('.hosts-warn').isVisible(), true, 'a failed probe leaves the untrusted warning');
+    assert.equal(await pane(13).locator('.hosts-warn').isVisible(), true, 'a failed probe leaves the untrusted warning');
     assert.equal(await card(13).locator('.hosts-dot').evaluate(el => el.classList.contains('is-warn')), true, 'a failed probe does not change the dot');
     failProbe = false;
     console.log('PASS probe 500');
@@ -280,7 +290,8 @@ const BUNDLE = { uid: 1, hosts: HOSTS, pending: [], base: origin, settings: { ag
     await card(11).waitFor();
     rows = await rowsOf();
     assert.equal(rows.length, 4, `reload row count ${rows.length}: ${rows.map(row => row.alias).join(',')}`);
-    assert.equal(await card(11).locator('.hosts-drawer').count(), 0, 'reload closes drawers that were open');
+    assert.equal(await pane(11).count(), 1, 'reload selects the first machine again');
+    assert.equal(await pane(13).count(), 0, 'reload does not keep the previous selection');
     assert.equal(await page.locator('[data-page-error]').isHidden(), true, 'reload clears the page error');
     console.log('PASS reload');
 
@@ -294,13 +305,13 @@ const BUNDLE = { uid: 1, hosts: HOSTS, pending: [], base: origin, settings: { ag
         text: el.textContent, title: el.getAttribute('title'), over: el.scrollWidth > el.clientWidth + 1,
       }));
       assert.equal(clipped.text, LONG_ALIAS, `${width}: alias ${clipped.text}`);
-      assert.equal(clipped.over, width === 390, `${width}: alias clip ${JSON.stringify(clipped)}`);
-      assert.equal(clipped.title, null, `${width}: the ellipsized alias has no title, so the full nickname is only the status tooltip`);
-      assert.equal(await card(14).locator('.hosts-row-addr').isVisible(), width !== 390, `${width}: address visibility`);
+      assert.equal(clipped.over, false, `${width}: the alias has its own line, so it fits: ${JSON.stringify(clipped)}`);
+      assert.equal(clipped.title, null, `${width}: the alias carries no title; the status tooltip is on the row`);
+      assert.equal(await card(14).locator('.hosts-row-addr').isVisible(), true, `${width}: address visibility`);
       await card(14).locator('[data-toggle-card]').click();
-      const drawerOver = await card(14).locator('.hosts-drawer').evaluate(el => el.scrollWidth - el.clientWidth);
-      assert.ok(drawerOver <= 1, `${width}: drawer overflow ${drawerOver}px`);
-      await card(14).locator('[data-edit-host]').click();
+      const paneOver = await pane(14).evaluate(el => el.scrollWidth - el.clientWidth);
+      assert.ok(paneOver <= 1, `${width}: pane overflow ${paneOver}px`);
+      await pane(14).locator('[data-edit-host]').click();
       shell = await page.locator('[data-edit-host-modal] .modal-shell').boundingBox();
       assert.ok(shell && shell.x >= -1 && shell.x + shell.width <= width + 1 && shell.y >= -1 && shell.y + shell.height <= height + 1, `${width}: dialog ${JSON.stringify(shell)}`);
       await page.locator('[data-edit-host-modal] [data-dialog-close]').first().click();
