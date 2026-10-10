@@ -66,8 +66,7 @@
     const state = machineState(host);
     const badges =
       (p.running ? '<span class="badge cool">Working</span>' : "") +
-      (p.permission_mode === "read_only" ? '<span class="badge off">Read-only</span>' : "") +
-      (p.archived ? '<span class="badge off">Archived</span>' : "");
+      (p.permission_mode === "read_only" ? '<span class="badge off">Read-only</span>' : "");
     return (
       `<li class="proj-row${p.archived ? " is-archived" : ""}" data-proj="${esc(key)}">` +
       `<button type="button" class="proj-open" data-proj-open="${esc(key)}" title="${p.thread_id ? "Open the latest chat" : "Start a chat"} in ${esc(p.name)}">` +

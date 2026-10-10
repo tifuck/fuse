@@ -33,11 +33,40 @@ body:has(.hosts-connector:not([hidden])) .page-actions { display: none; }
   text-transform: uppercase;
   color: var(--steel);
 }
-.hosts-ssh-alt { margin: 0; }
+.hosts-ssh-alt { margin: 0 0 0 auto; }
+.hosts-os-install > div { min-width: 0; }
+.hosts-os-install .hosts-actions { margin-top: 0.5rem; }
+.hosts-os-install .usage-sub { margin: 0.5rem 0 0; }
+.hosts-connector-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin-top: 0.25rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--line);
+}
+.hosts-wait {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin: 0;
+  color: var(--mute);
+  font: 0.76rem/1.4 var(--mono);
+}
+.hosts-wait::before {
+  content: "";
+  width: 0.45rem;
+  height: 0.45rem;
+  background: var(--status-live);
+  animation: hosts-wait 1.4s ease-in-out infinite;
+}
+@keyframes hosts-wait { 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) { .hosts-wait::before { animation: none; } }
 @media (min-width: 860px) {
   .hosts-os-install {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: 1rem;
     align-items: start;
   }
@@ -563,3 +592,15 @@ label.check.hosts-check,
   .hosts-wizard-nav .btn { flex: 1; }
 }
 
+
+/* A checkbox row inside a field (Tasks: coding tools, new chat each fire)
+   reads as a sentence, not as a field label. */
+.hosts-field > span:has(> input[type="checkbox"]) {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  color: var(--mist);
+  font-size: 0.8rem;
+  letter-spacing: 0;
+  text-transform: none;
+}

@@ -277,3 +277,9 @@ html[data-chat-view="console"] body.is-chat .fp-dialog { --fp-font: var(--mono);
 }
 @keyframes fp-up { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .fp-dialog[open] { animation: none; } }
+
+/* The add/edit form sizes to its fields; the fixed height is for the
+   chooser list, so switching between projects there does not jump. */
+@media (min-width: 801px) {
+  .fp-dialog:has(.fp-form) { height: fit-content; max-height: min(42rem, calc(100dvh - 3.5rem)); }
+}

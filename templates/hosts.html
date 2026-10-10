@@ -32,24 +32,24 @@
           <p class="hosts-os-label">Linux</p>
           <pre class="hosts-install mono"><code data-install-line></code></pre>
           <div class="hosts-actions">
-            <button type="button" class="btn sm copy" data-copy-install>Copy</button>
+            <button type="button" class="btn sm ghost copy" data-copy-install>Copy</button>
           </div>
         </div>
         <div>
           <p class="hosts-os-label">Windows</p>
           <pre class="hosts-install mono"><code data-install-windows></code></pre>
           <div class="hosts-actions">
-            <button type="button" class="btn sm copy" data-copy-windows>Copy</button>
+            <button type="button" class="btn sm ghost copy" data-copy-windows>Copy</button>
             <a class="btn sm ghost" data-download-windows hidden>Download EXE</a>
           </div>
           <p class="usage-sub">Run in PowerShell. Use an Administrator terminal if this machine should connect before anyone logs in.</p>
         </div>
       </div>
-      <div class="hosts-actions">
+      <div class="hosts-connector-foot">
+        <p class="hosts-wait" data-connector-wait>Waiting for this machine…</p>
+        <span class="hosts-ssh-alt"><button type="button" class="btn sm ghost" data-ssh-instead>Connect with SSH instead</button></span>
         <button type="button" class="btn sm ghost" data-connector-cancel>Cancel</button>
       </div>
-      <p class="usage-sub" data-connector-wait>Waiting for this machine…</p>
-      <p class="hosts-ssh-alt"><button type="button" class="btn sm ghost" data-ssh-instead>Connect with SSH instead</button></p>
     </section>
 
     <section class="panel hosts-wizard hosts-ssh-only" data-wizard hidden>

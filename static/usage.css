@@ -481,7 +481,7 @@ td.uz-empty { text-align: center; padding: 1.5rem 0; }
   padding: 0 0.55rem;
   border: 1px solid var(--line);
   border-radius: 7px;
-  background: var(--ink);
+  background-color: var(--ink);
   font-size: 0.8rem;
 }
 
@@ -548,7 +548,7 @@ td.uz-empty { text-align: center; padding: 1.5rem 0; }
     letter-spacing: 0.05em;
     text-transform: uppercase;
   }
-  .uz-table td.uz-empty { text-align: center; }
+  .uz-table td.uz-empty { grid-column: 1 / -1; text-align: center; }
   .uz-models tbody tr { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .uz-models td.uz-cell-name { grid-column: 1 / 4; width: auto; max-width: none; min-width: 0; }
   .uz-models td.uz-cell-trend { grid-column: 4; grid-row: 1; align-self: center; }

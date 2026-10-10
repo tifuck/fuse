@@ -157,8 +157,8 @@ html[data-chat-console="true"] body:is(.is-settings, .is-chat) :is(.settings-she
 html[data-chat-console="true"] body:is(.is-settings, .is-chat) :is(.settings-shell, dialog.modal, .fp-dialog) select { padding-right: 1.8rem; }
 html[data-chat-console="true"] body:is(.is-settings, .is-chat) :is(.settings-shell, dialog.modal, .fp-dialog) textarea { padding: 0.6rem 0.7rem; line-height: 1.55; }
 html[data-chat-console="true"] body:is(.is-settings, .is-chat) :is(.settings-shell, dialog.modal, .fp-dialog) :is(input, select, textarea):focus { border-color: var(--brass); outline: none; }
-html[data-chat-console="true"] body:is(.is-settings, .is-chat) :is(.settings-shell, dialog.modal, .fp-dialog) input[type="file"] { padding: 0.3rem; font-size: 0.78rem; }
-html[data-chat-console="true"] body:is(.is-settings, .is-chat) :is(.settings-shell, dialog.modal, .fp-dialog) input[type="file"]::file-selector-button {
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) :is(.settings-shell, dialog.modal, .fp-dialog, .chat-sheet) input[type="file"] { padding: 0.3rem; font-size: 0.78rem; }
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) :is(.settings-shell, dialog.modal, .fp-dialog, .chat-sheet) input[type="file"]::file-selector-button {
   margin-right: 0.6rem;
   padding: 0.3rem 0.65rem;
   border: 1px solid var(--line);
@@ -171,7 +171,7 @@ html[data-chat-console="true"] body:is(.is-settings, .is-chat) :is(.settings-she
 html[data-chat-console="true"] body.is-settings .settings-shell input[type="checkbox"] { accent-color: var(--brass); }
 
 /* Field labels read like the chat sheets' ("SEARCH SKILLS.SH"). */
-html[data-chat-console="true"] body:is(.is-settings, .is-chat) :is(.settings-shell, dialog.modal) :is(.hosts-field, .bugreport-field, .fp-field):not(.check):not(.hosts-check):not(:has(> input[type="checkbox"])) > span:first-child {
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) :is(.settings-shell, dialog.modal) :is(.hosts-field, .bugreport-field, .fp-field):not(.check):not(.hosts-check):not(:has(> input[type="checkbox"])) > span:first-child:not(:has(input)) {
   color: var(--mute);
   font: 0.66rem/1.4 var(--mono);
   letter-spacing: 0.06em;
@@ -296,12 +296,12 @@ html[data-chat-console="true"] body.is-settings .docs-toc a.on {
 }
 
 /* Card grids keep their columns packed instead of leaving tall gaps. */
-html[data-chat-console="true"] body.is-settings .catalog-grid:has(> .catalog-family:nth-child(3)) {
+html[data-chat-console="true"] body.is-settings .catalog-grid:not(.is-platforms):has(> .catalog-family:nth-child(3)) {
   display: block;
   columns: 2 24rem;
   column-gap: 1rem;
 }
-html[data-chat-console="true"] body.is-settings .catalog-grid:has(> .catalog-family:nth-child(3)) > .catalog-family {
+html[data-chat-console="true"] body.is-settings .catalog-grid:not(.is-platforms):has(> .catalog-family:nth-child(3)) > .catalog-family {
   display: block;
   margin: 0 0 1rem;
   break-inside: avoid;
@@ -321,3 +321,11 @@ html[data-chat-console="true"] body.is-settings .settings-shell label:not(.check
 html[data-chat-console="true"] body:is(.is-settings, .is-chat) :is(.settings-shell, dialog.modal) .btn:not(.sm) { height: 2.05rem; padding: 0 0.85rem; font-size: 0.8rem; }
 /* Long single-line fields in stacked forms stop at a readable width. */
 html[data-chat-console="true"] body.is-settings .settings-shell form.stack :is(input:where(:not([type="checkbox"], [type="radio"])), select) { max-width: 44rem; }
+/* A panel's form starts a step below its description. */
+html[data-chat-console="true"] body.is-settings .settings-shell .panel :is(p, .usage-sub) + form { margin-top: 0.75rem; }
+html[data-chat-console="true"] body.is-settings .settings-tools { max-width: 100%; min-width: 0; }
+html[data-chat-console="true"] body.is-settings .settings-tools .head-actions { flex-wrap: wrap; flex-shrink: 1; min-width: 0; }
+/* Stacked section headings keep the page's left edge on phones. */
+html[data-chat-console="true"] body.is-settings .settings-shell .section-heading { align-items: flex-start; text-align: left; }
+/* Tags keep their own width when a stacked row stretches its cells. */
+html[data-chat-console="true"] body.is-settings .settings-shell .badge { width: fit-content; justify-self: start; align-self: center; }
