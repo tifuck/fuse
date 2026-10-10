@@ -21,14 +21,14 @@ async def kimi_start(request: Request, region: str = Form("global")):
     if redir:
         return redir
     if not limiter.allow(f"kimi-start:{user['id']}", 5, 60):
-        _pool_flash[user["id"]] = ("ok", "Kimi sign-in was rate limited. Wait a minute and try again.", "kimi")
+        _pool_flash[user["id"]] = ("err", "Kimi sign-in was rate limited. Wait a minute and try again.", "kimi")
         return RedirectResponse("/sources", status_code=303)
     chosen = "cn" if str(region or "").strip().lower() in ("cn", "mainland-cn", "com") else "global"
     try:
         data = await kimi_mod.start_device(chosen)
     except Exception:
         logger.warning("Could not start Kimi device authorization", exc_info=True)
-        _pool_flash[user["id"]] = ("ok", "Could not start Kimi sign-in. Check the connection and try again.", "kimi")
+        _pool_flash[user["id"]] = ("err", "Could not start Kimi sign-in. Check the connection and try again.", "kimi")
         return RedirectResponse("/sources", status_code=303)
     if (
         not isinstance(data, dict)
@@ -37,7 +37,7 @@ async def kimi_start(request: Request, region: str = Form("global")):
         or not isinstance(data.get("user_code"), str)
         or not data["user_code"]
     ):
-        _pool_flash[user["id"]] = ("ok", "Kimi returned an invalid sign-in response. Try again shortly.", "kimi")
+        _pool_flash[user["id"]] = ("err", "Kimi returned an invalid sign-in response. Try again shortly.", "kimi")
         return RedirectResponse("/sources", status_code=303)
     data["_started"] = time.time()
     _kimi_pending[user["id"]] = data

@@ -22,13 +22,13 @@ async def grok_start(request: Request):
     if redir:
         return redir
     if not limiter.allow(f"grok-start:{user['id']}", 5, 60):
-        _pool_flash[user["id"]] = ("ok", "x.ai sign-in was rate limited. Wait a minute and try again.", "zai")
+        _pool_flash[user["id"]] = ("err", "x.ai sign-in was rate limited. Wait a minute and try again.", "grok")
         return RedirectResponse("/sources", status_code=303)
     try:
         data = await grok_mod.start_device()
     except Exception:
         logger.warning("Could not start Grok device authorization", exc_info=True)
-        _pool_flash[user["id"]] = ("ok", "Could not start x.ai sign-in. Check the connection and try again.", "zai")
+        _pool_flash[user["id"]] = ("err", "Could not start x.ai sign-in. Check the connection and try again.", "grok")
         return RedirectResponse("/sources", status_code=303)
     if (
         not isinstance(data, dict)
@@ -37,7 +37,7 @@ async def grok_start(request: Request):
         or not isinstance(data.get("user_code"), str)
         or not data["user_code"]
     ):
-        _pool_flash[user["id"]] = ("ok", "x.ai returned an invalid sign-in response. Try again shortly.", "zai")
+        _pool_flash[user["id"]] = ("err", "x.ai returned an invalid sign-in response. Try again shortly.", "grok")
         return RedirectResponse("/sources", status_code=303)
     data["_started"] = time.time()
     _pending[user["id"]] = data

@@ -601,7 +601,7 @@
   </div>
 </div>
 
-<dialog class="modal device-modal" id="grok-connect-dialog" aria-labelledby="grok-connect-title"{% if pending %} data-auto-open data-device-poll data-endpoint="/sources/grok/poll" data-interval="{{ pending_interval }}"{% endif %}>
+<dialog class="modal device-modal" id="grok-connect-dialog" aria-labelledby="grok-connect-title"{% if pending or grok_flash_msg %} data-auto-open{% endif %}{% if pending %} data-device-poll data-endpoint="/sources/grok/poll" data-interval="{{ pending_interval }}"{% endif %}>
   <div class="modal-shell">
     <header class="modal-head">
       <div>
@@ -610,6 +610,9 @@
       </div>
       <button type="button" class="btn ghost sm" data-dialog-close aria-label="Close x.ai connection dialog">Close</button>
     </header>
+    {% if grok_flash_msg %}
+    <p class="callout fault" role="alert">{{ grok_flash_msg }}</p>
+    {% endif %}
     {% if pending %}
     <p class="aside">Open the secure x.ai device page, enter this code, and approve Fuse.</p>
     <div class="device-code">
@@ -636,7 +639,7 @@
   </div>
 </dialog>
 
-<dialog class="modal device-modal" id="openai-connect-dialog" aria-labelledby="openai-connect-title"{% if chatgpt_pending %} data-auto-open data-device-poll data-endpoint="/sources/chatgpt/poll" data-interval="{{ chatgpt_interval }}"{% endif %}>
+<dialog class="modal device-modal" id="openai-connect-dialog" aria-labelledby="openai-connect-title"{% if chatgpt_pending or chatgpt_flash_msg %} data-auto-open{% endif %}{% if chatgpt_pending %} data-device-poll data-endpoint="/sources/chatgpt/poll" data-interval="{{ chatgpt_interval }}"{% endif %}>
   <div class="modal-shell">
     <header class="modal-head">
       <div>
@@ -645,6 +648,9 @@
       </div>
       <button type="button" class="btn ghost sm" data-dialog-close aria-label="Close OpenAI connection dialog">Close</button>
     </header>
+    {% if chatgpt_flash_msg %}
+    <p class="callout fault" role="alert">{{ chatgpt_flash_msg }}</p>
+    {% endif %}
     {% if chatgpt_pending %}
     <p class="aside">Open the OpenAI device page, enter this code, and sign in with the ChatGPT account you want to share.</p>
     <div class="device-code">

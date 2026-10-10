@@ -450,6 +450,8 @@ async def user_sources(request: Request):
         kimi_code=kimi_code,
         kimi_flash_kind=flash[0] if flash and flash[2] == "kimi" else "",
         kimi_flash_msg=flash[1] if flash and flash[2] == "kimi" else "",
+        grok_flash_msg=flash[1] if flash and flash[2] == "grok" else "",
+        chatgpt_flash_msg=flash[1] if flash and flash[2] == "chatgpt" else "",
         mimo_accounts=mimo_visible,
         mimo_ok=mimo_access["ok"],
         mimo_reason=mimo_access["reason"],

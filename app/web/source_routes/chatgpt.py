@@ -21,13 +21,13 @@ async def chatgpt_start(request: Request):
     if redir:
         return redir
     if not limiter.allow(f"chatgpt-start:{user['id']}", 5, 60):
-        _pool_flash[user["id"]] = ("ok", "OpenAI sign-in was rate limited. Wait a minute and try again.", "zai")
+        _pool_flash[user["id"]] = ("err", "OpenAI sign-in was rate limited. Wait a minute and try again.", "chatgpt")
         return RedirectResponse("/sources", status_code=303)
     try:
         data = await chatgpt_mod.start_device()
     except Exception:
         logger.warning("Could not start ChatGPT device authorization", exc_info=True)
-        _pool_flash[user["id"]] = ("ok", "Could not start OpenAI sign-in. Check the connection and try again.", "zai")
+        _pool_flash[user["id"]] = ("err", "Could not start OpenAI sign-in. Check the connection and try again.", "chatgpt")
         return RedirectResponse("/sources", status_code=303)
     if (
         not isinstance(data, dict)
@@ -36,7 +36,7 @@ async def chatgpt_start(request: Request):
         or not isinstance(data.get("device_auth_id"), str)
         or not data["device_auth_id"]
     ):
-        _pool_flash[user["id"]] = ("ok", "OpenAI returned an invalid sign-in response. Try again shortly.", "zai")
+        _pool_flash[user["id"]] = ("err", "OpenAI returned an invalid sign-in response. Try again shortly.", "chatgpt")
         return RedirectResponse("/sources", status_code=303)
     data["_started"] = time.time()
     _chatgpt_pending[user["id"]] = data
