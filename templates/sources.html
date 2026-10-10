@@ -568,7 +568,7 @@
     {% endif %}
   </div>
   <div data-tab-panel="explabs" class="stack-y{% if not explabs_flash_msg %} hidden{% endif %}">
-    <p class="sources-note">Your own key, never shared. Pick an <code>explabs/…</code> model to use it.</p>
+    <p class="sources-note">Your own key, never shared. Only <code>explabs/…</code> models use it; subscription pools never fall back to it.</p>
     {% if explabs_flash_msg %}
     <p class="callout {% if explabs_flash_kind == 'ok' %}ok{% else %}fault{% endif %}" role="alert">{{ explabs_flash_msg }}</p>
     {% endif %}
