@@ -211,9 +211,13 @@ def parse_state(raw) -> dict:
     checkpoints = [cp for cp in (data.get("checkpoints") or []) if _valid_checkpoint(cp)]
     meter_obj = data.get("meter") if isinstance(data.get("meter"), dict) else {}
     cfg = config()
+    from .chat_generation import cache_watch
+
     return {
         "checkpoints": checkpoints[-MAX_CHECKPOINTS:],
         "meter": meter_obj,
+        # Newest request's prompt-cache probe (chat_generation.cache_watch).
+        "cache": cache_watch.parse(data.get("cache")),
         "strategy": str(data.get("strategy") or cfg.strategy),
         "auto": data["auto"] if isinstance(data.get("auto"), bool) else cfg.auto,
         "warn_ratio": _clamp_ratio(data.get("warn_ratio"), cfg.warn_ratio),
@@ -426,6 +430,9 @@ def append_checkpoint(state: dict | None, checkpoint: dict) -> dict:
     parsed = parse_state(state)
     parsed["checkpoints"] = (parsed.get("checkpoints") or []) + [checkpoint]
     parsed["checkpoints"] = parsed["checkpoints"][-MAX_CHECKPOINTS:]
+    # A compacted history is a new prefix: its first request is expected to
+    # miss, so it must not be judged against the pre-compaction probe.
+    parsed["cache"] = None
     return parsed
 
 def _plain_text(content) -> str:

@@ -432,6 +432,9 @@ def save_meter(user_id, thread_id, meter):
             if owner is None or meter.get("model") != row["model"]:
                 return
             state["meter"] = dict(meter)
+            probe = state["meter"].pop("cache_probe", None)
+            if probe:
+                state["cache"] = probe
             conn.execute("UPDATE chat_threads SET compaction=? WHERE id=? AND user_id=?", (ctxmod.dump_state(state), pk, user_id))
             # Compaction state is view-visible: publish so the thread watermark
             # moves, or get_thread's unchanged short-circuit serves stale data.

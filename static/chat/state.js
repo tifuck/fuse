@@ -318,6 +318,9 @@ function initState() {
   S.hintKey = "";
   S.hintHeldAt = 0;
   S.hintReleaseTimer = 0;
+  S.pinnedHint = null;
+  S.cacheProbe = null;
+  S.cacheNoticed = new Set();
   S.ignoreScroll = false;
   S.artifactOpen = false;
   S.artifactMode = "preview";

@@ -307,6 +307,51 @@ class ResumeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(final["calibration"]["estimated_prompt_tokens"],
             ctx.occupancy_parts(sent[0]["messages"], tools=sent[0].get("tools"))["total"])
 
+    async def cache_turn(self, second_cached):
+        """Two rounds of one turn; round 1 is served from cache, round 2 reports `second_cached`."""
+        count = 0
+
+        async def fake_invoke(request, user, body, **_kwargs):
+            nonlocal count
+            count += 1
+            cached = 28000 if count == 1 else second_cached
+            usage = {"prompt_tokens": 30000 + count, "completion_tokens": 5,
+                "prompt_tokens_details": {"cached_tokens": cached}, "total_tokens": 30005 + count}
+            if count == 1:
+                return user, src(), "m", "m", stream_result([
+                    frame({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1",
+                        "function": {"name": "web_search", "arguments": "{}"}}]}, "finish_reason": "tool_calls"}]}),
+                    frame({"choices": [], "usage": usage}),
+                    b"data: [DONE]\n\n",
+                ])
+            return user, src(), "m", "m", stream_result([
+                frame({"choices": [{"delta": {"content": "done"}, "finish_reason": "stop"}]}),
+                frame({"choices": [], "usage": usage}),
+                b"data: [DONE]\n\n",
+            ])
+
+        async def fake_tools(*args, **kwargs):
+            yield [SimpleNamespace(orig_index=0, call_id="c1", name="web_search", arguments="{}",
+                event_id="ts_0_0", text="ok", trace={"id": "ts_0_0", "status": "done"}, done=True)]
+
+        with patch.object(runtime, "_run_tools", fake_tools):
+            objects = await self.stream_turn(fake_invoke)
+        fuse = [obj["fuse"] for obj in objects if isinstance(obj, dict) and isinstance(obj.get("fuse"), dict)]
+        rounds = [m for m in fuse if m.get("event") == "context" and m.get("phase") == "round"]
+        return [m for m in fuse if m.get("event") == "cache"], rounds
+
+    async def test_a_round_that_loses_the_cache_reports_one_miss(self):
+        misses, rounds = await self.cache_turn(0)
+        self.assertEqual(len(misses), 1)
+        self.assertEqual((misses[0]["state"], misses[0]["prompt"], misses[0]["cached"]), ("miss", 30002, 0))
+        # The page learns warmth from the round meter, without the account id.
+        self.assertTrue(rounds[-1]["cache"]["hit"])
+        self.assertNotIn("cred", rounds[-1]["cache"])
+
+    async def test_a_round_served_from_cache_reports_nothing(self):
+        misses, _rounds = await self.cache_turn(29000)
+        self.assertEqual(misses, [])
+
     async def test_tool_growth_can_compact_twice_from_a_small_start(self):
         from app import context_meter as ctx
         count = 0

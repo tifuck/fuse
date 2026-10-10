@@ -49,6 +49,8 @@ window.fuseToolFixture = {
   slash: composer.runSlash,
   api: net.api,
   runInfo: () => structuredClone(S.activeRun),
+  // Stands in for the thread's prompt-cache probe (compaction.cache).
+  cacheProbe(probe) { context.acceptCacheProbe(probe); },
   elapsed: transcript.liveElapsedSeconds,
   repaint: transcript.paint,
   update(id, patch, live = false) {

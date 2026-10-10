@@ -3,6 +3,10 @@ import { S } from './state.js';
 import { escapeHtml, formatTokens } from './core.js';
 import { newSession } from './state.js';
 
+// Below this many prompt tokens a lost cache is not worth mentioning
+// (matches cache_watch.MIN_TOKENS).
+const CACHE_MIN_TOKENS = 4096;
+
 const TOOL_FAMILIES = {
   web_search: "web search",
   read_url: "web search",
@@ -268,8 +272,41 @@ export function createContext(ctx) {
     };
   }
 
+    // Prompt-cache warmth from the thread's newest request probe
+  // (app/chat_generation/cache_watch.py). Warm while that request is inside
+  // the provider's cache lifetime and the chat was being served from cache.
+    function acceptCacheProbe(probe) {
+    S.cacheProbe = probe && typeof probe === "object" && Number(probe.at) > 0 ? probe : null;
+  }
+
+    function warmCache() {
+    const probe = S.cacheProbe;
+    if (!probe || !probe.hit || Number(probe.prompt) < CACHE_MIN_TOKENS) return null;
+    return Date.now() / 1000 - Number(probe.at) <= Number(probe.ttl) ? probe : null;
+  }
+
+    // Said once per run, and it stays until dismissed: a miss costs real
+  // quota, so it should not slip past while the user reads the reply.
+    function noteCacheMiss(event) {
+    const id = String(event.run_id || "");
+    if (S.cacheNoticed.has(id)) return;
+    S.cacheNoticed.add(id);
+    const prompt = Number(event.prompt) || 0;
+    const uncached = Math.max(0, prompt - (Number(event.cached) || 0));
+    const why = event.reason === "account" ? " (another pool account served it)" : event.reason === "settings" ? " (instructions or tools changed)" : "";
+    picker.pinHint("cache:" + id, `Cache miss · ${formatTokens(uncached)} of ${formatTokens(prompt)} input tokens uncached${why}`);
+  }
+
+    // The model switch warning: the new model has no cache for this chat.
+    function warnModelCacheReset(nextId) {
+    const warm = warmCache();
+    if (!warm || warm.model === nextId) return;
+    picker.setHint(`New model, cold cache · next reply sends ${formatTokens(warm.prompt)} tokens uncached`);
+  }
+
     function acceptMeter(meter) {
     if (!meter || typeof meter !== "object") return;
+    if (meter.cache) acceptCacheProbe(meter.cache);
     const scope = meter.scope === "transcript" ? "transcript" : "prompt";
     // Prompt-scope readings (live request during a turn) only apply while a
     // run is active. Transcript snapshots are authoritative at rest, so
@@ -502,7 +539,11 @@ export function createContext(ctx) {
   }
 
   return {
+    acceptCacheProbe,
     acceptMeter,
+    noteCacheMiss,
+    warmCache,
+    warnModelCacheReset,
     closeContextPop,
     contextSnapshot,
     currentModel,

@@ -298,11 +298,16 @@ export function createUndo(ctx) {
       return;
     }
     if (index < 0 || index >= S.messages.length) return;
+    // Trimming the tail keeps the cached prefix (Undo, Retry and Edit reuse
+    // the exact bytes sent); removing a row from the middle changes every
+    // request row after it, so a warm chat is told what that costs.
+    const recache = mode === "one" && index < S.messages.length - 1 && context.warmCache();
     mutateTranscript(() => {
       if (mode === "one") S.messages.splice(index, 1);
       else if (mode === "from") S.messages = S.messages.slice(0, index);
       else if (mode === "after") S.messages = S.messages.slice(0, index + 1);
-    }, mode === "one" ? "Message deleted. /undo restores it." : "Removed. /undo restores it.");
+    }, recache ? "Message deleted · the rest of the chat re-caches on the next reply. /undo restores it."
+      : mode === "one" ? "Message deleted. /undo restores it." : "Removed. /undo restores it.");
   }
 
     async function confirmDeleteAt(index, mode) {

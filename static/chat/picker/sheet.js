@@ -28,7 +28,12 @@ export function createSheet(ctx) {
       S.hintFrame = 0;
     }
     S.hint.classList.toggle("is-fault", Boolean(fault));
+    S.hint.classList.remove("is-pinned");
     const show = Boolean(text);
+    if (!show && S.pinnedHint) {
+      showPinned();
+      return;
+    }
     if (!show) {
       S.hint.classList.remove("is-on");
       S.hintTimer = window.setTimeout(() => {
@@ -76,7 +81,36 @@ export function createSheet(ctx) {
     return S.hintKey || "";
   }
 
+    // A toast that stays until the user closes it (or the chat changes). A
+  // passing hint may cover it; it comes back when that hint ends.
+    function pinHint(key, text) {
+    S.pinnedHint = { key, text };
+    showPinned();
+  }
+
+    function showPinned() {
+    const pin = S.pinnedHint;
+    setHint(pin.text, false, 0);
+    S.hintKey = pin.key;
+    S.hint.classList.add("is-pinned");
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "chat-toast-close";
+    close.setAttribute("aria-label", "Dismiss");
+    close.textContent = "\u00d7";
+    close.addEventListener("click", () => unpinHint(pin.key));
+    S.hint.appendChild(close);
+  }
+
+    function unpinHint(key) {
+    if (!S.pinnedHint || (key && S.pinnedHint.key !== key)) return;
+    const shown = S.hintKey === S.pinnedHint.key;
+    S.pinnedHint = null;
+    if (shown) setHint("");
+  }
+
     function defaultHint() {
+    S.pinnedHint = null;
     if (!S.allModels.length) {
       setHint("No models are unlocked yet. ", false, 0);
       const link = document.createElement("a");
@@ -257,9 +291,11 @@ export function createSheet(ctx) {
     heldHint,
     holdHint,
     innerScrolls,
+    pinHint,
     placePicker,
     releaseHint,
     renderPickerButton,
     setHint,
+    unpinHint,
   };
 }

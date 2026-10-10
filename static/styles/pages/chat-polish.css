@@ -258,6 +258,32 @@
   pointer-events: auto;
   margin-left: 0.2rem;
 }
+.chat-toast.is-pinned:not([hidden]) {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  max-width: min(30rem, calc(100% - 2rem));
+  text-align: left;
+  border-color: color-mix(in srgb, var(--brass) 45%, var(--line));
+  padding-right: 0.35rem;
+}
+.chat-toast-close {
+  flex: none;
+  pointer-events: auto;
+  margin-left: 0.25rem;
+  padding: 0 0.4rem;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.95rem;
+  line-height: 1.2;
+  opacity: 0.7;
+  cursor: pointer;
+}
+.chat-toast-close:hover,
+.chat-toast-close:focus-visible { opacity: 1; background: color-mix(in srgb, var(--mist) 12%, transparent); }
 
 @media (prefers-reduced-motion: reduce) {
   .chat-toast { transition: none; transform: translateX(-50%); }

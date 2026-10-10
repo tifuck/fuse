@@ -76,6 +76,7 @@ from .chat_generation.policy import (
     _resumable_failure,
     _should_resume,
 )
+from .chat_generation import cache_watch
 from .chat_generation.consume import _add_usage, consume_round as _consume_round
 from .chat_generation.tool_jobs import (
     CODING_UNLIMITED,
@@ -644,9 +645,11 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
     prompt_context = {"instructions": prefs["instructions"], "profile": prefs["profile"],
                       "thread_context": thread_context}
     schemas = copy.deepcopy(prompt_snapshot.get("tools", candidate_schemas))
+    prompt_refreshed = False
     if not (agent.get("resumed") or agent.get("followup_continuation")) and (
         schemas != candidate_schemas or prompt_snapshot.get("context") != prompt_context
     ):
+        prompt_refreshed = "system" in prompt_snapshot
         # Explicit settings changes take effect on the next turn. Resumes keep
         # the exact prefix; incidental catalog changes wait until compaction.
         schemas = copy.deepcopy(candidate_schemas)
@@ -684,7 +687,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
         start_i = _completion_start_index(agent, messages, completion_limit)
 
         def refresh_prompt():
-            nonlocal current_messages, prompt_snapshot
+            nonlocal current_messages, prompt_snapshot, cache_prior
             if transcript and transcript[0].get("role") == "system":
                 transcript[0] = {"role": "system", "content": candidate_system}
             else:
@@ -696,6 +699,8 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             else:
                 current.pop("tools", None)
             anchor.update(prompt=0, sent=None)
+            # A rebuilt prompt is a new prefix; its first request may miss.
+            cache_prior = None
 
         async def persist_jobs(jobs=None):
             nonlocal current_messages
@@ -767,6 +772,18 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 window_override = int(raw_override) or None
             except (TypeError, ValueError):
                 window_override = None
+
+        # The newest request's prompt-cache probe, carried across turns on the
+        # thread; one miss notice per turn at most (chat_generation.cache_watch).
+        cache_prior = None
+        cache_warned = False
+        if not is_child and thread_id:
+            try:
+                from .chat_checkpoint import load_compaction
+
+                cache_prior = (load_compaction(user["id"], thread_id) or {}).get("cache")
+            except Exception:
+                logger.exception("Could not load the prompt-cache probe")
 
         # Last provider prompt_tokens, and the projected messages that prompt covered.
         # Later readings add only the suffix. A rebuilt transcript clears this.
@@ -1322,8 +1339,20 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             # The prompt that just returned covers send["messages"], not the reply.
             _note_anchor(summary.get("usage"), send["messages"])
             round_meter = _live_meter(usage=summary.get("usage"), response=summary)
-            yield _sse(context_meter.context_event(round_meter, phase="round"))
-            _persist_meter(round_meter)
+            probe = None if is_child else cache_watch.probe(
+                summary.get("usage"), model=model, source=src_type or src_type_guess,
+                cred=getattr(result, "credential_id", None), prior=cache_prior)
+            missed = None
+            if probe:
+                if not cache_warned:
+                    missed = cache_watch.miss(cache_prior, probe, settings_changed=prompt_refreshed and completion_i == start_i)
+                cache_prior = probe
+            # The page reads cache warmth from the round meter (no account id).
+            yield _sse(context_meter.context_event({**round_meter, "cache": cache_watch.public(probe)} if probe else round_meter, phase="round"))
+            if missed:
+                cache_warned = True
+                yield _sse({"fuse": {**missed, "run_id": run_id}})
+            _persist_meter({**round_meter, "cache_probe": probe} if probe else round_meter)
             if summary.get("error"):
                 raw_err = summary["error"] if isinstance(summary["error"], dict) else {"error": {"message": str(summary["error"])}}
                 err_code, err_msg = _error_code_and_message(raw_err)

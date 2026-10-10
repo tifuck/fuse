@@ -179,6 +179,7 @@ export function createList(ctx) {
     id = resolveListedModel(id) || id;
     if (!S.modelsById.has(id)) return;
     if (id !== S.modelId && !net.requireLive()) return;
+    if (id !== S.modelId) context.warnModelCacheReset(id);
     S.modelId = id;
     S.pickerIndex = Math.max(0, filteredModels().findIndex((model) => model.id === id));
     composer.persist();

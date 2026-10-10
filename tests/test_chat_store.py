@@ -664,6 +664,28 @@ class ChatStoreTest(unittest.TestCase):
         self.assertEqual(parts["tools"], 3_100)
         self.assertGreater(parts["history"], 0)
 
+    def test_round_cache_probe_lands_on_the_thread_and_survives_edits(self):
+        from app import context_meter
+        from app.chat_generation import cache_watch
+
+        thread = chats.create_thread(1, model="grok-4.6")
+        run = store.start_turn(1, thread["id"], "hello", thread["revision"], "probe-turn")["run"]
+        probe = cache_watch.probe({"prompt_tokens": 40_000, "cached_tokens": 39_000, "cache_usage_status": "known"},
+                                  model="grok-4.6", source="grok", cred=7)
+        snap = context_meter.meter(used=40_000, limit=500_000, model="grok-4.6", estimated=False)
+        snap.update(scope="prompt", run_id=run["id"], cache_probe=probe)
+        store.save_meter(1, thread["id"], snap)
+        got = chats.get_thread(1, thread["id"])
+        self.assertEqual(got["compaction"]["cache"], cache_watch.public(probe))
+        self.assertNotIn("cache_probe", got["compaction"]["meter"])
+        self.assertEqual(store.load_compaction(1, thread["id"])["cache"]["cred"], 7)
+        store.finish_run(run["id"], {"content": "hi", "reasoning": ""}, "completed")
+        # An Undo/Edit rewrites the transcript and rebuilds the meter; the
+        # probe is what judges the next request, so it must stay.
+        got = chats.get_thread(1, thread["id"])
+        chats.update_thread(1, thread["id"], messages=got["messages"][:1], expected_revision=got["revision"])
+        self.assertEqual(chats.get_thread(1, thread["id"])["compaction"]["cache"], cache_watch.public(probe))
+
     def test_live_peak_does_not_land_in_stored_meter(self):
         from app import context_compact as ctxmod, context_meter
 

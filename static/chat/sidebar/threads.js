@@ -291,6 +291,7 @@ export function createThreads(ctx) {
     if (!traces.runIsActive(S.activeRun) && (!S.activeRun || !S.stoppingRunId || S.activeRun.id === S.stoppingRunId)) S.stoppingRunId = "";
     sync.setRunning(false);
     sync.healStuckRun(S.activeRun);
+    context.acceptCacheProbe(data.compaction?.cache);
     if (data.compaction && data.compaction.meter) context.acceptMeter(data.compaction.meter);
     else context.syncContextMeter();
     S.acceptedQueueCommands = new Set(data.accepted_queue_ids || []);

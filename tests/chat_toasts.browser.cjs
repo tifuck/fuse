@@ -30,10 +30,10 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
         return el.hidden || !el.classList.contains('is-on');
       }, null, { timeout: ms }).catch(() => { throw new Error(`${what} toast outlived its action by more than ${ms}ms`); });
     };
-    const toastShows = text => page.waitForFunction(text => {
+    const toastShows = (text, timeout = 2000) => page.waitForFunction(text => {
       const el = document.querySelector('[data-chat-hint]');
       return !el.hidden && el.classList.contains('is-on') && el.textContent === text;
-    }, text, { timeout: 2000 });
+    }, text, { timeout });
     const send = async text => {
       await page.locator('[data-chat-input]').fill(text);
       await page.locator('[data-chat-send]').click();
@@ -81,6 +81,32 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
     await page.waitForTimeout(1200);
     assert.equal(await toast(), 'Message deleted. /undo restores it.');
     console.log('PASS result toast survives the save it triggers');
+
+    // A cache miss stays until dismissed. A passing hint covers it, then it returns.
+    await send('Cache fixture miss');
+    await streaming();
+    await idle();
+    const miss = 'Cache miss · 51k of 52k input tokens uncached\u00d7';
+    await toastShows(miss);
+    await page.waitForTimeout(9000);
+    assert.equal(await toast(), miss, 'the miss outlasts the longest timed toast');
+    await page.evaluate(() => FuseChatActions.hint('Copied link.'));
+    await toastShows('Copied link.');
+    await toastShows(miss, 5000);
+    await page.locator('.chat-toast-close').click();
+    await toastGoneWithin(1000, 'Dismissed cache miss');
+    await page.waitForTimeout(3000);
+    assert.equal(await toast(), '', 'a dismissed miss does not come back');
+    console.log('PASS cache miss toast is sticky, returns after a passing hint, and dismisses');
+
+    // Deleting from the middle of a warm chat says the rest re-caches;
+    // trimming the tail (Undo/Retry/Edit) keeps the cached prefix and says nothing extra.
+    await page.evaluate(() => fuseToolFixture.cacheProbe({ at: Date.now() / 1000, prompt: 50000, ttl: 300, hit: true, model: 'offline' }));
+    await page.evaluate(() => document.querySelector('.is-user [aria-label="More"]').click());
+    await page.locator('.chat-pop button, [role=menuitem]').filter({ hasText: /^Delete$/ }).first().click();
+    await page.locator('dialog button, .chat-confirm button').filter({ hasText: /^Delete$/ }).first().click();
+    await toastShows('Message deleted · the rest of the chat re-caches on the next reply. /undo restores it.');
+    console.log('PASS mid-chat delete on a warm cache warns before the next reply');
 
     assert.deepEqual(errors, []);
   } finally {

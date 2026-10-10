@@ -153,6 +153,7 @@ export function createApply(ctx) {
       const listed = resolveListedModel(data.model);
       if (listed && S.modelId !== listed) { S.modelId = listed; picker.renderPickerButton(); }
     }
+    context.acceptCacheProbe(data.compaction?.cache);
     if (data.compaction && data.compaction.meter) context.acceptMeter(data.compaction.meter);
     else context.syncContextMeter();
     S.transcriptDirty = false;
@@ -275,6 +276,10 @@ export function createApply(ctx) {
     if (event.event === "activity") {
       msg._activity = { ...event };
       if (!child && S.activeRun && (!event.run_id || event.run_id === S.activeRun.id)) S.activeRun.activity = { ...event };
+      return;
+    }
+    if (event.event === "cache") {
+      if (!child && event.state === "miss") context.noteCacheMiss(event);
       return;
     }
     if (event.event === "context") {

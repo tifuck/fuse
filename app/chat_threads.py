@@ -27,6 +27,7 @@ from .chat_schema import (
     parse_thread_tools,
 )
 from .chat_titles import _clean_title
+from .chat_generation import cache_watch
 
 # Any active run keeps a thread "running", subagents included: a background
 # child can outlive the root turn that spawned it and the sidebar must keep
@@ -295,6 +296,7 @@ def _view(row, *, include_messages: bool = False, coding: bool = False, conn=Non
             "auto_ratio": state.get("auto_ratio"),
             "keep_tail": state.get("keep_tail"),
             "window_override": state.get("window_override"),
+            "cache": cache_watch.public(state.get("cache")),
             "checkpoints": [
                 {
                     "id": cp.get("id"),

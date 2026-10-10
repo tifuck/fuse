@@ -261,7 +261,7 @@ import { createBoot } from './chat/boot.js';
 
   const context = createContext({
     net,
-    picker: { holdHint: (...args) => picker.holdHint(...args), releaseHint: (...args) => picker.releaseHint(...args), setHint: (...args) => picker.setHint(...args) },
+    picker: { holdHint: (...args) => picker.holdHint(...args), pinHint: (...args) => picker.pinHint(...args), releaseHint: (...args) => picker.releaseHint(...args), setHint: (...args) => picker.setHint(...args) },
     sync: { acceptThread: (...args) => sync.acceptThread(...args), showFailure: (...args) => sync.showFailure(...args) },
     traces,
     ui,
@@ -922,6 +922,7 @@ import { createBoot } from './chat/boot.js';
     S.draftFiles.set(S.currentId, S.pendingAttachments);
     S.stoppingRunId = "";
     S.activeRun = null;
+    S.cacheProbe = null;
     sync.setRunning();
     S.permCards.clear();
     perms.renderPermQueue();
