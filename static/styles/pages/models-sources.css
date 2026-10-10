@@ -267,3 +267,52 @@
 /* "Add a … account" under an empty pool: one quiet line, not a box. */
 .sources-page section > .panel:has(> .empty:only-child) { padding: 0.55rem 0.85rem; background: transparent; border-style: dashed; }
 .sources-page section > .panel > .empty:only-child { font-size: 0.76rem; }
+
+/* —— Models ——
+   Tabs carry the counts, a finder filters every family, each family folds,
+   and long families show twelve ids until asked for the rest. */
+.catalog-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.9rem; }
+.catalog-toolbar .usage-tabs { margin: 0; }
+.catalog-toolbar .usage-tabs button span { margin-left: 0.3rem; opacity: 0.7; font-size: 0.7rem; }
+.catalog-find {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.45rem;
+  flex: 0 1 20rem;
+  height: 1.9rem;
+  padding: 0 0.6rem;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--mute);
+}
+.catalog-find:focus-within { border-color: var(--brass); color: var(--mist); }
+html[data-chat-console="true"] body.is-settings .settings-shell .catalog-find input[type="search"] { flex: 1 1 auto; min-width: 0; min-height: 0; height: 100%; padding: 0; border: 0; background-color: transparent; }
+.catalog-sum { margin-left: auto; color: var(--mute); font-size: 0.72rem; }
+.catalog-none { margin: 0; color: var(--mute); font-size: 0.8rem; }
+details.catalog-family > summary { display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; cursor: pointer; list-style: none; }
+details.catalog-family > summary::-webkit-details-marker { display: none; }
+details.catalog-family > summary h2 { display: flex; align-items: center; gap: 0.45rem; margin: 0; }
+details.catalog-family > summary::after { content: "−"; color: var(--mute); font: 0.9rem/1 var(--mono); }
+details.catalog-family:not([open]) > summary::after { content: "+"; }
+details.catalog-family:not([open]) > summary { margin-bottom: 0; }
+details.catalog-family[hidden] { display: none !important; }
+.catalog-count { margin-left: auto; color: var(--mute); font: 0.72rem/1 var(--mono); }
+.catalog-more {
+  width: 100%;
+  margin-top: 0.4rem;
+  padding: 0.45rem 0;
+  border: 1px dashed var(--line);
+  background: none;
+  color: var(--mute);
+  font: 0.74rem/1 var(--mono);
+  cursor: pointer;
+}
+.catalog-more:hover { color: var(--brass); border-color: color-mix(in srgb, var(--brass) 50%, var(--line)); }
+.catalog-more[hidden] { display: none; }
+@media (max-width: 720px) {
+  .catalog-find { flex: 1 1 100%; order: 2; }
+  .catalog-find input { font-size: 16px; }
+  .catalog-sum { order: 3; margin-left: 0; }
+  html[data-chat-console="true"] body.is-settings .settings-shell .catalog-family .section-heading { flex-direction: row; align-items: center; }
+}

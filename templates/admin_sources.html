@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Providers · Fuse{% endblock %}
 {% block page_title %}Providers{% endblock %}
-{% block page_lead %}<p>Site-wide model backends that every account can use. Subscriptions users link themselves are on <a href="/sources">Sources</a>; who may share them is on <a href="/admin/pools">Pools</a>.</p>{% endblock %}
+{% block page_lead %}<p>Site-wide backends every account can use. User-linked plans are on <a href="/admin/pools">Pools</a>.</p>{% endblock %}
 {% block body %}
 {% if error %}<p class="callout fault" role="alert">{{ error }}</p>{% endif %}
 {% if notice %}<p class="callout ok">{{ notice }}</p>{% endif %}
