@@ -13,10 +13,10 @@
         <select data-usage-provider aria-label="Provider"><option value="">All providers</option></select>
       </label>
       {% if user['is_admin'] %}
-      <div class="uz-seg" role="group" aria-label="Scope" data-usage-scope>
-        <button type="button" class="on" data-scope="account" aria-pressed="true">Mine</button>
-        <button type="button" data-scope="all" aria-pressed="false">All users</button>
-      </div>
+      <label class="uz-select">
+        <span class="visually-hidden">User</span>
+        <select data-usage-user aria-label="User"><option value="account">Mine</option><option value="all">All users</option></select>
+      </label>
       {% endif %}
       <div class="uz-seg uz-range" role="group" aria-label="Time range" data-usage-range>
         <button type="button" data-range="30m" aria-pressed="false">30m</button>
@@ -177,4 +177,4 @@
   </section>
 </div>
 {% endblock %}
-{% block scripts %}<script src="/static/usage.js?v=11"></script>{% endblock %}
+{% block scripts %}<script src="/static/usage.js?v=12"></script>{% endblock %}

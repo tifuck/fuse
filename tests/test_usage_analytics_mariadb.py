@@ -116,3 +116,20 @@ def test_events_without_a_user_row_stay_in_series_and_summary():
         assert everyone["summary"]["requests"] == 1
         assert everyone["users"][0]["requests"] == 1
         assert everyone["users"][0]["email"] == "user 1"
+
+
+def test_subject_filter_counts_only_that_user():
+    with isolated_database():
+        _seed()
+        ts = db.now()
+        db.execute("INSERT INTO users(id,email,password_hash,created_at) VALUES(2,'other@test.invalid','unused',?)", (ts,))
+        _event(_ago(hours=1))
+        db.execute("UPDATE usage_events SET user_id=2")
+        _event(_ago(hours=1), model="mine", provider="zai")
+        mine = stats.usage_analytics(1, range_id="24h")
+        other = stats.usage_analytics(1, range_id="24h", subject_id=2, include_accounts=True)
+        assert [m["name"] for m in mine["models"]] == ["mine"]
+        assert [m["name"] for m in other["models"]] == ["glm-5.3"]
+        assert other["summary"]["requests"] == 1
+        assert {row["email"] for row in other["account_options"]} == {"usage@test.invalid", "other@test.invalid"}
+        assert other["users"] == []

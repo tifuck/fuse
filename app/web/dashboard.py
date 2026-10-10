@@ -101,13 +101,25 @@ async def usage_json(request: Request):
         return JSONResponse({"error": "auth"}, status_code=401)
     range_id = request.query_params.get("range", "24h")
     provider = request.query_params.get("provider", "").strip()[:32]
-    all_users = bool(user["is_admin"] and request.query_params.get("scope") == "all")
+    scope = request.query_params.get("scope", "")
+    all_users = bool(user["is_admin"] and scope == "all")
+    subject_id = None
+    if user["is_admin"] and scope.startswith("user:"):
+        try:
+            subject_id = int(scope[5:])
+        except ValueError:
+            subject_id = None
+        else:
+            if subject_id < 1 or db.fetchone("SELECT id FROM users WHERE id=?", (subject_id,)) is None:
+                return JSONResponse({"error": "user"}, status_code=404)
     return JSONResponse(
         stats.usage_analytics(
             user["id"],
             range_id=range_id,
             provider=provider,
             all_users=all_users,
+            subject_id=subject_id,
+            include_accounts=bool(user["is_admin"]),
         ),
         headers={"Cache-Control": "no-store"},
     )

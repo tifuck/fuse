@@ -119,7 +119,7 @@ function payload(range, { empty = false, huge = false, slow = false } = {}) {
     assert.match(await page.locator('[data-providers]').innerText(), /No provider usage/, 'empty providers says so');
     assert.match(await page.locator('[data-reliability]').innerText(), /No requests in this range/, 'empty reliability says so');
     assert.doesNotMatch(await page.locator('[data-usage-dashboard]').innerText(), /Loading/, 'nothing still says Loading');
-    assert.equal(await page.locator('[data-usage-scope]').count(), 0, 'a non-admin never sees the all-users scope');
+    assert.equal(await page.locator('[data-usage-user]').count(), 0, 'a non-admin never sees the user filter');
 
     // A slow range keeps the busy flag until the response, then replaces it.
     const slow = page.locator('[data-range="6h"]').click();

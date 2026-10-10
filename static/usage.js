@@ -19,7 +19,10 @@
   const params = new URLSearchParams(location.search);
   if (RANGES.includes(params.get("range"))) state.range = params.get("range");
   if (params.get("provider")) state.provider = params.get("provider").slice(0, 32);
-  if (params.get("scope") === "all" && root.dataset.admin === "1") state.scope = "all";
+  if (root.dataset.admin === "1") {
+    const scope = params.get("scope") || "";
+    if (scope === "all" || /^user:\d+$/.test(scope)) state.scope = scope;
+  }
 
   const RECENT_PREVIEW = 10;
   let recentAll = false;
@@ -100,14 +103,15 @@
   }
   function syncControls() {
     syncPressed($("[data-usage-range]"), "data-range", state.range);
-    syncPressed($("[data-usage-scope]"), "data-scope", state.scope);
     syncPressed($("[data-chart-mode]"), "data-mode", state.mode);
+    const userSel = $("[data-usage-user]");
+    if (userSel && [...userSel.options].some((o) => o.value === state.scope)) userSel.value = state.scope;
   }
   function syncUrl() {
     const q = new URLSearchParams(location.search);
     state.range === "24h" ? q.delete("range") : q.set("range", state.range);
     state.provider ? q.set("provider", state.provider) : q.delete("provider");
-    state.scope === "all" ? q.set("scope", "all") : q.delete("scope");
+    state.scope === "account" ? q.delete("scope") : q.set("scope", state.scope);
     const next = location.pathname + (q.toString() ? "?" + q : "") + location.hash;
     history.replaceState(null, "", next);
   }
@@ -118,10 +122,9 @@
     state.range = b.dataset.range;
     load();
   });
-  $("[data-usage-scope]")?.addEventListener("click", (e) => {
-    const b = e.target.closest("[data-scope]");
-    if (!b || b.dataset.scope === state.scope) return;
-    state.scope = b.dataset.scope;
+  $("[data-usage-user]")?.addEventListener("change", (e) => {
+    if (e.target.value === state.scope) return;
+    state.scope = e.target.value;
     load();
   });
   $("[data-usage-provider]")?.addEventListener("change", (e) => {
@@ -153,7 +156,8 @@
     const el = $("[data-usage-caption]");
     if (!el) return;
     const provider = state.provider ? (data.provider_options || []).find((p) => p.id === state.provider)?.name || state.provider : "";
-    const who = data.scope === "all" ? "all accounts" : "your account";
+    const picked = (data.account_options || []).find((u) => "user:" + u.id === state.scope);
+    const who = data.scope === "all" ? "all accounts" : picked ? picked.email : "your account";
     el.innerHTML = `<b>${esc(RANGE_TEXT[data.range.id] || "")}</b> · ${esc(who)}${provider ? " · " + esc(provider) : ""} · compared with the previous ${esc((RANGE_TEXT[data.range.id] || "").replace("Last ", ""))}`;
   }
   function renderProviderOptions() {
@@ -163,6 +167,17 @@
       '<option value="">All providers</option>' +
       (data.provider_options || []).map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("");
     sel.value = state.provider;
+  }
+  function renderUserOptions() {
+    const sel = $("[data-usage-user]");
+    if (!sel) return;
+    const options = data.account_options || [];
+    const known = options.some((u) => "user:" + u.id === state.scope);
+    sel.innerHTML =
+      '<option value="account">Mine</option><option value="all">All users</option>' +
+      (known ? "" : state.scope.startsWith("user:") ? `<option value="${esc(state.scope)}">User ${esc(state.scope.slice(5))}</option>` : "") +
+      options.map((u) => `<option value="user:${u.id}">${esc(u.email)}</option>`).join("");
+    sel.value = state.scope;
   }
 
   /* —— KPIs —— */
@@ -690,6 +705,7 @@
     data.series_models.forEach((s) => modelColor(s.id));
     renderCaption();
     renderProviderOptions();
+    renderUserOptions();
     renderKpis();
     plot.render(true);
     renderAnatomy();
@@ -718,7 +734,7 @@
     const own = controller = new AbortController();
     const q = new URLSearchParams({ range: state.range });
     if (state.provider) q.set("provider", state.provider);
-    if (state.scope === "all") q.set("scope", "all");
+    if (state.scope !== "account") q.set("scope", state.scope);
     const plotEl = $("[data-plot]");
     plotEl.setAttribute("aria-busy", "true");
     try {

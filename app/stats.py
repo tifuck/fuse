@@ -296,20 +296,24 @@ def _change(current, previous) -> float | None:
     return round(((cur - prev) * 100) / prev, 1)
 
 
-def _window_filters(user_id: int, start: str, end: str, provider: str, all_users: bool) -> tuple[str, list]:
+def _window_filters(
+    user_id: int, start: str, end: str, provider: str, all_users: bool, *, subject_id: int | None = None
+) -> tuple[str, list]:
     clauses = ["e.created_at>=?", "e.created_at<?"]
     args: list = [start, end]
     if not all_users:
         clauses.append("e.user_id=?")
-        args.append(user_id)
+        args.append(subject_id if subject_id is not None else user_id)
     if provider:
         clauses.append("COALESCE(NULLIF(e.source_type, ''), s.type, 'unknown')=?")
         args.append(provider)
     return " AND ".join(clauses), args
 
 
-def _event_summary(user_id: int, start: str, end: str, provider: str, all_users: bool) -> dict:
-    where, args = _window_filters(user_id, start, end, provider, all_users)
+def _event_summary(
+    user_id: int, start: str, end: str, provider: str, all_users: bool, *, subject_id: int | None = None
+) -> dict:
+    where, args = _window_filters(user_id, start, end, provider, all_users, subject_id=subject_id)
     row = db.fetchone(
         f"""SELECT COALESCE(SUM(CASE WHEN e.total_tokens>0 THEN e.total_tokens
                                       ELSE e.prompt_tokens+e.output_tokens END), 0) AS tokens,
@@ -438,6 +442,8 @@ def usage_analytics(
     range_id: str = "24h",
     provider: str = "",
     all_users: bool = False,
+    subject_id: int | None = None,
+    include_accounts: bool = False,
 ) -> dict:
     range_id = range_id if range_id in _RANGES else "24h"
     duration, bucket_seconds, bucket_label = _RANGES[range_id]
@@ -448,7 +454,7 @@ def usage_analytics(
     start = start_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     end = end_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     prev_start = previous_start.strftime("%Y-%m-%dT%H:%M:%SZ")
-    where, args = _window_filters(user_id, start, end, provider, all_users)
+    where, args = _window_filters(user_id, start, end, provider, all_users, subject_id=subject_id)
     # users is a LEFT JOIN: usage_events can outlive their user row, and
     # _event_summary counts those rows, so the series and tables must not
     # drop them (an INNER JOIN made the charts disagree with the summary).
@@ -467,9 +473,9 @@ def usage_analytics(
         (bucket_seconds, bucket_seconds, *args),
     )
 
-    summary = _event_summary(user_id, start, end, provider, all_users)
-    previous = _event_summary(user_id, prev_start, start, provider, all_users)
-    prev_where, prev_args = _window_filters(user_id, prev_start, start, provider, all_users)
+    summary = _event_summary(user_id, start, end, provider, all_users, subject_id=subject_id)
+    previous = _event_summary(user_id, prev_start, start, provider, all_users, subject_id=subject_id)
+    prev_where, prev_args = _window_filters(user_id, prev_start, start, provider, all_users, subject_id=subject_id)
     prev_model_rows = db.fetchall(
         f"""SELECT COALESCE(NULLIF(e.source_type, ''), s.type, 'unknown') AS provider,
                    COALESCE(NULLIF(e.model, ''), 'Unknown') AS model,
@@ -582,6 +588,11 @@ def usage_analytics(
 
     providers = sorted(provider_totals.values(), key=lambda item: item["tokens"], reverse=True)
     users = sorted(user_totals.values(), key=lambda item: item["tokens"], reverse=True) if all_users else []
+    account_options = (
+        [{"id": int(row["id"]), "email": row["email"] or f"user {int(row['id'])}"} for row in db.fetchall("SELECT id, email FROM users ORDER BY email")]
+        if include_accounts
+        else []
+    )
     prev_provider_tokens: dict[str, int] = {}
     for key, tokens in prev_model_tokens.items():
         pid = key.split("\x1f", 1)[0]
@@ -684,7 +695,7 @@ def usage_analytics(
     # range is shorter, so the heatmap window is never under seven days.
     heat_start_dt = min(start_dt, end_dt - _HEATMAP_MIN)
     heat_where, heat_args = _window_filters(
-        user_id, heat_start_dt.strftime("%Y-%m-%dT%H:%M:%SZ"), end, provider, all_users
+        user_id, heat_start_dt.strftime("%Y-%m-%dT%H:%M:%SZ"), end, provider, all_users, subject_id=subject_id,
     )
     activity = [
         [int(row["hour"]), int(row["tokens"] or 0), int(row["requests"] or 0)]
@@ -715,6 +726,7 @@ def usage_analytics(
     return {
         "range": {"id": range_id, "from": start, "to": end, "bucket": bucket_label, "bucket_seconds": bucket_seconds},
         "scope": "all" if all_users else "account",
+        "subject_id": subject_id,
         "provider": provider,
         "provider_options": [
             {"id": row["provider"], "name": PROVIDER_LABELS.get(row["provider"], row["provider"])}
@@ -765,6 +777,7 @@ def usage_analytics(
         "activity": activity,
         "activity_days": max(duration, _HEATMAP_MIN).days,
         "users": users[:20],
+        "account_options": account_options,
     }
 
 
