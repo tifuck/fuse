@@ -145,6 +145,22 @@ class SpecialTokenAndXmlTest(unittest.TestCase):
         self.assertEqual(calls[0]["function"]["name"], "web_search")
         self.assertEqual(json.loads(calls[0]["function"]["arguments"])["query"], "brent oil")
 
+    def test_quoted_tool_call_examples_never_execute(self):
+        example = '<tool_call>{"name": "run_terminal_command", "arguments": {"command": "rm -rf build"}}</tool_call>'
+        for raw in (
+            f"Models emit calls like this:\n```xml\n{example}\n```\nThat is the format.",
+            f"Inline: `{example}` is the format.",
+            f"Unclosed fence:\n```\n{example}",
+        ):
+            text, calls = extract_text_tool_calls(raw, coding=True)
+            self.assertEqual(calls, [], raw)
+            self.assertEqual(text, raw.strip())
+        # A real call after a quoted example still runs.
+        raw = f"Example:\n```\n{example}\n```\n" + '<tool_call>{"name": "web_search", "arguments": {"query": "x"}}</tool_call>'
+        text, calls = extract_text_tool_calls(raw, coding=False)
+        self.assertEqual([c["function"]["name"] for c in calls], ["web_search"])
+        self.assertIn("rm -rf build", text)
+
     def test_finalize_promotes_xml_to_tool_calls(self):
         content, reasoning, calls, finish = _finalize_assistant_payload(
             "Setting `_starting` before `vc.stop()`. <|eos|>\n"

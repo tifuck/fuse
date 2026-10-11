@@ -167,8 +167,32 @@ def _calls_from_xml_body(body: str, *, coding: bool, start: int = 0) -> list[dic
     return calls
 
 
+# Markdown code (fenced blocks, inline spans) is quoted text: a tool call shown
+# as an example there must never execute.
+_MD_CODE = re.compile(r"(```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)|`[^`\n]+`)")
+
+
 def extract_text_tool_calls(content: str, *, coding: bool = False) -> tuple[str, list[dict]]:
     """Parse Qwen/Hermes/GLM XML or JSON tool dumps out of assistant content."""
+    if not content:
+        return content, []
+    lowered = content.lower()
+    if "<tool" not in lowered and "<function" not in lowered and "<invoke" not in lowered:
+        return content, []
+    parts = _MD_CODE.split(content)
+    if len(parts) == 1:
+        return _extract_plain_tool_calls(content, coding=coding)
+    calls: list[dict] = []
+    out = []
+    for i, part in enumerate(parts):
+        if i % 2 == 0 and part:
+            part, found = _extract_plain_tool_calls(part, coding=coding, start=len(calls), strip=False)
+            calls.extend(found)
+        out.append(part)
+    return "".join(out).strip(), calls
+
+
+def _extract_plain_tool_calls(content: str, *, coding: bool, start: int = 0, strip: bool = True) -> tuple[str, list[dict]]:
     if not content:
         return content, []
     lowered = content.lower()
@@ -178,12 +202,12 @@ def extract_text_tool_calls(content: str, *, coding: bool = False) -> tuple[str,
     cleaned = content
 
     def _replace(match: re.Match) -> str:
-        extracted = _calls_from_xml_body(match.group(0), coding=coding, start=len(calls))
+        extracted = _calls_from_xml_body(match.group(0), coding=coding, start=start + len(calls))
         if not extracted:
             # Inner body without the outer tags, in case the regex included them.
             inner = match.group(0)
             inner = re.sub(r"^</?tool_calls?\b[^>]*>|</tool_calls?>$", "", inner, flags=re.I | re.S)
-            extracted = _calls_from_xml_body(inner, coding=coding, start=len(calls))
+            extracted = _calls_from_xml_body(inner, coding=coding, start=start + len(calls))
         if extracted:
             calls.extend(extracted)
             return ""
@@ -193,17 +217,17 @@ def extract_text_tool_calls(content: str, *, coding: bool = False) -> tuple[str,
     if not calls:
         opener = _TOOL_XML_OPEN.search(cleaned)
         if opener:
-            extracted = _calls_from_xml_body(cleaned[opener.end() :], coding=coding)
+            extracted = _calls_from_xml_body(cleaned[opener.end() :], coding=coding, start=start)
             if extracted:
                 calls.extend(extracted)
                 cleaned = cleaned[: opener.start()]
     if not calls:
-        extracted = _calls_from_xml_body(cleaned, coding=coding)
+        extracted = _calls_from_xml_body(cleaned, coding=coding, start=start)
         if extracted:
             calls.extend(extracted)
             cleaned = _FUNCTION_XML.sub("", cleaned)
             cleaned = _INVOKE_XML.sub("", cleaned)
-    return cleaned.strip(), calls
+    return (cleaned.strip() if strip else cleaned), calls
 
 
 def _finalize_assistant_payload(content, reasoning, calls, finish, *, coding: bool = False):
