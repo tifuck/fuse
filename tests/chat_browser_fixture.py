@@ -292,7 +292,10 @@ async def sidebar_runs(thread_id: str):
 
 @app.get("/")
 async def login(request: Request):
-    request.session.update(uid=1, csrf="browser-test-csrf")
+    from app import accounts
+
+    # Stamped like a real login: unstamped sessions are refused.
+    request.session.update(uid=1, ph=accounts.password_fingerprint(accounts.get_user(1)), csrf="browser-test-csrf")
     return RedirectResponse("/chat")
 
 
