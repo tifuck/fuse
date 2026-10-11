@@ -109,19 +109,17 @@ class StaleModelCacheTest(unittest.IsolatedAsyncioTestCase):
         sources_mod._model_cache.pop(key, None)
         sources_mod._cache.pop(99, None)
 
-    async def test_llama_miss_returns_configured_model(self):
+    async def test_llama_miss_fetches_live_catalog(self):
         from types import SimpleNamespace
 
         src = SimpleNamespace(type_id="llama", name="Local", source_id=97, cfg={"model": "qwen3"})
         sources_mod._model_cache.pop((97, None), None)
-        with (
-            patch.object(sources_mod, "_refresh_source_models", new=AsyncMock()) as refresh,
-            patch.object(sources_mod, "_schedule_model_refresh") as schedule,
-        ):
+        refresh = AsyncMock(return_value=["rotated-model"])
+        with patch.object(sources_mod, "_refresh_source_models", new=refresh):
             names = await sources_mod._source_models(src, None)
-        self.assertEqual(names, ["qwen3"])
-        schedule.assert_called_once()
-        refresh.assert_not_awaited()
+        self.assertEqual(names, ["rotated-model"])
+        refresh.assert_awaited_once()
+        self.assertNotIn((97, None), sources_mod._model_cache)
 
     async def test_fresh_hit_does_not_refresh(self):
         from types import SimpleNamespace

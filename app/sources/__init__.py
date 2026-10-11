@@ -233,14 +233,10 @@ async def _await_first_fetch(s: Source, user_id: int | None) -> None:
 
 
 def _fallback_models(s: Source) -> list[str]:
-    seeded = _SEEDED_MODELS.get(s.type_id)
-    if seeded:
-        return list(seeded)
-    cfg = getattr(s, "cfg", None) or {}
-    named = str(cfg.get("model") or "").strip()
-    if named and named not in ("local", "llama"):
-        return [named]
-    return []
+    """Pool seeds only. A configured llama/openai name is a placeholder for a
+    down server, not a catalog: storing it would pin the picker to that name
+    after the server is swapped to a different model."""
+    return list(_SEEDED_MODELS.get(s.type_id) or [])
 
 
 async def _source_models(s: Source, user_id: int | None) -> list[str]:
