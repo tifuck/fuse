@@ -62,6 +62,13 @@ int main(void) {
     assert(strcmp(out, "saved") == 0);
     for (int i = 0; i < MAX_JOBS; i++) assert(g_jobs[i].id[0] == 0);
     cJSON_Delete(msg);
+    /* Intake refuses a live duplicate id instead of sharing its slot. */
+    assert(job_admit("dupjob") == 1);
+    assert(job_admit("dupjob") == 0);
+    struct job *dup = job_reserve("dupjob");
+    memset(dup, 0, sizeof(*dup));
+    assert(job_admit("dupjob") == 1);
+    memset(job_reserve("dupjob"), 0, sizeof(struct job));
     /* replace op: LF-only old_string against a CRLF file is converted, not failed. */
     cJSON *rep = cJSON_CreateObject();
     cJSON_AddStringToObject(rep, "id", "repl1");

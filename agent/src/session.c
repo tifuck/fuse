@@ -298,7 +298,13 @@ int session_loop(void) {
                 json_str(o, "id", jid, sizeof(jid));
                 /* job_reserve rejects oversized ids; a truncated jid here
                  * would reserve under a different key than the wire id. */
-                if (jid[0] && strlen(json_cstr(o, "id", "")) < sizeof(jid)) job_reserve(jid);
+                if (jid[0] && strlen(json_cstr(o, "id", "")) < sizeof(jid) && !job_admit(jid)) {
+                    /* Duplicate live id (or no free slot): never share a
+                     * slot with the job already running under it. */
+                    send_res(&t, jid, 0, 1, "", "", "agent is busy");
+                    cJSON_Delete(o);
+                    continue;
+                }
                 enqueue_job(&t, o); /* ownership moves to the worker */
                 o = NULL;
             } else if (strcmp(tt, "cancel") == 0) {

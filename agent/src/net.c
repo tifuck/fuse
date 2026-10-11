@@ -184,9 +184,15 @@ int tls_connect(struct tls *t, const struct url *u) {
     SSL_CTX_set_default_verify_paths(ctx);
     SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
     SSL *ssl = SSL_new(ctx);
-    SSL_set_fd(ssl, fd);
-    SSL_set_tlsext_host_name(ssl, u->host);
-    SSL_set1_host(ssl, u->host);
+    /* SSL_set1_host failing would leave the peer's hostname unchecked:
+     * refuse the connection rather than accept any trusted certificate. */
+    if (!ssl || SSL_set_fd(ssl, fd) != 1 || SSL_set_tlsext_host_name(ssl, u->host) != 1 ||
+        SSL_set1_host(ssl, u->host) != 1) {
+        if (ssl) SSL_free(ssl);
+        SSL_CTX_free(ctx);
+        close(fd);
+        return -1;
+    }
     int64_t deadline = now_mono_ms() + CONNECT_TIMEOUT_MS;
     for (;;) {
         int rc = SSL_connect(ssl);

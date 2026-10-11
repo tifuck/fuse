@@ -51,6 +51,28 @@ struct job *job_reserve(const char *id) {
     return NULL;
 }
 
+/* Intake: reserve a fresh slot, refusing an id that is already live. Two jobs
+ * sharing a slot would let either one's finish clear the other's pid, so
+ * cancel would lose the running process. */
+int job_admit(const char *id) {
+    if (!id || !id[0] || strlen(id) >= sizeof(g_jobs[0].id)) return 0;
+    pthread_mutex_lock(&g_job_mu);
+    int free_slot = -1;
+    for (int i = 0; i < MAX_JOBS; i++) {
+        if (g_jobs[i].id[0] && strcmp(g_jobs[i].id, id) == 0) {
+            pthread_mutex_unlock(&g_job_mu);
+            return 0;
+        }
+        if (free_slot < 0 && !g_jobs[i].id[0]) free_slot = i;
+    }
+    if (free_slot >= 0) {
+        memset(&g_jobs[free_slot], 0, sizeof(g_jobs[free_slot]));
+        strcpy(g_jobs[free_slot].id, id); /* length checked above */
+    }
+    pthread_mutex_unlock(&g_job_mu);
+    return free_slot >= 0;
+}
+
 static void job_clear(struct job *j) {
     if (!j) return;
     pthread_mutex_lock(&g_job_mu);

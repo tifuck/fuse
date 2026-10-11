@@ -23,6 +23,7 @@ extern int g_qcount;
 struct tls;
 
 struct job *job_reserve(const char *id);
+int job_admit(const char *id);
 int job_cancelled(struct job *j);
 void enqueue_job(struct tls *t, cJSON *owned);
 void handle_job(struct tls *t, cJSON *msg);

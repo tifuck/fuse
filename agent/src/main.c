@@ -141,11 +141,17 @@ static int install_service(void) {
     } else {
         const char *home = getenv("HOME");
         if (!home) die("HOME is not set");
+        /* A fresh account may have neither ~/.local nor ~/.config yet. */
+        char parent[PATH_MAX];
+        if (snprintf(parent, sizeof(parent), "%s/.local", home) >= (int)sizeof(parent)) die("path too long");
+        if (mkdir(parent, 0755) != 0 && errno != EEXIST) die("could not create %s", parent);
         if (snprintf(bindir, sizeof(bindir), "%s/.local/bin", home) >= (int)sizeof(bindir)) die("path too long");
-        mkdir(bindir, 0755);
+        if (mkdir(bindir, 0755) != 0 && errno != EEXIST) die("could not create %s", bindir);
+        if (snprintf(parent, sizeof(parent), "%s/.config", home) >= (int)sizeof(parent)) die("path too long");
+        if (mkdir(parent, 0700) != 0 && errno != EEXIST) die("could not create %s", parent);
         char cfgdir[PATH_MAX];
         if (snprintf(cfgdir, sizeof(cfgdir), "%s/.config/fuse-agent", home) >= (int)sizeof(cfgdir)) die("path too long");
-        mkdir(cfgdir, 0700);
+        if (mkdir(cfgdir, 0700) != 0 && errno != EEXIST) die("could not create %s", cfgdir);
         if (snprintf(bin, sizeof(bin), "%s/fuse-agent", bindir) >= (int)sizeof(bin)) die("path too long");
     }
     if (copy_self(bin) != 0) die("could not install binary to %s", bin);
@@ -160,12 +166,14 @@ static int install_service(void) {
     if (root) {
         snprintf(cmd, sizeof(cmd), "systemctl daemon-reload && systemctl enable --now fuse-agent");
     } else {
-        snprintf(cmd, sizeof(cmd),
-                 "systemctl --user daemon-reload && systemctl --user enable --now fuse-agent; "
-                 "command -v loginctl >/dev/null && loginctl enable-linger \"$(id -un)\" >/dev/null 2>&1 || true");
+        snprintf(cmd, sizeof(cmd), "systemctl --user daemon-reload && systemctl --user enable --now fuse-agent");
     }
     int st = system(cmd);
     if (st != 0) die("systemd enable failed (is systemd running?)");
+    /* Linger is optional (boot start without a login); its failure must not
+     * mask whether the service itself started. */
+    if (!root)
+        (void)!system("command -v loginctl >/dev/null && loginctl enable-linger \"$(id -un)\" >/dev/null 2>&1");
     fprintf(stderr, "fuse-agent: installed and started (%s)\n", root ? "system" : "user");
     return 0;
 }

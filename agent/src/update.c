@@ -48,8 +48,12 @@ static int http_get_file(const char *base, const char *path, int fd, size_t max_
         tls_close(&t);
         return -1;
     }
-    FILE *f = fdopen(fd, "wb");
+    /* Write through a dup so the caller always keeps sole ownership of fd and
+     * closes it exactly once, on success and failure alike. */
+    int wfd = dup(fd);
+    FILE *f = wfd >= 0 ? fdopen(wfd, "wb") : NULL;
     if (!f) {
+        if (wfd >= 0) close(wfd);
         tls_close(&t);
         return -1;
     }
@@ -205,12 +209,12 @@ int maybe_update(int allow_exec) {
     snprintf(tmp, sizeof(tmp), "/tmp/fuse-manifest.XXXXXX");
     int mfd = mkstemp(tmp);
     if (mfd < 0) goto out;
-    if (http_get_file(g_url, "/agent/v1/manifest", mfd, 300000) != 0) {
-        close(mfd);
-        goto out;
-    }
-    /* http_get_file's fdopen consumed mfd; /tmp is sticky and the file is
-     * ours 0600, so reopening by name cannot be swapped by another user. */
+    int fetched = http_get_file(g_url, "/agent/v1/manifest", mfd, 300000);
+    close(mfd);
+    mfd = -1;
+    if (fetched != 0) goto out;
+    /* /tmp is sticky and the file is ours 0600, so reopening by name cannot
+     * be swapped by another user. */
     mfd = open(tmp, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     if (mfd < 0) goto out;
     struct stat st;
@@ -249,8 +253,9 @@ int maybe_update(int allow_exec) {
     if (format_update_staging(neu, sizeof(neu), self) != 0) goto out;
     int sfd = mkstemp(neu);
     if (sfd < 0) goto out;
-    if (http_get_file(g_url, path, sfd, 128 * 1024 * 1024) != 0) {
-        close(sfd);
+    int got_bin = http_get_file(g_url, path, sfd, 128 * 1024 * 1024);
+    close(sfd);
+    if (got_bin != 0) {
         unlink(neu);
         goto out;
     }
