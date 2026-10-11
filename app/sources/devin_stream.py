@@ -40,10 +40,14 @@ def _merge_usage_frame(acc: dict, frame: dict) -> dict:
 def _openai_usage(u: dict | None) -> dict:
     if not u:
         return {}
-    prompt = int(u.get("prompt_tokens") or 0)
     completion = int(u.get("completion_tokens") or 0)
     cached = int(u.get("cached_tokens") or 0)
     write = int(u.get("cache_write_tokens") or 0)
+    # Devin counts input the Anthropic way: usage field 2 is only the uncached
+    # tail, with cache reads (5) and writes (4) on top (live swe-2: 91 + 15,616
+    # read on a 15.7K prompt). usage_from_obj expects OpenAI's inclusive total
+    # and clips cached to it, which recorded that request as 91 of 91.
+    prompt = int(u.get("prompt_tokens") or 0) + cached + write
     obj = {
         "usage": {
             "prompt_tokens": prompt,

@@ -925,7 +925,10 @@ class StreamUsageDetailsTest(unittest.IsolatedAsyncioTestCase):
         async for chunk in devin_stream._stream_sse(_FrameResp(frames), client, collected, "swe-2", "uid-1"):
             chunks.append(chunk.decode())
         joined = "".join(chunks)
+        # Field 2 (10) is the uncached tail; reads (4) and writes (6) add to it.
+        self.assertIn('"prompt_tokens":20', joined)
         self.assertIn('"prompt_tokens_details":{"cached_tokens":4,"cache_write_tokens":6}', joined)
+        self.assertEqual(collected["prompt_tokens"], 20)
         self.assertEqual(collected["cached_tokens"], 4)
         self.assertEqual(collected["cache_write_tokens"], 6)
 
