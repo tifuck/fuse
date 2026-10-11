@@ -805,26 +805,29 @@ async def _fire(schedule: dict, fire: dict, *, consume_slot: bool) -> None:
                     consume=schedule["recur_kind"] != "once",
                 )
                 return
-        n_sched = int(db.fetchone(
-            """SELECT COUNT(*) AS n FROM chat_runs r
-               WHERE r.user_id=? AND r.status IN ('queued','running') AND r.parent_run_id IS NULL
-                 AND instr(r.request, '"scheduled":true') > 0""",
-            (user_id,),
-        )["n"])
-        n_user = int(db.fetchone(
-            """SELECT COUNT(*) AS n FROM chat_runs WHERE user_id=? AND status IN ('queued','running')
-               AND parent_run_id IS NULL""",
-            (user_id,),
-        )["n"])
-        n_global = int(db.fetchone(
-            """SELECT COUNT(*) AS n FROM chat_runs WHERE status IN ('queued','running') AND parent_run_id IS NULL"""
-        )["n"])
-        n_sched_global = int(db.fetchone(
-            """SELECT COUNT(*) AS n FROM chat_runs r
-               WHERE r.status IN ('queued','running') AND r.parent_run_id IS NULL
-                 AND instr(r.request, '"scheduled":true') > 0"""
-        )["n"])
-        if n_sched >= MAX_CONCURRENT_USER or n_sched_global >= MAX_CONCURRENT_GLOBAL or n_user >= 4 or n_global >= 32:
+        def over_capacity() -> bool:
+            n_sched = int(db.fetchone(
+                """SELECT COUNT(*) AS n FROM chat_runs r
+                   WHERE r.user_id=? AND r.status IN ('queued','running') AND r.parent_run_id IS NULL
+                     AND instr(r.request, '"scheduled":true') > 0""",
+                (user_id,),
+            )["n"])
+            n_user = int(db.fetchone(
+                """SELECT COUNT(*) AS n FROM chat_runs WHERE user_id=? AND status IN ('queued','running')
+                   AND parent_run_id IS NULL""",
+                (user_id,),
+            )["n"])
+            n_global = int(db.fetchone(
+                """SELECT COUNT(*) AS n FROM chat_runs WHERE status IN ('queued','running') AND parent_run_id IS NULL"""
+            )["n"])
+            n_sched_global = int(db.fetchone(
+                """SELECT COUNT(*) AS n FROM chat_runs r
+                   WHERE r.status IN ('queued','running') AND r.parent_run_id IS NULL
+                     AND instr(r.request, '"scheduled":true') > 0"""
+            )["n"])
+            return n_sched >= MAX_CONCURRENT_USER or n_sched_global >= MAX_CONCURRENT_GLOBAL or n_user >= 4 or n_global >= 32
+
+        if over_capacity():
             status = "skipped_capacity"
             _finish_fire(schedule, fire, status, "capacity", None, None, consume=False)
             return
@@ -848,6 +851,12 @@ async def _fire(schedule: dict, fire: dict, *, consume_slot: bool) -> None:
         # this fire was suspended (e.g. in pick) must not start its run.
         if db.fetchone("SELECT 1 FROM chat_schedules WHERE id=?", (schedule["id"],)) is None:
             _finish_fire(schedule, fire, "cancelled", "schedule deleted", None, None, consume=False)
+            return
+        # Recount after the awaited pick: other fires may have started runs
+        # while this one was suspended there.
+        if over_capacity():
+            status = "skipped_capacity"
+            _finish_fire(schedule, fire, status, "capacity", None, None, consume=False)
             return
         prompt = expand_prompt(
             schedule, fire_id=fire_id,

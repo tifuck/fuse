@@ -686,6 +686,10 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
         # stored transcript / wake path.
         delivered_local: set[str] = set()
         start_i = _completion_start_index(agent, messages, completion_limit)
+        # Next unused ts_<round> id. Rounds that run no tools (salvage, nudges)
+        # still advance completion_i, so counting tool rounds on resume reused
+        # ids and new calls overwrote old traces.
+        trace_next = {"round": int(agent.get("trace_round") or 0)}
 
         def refresh_prompt():
             nonlocal current_messages, prompt_snapshot, cache_prior
@@ -717,6 +721,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     "search_queries": budgets.get("search_queries", 0),
                     "fetches": budgets.get("fetches", 0),
                     "fetch_attempts": budgets.get("fetch_attempts", 0),
+                    "trace_round": trace_next["round"],
                     "command_delivery_ids": list(command_delivery_ids),
                     "prompt_snapshot": prompt_snapshot,
                 }
@@ -934,6 +939,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
         # continuation (late steer) restarts the round counter, so it offsets
         # ids past the rounds an earlier leg already used.
         event_base = int(agent.get("event_base") or 0)
+        event_base = max(event_base, trace_next["round"] - start_i)
         resumes_left = MAX_RESUME_RETRIES
         stall_fails = 0
         idle_stalls = 0
@@ -1561,6 +1567,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     continue
                 break
             jobs = None
+            trace_next["round"] = max(trace_next["round"], completion_i + event_base + 1)
             preview = jobs_from_calls(run_calls, completion_i + event_base)
             await persist_jobs(preview)
             async with contextlib.aclosing(_run_tools(

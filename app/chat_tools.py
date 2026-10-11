@@ -1167,8 +1167,13 @@ async def execute_tool(
     if name in ARTIFACT_TOOL_IDS:
         from .artifacts import execute_from_tool
 
+        from .async_work import durable_call
+
         # Synchronous storage (pool checkout, row locks): keep it off the loop.
-        return await asyncio.to_thread(execute_from_tool, name, args, user_id=user_id, thread_id=thread_id)
+        # durable_call, not to_thread: Stop cancelled only the waiter, the
+        # write kept going, and the run could finalize before the artifact
+        # was created or published.
+        return await durable_call(execute_from_tool, name, args, user_id=user_id, thread_id=thread_id)
     if name == "web_search":
         queries = merge_queries(args)
         if not queries:

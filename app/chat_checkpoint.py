@@ -766,6 +766,12 @@ def save_turn_progress(run_id, messages, loaded_tools=None, extra=None):
                 agent["fetch_attempts"] = max(0, int(extra["fetch_attempts"]))
             except (TypeError, ValueError):
                 pass
+        if extra.get("trace_round") is not None:
+            try:
+                # Monotonic: a resume must never hand out a trace id again.
+                agent["trace_round"] = max(int(agent.get("trace_round") or 0), int(extra["trace_round"]))
+            except (TypeError, ValueError):
+                pass
         delivered_children: list[str] = []
         delivered_generations = {}
         pending_steers = agent.get("pending_steers")

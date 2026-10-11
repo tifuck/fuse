@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import copy
+import threading
 import hashlib
 import json
 import time
@@ -158,7 +159,18 @@ def touch_run(run_id: str) -> None:
         pass
 
 
-def start_turn(user_id, thread_id, text, expected_revision, command_id, model=None, tools=None, context=None,
+# Root-run admission: the active-run counts are plain reads, so two turns or
+# resumes checked concurrently could both pass the cap. Serialize the
+# check-and-insert like child spawns (_child_admission_lock); one worker.
+_root_admission_lock = threading.Lock()
+
+
+def start_turn(*args, **kwargs):
+    with _root_admission_lock:
+        return _start_turn(*args, **kwargs)
+
+
+def _start_turn(user_id, thread_id, text, expected_revision, command_id, model=None, tools=None, context=None,
                 attachments=None, reasoning_effort=None, auto_title=False, invoke_skill=None, auto=False,
                 scheduled=False, coding_override=None, command_receipt_ids=None, replace_from=None,
                 schedule_id=None, schedule_manual=False, auto_resumed_at=""):
@@ -1839,8 +1851,11 @@ def resume_run(user_id, run_id):
         )
         if active_root:
             raise chats.ChatValidationError("this chat already has an active run", 409)
-    _check_resume_admission(row, user_id, is_child)
-    _requeue_for_resume(row, messages, allowed=set(chat_tx.ACTIVE) | {"interrupted", "cancelled"}, by_user=True)
+    # Check and requeue under the same lock new turns/spawns admit under, so
+    # concurrent resumes cannot all pass the cap before any is counted.
+    with (chat_children._child_admission_lock if is_child else _root_admission_lock):
+        _check_resume_admission(row, user_id, is_child)
+        _requeue_for_resume(row, messages, allowed=set(chat_tx.ACTIVE) | {"interrupted", "cancelled"}, by_user=True)
     if not is_child:
         with chat_tx.transaction() as conn:
             thread = conn.execute("SELECT * FROM chat_threads WHERE id=? AND user_id=?", (row["thread_id"], user_id)).fetchone()

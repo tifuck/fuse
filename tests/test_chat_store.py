@@ -318,6 +318,14 @@ class ChatStoreTest(unittest.TestCase):
         self.assertEqual(ids, ["c1", "c2"])
         self.assertIn("interrupted", sealed[-1]["content"])
 
+    def test_trace_round_is_persisted_monotonically(self):
+        # Resume starts trace ids past this; it must never move backwards.
+        run = self.turn()["run"]
+        msgs = [{"role": "user", "content": "Hello"}]
+        store.save_turn_progress(run["id"], msgs, extra={"trace_round": 5})
+        store.save_turn_progress(run["id"], msgs, extra={"trace_round": 2})
+        self.assertEqual(store.get_run(1, run["id"])["request"]["agent"]["trace_round"], 5)
+
     def test_recover_requeues_saved_tool_round(self):
         run = self.turn()["run"]
         store.checkpoint(
