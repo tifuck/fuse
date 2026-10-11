@@ -311,6 +311,36 @@ class ProjectsRetentionTest(unittest.TestCase):
         self.assertIsNotNone(hosts.get_project(1, 7, made["id"]))
         self.assertIsNotNone(chats.get_thread(1, thread["id"]))
 
+    def test_sweep_skips_projects_with_scheduled_sessions(self):
+        retention.set_settings(1, {"archive_hours": 24, "delete_days": 30})
+        made = self.project()
+        thread, pk = self.session(made)
+        db.execute("UPDATE user_projects SET created_at=?, updated_at=? WHERE id=?", (ago(days=3), ago(days=3), made["id"]))
+        db.execute("UPDATE chat_threads SET active_at=?, updated_at=?, created_at=?, schedule_id=99 WHERE id=?",
+                   (ago(days=3), ago(days=3), ago(days=3), pk))
+        self.assertEqual(retention.sweep_user(1)["archived_projects"], 0)
+        self.assertFalse(chats.get_thread(1, thread["id"])["archived"])
+
+    def test_sweep_does_not_delete_a_project_restored_mid_sweep(self):
+        retention.set_settings(1, {"archive_hours": 24, "delete_days": 30})
+        made = self.project()
+        self.session(made)
+        with store.transaction() as conn:
+            hosts.set_project_archived(conn, 1, int(made["id"]), True, skip_running=True)
+        db.execute("UPDATE user_projects SET archived_at=? WHERE id=?", (ago(days=31), made["id"]))
+        db.execute("UPDATE chat_threads SET archived_at=? WHERE project_id=?", (ago(days=31), made["id"]))
+        real = retention.db.fetchone
+
+        def restore_then_read(sql, *args, **kwargs):
+            if "FROM user_projects" in sql:
+                db.execute("UPDATE user_projects SET archived=0, archived_at='' WHERE id=?", (made["id"],))
+            return real(sql, *args, **kwargs)
+
+        with patch.object(retention.db, "fetchone", side_effect=restore_then_read):
+            stats = retention.sweep_user(1)
+        self.assertEqual(stats["deleted_projects"], 0)
+        self.assertIsNotNone(hosts.get_project(1, 7, made["id"]))
+
     def test_instance_ceiling_applies_when_user_has_none(self):
         prefs = retention.get_settings(1)
         prefs["limits"] = {"archive_days": 90, "delete_days": 0}

@@ -194,7 +194,9 @@ def sweep_user(user_id: int, prefs: dict | None = None, *, now: datetime | None 
                 if p["archived"]:
                     continue
                 sessions = by_project.get(int(p["id"]), [])
-                if any(t["id"] in busy for t in sessions):
+                # Archiving a project archives its sessions: one that a
+                # schedule owns keeps the whole project out of cleanup.
+                if any(t["id"] in busy or t["schedule_id"] is not None for t in sessions):
                     continue
                 last = _latest(p["updated_at"], p["created_at"], *(t["last_active"] for t in sessions))
                 if last and last < cutoff:
@@ -239,7 +241,21 @@ def sweep_user(user_id: int, prefs: dict | None = None, *, now: datetime | None 
             )
             if int(open_sessions["n"] if open_sessions else 0):
                 continue
-            if any(t["id"] in busy for t in threads if t.get("project_id") == p["id"]):
+            if any(t["id"] in busy or t["schedule_id"] is not None
+                   for t in threads if t.get("project_id") == p["id"]):
+                continue
+            # The snapshot is from the start of the sweep: a project restored
+            # (or re-archived) since must be judged by its current row.
+            # ponytail: re-read narrows, not closes, the window; a guarded
+            # delete in hosts.delete_project would close it.
+            fresh = db.fetchone(
+                "SELECT archived, archived_at, updated_at, created_at FROM user_projects WHERE id=? AND user_id=?",
+                (p["id"], user_id),
+            )
+            if fresh is None or not fresh["archived"]:
+                continue
+            since = fresh["archived_at"] or fresh["updated_at"] or fresh["created_at"]
+            if not since or since >= delete_cutoff:
                 continue
             try:
                 if hosts.delete_project(user_id, int(p["host_id"]), int(p["id"]), sessions="delete", cancel_active=False):
@@ -252,8 +268,14 @@ def sweep_user(user_id: int, prefs: dict | None = None, *, now: datetime | None 
             since = t["archived_at"] or t["updated_at"]
             if not since or since >= delete_cutoff:
                 continue
-            fresh = db.fetchone("SELECT archived, revision FROM chat_threads WHERE id=? AND user_id=?", (t["id"], user_id))
+            fresh = db.fetchone("SELECT archived, archived_at, updated_at, revision FROM chat_threads WHERE id=? AND user_id=?",
+                                (t["id"], user_id))
             if fresh is None or not fresh["archived"]:
+                continue
+            # Restored and re-archived since the snapshot: age it from the new
+            # archive time, not the old one.
+            since = fresh["archived_at"] or fresh["updated_at"]
+            if not since or since >= delete_cutoff:
                 continue
             # expected_revision closes the check/delete window: delete_thread
             # aborts when the thread changed (or gained a run) underneath us.
