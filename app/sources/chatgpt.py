@@ -103,14 +103,23 @@ def _auth_headers() -> dict:
     }
 
 
-def _chat_headers(token: str, account_id: str | None) -> dict:
+def _chat_headers(token: str, account_id: str | None, session_id: str | None = None) -> dict:
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
         "User-Agent": settings.openai_auth_user_agent,
+        "originator": settings.openai_auth_originator,
     }
     if account_id:
         headers["ChatGPT-Account-Id"] = account_id
+    if session_id:
+        # ChatGPT derives prompt-cache affinity from the session-id header, not
+        # the body prompt_cache_key (Codex and opencode both send these). With
+        # the body key alone, follow-ups on the same account landed on servers
+        # holding an older or no prefix: ~38% hit rate against 90%+ elsewhere.
+        headers["session-id"] = session_id
+        headers["thread-id"] = session_id
+        headers["x-client-request-id"] = session_id
     return headers
 
 
@@ -729,7 +738,7 @@ class ChatGPTSource:
             "POST",
             _backend_base() + "/responses",
             json=payload,
-            headers=_chat_headers(token, account_id),
+            headers=_chat_headers(token, account_id, payload.get("prompt_cache_key")),
         )
         return await client.send(req, stream=True)
 

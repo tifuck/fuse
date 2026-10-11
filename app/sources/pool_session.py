@@ -10,8 +10,9 @@ per-server KV; Z.AI: implicit cache on the calling key). Fuse therefore:
    never expired on a timer. OpenAI GPT-5.6 refreshes its cache for ~30
    minutes per use and the other pools publish no TTL, so a 30-minute pin
    would rotate a warm conversation onto a cold account for no reason.
-3. Forwards x-grok-conv-id (Grok Chat Completions) and prompt_cache_key
-   (ChatGPT Responses). Z.AI has no documented cache-routing field.
+3. Forwards x-grok-conv-id (Grok Chat Completions) and, for ChatGPT
+   Responses, prompt_cache_key plus the session-id header that ChatGPT
+   actually routes its cache by. Z.AI has no documented cache-routing field.
 """
 
 from __future__ import annotations

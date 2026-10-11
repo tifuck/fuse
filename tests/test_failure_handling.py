@@ -38,7 +38,7 @@ class _ChatGPTHarness:
 
         return httpx.AsyncClient(transport=httpx.MockTransport(route))
 
-    def run(self, body: dict | None = None):
+    def run(self, body: dict | None = None, session_id: str | None = None):
         extras = {c["id"]: {"refresh_token": "rt", "access_token": f"tok-{c['id']}"} for c in self.creds}
         source = chatgpt_mod.ChatGPTSource({"id": 9, "name": "chatgpt"}, {}, self.creds)
         with (
@@ -54,7 +54,10 @@ class _ChatGPTHarness:
             patch.object(chatgpt_mod, "_client", side_effect=self._client),
         ):
             return asyncio.run(
-                source.chat(body or {"model": "gpt-6-sol", "messages": [{"role": "user", "content": "hi"}]})
+                source.chat(
+                    body or {"model": "gpt-6-sol", "messages": [{"role": "user", "content": "hi"}]},
+                    session_id=session_id,
+                )
             )
 
 
@@ -108,6 +111,40 @@ class ChatGPTPoolCooldownTest(unittest.TestCase):
         result = harness.run()
         self.assertEqual(result.status, 200)
         self.assertEqual(self._cooling(3), [1])
+
+
+class ChatGPTCacheAffinityTest(unittest.TestCase):
+    def setUp(self):
+        pool_pick.reset_health()
+
+    def tearDown(self):
+        pool_pick.reset_health()
+
+    def _sent(self, session_id):
+        seen: list[httpx.Request] = []
+
+        def handler(_cid, request):
+            seen.append(request)
+            return httpx.Response(200, content=_responses_completed())
+
+        result = _ChatGPTHarness(1, handler).run(session_id=session_id)
+        self.assertEqual(result.status, 200)
+        return seen[0]
+
+    def test_session_id_is_sent_as_affinity_headers(self):
+        # ChatGPT routes the prompt cache by the session-id header; the body
+        # prompt_cache_key alone left most follow-ups on a cold server.
+        request = self._sent("fx:abc")
+        self.assertEqual(json.loads(request.content)["prompt_cache_key"], "fx:abc")
+        self.assertEqual(request.headers["session-id"], "fx:abc")
+        self.assertEqual(request.headers["thread-id"], "fx:abc")
+        self.assertEqual(request.headers["x-client-request-id"], "fx:abc")
+        self.assertTrue(request.headers["originator"])
+
+    def test_no_session_sends_no_affinity_headers(self):
+        request = self._sent(None)
+        self.assertNotIn("session-id", request.headers)
+        self.assertNotIn("prompt_cache_key", json.loads(request.content))
 
 
 class FailoverGuardTest(unittest.TestCase):
