@@ -645,6 +645,33 @@ class ChatStoreTest(unittest.TestCase):
         sent = result["run"]["request"]["messages"]
         self.assertTrue(any("[Compacted conversation]" in (m.get("content") or "") for m in sent if m["role"] == "user"))
 
+    def test_compaction_writer_with_a_stale_read_cannot_drop_a_checkpoint(self):
+        # Interleaving: writer B read the thread before writer A's compaction
+        # committed. B must conflict (compact) or skip (meter) rather than
+        # write back state without A's checkpoint.
+        from unittest.mock import patch
+
+        from app import chat_checkpoint, context_compact as ctxmod
+
+        thread = chats.create_thread(1, model="offline")
+        chats.update_thread(1, thread["id"], messages=[{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}],
+                            expected_revision=thread["revision"])
+        thread = chats.get_thread(1, thread["id"])
+        with chat_checkpoint.chat_tx.transaction() as conn:
+            stale = chat_checkpoint._compaction_row(conn, 1, thread["id"])
+        checkpoint = ctxmod.make_checkpoint(summary="A", through_message_id=thread["messages"][0]["id"],
+                                            strategy="truncate", trigger="manual", tokens_before=10, tokens_after=1)
+        prepared = store.prepare_compact(1, thread["id"], thread["revision"], "compact-a")
+        store.finish_compact(1, thread["id"], checkpoint, command_id="compact-a", fingerprint=prepared["fingerprint"],
+                             expected_revision=thread["revision"])
+        with patch.object(chat_checkpoint, "_compaction_row", return_value=stale):
+            with self.assertRaises(chats.ChatValidationError) as ctx:
+                store.finish_compact(1, thread["id"], checkpoint, command_id="compact-b", fingerprint="fp-b",
+                                     expected_revision=thread["revision"])
+            self.assertEqual(ctx.exception.status_code, 409)
+            chat_checkpoint.save_meter(1, thread["id"], {"scope": "transcript", "limit": 1000})
+        self.assertEqual([cp["summary"] for cp in store.load_compaction(1, thread["id"])["checkpoints"]], ["A"])
+
     def test_start_turn_recomputes_meter_without_floor(self):
         from app import context_compact as ctxmod, context_meter
 

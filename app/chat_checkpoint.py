@@ -378,6 +378,17 @@ def _compaction_row(conn, user_id, thread_id):
     return pk, row
 
 
+def _hold_revision(conn, pk, user_id, row) -> bool:
+    """Row-lock the thread at the revision it was read at; False when another
+    writer moved it. The read above is a plain (snapshot) read, so without this
+    two compaction writers could both derive from the same state and the later
+    one silently drop the other's checkpoint. Take it after any chat_runs read:
+    run -> thread is the lock order finalization uses."""
+    cur = conn.execute("UPDATE chat_threads SET revision=revision WHERE id=? AND user_id=? AND revision=?",
+                       (pk, user_id, row["revision"]))
+    return bool(cur.rowcount)
+
+
 def load_compaction(user_id, thread_id):
     from . import chats, context_compact as ctxmod, context_meter
 
@@ -440,6 +451,10 @@ def save_meter(user_id, thread_id, meter):
                                  (meter["run_id"], pk, user_id)).fetchone()
             if owner is None or meter.get("model") != row["model"]:
                 return
+            # A compaction landed since the read: writing this state back
+            # would erase its checkpoint. The next meter write catches up.
+            if not _hold_revision(conn, pk, user_id, row):
+                return
             state["meter"] = dict(meter)
             probe = state["meter"].pop("cache_probe", None)
             if probe:
@@ -457,6 +472,8 @@ def save_meter(user_id, thread_id, meter):
         if run:
             current = json.loads(run["message"])
             messages = [current if msg.get("id") == run["message_id"] else msg for msg in messages]
+        if not _hold_revision(conn, pk, user_id, row):
+            return
         from . import chat_history
         replay, _info = chat_history.build(conn, user_id, pk, messages, state)
         state["meter"] = context_meter.standing_meter(
@@ -545,6 +562,9 @@ def finish_compact(user_id, thread_id, checkpoint, *, command_id, fingerprint, e
             (pk,),
         ).fetchone():
             raise chats.ChatValidationError("chat already has an active run", 409)
+        # Two compactions from the same revision must not both succeed.
+        if not _hold_revision(conn, pk, user_id, row):
+            raise chats.ChatValidationError("revision conflict; reload the latest state", 409)
         keys = row.keys() if hasattr(row, "keys") else []
         state = ctxmod.parse_state(row["compaction"] if "compaction" in keys else None)
         state = ctxmod.append_checkpoint(state, checkpoint)
@@ -587,25 +607,32 @@ def finish_compact(user_id, thread_id, checkpoint, *, command_id, fingerprint, e
 def apply_compaction_checkpoint(user_id, thread_id, checkpoint, *, meter=None):
     from . import chats, context_compact as ctxmod, context_meter
 
-    with chat_tx.transaction() as conn:
-        pk, row = _compaction_row(conn, user_id, thread_id)
-        if row is None:
-            raise chats.ChatValidationError("chat not found", 404)
-        keys = row.keys() if hasattr(row, "keys") else []
-        state = ctxmod.parse_state(row["compaction"] if "compaction" in keys else None)
-        if checkpoint:
-            state = ctxmod.append_checkpoint(state, checkpoint)
-        if meter:
-            state["meter"] = meter
-        ts = db.now()
-        conn.execute(
-            "UPDATE chat_threads SET compaction=?, revision=revision+1, updated_at=? WHERE id=? AND user_id=?",
-            (ctxmod.dump_state(state), ts, pk, user_id),
-        )
-        chat_tx.thread_event(conn, user_id, pk)
-        view = chat_views.thread_view(conn, user_id, pk)
-        chat_tx.event(conn, user_id, "compaction.done", pk, (view or {}).get("compaction") or {})
-        return view
+    for attempt in range(3):
+        with chat_tx.transaction() as conn:
+            pk, row = _compaction_row(conn, user_id, thread_id)
+            if row is None:
+                raise chats.ChatValidationError("chat not found", 404)
+            # Moved since the read: retry from a fresh snapshot rather than
+            # writing back state that lacks the other writer's change.
+            if not _hold_revision(conn, pk, user_id, row):
+                if attempt == 2:
+                    raise chats.ChatValidationError("revision conflict; reload the latest state", 409)
+                continue
+            keys = row.keys() if hasattr(row, "keys") else []
+            state = ctxmod.parse_state(row["compaction"] if "compaction" in keys else None)
+            if checkpoint:
+                state = ctxmod.append_checkpoint(state, checkpoint)
+            if meter:
+                state["meter"] = meter
+            ts = db.now()
+            conn.execute(
+                "UPDATE chat_threads SET compaction=?, revision=revision+1, updated_at=? WHERE id=? AND user_id=?",
+                (ctxmod.dump_state(state), ts, pk, user_id),
+            )
+            chat_tx.thread_event(conn, user_id, pk)
+            view = chat_views.thread_view(conn, user_id, pk)
+            chat_tx.event(conn, user_id, "compaction.done", pk, (view or {}).get("compaction") or {})
+            return view
 
 
 def save_provider_messages(run_id, messages):
