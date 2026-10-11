@@ -57,9 +57,10 @@
    between rows, so the levels read as loose T's. Each level is a cell the
    row's full height; its vertical line drops from the parent's dot (the
    negative margin cancels the pick's gap, so level k's line sits under the
-   dot of a row k levels deep), and the horizontal runs up to this row's dot.
+   dot of a row k levels deep), and the horizontal runs right up to this
+   row's square, which sits at the end of the arm, not on the junction.
    An elbow (the last child) stops its vertical halfway: an L. */
-.chat-agents-row { --tree-cell: 1.1rem; --tree-gap: 0.5rem; --tree-line: color-mix(in srgb, var(--mist) 26%, var(--ink)); }
+.chat-agents-row { --tree-cell: 1.6rem; --tree-gap: 0.5rem; --tree-line: color-mix(in srgb, var(--mist) 26%, var(--ink)); }
 .chat-agents-pick { gap: var(--tree-gap); }
 .chat-agents-tree {
   display: flex;
@@ -86,7 +87,7 @@
   content: "";
   position: absolute;
   left: var(--tree-x);
-  right: calc(-1 * var(--tree-gap) + 0.15rem);
+  right: calc(-1 * var(--tree-gap));
   top: 50%;
   height: 1px;
   background: var(--tree-line);
@@ -159,8 +160,9 @@ span.chat-agents-act { cursor: default; }
 .chat-jobs-detail { grid-column: 1 / -1; min-width: 0; }
 .chat-jobs-detail:not(.is-open) { display: none; }
 
-/* State is carried by the dot (drawn as a pseudo-element: the console theme
-   squares every element's corners). queued/running: in flight, pulsing.
+/* State is carried by a small square, the console's mark for agents and
+   background commands alike (drawn as a pseudo-element so state colours
+   ride on currentColor). queued/running: in flight, pulsing.
    interrupted/cancelled: stopped by the user, solid amber. */
 .chat-agents-dot {
   flex: 0 0 auto;
@@ -173,7 +175,6 @@ span.chat-agents-act { cursor: default; }
   display: block;
   width: 100%;
   height: 100%;
-  border-radius: 50%;
   background: currentColor;
 }
 :is(.chat-agents-row:is(.is-queued, .is-running, .is-working), .chat-jobs-row.is-running) .chat-agents-dot {
