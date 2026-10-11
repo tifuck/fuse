@@ -68,9 +68,13 @@
   align-self: stretch;
   margin-left: calc(-1 * var(--tree-gap));
 }
+/* An explicit width, not only a flex-basis: Firefox sizes the tree from its
+   cells' widths and would collapse it to nothing, leaving every square on
+   the junction of its lines. */
 .chat-agents-tree > i {
   position: relative;
   flex: 0 0 var(--tree-cell);
+  width: var(--tree-cell);
   --tree-x: calc(var(--tree-gap) + var(--console-dot, 0.4rem) / 2 - 0.5px);
 }
 .chat-agents-tree > :is(.is-pipe, .is-tee, .is-elbow)::before {
