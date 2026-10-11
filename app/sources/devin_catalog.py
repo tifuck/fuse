@@ -514,9 +514,13 @@ def catalog_ids_from_records(recs: list[dict]) -> tuple[list[str], dict[str, str
         else:
             efforts[fid] = set()
             plains[fid] = base
-    _model_efforts = {fid: _ordered_efforts(seen) for fid, seen in efforts.items()}
-    _model_wire_uids = wires
-    _model_plain_uids = plains
+    # Listed names survive refreshes (_remember_models), so a family a
+    # fresh catalog omits keeps its learned wire mapping instead of falling
+    # back to guessed UIDs; families in this catalog take its mapping.
+    fresh = {**{fid: _ordered_efforts(seen) for fid, seen in efforts.items()}}
+    _model_efforts = {**{k: v for k, v in _model_efforts.items() if k not in fresh}, **fresh}
+    _model_wire_uids = {**{k: v for k, v in _model_wire_uids.items() if k not in fresh}, **wires}
+    _model_plain_uids = {**{k: v for k, v in _model_plain_uids.items() if k not in fresh}, **plains}
     _model_promo_until = promos
     return names, labels
 

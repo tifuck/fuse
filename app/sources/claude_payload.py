@@ -339,6 +339,16 @@ def build_messages_payload(body: dict, model: str) -> dict:
             budget = min(max_tokens - 1, 8192)
             if budget >= 1024:
                 payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
+        # "any" (OpenAI "required") is a forced choice too, illegal with
+        # thinking on. Same rule as a named tool: an explicit thinking
+        # request demotes the choice; otherwise the default thinking yields.
+        forced_any = (payload.get("tool_choice") or {}).get("type") == "any"
+        if forced_any and "thinking" in payload:
+            if explicit_effort:
+                parallel_off = payload["tool_choice"].get("disable_parallel_tool_use")
+                payload["tool_choice"] = {"type": "auto", **({"disable_parallel_tool_use": True} if parallel_off else {})}
+            else:
+                payload.pop("thinking")
     else:
         if isinstance(body.get("temperature"), (int, float)) and not isinstance(body.get("temperature"), bool):
             payload["temperature"] = body["temperature"]

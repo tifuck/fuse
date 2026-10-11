@@ -269,10 +269,10 @@ def _error_object(status: int, raw: bytes) -> dict:
     return {"error": {"message": scrub_secrets(text)[:500] or f"upstream returned HTTP {status}"}}
 
 
-def _chat_failure(status: int, message: str, phase: str) -> tuple:
+def _chat_failure(status: int, message: str, phase: str, usage: dict | None = None) -> tuple:
     return status, {"error": {
         "message": message, "failure_phase": phase, "retryable": phase == "pre_generation",
-    }}, None, {"failure_phase": phase}, {}
+    }}, None, {**(usage or {}), "failure_phase": phase}, {}
 
 
 async def openai_chat(
@@ -400,16 +400,18 @@ async def openai_chat(
             return _chat_failure(502, "upstream returned non-JSON data", "response_received")
         if not isinstance(obj, dict):
             return _chat_failure(502, "upstream returned an invalid JSON schema", "response_received")
+        # Before the shape checks: a malformed body can still report tokens
+        # and cost the upstream billed, and those must be recorded.
+        usage = usage_from_obj(obj, reasoning_separate=reasoning_separate)
         if resp.status_code == 200:
             choices = obj.get("choices")
             if not isinstance(choices, list) or not choices or not all(isinstance(choice, dict) for choice in choices):
-                return _chat_failure(502, "upstream response has invalid choices", "response_received")
+                return _chat_failure(502, "upstream response has invalid choices", "response_received", usage)
             if any(
                 not isinstance(choice.get("message"), dict)
                 for choice in choices
             ):
-                return _chat_failure(502, "upstream response has an invalid message", "response_received")
-        usage = usage_from_obj(obj, reasoning_separate=reasoning_separate)
+                return _chat_failure(502, "upstream response has an invalid message", "response_received", usage)
         safe_headers = {}
         if resp.headers.get("retry-after"):
             safe_headers["Retry-After"] = resp.headers["retry-after"][:128]

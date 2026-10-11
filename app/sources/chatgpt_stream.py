@@ -77,6 +77,10 @@ def _usage_from_response(u: dict) -> dict:
     return usage_from_obj({"usage": u}) if isinstance(u, dict) else {}
 
 
+# One SSE line; the final response event carries the whole output.
+SSE_LINE_MAX = 32 * 1024 * 1024
+
+
 async def _upstream_events(resp: httpx.Response):
     buf = ""
 
@@ -102,6 +106,9 @@ async def _upstream_events(resp: httpx.Response):
             obj = parse(line)
             if obj is not None:
                 yield obj
+        # A peer that never ends a line would otherwise grow buf forever.
+        if len(buf) > SSE_LINE_MAX:
+            raise UpstreamProtocolError("upstream sent an oversized event")
     if buf.strip():
         obj = parse(buf)
         if obj is not None:

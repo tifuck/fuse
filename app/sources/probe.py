@@ -151,6 +151,8 @@ async def probe_source(source_id: int) -> dict:
         checks = await _probe_mimo(src)
     elif src.type_id == "claude":
         checks = await _probe_claude(src)
+    elif src.type_id == "devin":
+        checks = await _probe_devin(src)
     elif src.type_id == "explabs":
         checks = [_check("Personal keys", True, "Validated when each user connects a key; no shared-key or completion probe.", skip=True)]
     elif src.type_id == "openrouter":
@@ -566,6 +568,38 @@ async def _probe_mimo(src) -> list[dict]:
     else:
         checks.append(_check("Catalog", bool(names), _summary(names) if names else "No models listed"))
     checks.append(_check("Chat", True, "Skipped — Fuse does not send MiMo completions as a probe.", skip=True))
+    return checks
+
+
+async def _probe_devin(src) -> list[dict]:
+    """JWT + catalog only. Never send a Devin completion."""
+    from .devin import get_user_jwt
+
+    checks: list[dict] = []
+    skipped = _check("Chat", True, "Skipped — Fuse does not send Devin completions as a probe.", skip=True)
+    creds = db.fetchall("SELECT * FROM credentials WHERE source_id=? AND disabled=0", (src.source_id,))
+    if not creds:
+        checks.append(_check("Accounts", False, "No Devin accounts linked"))
+        checks.append(skipped)
+        return checks
+    checks.append(_check("Accounts", True, f"{len(creds)} linked"))
+    authed = 0
+    for cred in creds:
+        try:
+            token = accounts.cred_extra(cred).get("api_key") or accounts.cred_secret(cred)
+            jwt, err = await asyncio.wait_for(get_user_jwt(token), timeout=20)
+        except Exception:
+            continue
+        if jwt and not err:
+            authed += 1
+    checks.append(_check("Auth", authed > 0, f"{authed} of {len(creds)} issue a session JWT" if authed else "No account issues a JWT"))
+    try:
+        names = await asyncio.wait_for(src.models(), timeout=20)
+    except Exception as e:
+        checks.append(_check("Catalog", False, f"Could not list models ({type(e).__name__})"))
+    else:
+        checks.append(_check("Catalog", bool(names), _summary(names) if names else "No models listed"))
+    checks.append(skipped)
     return checks
 
 

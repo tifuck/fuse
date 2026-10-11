@@ -502,6 +502,10 @@ class OllamaSource:
                     )
                 choice["message"]["tool_calls"] = to_openai_tools(msg["tool_calls"])
                 choice["finish_reason"] = "tool_calls"
+            # num_predict reached: truncation wins, so clients neither take
+            # a cut answer as complete nor run a half-written tool call.
+            if raw.get("done_reason") == "length":
+                choice["finish_reason"] = "length"
             obj = {
                 "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
                 "object": "chat.completion",
@@ -570,7 +574,7 @@ async def _stream(resp: httpx.Response, model: str, client: httpx.AsyncClient | 
                     "prompt_tokens": chunk.get("prompt_eval_count", 0),
                     "completion_tokens": chunk.get("eval_count", 0),
                 }
-                finish = "tool_calls" if saw_tools else "stop"
+                finish = "length" if chunk.get("done_reason") == "length" else "tool_calls" if saw_tools else "stop"
                 final = {
                     "id": request_id,
                     "object": "chat.completion.chunk",

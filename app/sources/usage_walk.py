@@ -92,7 +92,12 @@ def usage_targets() -> list[tuple[str, object]]:
     targets: list[tuple[str, object, datetime]] = []
     for row in rows:
         kind = str(row["source_type"] or "")
-        extra = accounts.cred_extra(row)
+        try:
+            extra = accounts.cred_extra(row)
+        except Exception:
+            # One unreadable row must not stall the walk for every account.
+            logger.warning("Usage walk skipped unreadable %s credential %s", kind, row["id"], exc_info=True)
+            continue
         if not _is_paid(kind, extra):
             continue
         when = _parse_ts(_checked_at(extra)) or datetime.min.replace(tzinfo=timezone.utc)

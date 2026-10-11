@@ -453,7 +453,14 @@ async def pick(
     if route:
         src = get(route["source_id"])
         if src and src.type_id != "explabs" and (allow_grok or src.type_id != "grok") and (allow_chatgpt or src.type_id != "chatgpt") and (allow_zai or src.type_id != "zai") and (allow_devin or src.type_id != "devin") and (allow_kimi or src.type_id != "kimi") and (allow_mimo or src.type_id != "mimo") and (allow_claude or src.type_id != "claude"):
-            return src, route["upstream_model"] or model
+            upstream = route["upstream_model"] or model
+            if src.type_id != "openrouter":
+                return src, upstream
+            # A route onto OpenRouter bills the caller's own key, so it obeys
+            # the same per-account free/paid enablement as a direct id.
+            if await openrouter_mod.resolve(openrouter_mod.public_id(upstream), user_id):
+                return src, upstream
+            return None
     # Devin-prefixed ids never leave this pool — including GPT/Astra/Claude
     # slugs that would otherwise match ChatGPT or look like OpenRouter.
     if devin_mod.is_devin_model(model):

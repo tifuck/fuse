@@ -279,6 +279,19 @@ class ClaudeParseTest(unittest.TestCase):
             )
         self.assertEqual(payload["thinking"], {"type": "enabled", "budget_tokens": 7999})
 
+    def test_required_tool_choice_never_ships_with_thinking(self):
+        # tool_choice "any" plus thinking is rejected upstream.
+        base = {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 8000, "tool_choice": "required",
+                "tools": [{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}]}
+        for meta in ({"thinking_type": "adaptive"}, {"thinking_type": "enabled"}):
+            with patch("app.sources.claude_payload._meta_for", return_value=meta):
+                default = claude_mod.build_messages_payload(dict(base), "claude-sonnet-4-6")
+                explicit = claude_mod.build_messages_payload({**base, "reasoning_effort": "high"}, "claude-sonnet-4-6")
+            self.assertEqual(default["tool_choice"]["type"], "any", meta)
+            self.assertNotIn("thinking", default, meta)
+            self.assertIn("thinking", explicit, meta)
+            self.assertEqual(explicit["tool_choice"]["type"], "auto", meta)
+
     def test_data_url_media_type_must_be_image(self):
         payload = claude_mod.build_messages_payload(
             {

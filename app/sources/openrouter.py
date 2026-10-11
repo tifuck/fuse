@@ -737,8 +737,14 @@ async def add_user_key(source_id: int, raw: str, donated_by: int, *, label: str 
     return accounts.add_credential(source_id, name, key, extra=extra, donated_by=donated_by), ""
 
 
-def disable_credential(cred_id: int) -> None:
-    db.execute("UPDATE credentials SET disabled=1 WHERE id=?", (cred_id,))
+def disable_credential(cred_id: int, *, secret: str | None = None) -> None:
+    """secret: the stored (encrypted) value the failing request used. A key
+    replaced since then keeps the row id but not that value, and must not be
+    disabled for its predecessor's rejection."""
+    if secret is None:
+        db.execute("UPDATE credentials SET disabled=1 WHERE id=?", (cred_id,))
+    else:
+        db.execute("UPDATE credentials SET disabled=1 WHERE id=? AND secret=?", (cred_id, secret))
 
 
 def _is_auth_failure(status: int, obj) -> bool:
@@ -891,7 +897,7 @@ class OpenRouterSource:
         if stream is not None:
             return ChatResult(status=200, stream=stream, credential_id=cred["id"], model=upstream)
         if _is_auth_failure(status, obj):
-            disable_credential(cred["id"])
+            disable_credential(cred["id"], secret=cred["secret"])
             status = 502
             obj = {"error": {"message": "OpenRouter rejected the configured API key"}}
         return ChatResult(

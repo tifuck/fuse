@@ -24,6 +24,9 @@ class UpstreamProtocolError(ValueError):
     pass
 
 
+SSE_EVENT_MAX = 32 * 1024 * 1024
+
+
 async def _upstream_events(resp: httpx.Response):
     buf = ""
 
@@ -62,6 +65,9 @@ async def _upstream_events(resp: httpx.Response):
             if obj is not None:
                 yield obj
         buf += carry
+        # A peer that never ends an event would otherwise grow buf forever.
+        if len(buf) > SSE_EVENT_MAX:
+            raise UpstreamProtocolError("upstream sent an oversized event")
     if buf.strip():
         obj = parse(buf)
         if obj is not None:

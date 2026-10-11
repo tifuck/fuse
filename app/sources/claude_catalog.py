@@ -151,6 +151,15 @@ def _remember_models(rows: list[dict]) -> list[str]:
         names = list(CLAUDE_MODELS)
         meta = {upstream_id(mid): {"id": upstream_id(mid), **CLAUDE_MODEL_META[upstream_id(mid)]} for mid in names}
     else:
+        # Catalogs only grow: a partial fetch keeps earlier-discovered models
+        # (and their metadata) after the fresh entries, like the other pools.
+        prior_meta = dict(_catalog_meta or {})
+        for earlier in (_models_cache[1] if _models_cache else []):
+            if earlier not in names:
+                names.append(earlier)
+                slug = upstream_id(earlier)
+                if slug in prior_meta:
+                    meta.setdefault(slug, prior_meta[slug])
         for seeded in CLAUDE_MODELS:
             if seeded not in names:
                 names.append(seeded)

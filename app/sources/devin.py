@@ -193,6 +193,10 @@ async def fetch_catalog(token: str) -> list[str]:
         except Exception:
             logger.warning("Devin model catalog could not be parsed", exc_info=True)
     if not names:
+        # A failed fetch after a real catalog keeps the learned maps; seeding
+        # here would replace real wire UIDs with guesses.
+        if not catalog_empty():
+            return _remember_models([], {})
         names, labels = catalog_ids_from_records([])
     return _remember_models(names, labels)
 
