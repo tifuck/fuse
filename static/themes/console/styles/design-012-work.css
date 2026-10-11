@@ -3,7 +3,7 @@
    line on the composer's surface, like Claude Code's agent and task lists:
    no headings, the main row and the `$` prompt say what each group is. */
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-work {
-  --work-row: 1.45rem;
+  --work-row: 1.3rem;
   padding: 0.15rem 0;
   background: color-mix(in srgb, var(--ink) 92%, var(--panel));
   font: calc(var(--console-type) * 0.92)/var(--work-row) var(--mono);
@@ -53,8 +53,8 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-job
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-jobs-meta { max-width: 40%; }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-agents-act, .chat-jobs-kill) {
-  width: 1.3rem;
-  height: 1.3rem;
+  width: 1.2rem;
+  height: 1.2rem;
   font-size: 0.95rem;
 }
 
@@ -62,17 +62,17 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat
    the screen. Clocks keep their column so they line up. */
 @media (max-width: 800px) {
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-work {
-    --work-row: 1.8rem;
+    --work-row: 1.6rem;
     padding: 0.1rem 0;
   }
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-work-agents { max-height: calc(6 * var(--work-row)); }
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-work-jobs { max-height: calc(3 * var(--work-row)); }
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-agents-row, .chat-jobs-row) {
-    grid-template-columns: minmax(0, 1fr) 6ch 1.8rem;
+    grid-template-columns: minmax(0, 1fr) 6ch 1.6rem;
     padding: 0 0.1rem 0 var(--console-gutter, 0.55rem);
     column-gap: 0.4rem;
   }
-  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-agents-act, .chat-jobs-kill) { width: 1.8rem; height: 1.8rem; }
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-agents-act, .chat-jobs-kill) { width: 1.6rem; height: 1.6rem; }
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-agents-name { max-width: 72%; }
 }
 /* Narrow phones: a subagent row is its task and dot (the dot carries its

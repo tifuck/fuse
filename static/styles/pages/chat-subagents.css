@@ -53,11 +53,43 @@
 .chat-jobs-output-link:focus-visible,
 .chat-agents-fold:focus-visible,
 :is(.chat-agents-act, .chat-jobs-kill):focus-visible { outline: 1px solid var(--brass); outline-offset: -1px; }
+/* Tree connectors are drawn, not typed: box-drawing glyphs leave gaps
+   between rows, so the levels read as loose T's. Each level is a cell the
+   row's full height; its vertical line drops from the parent's dot (the
+   negative margin cancels the pick's gap, so level k's line sits under the
+   dot of a row k levels deep), and the horizontal runs up to this row's dot.
+   An elbow (the last child) stops its vertical halfway: an L. */
+.chat-agents-row { --tree-cell: 1.1rem; --tree-gap: 0.5rem; --tree-line: color-mix(in srgb, var(--mist) 26%, var(--ink)); }
+.chat-agents-pick { gap: var(--tree-gap); }
 .chat-agents-tree {
+  display: flex;
   flex: 0 0 auto;
-  margin-right: -0.2rem;
-  color: color-mix(in srgb, var(--mist) 26%, var(--ink));
-  white-space: pre;
+  align-self: stretch;
+  margin-left: calc(-1 * var(--tree-gap));
+}
+.chat-agents-tree > i {
+  position: relative;
+  flex: 0 0 var(--tree-cell);
+  --tree-x: calc(var(--tree-gap) + var(--console-dot, 0.4rem) / 2 - 0.5px);
+}
+.chat-agents-tree > :is(.is-pipe, .is-tee, .is-elbow)::before {
+  content: "";
+  position: absolute;
+  left: var(--tree-x);
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--tree-line);
+}
+.chat-agents-tree > .is-elbow::before { bottom: 50%; }
+.chat-agents-tree > :is(.is-tee, .is-elbow)::after {
+  content: "";
+  position: absolute;
+  left: var(--tree-x);
+  right: calc(-1 * var(--tree-gap) + 0.15rem);
+  top: 50%;
+  height: 1px;
+  background: var(--tree-line);
 }
 .chat-agents-name,
 .chat-jobs-cmd {

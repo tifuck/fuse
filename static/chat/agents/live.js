@@ -145,7 +145,7 @@ export function createLive(ctx) {
       : row);
   }
 
-    // Spawn order, each child under its parent with Claude Code's connectors.
+    // Spawn order, each child under its parent with tree connectors.
   // A row whose parent is not listed (pruned from the recent window) hangs
   // off the main agent.
   function agentTree() {
@@ -167,11 +167,13 @@ export function createLive(ctx) {
         if (seen.has(id)) return;
         seen.add(id);
         const last = index === list.length - 1;
-        out.push({ row, tree: prefix + (last ? "└─ " : "├─ ") });
-        walk(id, prefix + (last ? "   " : "│  "));
+        // One connector per level: a line on through an ancestor that has
+        // later siblings, blank after a last one, then this row's tee or elbow.
+        out.push({ row, tree: [...prefix, last ? "elbow" : "tee"] });
+        walk(id, [...prefix, last ? "blank" : "pipe"]);
       });
     };
-    walk("", "");
+    walk("", []);
     return out;
   }
 
@@ -217,7 +219,7 @@ export function createLive(ctx) {
     tree.forEach((item) => {
       const selected = String(item.row.id) === viewing;
       // Folded, the viewed subagent still shows under main.
-      if (expanded || selected) html += ui.agentRowHtml(item.row, { tree: expanded ? item.tree : "└─ ", selected });
+      if (expanded || selected) html += ui.agentRowHtml(item.row, { tree: expanded ? item.tree : ["elbow"], selected });
     });
     FuseChatDOM.reconcile(S.agentsListEl, html);
     S.agentsListEl.hidden = false;
