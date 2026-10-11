@@ -850,6 +850,16 @@ def _auto_allow_ask(ask_id: str) -> bool:
         return bool(cur.rowcount)
 
 
+def _auto_deny_ask(ask_id: str) -> bool:
+    """Jev denied a waiting ask. False when the user answered first."""
+    with db.tx() as conn:
+        cur = conn.execute(
+            "UPDATE chat_permission_asks SET status='denied', decision='jev', resolved_at=? WHERE id=? AND status='pending'",
+            (db.now(), ask_id),
+        )
+        return bool(cur.rowcount)
+
+
 async def _ask_and_wait(gate: Gate, payload: dict, auto_judge=None) -> str:
     """Raise the card and wait. auto_judge (async () -> bool) runs once if Auto
     is switched on while the card waits; None when Jev already ruled or the
@@ -889,10 +899,15 @@ async def _ask_and_wait(gate: Gate, payload: dict, auto_judge=None) -> str:
                 return "allow"
             if auto and auto_judge is not None and row is not None and row["status"] == "pending":
                 judge, auto_judge = auto_judge, None
-                if await judge() and await durable_call(_auto_allow_ask, ask_id):
+                verdict = await judge()
+                if verdict and await durable_call(_auto_allow_ask, ask_id):
                     gate._notify({"event": "permission", "kind": "tool_permission", "id": ask_id,
                                   "status": "allowed", "decision": "allow"})
                     return "allow"
+                if verdict is False and await durable_call(_auto_deny_ask, ask_id):
+                    gate._notify({"event": "permission", "kind": "tool_permission", "id": ask_id,
+                                  "status": "denied", "decision": "jev"})
+                    return "jev_denied"
                 continue  # re-read: the user may have answered while Jev ran
             if row is not None and row["status"] != "pending":
                 status = row["status"]
@@ -928,6 +943,9 @@ def _deny_detail(target: str, action: str) -> str:
                 "Continue without it; ask the owner to grant access or enable bypass.")
     if action == "deny_busy":
         return "Too many pending permission requests in this chat. Continue without new locations."
+    if action == "jev_denied":
+        return (f"Permission denied by Jev (Auto mode automation), not by the user. "
+                f"Do not access {label}; continue without it.")
     return f"Permission denied by user. Do not access {label}; continue without it."
 
 
@@ -964,15 +982,16 @@ _AUTO_NAME_TOOLS = frozenset({"list_dir", "glob"})
 _SHELL_APPROVAL = "shell command requires approval"
 
 
-async def _auto_verdict(gate: Gate, tool: str, action: dict, roots: list[str]) -> bool:
-    """Auto mode's answer for one call that would otherwise ask. Fail closed."""
+async def _auto_verdict(gate: Gate, tool: str, action: dict, roots: list[str]) -> bool | None:
+    """Auto mode's answer for one call that would otherwise ask: True allow,
+    False Jev denied, None no verdict (the user's card decides)."""
     from . import chat_runs as chat_runs_mod
     from . import jev
 
     if getattr(chat_runs_mod, "_stopping", False):
-        return False
+        return None
     if not await asyncio.to_thread(jev.user_can_auto, gate.user_id):
-        return False
+        return None
     if tool in _AUTO_NAME_TOOLS:
         logger.warning("auto-allow listing tool=%s path=%s thread=%s", tool, action.get("path"), gate.thread_id)
         return True
@@ -982,9 +1001,9 @@ async def _auto_verdict(gate: Gate, tool: str, action: dict, roots: list[str]) -
         raise
     except Exception:
         logger.warning("Jev judge raised", exc_info=True)
-        allowed = False
+        allowed = None
     logger.warning("Jev verdict tool=%s path=%s allowed=%s", tool, action.get("path") or action.get("cwd"), allowed)
-    return bool(allowed)
+    return allowed if allowed is None else bool(allowed)
 
 
 async def review(*, tool: str, args: dict, user_id: int,
@@ -1182,9 +1201,12 @@ async def review(*, tool: str, args: dict, user_id: int,
         return await _auto_verdict(gate, tool, jev_action, roots)
 
     if await asyncio.to_thread(auto_enabled, gate.user_id, gate.thread_id):
-        if await auto_judge():
+        verdict = await auto_judge()
+        if verdict:
             return ReviewResult(allowed=True, root_override=relax, resolved=resolved)
-        auto_judge = None  # Jev ruled; the card is the user's call
+        if verdict is False:
+            return ReviewResult(allowed=False, detail=_deny_detail(label, "jev_denied"), kind="permission_denied")
+        auto_judge = None  # no verdict; the card is the user's call
     # auto_judge stays live when Auto is off: _ask_and_wait re-reads the flag
     # every poll, so flipping Auto on mid-wait sends the ask to Jev once.
     if gate.unattended:

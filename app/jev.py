@@ -97,11 +97,11 @@ def _noul(answers: dict, key: str) -> float | None:
     return value
 
 
-def should_allow(answers: dict) -> bool:
-    """Allow unless Jev says the action is dangerous. Missing answer → ask."""
+def should_allow(answers: dict) -> bool | None:
+    """Allow unless Jev says the action is dangerous. Missing answer → None (ask)."""
     dangerous = _noul(answers, "dangerous")
     if dangerous is None:
-        return False
+        return None
     return dangerous < DANGEROUS_CEILING
 
 
@@ -208,23 +208,24 @@ async def evaluate(user_id: int, state: dict, questions: dict | None = None, tim
         return None
 
 
-async def judge(user_id: int, thread_id: int, action: dict, *, roots: list[str] | None = None) -> bool:
-    """True only when Jev is confident the action is a safe auto-allow."""
+async def judge(user_id: int, thread_id: int, action: dict, *, roots: list[str] | None = None) -> bool | None:
+    """True when Jev rules the action safe, False when Jev rules it dangerous,
+    None when there is no verdict (no key, skipped, or Jev unavailable)."""
     try:
         if len(str((action or {}).get("command") or "")) > ACTION_CLIP:
             logger.warning("Jev skip long command tool=%s", (action or {}).get("tool"))
-            return False
+            return None
         # Destructive-pattern hits are not a verdict: they ride along as an
         # advisory reason and Jev decides. A regex refusal here would make
         # auto mode card on every sudo/rm instead of judging it.
         if not user_can_auto(user_id):
             logger.warning("Jev skip no OpenRouter key user=%s", user_id)
-            return False
+            return None
         state = clip_thread_state(user_id, thread_id, action, roots=roots)
         result = await evaluate(user_id, state)
         if not result:
             logger.warning("Jev no result tool=%s path=%s", (action or {}).get("tool"), (action or {}).get("path"))
-            return False
+            return None
         allowed = should_allow(result.get("answers") or {})
         logger.warning("Jev judge tool=%s path=%s allowed=%s", (action or {}).get("tool"), (action or {}).get("path") or (action or {}).get("cwd"), allowed)
         return allowed
@@ -232,4 +233,4 @@ async def judge(user_id: int, thread_id: int, action: dict, *, roots: list[str] 
         raise
     except Exception:
         logger.warning("Jev judge failed", exc_info=True)
-        return False
+        return None
