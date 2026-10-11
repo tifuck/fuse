@@ -76,10 +76,14 @@ async def grok_poll(request: Request):
             )
         sid = ensure_grok_source()
         profile = await grok_mod.fetch_userinfo(tokens["access_token"])
+        # Cancelled or restarted while x.ai answered: this flow no longer
+        # stands for the user's intent, so it must not donate an account.
+        if _pending.get(user["id"]) is not pending:
+            return JSONResponse({"error": "That x.ai sign-in was cancelled or replaced."}, status_code=409)
+        _pending.pop(user["id"], None)
         cred_id = grok_mod.store_tokens(
             sid, tokens, donated_by=user["id"], label=profile.get("email") or "Grok account", profile=profile
         )
-        _pending.pop(user["id"], None)
         row = db.fetchone("SELECT * FROM credentials WHERE id=?", (cred_id,))
         if row:
             try:

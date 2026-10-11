@@ -366,6 +366,9 @@ def _save_key(
     }
     name = (label or "").strip()[:80] or f"Xiaomi ({region})"
     existing = _find_key(source_id, key)
+    if existing and not existing["disabled"] and int(existing["donated_by"] or 0) != int(donated_by or 0):
+        # An active key stays with its donor; another login never takes it over.
+        raise ValueError("pooled")
     if existing:
         db.execute(
             """UPDATE credentials SET disabled=0, donated_by=?, label=?, secret=?, extra=? WHERE id=?""",
@@ -423,10 +426,10 @@ async def add_plan_key(
         if last in ("http 401", "http 403", "Invalid API key."):
             return None, "Xiaomi rejected that key. Copy it from Token Plan → Plan Overview."
         return None, "Could not validate this key. Check the connection and try again."
-    existing = _find_key(source_id, key)
-    if existing and not existing["disabled"] and int(existing["donated_by"] or 0) != int(donated_by):
+    try:
+        cred_id = _save_key(source_id, key, chosen, donated_by, label=label, auth_kind="api")
+    except ValueError:
         return None, "That key is already in the pool."
-    cred_id = _save_key(source_id, key, chosen, donated_by, label=label, auth_kind="api")
     row = db.fetchone("SELECT * FROM credentials WHERE id=?", (cred_id,))
     if row:
         _store_billing(cred_id, parsed, region=chosen)

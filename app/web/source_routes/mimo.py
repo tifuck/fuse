@@ -55,7 +55,9 @@ async def _mimo_finish(user: dict, pending: dict, blob: str):
     sid = mimo_mod.ensure_mimo_source()
     try:
         cred_id = mimo_mod.store_login(sid, payload, user["id"])
-    except ValueError:
+    except ValueError as exc:
+        if str(exc) == "pooled":
+            return None, "That Xiaomi key is already in the pool."
         return None, "Xiaomi did not return a Token Plan key. Pick Token Plan in the authorize page and try again."
     row = db.fetchone("SELECT * FROM credentials WHERE id=?", (cred_id,))
     if row:
@@ -83,10 +85,12 @@ async def mimo_callback(request: Request):
         _pool_flash[user["id"]] = ("err", "Xiaomi did not return a sign-in code. Paste the code from the authorize page.", "mimo")
         return RedirectResponse("/sources", status_code=303)
     cred_id, err = await _mimo_finish(user, pending, blob)
-    _mimo_pending.pop(user["id"], None)
     if err or not cred_id:
+        # Keep the pending sign-in: an unreadable (possibly forged) callback
+        # must not cancel it; the user can still paste the real code.
         _pool_flash[user["id"]] = ("err", err or "Could not link this Xiaomi account.", "mimo")
         return RedirectResponse("/sources", status_code=303)
+    _mimo_pending.pop(user["id"], None)
     _pool_flash[user["id"]] = ("ok", "Xiaomi Token Plan added to the pool.", "mimo")
     return RedirectResponse("/sources", status_code=303)
 

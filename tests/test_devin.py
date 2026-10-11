@@ -94,6 +94,17 @@ def _clear_catalog():
     devin_mod.reset_sku_health()
 
 
+class JwtOutageTest(unittest.TestCase):
+    def test_only_an_auth_rejection_reads_as_401(self):
+        # A 401 strikes (and can disable) the donated account; an outage must not.
+        src = DevinSource.__new__(DevinSource)
+        for err, status in (("Devin auth http 503", 502), ("Devin auth returned an unreadable response.", 502),
+                            (devin_mod._JWT_REJECTED, 401)):
+            with unittest.mock.patch.object(devin_mod, "get_user_jwt", unittest.mock.AsyncMock(return_value=(None, err))):
+                result = asyncio.run(src._chat_one("tok", {}, "m", {"id": 1}, "s", []))
+            self.assertEqual(result.status, status, err)
+
+
 class TokenAndIdTest(unittest.TestCase):
     def setUp(self):
         _clear_catalog()

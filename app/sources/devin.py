@@ -133,6 +133,9 @@ async def _unary(client: httpx.AsyncClient, path: str, body: bytes) -> tuple[int
     return r.status_code, r.content or b""
 
 
+_JWT_REJECTED = "Invalid Devin session token."
+
+
 async def get_user_jwt(token: str) -> tuple[dict | None, str]:
     token = normalize_token(token)
     hit = _jwt_cache.get(token)
@@ -141,7 +144,7 @@ async def get_user_jwt(token: str) -> tuple[dict | None, str]:
     async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as client:
         status, raw = await _unary(client, AUTH_PATH, proto.encode_get_user_jwt(_meta(token)))
     if status in (401, 403):
-        return None, "Invalid Devin session token."
+        return None, _JWT_REJECTED
     if status != 200:
         return None, f"Devin auth http {status}"
     try:
@@ -658,8 +661,10 @@ class DevinSource:
     async def _chat_one(self, token, body, model, cred, session_id, attempts) -> ChatResult:
         jwt, err = await get_user_jwt(token)
         if err or not jwt:
+            # Only an explicit auth rejection strikes the account: a timeout,
+            # 5xx or unreadable reply is Devin's outage, not a dead credential.
             return ChatResult(
-                status=401,
+                status=401 if err == _JWT_REJECTED else 502,
                 body={"error": {"message": err or "Devin auth failed"}},
                 credential_id=cred["id"],
                 model=model,

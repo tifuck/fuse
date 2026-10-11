@@ -76,6 +76,10 @@ async def kimi_poll(request: Request):
                 {"pending": True, "error": str(exc) + " Retrying.", "retry_after": pending.get("interval", 5)},
                 status_code=502,
             )
+        # Cancelled or restarted while Kimi answered: do not donate it.
+        if _kimi_pending.get(user["id"]) is not pending:
+            return JSONResponse({"error": "That Kimi sign-in was cancelled or replaced."}, status_code=409)
+        _kimi_pending.pop(user["id"], None)
         sid = kimi_mod.ensure_kimi_source()
         cred_id = kimi_mod.store_tokens(
             sid,
@@ -85,7 +89,6 @@ async def kimi_poll(request: Request):
             region=region,
             device_id=device_id,
         )
-        _kimi_pending.pop(user["id"], None)
         row = db.fetchone("SELECT * FROM credentials WHERE id=?", (cred_id,))
         if row:
             try:

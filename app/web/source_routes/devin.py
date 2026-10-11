@@ -53,17 +53,18 @@ async def devin_callback(request: Request):
     if redir:
         return redir
     pending = _devin_pending_for(user["id"])
+    code = str(request.query_params.get("code") or "").strip()
+    state = str(request.query_params.get("state") or "").strip()
+    # State first: a cross-site link to ?error=… must not cancel a sign-in.
+    if not pending or not state or state != str(pending.get("state") or ""):
+        _pool_flash[user["id"]] = ("err", "Devin sign-in expired or did not match this session. Start again.", "devin")
+        return RedirectResponse("/sources", status_code=303)
     error = str(request.query_params.get("error") or "").strip()
     if error:
         _devin_pending.pop(user["id"], None)
         denied = error.lower() in ("access_denied", "denied", "cancelled", "canceled")
         msg = "Devin sign-in was cancelled." if denied else "Devin sign-in was denied or expired. Start again."
         _pool_flash[user["id"]] = ("err", msg, "devin")
-        return RedirectResponse("/sources", status_code=303)
-    code = str(request.query_params.get("code") or "").strip()
-    state = str(request.query_params.get("state") or "").strip()
-    if not pending or not state or state != str(pending.get("state") or ""):
-        _pool_flash[user["id"]] = ("err", "Devin sign-in expired or did not match this session. Start again.", "devin")
         return RedirectResponse("/sources", status_code=303)
     if not code:
         _devin_pending.pop(user["id"], None)

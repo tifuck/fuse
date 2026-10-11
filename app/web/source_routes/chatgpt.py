@@ -73,9 +73,12 @@ async def chatgpt_poll(request: Request):
                 {"pending": True, "error": str(exc) + " Retrying.", "retry_after": pending.get("interval", 5)},
                 status_code=502,
             )
+        # Cancelled or restarted while OpenAI answered: do not donate it.
+        if _chatgpt_pending.get(user["id"]) is not pending:
+            return JSONResponse({"error": "That ChatGPT sign-in was cancelled or replaced."}, status_code=409)
+        _chatgpt_pending.pop(user["id"], None)
         sid = chatgpt_mod.ensure_chatgpt_source()
         cred_id = chatgpt_mod.store_tokens(sid, tokens, donated_by=user["id"], label="ChatGPT account")
-        _chatgpt_pending.pop(user["id"], None)
         row = db.fetchone("SELECT * FROM credentials WHERE id=?", (cred_id,))
         if row:
             try:

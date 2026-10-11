@@ -133,6 +133,14 @@ class MimoPoolTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(extra["auth_kind"], "api")
         self.assertTrue(mimo_mod.billing_has_subscription(extra["billing"]))
 
+    def test_browser_login_never_takes_over_another_donors_key(self):
+        cred_id = mimo_mod.store_login(self.sid, {"sk": "tp-shared12345"}, self.alice["id"])
+        with self.assertRaises(ValueError) as ctx:
+            mimo_mod.store_login(self.sid, {"sk": "tp-shared12345"}, self.bob["id"])
+        self.assertEqual(str(ctx.exception), "pooled")
+        row = db.fetchone("SELECT donated_by FROM credentials WHERE id=?", (cred_id,))
+        self.assertEqual(row["donated_by"], self.alice["id"])
+
     async def test_add_plan_key_rejects_sk(self):
         cred_id, err = await mimo_mod.add_plan_key(self.sid, "sk-paygkey", self.alice["id"], region="cn")
         self.assertIsNone(cred_id)
