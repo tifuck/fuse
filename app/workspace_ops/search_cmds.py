@@ -224,10 +224,12 @@ def _enter_dir_sh(target: str, include: str = "") -> str:
     """Search a directory from inside it, so include/glob patterns are
     relative to the searched path on every host (the Windows connector's
     rule) and results print as ./rel. A literal include naming a file right
-    there narrows the search to that one file."""
+    there narrows the search to that one file. A symlink is not narrowed to:
+    the gate reviewed the directory, and the walk never follows symlinks."""
     literal = ""
     if include and _literal_glob(include):
-        literal = f"if [ -f {shlex.quote('./' + include)} ]; then TGT={shlex.quote('./' + include)}; fi; "
+        lit = shlex.quote('./' + include)
+        literal = f"if [ -f {lit} ] && [ ! -L {lit} ]; then TGT={lit}; fi; "
     return (
         f"TGT={_quote_host_path(target)}; "
         f'if [ -d "$TGT" ]; then cd -- "$TGT" || exit 2; TGT=.; {literal}fi; '

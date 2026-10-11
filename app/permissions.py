@@ -1107,13 +1107,20 @@ async def review(*, tool: str, args: dict, user_id: int,
                 secret = True
                 reasons.append("secret-named file")
                 grant_kind, grant_value = "file", resolved
-        if realpath is not None and in_roots and not windows and tool != "spawn_subagent":
+        if realpath is not None and in_roots and not windows:
             reals = await realpath([resolved, *roots])
             real = reals[0] if reals else None
+            real_roots = list(reals[1:])
             # Compare only when every root resolved too: a root that is itself
             # a symlink must be judged by its real location, not skipped.
-            if real and real != resolved and all(reals[1:]):
-                real_roots = list(reals[1:])
+            # The roots resolving but the target not is fail-closed: an
+            # unresolvable target may sit behind a symlink out of the roots.
+            if real_roots and all(real_roots) and not real:
+                in_roots = False
+                out_of_root = True
+                reasons.append(f"cannot resolve where {resolved} points")
+                grant_kind, grant_value = "dir", _grant_dir_for(tool, resolved, windows)
+            elif real and real != resolved and real_roots and all(real_roots):
                 if not _in_roots(real, real_roots, windows):
                     in_roots = False
                     out_of_root = True

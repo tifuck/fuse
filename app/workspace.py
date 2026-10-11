@@ -816,7 +816,10 @@ async def _realpaths(user_id, host_id, paths: list[str]) -> list[str | None]:
     round trip; None where it cannot be resolved. Never raises."""
     marker = "__fuse_realpath__"
     script = f"printf '%s\\n' {marker}; " + "; ".join(
-        f'printf "%s\\n" "$(readlink -f -- {_shell_path_arg(p)} 2>/dev/null)"' for p in paths
+        # -m resolves through missing components (a write's new dirs) so a
+        # symlinked parent is still followed; -f where -m is unsupported.
+        f'printf "%s\\n" "$(readlink -m -- {_shell_path_arg(p)} 2>/dev/null || readlink -f -- {_shell_path_arg(p)} 2>/dev/null)"'
+        for p in paths
     )
     try:
         res = await _run_remote(user_id, host_id, script, "", 10, rate=False)
@@ -2787,6 +2790,17 @@ async def load_project_agents(user_id, bound_host_id, bound_cwd: str = "", repor
             report["reason"] = "host"
         return _agents_fail(key, now, "host")
     chosen = pick_agents_name(listing_names(listing, listing_rec))
+    if chosen and not windows:
+        # This read bypasses the permission gate, so an instruction file that
+        # is a symlink out of the project (e.g. to ~/.ssh/id_ed25519) is
+        # treated as absent rather than loaded into the system prompt.
+        real, real_root = await _realpaths(user_id, host_id, [posixpath.join(root or "~", chosen), root or "~"])
+        if not real or not real_root:
+            if report is not None:
+                report["reason"] = "host"
+            return _agents_fail(key, now, "host")
+        if not (real == real_root or real.startswith(real_root.rstrip("/") + "/")):
+            chosen = ""
     if not chosen:
         # A successful listing with no instruction file is a confirmed
         # absence, not a failure: drop any sticky body instead of resurrecting

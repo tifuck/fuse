@@ -346,7 +346,7 @@ async def _review_child_cwd(user_id: int, pagent: dict, host_id, cwd: str, gate)
     would for that folder. Returns (resolved cwd, error)."""
     from . import permissions
     from .hosts import get_host
-    from .workspace import _is_windows_row, host_root
+    from .workspace import _is_windows_row, _realpaths, host_root
 
     if host_id is None:
         return "", "cwd needs a host: bind a project or pass host with cwd."
@@ -366,6 +366,9 @@ async def _review_child_cwd(user_id: int, pagent: dict, host_id, cwd: str, gate)
     verdict = await permissions.review(
         tool="spawn_subagent", args={"cwd": cwd}, user_id=user_id, host_id=int(row["id"]),
         host_alias=str(row.get("alias") or ""), root=parent_root, windows=windows, gate=gate,
+        # The cwd becomes the child's root: judge an in-root symlink by where
+        # it really points, or the child inherits that target as approved.
+        realpath=lambda paths: _realpaths(user_id, int(row["id"]), paths),
     )
     if not verdict.allowed:
         return "", verdict.detail or "cwd is outside this agent's allowed folders."

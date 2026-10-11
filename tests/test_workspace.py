@@ -23,12 +23,21 @@ import pytest
 pytestmark = pytest.mark.usefixtures("isolated_db")
 
 
+def _patch_realpaths(case, resolve=None):
+    """Instruction loading verifies where the file really points; by default
+    every path resolves to itself (no symlinks)."""
+    patcher = patch.object(workspace, "_realpaths", AsyncMock(side_effect=resolve or (lambda _u, _h, paths: list(paths))))
+    patcher.start()
+    case.addCleanup(patcher.stop)
+
+
 class AgentsFileTest(unittest.TestCase):
     def setUp(self):
         workspace._agents_cache.clear()
         workspace._agents_last_good.clear()
         self.addCleanup(workspace._agents_cache.clear)
         self.addCleanup(workspace._agents_last_good.clear)
+        _patch_realpaths(self)
 
     def test_prefers_agents_md_over_claude(self):
         names = {"README.md", "CLAUDE.md", "AGENTS.md", "src"}
@@ -79,6 +88,20 @@ class AgentsLoadingTest(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(workspace._agents_cache.clear)
         self.addCleanup(workspace._agents_last_good.clear)
         self.row = {"id": 4, "alias": "prod", "default_cwd": "/srv/api"}
+        _patch_realpaths(self)
+
+    async def test_symlinked_instruction_file_out_of_project_is_not_loaded(self):
+        def resolve(_u, _h, paths):
+            return ["/home/me/.ssh/id_ed25519" if p.endswith("AGENTS.md") else p for p in paths]
+
+        workspace._realpaths.side_effect = resolve
+        reading = AsyncMock(side_effect=AssertionError("must not read a symlink out of the project"))
+        with patch.object(workspace, "resolve_host_row", return_value=self.row), patch.object(
+            workspace, "_list", AsyncMock(return_value=("AGENTS.md", {"status": "done"}))
+        ), patch.object(workspace, "_read", reading):
+            report = {}
+            self.assertEqual(await workspace.load_project_agents(1, 4, "/srv/api", report), ("", ""))
+        self.assertEqual(report, {"reason": "missing"})
 
     async def test_full_budget_and_paging_on_both_transports(self):
         for agent in (False, True):

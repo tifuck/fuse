@@ -282,6 +282,34 @@ class ReviewTest(PermSchemaTest):
         res = asyncio.run(run())
         self.assertFalse(res.allowed)
 
+    def test_unresolvable_target_fails_closed(self):
+        # /srv/app/link -> /outside with a missing intermediate dir: readlink
+        # cannot resolve it, so the lexical in-root path must not be trusted.
+        async def realpath(paths):
+            return [None if p.startswith("/srv/app/link") else p for p in paths]
+
+        async def run(tool, args):
+            return await permissions.review(
+                tool=tool, args=args, user_id=1, host_id=7, host_alias="prod",
+                root="/srv/app", windows=False, gate=_gate(unattended=True), realpath=realpath,
+            )
+
+        self.assertFalse(asyncio.run(run("write_file", {"path": "link/newdir/f.txt", "content": "x"})).allowed)
+        self.assertFalse(asyncio.run(run("spawn_subagent", {"cwd": "link"})).allowed)
+        self.assertTrue(asyncio.run(run("write_file", {"path": "src/f.txt", "content": "x"})).allowed)
+
+    def test_spawn_cwd_symlink_out_of_root_is_judged_by_target(self):
+        async def realpath(paths):
+            return ["/outside" if p == "/srv/app/link" else p for p in paths]
+
+        async def run():
+            return await permissions.review(
+                tool="spawn_subagent", args={"cwd": "link"}, user_id=1, host_id=7, host_alias="prod",
+                root="/srv/app", windows=False, gate=_gate(unattended=True), realpath=realpath,
+            )
+
+        self.assertFalse(asyncio.run(run()).allowed)
+
     def test_symlinked_root_still_allows_its_own_files(self):
         async def realpath(paths):
             return [p.replace("/srv/app", "/data/app") for p in paths]

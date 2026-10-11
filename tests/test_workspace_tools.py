@@ -140,6 +140,22 @@ class GrepSearchCmdTest(unittest.TestCase):
         # The no-rg walk prunes the same vendor dirs.
         self.assertIn("-name venv", cmd)
 
+    def test_literal_include_does_not_follow_symlink_out_of_dir(self):
+        import subprocess
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            work, outside = Path(tmp) / "work", Path(tmp) / "outside"
+            work.mkdir()
+            outside.mkdir()
+            (outside / "secret.txt").write_text("TOPSECRET\n")
+            (work / "link.txt").symlink_to(outside / "secret.txt")
+            (work / "real.txt").write_text("TOPSECRET\n")
+            for include, found in (("link.txt", False), ("real.txt", True)):
+                cmd = workspace._grep_search_cmd("TOPSECRET", str(work), include=include)
+                out = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=20).stdout
+                self.assertEqual("TOPSECRET" in out, found, include)
+
     def test_size_cap_only_for_unfiltered_walks(self):
         # A file picked out by include must be searched even when it is large:
         # the cap silently turned "grep this one file" into "(no matches)".
