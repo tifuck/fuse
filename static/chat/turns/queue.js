@@ -114,8 +114,8 @@ export function createQueue(ctx) {
   }
 
     function persistQueue(item) {
-    if (!S.currentId || !item) return;
-    try { writeQueueItem(S.currentId, item); } catch (_) {}
+    if (!S.currentId || !item) return false;
+    try { writeQueueItem(S.currentId, item); return true; } catch (_) { return false; }
   }
 
     function loadQueue() {
@@ -221,7 +221,13 @@ export function createQueue(ctx) {
       sending: false,
     };
     S.queuedTurns.push(item);
-    persistQueue(item);
+    // Storage full or blocked: a queued item that is not persisted vanishes
+    // on reload or thread switch, so refuse it and leave the text in place.
+    if (!persistQueue(item)) {
+      S.queuedTurns.pop();
+      renderQueue();
+      return false;
+    }
     renderQueue();
     return true;
   }
@@ -269,7 +275,10 @@ export function createQueue(ctx) {
     if ((!text && !attachments.length) || !S.modelId) return;
     if (window.FuseComposerSpell && FuseComposerSpell.isOpen()) return;
     transcript.dismissRecaps();
-    enqueueTurn(text, attachments);
+    if (!enqueueTurn(text, attachments)) {
+      picker.setHint("Could not queue this message: browser storage is full or blocked. It is still in the box.", true);
+      return;
+    }
     S.input.value = "";
     S.drafts.delete(S.currentId);
     S.pendingAttachments = [];

@@ -580,15 +580,34 @@
         return;
       }
       if (wizardStep === 2) {
-        if (wizardHostId) {
-          setStep(3);
-          return;
-        }
         const auth = wizard.querySelector("[data-w-auth]").value;
         const secret =
           auth === "key"
             ? wizard.querySelector("[data-w-secret]").value
             : wizard.querySelector("[data-w-password]").value;
+        if (wizardHostId) {
+          // Back from step 3 and edited: save the corrections to the machine
+          // already created, or probe/trust/test would target the old one.
+          setBusy(true);
+          const patch = {
+            alias: wizard.querySelector("[data-w-alias]").value.trim(),
+            hostname: wizard.querySelector("[data-w-hostname]").value.trim(),
+            port: Number(wizard.querySelector("[data-w-port]").value || 22),
+            username: wizard.querySelector("[data-w-username]").value.trim(),
+            auth_type: auth,
+            default_cwd: wizard.querySelector("[data-w-cwd]").value.trim(),
+          };
+          if (secret && secret.trim()) patch.secret = secret;
+          const pass = wizard.querySelector("[data-w-passphrase]").value;
+          if (auth === "key" && pass) patch.passphrase = pass;
+          await api(`/hosts/${wizardHostId}`, { method: "PATCH", body: JSON.stringify(patch) });
+          wizardProbe = null;
+          const fp = wizard.querySelector("[data-w-fingerprint]");
+          if (fp) fp.hidden = true;
+          await reload();
+          setStep(3);
+          return;
+        }
         if (!secret || !secret.trim()) {
           showErr(wizardError, auth === "key" ? "Paste a private key." : "Enter the SSH password.");
           return;

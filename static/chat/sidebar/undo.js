@@ -316,8 +316,19 @@ export function createUndo(ctx) {
       from: "Delete this message and everything after it? /undo restores it.",
       after: "Keep messages up to here and drop everything after? /undo restores it.",
     };
+    // The transcript can change while the dialog is open (another tab, a
+    // reconcile): re-find the confirmed message by identity, never reuse the
+    // old index, or the wrong message or tail is deleted.
+    const thread = S.currentId;
+    const target = S.messages[index];
+    const targetId = target && target.id;
     if (!(await askConfirm(prompts[mode] || prompts.one, { confirmLabel: "Delete", danger: true }))) return;
-    deleteAt(index, mode);
+    const now = targetId ? S.messages.findIndex((msg) => msg && msg.id === targetId) : (S.messages[index] === target ? index : -1);
+    if (S.currentId !== thread || now < 0) {
+      picker.setHint("The chat changed while you confirmed; nothing was deleted.", true);
+      return;
+    }
+    deleteAt(now, mode);
   }
 
     function rewindTo(index) {

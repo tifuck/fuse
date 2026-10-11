@@ -363,15 +363,24 @@
       holder.querySelector("[data-fp-preview-path]").textContent = draft.path || "Choose a folder";
     };
 
+    // The machine the folder default came from. The form's input listener has
+    // already captured the new host by the time "change" fires.
+    let lastHostId = draft.hostId;
+    // Set once a create succeeds, so a retry after a failed logo upload
+    // updates that project instead of POSTing a duplicate.
+    let createdProject = null;
+
     function bind() {
       const f = form();
+      lastHostId = draft.hostId;
       f.addEventListener("input", () => {
         capture();
         repaintPreview();
       });
       f.elements.host?.addEventListener("change", () => {
-        const prev = hostById(draft.hostId);
+        const prev = hostById(lastHostId);
         capture();
+        lastHostId = draft.hostId;
         const next = hostById(draft.hostId);
         if (!f.elements.remote_path.value || (prev && f.elements.remote_path.value === prev.default_cwd)) {
           f.elements.remote_path.value = (next && next.default_cwd) || "";
@@ -447,9 +456,11 @@
           color: draft.color,
         };
         try {
-          let saved = project
-            ? await api(`/hosts/${draft.hostId}/projects/${project.id}`, { method: "PATCH", body: JSON.stringify(body) })
+          const existing = project || createdProject;
+          let saved = existing
+            ? await api(`/hosts/${draft.hostId}/projects/${existing.id}`, { method: "PATCH", body: JSON.stringify(body) })
             : await api(`/hosts/${draft.hostId}/projects`, { method: "POST", body: JSON.stringify(body) });
+          if (!project) createdProject = saved;
           if (draft.logoData) {
             saved = await api(`/hosts/${draft.hostId}/projects/${saved.id}/logo`, { method: "PUT", body: JSON.stringify({ data: draft.logoData }) });
           } else if (draft.logoCleared && project && project.logo_url) {

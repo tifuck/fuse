@@ -895,8 +895,13 @@ import { createBoot } from './chat/boot.js';
         const index = Number(editBtnEl.getAttribute("data-queue-edit"));
         const item = S.queuedTurns[index];
         if (!item || item.sending) return;
+        // Queue what is in the box first: if that cannot be saved, editing
+        // would overwrite it with the queued text and lose it.
+        if ((S.input.value.trim() || S.pendingAttachments.length) && !turns.enqueueTurn(S.input.value, S.pendingAttachments)) {
+          picker.setHint("Could not queue the message in the box (browser storage is full or blocked).", true);
+          return;
+        }
         turns.removeQueuedTurn(index);
-        if (S.input.value.trim() || S.pendingAttachments.length) turns.enqueueTurn(S.input.value, S.pendingAttachments);
         S.input.value = item.text;
         S.pendingAttachments = (item.attachments || []).slice();
         composer.renderAttachList();
