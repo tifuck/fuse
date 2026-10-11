@@ -175,12 +175,11 @@ async def _with_beats(awaitable):
             except Exception as exc:
                 yield ("err", exc)
             return
-    except asyncio.CancelledError:
+    finally:
         if not task.done():
             task.cancel()
-            with contextlib.suppress(Exception, asyncio.CancelledError):
-                await task
-        raise
+        with contextlib.suppress(Exception, asyncio.CancelledError):
+            await task
 
 
 async def _heartbeat_sleep(delay: float):

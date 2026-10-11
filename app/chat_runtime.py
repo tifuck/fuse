@@ -869,12 +869,13 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 snap["parts"] = context_meter._fit_parts(snap["parts"], snap["used"])
             return snap
 
-        def _persist_meter(snap: dict):
+        async def _persist_meter(snap: dict):
+            from .async_work import durable_call
             if is_child and run_id:
                 try:
                     from . import chat_store as store
 
-                    store.save_child_meter(str(run_id), {**snap, "scope": "prompt", "run_id": run_id})
+                    await durable_call(store.save_child_meter, str(run_id), {**snap, "scope": "prompt", "run_id": run_id})
                 except Exception:
                     logger.exception("Could not persist child context meter")
                 return
@@ -883,13 +884,13 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             try:
                 from . import chat_store as store
 
-                store.save_meter(user["id"], thread_id, {**snap, "scope": "prompt", "run_id": run_id})
+                await durable_call(store.save_meter, user["id"], thread_id, {**snap, "scope": "prompt", "run_id": run_id})
             except Exception:
                 logger.exception("Could not persist context meter")
 
         boot = _live_meter(estimated=True)
         yield _sse(context_meter.context_event(boot, phase="start"))
-        _persist_meter(boot)
+        await _persist_meter(boot)
         if context_meter.should_auto_compact(
             # Boot measures the exact payload about to be sent, not a
             # transient mid-turn estimate; the spike guard does not apply.
@@ -926,7 +927,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 yield _sse(ctxmod.compact_handoff_event(ctxmod.prior_handoff(current_messages)))
             else:
                 yield _sse(context_meter.context_event(boot, phase="update"))
-            _persist_meter(boot)
+            await _persist_meter(boot)
         await persist_jobs()
         completion_i = start_i
         # Trace ids are ts_<round>_<call> within one message. A same-message
@@ -1034,7 +1035,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     last_compact_used = preflight["used"] if preflight["used"] >= int(before_compact_used * 0.95) else None
                     yield _sse(ctxmod.compact_handoff_event(ctxmod.prior_handoff(current_messages)))
                 yield _sse(context_meter.context_event(preflight, phase="compacted" if kind in ("summarize", "truncate") else "update"))
-                _persist_meter(preflight)
+                await _persist_meter(preflight)
                 await persist_jobs()
             _user = user
             src = None
@@ -1074,7 +1075,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     request_meter = context_meter.calibrate_meter(request_meter, calibration)
                 request_meter.update(scope="prompt", run_id=run_id, source_type=src_type or src_type_guess)
                 yield _sse(context_meter.context_event(request_meter, phase="request"))
-                _persist_meter(request_meter)
+                await _persist_meter(request_meter)
                 # Provider cache lifetimes run from the request that used the
                 # prefix, not from when its reply finished streaming.
                 round_sent_at = time.time()
@@ -1082,16 +1083,17 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     _user = src = upstream = requested = result = None
                     # `invoked`, not `payload`: the loop variable must not
                     # shadow the request payload gen() was built from.
-                    async for kind, invoked in _with_beats(api.invoke_chat(
+                    async with contextlib.aclosing(_with_beats(api.invoke_chat(
                         request, user, send, image_snapshot=prompt_snapshot.setdefault("images", {}),
                         prepared=persist_jobs,
-                    )):
-                        if kind == "beat":
-                            yield _sse({"fuse": {"event": "heartbeat"}})
-                            continue
-                        if kind == "err":
-                            raise invoked
-                        _user, src, upstream, requested, result = invoked
+                    ))) as invocation:
+                        async for kind, invoked in invocation:
+                            if kind == "beat":
+                                yield _sse({"fuse": {"event": "heartbeat"}})
+                                continue
+                            if kind == "err":
+                                raise invoked
+                            _user, src, upstream, requested, result = invoked
                 except HTTPException as exc:
                     if _is_idle_timeout(str(exc.detail)):
                         idle_stalls += 1
@@ -1124,7 +1126,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                             attempts=MAX_RESUME_RETRIES - resumes_left,
                         )
                     )
-                    _snap = _live_meter(); yield _sse(context_meter.context_event(_snap, phase="end")); _persist_meter(_snap)
+                    _snap = _live_meter(); yield _sse(context_meter.context_event(_snap, phase="end")); await _persist_meter(_snap)
                     yield b"data: [DONE]\n\n"
                     return
                 shed = (getattr(result, "response_headers", None) or {}).get("X-Fuse-Images-Shed")
@@ -1217,7 +1219,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                         }
                     )
                     yield _sse(_error_obj(result.status, result.body))
-                    _snap = _live_meter(); yield _sse(context_meter.context_event(_snap, phase="end")); _persist_meter(_snap)
+                    _snap = _live_meter(); yield _sse(context_meter.context_event(_snap, phase="end")); await _persist_meter(_snap)
                     yield b"data: [DONE]\n\n"
                     return
                 break
@@ -1255,7 +1257,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                         yield frame
                     continue
                 yield _sse(_exhausted_provider_error(is_child, result.body, result.status, attempts=MAX_RESUME_RETRIES - resumes_left))
-                _snap = _live_meter(); yield _sse(context_meter.context_event(_snap, phase="end")); _persist_meter(_snap)
+                _snap = _live_meter(); yield _sse(context_meter.context_event(_snap, phase="end")); await _persist_meter(_snap)
                 yield b"data: [DONE]\n\n"
                 return
             diag = {
@@ -1329,7 +1331,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     await persist_jobs()
                     continue
                 yield _sse(_exhausted_provider_error(is_child, {"error": {"message": err_msg, "code": 502}}, attempts=MAX_RESUME_RETRIES - resumes_left))
-                _snap = _live_meter(); yield _sse(context_meter.context_event(_snap, phase="end")); _persist_meter(_snap)
+                _snap = _live_meter(); yield _sse(context_meter.context_event(_snap, phase="end")); await _persist_meter(_snap)
                 yield b"data: [DONE]\n\n"
                 return
             summary = _promote_provider_content_error(
@@ -1360,7 +1362,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             if missed:
                 cache_warned = True
                 yield _sse({"fuse": {**missed, "run_id": run_id}})
-            _persist_meter({**round_meter, "cache_probe": probe} if probe else round_meter)
+            await _persist_meter({**round_meter, "cache_probe": probe} if probe else round_meter)
             if summary.get("error"):
                 raw_err = summary["error"] if isinstance(summary["error"], dict) else {"error": {"message": str(summary["error"])}}
                 err_code, err_msg = _error_code_and_message(raw_err)
@@ -1401,7 +1403,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     await persist_jobs()
                     continue
                 yield _sse(_exhausted_provider_error(is_child, raw_err, attempts=MAX_RESUME_RETRIES - resumes_left))
-                _snap = _live_meter(); yield _sse(context_meter.context_event(_snap, phase="end")); _persist_meter(_snap)
+                _snap = _live_meter(); yield _sse(context_meter.context_event(_snap, phase="end")); await _persist_meter(_snap)
                 yield b"data: [DONE]\n\n"
                 return
             # The round came back intact: the retry budget is per step, so a
@@ -1500,7 +1502,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 if is_child:
                     message = "Subagent stopped: " + message[0].lower() + message[1:]
                 yield _sse(_error_obj(502, {"error": {"message": message}}))
-                _snap = _live_meter(); yield _sse(context_meter.context_event(_snap, phase="end")); _persist_meter(_snap)
+                _snap = _live_meter(); yield _sse(context_meter.context_event(_snap, phase="end")); await _persist_meter(_snap)
                 yield b"data: [DONE]\n\n"
                 return
             if force and calls and not is_child and not coding:
@@ -1605,7 +1607,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 # tool_msgs are already in current_messages: count once.
                 tool_meter = _live_meter(usage=summary.get("usage"))
                 yield _sse(context_meter.context_event(tool_meter, phase="tools"))
-                _persist_meter(tool_meter)
+                await _persist_meter(tool_meter)
                 do_compact = context_meter.should_auto_compact(
                     tool_meter["used"],
                     tool_meter["limit"],
@@ -1652,7 +1654,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                         stored_meter = tool_meter
                         yield _sse(ctxmod.compact_handoff_event(ctxmod.prior_handoff(current_messages)))
                     yield _sse(context_meter.context_event(tool_meter, phase="compacted" if real else "update"))
-                    _persist_meter(tool_meter)
+                    await _persist_meter(tool_meter)
                 if (
                     session.pop("project_promoted", None)
                     and current_messages
@@ -1777,7 +1779,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
         if total_usage:
             yield _sse({"usage": total_usage, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
         _snap = _live_meter(usage=(summary or {}).get("usage"))
-        yield _sse(context_meter.context_event(_snap, phase="end")); _persist_meter(_snap)
+        yield _sse(context_meter.context_event(_snap, phase="end")); await _persist_meter(_snap)
         yield b"data: [DONE]\n\n"
 
     return StreamingResponse(
