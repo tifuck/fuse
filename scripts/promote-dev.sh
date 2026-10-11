@@ -12,6 +12,11 @@ DEV_BRANCH="${FUSE_DEV_BRANCH:-dev}"
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || die "run as root"
+
+# One promotion at a time: the checks below and the commit/merge after them
+# must not interleave with another run.
+exec 9>/run/lock/fuse-promote.lock
+flock -n 9 || die "another promotion is running"
 git -C "$PROD" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "production is not a git repo: $PROD"
 git -C "$DEV" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "development worktree missing: $DEV"
 [ "$PROD" != "$DEV" ] || die "dev and production are the same directory"
@@ -52,13 +57,18 @@ for path in pathlib.Path(dev, "templates").rglob("*.html"):
 if bumped:
     print("cache bust:", ", ".join(sorted(set(bumped))))
 PY
-if ! git -C "$DEV" diff --quiet; then
+if ! git -C "$DEV" diff --quiet -- templates; then
   git -C "$DEV" add templates
-  git -C "$DEV" commit -m "Bump static cache versions for files changed since production"
+  # Pathspec-limited: anything else staged meanwhile is not swept in.
+  git -C "$DEV" commit -m "Bump static cache versions for files changed since production" -- templates
 fi
+# Promote exactly this commit, checked again for a clean tree.
+DEV_SHA="$(git -C "$DEV" rev-parse HEAD)"
+git -C "$DEV" diff --quiet && git -C "$DEV" diff --cached --quiet || die "development changed during promotion; rerun"
 
 cd "$PROD"
 git fetch "$DEV" "$DEV_BRANCH"
+[ "$(git rev-parse FETCH_HEAD)" = "$DEV_SHA" ] || die "$DEV_BRANCH moved during promotion; rerun"
 git merge-base --is-ancestor "$PROD_BRANCH" FETCH_HEAD || die "$DEV_BRANCH is not a fast-forward of $PROD_BRANCH; rebase dev onto main first"
 [ "$(git rev-parse HEAD)" = "$(git rev-parse FETCH_HEAD)" ] && die "nothing to promote"
 
@@ -68,14 +78,18 @@ BEFORE="$(git rev-parse --short HEAD)"
 # code whose deps are missing. The merge brings the requirements file itself.
 # A failed dry run (resolver or index error) proves nothing: refuse, do not
 # read its silence as "nothing to install".
-DRY_RUN="$("$PROD/venv/bin/python" -m pip install --dry-run -r "$DEV/requirements.txt" 2>&1)" \
+# The requirements of the commit being promoted, not the mutable worktree.
+REQS="$(mktemp)"
+trap 'rm -f "$REQS"' EXIT
+git -C "$DEV" show "$DEV_SHA:requirements.txt" > "$REQS"
+DRY_RUN="$("$PROD/venv/bin/python" -m pip install --dry-run -r "$REQS" 2>&1)" \
   || die "pip could not check requirements.txt against $PROD/venv:
 $DRY_RUN"
 if grep -q "Would install" <<<"$DRY_RUN"; then
   die "requirements.txt changed; install it into $PROD/venv before promoting"
 fi
 "$PROD/backup-db.sh"
-git merge --ff-only FETCH_HEAD
+git merge --ff-only "$DEV_SHA"
 AFTER="$(git rev-parse --short HEAD)"
 
 systemctl restart fuse

@@ -72,6 +72,9 @@ def main():
                     "--routines",
                     "--triggers",
                     "--skip-lock-tables",
+                    # Same as backup_mariadb: chat_runs rows exceed the default
+                    # packet, and the server drops the dump mid-table (2013).
+                    "--max-allowed-packet=1G",
                     SOURCE,
                 ],
                 stdout=subprocess.PIPE,
@@ -85,7 +88,7 @@ def main():
         dump_err = []
         reader = threading.Thread(target=lambda: dump_err.append(dump.stderr.read()), daemon=True)
         reader.start()
-        load = subprocess.Popen([*base, TARGET], stdin=dump.stdout, stderr=subprocess.PIPE)
+        load = subprocess.Popen([*base, "--max-allowed-packet=1G", TARGET], stdin=dump.stdout, stderr=subprocess.PIPE)
         dump.stdout.close()
         load_err = load.communicate()[1]
         dump_status = dump.wait()

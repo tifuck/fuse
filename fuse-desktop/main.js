@@ -12,13 +12,32 @@ const BACKGROUND = "#141615";
 const CUSTOM_FRAME = process.platform !== "darwin";
 const TITLEBAR_HEIGHT = CUSTOM_FRAME ? 34 : 0;
 
-if (process.env.APPIMAGE) {
-  app.commandLine.appendSwitch("no-sandbox");
-} else if (process.platform === "linux" && process.getuid() !== 0) {
-  try {
-    const helper = path.join(path.dirname(process.execPath), "chrome-sandbox");
-    if (!(statSync(helper).mode & 0o4000)) app.commandLine.appendSwitch("no-sandbox");
-  } catch {}
+// Chromium sandboxes through user namespaces when it can, else through the
+// setuid chrome-sandbox helper. Only when neither is available (AppImage or a
+// stripped helper on a kernel that restricts unprivileged user namespaces)
+// is the sandbox turned off; it used to be off for every AppImage.
+function userNamespacesUsable() {
+  const flag = (file) => {
+    try {
+      return readFileSync(file, "utf8").trim();
+    } catch {
+      return null;
+    }
+  };
+  if (flag("/proc/sys/kernel/unprivileged_userns_clone") === "0") return false;
+  if (flag("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") === "1") return false;
+  return true;
+}
+
+if (process.platform === "linux" && process.getuid() !== 0) {
+  let setuidHelper = false;
+  if (!process.env.APPIMAGE) {
+    try {
+      const helper = path.join(path.dirname(process.execPath), "chrome-sandbox");
+      setuidHelper = Boolean(statSync(helper).mode & 0o4000);
+    } catch {}
+  }
+  if (!setuidHelper && !userNamespacesUsable()) app.commandLine.appendSwitch("no-sandbox");
 }
 
 let win = null;
@@ -229,6 +248,17 @@ function createWindow() {
     if (url !== wc.getURL() && originOf(url) !== APP_ORIGIN) {
       event.preventDefault();
       openExternalSafe(url);
+    }
+  });
+  // will-navigate does not see server redirects: an in-origin URL that
+  // redirects elsewhere would otherwise render a foreign site in this window.
+  wc.on("will-redirect", (event, url, _inPlace, isMainFrame) => {
+    // Newer Electron puts the details on the event; older passes them positionally.
+    const target = event.url || url;
+    const main = event.isMainFrame !== undefined ? event.isMainFrame : isMainFrame;
+    if (main && originOf(target) !== APP_ORIGIN) {
+      event.preventDefault();
+      openExternalSafe(target);
     }
   });
 
