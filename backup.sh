@@ -25,10 +25,12 @@ ITEMS=(
   AGENTS.md
   install.sh
   backup.sh
+  backup-db.sh
   fuse-desktop/.github
   fuse-desktop/build
   fuse-desktop/scripts
   fuse-desktop/main.js
+  fuse-desktop/titlebar
   fuse-desktop/package.json
   fuse-desktop/package-lock.json
   fuse-desktop/electron-builder.yml

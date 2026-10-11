@@ -15,6 +15,8 @@ say()  { printf '\n=== %s\n' "$*"; }
 warn() { printf 'WARNING: %s\n' "$*" >&2; }
 die()  { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
+[[ "$FUSE_HOME" =~ ^/[a-zA-Z0-9_./-]+$ ]] || die "Install path contains unsupported systemd characters; use letters, digits, /, _, . or -."
+
 usage() {
   cat <<'USAGE'
 Usage: ./install.sh [options]
@@ -75,8 +77,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=$FUSE_HOME
+Environment="PORT=8088" "FORWARDED_ALLOW_IPS=127.0.0.1"
 EnvironmentFile=$FUSE_HOME/.env
-ExecStart=$FUSE_HOME/venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port \${PORT:-8088} --workers 1 --limit-concurrency 256 --timeout-graceful-shutdown 8 --ws-max-size 1048576 --ws-max-queue 32 --proxy-headers --forwarded-allow-ips \${FORWARDED_ALLOW_IPS:-127.0.0.1} --ssl-certfile $FUSE_HOME/certs/server.crt --ssl-keyfile $FUSE_HOME/certs/server.key
+ExecStart=$FUSE_HOME/venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port \${PORT} --workers 1 --limit-concurrency 256 --timeout-graceful-shutdown 8 --ws-max-size 1048576 --ws-max-queue 32 --proxy-headers --forwarded-allow-ips \${FORWARDED_ALLOW_IPS} --ssl-certfile $FUSE_HOME/certs/server.crt --ssl-keyfile $FUSE_HOME/certs/server.key
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=20

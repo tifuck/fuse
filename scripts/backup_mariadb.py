@@ -9,6 +9,7 @@ import tempfile
 import threading
 from datetime import datetime, timezone
 from urllib.parse import urlsplit, unquote
+from uuid import uuid4
 
 from app.config import settings
 
@@ -17,7 +18,7 @@ def backup(directory):
     root = Path(directory)
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    target = root / f"fuse-mariadb-{stamp}.sql.gz"
+    target = root / f"fuse-mariadb-{stamp}-{uuid4().hex}.sql.gz"
     partial = target.with_suffix(".partial")
     parsed = urlsplit(settings.database_url)
     def quote(value):
@@ -39,8 +40,10 @@ def backup(directory):
         stderr_buf = []
         drain = threading.Thread(target=lambda: stderr_buf.append(proc.stderr.read()), daemon=True)
         drain.start()
+        created = False
         try:
             fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            created = True
             with os.fdopen(fd, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb") as stream:
                 while block := proc.stdout.read(1024 * 1024):
                     stream.write(block)
@@ -53,7 +56,8 @@ def backup(directory):
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
-            partial.unlink(missing_ok=True)
+            if created:
+                partial.unlink(missing_ok=True)
     with target.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
     target.with_suffix(target.suffix + ".sha256").write_text(f"{digest}  {target.name}\n")

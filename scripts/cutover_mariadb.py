@@ -41,16 +41,21 @@ def cutover(database):
     (root / "migration-report.json").write_text(json.dumps(report, indent=2))
     url = urlunsplit(urlsplit(settings.database_url)._replace(path="/" + database))
     env = (ROOT / ".env").read_text()
-    env = re.sub(r"(?m)^DATABASE_URL=.*$", "DATABASE_URL=" + url, env)
+    env, replaced = re.subn(r"(?m)^DATABASE_URL=.*$", lambda _: "DATABASE_URL=" + url, env)
+    if not replaced:
+        env = env.rstrip() + "\nDATABASE_URL=" + url + "\n"
     env = re.sub(r"(?m)^DATABASE_MARIADB_ENABLED=.*\n?", "", env)
     env = env.rstrip() + "\nDATABASE_MARIADB_ENABLED=true\n"
     temporary = ROOT / ".env.mariadb.tmp"
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w") as stream:
-        stream.write(env)
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, ROOT / ".env")
+    try:
+        with os.fdopen(fd, "w") as stream:
+            stream.write(env)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, ROOT / ".env")
+    finally:
+        temporary.unlink(missing_ok=True)
     print(f"Verified migration and selected MariaDB. Backup: {root}")
 
 
