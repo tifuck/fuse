@@ -33,6 +33,15 @@ def durable_state_cursor(run_id: str) -> int | None:
     return _state_cursors.get(str(run_id))
 
 
+def state_cursor_snapshot() -> dict[str, int]:
+    """Stamps to use for one snapshot; take them BEFORE its transaction's
+    first read. A stamp is set only after its row write commits, so a stamp
+    taken first is covered by any row the later snapshot sees. A stamp read
+    after the snapshot can belong to a newer row the snapshot cannot see,
+    and clamping to it would skip patches the returned row lacks."""
+    return dict(_state_cursors)
+
+
 def state_write_pending(run_id) -> bool:
     return run_id in _state_dirty
 

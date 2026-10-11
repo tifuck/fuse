@@ -794,7 +794,16 @@ def accepted_commands(conn, user_id, thread_id, queued):
     return accepted
 
 
-def thread_view(conn, user_id, thread_id, *, queued=()):
+def _durable_cursor(run_id, stamps):
+    from . import chat_checkpoint
+
+    run_id = str(run_id)
+    if stamps is not None and run_id in stamps:
+        return stamps[run_id]
+    return chat_checkpoint.durable_state_cursor(run_id)
+
+
+def thread_view(conn, user_id, thread_id, *, queued=(), stamps=None):
     from . import chat_checkpoint
     from . import chats
 
@@ -854,7 +863,7 @@ def thread_view(conn, user_id, thread_id, *, queued=()):
     if result.get("run") and result["run"].get("status") in chat_tx.ACTIVE:
         # Same contract as get_run_snapshot: an active run's embedded message
         # is only durable up to its stamped cursor; replay the gap.
-        stamped = chat_checkpoint.durable_state_cursor(str(result["run"]["id"]))
+        stamped = _durable_cursor(result["run"]["id"], stamps)
         if stamped is not None and stamped < result["event_cursor"]:
             result["event_cursor"] = stamped
     # Per-thread watermark: reconciles can short-circuit while OTHER threads'
@@ -1090,6 +1099,7 @@ def get_run(user_id, run_id):
 def get_run_snapshot(user_id, run_id):
     """Message, execution projections, and replay watermark from one snapshot."""
     from . import chat_checkpoint
+    stamps = chat_checkpoint.state_cursor_snapshot()
     with db.tx() as conn:
         conn.execute("BEGIN")
         run = run_view(conn.execute("SELECT * FROM chat_runs WHERE user_id=? AND id=?", (user_id, run_id)).fetchone())
@@ -1101,7 +1111,7 @@ def get_run_snapshot(user_id, run_id):
             # The durable row may lag published patches (state writes are
             # throttled). Report the cursor the row actually covers so the
             # panel replays the gap instead of skipping it.
-            stamped = chat_checkpoint.durable_state_cursor(str(run_id))
+            stamped = _durable_cursor(run_id, stamps)
             if stamped is not None and stamped < run["event_cursor"]:
                 run["event_cursor"] = stamped
         settle_spawn_traces(conn, user_id, [run["message"]])

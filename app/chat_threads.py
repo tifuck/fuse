@@ -386,8 +386,10 @@ def search_threads(user_id: int, q: str, *, archived: bool = False) -> list[dict
     return out
 def get_thread(user_id: int, thread_id, *, observed_cursor: int | None = None, observed_thread_cursor: int | None = None,
                queued=()):
-    from . import chat_store
+    from . import chat_checkpoint, chat_store
 
+    # Before the transaction's first read; see state_cursor_snapshot.
+    stamps = chat_checkpoint.state_cursor_snapshot()
     with db.tx() as conn:
         conn.execute("BEGIN")
         pk = resolve_thread_pk(user_id, thread_id, conn)
@@ -408,7 +410,7 @@ def get_thread(user_id: int, thread_id, *, observed_cursor: int | None = None, o
             cursor = int(high[0]) if high else 0
             if cursor == observed_cursor:
                 return {"unchanged": True, "event_cursor": cursor}
-        return chat_store.thread_view(conn, user_id, pk, queued=queued)
+        return chat_store.thread_view(conn, user_id, pk, queued=queued, stamps=stamps)
 def create_thread(
     user_id: int,
     *,
