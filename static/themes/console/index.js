@@ -445,6 +445,7 @@ export function createConsoleTheme(runtime) {
   }));
   Object.assign(theme, createWorkPanels({
     get agentActivitySummary() { return runtime.agentActivitySummary; },
+    get agentResumeAvailable() { return runtime.agentResumeAvailable; },
     get agentDurationSeconds() { return runtime.agentDurationSeconds; },
     get agentIsStalled() { return runtime.agentIsStalled; },
     get agentLive() { return runtime.agentLive; },
@@ -461,6 +462,7 @@ export function createConsoleTheme(runtime) {
   return {
     ACTION_ICONS: theme.ACTION_ICONS,
     FILE_CHIP_ICON: theme.FILE_CHIP_ICON,
+    agentMainRowHtml: theme.agentMainRowHtml,
     agentRowHtml: theme.agentRowHtml,
     compactionMarkHtml: theme.compactionMarkHtml,
     consoleSpinGlyph: theme.consoleSpinGlyph,

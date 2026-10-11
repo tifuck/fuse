@@ -129,20 +129,6 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-liv
   transform: none;
 }
 
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-agent-live-dock {
-  box-sizing: border-box;
-  min-height: 0;
-  padding-block: 0.28rem max(0.2rem, env(safe-area-inset-bottom));
-}
-
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-agent-live-dock {
-  gap: 0.45rem;
-  padding-inline: var(--console-gutter);
-  font: var(--console-type)/var(--console-leading) var(--mono);
-  font-style: normal;
-  letter-spacing: 0;
-  color: color-mix(in srgb, var(--mist) 70%, var(--ink));
-}
 
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-dock, .chat-agent-live-dock) .chat-activity-spin {
   display: grid;

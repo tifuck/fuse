@@ -466,18 +466,20 @@
 .chat-perms-modes button:disabled { opacity: 0.45; cursor: not-allowed; }
 .chat-perms-modes button:focus-visible { outline: 2px solid var(--steel); outline-offset: 1px; }
 .chat-perms-hint { margin: 0; color: var(--mute); font-size: 0.7rem; line-height: 1.4; }
-/* Phones: the same full-screen sheet as the model picker (size, head,
-   motion and swipe-to-close are shared with it above), with touch-sized
-   rows and remove buttons. */
+/* Phones: a bottom sheet with the model picker's head, motion and
+   swipe-to-close, as tall as its few rows (the model list needs the whole
+   screen; this one does not), with touch-sized rows and remove buttons. A
+   tap above it closes it. */
 .chat-perms-menu.is-sheet {
   position: fixed;
-  inset: 0;
+  inset: auto 0 0;
   z-index: 68;
   width: auto;
   max-width: none;
-  max-height: none;
-  height: var(--vv-height, 100dvh);
+  max-height: calc(var(--vv-height, 100dvh) - 3rem);
+  height: auto;
   border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--mist) 18%, var(--line));
   border-radius: 0;
   box-shadow: none;
   animation: none;

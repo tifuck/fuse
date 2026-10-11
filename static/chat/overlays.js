@@ -92,7 +92,6 @@ export function createOverlays(ctx) {
     } else if (kind === "memory") panels.setMemoryOpen(false);
     else if (kind === "skills") panels.setSkillsOpen(false);
     else if (kind === "perms") perms.setPermsOpen(false);
-    else if (kind === "agents") agents.setAgentsOpen(false);
     else if (kind === "artifact") artifacts.setArtifactOpen(false);
     else if (kind === "picker") picker.closePicker();
     else if (kind === "history") sidebar.setHistoryOpen(false);
@@ -101,7 +100,6 @@ export function createOverlays(ctx) {
     else if (kind === "search") sidebar.setSearchOpen(false);
     else if (kind === "pop") closePop();
     else if (kind === "context") context.closeContextPop();
-    else if (kind === "agent-context") agents.closeAgentContextPop();
     else if (kind === "lightbox") panels.closeLightbox();
   }
 

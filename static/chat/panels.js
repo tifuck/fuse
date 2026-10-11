@@ -229,7 +229,6 @@ export function createPanels(ctx) {
     if (S.skillsOpen) {
       if (S.memoryOpen) setMemoryOpen(false);
       if (S.artifactOpen) artifacts.setArtifactOpen(false);
-      if (S.agentsOpen) agents.setAgentsOpen(false);
       perms.setPermsOpen(false);
       if (overlays.overlayIsMobile()) sidebar.setHistoryOpen(false);
       picker.closePicker();
@@ -300,7 +299,6 @@ export function createPanels(ctx) {
     if (open) {
       if (overlays.overlayIsMobile()) sidebar.setHistoryOpen(false);
       if (S.artifactOpen) artifacts.setArtifactOpen(false);
-      if (S.agentsOpen) agents.setAgentsOpen(false);
       if (S.skillsOpen) setSkillsOpen(false);
       picker.closePicker();
       overlays.overlayPush("memory");

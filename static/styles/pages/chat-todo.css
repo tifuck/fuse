@@ -23,21 +23,22 @@
   color: var(--mist);
   font: var(--console-type, 0.78rem)/var(--console-leading, 1.4) var(--mono);
 }
-.chat .chat-dock > .chat-live-todos:not([hidden]) {
+/* Both trays hang off the composer's top edge; the one for the transcript
+   on screen shows (the main agent's, or the open subagent's). */
+.chat .chat-dock > :is(.chat-live-todos, .chat-agent-live-todos):not([hidden]) {
   position: absolute;
   left: 0;
   right: 0;
   bottom: 100%;
 }
-.chat .chat-agent-live-todos:not([hidden]) { --todo-edge: var(--line); }
+.chat.is-agent-view .chat-dock > .chat-live-todos { display: none !important; }
+/* The composer's own popovers (model picker, permissions, context) open
+   upward over the tab, never under it. */
+.chat .chat-dock > .chat-box { z-index: 7; }
 /* Collapsed, the tab only hovers over the last row. Open, the transcript
    makes room for the drawer's page (todos.js measures it into --todo-push;
    the tab is not counted, it stays on the last row), so the chat ends where
-   the list begins. */
-html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty):has(.chat-dock > .chat-live-todos.is-open:not([hidden])) .chat-thread > .chat-live-dock:not([hidden]),
-html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty):has(.chat-dock > .chat-live-todos.is-open:not([hidden])) .chat-thread:not(:has(> .chat-live-dock:not([hidden]))) > .chat-log {
-  padding-bottom: calc(1rem + var(--todo-push, 0px));
-}
+   the list begins. The console theme sets the exact spacing. */
 
 /* The sheet: hangs from the anchor line, the tab on top, the page under it. */
 .chat .chat-todo-sheet {
@@ -66,11 +67,10 @@ html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty):has(.ch
   border-bottom: 0;
   border-radius: var(--todo-radius) var(--todo-radius) 0 0;
   background: var(--todo-surface);
-  animation: chat-todo-in var(--dur-2) var(--ease-snap) both;
-  transition: border-color var(--dur-2) ease;
+  animation: chat-todo-in var(--dur-2) ease-out both;
 }
 @keyframes chat-todo-in {
-  from { opacity: 0; transform: translateY(40%); }
+  from { opacity: 0; transform: translateY(3px); }
   to { opacity: 1; transform: none; }
 }
 /* Progress: a hairline along the tab's top edge, as wide as the finished share. */
@@ -84,29 +84,10 @@ html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty):has(.ch
   background: var(--brass);
   transition: width 600ms var(--ease-glide);
 }
-/* An update: a light sweep across the tab, a bright edge that fades, and the
-   count rolls in. */
-.chat .chat-todo-bar::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--brass) 28%, transparent) 50%, transparent);
-  transform: translateX(-100%);
-  pointer-events: none;
-}
-.chat .chat-todo-bar.is-updated { animation: chat-todo-edge 1.4s ease-out; }
-.chat .chat-todo-bar.is-updated::before { animation: chat-todo-sweep 850ms var(--ease-glide); }
-.chat .chat-todo-bar.is-updated .chat-todo-count { animation: chat-todo-count 420ms var(--ease-snap); }
-@keyframes chat-todo-edge {
-  0%, 30% { border-color: var(--brass); box-shadow: 0 0 14px color-mix(in srgb, var(--brass) 30%, transparent); }
-  100% { border-color: var(--todo-edge); box-shadow: none; }
-}
-@keyframes chat-todo-sweep {
-  from { transform: translateX(-100%); }
-  to { transform: translateX(100%); }
-}
+/* An update: the new count rolls in; the hairline above grows to match. */
+.chat .chat-todo-bar.is-updated .chat-todo-count { animation: chat-todo-count 280ms ease-out; }
 @keyframes chat-todo-count {
-  from { opacity: 0; transform: translateY(0.5em); }
+  from { opacity: 0; transform: translateY(0.35em); }
   to { opacity: 1; transform: none; }
 }
 
@@ -133,7 +114,7 @@ html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty):has(.ch
 }
 .chat .chat-todo-chevron {
   color: var(--mute);
-  transition: transform 320ms var(--ease-glide), color var(--dur-1) ease;
+  transition: transform var(--dur-2) ease, color var(--dur-1) ease;
 }
 .chat .chat-todo-head:hover .chat-todo-chevron { color: var(--mist); }
 .chat :is(.chat-live-todos, .chat-agent-live-todos).is-open .chat-todo-chevron { transform: rotate(180deg); }
@@ -154,25 +135,31 @@ html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty):has(.ch
 .chat .chat-todo-dismiss:hover { color: var(--mist); background: color-mix(in srgb, var(--mist) 8%, transparent); }
 .chat .chat-todo-dismiss:focus-visible { outline: 2px solid var(--brass); outline-offset: -2px; }
 
-/* The page: full width, it grows up out of the composer and carries the tab
-   up on its top edge. Closed, it is zero tall and only the tab shows. */
+/* The page: full width, it opens up out of the composer and carries the tab
+   on its top edge. The transcript makes room for it in the same frame, so
+   the page does not slide (a sliding page fought the transcript's jump); its
+   rows fade up into place instead. Closed, it is zero tall and only the tab
+   shows. */
 .chat .chat-todo-drawer {
   display: grid;
   grid-template-rows: 0fr;
   visibility: hidden;
-  transition: grid-template-rows 360ms var(--ease-glide), visibility 0s linear 360ms;
 }
 .chat :is(.chat-live-todos, .chat-agent-live-todos).is-open .chat-todo-drawer {
   grid-template-rows: 1fr;
   visibility: visible;
-  box-shadow: 0 -16px 32px -12px rgb(0 0 0 / 45%);
-  transition-delay: 0s;
+  box-shadow: 0 -12px 24px -14px rgb(0 0 0 / 50%);
 }
 .chat .chat-todo-clip { min-height: 0; overflow: hidden; }
 .chat .chat-todo-page {
-  padding: 0.3rem 0.35rem 0.4rem;
+  padding: 0.25rem 0.35rem;
   border-top: 1px solid var(--todo-edge);
   background: var(--todo-surface);
+}
+.chat :is(.chat-live-todos, .chat-agent-live-todos).is-open .chat-todo-rows { animation: chat-todo-rows-in 160ms ease-out both; }
+@keyframes chat-todo-rows-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
 }
 .chat .chat-todo-rows {
   position: relative;
@@ -185,13 +172,14 @@ html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty):has(.ch
   list-style: none;
   scrollbar-width: thin;
 }
+/* A row is its text plus an even sliver above and below; wrapped items grow
+   by whole lines. */
 .chat .chat-todo-row {
   display: grid;
   grid-template-columns: var(--console-col, 0.7rem) minmax(0, 1fr);
   column-gap: 0.6rem;
   align-items: start;
-  min-height: var(--todo-row);
-  padding: 0.12rem 0.5rem;
+  padding: 0.1rem 0.5rem;
   border-radius: 5px;
   transition: background var(--dur-2) ease;
 }
@@ -222,15 +210,13 @@ html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty):has(.ch
 
 @media (max-width: 800px) {
   .chat :is(.chat-live-todos, .chat-agent-live-todos):not([hidden]) { --todo-tab-h: 2.2rem; --todo-row: 1.75rem; }
-  .chat .chat-todo-row { padding-block: 0.22rem; }
+  .chat .chat-todo-row { padding-block: 0.18rem; }
   .chat .chat-todo-dismiss { width: 2rem; height: 2rem; }
 }
 @media (prefers-reduced-motion: reduce) {
   .chat .chat-todo-bar,
-  .chat .chat-todo-bar.is-updated,
-  .chat .chat-todo-bar.is-updated::before,
-  .chat .chat-todo-bar.is-updated .chat-todo-count { animation: none; }
-  .chat .chat-todo-drawer,
+  .chat .chat-todo-bar.is-updated .chat-todo-count,
+  .chat :is(.chat-live-todos, .chat-agent-live-todos).is-open .chat-todo-rows { animation: none; }
   .chat .chat-todo-bar::after,
   .chat .chat-todo-chevron { transition: none; }
 }

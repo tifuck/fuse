@@ -69,7 +69,7 @@ export function createStream(ctx) {
       status.notifyTurnDone(event.thread_id, payload, event.type);
     } else if (event.thread_id === S.currentId && event.type === "agent.tick") {
       // Compact progress for subagents this socket is not viewing. Enough
-      // for the Work list and permission asks; the full patch stream of the
+      // for the agent tree and permission asks; the full patch stream of the
       // viewed agent arrives as regular agent.progress.
       if (Array.isArray(payload.permissions)) perms.syncPermQueueFromMessage({ permissions: payload.permissions });
       const row = S.agentsRows.find((item) => String(item.id) === String(payload.run_id));
@@ -77,7 +77,7 @@ export function createStream(ctx) {
         if (Object.prototype.hasOwnProperty.call(payload, "current")) row.current = payload.current;
         row.quiet_s = 0;
         row.updated_at = new Date().toISOString();
-        if (S.agentsOpen && Date.now() - S._agentTickRenderAt > 1000) {
+        if (Date.now() - S._agentTickRenderAt > 1000) {
           S._agentTickRenderAt = Date.now();
           agents.renderAgentsList();
         }

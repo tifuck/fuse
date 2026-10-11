@@ -111,20 +111,16 @@ const out = process.env.TOOL_UI_ARTIFACTS || '/tmp/opencode/tool-redesign';
       fuseToolFixture.mount([{ tools: [{ id: 'work-job', name: 'run_terminal_command', command_id: 'job-linked', status: 'running', state: 'running', background: true, command: 'npm test', output: 'Parent command output' }] }]);
       fuseToolFixture.work([{ id: 'job-linked', command_id: 'job-linked', state: 'running', command: 'npm test', output: 'Parent command output', background: true }]);
     });
-    // The Agents badge counts subagents only; a running command lives in the
-    // strip above the transcript.
-    assert.equal(await page.locator('.chat-agents-bar [data-agents-count]').textContent(), '');
-    assert.equal(await page.locator('.chat-agents-bar').getAttribute('aria-label'), 'Agents');
+    // Without subagents the strip holds only the command: no agent tree.
+    assert.equal(await page.locator('[data-agents-list]').isVisible(), false, 'no agent tree without subagents');
     assert.equal(await page.locator('[data-jobs-list]').isVisible(), true, 'the running command shows in the strip');
-    await page.locator('[data-agents-close]').click();
-    assert.equal(await page.locator('[data-jobs-list]').evaluate(el => el.nextElementSibling.matches('[data-chat-thread]')), true, 'commands stay outside the scrolling transcript');
+    assert.equal(await page.locator('[data-jobs-list]').evaluate(el => el.closest('[data-work-strip]').nextElementSibling.matches('[data-chat-thread]')), true, 'commands stay outside the scrolling transcript');
     await page.locator('[data-show-job="job-linked"]').click();
     const workRow = page.locator('[data-execution="job-linked"]');
     await workRow.waitFor();
     assert.match(await workRow.innerText(), /Running in the background/, 'the job view reveals its transcript row, still running in the background');
     assert.doesNotMatch(await workRow.innerText(), /Parent command output/, 'a running background row shows no output tail in-transcript');
     await page.evaluate(() => fuseToolFixture.work([{ id: 'job-child', command_id: 'job-child', state: 'running', host: 'workstation', cwd: '/repo', command: 'npm run build', output: 'Child command output', background: true }]));
-    await page.locator('[data-agents-close]').click();
     await page.locator('[data-show-job="job-child"]').click();
     const jobDetail = page.locator('.chat-jobs-detail', { hasText: 'Child command output' });
     await jobDetail.waitFor();

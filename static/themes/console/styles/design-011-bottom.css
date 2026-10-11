@@ -26,8 +26,8 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-sen
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box::before { margin-right: 0.2rem; }
 }
 
-/* Todo tab: a thin tab out of the way; the open page has no rule of its own
-   (the tab and the shadow already mark its top). */
+/* Todo tab: a thin tab out of the way. Open, its page has a rule on top
+   that the tab breaks into, like a folder tab. */
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos):not([hidden]) {
   --todo-tab-h: 1.3rem;
 }
@@ -44,20 +44,25 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-tod
   margin: 0 0.1rem 0 -0.3rem;
   font-size: 0.85rem;
 }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-todo-page { border-top: 0; }
-/* The transcript ends above the tab too, open or closed, so the tab never
-   sits on the status line. */
+/* The transcript on screen ends above the tab too, open or closed, so the
+   tab never sits on the status line; open, it also makes room for the page. */
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] { --todo-tab-room: 1.3rem; }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"]:not(.is-empty):has(.chat-dock > .chat-live-todos:not([hidden])) .chat-thread > .chat-live-dock:not([hidden]),
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"]:not(.is-empty):has(.chat-dock > .chat-live-todos:not([hidden])) .chat-thread:not(:has(> .chat-live-dock:not([hidden]))) > .chat-log {
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"]:not(.is-empty):not(.is-agent-view):has(.chat-dock > .chat-live-todos:not([hidden])) [data-chat-thread] > .chat-live-dock:not([hidden]),
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"]:not(.is-empty):not(.is-agent-view):has(.chat-dock > .chat-live-todos:not([hidden])) [data-chat-thread]:not(:has(> .chat-live-dock:not([hidden]))) > .chat-log,
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"].is-agent-view:has(.chat-dock > .chat-agent-live-todos:not([hidden])) [data-agent-view] > .chat-live-dock:not([hidden]),
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"].is-agent-view:has(.chat-dock > .chat-agent-live-todos:not([hidden])) [data-agent-view]:not(:has(> .chat-live-dock:not([hidden]))) > .chat-log {
   padding-bottom: calc(0.6rem + var(--todo-tab-room));
 }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"]:not(.is-empty):has(.chat-dock > .chat-live-todos.is-open:not([hidden])) .chat-thread > .chat-live-dock:not([hidden]),
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"]:not(.is-empty):has(.chat-dock > .chat-live-todos.is-open:not([hidden])) .chat-thread:not(:has(> .chat-live-dock:not([hidden]))) > .chat-log {
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"]:not(.is-empty):not(.is-agent-view):has(.chat-dock > .chat-live-todos.is-open:not([hidden])) [data-chat-thread] > .chat-live-dock:not([hidden]),
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"]:not(.is-empty):not(.is-agent-view):has(.chat-dock > .chat-live-todos.is-open:not([hidden])) [data-chat-thread]:not(:has(> .chat-live-dock:not([hidden]))) > .chat-log {
   padding-bottom: calc(0.6rem + var(--todo-tab-room) + var(--todo-push, 0px));
 }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"].is-agent-view:has(.chat-dock > .chat-agent-live-todos.is-open:not([hidden])) [data-agent-view] > .chat-live-dock:not([hidden]),
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"].is-agent-view:has(.chat-dock > .chat-agent-live-todos.is-open:not([hidden])) [data-agent-view]:not(:has(> .chat-live-dock:not([hidden]))) > .chat-log {
+  padding-bottom: calc(0.6rem + var(--todo-tab-room) + var(--agent-todo-push, 0px));
+}
 /* An open list over a queue: a clear rule between the two. */
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-dock:has(> .chat-live-todos.is-open:not([hidden])) > .chat-queue:not([hidden]) {
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-dock:has(> :is(.chat-live-todos, .chat-agent-live-todos).is-open:not([hidden])) > .chat-queue:not([hidden]) {
   border-top-color: var(--todo-edge, var(--line));
 }
 @media (max-width: 800px) {
@@ -170,62 +175,4 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-que
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-queue-action { min-height: 1.9rem; }
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-queue-more { width: 1.9rem; height: 1.9rem; }
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-queue-menu .chat-queue-action { min-height: 1.7rem; }
-}
-
-/* Background commands: one dense block under the header. On wide screens
-   the label sits beside the rows instead of on a line of its own. */
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-command-strip:not([hidden]) {
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  column-gap: 0.9rem;
-  row-gap: 0;
-  align-items: center;
-  padding: 0.1rem 0.75rem;
-  background: color-mix(in srgb, var(--ink) 92%, var(--panel));
-}
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-command-strip .chat-work-head {
-  grid-column: 1;
-  grid-row: 1;
-  align-self: start;
-  min-height: 1.45rem;
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-command-strip .chat-work-head span {
-  font: 0.62rem/1.45rem var(--mono);
-  letter-spacing: 0.06em;
-  text-transform: lowercase;
-}
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-command-strip .chat-work-head small { font: 0.62rem/1.45rem var(--mono); color: var(--mute); }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-command-strip .chat-jobs-row {
-  grid-column: 2;
-  min-height: 1.45rem;
-  padding-inline: 0;
-  column-gap: 0.5rem;
-  border-radius: 0;
-}
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-command-strip .chat-jobs-row + .chat-jobs-row { border-top: 0; }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-command-strip :is(.chat-jobs-cmd, .chat-jobs-meta, .chat-agents-time) { font-size: 0.7rem; line-height: 1.45rem; }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-command-strip .chat-jobs-meta { color: var(--mute); }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-command-strip .chat-jobs-kill { width: 1.3rem; height: 1.3rem; border-radius: 0; color: var(--mute); }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-command-strip .chat-jobs-kill:hover { color: var(--fault); }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-agent-jobs.chat-command-strip:not([hidden]) { grid-template-columns: minmax(0, 1fr); }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-agent-jobs .chat-work-head { grid-row: auto; }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-agent-jobs .chat-jobs-row { grid-column: 1; }
-@media (max-width: 800px) {
-  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-command-strip:not([hidden]) {
-    grid-template-columns: minmax(0, 1fr);
-    padding: 0.05rem var(--console-gutter, 0.55rem) 0.1rem;
-  }
-  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-command-strip .chat-work-head { grid-row: auto; min-height: 1.2rem; }
-  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-command-strip .chat-work-head :is(span, small) { line-height: 1.2rem; }
-  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-command-strip .chat-jobs-row {
-    grid-column: 1;
-    grid-template-columns: 0.5rem minmax(0, 1fr) 6ch 1.9rem;
-    min-height: 1.9rem;
-    padding-block: 0;
-  }
-  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-command-strip .chat-jobs-kill { width: 1.9rem; height: 1.9rem; }
-  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-command-strip .chat-jobs-meta { max-width: 40%; }
 }

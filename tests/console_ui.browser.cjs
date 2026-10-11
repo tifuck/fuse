@@ -191,7 +191,7 @@ function scenarios() {
           const dock = document.querySelector('[data-live-dock]');
           const label = dock.querySelector('.chat-status-verb');
           const probe = document.createElement('div');
-          probe.innerHTML = '<div class="chat-agent-live-dock"><span class="chat-status-verb">Working</span></div>' +
+          probe.innerHTML = '<div class="chat-live-dock chat-agent-live-dock"><span class="chat-status-verb">Working</span></div>' +
             '<div class="chat-turn"><div class="chat-recap">Recap</div><div class="chat-bubble">Message</div></div>' +
             '<div class="chat-compact-mark">Compacted</div><details class="chat-compact-banner"><summary>Summary</summary><div class="chat-compact-handoff">Handoff</div></details>' +
             '<span class="chat-user-file">File</span><span class="chat-file-ext">TXT</span><div class="chat-foot"><span class="chat-foot-meta">Tokens</span></div>' +

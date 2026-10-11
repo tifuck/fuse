@@ -126,7 +126,6 @@ export function createArtifacts(ctx) {
     if (S.artifactOpen) {
       if (S.memoryOpen) panels.setMemoryOpen(false);
       if (S.skillsOpen) panels.setSkillsOpen(false);
-      if (S.agentsOpen) agents.setAgentsOpen(false);
       if (overlays.overlayIsMobile()) sidebar.setHistoryOpen(false);
       else if (window.matchMedia("(max-width: 1100px)").matches) {
         S.root.classList.add("history-collapsed");

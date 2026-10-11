@@ -53,7 +53,8 @@ const message = { id: 'image-message', role: 'assistant', content: '', tools: [t
         await check(page.locator('[data-chat-log]'));
         await page.evaluate(() => fuseToolFixture.todo.openAgent('image-child'));
         await check(page.locator('[data-agent-log-body]'));
-        await page.locator('[data-agents-close]').click();
+        await page.locator('[data-agents-list] [data-agent-main]').click();
+        await page.locator('[data-agent-view]').waitFor({ state: 'hidden' });
       }
     }
 

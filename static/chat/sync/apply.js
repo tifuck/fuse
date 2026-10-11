@@ -297,7 +297,7 @@ export function createApply(ctx) {
       if (child) {
         if (S.agentsOpen && S.agentViewId && S.agentRun && (event.run_id === S.agentRun.id || event.run_id === S.agentViewId)) {
           S.agentRun.compaction = { meter: { ...event, scope: "prompt" } };
-          agents.syncAgentMeter(S.agentRun);
+          agents.scheduleAgentView();
         }
         return;
       }

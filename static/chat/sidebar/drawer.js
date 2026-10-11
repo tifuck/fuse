@@ -53,7 +53,6 @@ export function createDrawer(ctx) {
       if (S.memoryOpen) panels.setMemoryOpen(false);
       if (S.skillsOpen && overlays.overlayIsMobile()) panels.setSkillsOpen(false);
       if (S.artifactOpen && overlays.overlayIsMobile()) artifacts.setArtifactOpen(false);
-      if (S.agentsOpen && overlays.overlayIsMobile()) agents.setAgentsOpen(false);
       if (overlays.overlayIsMobile() && !home) overlays.overlayPush("history");
     } else if (!next && was) {
       overlays.armOverlayGhost(historyCollapse);

@@ -1,8 +1,7 @@
 /* —— Sidebar redesign: brand mark, tabs-first header, contextual +, uniform rows,
       user-resizable width. Loaded last so it wins the cascade. —— */
 .chat { --chat-history: 19rem; }
-body.is-resizing-history,
-body.is-resizing-agents {
+body.is-resizing-history {
   cursor: col-resize;
   user-select: none;
   -webkit-user-select: none;
@@ -20,50 +19,9 @@ body.is-resizing-agents {
 /* Uniform rows: every item is title-first; a session shows the project · host
    sub-line exactly where a chat shows its snippet, so line counts match. */
 
-/* Desktop: drag the right edge to resize; double-click resets. */
-.chat-agents-resize { display: none; }
-@media (min-width: 801px) {
-  .chat-agents-resize {
-    display: block;
-    position: absolute;
-    top: 0;
-    left: -0.3rem;
-    bottom: 0;
-    width: 0.6rem;
-    padding: 0;
-    background: transparent;
-    border: 0;
-    border-radius: 8px 0 0 8px;
-    cursor: col-resize;
-    touch-action: none;
-    z-index: 6;
-  }
-  .chat-agents-resize::after {
-    content: "";
-    position: absolute;
-    top: 50%;
-    left: 0.16rem;
-    width: 2px;
-    height: 2.6rem;
-    transform: translateY(-50%);
-    border-radius: 2px;
-    background: var(--line);
-    opacity: 0;
-    transition: opacity 140ms ease, background-color 140ms ease;
-  }
-  .chat-agents-resize:hover::after,
-  .chat-agents-resize:focus-visible::after,
-  .chat-agents-resize.is-dragging::after {
-    opacity: 1;
-    background: var(--brass);
-  }
-  .chat-agents-resize:focus-visible { outline: none; }
-}
-
 /* Mobile drawer: same header as desktop, larger touch targets. */
 
 @media (prefers-reduced-motion: reduce) {
-  .chat-history-resize::after,
-  .chat-agents-resize::after { transition: none; }
+  .chat-history-resize::after { transition: none; }
 }
 

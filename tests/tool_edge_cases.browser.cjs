@@ -663,7 +663,6 @@ const hits = (n, prefix = 'Result') => Array.from({ length: n }, (_, i) => ({
       eq(snap.result, 'Monitor started · task m2', 'the settled monitor keeps its start receipt');
       const jobChips = async (id, trace) => {
         await page.evaluate(({ id, trace }) => fuseToolFixture.work([{ ...trace, command_id: undefined, id, kind: 'monitor', state: 'running' }]), { id, trace });
-        await page.locator('[data-agents-close]').click();
         await page.locator(`[data-show-job="${id}"]`).click();
         return page.locator('.chat-jobs-detail .chat-tool-context').innerText();
       };

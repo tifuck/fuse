@@ -135,12 +135,13 @@ export function createTodos(ctx) {
     bar.classList.add("is-updated");
   }
 
-    // Open, the main chat's drawer page pushes the transcript up by its own
-  // height; the tab is left out so it sits on the last transcript row.
+    // Open, the drawer page pushes its transcript (the main one, or the
+  // subagent's on screen) up by its own height; the tab is left out so it
+  // sits on the last transcript row.
   function syncTodoPush(sec, el, expanded) {
-    if (sec !== S.todoSections.main) return;
     const page = el.querySelector(".chat-todo-page");
-    S.root.style.setProperty("--todo-push", expanded && page ? `${page.offsetHeight}px` : "0px");
+    const name = sec === S.todoSections.main ? "--todo-push" : "--agent-todo-push";
+    S.root.style.setProperty(name, expanded && page ? `${page.offsetHeight}px` : "0px");
   }
 
     function paintTodoSection(sec, candidate, active, afterResize) {

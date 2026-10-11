@@ -22,16 +22,6 @@ function agentIsWaiting(row) {
   return agentQuietSeconds(row) >= 60;
 }
 
-function agentBadgeClass(row) {
-  if (!row) return "badge";
-  if (row.cancel_requested) return "badge live";
-  if (row.status === "completed") return "badge on";
-  if (row.status === "failed" || agentIsStalled(row)) return "badge fault";
-  if (agentLive(row.status)) return "badge live";
-  if (row.status === "cancelled" || row.status === "interrupted") return "badge stop";
-  return "badge";
-}
-
 function agentElapsedSeconds(iso) {
   const t = Date.parse(iso || "");
   return Number.isFinite(t) ? Math.max(0, (Date.now() - t) / 1000) : 0;
@@ -109,7 +99,7 @@ function compactionMarkerText(line) {
 }
 
 export function createLive(ctx) {
-  const { artifacts, composer, jobs, net, overlays, panels, perms, picker, sidebar, transcript, ui, view } = ctx;
+  const { composer, jobs, net, overlays, perms, picker, sidebar, traces, transcript, ui, view } = ctx;
     function agentStatusText(row) {
     if (row.cancel_requested) {
       const stamp = Date.parse(row.cancel_requested_at || "");
@@ -134,52 +124,130 @@ export function createLive(ctx) {
     return before / 1000 + (transcript.liveElapsedSeconds(msg, true) || 0);
   }
 
-    function agentRowsSorted() {
-    const live = S.agentsRows
-      .filter((row) => agentLive(row.status))
-      .sort((a, b) => agentElapsedSeconds(b.created_at) - agentElapsedSeconds(a.created_at));
-    const done = S.agentsRows.filter((row) => !agentLive(row.status));
-    return { live, done };
+    // The viewed subagent's own snapshot is fresher than its list row.
+  function agentRowsMerged() {
+    const run = S.agentRun;
+    const rows = S.agentsRows.slice();
+    // An open child outside the listed window still gets its row.
+    if (S.agentsOpen && run && String(run.id) === S.agentViewId && !rows.some((row) => String(row.id) === S.agentViewId)) {
+      rows.push({ id: run.id, description: run.description || "Subagent", status: run.status, parent_run_id: run.parent_run_id, created_at: run.created_at, work_ms: null });
+    }
+    return rows.map((row) => run && String(run.id) === String(row.id)
+      ? {
+        ...row,
+        status: run.status || row.status,
+        cancel_requested: run.cancel_requested ?? row.cancel_requested,
+        cancel_requested_at: run.cancel_requested_at || row.cancel_requested_at,
+        resume_count: run.resume_count ?? row.resume_count,
+        resumable: run.resumable ?? row.resumable,
+        has_transcript: run.has_transcript ?? row.has_transcript,
+      }
+      : row);
+  }
+
+    // Spawn order, each child under its parent with Claude Code's connectors.
+  // A row whose parent is not listed (pruned from the recent window) hangs
+  // off the main agent.
+  function agentTree() {
+    const rows = agentRowsMerged().sort((a, b) =>
+      (Date.parse(a.created_at || "") || 0) - (Date.parse(b.created_at || "") || 0) || String(a.id).localeCompare(String(b.id)));
+    const ids = new Set(rows.map((row) => String(row.id)));
+    const kids = new Map();
+    rows.forEach((row) => {
+      const parent = row.parent_run_id != null && ids.has(String(row.parent_run_id)) && String(row.parent_run_id) !== String(row.id) ? String(row.parent_run_id) : "";
+      if (!kids.has(parent)) kids.set(parent, []);
+      kids.get(parent).push(row);
+    });
+    const out = [];
+    const seen = new Set();
+    const walk = (parent, prefix) => {
+      const list = kids.get(parent) || [];
+      list.forEach((row, index) => {
+        const id = String(row.id);
+        if (seen.has(id)) return;
+        seen.add(id);
+        const last = index === list.length - 1;
+        out.push({ row, tree: prefix + (last ? "└─ " : "├─ ") });
+        walk(id, prefix + (last ? "   " : "│  "));
+      });
+    };
+    walk("", "");
+    return out;
+  }
+
+    function mainBusy() {
+    return Boolean(S.streaming || traces.runIsActive(S.activeRun));
+  }
+
+    // The tree opens by itself while subagents run or one is on screen, and
+  // folds to the main row once they are all done; a click on its toggle
+  // holds the user's choice until the thread changes.
+  function agentsExpanded(liveCount) {
+    return S.agentsFold != null ? S.agentsFold : liveCount > 0 || Boolean(S.agentViewId);
+  }
+
+    function syncWorkStrip() {
+    if (!S.workStripEl) return;
+    const hidden = (!S.agentsListEl || S.agentsListEl.hidden) && (!S.jobsListEl || S.jobsListEl.hidden);
+    if (S.workStripEl.hidden !== hidden) S.workStripEl.hidden = hidden;
   }
 
     function renderAgentsList() {
     if (!S.agentsListEl) return;
     if (S.toolGestureOwner === S.agentsListEl) { S.pendingAgentListPaint = true; return; }
-    const { live, done } = agentRowsSorted();
-    const count = [live.length ? `${live.length} running` : "", done.length ? `${done.length} finished` : ""].filter(Boolean).join(" · ");
-    let html = ui.workHeadHtml("Subagents", count);
-    if (live.length) html += '<p class="chat-agents-kicker">Running · longest first</p>' + live.map(ui.agentRowHtml).join("");
-    if (done.length) html += '<p class="chat-agents-kicker">Finished</p>' + done.map(ui.agentRowHtml).join("");
-    if (!live.length && !done.length) html += '<p class="chat-agents-empty">No subagents yet. The main agent spawns them for isolated sub-tasks while it works.</p>';
+    const viewing = S.agentsOpen ? S.agentViewId : "";
+    if (!S.agentsRows.length && !viewing) {
+      if (!S.agentsListEl.hidden) {
+        S.agentsListEl.hidden = true;
+        S.agentsListEl.replaceChildren();
+      }
+      syncWorkStrip();
+      return;
+    }
+    const tree = agentTree();
+    const liveCount = tree.filter((item) => agentLive(item.row.status)).length;
+    const expanded = agentsExpanded(liveCount);
+    let html = ui.agentMainRowHtml({
+      state: mainBusy() ? "working" : "idle",
+      doing: liveCount ? `${liveCount} running` : "",
+      selected: !viewing,
+      total: tree.length,
+      expanded,
+    });
+    tree.forEach((item) => {
+      const selected = String(item.row.id) === viewing;
+      // Folded, the viewed subagent still shows under main.
+      if (expanded || selected) html += ui.agentRowHtml(item.row, { tree: expanded ? item.tree : "└─ ", selected });
+    });
     FuseChatDOM.reconcile(S.agentsListEl, html);
+    S.agentsListEl.hidden = false;
+    S.agentsListEl.classList.toggle("is-folded", !expanded);
+    syncWorkStrip();
+    if (S.agentsListEl._shown !== viewing) {
+      S.agentsListEl._shown = viewing;
+      const current = S.agentsListEl.querySelector('[aria-current="true"]');
+      if (current && S.agentsListEl.scrollHeight > S.agentsListEl.clientHeight) {
+        const top = current.offsetTop - S.agentsListEl.offsetTop;
+        if (top < S.agentsListEl.scrollTop || top + current.offsetHeight > S.agentsListEl.scrollTop + S.agentsListEl.clientHeight) {
+          S.agentsListEl.scrollTop = Math.max(0, top - current.offsetHeight);
+        }
+      }
+    }
   }
 
-    // "Stopping subagent…" (chat.js) leaves once the pane shows that subagent
-  // finished, or quietly when the pane moves off it.
+    // "Stopping subagent…" (chat.js) leaves once that subagent is seen
+  // finished, in its open transcript or in the list.
     function syncAgentStopHint() {
     const held = picker.heldHint();
     if (!held.startsWith("agent-stop:")) return;
     const id = held.slice("agent-stop:".length);
-    if (S.agentViewId !== id) picker.releaseHint(held);
-    else if (S.agentRun?.id === id && !agentLive(S.agentRun.status)) picker.releaseHint(held, "Stopped subagent.");
+    const run = S.agentRun && String(S.agentRun.id) === id ? S.agentRun : S.agentsRows.find((row) => String(row.id) === id);
+    if (!run) picker.releaseHint(held);
+    else if (!agentLive(run.status)) picker.releaseHint(held, "Stopped subagent.");
   }
 
     function renderAgentHead() {
     syncAgentStopHint();
-    if (!S.agentViewId || !S.agentRun) return;
-    if (S.agentTitleEl) S.agentTitleEl.textContent = S.agentRun.description || "Subagent";
-    if (S.agentStatusEl) {
-      S.agentStatusEl.textContent = agentStatusText(S.agentRun);
-      S.agentStatusEl.className = agentBadgeClass(S.agentRun);
-    }
-    if (S.agentStopBtn) S.agentStopBtn.hidden = !agentLive(S.agentRun.status);
-    const stamp = Date.parse(S.agentRun.cancel_requested_at || "");
-    const stoppingSecs = Number.isFinite(stamp) ? Math.max(0, (Date.now() - stamp) / 1000) : 0;
-    if (S.agentForceBtn) {
-      S.agentForceBtn.hidden = !agentLive(S.agentRun.status);
-      S.agentForceBtn.classList.toggle("is-urgent", Boolean(S.agentRun.cancel_requested && stoppingSecs >= 15));
-    }
-    if (S.agentResumeBtn) S.agentResumeBtn.hidden = !agentResumeAvailable(S.agentRun);
   }
 
     function syncAgentLiveDock() {
@@ -233,51 +301,40 @@ export function createLive(ctx) {
     function syncAgentsUi() {
     transcript.scheduleTodoSync();
     sidebar.syncCurrentThreadBusy();
-    const { live } = agentRowsSorted();
-    const liveCount = live.length;
-    const workLabel = liveCount ? `${liveCount} agent${liveCount === 1 ? "" : "s"}` : "";
-    if (S.agentsPanel) S.agentsPanel.hidden = !S.agentsOpen;
-    if (S.agentsBackdrop) S.agentsBackdrop.hidden = !(S.agentsOpen && window.matchMedia("(max-width: 800px)").matches);
-    S.root.classList.toggle("is-agents", S.agentsOpen);
-    if (S.agentsLiveEl) {
-      S.agentsLiveEl.hidden = !liveCount;
-      S.agentsLiveEl.textContent = liveCount ? `${liveCount} live` : "";
-    }
-    if (S.agentsPanel) {
-      S.agentsPanel.querySelector('.chat-agents-copy').hidden = Boolean(S.agentViewId);
-      S.agentsPanel.querySelector('[data-agent-head]').hidden = !S.agentViewId;
-    }
-    if (S.agentsOverviewEl) S.agentsOverviewEl.hidden = Boolean(S.agentViewId);
-    if (S.agentViewEl) S.agentViewEl.hidden = !S.agentViewId;
-    for (const tab of S.agentsTabs) {
-      tab.setAttribute("aria-expanded", S.agentsOpen ? "true" : "false");
-      tab.classList.toggle("is-live", liveCount > 0);
-      tab.title = workLabel || "Agents";
-      tab.setAttribute("aria-label", workLabel ? `Agents: ${workLabel}` : "Agents");
-      const countEl = tab.querySelector("[data-agents-count]");
-      if (countEl) {
-        // Live subagents only: background commands have their own strip.
-        const next = liveCount ? String(liveCount) : "";
-        if (next && countEl.textContent !== next) {
-          countEl.classList.remove("is-bump");
-          void countEl.offsetWidth;
-          countEl.classList.add("is-bump");
-        }
-        countEl.textContent = next;
-        countEl.classList.toggle("has-count", Boolean(next));
-      }
-    }
+    const view = Boolean(S.agentsOpen && S.agentViewId);
+    S.root.classList.toggle("is-agent-view", view);
+    if (S.agentViewEl) S.agentViewEl.hidden = !view;
     jobs.renderJobsList();
     renderAgentsList();
     renderAgentHead();
+    syncStripTimer();
+  }
+
+    // One clock for the strip: live rows tick, and an open subagent polls.
+  function syncStripTimer() {
+    const need = S.agentsOpen || S.agentsRows.some((row) => agentLive(row.status)) || S.jobsRows.length > 0;
+    if (need && !S.agentsTimer) S.agentsTimer = setInterval(agentsTick, 1000);
+    else if (!need && S.agentsTimer) {
+      clearInterval(S.agentsTimer);
+      S.agentsTimer = 0;
+    }
   }
 
     function agentsTick() {
-    if (!S.agentsOpen) return;
     renderAgentsList();
     jobs.tickJobTimes();
-    syncAgentLiveDock();
     S.agentsPollTick += 1;
+    if (!S.agentsOpen) {
+      // Live rows in the tree refresh every few seconds on their own; the
+      // socket's agent events usually beat this.
+      if (S.agentsPollTick >= 4) {
+        S.agentsPollTick = 0;
+        if (S.agentsRows.some((row) => agentLive(row.status))) view.refreshAgents();
+      }
+      syncStripTimer();
+      return;
+    }
+    syncAgentLiveDock();
     if (S.agentsPollTick < 2) return;
     S.agentsPollTick = 0;
     const wsHealthy = net.isLive() && Date.now() - S.agentLastEventAt < 3000;
@@ -285,53 +342,68 @@ export function createLive(ctx) {
     view.refreshAgents();
   }
 
-    function setAgentsOpen(open) {
+    function setAgentsFold(open) {
+    S.agentsFold = Boolean(open);
+    renderAgentsList();
+  }
+
+    // Open: the selected subagent's transcript takes the main one's place (the
+  // caller sets agentViewId first). Closed: back to the main agent. Without a
+  // subagent to show, opening just unfolds the tree.
+  function setAgentsOpen(open) {
+    if (open && !S.agentViewId) {
+      setAgentsFold(true);
+      if (!S.agentsRows.length) picker.setHint("No subagents in this chat yet.");
+      return;
+    }
     const next = Boolean(open);
     if (next === S.agentsOpen) {
       if (next) syncAgentsUi();
       return;
     }
     S.agentsOpen = next;
-    if (S.agentsOpen) {
-      if (S.artifactOpen) artifacts.setArtifactOpen(false);
-      if (S.memoryOpen) panels.setMemoryOpen(false);
-      if (S.skillsOpen) panels.setSkillsOpen(false);
-      perms.setPermsOpen(false);
-      if (overlays.overlayIsMobile()) sidebar.setHistoryOpen(false);
-      else if (window.matchMedia("(max-width: 1100px)").matches) {
-        S.root.classList.add("history-collapsed");
-        if (typeof sidebar.syncHistory === "function") sidebar.syncHistory();
-      }
+    if (next) {
       picker.closePicker();
-      overlays.overlayPush("agents");
-      if (!S.agentsTimer) S.agentsTimer = setInterval(agentsTick, 1000);
+      perms.setPermsOpen(false);
+      S.mainScroll = S.thread ? { top: S.thread.scrollTop, stick: S.stickToBottom } : null;
+      overlays.overlayPush("agent");
       view.refreshAgents();
-      if (S.agentViewId) net.sendSyncView(S.agentViewId);
-      if (S.agentViewId && S.agentRun) view.pollAgentView();
+      net.sendSyncView(S.agentViewId);
+      if (S.agentRun) view.pollAgentView();
     } else {
       S.agentsViewGen += 1;
       // Progress for a hidden view is discarded; stop the server streaming it.
       net.sendSyncView("");
-      if (!S.agentRun) { S.agentViewId = ""; S.agentMsgState = null; }
-      overlays.armOverlayGhost(S.root.querySelector("[data-agents-close]"));
+      S.agentViewId = "";
+      S.agentRun = null;
+      S.agentMsgState = null;
+      S.agentViewFailCount = 0;
       overlays.overlayDrop("agent");
-      overlays.overlayDrop("agents");
-      if (S.agentsTimer) {
-        clearInterval(S.agentsTimer);
-        S.agentsTimer = 0;
-      }
+      view.refreshAgents();
     }
     syncAgentsUi();
+    syncAgentLiveDock();
+    if (!next && S.thread) {
+      const saved = S.mainScroll;
+      S.mainScroll = null;
+      if (!saved || saved.stick) transcript.scrollThread();
+      else S.thread.scrollTop = saved.top;
+      transcript.syncLatest();
+    }
     composer.scheduleFitChatBar();
   }
 
     function resetAgents() {
+    // A new thread keeps its own scroll, not the one saved for the old thread.
+    S.mainScroll = null;
+    if (S.agentsOpen) setAgentsOpen(false);
     S.agentsViewGen += 1;
     S.agentLifecycle.clear();
     S.agentLifecycleEpoch += 1;
     S.agentsRefreshAgain = false;
     S.agentsRows = [];
     S.agentsLoadedFor = "";
+    S.agentsFold = null;
     S.jobsRows = [];
     S.completedJobs.clear();
     jobs.renderJobsList();
@@ -346,11 +418,14 @@ export function createLive(ctx) {
   }
 
   return {
+    agentResumeAvailable,
     agentStatusText,
     renderAgentHead,
     renderAgentsList,
     resetAgents,
+    setAgentsFold,
     setAgentsOpen,
+    syncWorkStrip,
     syncAgentLiveDock,
     syncAgentsUi,
     agentActivitySummary,

@@ -241,7 +241,7 @@ html[data-chat-backdrop="none"] .chat-scene,
   transition: background-color var(--dur-1) ease, color var(--dur-1) ease;
 }
 .chat .chat-bar-btn svg { width: 1.0625rem; height: 1.0625rem; }
-.chat .chat-bar-btn > span:not(.chat-agents-bar-count) {
+.chat .chat-bar-btn > span {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -265,34 +265,6 @@ html[data-chat-backdrop="none"] .chat-scene,
   border-radius: 50%;
   background: var(--brass);
   box-shadow: 0 0 0 2px var(--panel);
-}
-.chat .chat-agents-bar.is-live { color: var(--brass); }
-.chat .chat-agents-bar-count {
-  position: absolute;
-  top: calc(50% - 0.9rem);
-  left: calc(50% + 0.15rem);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 0.95rem;
-  height: 0.95rem;
-  padding: 0 0.22rem;
-  border-radius: 999px;
-  background: var(--brass);
-  color: var(--on-brass);
-  font: 600 0.58rem/1 var(--mono);
-  font-variant-numeric: tabular-nums;
-  pointer-events: none;
-  opacity: 0;
-  transform: scale(0.4);
-  transition: opacity var(--dur-2) ease, transform var(--dur-3) var(--ease-glide);
-}
-.chat .chat-agents-bar-count.has-count { opacity: 1; transform: scale(1); }
-.chat .chat-agents-bar-count.is-bump { animation: chat-agents-bump var(--dur-3) var(--ease-glide); }
-@keyframes chat-agents-bump {
-  0% { transform: scale(0.55); }
-  55% { transform: scale(1.22); }
-  100% { transform: scale(1); }
 }
 /* Desktop: the brand row is the same height as the chat bar next to it, so the
    collapse control sits exactly where the bar buttons sit when it swaps sides. */
@@ -465,7 +437,7 @@ html[data-chat-backdrop="none"] .chat-scene,
 .chat .chat-search-btn.is-on { color: var(--brass); background: transparent; }
 
 body.is-chat :is(.chat-pop, .chat-picker-menu, .chat-perms-menu, .chat-context-pop,
-  .chat-slash, .chat-rewind, .chat-sheet, .chat-agents,
+  .chat-slash, .chat-rewind, .chat-sheet,
   .chat-artifact, .chat-latest) {
   background: var(--panel);
   color: var(--mist);
@@ -601,18 +573,18 @@ html[data-chat-theme="ivory"] ::selection {
    top bar and both panel heads share one height per breakpoint. —— */
 body.is-chat .chat { --chat-bar-h: 2.25rem; --chat-bar-btn: 1.75rem; }
 body.is-chat .chat .chat-history-collapse,
-body.is-chat :is(.chat-history-head, .chat-agents-head) :is(.btn, .chat-menu-close) {
+body.is-chat .chat-history-head :is(.btn, .chat-menu-close) {
   height: 1.75rem;
   min-height: 1.75rem;
 }
-body.is-chat :is(.chat-history-head, .chat-agents-head) {
+body.is-chat .chat-history-head {
   height: 2.8rem;
   min-height: 2.8rem;
   padding-top: 0;
   padding-bottom: 0;
 }
 @media (min-width: 801px) {
-  body.is-chat :is(.chat-history-head, .chat-agents-head) {
+  body.is-chat .chat-history-head {
     height: 2.25rem;
     min-height: 2.25rem;
   }
@@ -627,7 +599,7 @@ body.is-chat :is(.chat-history-head, .chat-agents-head) {
   }
   body.is-chat .chat { --chat-bar-btn: 2rem; }
   body.is-chat .chat .chat-history-collapse,
-  body.is-chat :is(.chat-history-head, .chat-agents-head) :is(.btn, .chat-menu-close) {
+  body.is-chat .chat-history-head :is(.btn, .chat-menu-close) {
     height: 2.5rem;
     min-height: 2.5rem;
   }
@@ -1334,45 +1306,4 @@ body.is-chat .chat-view-menu { border-color: var(--line); }
 /* A monitor event: "Monitor event: <description>" with the event's output
    under it; "… +N lines" (or the row) opens all of it. */
 
-/* Shared pane chrome; unsupported composer controls do not reserve space. */
-.chat .chat-agents-copy[hidden], .chat .chat-agent-view-head[hidden] { display: none; }
-.chat .chat-agent-view-head { flex: 1; min-width: 0; min-height: 0; padding: 0; border: 0; }
-.chat .chat-agent-view-copy p { font: inherit; letter-spacing: inherit; }
-.chat .chat-agent-view-head .chat-context-pop { top: calc(100% + 0.5rem); bottom: auto; }
-.chat .chat-agent-view-head .chat-agent-view-tool { height: var(--chat-bar-btn); min-height: 0; padding-inline: 0.3rem; font-size: 0.7rem; }
-.chat .chat-agent-live-dock { border: 0; }
-.chat .chat-agent-live-todos { border: 0; }
-.chat .chat-command-strip {
-  position: relative;
-  z-index: 5;
-  width: 100%;
-  max-height: min(14rem, 30vh);
-  overflow: auto;
-  overscroll-behavior: contain;
-  flex: 0 0 auto;
-  padding: 0.1rem 0.5rem 0.15rem;
-  border: 0;
-  border-bottom: 1px solid var(--line);
-  background: var(--ink);
-  scrollbar-width: thin;
-}
-.chat .chat-stage > .chat-command-strip { margin-top: var(--chat-bar-h); }
-.chat .chat-stage:has(> .chat-command-strip:not([hidden])) > .chat-thread { padding-top: 0.35rem; }
-.chat .chat-command-strip .chat-work-head { align-items: center; justify-content: flex-start; gap: 0.45rem; min-height: 1.35rem; margin: 0 0.5rem; }
-.chat .chat-command-strip .chat-work-head span { color: var(--mute); font: 600 0.6875rem/1.2 var(--sans); letter-spacing: 0; }
-.chat .chat-command-strip .chat-work-head small { color: var(--brass); font-variant-numeric: tabular-nums; }
-.chat .chat-command-strip .chat-jobs-row { border-radius: 4px; grid-template-columns: 0.5rem minmax(0, 1fr) 6ch 1.5rem; column-gap: 0.55rem; min-height: 1.65rem; padding-block: 0; }
-.chat .chat-command-strip .chat-jobs-row + .chat-jobs-row { border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent); border-radius: 0; }
-.chat .chat-command-strip .chat-jobs-output-link { flex-direction: row; align-items: center; gap: 0.6rem; }
-.chat .chat-command-strip .chat-jobs-cmd { flex: 1; }
-.chat .chat-command-strip .chat-jobs-meta { flex: 0 1 auto; max-width: 32%; }
-.chat .chat-command-strip .chat-agents-dot { align-self: center; margin: 0; }
-.chat .chat-command-strip .chat-agents-time { align-self: center; line-height: 1.4; }
-.chat .chat-command-strip .chat-jobs-kill { align-self: center; display: grid; place-items: center; width: 1.5rem; height: 1.5rem; padding: 0; border: 0; border-radius: 4px; background: none; font-size: 1rem; line-height: 1; }
-.chat .chat-command-strip .chat-jobs-kill:hover { background: color-mix(in srgb, var(--fault) 14%, transparent); }
-.chat .chat-command-strip :is(.chat-jobs-kill, .chat-jobs-output-link):focus-visible { outline: 2px solid var(--brass); outline-offset: -2px; }
-@media (max-width: 800px) {
-  .chat .chat-command-strip .chat-jobs-row { min-height: 2.4rem; grid-template-columns: 0.5rem minmax(0, 1fr) 6ch 2.4rem; }
-  .chat .chat-command-strip .chat-jobs-kill { width: 2.4rem; height: 2.4rem; }
-}
 

@@ -1,11 +1,10 @@
 // Agent detail view: show, poll, meter, scroll pinning.
 import { S } from '../state.js';
-import { formatTokens } from '../core.js';
 
 let _agentViewQueued = false;
 
 export function createView(ctx) {
-  const { context, jobs, live: agentLiveUi, net, overlays, sync, traces, transcript, ui } = ctx;
+  const { jobs, live: agentLiveUi, net, overlays, sync, traces, transcript, ui } = ctx;
     function scheduleAgentView() {
     if (_agentViewQueued) return;
     _agentViewQueued = true;
@@ -77,47 +76,6 @@ export function createView(ctx) {
     };
   }
 
-    function syncAgentMeter(run) {
-    if (!S.agentMeterEl) return;
-    const meter = run && run.compaction && run.compaction.meter;
-    const used = Number(meter && meter.used);
-    const limit = Number(meter && meter.limit);
-    if (!meter || !Number.isFinite(used) || !Number.isFinite(limit) || limit <= 0) {
-      S.agentMeterEl.hidden = true;
-      closeAgentContextPop();
-      return;
-    }
-    const ratio = Math.max(0, Math.min(1, used / limit));
-    const pct = Math.round(ratio * 100);
-    S.agentMeterEl.hidden = false;
-    if (S.agentContextFill) {
-      S.agentContextFill.style.strokeDasharray = String(S.CONTEXT_RING);
-      S.agentContextFill.style.strokeDashoffset = String(S.CONTEXT_RING * (1 - ratio));
-    }
-    const btn = S.agentContextBtn;
-    if (btn) {
-      btn.classList.toggle("is-warn", Boolean(meter.warn) && !meter.auto);
-      btn.classList.toggle("is-auto", Boolean(meter.auto));
-      btn.classList.toggle("is-busy", Boolean(meter.compacting));
-      const title = `${formatTokens(used)} / ${formatTokens(limit)} tokens (${pct}%)`;
-      btn.setAttribute("aria-label", "Subagent context usage " + title);
-      btn.title = title;
-    }
-    if (S.agentContextPop && !S.agentContextPop.hidden) {
-      const parts = meter.parts && typeof meter.parts === "object" ? meter.parts : null;
-      context.fillContextCard(S.agentContextPop, {
-        used, limit, ratio, rows: parts ? context.partsRows(parts) : [["Context", used, ""]], warn: meter.warn, auto: meter.auto,
-        autoEnabled: meter.auto_enabled !== false, autoRatio: Number(meter.auto_ratio) || Number(S.compactCfg.auto_ratio) || 0.9,
-        compact: false,
-      });
-    }
-  }
-
-    function closeAgentContextPop() {
-    if (S.agentContextPop) S.agentContextPop.hidden = true;
-    if (S.agentContextBtn) S.agentContextBtn.setAttribute("aria-expanded", "false");
-  }
-
     function agentNearBottom() {
     if (!S.agentLogEl) return true;
     const gap = S.agentLogEl.scrollHeight - S.agentLogEl.scrollTop - S.agentLogEl.clientHeight;
@@ -154,7 +112,7 @@ export function createView(ctx) {
     if ([...S.toolMotions.keys()].some(owner => S.agentBodyEl.contains(owner))) { S.pendingAgentPaint = true; return; }
     if (S.toolGestureOwner && S.agentBodyEl.contains(S.toolGestureOwner)) { S.pendingAgentPaint = true; return; }
     agentLiveUi.renderAgentHead();
-    syncAgentMeter(S.agentRun);
+    agentLiveUi.renderAgentsList();
     const live = agentLiveUi.agentLive(S.agentRun.status);
     const wasAtBottom = S.agentStick;
     const savedTop = S.agentLogEl.scrollTop;
@@ -260,7 +218,9 @@ export function createView(ctx) {
   }
 
     async function showAgent(id) {
-    if (!id) return;
+    if (!id) { closeAgentView(); return; }
+    // Clicking the open child again re-reads it.
+    if (S.agentsOpen && S.agentViewId === id) { pollAgentView(); return; }
     const gen = ++S.agentsViewGen;
     S.agentLastEventAt = 0;
     S.agentViewId = id;
@@ -275,22 +235,10 @@ export function createView(ctx) {
     S.agentFollowFrame = 0;
     if (S.agentBodyEl) { ui.disposeThinking(S.agentBodyEl); S.agentBodyEl.innerHTML = ""; }
     if (S.agentLogEl) S.agentLogEl.scrollTop = 0;
-    if (S.agentMeterEl) S.agentMeterEl.hidden = true;
-    closeAgentContextPop();
-    if (S.agentTitleEl) S.agentTitleEl.textContent = "Subagent";
-    if (S.agentStatusEl) {
-      S.agentStatusEl.textContent = "loading";
-      S.agentStatusEl.className = "badge live";
-    }
-    if (S.agentStopBtn) S.agentStopBtn.hidden = true;
-    if (S.agentForceBtn) S.agentForceBtn.hidden = true;
-    if (S.agentResumeBtn) S.agentResumeBtn.hidden = true;
     const errorBox = S.root.querySelector("[data-agent-error]");
     if (errorBox) errorBox.hidden = true;
-    agentLiveUi.syncAgentLiveDock();
     agentLiveUi.setAgentsOpen(true);
-    overlays.overlayPush("agent");
-    S.agentBackBtn?.focus({ preventScroll: true });
+    agentLiveUi.syncAgentLiveDock();
     try {
       const run = await net.api("/chat/runs/" + encodeURIComponent(id));
       if (gen !== S.agentsViewGen) return;
@@ -307,10 +255,6 @@ export function createView(ctx) {
 
     function markAgentViewUnavailable(error) {
     const errorBox = S.root.querySelector("[data-agent-error]");
-    if (S.agentStatusEl) { S.agentStatusEl.textContent = "Unavailable"; S.agentStatusEl.className = "badge fault"; }
-    if (S.agentStopBtn) S.agentStopBtn.hidden = true;
-    if (S.agentForceBtn) S.agentForceBtn.hidden = true;
-    if (S.agentResumeBtn) S.agentResumeBtn.hidden = true;
     if (errorBox) {
       errorBox.hidden = false;
       errorBox.querySelector("[data-agent-error-text]").textContent = `Could not open subagent: ${error?.message || "Request failed."}`;
@@ -413,25 +357,17 @@ export function createView(ctx) {
     jobs.refreshJobs();
   }
 
-    function closeAgentView() {
+    // Back to the main agent's transcript.
+  function closeAgentView() {
     net.sendSyncView("");
-    if (!S.agentViewId) return;
-    S.agentsViewGen += 1;
-    S.agentViewId = "";
-    S.agentRun = null;
-    S.agentMsgState = null;
-    S.agentViewFailCount = 0;
-    agentLiveUi.syncAgentLiveDock();
-    overlays.armOverlayGhost(S.agentBackBtn);
-    overlays.overlayDrop("agent");
-    agentLiveUi.syncAgentsUi();
+    if (!S.agentViewId && !S.agentsOpen) return;
+    agentLiveUi.setAgentsOpen(false);
   }
 
   return {
     acceptAgentSnapshot,
     agentNearBottom,
     agentSeedArticle,
-    closeAgentContextPop,
     closeAgentView,
     pinAgentLog,
     pollAgentView,
@@ -440,6 +376,5 @@ export function createView(ctx) {
     restoreAgentScroll,
     scheduleAgentView,
     showAgent,
-    syncAgentMeter,
   };
 }

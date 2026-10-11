@@ -4,16 +4,17 @@
 Needs Playwright, which only the production venv has:
 
     /root/fuse/venv/bin/python scripts/dev_qa_shot.py --out /tmp/shots
-    /root/fuse/venv/bin/python scripts/dev_qa_shot.py --size 390x844 --agents --live
+    /root/fuse/venv/bin/python scripts/dev_qa_shot.py --size 390x844 --agent --live
     /root/fuse/venv/bin/python scripts/dev_qa_shot.py --backdrop garden:40 --wait 8
 
 Run from /root/fuse-dev. Logs in with data/dev-qa-login.json (created by
 scripts.dev_qa_account) and opens the "QA · Tools, subagents and commands"
-fixture unless --thread gives a public id. --agents opens the side pane;
---agent also opens its first subagent. --live makes the open run and the
+fixture unless --thread gives a public id. --agents unfolds the agent tree
+under the header; --agent opens its first subagent in place of the main
+transcript. --live makes the open run and the
 subagents look running by rewriting their JSON in the browser only (writes are
 blocked), so live docks can be checked without a model call. Prints each
-file it writes plus the composer and subagent-dock boxes.
+file it writes plus the composer, live-dock and work-strip boxes.
 """
 from __future__ import annotations
 
@@ -77,7 +78,7 @@ async def _live(page):
 
 
 BOXES = """() => Object.fromEntries(Object.entries({
-  composer: '.chat-box', dock: '[data-live-dock]', agentDock: '[data-agent-live-dock]', agentsPane: '[data-chat-agents]',
+  composer: '.chat-box', dock: '[data-live-dock]', agentDock: '[data-agent-live-dock]', workStrip: '[data-work-strip]',
 }).map(([k, s]) => { const e = document.querySelector(s); if (!e || e.hidden) return [k, null];
   const b = e.getBoundingClientRect(); return [k, {top: Math.round(b.top), height: Math.round(b.height), width: Math.round(b.width)}]; }))"""
 
@@ -108,8 +109,6 @@ async def main(args):
             await page.evaluate("([n, c]) => { localStorage.setItem('fuse.chat.theme.v1', n); if (c) {"
                                 " const [ink, brass] = c.split(','); localStorage.setItem('fuse.chat.custom.v1',"
                                 " JSON.stringify({ink, brass})); } }", [name, colors])
-        if args.pane_width:
-            await page.evaluate(f"localStorage.setItem('fuse.chat.agentsWidth', '{args.pane_width}')")
         if args.backdrop:
             kind, _, strength = args.backdrop.partition(":")
             await page.evaluate("([k, s]) => { localStorage.setItem('fuse.chat.backdrop.v1', k);"
@@ -117,10 +116,12 @@ async def main(args):
         await page.goto(f"{BASE}/chat?t={thread}")
         await page.wait_for_timeout(2500 + int(args.wait * 1000))
         if args.agents or args.agent:
-            await page.click("[data-agents-tab]")
-            await page.wait_for_timeout(1000)
+            fold = page.locator("[data-agents-list] [data-agents-fold]")
+            if await fold.count() and await fold.get_attribute("aria-expanded") == "false":
+                await fold.click()
+                await page.wait_for_timeout(300)
             if args.agent:
-                await page.click("[data-agents-list] button")
+                await page.click("[data-agents-list] [data-agent-id]")
                 await page.wait_for_timeout(1500)
         tag = f"-{args.backdrop.partition(':')[0]}" if args.backdrop else ""
         path = out / f"chat-{args.size}{tag}{'-live' if args.live else ''}.png"
@@ -134,9 +135,8 @@ if __name__ == "__main__":
     ap.add_argument("--size", default="1440x900")
     ap.add_argument("--scale", type=float, default=1)
     ap.add_argument("--thread", help="public thread id (default: the QA fixture)")
-    ap.add_argument("--agents", action="store_true", help="open the agents pane")
-    ap.add_argument("--agent", action="store_true", help="open the first subagent")
-    ap.add_argument("--pane-width", type=int, help="agents pane width in px (256-896)")
+    ap.add_argument("--agents", action="store_true", help="unfold the agent tree")
+    ap.add_argument("--agent", action="store_true", help="open the first subagent in place of the main transcript")
     ap.add_argument("--live", action="store_true", help="show live docks (browser-only JSON rewrite)")
     ap.add_argument("--theme", help="theme id, or custom:<ink>,<brass> e.g. custom:#121212,#f2cf4a")
     ap.add_argument("--backdrop", help="backdrop id, optionally with strength 12-55, e.g. garden:40")

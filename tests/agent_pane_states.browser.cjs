@@ -1,5 +1,6 @@
-// Chat-page RIGHT agent pane/dock: persistence and multi-agent states across
-// navigation (panel close, model switch, reload, thread switch).
+// Chat-page agent tree (under the header) and the subagent transcript it opens
+// in place of the main one: persistence and multi-agent states across
+// navigation (folding the tree, model switch, reload, thread switch).
 // Asserts latest server truth (mocked run/agent payloads), not pixels.
 // Already covered elsewhere — do not re-pin: dock status labels/classes/dots,
 // report delivery scope and "No completed report" (subagent_status.browser.cjs),
@@ -144,24 +145,26 @@ function agent(id, patch) {
       fuseToolFixture.sidebar.update({ id: thread, title: 'Pane states B', updated_at: new Date().toISOString(), running: false });
     }, THREAD_B);
 
-    const bar = page.locator('.chat-agents-bar');
     const paneText = () => page.locator('[data-agent-log-body]').innerText();
-    const countEl = page.locator('.chat-agents-bar [data-agents-count]');
+    // The open child is the tree's current row: its name, state and action
+    // stand in for the old pane header's title, badge and buttons.
     const read = () => page.evaluate(() => {
       const flat = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
+      const list = document.querySelector('[data-agents-list]');
       const rows = [...document.querySelectorAll('[data-agents-list] [data-agent-id]')].map((el) => ({
         id: el.getAttribute('data-agent-id'),
         state: flat(el.querySelector('.chat-agents-state')),
-        kicker: flat(el.previousElementSibling && el.previousElementSibling.matches('.chat-agents-kicker') ? el.previousElementSibling : null),
       }));
+      const cur = list?.querySelector('.chat-agents-row[aria-current="true"]:not(.is-main)');
+      const main = list?.querySelector('.chat-agents-row.is-main');
       const dock = document.querySelector('[data-agent-live-dock]');
       return {
         rows,
-        title: flat(document.querySelector('[data-agent-title]')),
-        badge: flat(document.querySelector('[data-agent-status]')),
-        badgeClass: document.querySelector('[data-agent-status]')?.className || '',
-        resume: Boolean(document.querySelector('[data-agent-resume]') && !document.querySelector('[data-agent-resume]').hidden),
-        stop: Boolean(document.querySelector('[data-agent-stop]') && !document.querySelector('[data-agent-stop]').hidden),
+        title: flat(cur?.querySelector('.chat-agents-name')),
+        badge: flat(cur?.querySelector('.chat-agents-state')),
+        badgeClass: cur?.className || '',
+        resume: Boolean(cur?.querySelector('[data-agent-resume]')),
+        stop: Boolean(cur?.querySelector('[data-agent-stop]')),
         dockHidden: dock ? dock.hidden : null,
         dockVerb: flat(document.querySelector('[data-agent-live-label] .chat-status-verb')),
         spin: Boolean(document.querySelector('[data-agent-live-spin]')?.firstChild),
@@ -171,59 +174,70 @@ function agent(id, patch) {
         errorVisible: Boolean(document.querySelector('[data-agent-error]') && !document.querySelector('[data-agent-error]').hidden),
         errorText: flat(document.querySelector('[data-agent-error]')),
         viewOpen: Boolean(document.querySelector('[data-agent-view]') && !document.querySelector('[data-agent-view]').hidden),
-        overviewOpen: Boolean(document.querySelector('[data-agents-overview]') && !document.querySelector('[data-agents-overview]').hidden),
-        panelText: flat(document.querySelector('[data-agents-list]')),
-        count: flat(document.querySelector('.chat-agents-bar [data-agents-count]')),
-        tabLabel: document.querySelector('.chat-agents-bar')?.getAttribute('aria-label') || '',
-        liveLabel: flat(document.querySelector('[data-agents-live]')),
-        liveHidden: Boolean(document.querySelector('[data-agents-live]')?.hidden),
+        mainOpen: Boolean(document.querySelector('[data-chat-thread]')?.checkVisibility()),
+        mainCurrent: main?.getAttribute('aria-current') === 'true',
+        panelText: flat(list),
+        count: flat(main?.querySelector('.chat-agents-doing')),
+        fold: flat(list?.querySelector('[data-agents-fold]')),
         docks: document.querySelectorAll('[data-agent-live-dock]').length,
         panes: document.querySelectorAll('[data-agent-log-body]').length,
         modelBtn: flat(document.querySelector('[data-chat-picker] .chat-picker-btn')),
         overflow: document.scrollingElement.scrollWidth - window.innerWidth,
       };
     });
+    const runningCount = () => page.evaluate(() => (document.querySelector('[data-agents-list] .is-main .chat-agents-doing')?.textContent || '').trim());
+    const back = async () => {
+      await page.locator('[data-agents-list] [data-agent-main]').click();
+      await page.locator('[data-agent-view]').waitFor({ state: 'hidden' });
+    };
     const openPane = async (id) => {
       await page.locator(`[data-agent-id="${id}"]`).click();
       await page.locator('[data-agent-view]').waitFor({ state: 'visible' });
     };
     const poll = () => page.evaluate(() => fuseToolFixture.pollAgent());
 
-    // --- 1. Multi-agent dock: counts, badges and entries appear/disappear ---
-    await bar.click();
+    // --- 1. Multi-agent tree: counts, states and entries appear/disappear ---
+    await page.evaluate(() => fuseToolFixture.refreshAgents());
     await page.waitForFunction(() => document.querySelectorAll('[data-agents-list] [data-agent-id]').length === 7);
     let ui = await read();
-    assert.equal(ui.count, '4', `badge counts live children (3 running + 1 queued): ${ui.count}`);
-    assert.equal(ui.tabLabel, 'Agents: 4 agents', `tab label names the work: ${ui.tabLabel}`);
-    assert.equal(ui.liveLabel, '4 live', `live counter: ${ui.liveLabel}`);
+    assert.equal(ui.count, '4 running', `the main row counts live children (3 running + 1 queued): ${ui.count}`);
+    assert.equal(ui.fold, '7 agents', `the fold names every child: ${ui.fold}`);
+    assert.equal(ui.mainCurrent, true, 'the main transcript is the one on screen');
     assert.equal(ui.rows.filter((row) => row.state === 'running').length, 3);
     assert.equal(ui.rows.find((row) => row.id === 'que').state, 'queued');
     assert.equal(ui.rows.find((row) => row.id === 'rex').state, 'interrupted');
     assert.equal(ui.rows.find((row) => row.id === 'lima').state, 'completed');
     assert.equal(ui.rows.find((row) => row.id === 'mike').state, 'failed');
+    const countIs = (want) => page.waitForFunction((want) => (document.querySelector('[data-agents-list] .is-main .chat-agents-doing')?.textContent || '').trim() === want, want);
+    const refresh = () => page.evaluate(() => fuseToolFixture.refreshAgents());
     setAgent('nov', { status: 'completed', work_live: false });
-    await page.waitForFunction(() => document.querySelector('.chat-agents-bar [data-agents-count]')?.textContent === '3');
+    await refresh();
+    await countIs('3 running');
     setAgent('que', { status: 'completed' });
-    await page.waitForFunction(() => document.querySelector('.chat-agents-bar [data-agents-count]')?.textContent === '2');
+    await refresh();
+    await countIs('2 running');
     setAgent('tate', { status: 'completed', work_live: false });
-    await page.waitForFunction(() => document.querySelector('.chat-agents-bar [data-agents-count]')?.textContent === '1');
-    ui = await read();
-    assert.equal(ui.tabLabel, 'Agents: 1 agent', `the label stays singular for one: ${ui.tabLabel}`);
-    assert.equal(ui.liveLabel, '1 live');
+    await refresh();
+    await countIs('1 running');
     setAgent('kilo', { status: 'completed', work_live: false });
-    await page.waitForFunction(() => !document.querySelector('.chat-agents-bar [data-agents-count]')?.textContent);
+    await refresh();
+    await countIs('');
     ui = await read();
-    assert.equal(ui.count, '', 'the badge empties when nothing is live');
-    assert.equal(ui.liveHidden, true, 'the live counter hides with no live child');
-    assert.equal(ui.tabLabel, 'Agents');
+    assert.equal(ui.count, '', 'the main row drops its count when nothing is live');
+    assert.equal(ui.fold, '7 agents', 'finished children stay listed');
+    assert.equal(ui.rows.length, 0, 'with nothing live the tree folds to the main row');
+    await page.locator('[data-agents-list] [data-agents-fold]').click();
+    await page.waitForFunction(() => document.querySelectorAll('[data-agents-list] [data-agent-id]').length === 7);
+    ui = await read();
     assert.equal(ui.rows.filter((row) => row.state === 'running' || row.state === 'queued').length, 0, 'no row stays in the live states');
     // Entries come back when the children run again.
     setAgent('kilo', { status: 'running', work_live: true });
     setAgent('nov', { status: 'running', work_live: true });
     setAgent('tate', { status: 'running', work_live: true });
     setAgent('que', { status: 'queued' });
-    await page.waitForFunction(() => document.querySelector('.chat-agents-bar [data-agents-count]')?.textContent === '4');
-    console.log('PASS multi-agent dock counts and entries');
+    await refresh();
+    await countIs('4 running');
+    console.log('PASS multi-agent tree counts and entries');
 
     // --- 2. Switching the open pane between children: no cross-delivery ---
     await openPane('kilo');
@@ -231,7 +245,8 @@ function agent(id, patch) {
     ui = await read();
     assert.equal(ui.title, 'Kilo worker');
     assert.equal(ui.badge, 'running');
-    assert.match(ui.badgeClass, /badge live/);
+    assert.match(ui.badgeClass, /is-running/);
+    assert.equal(ui.mainOpen, false, 'the child replaces the main transcript');
     assert.equal(ui.stop, true, 'a running child offers Stop');
     assert.equal(ui.resume, false, 'a running child offers no Resume');
     assert.equal(ui.dockHidden, false, 'the live dock shows while the child runs');
@@ -246,13 +261,13 @@ function agent(id, patch) {
     assert.equal(ui.title, 'Kilo worker', 'the open pane still shows its own child');
     assert.equal(ui.badge, 'running');
     assert.doesNotMatch(ui.text, /LIMA_REPORT|MIKE_AFTER_BUMP|MIKE_PARTIAL/, `no sibling content in kilo's pane: ${ui.text.slice(0, 200)}`);
-    await page.locator('[data-agent-back]').click();
+    await back();
     await openPane('mike');
     await page.locator('[data-agent-log-body]').getByText('MIKE_AFTER_BUMP').waitFor();
     ui = await read();
     assert.equal(ui.title, 'Mike worker');
     assert.equal(ui.badge, 'failed', 'the pane shows the terminal state, not eternal running');
-    assert.match(ui.badgeClass, /badge fault/);
+    assert.match(ui.badgeClass, /is-failed/);
     assert.match(ui.text, /provider 502/, `the failure surfaces its error: ${ui.text.slice(0, 200)}`);
     assert.equal(ui.dockHidden, true, 'a failed child shows no live dock');
     assert.equal(ui.spin, false, 'no spinner is left behind for a failed child');
@@ -271,12 +286,12 @@ function agent(id, patch) {
     assert.equal(ui.title, 'Mike worker', 'a sibling finishing does not steal the open pane');
     assert.equal(ui.badge, 'failed');
     assert.doesNotMatch(ui.text, /KILO_FINAL_REPORT|KILO_DRAFT/, `no cross-delivery into mike's pane: ${ui.text.slice(0, 200)}`);
-    await page.locator('[data-agent-back]').click();
+    await back();
     await openPane('kilo');
     await page.locator('[data-agent-log-body]').getByText('KILO_FINAL_REPORT').waitFor();
     ui = await read();
     assert.equal(ui.badge, 'completed');
-    assert.match(ui.badgeClass, /badge on/);
+    assert.match(ui.badgeClass, /is-completed/);
     assert.equal(ui.dockHidden, true, 'the dock leaves when the child finishes');
     assert.equal(ui.spin, false);
     assert.doesNotMatch(ui.text, /MIKE_AFTER_BUMP|LIMA_REPORT/, 'kilo kept only its own content');
@@ -287,21 +302,19 @@ function agent(id, patch) {
     // --- 3. A stalled child reads as stalled and settles without a stuck spinner ---
     runs.get('nov').quiet_s = 300;
     setAgent('nov', { quiet_s: 300 });
-    await page.locator('[data-agent-back]').click();
+    await back();
     await openPane('nov');
-    await page.waitForFunction(() => document.querySelector('[data-agent-status]')?.textContent === 'stalled');
+    await page.locator('[data-agent-log-body]').getByText('NOV_STALLED_TEXT').waitFor();
+    await page.waitForFunction(() => document.querySelector('[data-agents-list] [aria-current="true"] .chat-agents-state')?.textContent === 'stalled');
     ui = await read();
     assert.equal(ui.badge, 'stalled', 'a quiet child reads as stalled, not running');
-    assert.match(ui.badgeClass, /badge fault/);
+    assert.match(ui.badgeClass, /is-stalled/);
     assert.equal(ui.dockHidden, false, 'the dock stays to report the stall');
     assert.match(ui.dockVerb, /stalled/i, `the dock says why: ${ui.dockVerb}`);
     assert.equal(ui.spin, false, 'a stalled child shows no spinner');
     assert.equal(ui.resume, false);
     assert.equal(ui.stop, true);
     assert.match(ui.text, /NOV_STALLED_TEXT/);
-    await page.waitForFunction(() => document.querySelector('[data-agent-id="nov"] .chat-agents-state')?.textContent === 'stalled');
-    ui = await read();
-    assert.equal(ui.rows.find((row) => row.id === 'nov').state, 'stalled', 'the dock list agrees about the stall');
     // The child settles: every running/stalled mark must clear at once.
     bump('nov', {
       status: 'completed', work_live: false, quiet_s: 0,
@@ -311,22 +324,23 @@ function agent(id, patch) {
     });
     setAgent('nov', { status: 'completed', work_live: false, quiet_s: 0 });
     await poll();
-    await page.locator('[data-agent-status]').getByText('completed', { exact: true }).waitFor();
+    await page.waitForFunction(() => document.querySelector('[data-agents-list] [aria-current="true"] .chat-agents-state')?.textContent === 'completed');
     ui = await read();
     assert.equal(ui.badge, 'completed');
-    assert.match(ui.badgeClass, /badge on/);
+    assert.match(ui.badgeClass, /is-completed/);
     assert.equal(ui.dockHidden, true, 'the dock hides once the stalled child settles');
     assert.equal(ui.spin, false, 'no spinner is stuck after the child settles');
     assert.match(ui.text, /NOV_FINAL_REPORT/, 'the settled transcript keeps its report');
     console.log('PASS stalled child shows the stalled state and settles cleanly');
 
     // --- 4. Resume affordances: hidden while live and at the resume cap ---
-    await page.locator('[data-agent-back]').click();
+    await back();
     await openPane('rex');
-    await page.locator('[data-agent-status]').getByText('interrupted', { exact: true }).waitFor();
+    await page.locator('[data-agent-log-body]').getByText('REX_INTERRUPTED_OUTPUT').waitFor();
+    await page.waitForFunction(() => document.querySelector('[data-agents-list] [aria-current="true"] .chat-agents-state')?.textContent === 'interrupted');
     ui = await read();
     assert.equal(ui.badge, 'interrupted');
-    assert.match(ui.badgeClass, /badge stop/);
+    assert.match(ui.badgeClass, /is-interrupted/);
     assert.equal(ui.resume, false, 'a child at the resume cap offers no Resume');
     assert.equal(ui.stop, false);
     assert.match(ui.text, /REX_INTERRUPTED_OUTPUT/);
@@ -334,14 +348,12 @@ function agent(id, patch) {
 
     // --- 5. Pane loading/error states: an empty transcript vs an unavailable one ---
     setAgent('que', { status: 'queued' });
-    await page.locator('[data-agent-back]').click();
+    await back();
     await openPane('que');
-    await page.waitForFunction(() => {
-      const badge = document.querySelector('[data-agent-status]')?.textContent || '';
-      return badge && badge !== 'loading';
-    });
+    // Loaded once its (empty) bubble is mounted.
+    await page.waitForFunction(() => document.querySelector('[data-agent-log-body]')?.children.length > 0);
     ui = await read();
-    assert.equal(ui.badge, 'queued', `the badge settles instead of sticking at loading: ${ui.badge}`);
+    assert.equal(ui.badge, 'queued', `the row shows the child's state: ${ui.badge}`);
     assert.equal(ui.errorVisible, false, 'an empty transcript is not an error');
     assert.equal(ui.articles, 1, `one (empty) bubble, not a leftover transcript: ${ui.articles}`);
     assert.equal(ui.steps.length, 0, 'no stale tool rows from the previously open pane');
@@ -351,15 +363,13 @@ function agent(id, patch) {
     assert.equal((await paneText()).trim(), '', 'an empty child renders an empty pane');
     // A pane that becomes unavailable mid-poll surfaces the error and stops.
     const limaRow = runs.get('lima');
-    await page.locator('[data-agent-back]').click();
+    await back();
     await openPane('lima');
     await page.locator('[data-agent-log-body]').getByText('LIMA_REPORT_UPDATED').waitFor();
     runs.delete('lima');
     for (let i = 0; i < 3; i++) await poll();
     await page.locator('[data-agent-error]').waitFor({ state: 'visible' });
     ui = await read();
-    assert.match(ui.badge, /unavailable/i, `the pane reports the broken fetch: ${ui.badge}`);
-    assert.match(ui.badgeClass, /badge fault/);
     assert.match(ui.errorText, /Could not open subagent/, `the error is surfaced: ${ui.errorText}`);
     assert.equal(ui.dockHidden, true, 'an unavailable pane shows no live dock');
     assert.equal(ui.spin, false);
@@ -373,22 +383,23 @@ function agent(id, patch) {
     assert.match(ui.text, /LIMA_REPORT_UPDATED/, 'the transcript comes back with the recovery');
     console.log('PASS empty and unavailable pane states');
 
-    // --- 6. Persistence: panel close, model switch, reload ---
-    // (a) Closing the panel keeps the child; reopening re-attaches to it.
-    await page.locator('[data-agents-close]').click();
-    await page.locator('[data-chat-agents]').waitFor({ state: 'hidden' });
-    await bar.click();
-    await page.locator('[data-chat-agents]').waitFor({ state: 'visible' });
+    // --- 6. Persistence: folding the tree, model switch, reload ---
+    // (a) Folding the tree keeps the open child, and its row stays in view.
+    await page.locator('[data-agents-list] [data-agents-fold]').click();
+    await page.waitForFunction(() => document.querySelectorAll('[data-agents-list] [data-agent-id]').length === 1);
     ui = await read();
-    assert.equal(ui.viewOpen, true, 'reopening the panel returns to the open child, not the list');
-    assert.equal(ui.overviewOpen, false, 'no orphaned list pane behind the child');
+    assert.equal(ui.viewOpen, true, 'folding the tree leaves the open child on screen');
+    assert.equal(ui.title, 'Lima worker', 'the folded tree still shows which child is open');
+    await page.locator('[data-agents-list] [data-agents-fold]').click();
+    await page.waitForFunction(() => document.querySelectorAll('[data-agents-list] [data-agent-id]').length === 7);
+    ui = await read();
     assert.equal(ui.title, 'Lima worker');
     assert.match(ui.text, /LIMA_REPORT_UPDATED/);
     assert.equal(ui.badge, 'completed');
-    assert.equal(ui.docks, 1, 'no duplicated dock after a close/reopen cycle');
+    assert.equal(ui.docks, 1, 'no duplicated dock after a fold/unfold cycle');
     assert.equal(ui.panes, 1);
     // (b) Open the running Tate child; the switch checks below assert its state.
-    await page.locator('[data-agent-back]').click();
+    await back();
     await openPane('tate');
     await page.locator('[data-agent-log-body]').getByText('TATE_DRAFT').waitFor();
     // (c) A model switch leaves the pane exactly where it was.
@@ -415,11 +426,11 @@ function agent(id, patch) {
       fuseToolFixture.sidebar.mount({ id: thread, title: 'Pane states A', updated_at: new Date().toISOString(), running: false });
       fuseToolFixture.sidebar.update({ id: other, title: 'Pane states B', updated_at: new Date().toISOString(), running: false });
     }, { thread: THREAD_A, other: THREAD_B, tools: spawnTools(THREAD_A) });
-    await bar.click();
+    await page.evaluate(() => fuseToolFixture.refreshAgents());
     await page.waitForFunction(() => document.querySelectorAll('[data-agents-list] [data-agent-id]').length === 7);
     ui = await read();
     assert.equal(ui.viewOpen, false, 'after a reload nothing is left open by itself');
-    assert.equal(ui.overviewOpen, true, 'the reload lands on the agents list, not a stale pane');
+    assert.equal(ui.mainOpen, true, 'the reload lands on the main transcript, not a stale child');
     assert.equal(ui.docks, 1);
     assert.equal(ui.panes, 1);
     await openPane('tate');
@@ -430,7 +441,7 @@ function agent(id, patch) {
     assert.equal(ui.dockHidden, false, 'the dock re-attaches after the reload');
     assert.equal(ui.spin, true, 'the spinner is back exactly once');
     assert.equal((await paneText()).split('TATE_DRAFT').length - 1, 1, 'no duplicated content after the reload');
-    console.log('PASS pane survives panel close, a model switch, and reload');
+    console.log('PASS the open child survives folding, a model switch, and reload');
 
     // --- 7. Thread switch: the pane resets cleanly, never orphans, never bleeds ---
     const openRow = async (id) => {
@@ -445,9 +456,9 @@ function agent(id, patch) {
       return rows.length === 1 && rows[0].getAttribute('data-agent-id') === 'oscar';
     });
     ui = await read();
-    assert.equal(ui.viewOpen, false, 'switching threads closes the pane instead of orphaning it');
-    assert.equal(ui.overviewOpen, true, 'the panel lands on the new thread\'s list');
-    assert.equal(ui.count, '1', `the badge counts the new thread's live child: ${ui.count}`);
+    assert.equal(ui.viewOpen, false, 'switching threads closes the child instead of orphaning it');
+    assert.equal(ui.mainOpen, true, 'the new thread lands on its main transcript');
+    assert.equal(ui.count, '1 running', `the main row counts the new thread's live child: ${ui.count}`);
     assert.doesNotMatch(ui.panelText, /Kilo|Tate|Lima|Mike|Nov|Rex|Queued|TATE_DRAFT|KILO/, `thread B's dock lists only its own children: ${ui.panelText.slice(0, 200)}`);
     await openPane('oscar');
     await page.locator('[data-agent-log-body]').getByText('OSCAR_ONLY_TEXT').waitFor();
@@ -468,11 +479,11 @@ function agent(id, patch) {
     assert.equal((await paneText()).split('TATE_DRAFT').length - 1, 1, 'the round trip neither loses nor duplicates content');
     console.log('PASS thread switch resets the pane without orphans or cross-delivery');
 
-    // --- 8. The dock list fits a phone: 390px, no overflow, rows inside ---
-    await page.locator('[data-agent-back]').click();
+    // --- 8. The tree fits a phone: 390px, no overflow, rows inside ---
+    await back();
     await page.locator('[data-agents-list]').waitFor({ state: 'visible' });
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.locator('[data-chat-agents]').waitFor({ state: 'visible' });
+    await page.locator('[data-work-strip]').waitFor({ state: 'visible' });
     ui = await read();
     assert.ok(ui.overflow <= 0, `390: the agents list does not widen the page (${ui.overflow}px)`);
     const rowsFit = await page.evaluate(() => [...document.querySelectorAll('[data-agents-list] [data-agent-id]')].every((el) => {

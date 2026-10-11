@@ -15,17 +15,15 @@ function jobElapsedMs(job, nowMs) {
   return Math.max(0, Number(job && job.elapsed_ms) || 0);
 }
 
-let agentJobsRendered = "";
-
 export function createJobs(ctx) {
   const { live, net, sync, traces, transcript, ui } = ctx;
     async function onJobsClick(event) {
     const output = event.target.closest("[data-show-job]");
     if (output) {
       const id = output.dataset.showJob;
-      // A subagent's command lives in that subagent's transcript, which is
-      // already on screen below its list; the main agent's lives in the thread.
-      const inAgent = Boolean(S.agentJobsEl && S.agentJobsEl.contains(output));
+      // The strip lists the commands of the transcript on screen: a
+      // subagent's live in its transcript, the main agent's in the thread.
+      const inAgent = Boolean(S.agentsOpen && S.agentViewId);
       const row = (inAgent ? S.agentBodyEl : S.log)?.querySelector(`[data-execution="${CSS.escape(id)}"]`);
       if (row && inAgent) {
         transcript.revealToolRow(row);
@@ -69,36 +67,21 @@ export function createJobs(ctx) {
   }
 
     function renderJobsList() {
-    const nowMs = Date.now();
-    const sigOf = (rows) => JSON.stringify(rows.map((job) => [job.id, job.command, job.description, job.host, job.state, job.event_count, job.kind]));
-    if (S.jobsListEl) {
-      const rows = jobsFor("");
-      const sig = sigOf(rows);
-      if (sig !== jobsRendered) {
-        jobsRendered = sig;
-        S.jobsListEl.hidden = !rows.length;
-        S.jobsListEl.innerHTML = rows.length
-          ? ui.workHeadHtml("Background commands", String(rows.length)) +
-            rows.map((job) => ui.jobRowHtml(job, nowMs)).join("")
-          : "";
-      }
-    }
-    if (S.agentJobsEl) {
-      const rows = S.agentViewId ? jobsFor(S.agentViewId) : [];
-      const sig = S.agentViewId + sigOf(rows);
-      if (sig !== agentJobsRendered) {
-        agentJobsRendered = sig;
-        S.agentJobsEl.hidden = !rows.length;
-        S.agentJobsEl.innerHTML = rows.length
-          ? ui.workHeadHtml("Background commands", String(rows.length)) + rows.map((job) => ui.jobRowHtml(job, nowMs)).join("")
-          : "";
-      }
+    if (!S.jobsListEl) return;
+    const owner = S.agentsOpen ? S.agentViewId : "";
+    const rows = jobsFor(owner);
+    const sig = owner + "\u001e" + JSON.stringify(rows.map((job) => [job.id, job.command, job.description, job.host, job.state, job.event_count, job.kind]));
+    if (sig !== jobsRendered) {
+      jobsRendered = sig;
+      S.jobsListEl.hidden = !rows.length;
+      S.jobsListEl.innerHTML = rows.map((job) => ui.jobRowHtml(job, Date.now())).join("");
+      live.syncWorkStrip();
     }
     tickJobTimes();
   }
 
     function tickJobTimes() {
-    if (!S.agentsPanel || !S.jobsRows.length) return;
+    if (!S.jobsRows.length) return;
     const nowMs = Date.now();
     S.jobsRows.forEach((job) => {
       S.root.querySelectorAll('[data-job-time="' + CSS.escape(String(job.id)) + '"]').forEach((el) => {

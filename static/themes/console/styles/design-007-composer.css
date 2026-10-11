@@ -20,31 +20,6 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-rep
   height: 1.55rem;
 }
 
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-agents {
-  background: var(--ink);
-  border-left: 1px solid var(--line);
-}
-
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-agents-head {
-  background: color-mix(in srgb, var(--ink) 92%, var(--panel));
-  font-family: var(--mono);
-}
-
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-agents-copy p {
-  font: 0.68rem/1.3 var(--mono);
-  letter-spacing: 0.06em;
-  text-transform: lowercase;
-}
-
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-agents-kicker {
-  font: 0.58rem/1.3 var(--mono);
-  letter-spacing: 0.1em;
-}
-
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-agents-row, .chat-jobs-row):hover {
-  background: color-mix(in srgb, var(--brass) 7%, transparent);
-}
-
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-pop,
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-picker-menu,
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-context-pop {

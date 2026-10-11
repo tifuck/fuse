@@ -68,13 +68,14 @@ window.fuseToolFixture = {
   agents: traces.reconcileAgentTraces,
   todo: {
     sync: transcript.syncTodoSections,
-    openAgent(id) { agents.setAgentsOpen(true); return agents.showAgent(id); },
+    openAgent(id) { return agents.showAgent(id); },
     agents(rows) { S.agentsRows = structuredClone(rows); transcript.syncTodoSections(); },
     reset() { Object.values(S.todoSections).forEach((sec) => { sec.sig = ''; sec.shownKey = ''; sec.lingerUntil = 0; sec.expanded = false; }); S.todoDismissedKeys = new Set(); },
   },
   pollAgent: agents.pollAgentView,
+  refreshAgents: agents.refreshAgents,
   jobs: traces.reconcileBgTraces,
-  work(rows) { agents.setAgentsOpen(true); S.jobsRows = structuredClone(rows); agents.renderJobsList(); agents.syncAgentsUi(); },
+  work(rows) { S.jobsRows = structuredClone(rows); agents.renderJobsList(); agents.syncAgentsUi(); },
   event: sync.receiveEvent,
   sidebar: {
     mount(thread, nativeProjects = []) {

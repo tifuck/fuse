@@ -92,23 +92,11 @@ function initState() {
   S.artifactSource = S.root.querySelector("[data-artifact-source]");
   S.artifactBuilding = S.root.querySelector("[data-artifact-building]");
   S.artifactModeBtns = [...S.root.querySelectorAll("[data-artifact-mode]")];
-  S.agentsPanel = S.root.querySelector("[data-chat-agents]");
-  S.agentsTabs = Array.from(S.root.querySelectorAll("[data-agents-tab]"));
-  S.agentsCloseBtn = S.root.querySelector("[data-agents-close]");
-  S.agentsBackdrop = S.root.querySelector("[data-agents-backdrop]");
-  S.agentsLiveEl = S.root.querySelector("[data-agents-live]");
+  S.workStripEl = S.root.querySelector("[data-work-strip]");
   S.agentsListEl = S.root.querySelector("[data-agents-list]");
   S.jobsListEl = S.root.querySelector("[data-jobs-list]");
-  S.agentsOverviewEl = S.root.querySelector("[data-agents-overview]");
-  S.agentJobsEl = S.root.querySelector("[data-agent-jobs]");
   S.completedJobs = new Map();
   S.agentViewEl = S.root.querySelector("[data-agent-view]");
-  S.agentBackBtn = S.root.querySelector("[data-agent-back]");
-  S.agentTitleEl = S.root.querySelector("[data-agent-title]");
-  S.agentStatusEl = S.root.querySelector("[data-agent-status]");
-  S.agentStopBtn = S.root.querySelector("[data-agent-stop]");
-  S.agentResumeBtn = S.root.querySelector("[data-agent-resume]");
-  S.agentForceBtn = S.root.querySelector("[data-agent-force]");
   S.queueEl = S.root.querySelector("[data-chat-queue]");
   S.queueListEl = S.root.querySelector("[data-chat-queue-list]");
   S.queueCountEl = S.root.querySelector("[data-chat-queue-count]");
@@ -117,10 +105,6 @@ function initState() {
   S.agentLiveDock = S.root.querySelector("[data-agent-live-dock]");
   S.agentLiveSpin = S.root.querySelector("[data-agent-live-spin]");
   S.agentLiveLabel = S.root.querySelector("[data-agent-live-label]");
-  S.agentMeterEl = S.root.querySelector("[data-agent-meter]");
-  S.agentContextBtn = S.root.querySelector("[data-agent-context]");
-  S.agentContextPop = S.root.querySelector("[data-agent-context-pop]");
-  S.agentContextFill = S.root.querySelector("[data-agent-context-fill]");
   S.STORE_MODEL = "fuse.chat.model";
   S.STORE_EFFORT = "fuse.chat.effort";
   S.STORE_TAB = "fuse.chat.historyTab";
@@ -329,7 +313,10 @@ function initState() {
   S.showThinking = false;
     try { S.showThinking = localStorage.getItem(S.STORE_THINKING) === "shown"; } catch (_) {}
   S.artifactSourceLoaded = "";
+  // True while a subagent's transcript replaces the main one.
   S.agentsOpen = false;
+  // The agent tree under the header: null follows activity, else the user's choice.
+  S.agentsFold = null;
   S.agentsRows = [];
   S.agentsLoadedFor = "";
   S.agentViewId = "";

@@ -145,8 +145,9 @@
 
   function paint() {
     const state = actions.state();
-    const countEl = root.querySelector("[data-agents-tab] [data-agents-count]");
-    const count = (countEl && countEl.textContent.trim()) || "";
+    // Live subagents, as the agent tree's main row counts them ("3 running").
+    const countEl = root.querySelector("[data-agents-list] .is-main .chat-agents-doing");
+    const count = ((countEl && countEl.textContent.trim()) || "").split(" ")[0];
     sats.forEach((sat, i) => {
       const d = describe(sat.slot.id, state);
       const g = geometry[i];

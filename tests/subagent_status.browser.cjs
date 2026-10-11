@@ -59,10 +59,14 @@ function bump(id, patch) {
       const rows = [...document.querySelectorAll('[data-agents-list] [data-agent-id]')].map((el) => ({
         id: el.getAttribute('data-agent-id'),
         status: (el.querySelector('.chat-agents-state')?.textContent || '').trim(),
-        cls: el.className,
-        dot: getComputedStyle(el.querySelector('.chat-agents-dot')).backgroundColor,
+        cls: el.closest('.chat-agents-row').className,
+        dot: getComputedStyle(el.querySelector('.chat-agents-dot')).color,
         text: el.textContent.replace(/\s+/g, ' ').trim(),
+        title: el.getAttribute('title') || '',
+        resume: Boolean(el.closest('.chat-agents-row').querySelector('[data-agent-resume]')),
       }));
+      // The open child is the tree's current row.
+      const cur = document.querySelector('[data-agents-list] .chat-agents-row[aria-current="true"]:not(.is-main)');
       const dock = document.querySelector('[data-agent-live-dock]');
       const pane = document.querySelector('[data-agent-log-body]');
       const strip = (sel) => [...document.querySelectorAll(sel + ' [data-show-job]')].map((el) => el.getAttribute('data-show-job'));
@@ -70,26 +74,30 @@ function bump(id, patch) {
       const history = document.querySelector('.chat-history-item.is-on');
       return {
         rows,
-        badge: document.querySelector('[data-agent-status]')?.textContent || '',
-        badgeClass: document.querySelector('[data-agent-status]')?.className || '',
-        resume: Boolean(document.querySelector('[data-agent-resume]') && !document.querySelector('[data-agent-resume]').hidden),
-        stop: Boolean(document.querySelector('[data-agent-stop]') && !document.querySelector('[data-agent-stop]').hidden),
+        badge: (cur?.querySelector('.chat-agents-state')?.textContent || '').trim(),
+        badgeClass: cur?.className || '',
+        resume: Boolean(cur?.querySelector('[data-agent-resume]')),
+        stop: Boolean(cur?.querySelector('[data-agent-stop]')),
         dockHidden: dock ? dock.hidden : null,
         dockSpin: Boolean(document.querySelector('[data-agent-live-spin]')?.firstChild),
         dockLabel: text('[data-agent-live-label]').replace(/\s+/g, ' ').trim(),
         pane: pane ? pane.textContent : '',
         handoff: Boolean(pane?.querySelector('[data-compaction] .chat-compact-handoff')),
-        paneJobs: strip('[data-agent-jobs]'),
-        mainJobs: strip('[data-jobs-list]'),
+        jobs: strip('[data-jobs-list]'),
         main: main ? main.textContent : '',
         sidebarRunning: Boolean(history?.classList.contains('is-running')),
         sidebarBusy: history?.getAttribute('aria-busy') || '',
-        tabCount: document.querySelector('.chat-agents-bar [data-agents-count]')?.textContent || '',
-        tabLabel: document.querySelector('.chat-agents-bar')?.getAttribute('aria-label') || '',
+        running: (document.querySelector('[data-agents-list] .is-main .chat-agents-doing')?.textContent || '').trim(),
       };
     });
 
-    // --- 1. Dock rows: status text, badge class, dot colour, resumable ---
+    const stateIs = (want) => page.waitForFunction((want) => (document.querySelector('[data-agents-list] .chat-agents-row[aria-current="true"]:not(.is-main) .chat-agents-state')?.textContent || '') === want, want);
+    const back = async () => {
+      await page.locator('[data-agents-list] [data-agent-main]').click();
+      await page.locator('[data-agent-view]').waitFor({ state: 'hidden' });
+    };
+
+    // --- 1. Tree rows: status text, row class, dot colour, resumable ---
     agents = [
       { id: 'alpha', status: 'completed', description: 'Alpha worker', work_ms: 4000, created_at: now },
       { id: 'bravo', status: 'failed', description: 'Bravo worker', error: 'provider down', work_ms: 2000, created_at: now },
@@ -121,17 +129,14 @@ function bump(id, patch) {
       ] }], false, thread);
       fuseToolFixture.sidebar.mount({ id: thread, title: 'Status fixture', updated_at: new Date().toISOString(), running: false });
     }, THREAD);
-    const bar = page.locator('.chat-agents-bar');
-    await bar.waitFor({ state: 'visible' });
     const agentsResponse = page.waitForResponse((res) => res.url().includes('/agents') && res.request().method() === 'GET');
-    await bar.click();
+    await page.evaluate(() => fuseToolFixture.refreshAgents());
     const agentsRes = await agentsResponse;
     assert.equal(agentsRes.status(), 200, 'agents refresh must be served by the suite mock');
     try {
       await page.waitForFunction(() => document.querySelectorAll('[data-agents-list] [data-agent-id]').length === 5);
     } catch (error) {
       const dock = await page.evaluate(() => ({
-        expanded: document.querySelector('.chat-agents-bar')?.getAttribute('aria-expanded'),
         list: document.querySelector('[data-agents-list]')?.innerText?.slice(0, 400) || '',
         count: document.querySelectorAll('[data-agents-list] [data-agent-id]').length,
       })).catch((dumpError) => String(dumpError));
@@ -140,46 +145,47 @@ function bump(id, patch) {
     }
     let ui = await read();
     const byId = Object.fromEntries(ui.rows.map((row) => [row.id, row]));
-    assert.deepEqual(ui.rows.map((row) => row.id).slice(0, 2), ['delta', 'echo'], 'live rows sort ahead of finished ones');
+    assert.deepEqual(ui.rows.map((row) => row.id), ['alpha', 'bravo', 'charlie', 'delta', 'echo'], 'rows keep spawn order, like a tree');
     assert.equal(byId.delta.status, 'running');
     assert.equal(byId.echo.status, 'queued');
     assert.equal(byId.alpha.status, 'completed');
     assert.equal(byId.bravo.status, 'failed');
     assert.match(byId.bravo.text, /provider down/);
     assert.equal(byId.charlie.status, 'interrupted');
-    assert.match(byId.charlie.text, /resumable/);
+    assert.equal(byId.charlie.resume, true, 'a resumable child offers Resume on its row');
+    assert.equal(byId.alpha.resume, false);
     assert.match(byId.alpha.cls, /is-completed/);
     assert.match(byId.bravo.cls, /is-failed/);
     assert.match(byId.charlie.cls, /is-interrupted/);
     assert.notEqual(byId.alpha.dot, byId.bravo.dot, 'completed and failed dots differ');
     assert.notEqual(byId.delta.dot, byId.alpha.dot, 'a running dot differs from a completed one');
     assert.equal(byId.charlie.dot, byId.delta.dot, 'interrupted shares the live dot colour');
-    assert.match(ui.tabLabel, /2 agents/);
-    console.log('PASS dock status labels, classes and dots');
+    assert.equal(ui.running, '2 running', 'the main row counts the live children');
+    console.log('PASS tree status labels, classes and dots');
 
     // --- 2. A report renders only in the agent it names ---
     await page.locator('[data-agent-id="alpha"]').click();
     await page.locator('[data-agent-log-body]').getByText('ALPHA_REPORT_ONLY', { exact: true }).waitFor();
     ui = await read();
     assert.equal(ui.badge, 'completed');
-    assert.match(ui.badgeClass, /badge on/);
+    assert.match(ui.badgeClass, /is-completed/);
     assert.equal(ui.resume, false, 'a completed child has no Resume');
     assert.equal(ui.dockHidden, true, 'a finished child shows no live dock');
     assert.doesNotMatch(ui.pane, /BRAVO_PARTIAL|CHARLIE_PARTIAL/);
     assert.doesNotMatch(ui.main, /ALPHA_REPORT_ONLY|BRAVO_PARTIAL/, 'a child report never lands in the main transcript');
-    await page.locator('[data-agent-back]').click();
+    await back();
     await page.locator('[data-agent-id="bravo"]').click();
-    await page.locator('[data-agent-status]').getByText('failed', { exact: true }).waitFor();
+    await page.locator('[data-agent-log-body]').getByText('BRAVO_PARTIAL_MUST_NOT_DELIVER').waitFor();
+    await stateIs('failed');
     ui = await read();
-    assert.match(ui.badgeClass, /badge fault/);
+    assert.match(ui.badgeClass, /is-failed/);
     assert.match(ui.pane, /BRAVO_PARTIAL_MUST_NOT_DELIVER/, 'the failed child pane shows its own transcript');
     assert.doesNotMatch(ui.pane, /ALPHA_REPORT_ONLY/, 'opening bravo must not keep alpha\'s report');
     assert.doesNotMatch(ui.main, /BRAVO_PARTIAL_MUST_NOT_DELIVER/);
     console.log('PASS report stays inside the named agent pane');
 
     // --- 3. Wait rows: waiting, then the completed report, never a partial ---
-    await page.locator('[data-agent-back]').click();
-    await page.locator('[data-agents-close]').click();
+    await back();
     const mainTools = [
       { id: 'sp-a', name: 'spawn_subagent', status: 'done', background: true, child_id: 'alpha', description: 'Alpha worker' },
       { id: 'sp-b', name: 'spawn_subagent', status: 'done', background: true, child_id: 'bravo', description: 'Bravo worker' },
@@ -225,7 +231,7 @@ function bump(id, patch) {
     assert.equal(ui.sidebarRunning, true, 'a live subagent keeps the thread row spinning after the turn');
     assert.equal(ui.sidebarBusy, 'true');
     agents = agents.map((row) => row.id === 'delta' || row.id === 'echo' ? { ...row, status: 'completed' } : row);
-    await page.locator('.chat-agents-bar').click();
+    await page.evaluate(() => fuseToolFixture.refreshAgents());
     await page.waitForFunction(() => ![...document.querySelectorAll('[data-agents-list] .chat-agents-state')].some((el) => /running|queued/.test(el.textContent)));
     ui = await read();
     assert.equal(ui.sidebarRunning, false, 'the row goes idle once every subagent settles');
@@ -233,18 +239,21 @@ function bump(id, patch) {
     console.log('PASS sidebar activity outlives the main turn');
 
     // --- 5. Resuming an interrupted child: dock, pane, held wake ---
+    // With nothing live the tree is folded to its main row.
+    await page.locator('[data-agents-list] [data-agents-fold]').click();
     await page.locator('[data-agent-id="charlie"]').click();
-    await page.locator('[data-agent-resume]').waitFor({ state: 'visible' });
+    await page.locator('[data-agent-log-body]').getByText('CHARLIE_PARTIAL').waitFor();
+    await page.locator('[data-agents-list] [aria-current="true"] [data-agent-resume]').waitFor({ state: 'visible' });
     ui = await read();
     assert.equal(ui.badge, 'interrupted');
-    assert.match(ui.badgeClass, /badge stop/);
+    assert.match(ui.badgeClass, /is-interrupted/);
     assert.equal(ui.resume, true);
     assert.equal(ui.stop, false);
     agents = agents.map((row) => row.id === 'charlie' ? { ...row, status: 'running', resumable: false, wake_state: '' } : row);
     bump('charlie', { status: 'running', resumable: false, message: { role: 'assistant', content: 'CHARLIE_RESUMED_WORK', tools: [{ id: 'c-read', name: 'read_file', status: 'running', path: 'NOTES.md' }] } });
-    // The dock list refreshes on open, and the sidebar reads that list.
-    await page.locator('[data-agents-close]').click();
-    await page.locator('.chat-agents-bar').click();
+    // The tree refreshes when the reader returns to main, and the sidebar
+    // reads that list; picking the child again re-reads it.
+    await back();
     await page.waitForFunction(() => document.querySelector('[data-agent-id="charlie"]'));
     await page.evaluate(() => fuseToolFixture.todo.openAgent('charlie'));
     await page.locator('[data-agent-log-body]').getByText('CHARLIE_RESUMED_WORK').waitFor();
@@ -259,8 +268,8 @@ function bump(id, patch) {
     agents = agents.map((row) => row.id === 'charlie' ? { ...row, status: 'completed', wake_state: 'held' } : row);
     bump('charlie', { status: 'completed', message: { role: 'assistant', content: 'CHARLIE_FINAL_REPORT' } });
     await page.evaluate(() => fuseToolFixture.pollAgent());
-    await page.locator('[data-agent-status]').getByText('completed', { exact: true }).waitFor();
-    await page.locator('[data-agent-back]').click();
+    await stateIs('completed');
+    await back();
     await page.locator('[data-agent-id="charlie"]').getByText('report waits for your next message').waitFor();
     ui = await read();
     assert.match(ui.rows.find((row) => row.id === 'charlie').text, /report waits for your next message/);
@@ -274,18 +283,20 @@ function bump(id, patch) {
       { id: 'job-main', command_id: 'job-main', agent_run_id: '', state: 'running', command: 'main-only-cmd', background: true, elapsed_ms: 1000 },
       { id: 'job-delta', command_id: 'job-delta', agent_run_id: 'delta', state: 'completed', command: 'delta-only-cmd', background: true, elapsed_ms: 500 },
     ];
+    await page.evaluate(() => fuseToolFixture.refreshAgents());
+    await page.locator('[data-jobs-list]').getByText('main-only-cmd').waitFor();
+    ui = await read();
+    assert.deepEqual(ui.jobs, ['job-main'], 'on main, the strip lists only the main agent\'s command');
     await page.locator('[data-agent-id="alpha"]').click();
-    await page.locator('[data-agent-jobs]').getByText('alpha-only-cmd').waitFor();
+    await page.locator('[data-jobs-list]').getByText('alpha-only-cmd').waitFor();
     ui = await read();
-    assert.deepEqual(ui.paneJobs, ['job-alpha'], 'the open pane lists only its owner\'s command');
-    assert.deepEqual(ui.mainJobs, ['job-main'], 'the thread strip lists only the main agent\'s command');
-    assert.equal(ui.rows.find((row) => row.id === 'alpha').text.includes('1 command'), true);
-    assert.equal(ui.rows.find((row) => row.id === 'bravo').text.includes('command'), false, 'a child with no jobs shows no command count');
-    await page.locator('[data-agent-back]').click();
-    await page.locator('[data-agent-jobs]').waitFor({ state: 'hidden' });
+    assert.deepEqual(ui.jobs, ['job-alpha'], 'with a child open, the strip lists only that child\'s command');
+    assert.equal(ui.rows.find((row) => row.id === 'alpha').title.includes('1 command'), true);
+    assert.equal(ui.rows.find((row) => row.id === 'bravo').title.includes('command'), false, 'a child with no jobs shows no command count');
+    await back();
+    await page.locator('[data-jobs-list]').getByText('main-only-cmd').waitFor();
     ui = await read();
-    assert.deepEqual(ui.paneJobs, [], 'leaving the pane clears its command strip');
-    assert.deepEqual(ui.mainJobs, ['job-main']);
+    assert.deepEqual(ui.jobs, ['job-main'], 'back on main, the child\'s command leaves the strip');
     console.log('PASS owner-scoped background commands');
 
     // --- 7. Compaction keeps the assignment handoff inside that pane ---
@@ -303,7 +314,7 @@ function bump(id, patch) {
       { id: 'india', status: 'running', description: 'India worker', work_ms: 1000, work_live: true, created_at: now },
       { id: 'juliet', status: 'completed', description: 'Juliet worker', work_ms: 1000, created_at: now },
     ];
-    await page.evaluate(() => fuseToolFixture.pollAgent());
+    await page.evaluate(() => fuseToolFixture.refreshAgents());
     await page.locator('[data-agent-id="india"]').click();
     await page.locator('[data-agent-log-body] [data-compaction]').waitFor();
     ui = await read();
@@ -313,7 +324,7 @@ function bump(id, patch) {
     assert.match(ui.pane, /INDIA_KEPT_AFTER_HANDOFF/);
     assert.match(ui.pane, /INDIA_LIVE_AFTER_HANDOFF/);
     assert.doesNotMatch(ui.main, /Assignment for INDIA only|INDIA_LIVE_AFTER_HANDOFF/);
-    await page.locator('[data-agent-back]').click();
+    await back();
     await page.locator('[data-agent-id="juliet"]').click();
     await page.locator('[data-agent-log-body]').getByText('JULIET_REPORT_ONLY', { exact: true }).waitFor();
     ui = await read();

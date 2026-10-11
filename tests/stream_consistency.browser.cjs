@@ -109,7 +109,8 @@ async function checkGroup(page,scope){
     run.status='completed';run.event_cursor=11;
     await page.evaluate(()=>fuseToolFixture.event({id:11,type:'agent.completed',thread_id:'fixture-thread',payload:{run_id:'audit-child',child_id:'audit-child',status:'completed'}}));
     release();await page.evaluate(()=>window.heldPoll);
-    assert.equal(await page.locator('[data-agent-status]').textContent(),'completed','stale poll cannot undo completion');
+    await frames(page);
+    assert.equal(await page.locator('[data-agents-list] .chat-agents-row[aria-current="true"]:not(.is-main) .chat-agents-state').textContent(),'completed','stale poll cannot undo completion');
     await page.waitForTimeout(100);
     {
       run.event_cursor++;

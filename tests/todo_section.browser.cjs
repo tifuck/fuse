@@ -235,6 +235,8 @@ const DONE = OPEN.map(([text]) => [text, 'completed']);
       child: document.querySelector('[data-agent-live-todos]').textContent.replace(/\s+/g, ' ').trim(),
     }));
     check(/Spawn reviewers/.test(both.main) && !/Child:/.test(both.main), `main section shows only the main list: ${both.main}`);
+    // One tab on screen: the open subagent's replaces the main one's.
+    check(await page.evaluate(() => !document.querySelector('[data-live-todos]').checkVisibility() && document.querySelector('[data-agent-live-todos]').checkVisibility()), 'with a subagent open, only its todo tab shows');
     check(/Child: report/.test(both.child) && !/Spawn reviewers/.test(both.child), `subagent section shows only its own list: ${both.child}`);
     // The main list changes; the child's does not follow, and the reverse.
     await page.evaluate(([next]) => { fuseToolFixture.append(next, true); fuseToolFixture.todo.sync(); }, [todo('t9', [['Main only', 'in_progress']])]);
@@ -246,9 +248,10 @@ const DONE = OPEN.map(([text]) => [text, 'completed']);
     check(/Main only/.test(after.main) && !/Child:/.test(after.main), `main updates alone: ${after.main}`);
     check(after.child === both.child, `the subagent's list did not move with the main chat's: ${after.child}`);
     check(!/Child:/.test(await logText()) , 'the subagent\'s list never reaches the main transcript');
-    await page.locator('[data-agents-close]').click();
+    await page.locator('[data-agents-list] [data-agent-main]').click();
     await frame();
-    check(await page.evaluate(() => !document.querySelector('[data-agent-live-todos]').checkVisibility()), 'closing the subagent pane takes its section with it');
+    check(await page.evaluate(() => !document.querySelector('[data-agent-live-todos]').checkVisibility()), 'leaving the subagent takes its section with it');
+    check(await page.evaluate(() => document.querySelector('[data-live-todos]').checkVisibility()), 'back on main, the main todo tab returns');
 
     assert.deepEqual(errors, [], `page errors: ${errors.join('; ')}`);
   } finally {

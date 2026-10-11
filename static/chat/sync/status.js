@@ -5,7 +5,7 @@ import { runIsStopping } from '../core.js';
 let renderedRunState = "";
 
 export function createStatus(ctx) {
-  const { apply, composer, net, picker, sidebar, traces, transcript, turns, ui } = ctx;
+  const { agents, apply, composer, net, picker, sidebar, traces, transcript, turns, ui } = ctx;
     // `key` lets the action that failed clear its own error once it recovers.
     function showFailure(action, error, key) {
     const message = (error && error.message) || "Request failed.";
@@ -73,6 +73,8 @@ export function createStatus(ctx) {
       if (repaint && S.messages.length) transcript.schedulePaintLast();
     }
     sidebar.syncRunSpinners();
+    // The agent tree's main row says whether the main agent is working.
+    if (prior !== S.streaming) agents.renderAgentsList();
     composer.syncComposer();
     ui.syncLiveDock();
     turns.renderQueue();

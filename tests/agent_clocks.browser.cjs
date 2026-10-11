@@ -224,22 +224,23 @@ const agentRow = (id, patch) => ({
       fuseToolFixture.mount([{ tools: [] }], false, thread);
       fuseToolFixture.sidebar.mount({ id: thread, title: 'Clock fixture', updated_at: new Date().toISOString(), running: false });
     }, THREAD);
-    await page.locator('.chat-agents-bar').click();
+    // The agent tree under the header loads with the thread.
+    await page.evaluate(() => fuseToolFixture.refreshAgents());
     await page.waitForFunction(() => document.querySelectorAll('[data-agents-list] [data-agent-id]').length === 2);
     const dockTimes = () => page.evaluate(() => {
       const out = {};
       for (const btn of document.querySelectorAll('[data-agents-list] [data-agent-id]')) {
-        out[btn.getAttribute('data-agent-id')] = (btn.querySelector('.chat-agents-time')?.textContent || '').trim();
+        out[btn.getAttribute('data-agent-id')] = (btn.closest('.chat-agents-row').querySelector('.chat-agents-time')?.textContent || '').trim();
       }
       return out;
     });
     const dockGets0 = agentGets;
     const dock = [];
-    for (let i = 0; i < 26; i += 1) {
+    for (let i = 0; i < 40; i += 1) {
       dock.push(await dockTimes());
       await page.waitForTimeout(250);
     }
-    assert.ok(agentGets - dockGets0 >= 2, `the dock polls /agents while open (${agentGets - dockGets0} polls)`);
+    assert.ok(agentGets - dockGets0 >= 2, `the tree polls /agents while subagents run (${agentGets - dockGets0} polls)`);
     for (const id of ['d1', 'd2']) {
       const secs = dock.map((s) => parseDur(s[id]));
       const workSecs = id === 'd1' ? 30 : 15;
@@ -247,7 +248,7 @@ const agentRow = (id, patch) => ({
       for (let i = 1; i < secs.length; i += 1) {
         assert.ok(secs[i] >= secs[i - 1], `${id} dock time is monotonic at ${i} | ${JSON.stringify(secs)}`);
       }
-      assert.ok(Math.max(...secs) <= workSecs + 6.5 + 2, `${id} dock time never outruns wall time | ${JSON.stringify(secs)}`);
+      assert.ok(Math.max(...secs) <= workSecs + 10 + 2, `${id} dock time never outruns wall time | ${JSON.stringify(secs)}`);
     }
     console.log('PASS dock clocks are monotonic across /agents polls');
 

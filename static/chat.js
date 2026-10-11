@@ -29,6 +29,7 @@ import { createBoot } from './chat/boot.js';
     const {
     ACTION_ICONS,
     FILE_CHIP_ICON,
+    agentMainRowHtml,
     agentRowHtml,
     compactionMarkHtml,
     consoleSpinGlyph,
@@ -76,6 +77,7 @@ import { createBoot } from './chat/boot.js';
     get activitySeq() { return S.activitySeq; },
     set activitySeq(value) { S.activitySeq = value; },
     get agentActivitySummary() { return agents.agentActivitySummary; },
+    get agentResumeAvailable() { return agents.agentResumeAvailable; },
     get agentDurationSeconds() { return agents.agentDurationSeconds; },
     get agentIsStalled() { return agents.agentIsStalled; },
     get agentLive() { return agents.agentLive; },
@@ -195,6 +197,7 @@ import { createBoot } from './chat/boot.js';
   const ui = {
     ACTION_ICONS,
     FILE_CHIP_ICON,
+    agentMainRowHtml,
     agentRowHtml,
     compactionMarkHtml,
     consoleSpinGlyph,
@@ -236,7 +239,7 @@ import { createBoot } from './chat/boot.js';
   const chatApi = { clearChatState };
 
   const overlays = createOverlays({
-    agents: { closeAgentContextPop: (...args) => agents.closeAgentContextPop(...args), closeAgentView: (...args) => agents.closeAgentView(...args), setAgentsOpen: (...args) => agents.setAgentsOpen(...args) },
+    agents: { closeAgentView: (...args) => agents.closeAgentView(...args) },
     artifacts: { setArtifactOpen: (...args) => artifacts.setArtifactOpen(...args) },
     context: { closeContextPop: (...args) => context.closeContextPop(...args) },
     panels: { closeLightbox: (...args) => panels.closeLightbox(...args), closeViewMenuDom: (...args) => panels.closeViewMenuDom(...args), setMemoryOpen: (...args) => panels.setMemoryOpen(...args), setSkillsOpen: (...args) => panels.setSkillsOpen(...args), setViewMenuOpen: (...args) => panels.setViewMenuOpen(...args) },
@@ -338,7 +341,7 @@ import { createBoot } from './chat/boot.js';
   });
 
   const sync = createSync({
-    agents: { compactionMarkerText: (...args) => agents.compactionMarkerText(...args), pollAgentView: (...args) => agents.pollAgentView(...args), refreshAgents: (...args) => agents.refreshAgents(...args), renderAgentsList: (...args) => agents.renderAgentsList(...args), scheduleAgentView: (...args) => agents.scheduleAgentView(...args), syncAgentMeter: (...args) => agents.syncAgentMeter(...args) },
+    agents: { compactionMarkerText: (...args) => agents.compactionMarkerText(...args), pollAgentView: (...args) => agents.pollAgentView(...args), refreshAgents: (...args) => agents.refreshAgents(...args), renderAgentsList: (...args) => agents.renderAgentsList(...args), scheduleAgentView: (...args) => agents.scheduleAgentView(...args) },
     artifacts,
     composer: { syncComposer: (...args) => composer.syncComposer(...args) },
     context,
@@ -421,7 +424,7 @@ import { createBoot } from './chat/boot.js';
     document.addEventListener("click", (event) => {
     if (event.detail === 0) return; // Keyboard/programmatic activation is not a touch ghost.
     if (!overlays.overlayIsMobile() || performance.now() > S.overlayGhostUntil) return;
-    if (event.target.closest?.(".chat-menu-close, [data-picker-close], [data-memory-close], [data-skills-close], [data-perms-close], [data-agents-close], [data-artifact-close], [data-view-close], [data-account-close], [data-rewind-close], [data-agent-back]")) return;
+    if (event.target.closest?.(".chat-menu-close, [data-picker-close], [data-memory-close], [data-skills-close], [data-perms-close], [data-artifact-close], [data-view-close], [data-account-close], [data-rewind-close]")) return;
     const r = S.overlayGhostRect;
     if (r && (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom)) return;
     event.preventDefault();
@@ -429,7 +432,7 @@ import { createBoot } from './chat/boot.js';
   }, true);
 
     document.addEventListener("touchend", (event) => {
-    const close = event.target.closest?.(".chat-menu-close, [data-picker-close], [data-memory-close], [data-skills-close], [data-agents-close], [data-artifact-close], [data-view-close], [data-account-close], [data-rewind-close], [data-agent-back]");
+    const close = event.target.closest?.(".chat-menu-close, [data-picker-close], [data-memory-close], [data-skills-close], [data-artifact-close], [data-view-close], [data-account-close], [data-rewind-close]");
     if (!close) return;
     event.preventDefault();
     close.click();
@@ -1006,9 +1009,20 @@ import { createBoot } from './chat/boot.js';
     }
   }
 
+    // The composer always talks to the main agent: a message sent (or queued)
+  // while a subagent is on screen brings the main transcript back to show it.
+  function showMainForSend() {
+    if (S.agentsOpen && (S.input.value.trim() || (S.attachList && !S.attachList.hidden))) agents.closeAgentView();
+  }
+
+    function sendFromComposer() {
+    showMainForSend();
+    turns.send();
+  }
+
     S.form.addEventListener("submit", (event) => {
     event.preventDefault();
-    turns.send();
+    sendFromComposer();
   });
 
     if (S.contextBtn) {
@@ -1109,6 +1123,7 @@ import { createBoot } from './chat/boot.js';
       // Enter never stops a running turn: it queues the message. Send now on
       // a queued row stops the running reply and sends it as a new turn instead.
       event.preventDefault();
+      showMainForSend();
       turns.queueIncomingTurn();
       return;
     }
@@ -1184,7 +1199,7 @@ import { createBoot } from './chat/boot.js';
 
     if (event.key === "Enter") {
       event.preventDefault();
-      turns.send();
+      sendFromComposer();
     }
   });
 
@@ -1259,31 +1274,7 @@ import { createBoot } from './chat/boot.js';
     }
   });
 
-    if (S.agentContextBtn) {
-    S.agentContextBtn.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      if (!S.agentContextPop) return;
-      const open = S.agentContextPop.hidden;
-      S.agentContextPop.hidden = !open;
-      S.agentContextBtn.setAttribute("aria-expanded", String(open));
-      if (open) agents.syncAgentMeter(S.agentRun);
-    });
-  }
-
-    overlays.backLayerFollowsHidden(S.agentContextPop, "agent-context");
-
-    document.addEventListener("click", (event) => {
-    if (S.agentContextPop && !S.agentContextPop.hidden && S.agentMeterEl && !S.agentMeterEl.contains(event.target)) agents.closeAgentContextPop();
-  });
-
-    document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && S.agentContextPop && !S.agentContextPop.hidden) agents.closeAgentContextPop();
-  });
-
     if (S.jobsListEl) S.jobsListEl.addEventListener("click", agents.onJobsClick);
-
-    if (S.agentJobsEl) S.agentJobsEl.addEventListener("click", agents.onJobsClick);
 
     setInterval(() => {
     if (S.currentId && (S.agentsOpen || S.jobsRows.length || traces.hasRunningBgTraces())) agents.refreshJobs();
@@ -1304,12 +1295,6 @@ import { createBoot } from './chat/boot.js';
     runReconcilePending = true;
     try { await sync.reconcileThread(); } catch (_) {} finally { runReconcilePending = false; }
   }, 5000);
-
-    for (const tab of S.agentsTabs) tab.addEventListener("click", () => agents.setAgentsOpen(!S.agentsOpen));
-
-    if (S.agentsCloseBtn) S.agentsCloseBtn.addEventListener("click", () => agents.setAgentsOpen(false));
-
-    if (S.agentsBackdrop) S.agentsBackdrop.addEventListener("click", () => agents.setAgentsOpen(false));
 
     if (S.agentLogEl)
     S.agentLogEl.addEventListener("scroll", () => {
@@ -1353,48 +1338,36 @@ import { createBoot } from './chat/boot.js';
       agents.showAgent(openAgentEl.getAttribute("data-open-agent"));
     });
 
-    if (S.agentBackBtn)
-    S.agentBackBtn.addEventListener("click", () => agents.closeAgentView());
-
-    S.root.querySelector("[data-agent-retry]")?.addEventListener("click", () => { if (S.agentViewId) agents.showAgent(S.agentViewId); });
-
-    if (S.agentStopBtn)
-    S.agentStopBtn.addEventListener("click", async () => {
-      if (!S.agentViewId || !S.agentRun) return;
-      if (!(await sidebar.askConfirm("Stop this subagent? Its children stop too; the main agent keeps running.", { confirmLabel: "Stop", danger: true }))) return;
-      // Held until the pane sees the subagent finish (agents/live.js).
-      picker.holdHint("agent-stop:" + S.agentViewId, "Stopping subagent…");
-      try {
-        await net.api("/chat/runs/" + encodeURIComponent(S.agentViewId) + "/cancel?scope=self", { method: "POST", body: "{}" });
-        await agents.pollAgentView();
-        agents.refreshAgents();
-      } catch (error) {
-        sync.showFailure("Could not stop subagent", error);
-      }
+    S.root.querySelector("[data-agent-retry]")?.addEventListener("click", () => {
+      const id = S.agentViewId;
+      if (!id) return;
+      S.agentViewId = "";
+      agents.showAgent(id);
     });
 
-    if (S.agentForceBtn)
-    S.agentForceBtn.addEventListener("click", async () => {
-      if (!S.agentViewId || !S.agentRun) return;
-      if (!(await sidebar.askConfirm("Force stop this subagent now? It is wedged in stopping; force-finalize its state.", { confirmLabel: "Force stop", danger: true }))) return;
-      picker.holdHint("agent-stop:" + S.agentViewId, "Force-stopping subagent…");
+    // Row actions act on that row's subagent, open or not.
+    async function stopAgent(id, force) {
+      const ask = force
+        ? "Force stop this subagent now? It is wedged in stopping; force-finalize its state."
+        : "Stop this subagent? Its children stop too; the main agent keeps running.";
+      if (!(await sidebar.askConfirm(ask, { confirmLabel: force ? "Force stop" : "Stop", danger: true }))) return;
+      // Held until the subagent is seen finished (agents/live.js).
+      picker.holdHint("agent-stop:" + id, force ? "Force-stopping subagent…" : "Stopping subagent…");
       try {
-        await net.api("/chat/runs/" + encodeURIComponent(S.agentViewId) + "/cancel?scope=self&force=1", { method: "POST", body: "{}" });
-        await agents.pollAgentView();
+        await net.api("/chat/runs/" + encodeURIComponent(id) + "/cancel?scope=self" + (force ? "&force=1" : ""), { method: "POST", body: "{}" });
+        if (S.agentViewId === id) await agents.pollAgentView();
         agents.refreshAgents();
       } catch (error) {
-        sync.showFailure("Could not force-stop subagent", error);
+        sync.showFailure(force ? "Could not force-stop subagent" : "Could not stop subagent", error);
       }
-    });
+    }
 
-    if (S.agentResumeBtn)
-    S.agentResumeBtn.addEventListener("click", async () => {
-      if (!S.agentViewId || !S.agentRun) return;
+    async function resumeAgent(id) {
       if (!(await sidebar.askConfirm("Resume this subagent from where it stopped? Its report goes to the main agent when it finishes.", { confirmLabel: "Resume" }))) return;
       try {
-        const data = await net.api("/chat/runs/" + encodeURIComponent(S.agentViewId) + "/resume", { method: "POST", body: "{}" });
-        if (data && data.run) {
-          agents.acceptAgentSnapshot(await net.api("/chat/runs/" + encodeURIComponent(S.agentViewId)));
+        const data = await net.api("/chat/runs/" + encodeURIComponent(id) + "/resume", { method: "POST", body: "{}" });
+        if (data && data.run && S.agentViewId === id) {
+          agents.acceptAgentSnapshot(await net.api("/chat/runs/" + encodeURIComponent(id)));
           agents.renderAgentView();
         }
         picker.setHint("Resumed subagent.");
@@ -1402,12 +1375,34 @@ import { createBoot } from './chat/boot.js';
       } catch (error) {
         sync.showFailure("Could not resume subagent", error);
       }
-    });
+    }
 
-    if (S.agentsPanel)
-    S.agentsPanel.addEventListener("click", (event) => {
+    if (S.agentsListEl)
+    S.agentsListEl.addEventListener("click", (event) => {
+      const action = event.target.closest("[data-agent-stop], [data-agent-force], [data-agent-resume]");
+      if (action) {
+        event.preventDefault();
+        if (action.dataset.agentResume) resumeAgent(action.dataset.agentResume);
+        else stopAgent(action.dataset.agentStop || action.dataset.agentForce, Boolean(action.dataset.agentForce));
+        return;
+      }
+      if (event.target.closest("[data-agents-fold]")) {
+        const btn = event.target.closest("[data-agents-fold]");
+        agents.setAgentsFold(btn.getAttribute("aria-expanded") !== "true");
+        return;
+      }
+      if (event.target.closest("[data-agent-main]")) { agents.closeAgentView(); return; }
       const row = event.target.closest("[data-agent-id]");
       if (row) agents.showAgent(row.getAttribute("data-agent-id"));
+    });
+
+    // Escape leaves a subagent's transcript when nothing else claims it.
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || event.defaultPrevented || !S.agentsOpen) return;
+      if (S.pickerOpen || S.permsOpen || S.memoryOpen || S.skillsOpen || S.artifactOpen) return;
+      if (document.querySelector(".chat-slash:not([hidden]), .chat-rewind:not([hidden]), .chat-lightbox:not([hidden]), dialog[open]")) return;
+      if (event.target === S.input && S.input.value) return;
+      agents.closeAgentView();
     });
 
     agents.syncAgentsUi();
@@ -1711,73 +1706,6 @@ import { createBoot } from './chat/boot.js';
       sidebar.applyHistoryWidth(sidebar.clampHistoryWidth(sidebar.currentHistoryWidth() + (event.key === "ArrowRight" ? step : -step)), true);
     });
     resizeHandle.addEventListener("dblclick", () => sidebar.applyHistoryWidth(S.HISTORY_WIDTH.default, true));
-  }
-
-    const agentsResizeHandle = S.root.querySelector("[data-agents-resize]");
-
-    const STORE_AGENTS_WIDTH = "fuse.chat.agentsWidth";
-
-    const AGENTS_WIDTH = { min: 16 * 16, max: 56 * 16, defaultPx: 480 };
-
-    function clampAgentsWidth(px) {
-    const max = Math.min(AGENTS_WIDTH.max, Math.max(AGENTS_WIDTH.min, window.innerWidth - 340));
-    return Math.round(Math.min(max, Math.max(AGENTS_WIDTH.min, px)));
-  }
-
-    function applyAgentsWidth(px, persist) {
-    S.root.style.setProperty("--chat-agents", px + "px");
-    if (persist) {
-      try { localStorage.setItem(STORE_AGENTS_WIDTH, String(px)); } catch (_) {}
-    }
-  }
-
-    function currentAgentsWidth() {
-    const raw = Number.parseFloat(S.root.style.getPropertyValue("--chat-agents"));
-    return Number.isFinite(raw) ? raw : AGENTS_WIDTH.defaultPx;
-  }
-
-    if (agentsResizeHandle) {
-    let savedAgentsWidth = 0;
-    try { savedAgentsWidth = Number(localStorage.getItem(STORE_AGENTS_WIDTH)) || 0; } catch (_) {}
-    if (savedAgentsWidth >= AGENTS_WIDTH.min && savedAgentsWidth <= AGENTS_WIDTH.max) {
-      applyAgentsWidth(savedAgentsWidth, false);
-    }
-    let agentsResizeRaf = 0;
-    agentsResizeHandle.addEventListener("pointerdown", (event) => {
-      if (window.innerWidth <= 800) return;
-      event.preventDefault();
-      try { agentsResizeHandle.setPointerCapture(event.pointerId); } catch (_) {}
-      agentsResizeHandle.classList.add("is-dragging");
-      document.body.classList.add("is-resizing-agents");
-      const onMove = (moveEvent) => {
-        const rect = S.root.getBoundingClientRect();
-        cancelAnimationFrame(agentsResizeRaf);
-        agentsResizeRaf = requestAnimationFrame(() => {
-          applyAgentsWidth(clampAgentsWidth(rect.right - moveEvent.clientX), false);
-        });
-      };
-      const onUp = () => {
-        agentsResizeHandle.classList.remove("is-dragging");
-        document.body.classList.remove("is-resizing-agents");
-        agentsResizeHandle.removeEventListener("pointermove", onMove);
-        agentsResizeHandle.removeEventListener("pointerup", onUp);
-        agentsResizeHandle.removeEventListener("pointercancel", onUp);
-        applyAgentsWidth(clampAgentsWidth(currentAgentsWidth()), true);
-      };
-      agentsResizeHandle.addEventListener("pointermove", onMove);
-      agentsResizeHandle.addEventListener("pointerup", onUp);
-      agentsResizeHandle.addEventListener("pointercancel", onUp);
-    });
-    agentsResizeHandle.addEventListener("keydown", (event) => {
-      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-      event.preventDefault();
-      const step = event.shiftKey ? 32 : 16;
-      applyAgentsWidth(clampAgentsWidth(currentAgentsWidth() + (event.key === "ArrowLeft" ? step : -step)), true);
-    });
-    agentsResizeHandle.addEventListener("dblclick", () => {
-      S.root.style.removeProperty("--chat-agents");
-      try { localStorage.removeItem(STORE_AGENTS_WIDTH); } catch (_) {}
-    });
   }
 
     const searchCloseBtn = S.root.querySelector("[data-history-search-close]");

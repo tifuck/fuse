@@ -1,5 +1,5 @@
-// Open subagent pane: the child's own transcript while
-// the pane stays open. Dock labels, report delivery, disclosure and the
+// Open subagent: the child's own transcript, shown in place of the main
+// transcript while it stays open. Dock labels, report delivery, disclosure and the
 // lifecycle matrix live in subagent_status / agent_ui / subagent_lifecycle.
 const assert = require('node:assert/strict');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
@@ -67,7 +67,8 @@ function bump(id, patch) {
       const dock = document.querySelector('[data-agent-live-dock]');
       const verb = document.querySelector('[data-agent-live-label] .chat-status-verb');
       const meta = document.querySelector('[data-agent-live-label] .chat-status-meta');
-      const badge = document.querySelector('[data-agent-status]');
+      // The open child is the agent tree's current row.
+      const row = document.querySelector('[data-agents-list] .chat-agents-row[aria-current="true"]:not(.is-main)');
       const current = body?.querySelector('[data-agent-current]');
       const clocks = [...(body?.querySelectorAll('[data-cc-clock]') || [])].map((el) => el.textContent);
       const box = (sel) => {
@@ -77,11 +78,11 @@ function bump(id, patch) {
         return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
       };
       return {
-        title: flat(document.querySelector('[data-agent-title]')),
-        badge: badge?.textContent || '',
-        badgeClass: badge?.className || '',
-        stop: Boolean(document.querySelector('[data-agent-stop]') && !document.querySelector('[data-agent-stop]').hidden),
-        resume: Boolean(document.querySelector('[data-agent-resume]') && !document.querySelector('[data-agent-resume]').hidden),
+        title: flat(row?.querySelector('.chat-agents-name')),
+        badge: flat(row?.querySelector('.chat-agents-state')),
+        badgeClass: row?.className || '',
+        stop: Boolean(row?.querySelector('[data-agent-stop]')),
+        resume: Boolean(row?.querySelector('[data-agent-resume]')),
         dockHidden: dock ? dock.hidden : null,
         dockVerb: verb?.textContent || '',
         dockMeta: meta && !meta.hidden ? meta.textContent : '',
@@ -92,15 +93,22 @@ function bump(id, patch) {
         articles: body?.children.length || 0,
         report: flat(current),
         main: flat(document.querySelector('[data-chat-thread]')),
-        paneJobs: [...document.querySelectorAll('[data-agent-jobs] [data-show-job]')].map((el) => el.getAttribute('data-show-job')),
+        paneJobs: [...document.querySelectorAll('[data-jobs-list] [data-show-job]')].map((el) => el.getAttribute('data-show-job')),
         overflow: document.scrollingElement.scrollWidth - window.innerWidth,
-        panel: box('[data-chat-agents]'),
-        close: box('[data-agents-close]'),
+        panel: box('[data-agent-view]'),
+        close: box('[data-agents-list] [data-agent-main]'),
       };
     });
     const open = async (id) => {
       await page.evaluate((agent) => fuseToolFixture.todo.openAgent(agent), id);
       await page.locator('[data-agent-log-body]').waitFor({ state: 'visible' });
+      await page.locator(`[data-agents-list] .chat-agents-row[aria-current="true"] [data-agent-id="${id}"]`).waitFor();
+    };
+    const stateIs = (want) => page.waitForFunction((want) => (document.querySelector('[data-agents-list] .chat-agents-row[aria-current="true"]:not(.is-main) .chat-agents-state')?.textContent || '') === want, want);
+    // Back to the main transcript: the tree's main row.
+    const back = async () => {
+      await page.locator('[data-agents-list] [data-agent-main]').click();
+      await page.locator('[data-agent-view]').waitFor({ state: 'hidden' });
     };
     const poll = () => page.evaluate(() => fuseToolFixture.pollAgent());
 
@@ -128,7 +136,7 @@ function bump(id, patch) {
     let ui = await pane();
     assert.equal(ui.title, 'Audit the router', `title: ${ui.title}`);
     assert.equal(ui.badge, 'running', `badge: ${ui.badge}`);
-    assert.match(ui.badgeClass, /badge live/, ui.badgeClass);
+    assert.match(ui.badgeClass, /is-running/, ui.badgeClass);
     assert.equal(ui.stop, true, 'a running child offers Stop');
     assert.equal(ui.dockHidden, false, 'the live dock shows while the child runs');
     assert.match(ui.dockVerb, /…$/, `dock verb keeps its ellipsis: ${ui.dockVerb}`);
@@ -209,10 +217,10 @@ function bump(id, patch) {
     });
     agents = [{ id: 'nova', status: 'completed', description: 'Audit the router', work_ms: 15000, work_live: false, created_at: NOW }];
     await poll();
-    await page.locator('[data-agent-status]').getByText('completed', { exact: true }).waitFor();
+    await stateIs('completed');
     ui = await pane();
     assert.equal(ui.badge, 'completed', `badge settles: ${ui.badge}`);
-    assert.match(ui.badgeClass, /badge on/, ui.badgeClass);
+    assert.match(ui.badgeClass, /is-completed/, ui.badgeClass);
     assert.equal(ui.stop, false, 'Stop leaves when the child finishes');
     assert.equal(ui.dockHidden, true, 'the live dock hides when the child finishes');
     assert.equal(ui.spin, false, 'the dock spinner is gone');
@@ -240,7 +248,9 @@ function bump(id, patch) {
       { id: 'nova', status: 'completed', description: 'Audit the router', work_ms: 15000, work_live: false, created_at: NOW },
       { id: 'ivy', status: 'running', description: 'Check the pool', work_ms: 2000, work_live: true, created_at: NOW },
     ];
-    await page.locator('[data-agent-back]').click();
+    await back();
+    // A new child arrives the way agent.started announces it: a refresh.
+    await page.evaluate(() => fuseToolFixture.refreshAgents());
     await page.locator('[data-agent-id="ivy"]').waitFor();
     await open('ivy');
     await page.locator('[data-agent-log-body]').getByText('IVY_ONLY_TEXT').waitFor();
@@ -253,8 +263,8 @@ function bump(id, patch) {
       { id: 'i-grep', name: 'grep', status: 'done', pattern: 'IVY_PATTERN', path: 'app', preview: 'app/pool.py:4: rotator' },
     ] } });
     await poll();
-    await page.locator('[data-agent-status]').getByText('completed', { exact: true }).waitFor();
-    await page.locator('[data-agent-back]').click();
+    await stateIs('completed');
+    await back();
     await open('nova');
     await page.locator('[data-agent-log-body]').getByText('NOVA_FINAL_REPORT').waitFor();
     ui = await pane();
@@ -264,8 +274,7 @@ function bump(id, patch) {
     assert.equal(ui.dockHidden, true);
 
     // --- 4. Close, reopen, reload: nothing lost, nothing doubled ---
-    await page.locator('[data-agents-close]').click();
-    await page.locator('[data-agent-view]').waitFor({ state: 'hidden' });
+    await back();
     await open('nova');
     await page.locator('[data-agent-log-body]').getByText('NOVA_FINAL_REPORT').waitFor();
     ui = await pane();
@@ -307,11 +316,11 @@ function bump(id, patch) {
         { id: 'killed', status: 'cancelled', description: 'Stopped worker', resumable: true, work_ms: 3000, created_at: NOW },
       ];
 
-      await page.locator('[data-agents-close]').click();
+      await back();
       await open('fail');
-      await page.locator('[data-agent-status]').getByText('failed', { exact: true }).waitFor();
+      await stateIs('failed');
       ui = await pane();
-      assert.match(ui.badgeClass, /badge fault/, `failed badge: ${ui.badgeClass}`);
+      assert.match(ui.badgeClass, /is-failed/, `failed row: ${ui.badgeClass}`);
       assert.equal(ui.resume, false, `a failed child has no Resume`);
       assert.equal(ui.dockHidden, true, `a failed child shows no live dock`);
       assert.match(ui.text, /FAIL_PARTIAL_OUTPUT/, `the failed pane keeps its text`);
@@ -319,11 +328,11 @@ function bump(id, patch) {
       const failed = ui.steps.find((row) => row.tool === 'read_file');
       assert.equal(failed?.state, 'error', `failed row: ${JSON.stringify(failed)}`);
       assert.doesNotMatch(failed.hang, /is-running/, `a failed row is not Running`);
-      await page.locator('[data-agent-back]').click();
+      await back();
       await open('killed');
-      await page.locator('[data-agent-status]').getByText('cancelled', { exact: true }).waitFor();
+      await stateIs('cancelled');
       ui = await pane();
-      assert.match(ui.badgeClass, /badge stop/, `cancelled badge: ${ui.badgeClass}`);
+      assert.match(ui.badgeClass, /is-cancelled/, `cancelled row: ${ui.badgeClass}`);
       assert.equal(ui.resume, true, `an interrupted child offers Resume`);
       assert.match(ui.text, /KILLED_KEPT_OUTPUT/);
       const stopped = ui.steps.find((row) => row.tool === 'run_terminal_command');
@@ -352,7 +361,7 @@ function bump(id, patch) {
     agents = [{ id: 'fold', status: 'running', description: 'Folder', work_ms: 1000, work_live: true, created_at: NOW }];
     jobs = [{ id: 'jobnova01', command_id: 'jobnova01', agent_run_id: 'fold', state: 'completed', command: 'nohup pytest -q', exit_code: 0, background: true, elapsed_ms: 2500 }];
 
-    await page.locator('[data-agents-close]').click();
+    await back();
     await open('fold');
     await page.locator('[data-agent-log-body]').getByText(/background command/i).waitFor();
     ui = await pane();
@@ -367,27 +376,28 @@ function bump(id, patch) {
     assert.notEqual(bg?.state, 'running', `the handed-off command leaves Running: ${JSON.stringify(bg)}`);
     console.log('PASS background-command handoff folds into the pane');
 
-    // --- 7. Layout: overlay at 390, side pane at 1440, close reachable ---
+    // --- 7. Layout: the child takes the main column at 390 and 1440, and the
+    // way back (the tree's main row) stays reachable ---
     for (const [width, height] of [[390, 844], [1440, 1000]]) {
       await page.setViewportSize({ width, height });
-      await page.locator('[data-chat-agents]').waitFor({ state: 'visible' });
+      await page.locator('[data-agent-view]').waitFor({ state: 'visible' });
       ui = await pane();
-      assert.ok(ui.panel, `${width}: pane has a box`);
-      assert.ok(ui.close, `${width}: close control is shown`);
-      assert.ok(ui.close.w >= 24 && ui.close.h >= 24, `${width}: close is tappable ${JSON.stringify(ui.close)}`);
-      assert.ok(ui.close.x >= 0 && ui.close.x + ui.close.w <= width + 1, `${width}: close stays inside ${JSON.stringify(ui.close)}`);
+      assert.ok(ui.panel, `${width}: the child transcript has a box`);
+      assert.ok(ui.close, `${width}: the main row is shown`);
+      assert.ok(ui.close.w >= 24 && ui.close.h >= 20, `${width}: the main row is tappable ${JSON.stringify(ui.close)}`);
+      assert.ok(ui.close.x >= 0 && ui.close.x + ui.close.w <= width + 1, `${width}: the main row stays inside ${JSON.stringify(ui.close)}`);
       const covered = await page.evaluate(() => {
-        const el = document.querySelector('[data-agents-close]');
+        const el = document.querySelector('[data-agents-list] [data-agent-main]');
         const r = el.getBoundingClientRect();
         const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
         return el.contains(hit);
       });
-      assert.equal(covered, true, `${width}: close is the topmost element`);
+      assert.equal(covered, true, `${width}: the main row is the topmost element`);
       if (width === 390) {
-        assert.ok(ui.panel.w >= 350, `390 overlay fills the screen: ${JSON.stringify(ui.panel)}`);
-        assert.ok(ui.panel.x <= 1, `390 overlay starts at the edge: ${JSON.stringify(ui.panel)}`);
+        assert.ok(ui.panel.w >= 350, `390: the child fills the screen width: ${JSON.stringify(ui.panel)}`);
+        assert.ok(ui.panel.x <= 1, `390: the child starts at the edge: ${JSON.stringify(ui.panel)}`);
       } else {
-        assert.ok(ui.panel.w < 900 && ui.panel.x > 400, `1440 pane sits beside the thread: ${JSON.stringify(ui.panel)}`);
+        assert.ok(ui.panel.w >= 900, `1440: the child takes the main column: ${JSON.stringify(ui.panel)}`);
       }
       assert.ok(ui.overflow <= 0, `${width}: no page overflow (${ui.overflow}px)`);
       const wrap = await page.evaluate(() => {
