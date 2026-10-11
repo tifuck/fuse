@@ -125,14 +125,16 @@ def enable_coding_if_off(user_id: int) -> None:
     either fully before this (we re-enable, as a connecting agent implies)
     or fully after it (their choice wins). It can never be silently reverted
     by a stale intermediate read.
+
+    One upsert, not INSERT IGNORE then UPDATE: on MariaDB the ignored insert
+    takes a shared lock on the existing row, so two connectors of one user
+    saying hello at once (every reconnect after a restart) each held it and
+    deadlocked upgrading to the UPDATE's exclusive lock.
     """
     with db.tx() as conn:
         conn.execute(
-            "INSERT OR IGNORE INTO user_agent_settings(user_id) VALUES(?)",
-            (user_id,),
-        )
-        conn.execute(
-            "UPDATE user_agent_settings SET agent_coding=1 WHERE user_id=? AND agent_coding=0",
+            """INSERT INTO user_agent_settings(user_id, agent_coding) VALUES(?, 1)
+               ON CONFLICT(user_id) DO UPDATE SET agent_coding=1""",
             (user_id,),
         )
 

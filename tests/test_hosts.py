@@ -743,5 +743,27 @@ class HostsHttpTest(unittest.TestCase):
         self.assertEqual(fresh.json()["kind"], "project")
 
 
+@unittest.skipUnless(os.environ.get("FUSE_CHAT_TEST_MODE") == "1", "requires disposable MariaDB fixture")
+class EnableCodingConcurrencyTest(unittest.TestCase):
+    """Every connector of a user says hello at once after a restart."""
+
+    def test_concurrent_hellos_never_deadlock(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        from tests.mariadb_fixture import isolated_database
+
+        with isolated_database():
+            uid = accounts.create_user("hello@test.invalid", "password12", admin=False)["id"]
+            for existing in (False, True):
+                if existing:
+                    db.execute("UPDATE user_agent_settings SET agent_coding=0 WHERE user_id=?", (uid,))
+                for _ in range(5):
+                    with ThreadPoolExecutor(max_workers=12) as pool:
+                        for future in [pool.submit(hosts.enable_coding_if_off, uid) for _ in range(12)]:
+                            future.result()
+                row = db.fetchone("SELECT agent_coding FROM user_agent_settings WHERE user_id=?", (uid,))
+                self.assertEqual(row["agent_coding"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
