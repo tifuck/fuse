@@ -564,21 +564,27 @@ def parse_messages(raw, *, strict: bool = False) -> list[dict]:
                     raise ChatValidationError(f"messages[{index}].usage is too large", 413)
                 msg["usage"] = usage
             else:
-                msg["usage"] = {
-                    k: _legacy_json_value(usage[k])
-                    for k in (
-                        "prompt_tokens",
-                        "completion_tokens",
-                        "total_tokens",
-                        "reasoning_tokens",
-                        "completion_tokens_details",
-                        "prompt_tokens_details",
-                        "cached_tokens",
-                        "cache_write_tokens",
-                        "cache_usage_status",
-                    )
-                    if k in usage
-                }
+                # Stored rows were validated when written: keep every field.
+                # A hard-coded subset here dropped output_tokens, usage_status
+                # and the rest, and the next save wrote the loss back.
+                kept = {k: _legacy_json_value(v) for k, v in usage.items() if isinstance(k, str)}
+                if len(json.dumps(kept, ensure_ascii=True, separators=(",", ":"), default=str)) > USAGE_MAX:
+                    kept = {
+                        k: kept[k]
+                        for k in (
+                            "prompt_tokens",
+                            "completion_tokens",
+                            "total_tokens",
+                            "reasoning_tokens",
+                            "completion_tokens_details",
+                            "prompt_tokens_details",
+                            "cached_tokens",
+                            "cache_write_tokens",
+                            "cache_usage_status",
+                        )
+                        if k in kept
+                    }
+                msg["usage"] = kept
         elif strict and usage is not None:
             raise ChatValidationError(f"messages[{index}].usage must be an object or null")
         # Which model generated this reply. Recorded per assistant message so
