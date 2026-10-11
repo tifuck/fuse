@@ -120,6 +120,9 @@ class _ToolBook:
     def __init__(self) -> None:
         self.order: list[str] = []
         self.calls: dict[str, dict] = {}
+        # Wire id -> key of the call it currently names. A reused id moves to
+        # the newest call; the earlier call keeps its own key in calls/order.
+        self.alias: dict[str, str] = {}
 
     def _new(self, tid: str, name: str, incoming: str) -> dict:
         key = tid or name or f"call_{len(self.order)}"
@@ -132,13 +135,13 @@ class _ToolBook:
         }
         self.calls[key] = rec
         if tid and tid != key:
-            self.calls[tid] = rec
+            self.alias[tid] = key
         self.order.append(key)
         return rec
 
     def _merge_into(self, rec: dict, tid: str, name: str, incoming: str) -> tuple[dict, str]:
         if tid:
-            self.calls[tid] = rec
+            self.alias[tid] = rec["key"]
             if not rec["id"]:
                 rec["id"] = tid
         if name and not rec["name"]:
@@ -154,13 +157,16 @@ class _ToolBook:
         incoming = str(tc.get("arguments_json") or tc.get("invalid_json") or "")
         if _devin_debug():
             self._debug_decision("in", tid, name, incoming)
-        if tid and tid in self.calls:
-            existing = self.calls[tid]
+        current = self.alias.get(tid, tid)
+        if tid and current in self.calls:
+            existing = self.calls[current]
             # The server reuses one tool_call id for every call of that tool.
             # A tid'd frame with empty args after a COMPLETED record is the
             # opening frame of the NEXT call — not a redelivery of this one.
             if not incoming and _json_object(existing["arguments"]) is not None:
                 rec = self._new(self._next_key(tid), name, incoming)
+                # Later argument frames carrying this id belong to the new call.
+                self.alias[tid] = rec["key"]
                 if _devin_debug():
                     self._debug_decision("newcall", tid, name, rec["arguments"])
                 return rec, incoming

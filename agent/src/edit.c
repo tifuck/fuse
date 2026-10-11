@@ -148,8 +148,20 @@ int load_whole(const char *path, char **buf, size_t *len) {
     char expanded[PATH_MAX];
     if (expand_home(path, expanded, sizeof(expanded)) != 0) return -1;
     path = expanded;
-    FILE *f = fopen(path, "rb");
-    if (!f) return -1;
+    /* Non-blocking open + regular-file check: a FIFO must not hang a worker. */
+    int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) return -1;
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        close(fd);
+        errno = EINVAL;
+        return -1;
+    }
+    FILE *f = fdopen(fd, "rb");
+    if (!f) {
+        close(fd);
+        return -1;
+    }
     if (fseek(f, 0, SEEK_END) != 0) {
         fclose(f);
         return -1;

@@ -66,6 +66,8 @@ class ChatSyncTest(unittest.TestCase):
         return TimestampSigner(SECRET).sign(data).decode()
 
     def login(self, uid):
+        # The server re-stamps unstamped sessions, so drop its cookie too.
+        self.client.cookies.clear()
         self.client.cookies.set("session", self.cookie(uid))
         self.client.headers["x-csrf-token"] = "test-csrf"
 

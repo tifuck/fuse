@@ -987,7 +987,13 @@ def finish_run(run_id, message, status):
             source = json.loads(row["provider_messages"] or "null") or request.get("messages") or []
             request["messages"] = seal_provider_messages(source)
             agent.update(skip_sanitize=True, steer_closed=False, followup_continuation=True,
-                         steer_continuations=int(agent.get("steer_continuations") or 0) + 1)
+                         steer_continuations=int(agent.get("steer_continuations") or 0) + 1,
+                         # The continuation's round counter restarts at 0 on
+                         # this same message: start its trace ids past every
+                         # round already in the transcript.
+                         event_base=sum(1 for item in request["messages"]
+                                        if isinstance(item, dict) and item.get("role") == "assistant"
+                                        and item.get("tool_calls")))
             agent["activity"] = {"phase": "queued"}
             agent["usage_before"] = message.get("usage") or {}
             request["agent"] = agent
@@ -1765,6 +1771,30 @@ MAX_RESUME_ATTEMPTS = 3
 BOOT_RESUME_BATCH = 8
 
 
+def _check_resume_admission(row, user_id, is_child):
+    """A resume starts generation again: same caps as a new turn or spawn."""
+    from . import chat_children
+    from . import chats
+
+    def count(sql, params=()):
+        return int(db.fetchone(sql, params)["n"])
+
+    live = "status IN ('queued','running')"
+    if not is_child:
+        if count(f"SELECT COUNT(*) AS n FROM chat_runs WHERE user_id=? AND {live} AND parent_run_id IS NULL", (user_id,)) >= 4:
+            raise chats.ChatValidationError("maximum of 4 active runs reached", 409)
+        if count(f"SELECT COUNT(*) AS n FROM chat_runs WHERE {live} AND parent_run_id IS NULL") >= 32:
+            raise chats.ChatValidationError("chat generation capacity reached; try again shortly", 429)
+        return
+    root = row["root_run_id"] or row["parent_run_id"]
+    if count(f"SELECT COUNT(*) AS n FROM chat_runs WHERE root_run_id=? AND id<>? AND {live}", (root, root)) >= chat_children.LIVE_TREE_CHILDREN:
+        raise chats.ChatValidationError(f"tree already has {chat_children.LIVE_TREE_CHILDREN} live children", 409)
+    if count(f"SELECT COUNT(*) AS n FROM chat_runs WHERE user_id=? AND {live}", (user_id,)) >= chat_children.LIVE_USER_RUNS:
+        raise chats.ChatValidationError(f"maximum of {chat_children.LIVE_USER_RUNS} live agents reached", 409)
+    if count(f"SELECT COUNT(*) AS n FROM chat_runs WHERE {live}") >= chat_children.LIVE_PROCESS_RUNS:
+        raise chats.ChatValidationError("agent generation capacity reached; try again shortly", 429)
+
+
 def resume_run(user_id, run_id):
     """User-initiated resume of a terminal run from its durable transcript."""
     from . import chat_children
@@ -1809,6 +1839,7 @@ def resume_run(user_id, run_id):
         )
         if active_root:
             raise chats.ChatValidationError("this chat already has an active run", 409)
+    _check_resume_admission(row, user_id, is_child)
     _requeue_for_resume(row, messages, allowed=set(chat_tx.ACTIVE) | {"interrupted", "cancelled"}, by_user=True)
     if not is_child:
         with chat_tx.transaction() as conn:

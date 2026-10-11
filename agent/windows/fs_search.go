@@ -104,7 +104,13 @@ func includeOK(s string) bool {
 
 // matchAny matches rel against every brace alternative of pattern.
 func matchAny(pattern, rel string) (bool, error) {
-	for _, alt := range expandBraces(pattern) {
+	alts := expandBraces(pattern)
+	if len(alts) == 1 && alts[0] == pattern && strings.ContainsAny(pattern, "{}") {
+		// Nothing expanded (an unmatched brace): pathMatch would hand the
+		// same pattern straight back here and recurse until the stack dies.
+		return false, fmt.Errorf("unmatched brace in pattern %q", pattern)
+	}
+	for _, alt := range alts {
 		ok, err := pathMatch(alt, rel)
 		if err != nil || ok {
 			return ok, err

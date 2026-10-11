@@ -196,16 +196,22 @@ def row_elapsed_ms(row) -> int | None:
     return max(0, int(datetime.now(timezone.utc).timestamp() * 1000) - started)
 
 
+# Slots admitted by launch_async but not yet in _live (its INSERT awaits):
+# counted by _admit so concurrent launches cannot all pass the same last slot.
+_reserved: dict[str, dict] = {}
+
+
 def _admit(kind: str, host_id: int, source: str) -> None:
     """In-memory admission caps. Raises ValueError when a cap is hit."""
     _prune()
-    running = sum(1 for v in _live.values() if v.get("status") not in TERMINAL)
+    live = [*_live.values(), *_reserved.values()]
+    running = sum(1 for v in live if v.get("status") not in TERMINAL)
     if running >= JOB_CAP:
         raise ValueError("too many running commands")
     if source == "ws":
         ws_running = sum(
             1
-            for v in _live.values()
+            for v in live
             if v.get("status") not in TERMINAL and v.get("source") == "ws"
         )
         if ws_running >= WS_MONITOR_CAP:
@@ -213,7 +219,7 @@ def _admit(kind: str, host_id: int, source: str) -> None:
     elif int(host_id):
         per_host = sum(
             1
-            for v in _live.values()
+            for v in live
             if v.get("host_id") == int(host_id)
             and v.get("status") not in TERMINAL
             and v.get("source") != "ws"
@@ -231,6 +237,15 @@ def clean_description(value) -> str:
 def _label_fields(rec: dict) -> dict:
     description = clean_description(rec.get("description"))
     return {"description": description} if description else {}
+
+
+def _abandon_launch(job_id: str) -> None:
+    with db.tx() as conn:
+        conn.execute(
+            "UPDATE command_jobs SET status='cancelled', error='cancelled before start', finished_at=?,"
+            " termination_confirmed=1 WHERE id=? AND status='running'",
+            (db.now(), job_id),
+        )
 
 
 def _insert_job_row(
@@ -403,17 +418,30 @@ async def launch_async(**kwargs) -> dict:
     _admit(kind, host_id, source)
     job_id = uuid4().hex[:12]
     now = db.now()
-    await durable_call(
-        _insert_job_row,
-        job_id=job_id, user_id=kwargs["user_id"], host_id=host_id, host=kwargs["host"],
-        thread_id=kwargs.get("thread_id"), run_id=kwargs.get("run_id"),
-        command=kwargs["command"], cwd=kwargs.get("cwd", ""), background=background,
-        timeout_ms=kwargs["timeout_ms"], now=now, kind=kind, source=source,
-        url=kwargs.get("url", ""), pattern=kwargs.get("pattern", ""), max_events=max_events,
-        description=kwargs.get("description", ""),
-    )
-    if kind == "monitor":
-        await asyncio.to_thread(_set_monitor_notify, job_id)
+    _reserved[job_id] = {"status": "starting", "host_id": int(host_id), "source": source}
+    inserted = False
+    try:
+        await durable_call(
+            _insert_job_row,
+            job_id=job_id, user_id=kwargs["user_id"], host_id=host_id, host=kwargs["host"],
+            thread_id=kwargs.get("thread_id"), run_id=kwargs.get("run_id"),
+            command=kwargs["command"], cwd=kwargs.get("cwd", ""), background=background,
+            timeout_ms=kwargs["timeout_ms"], now=now, kind=kind, source=source,
+            url=kwargs.get("url", ""), pattern=kwargs.get("pattern", ""), max_events=max_events,
+            description=kwargs.get("description", ""),
+        )
+        inserted = True
+        if kind == "monitor":
+            await durable_call(_set_monitor_notify, job_id)
+    except BaseException:
+        if inserted:
+            # Cancelled between the INSERT and the supervisor: nothing will
+            # ever finish this row, so close it instead of leaving a phantom
+            # "running" job that cannot be joined or stopped.
+            await durable_call(_abandon_launch, job_id)
+        raise
+    finally:
+        _reserved.pop(job_id, None)
     return _start_rec(
         runner=kwargs["runner"], job_id=job_id, user_id=kwargs["user_id"], host_id=host_id,
         host=kwargs["host"], thread_id=kwargs.get("thread_id"), run_id=kwargs.get("run_id"),
@@ -565,6 +593,24 @@ async def _supervise(rec: dict, runner) -> None:
         writer = asyncio.create_task(_monitor_writer(rec))
         rec["_writer"] = writer
 
+    async def drain_writer() -> None:
+        # Deliver queued monitor events (and nothing more), then stop the
+        # writer. Must run before the terminal state is set: delivery drops
+        # events for a finished job, which would lose the final match.
+        if writer is None or writer.done():
+            return
+        rec["_write_queue"].put_nowait(None)
+        try:
+            await writer
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("Monitor writer failed to drain for job %s", rec["id"])
+
+    async def finish(**kwargs) -> None:
+        await drain_writer()
+        await _finish(rec, **kwargs)
+
     try:
         # Command runners enforce their own kill — the connector kills at the
         # deadline it was given and returns its buffered output — so this waits
@@ -580,7 +626,8 @@ async def _supervise(rec: dict, runner) -> None:
         outer = rec["timeout_ms"] / 1000 + grace
         if limit is not None:
             outer = min(outer, max(0.0, limit - time.monotonic()))
-        async with asyncio.timeout(outer):
+        async with asyncio.timeout(outer) as deadline:
+            rec["_deadline"] = deadline  # arm_background may move it earlier
             result = await runner(sink)
         if batcher is not None:
             await batcher.close()
@@ -594,21 +641,20 @@ async def _supervise(rec: dict, runner) -> None:
                 await batcher.close()
         if rec.get("_firehose"):
             rec["termination_confirmed"] = True
-            await _finish(rec, status="cancelled", exit_code=None, error=str(rec.get("error") or "monitor auto-stopped: too many events"))
+            await finish(status="cancelled", exit_code=None, error=str(rec.get("error") or "monitor auto-stopped: too many events"))
             return
         if rec.get("_max_events_hit"):
             rec["termination_confirmed"] = True
-            await _finish(rec, status="completed", exit_code=0, error=str(rec.get("error") or ""))
+            await finish(status="completed", exit_code=0, error=str(rec.get("error") or ""))
             return
         if _is_monitor(rec) and rec.get("source") == "ws":
             rec["termination_confirmed"] = True
-            await _finish(rec, status="completed", exit_code=0, error="")
+            await finish(status="completed", exit_code=0, error="")
             return
         if code is None or code < 0:
             raise RuntimeError("command ended without a normal exit status; remote outcome is unknown")
         rec["termination_confirmed"] = code is not None
-        await _finish(
-            rec,
+        await finish(
             status="completed",
             exit_code=code,
             error="",
@@ -627,12 +673,12 @@ async def _supervise(rec: dict, runner) -> None:
         error = str(rec.get("error") or "")
         if rec.get("_firehose"):
             rec["termination_confirmed"] = True
-            await _finish(rec, status="cancelled", exit_code=None, error=error or "monitor auto-stopped: too many events")
+            await finish(status="cancelled", exit_code=None, error=error or "monitor auto-stopped: too many events")
         elif rec.get("_max_events_hit"):
             rec["termination_confirmed"] = True
-            await _finish(rec, status="completed", exit_code=0, error=error)
+            await finish(status="completed", exit_code=0, error=error)
         else:
-            await _finish(rec, status="cancelled", exit_code=None,
+            await finish(status="cancelled", exit_code=None,
                           error="cancellation requested; remote termination is not confirmed")
         return
     except (CommandTimedOut, TimeoutError) as exc:
@@ -650,7 +696,7 @@ async def _supervise(rec: dict, runner) -> None:
             error = f'Background command "{description}" was stopped after reaching its background time limit'
         else:
             error = f"{label} exceeded its {int(rec['timeout_ms'])}ms execution deadline; termination requested{extra}"
-        await _finish(rec, status="timed_out", exit_code=None, error=error)
+        await finish(status="timed_out", exit_code=None, error=error)
     except Exception as exc:
         if batcher is not None:
             await batcher.close()
@@ -658,23 +704,14 @@ async def _supervise(rec: dict, runner) -> None:
         text = str(exc) or exc.__class__.__name__
         low = text.lower()
         status = "timed_out" if "timed out" in low else "interrupted"
-        await _finish(rec, status=status, exit_code=None, error=text[:400])
+        await finish(status=status, exit_code=None, error=text[:400])
     finally:
         if batcher is not None:
             try:
                 await batcher.close()
             except Exception:
                 pass
-        if writer is not None:
-            # Drain queued monitor events (and nothing more) before the
-            # terminal state is observed; then stop the writer.
-            rec["_write_queue"].put_nowait(None)
-            try:
-                await writer
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                logger.exception("Monitor writer failed to drain for job %s", rec["id"])
+        await drain_writer()
         fut: asyncio.Future = rec["future"]
         if not fut.done():
             fut.set_result(rec["status"])
@@ -1067,6 +1104,16 @@ def arm_background(rec: dict, limit_ms: int = BACKGROUND_DEFAULT_MS) -> None:
     the move, not from when it was launched."""
     rec["background"] = True
     rec["background_deadline"] = time.monotonic() + max(1, int(limit_ms)) / 1000
+    deadline = rec.get("_deadline")
+    if deadline is not None:
+        # The supervisor's wait already started with the launch budget: pull
+        # it in so the job ends at the limit counted from this move.
+        try:
+            when = asyncio.get_running_loop().time() + max(1, int(limit_ms)) / 1000
+        except RuntimeError:
+            when = None
+        if when is not None and (deadline.when() is None or when < deadline.when()):
+            deadline.reschedule(when)
     mark_background(rec)
 
 

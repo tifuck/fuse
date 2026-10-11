@@ -40,6 +40,14 @@ class MonitorHelpers(unittest.TestCase):
         self.assertFalse(monitor.match_line("still waiting", pat))
         self.assertFalse(monitor.match_line("   ", pat))
 
+    def test_catastrophic_pattern_times_out_instead_of_blocking(self):
+        import time
+
+        pat = monitor.compile_pattern(r"(x+x+)+y")
+        start = time.monotonic()
+        self.assertFalse(monitor.match_line("x" * 5000, pat))
+        self.assertLess(time.monotonic() - start, 1.0)
+
     def test_max_events_bounds(self):
         self.assertEqual(monitor.max_events(None), 1)
         self.assertEqual(monitor.max_events(8), 8)

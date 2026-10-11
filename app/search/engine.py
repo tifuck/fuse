@@ -670,6 +670,9 @@ async def fetch_url(
             msg = "That URL is not an allowed public HTTPS address."
         return None, msg, msg
     cached = _page_cache.get(normalize_url(clean))
+    if cached is not None and not allowed_fetch_url(cached[0]):
+        # The redirect target fell under the domain policy since it was cached.
+        cached = None
     if cached is not None:
         final_url, base_extract, links = cached
         allowed.add(final_url)

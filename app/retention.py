@@ -202,8 +202,13 @@ def sweep_user(user_id: int, prefs: dict | None = None, *, now: datetime | None 
                         if hosts.set_project_archived(conn, user_id, int(p["id"]), True, skip_running=True) is not None:
                             stats["archived_projects"] += 1
                             p["archived"] = 1
+                    # Archived just now: the delete pass must age them from
+                    # this moment, not from their old activity timestamps.
+                    archived_now = _iso(now)
+                    p["archived_at"] = archived_now
                     for t in sessions:
                         t["archived"] = 1
+                        t["archived_at"] = archived_now
         if archive_chats:
             for t in threads:
                 if t["archived"] or t["schedule_id"] is not None or t["id"] in busy:
@@ -234,8 +239,13 @@ def sweep_user(user_id: int, prefs: dict | None = None, *, now: datetime | None 
             )
             if int(open_sessions["n"] if open_sessions else 0):
                 continue
-            if hosts.delete_project(user_id, int(p["host_id"]), int(p["id"]), sessions="delete"):
-                stats["deleted_projects"] += 1
+            if any(t["id"] in busy for t in threads if t.get("project_id") == p["id"]):
+                continue
+            try:
+                if hosts.delete_project(user_id, int(p["host_id"]), int(p["id"]), sessions="delete", cancel_active=False):
+                    stats["deleted_projects"] += 1
+            except hosts.HostError:
+                continue
         for t in threads:
             if not t["archived"] or t["id"] in busy:
                 continue

@@ -54,7 +54,39 @@ static inline void die(const char *fmt, ...) {
  * Emits a cJSON_Raw node holding a fully-escaped JSON string literal:
  * " -> \", \ -> \\, tab/LF/CR -> \t \n \r, other control bytes -> \uXXXX.
  * JSON forbids raw control bytes in a string: the server rejects the whole
- * frame, so a literal newline would lose every line of output. */
+ * frame, so a literal newline would lose every line of output.
+ * Frames are WebSocket text, which must be valid UTF-8: a byte that does not
+ * start a well-formed sequence becomes \ufffd instead of killing the link. */
+static inline size_t utf8_seq_len(const unsigned char *s, size_t n) {
+    unsigned char c = s[0];
+    size_t len;
+    unsigned char lo = 0x80, hi = 0xBF;
+    if (c >= 0xC2 && c <= 0xDF) len = 2;
+    else if (c >= 0xE0 && c <= 0xEF) {
+        len = 3;
+        if (c == 0xE0) lo = 0xA0;
+        if (c == 0xED) hi = 0x9F;
+    } else if (c >= 0xF0 && c <= 0xF4) {
+        len = 4;
+        if (c == 0xF0) lo = 0x90;
+        if (c == 0xF4) hi = 0x8F;
+    } else return 0;
+    if (n < len || s[1] < lo || s[1] > hi) return 0;
+    for (size_t k = 2; k < len; k++)
+        if (s[k] < 0x80 || s[k] > 0xBF) return 0;
+    return len;
+}
+/* Bytes at the end of s[0..n) that begin a multibyte sequence the next read
+ * may complete: hold them back so a split character is not mangled. */
+static inline size_t utf8_incomplete_tail(const char *s, size_t n) {
+    for (size_t back = 1; back <= 3 && back <= n; back++) {
+        unsigned char c = (unsigned char)s[n - back];
+        if (c >= 0x80 && c <= 0xBF) continue;
+        size_t need = c >= 0xF0 && c <= 0xF4 ? 4 : c >= 0xE0 ? 3 : c >= 0xC2 && c <= 0xDF ? 2 : 0;
+        return need > back ? back : 0;
+    }
+    return 0;
+}
 static inline cJSON *json_string_bytes(const char *s, size_t n) {
     char *buf = malloc(n * 6 + 3);
     if (!buf) return NULL;
@@ -65,6 +97,16 @@ static inline cJSON *json_string_bytes(const char *s, size_t n) {
         if (c == '"' || c == '\\') {
             *w++ = '\\';
             *w++ = (char)c;
+        } else if (c >= 0x80) {
+            size_t len = utf8_seq_len((const unsigned char *)s + i, n - i);
+            if (len) {
+                memcpy(w, s + i, len);
+                w += len;
+                i += len - 1;
+            } else {
+                memcpy(w, "\\ufffd", 6);
+                w += 6;
+            }
         } else if (c >= 0x20) {
             *w++ = (char)c;
         } else {

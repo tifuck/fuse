@@ -81,6 +81,15 @@ class ToolBookStreamTest(unittest.TestCase):
         self.assertEqual(calls[0]["function"]["arguments"], '{"command": "find /usr -maxdepth 2>/dev/null | head -20"}')
         json.loads(calls[0]["function"]["arguments"])  # must parse
 
+    def test_reused_tid_argument_frames_fill_the_new_call(self):
+        book = _ToolBook()
+        book.add(_frame(tid="T", name="read_file", args='{"path": "a"}'))
+        book.add(_frame(tid="T", name="read_file"))
+        book.add(_frame(tid="T", args='{"path": '))
+        book.add(_frame(tid="T", args='"b"}'))
+        calls = book.openai_calls()
+        self.assertEqual([json.loads(c["function"]["arguments"])["path"] for c in calls], ["a", "b"])
+
     def test_two_calls_reusing_same_tid(self):
         book = _ToolBook()
         book.add(_frame(tid="run_terminal", name="run_terminal_command"))

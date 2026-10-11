@@ -12,6 +12,21 @@
 #include "jobs.h"
 #include "outq.h"
 
+/* Stream one pipe read, holding back a UTF-8 sequence split across reads so
+ * the character arrives whole with the next read (n == 0 flushes the rest). */
+static int send_utf8_chunk(const char *id, const char *stream, char *carry, size_t *carry_n,
+                           const char *data, size_t n) {
+    char buf[2048 + 4];
+    size_t total = *carry_n;
+    memcpy(buf, carry, total);
+    if (n) memcpy(buf + total, data, n);
+    total += n;
+    size_t tail = n ? utf8_incomplete_tail(buf, total) : 0;
+    *carry_n = tail;
+    memcpy(carry, buf + total - tail, tail);
+    return send_chunk(id, stream, buf, total - tail);
+}
+
 int run_exec(const char *cwd, const char *cmd, int timeout_ms, char *out, size_t ocap, char *errb, size_t ecap, int *code, struct job *job, int *timed_out, int stream, const char *job_id, int *clipped, size_t *out_len, size_t *err_len) {
     int outp[2], errp[2];
     /* O_CLOEXEC: exec'd commands (and daemons they spawn) must not inherit
@@ -72,6 +87,8 @@ int run_exec(const char *cwd, const char *cmd, int timeout_ms, char *out, size_t
     int status = 0, done = 0, killed = 0, by_timeout = 0;
     int out_clipped = 0, err_clipped = 0;
     long kill_ms = 0, reap_ms = 0;
+    char out_carry[4], err_carry[4];
+    size_t out_carry_n = 0, err_carry_n = 0;
     while (done < 2) {
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
@@ -92,6 +109,10 @@ int run_exec(const char *cwd, const char *cmd, int timeout_ms, char *out, size_t
          * the slot is released either way and one zombie is the lesser evil. */
         if (killed && elapsed - kill_ms >= 10000) {
             fprintf(stderr, "fuse-agent: child %d unkillable after SIGKILL; abandoning\n", (int)pid);
+            if (stream) {
+                send_utf8_chunk(job_id, "out", out_carry, &out_carry_n, NULL, 0);
+                send_utf8_chunk(job_id, "err", err_carry, &err_carry_n, NULL, 0);
+            }
             close(outp[0]);
             close(errp[0]);
             if (code) *code = -1; /* no reap: remote outcome remains unconfirmed */
@@ -115,7 +136,7 @@ int run_exec(const char *cwd, const char *cmd, int timeout_ms, char *out, size_t
         char tmp[2048];
         ssize_t k;
         for (int reads = 0; !held && reads < 64 && (k = read(outp[0], tmp, sizeof(tmp))) > 0; reads++) {
-            if (stream && send_chunk(job_id, "out", tmp, (size_t)k) != 0) out_clipped = 1;
+            if (stream && send_utf8_chunk(job_id, "out", out_carry, &out_carry_n, tmp, (size_t)k) != 0) out_clipped = 1;
             if (stream && !out_has_room()) held = 1;
             if (o + (size_t)k >= ocap) { out_clipped = 1; k = (ssize_t)(ocap - 1 - o); }
             if (k > 0 && !stream) {
@@ -125,7 +146,7 @@ int run_exec(const char *cwd, const char *cmd, int timeout_ms, char *out, size_t
             }
         }
         for (int reads = 0; !held && reads < 64 && (k = read(errp[0], tmp, sizeof(tmp))) > 0; reads++) {
-            if (stream && send_chunk(job_id, "err", tmp, (size_t)k) != 0) err_clipped = 1;
+            if (stream && send_utf8_chunk(job_id, "err", err_carry, &err_carry_n, tmp, (size_t)k) != 0) err_clipped = 1;
             if (stream && !out_has_room()) held = 1;
             if (e + (size_t)k >= ecap) { err_clipped = 1; k = (ssize_t)(ecap - 1 - e); }
             if (k > 0 && !stream) {
@@ -152,6 +173,10 @@ int run_exec(const char *cwd, const char *cmd, int timeout_ms, char *out, size_t
             done = 1;
             reap_ms = elapsed;
         }
+    }
+    if (stream) {
+        send_utf8_chunk(job_id, "out", out_carry, &out_carry_n, NULL, 0);
+        send_utf8_chunk(job_id, "err", err_carry, &err_carry_n, NULL, 0);
     }
     close(outp[0]);
     close(errp[0]);

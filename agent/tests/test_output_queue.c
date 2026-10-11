@@ -20,7 +20,10 @@ int main(void) {
     for (size_t i = 0; i < g_outq[g_out_head].n; i++) assert(frame[i] >= 0x20);
     cJSON *parsed = cJSON_ParseWithLength((const char *)frame, g_outq[g_out_head].n);
     const char *data = json_cstr(parsed, "data", NULL);
-    assert(data && strlen(data) == sizeof(all) && !memcmp(data, all, sizeof(all)));
+    /* ASCII round-trips exactly; each lone high byte (not valid UTF-8, which
+     * a WebSocket text frame must be) arrives as U+FFFD. */
+    assert(data && strlen(data) == 127 + 128 * 3 && !memcmp(data, all, 127));
+    for (int i = 0; i < 128; i++) assert(!memcmp(data + 127 + i * 3, "\xef\xbf\xbd", 3));
     cJSON_Delete(parsed);
     free(g_outq[g_out_head].data);
     g_out_head = (g_out_head + 1) % OUT_QMAX;

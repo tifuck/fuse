@@ -174,6 +174,7 @@ def set_user_context(user_id: int, *, instructions=None, profile=None, recaps=No
         if row is None:
             raise ChatValidationError("user not found", 404)
         store.check_revision(row["chat_context_revision"], expected_revision)
+        _lock_revision(conn, "users", "chat_context_revision", row["chat_context_revision"], "id=?", (user_id,))
         stored_instructions = row["chat_instructions"] or ""
         stored_profile = row["chat_profile"] or ""
         if instructions is not None:
@@ -522,6 +523,8 @@ def update_thread(
         store.check_revision(row["revision"], expected_revision)
         if messages is not None and conn.execute("SELECT 1 FROM chat_runs WHERE thread_id=? AND status IN ('queued','running')", (pk,)).fetchone():
             raise ChatValidationError("cannot replace messages during an active run", 409)
+        # After the chat_runs read: finalization locks run before thread.
+        _lock_revision(conn, "chat_threads", "revision", row["revision"], "id=? AND user_id=?", (pk, user_id))
         _update_thread(conn, row, title=title, model=model, archived=archived, pinned=pinned, messages=messages, context=context, tools=tools)
         if bypass_permissions is not None and bool(bypass_permissions) != bool(row["bypass_permissions"] if "bypass_permissions" in row.keys() else 0):
             from . import permissions as permissions_mod
@@ -598,6 +601,16 @@ def unarchive_on_activity(conn, row, ts):
     if (row["kind"] if "kind" in row.keys() else "") == "project" and row["project_id"] is not None:
         conn.execute("UPDATE user_projects SET archived=0, archived_at='' WHERE id=? AND user_id=? AND archived=1",
                      (row["project_id"], row["user_id"]))
+def _lock_revision(conn, table: str, column: str, seen, where: str, args: tuple) -> None:
+    """Row-lock what was just read, at the revision it was read at. The plain
+    SELECT before it does not lock on MariaDB (BEGIN IMMEDIATE is a no-op
+    there), so two writers could both pass the revision check and the later
+    one write back stale state; this makes the second one conflict."""
+    cur = conn.execute(f"UPDATE {table} SET {column}={column} WHERE {where} AND {column}=?", (*args, seen))
+    if not cur.rowcount:
+        raise ChatValidationError("revision conflict; reload the latest state", 409)
+
+
 def _update_thread(conn, row, *, title, model, archived, pinned, messages, context, tools):
     if not row:
         return None
@@ -714,6 +727,12 @@ def delete_thread(user_id: int, thread_id, *, expected_revision=None, command_id
                 return False
         public = str(row["public_id"]) if "public_id" in row.keys() and row["public_id"] else public_id_for(pk, conn)
         active = conn.execute("SELECT * FROM chat_runs WHERE thread_id=? AND user_id=? AND status IN ('queued','running')", (pk, user_id)).fetchall()
+        if expected_revision is not None:
+            # After the chat_runs read: finalization locks run before thread.
+            try:
+                _lock_revision(conn, "chat_threads", "revision", row["revision"], "id=? AND user_id=?", (pk, user_id))
+            except ChatValidationError:
+                return False
         if active and not cancel_active:
             return False
         for run in active:

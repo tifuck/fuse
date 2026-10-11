@@ -365,6 +365,22 @@ class ClaudeParseTest(unittest.TestCase):
 
 
 class ClaudeStreamTest(unittest.IsolatedAsyncioTestCase):
+    async def test_crlf_framed_events_split_anywhere(self):
+        from app.sources.claude_stream import _upstream_events
+
+        class Resp:
+            def __init__(self, chunks):
+                self.chunks = chunks
+
+            async def aiter_text(self):
+                for chunk in self.chunks:
+                    yield chunk
+
+        data = 'event: a\r\ndata: {"x":1}\r\n\r\nevent: b\r\ndata: {"x":2}\r\n\r\n'
+        for cut in range(1, len(data)):
+            got = [obj async for obj in _upstream_events(Resp([data[:cut], data[cut:]]))]
+            self.assertEqual(got, [{"x": 1, "type": "a"}, {"x": 2, "type": "b"}], cut)
+
     async def test_sse_translates_text_thinking_and_tools(self):
         events = [
             {"type": "message_start", "message": {"id": "msg_1", "usage": {"input_tokens": 10, "cache_read_input_tokens": 4, "cache_creation_input_tokens": 2}}},

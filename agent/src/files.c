@@ -76,12 +76,19 @@ int read_file_slice(const char *path, int offset, int limit, char *out, size_t c
     char expanded[PATH_MAX];
     if (expand_home(path, expanded, sizeof(expanded)) != 0) return -1;
     path = expanded;
-    FILE *f = fopen(path, "rb");
-    if (!f) return -1;
+    /* O_NONBLOCK: opening a FIFO with no writer would otherwise block this
+       worker forever, before the regular-file check could reject it. */
+    int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) return -1;
     struct stat st;
-    if (fstat(fileno(f), &st) != 0 || !S_ISREG(st.st_mode)) {
-        fclose(f);
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        close(fd);
         errno = EINVAL;
+        return -1;
+    }
+    FILE *f = fdopen(fd, "rb");
+    if (!f) {
+        close(fd);
         return -1;
     }
     if (offset < 1) offset = 1;

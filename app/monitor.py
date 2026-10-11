@@ -14,9 +14,12 @@ import socket
 import time
 from urllib.parse import urlparse, urlunparse
 
+import regex
+
 logger = logging.getLogger(__name__)
 
 BATCH_S = 0.2
+MATCH_TIMEOUT_S = 0.05
 DEFAULT_TIMEOUT_MS = 300_000
 MAX_TIMEOUT_MS = 1_800_000
 DEFAULT_MAX_EVENTS = 1
@@ -65,8 +68,8 @@ def compile_pattern(raw: str):
     if not text:
         return None
     try:
-        return re.compile(text)
-    except re.error:
+        return regex.compile(text)
+    except regex.error:
         raise ValueError("invalid monitor pattern") from None
 
 
@@ -76,7 +79,12 @@ def match_line(line: str, pattern) -> bool:
         return False
     if pattern is None:
         return True
-    return bool(pattern.search(text))
+    # Model-supplied patterns run on the event loop; a backtracking blowup
+    # must not stall every other request.
+    try:
+        return bool(pattern.search(text, timeout=MATCH_TIMEOUT_S))
+    except TimeoutError:
+        return False
 
 
 def _resolves_public(host: str, port: int | None) -> bool:

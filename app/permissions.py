@@ -989,11 +989,15 @@ async def _auto_verdict(gate: Gate, tool: str, action: dict, roots: list[str]) -
 
 async def review(*, tool: str, args: dict, user_id: int,
                  host_id: int, host_alias: str, root: str, windows: bool,
-                 gate: Gate | None, deny_reason: str = "") -> ReviewResult:
+                 gate: Gate | None, deny_reason: str = "", realpath=None) -> ReviewResult:
     """Decide whether a workspace tool call may run. Pure verdict + ask flow.
 
     deny_reason (workspace denylist hit): the command may only run on the
-    user's own Allow or bypass — never a grant, Allow-always, or Jev auto."""
+    user's own Allow or bypass — never a grant, Allow-always, or Jev auto.
+
+    realpath (async, list of paths -> list of host-resolved paths or None):
+    lexical scope alone lets a symlink inside a root reach outside it, so an
+    in-root file target is re-checked against where it really points."""
     if gate is None or tool not in _GATED_TOOLS:
         return ReviewResult(allowed=True)
     if gate.thread_id is None:
@@ -1084,7 +1088,25 @@ async def review(*, tool: str, args: dict, user_id: int,
                 secret = True
                 reasons.append("secret-named file")
                 grant_kind, grant_value = "file", resolved
-        if not in_roots:
+        if realpath is not None and in_roots and not windows and tool != "spawn_subagent":
+            reals = await realpath([resolved, *roots])
+            real = reals[0] if reals else None
+            # Compare only when every root resolved too: a root that is itself
+            # a symlink must be judged by its real location, not skipped.
+            if real and real != resolved and all(reals[1:]):
+                real_roots = list(reals[1:])
+                if not _in_roots(real, real_roots, windows):
+                    in_roots = False
+                    out_of_root = True
+                    display = real
+                    reasons.append(f"symlink target {real} is outside the allowed roots")
+                    grant_kind, grant_value = "dir", _grant_dir_for(tool, real, windows)
+                if (not secret and tool in ("read_file", "grep") and is_secret_path(real)
+                        and (secret_dir_in_path(real) or not in_roots)):
+                    secret = True
+                    reasons.append("secret-named file")
+                    grant_kind, grant_value = "file", real
+        if not in_roots and not out_of_root:
             out_of_root = True
             reasons.append("outside the allowed roots")
             if not grant_value:

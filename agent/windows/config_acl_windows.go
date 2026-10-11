@@ -4,18 +4,54 @@ package main
 
 import (
 	"encoding/binary"
+	"os"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
-// hardenSecretFile replaces the file's DACL with explicit full-control grants
-// for the writing user, the previous config's owner (a SYSTEM rewrite must not
-// lock the tray out), SYSTEM and BuiltinAdministrators, and blocks inherited
-// ACEs. os.WriteFile's 0600 mode is meaningless on Windows: without this the
-// token-bearing config inherits C:\ProgramData's Users:(RX) ACL and any local
-// user can read the device token. previous may be "" (fresh install).
-func hardenSecretFile(path string, previous string) error {
+// createSecretFile creates path exclusively with a protected DACL attached at
+// creation: full control for the writing user, the previous config's owner (a
+// SYSTEM rewrite must not lock the tray out), SYSTEM and BuiltinAdministrators,
+// nothing inherited. Mode bits are meaningless on Windows, and hardening after
+// the write leaves a window in which another local user can open the file
+// under C:\ProgramData's inherited Users:(RX) ACL and keep that handle.
+// previous may be "" (fresh install).
+func createSecretFile(path string, previous string) (*os.File, error) {
+	sids := secretSIDs(previous)
+	if len(sids) == 0 {
+		return nil, windows.ERROR_INVALID_SID
+	}
+	dacl, buf, err := buildAllowAllACL(sids)
+	if err != nil {
+		return nil, err
+	}
+	sd, err := windows.NewSecurityDescriptor()
+	if err != nil {
+		return nil, err
+	}
+	if err := sd.SetDACL(dacl, true, false); err != nil {
+		return nil, err
+	}
+	if err := sd.SetControl(windows.SE_DACL_PROTECTED, windows.SE_DACL_PROTECTED); err != nil {
+		return nil, err
+	}
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return nil, err
+	}
+	sa := windows.SecurityAttributes{SecurityDescriptor: sd}
+	sa.Length = uint32(unsafe.Sizeof(sa))
+	h, err := windows.CreateFile(name, windows.GENERIC_WRITE, 0, &sa,
+		windows.CREATE_NEW, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	_ = buf // keep the ACL bytes alive across the call
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(h), path), nil
+}
+
+func secretSIDs(previous string) []*windows.SID {
 	sids := make([]*windows.SID, 0, 4)
 	add := func(sid *windows.SID, err error) {
 		if err != nil || sid == nil {
@@ -46,18 +82,7 @@ func hardenSecretFile(path string, previous string) error {
 	}
 	add(windows.CreateWellKnownSid(windows.WinLocalSystemSid))
 	add(windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid))
-	if len(sids) == 0 {
-		return nil
-	}
-	dacl, buf, err := buildAllowAllACL(sids)
-	if err != nil {
-		return err
-	}
-	err = windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT,
-		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
-		nil, nil, dacl, nil)
-	_ = buf // keep the ACL bytes alive across the call
-	return err
+	return sids
 }
 
 // buildAllowAllACL packs one ACCESS_ALLOWED ACE (GENERIC_ALL) per SID into a

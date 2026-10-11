@@ -355,6 +355,16 @@ def estimate_text(text: str) -> int:
     return max(1, wide + (narrow + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN)
 
 
+def estimate_file(part: dict) -> int:
+    """A file attachment (e.g. a PDF) is real input; counting it as zero let
+    preflight and compaction ignore it. ponytail: size-based guess (decoded
+    bytes / 8, at least one image's worth); extract text if this misleads."""
+    file = part.get("file") if isinstance(part.get("file"), dict) else part
+    data = str(file.get("file_data") or "")
+    encoded = data.split(",", 1)[1] if data.startswith("data:") and "," in data else data
+    return max(IMAGE_TOKENS, (len(encoded) * 3 // 4) // 8)
+
+
 def estimate_content(content) -> int:
     if content is None:
         return 0
@@ -369,6 +379,8 @@ def estimate_content(content) -> int:
                 kind = part.get("type")
                 if kind in ("image_url", "input_image"):
                     total += IMAGE_TOKENS
+                elif kind in ("file", "input_file"):
+                    total += estimate_file(part)
                 else:
                     total += estimate_text(str(part.get("text") or part.get("content") or ""))
         return total

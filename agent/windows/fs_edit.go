@@ -169,6 +169,15 @@ func applyEdit(text string, e fileEdit) (string, int, error) {
 	if count > 1 && !e.All {
 		return "", 0, fmt.Errorf("old_string is not unique (%d occurrences)", count)
 	}
+	// Size the result before building it: ReplaceAll allocates the whole
+	// output first, so a short old/long new pair could ask for gigabytes.
+	replaced := 1
+	if e.All {
+		replaced = count
+	}
+	if growth := len(newUse) - len(oldUse); growth > 0 && replaced > (editFileMax-len(text))/growth {
+		return "", 0, fmt.Errorf("replacement too large (maximum %d bytes); apply the change with run_terminal_command", editFileMax)
+	}
 	if e.All {
 		return strings.ReplaceAll(text, oldUse, newUse), count, nil
 	}

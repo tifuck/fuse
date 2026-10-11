@@ -116,8 +116,8 @@ case "$ARCH" in
   *) echo "fuse-agent: unsupported architecture: $ARCH" >&2; exit 1 ;;
 esac
 NAME="fuse-agent-$SKU"
-TMP="${{TMPDIR:-/tmp}}/fuse-agent.$$"
-mkdir -p "$TMP"
+TMP=$(mktemp -d "${{TMPDIR:-/tmp}}/fuse-agent.XXXXXXXX")
+chmod 700 "$TMP"
 trap 'rm -rf "$TMP"' EXIT INT HUP
 echo "Downloading $NAME from $BASE ..."
 curl -fsSL "$BASE/agent/dist/$NAME" -o "$TMP/fuse-agent"

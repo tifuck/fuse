@@ -511,12 +511,18 @@ def patch_schedule(user_id: int, token, raw: dict) -> dict:
         item = _normalize(user_id, merged, existing=existing)
         if set(raw) & _PATCH_INTERVAL_KEYS:
             _assert_interval(item)
+        timing = ("recur_kind", "cron_expr", "every_seconds", "timezone", "at_local", "weekdays", "once_at",
+                  "enabled", "paused")
+        if existing.get("next_fire_at") and item["next_fire_at"] and all(item[k] == existing.get(k) for k in timing):
+            # Renaming or rewording must not push the next run back a period.
+            item["next_fire_at"] = existing["next_fire_at"]
+        retarget = (item["target"], item["project_id"]) != (existing.get("target"), existing.get("project_id"))
         now = db.now()
         conn.execute(
             """UPDATE chat_schedules SET name=?, enabled=?, paused=?, target=?, project_id=?, fresh_each_fire=?,
                    allow_coding=?, prompt=?, variables=?, model=?, tools=?, reasoning_effort=?, timezone=?,
                    recur_kind=?, cron_expr=?, every_seconds=?, weekdays=?, at_local=?, once_at=?, next_fire_at=?,
-                   updated_at=? WHERE id=? AND user_id=?""",
+                   updated_at=?""" + (", thread_id=NULL" if retarget else "") + " WHERE id=? AND user_id=?",
             (
                 item["name"], 1 if item["enabled"] else 0, 1 if item["paused"] else 0, item["target"],
                 item["project_id"], 1 if item["fresh_each_fire"] else 0, 1 if item["allow_coding"] else 0,
@@ -870,9 +876,16 @@ async def _fire(schedule: dict, fire: dict, *, consume_slot: bool) -> None:
             thread_pk = schedule.get("thread_id")
             if thread_pk:
                 row = db.fetchone(
-                    "SELECT id, messages FROM chat_threads WHERE id=? AND user_id=?",
+                    "SELECT id, messages, kind, host_id, project_id FROM chat_threads WHERE id=? AND user_id=?",
                     (thread_pk, user_id),
                 )
+                if row and kind == "project" and (row["host_id"], row["project_id"]) != (hid, pid):
+                    # The schedule was retargeted since this thread was made;
+                    # the thread's binding decides host and cwd, so start a
+                    # new continuity thread rather than run on the old target.
+                    # (Chat targets are left alone: a chat may legitimately
+                    # have been promoted into a project by its own work.)
+                    row = None
                 if row:
                     msgs = chats.parse_messages(row["messages"])
                     if len(msgs) + 2 > chats.MSG_MAX - 8:

@@ -130,6 +130,27 @@ function restoreFocus() {
   })()`).catch(() => {});
 }
 
+function originOf(url) {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "";
+  }
+}
+
+// Page content picks these URLs: only hand web links to the OS, never a
+// custom scheme that would launch some installed protocol handler.
+const EXTERNAL_PROTOCOLS = new Set(["https:", "http:", "mailto:"]);
+function openExternalSafe(url) {
+  let protocol = "";
+  try {
+    protocol = new URL(url).protocol;
+  } catch {
+    return;
+  }
+  if (EXTERNAL_PROTOCOLS.has(protocol)) shell.openExternal(url);
+}
+
 function createWindow() {
   const background = (frameTheme && frameTheme.ink) || BACKGROUND;
   win = new BaseWindow({
@@ -196,18 +217,18 @@ function createWindow() {
   });
 
   wc.setWindowOpenHandler(({ url }) => {
-    if (new URL(url).origin === APP_ORIGIN) {
+    if (originOf(url) === APP_ORIGIN) {
       wc.loadURL(url);
     } else {
-      shell.openExternal(url);
+      openExternalSafe(url);
     }
     return { action: "deny" };
   });
 
   wc.on("will-navigate", (event, url) => {
-    if (url !== wc.getURL() && new URL(url).origin !== APP_ORIGIN) {
+    if (url !== wc.getURL() && originOf(url) !== APP_ORIGIN) {
       event.preventDefault();
-      shell.openExternal(url);
+      openExternalSafe(url);
     }
   });
 

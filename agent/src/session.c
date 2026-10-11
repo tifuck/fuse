@@ -151,7 +151,8 @@ int session_loop(void) {
             fprintf(stderr, "fuse-agent: %s\n", errbuf);
             cJSON_Delete(reply);
             tls_close(&t);
-            if (strstr(err, "invalid") || strstr(err, "expired") || strstr(err, "token")) {
+            /* err points into reply, freed above: classify the copy. */
+            if (strstr(errbuf, "invalid") || strstr(errbuf, "expired") || strstr(errbuf, "token")) {
                 /* Revoked or expired credential. Never hot-exit: systemd would
                    restart-loop. Retry slowly; the host may be re-enabled. */
                 auth_backoff = auth_backoff < 60 ? 60 : (auth_backoff * 2 > 600 ? 600 : auth_backoff * 2);

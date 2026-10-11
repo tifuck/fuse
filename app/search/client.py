@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.cookiejar
 import logging
 import zlib
 
@@ -18,11 +19,16 @@ _search_client: httpx.AsyncClient | None = None
 _fetch_client: httpx.AsyncClient | None = None
 
 
-class _NoCookies(httpx.Cookies):
-    def extract_cookies(self, response) -> None:
+class _NoCookies(http.cookiejar.CookieJar):
+    # httpx wraps whatever it is given in a fresh Cookies object, so only the
+    # underlying jar's behaviour survives: never store, never send.
+    def extract_cookies(self, response, request) -> None:
         return
 
-    def set_cookie_header(self, request) -> None:
+    def set_cookie(self, cookie) -> None:
+        return
+
+    def add_cookie_header(self, request) -> None:
         return
 
 

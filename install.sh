@@ -198,7 +198,9 @@ PORT=8088
 # Public HTTPS URL of this box (required for fuse-agent connector installs
 # and desktop update checks):
 #PUBLIC_BASE_URL=https://your-host.example.com
-#DATABASE_PATH=data/fuse.db
+# Required: Fuse runs only on a migrated MariaDB schema (scripts/migrate_mariadb.py).
+#DATABASE_MARIADB_ENABLED=true
+#DATABASE_URL=mysql://fuse:CHANGE_ME@127.0.0.1:3306/fuse_live
 #TRUSTED_HOSTS=
 #FORWARDED_ALLOW_IPS=127.0.0.1
 #OPENAI_AUTH_PROXY=
@@ -229,6 +231,13 @@ fi
 mkdir -p data/desktop-releases
 
 say "Step 5/5: Service"
+if [ "$WANT_SERVICE" -eq 1 ] && ! { grep -qE '^DATABASE_MARIADB_ENABLED=true' .env && grep -qE '^DATABASE_URL=mysql://' .env; }; then
+  # app/db.py refuses to boot without MariaDB: a service now would only
+  # crash-loop. Configure it, migrate the schema, then re-run this script.
+  warn "MariaDB is not configured in .env (DATABASE_MARIADB_ENABLED=true and DATABASE_URL=mysql://...);"
+  warn "skipping service setup. Set both, migrate the schema with scripts/migrate_mariadb.py, then re-run."
+  WANT_SERVICE=0
+fi
 if [ "$WANT_SERVICE" -eq 1 ]; then
   if ask "Install Fuse as a systemd service for user '$(id -un)'? [Y/n] "; then
     if [ "$(id -u)" -eq 0 ]; then

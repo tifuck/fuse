@@ -117,9 +117,13 @@ def get_proposal(user_id: int, proposal_id: str, conn=None) -> dict | None:
     return _row(row) if row else None
 
 
-def _synthetic_md(slug: str, description: str, body: str) -> str:
+def _synthetic_md(slug: str, description: str, body: str, hint: str = "") -> str:
     desc = (description or "").replace("\n", " ").strip()
-    return f"---\nname: {slug}\ndescription: {desc}\n---\n\n{body or ''}\n"
+    hint = " ".join((hint or "").split())
+    # The saved skill reads its hint back from this frontmatter only.
+    quote = "'" if '"' in hint else '"'
+    hint_line = f"argument-hint: {quote}{hint}{quote}\n" if hint else ""
+    return f"---\nname: {slug}\ndescription: {desc}\n{hint_line}---\n\n{body or ''}\n"
 
 
 def _to_bytes(files: dict[str, str]) -> dict[str, bytes]:
@@ -150,7 +154,7 @@ def validate_draft(*, slug: str, description: str, body: str, files: dict[str, s
         if not isinstance(rel, str) or not isinstance(text, str):
             raise SkillError("invalid skill file")
         rebuilt[rel] = text
-    rebuilt["SKILL.md"] = _synthetic_md(name, description.strip(), body)
+    rebuilt["SKILL.md"] = _synthetic_md(name, description.strip(), body, hint)
     parsed = parse_skill_md(rebuilt["SKILL.md"], slug=name)
     if parsed["name"] != name:
         raise SkillError("invalid skill name")

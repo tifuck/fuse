@@ -189,6 +189,8 @@ class ArtifactStoreTest(unittest.TestCase):
         resp = artifacts.content_response("<html><body>x</body></html>")
         csp = resp.headers["content-security-policy"]
         self.assertIn("frame-ancestors 'self'", csp)
+        self.assertIn("sandbox allow-scripts allow-forms allow-modals", csp)
+        self.assertNotIn("allow-same-origin", csp)
         self.assertIn("connect-src https://cdn.jsdelivr.net", csp)
         self.assertNotIn("'unsafe-eval'", csp)
         self.assertNotIn("connect-src 'self'", csp)

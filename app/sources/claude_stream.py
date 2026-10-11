@@ -51,12 +51,17 @@ async def _upstream_events(resp: httpx.Response):
         return obj
 
     async for chunk in resp.aiter_text():
+        # SSE allows CRLF and CR line endings. Normalize to LF, holding back a
+        # trailing CR whose LF may arrive with the next chunk.
         buf += chunk
+        carry = "\r" if buf.endswith("\r") else ""
+        buf = buf[: len(buf) - len(carry)].replace("\r\n", "\n").replace("\r", "\n")
         while "\n\n" in buf:
             block, buf = buf.split("\n\n", 1)
             obj = parse(block)
             if obj is not None:
                 yield obj
+        buf += carry
     if buf.strip():
         obj = parse(buf)
         if obj is not None:

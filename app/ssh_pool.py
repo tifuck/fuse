@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import ipaddress
 import socket
@@ -53,14 +54,38 @@ def _ip_forbidden(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return False
 
 
+@functools.lru_cache(maxsize=1)
+def _self_addresses() -> frozenset[str]:
+    """This server's own addresses: SSH back into Fuse's host stays refused
+    even where the address is public (or private and ALLOW_PRIVATE_HOSTS)."""
+    names = {socket.gethostname(), socket.getfqdn()}
+    base = (settings.public_base_url or "").split("://", 1)[-1].split("/", 1)[0].rsplit(":", 1)[0].strip("[]")
+    if base:
+        names.add(base)
+    out: set[str] = set()
+    for name in names:
+        try:
+            out.update(info[4][0] for info in socket.getaddrinfo(name, None))
+        except OSError:
+            continue
+    return frozenset(out)
+
+
 def resolve_public(hostname: str, port: int) -> list[str]:
     host = (hostname or "").lower().rstrip(".")
-    if not host or is_blocked_host(host):
+    try:
+        literal = ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        literal = None
+    # Literal IPs are judged by _ip_forbidden alone (it honours
+    # ALLOW_PRIVATE_HOSTS); the name denylist would refuse every RFC1918 one.
+    if not host or (literal is None and is_blocked_host(host)):
         raise SshError("host is not allowed")
     try:
         infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
         raise SshError("hostname could not be resolved") from exc
+    self_addrs = _self_addresses()
     addrs = []
     for info in infos:
         ip_s = info[4][0]
@@ -70,6 +95,8 @@ def resolve_public(hostname: str, port: int) -> list[str]:
             continue
         if _ip_forbidden(ip):
             raise SshError("host resolves to a blocked address")
+        if ip_s in self_addrs:
+            raise SshError("host is this Fuse server")
         if ip_s not in addrs:
             addrs.append(ip_s)
     if not addrs:

@@ -300,6 +300,17 @@ class ProjectsRetentionTest(unittest.TestCase):
         self.assertIsNone(chats.get_thread(1, old["id"]))
         self.assertIsNone(hosts.get_project(1, 7, made["id"]))
 
+    def test_sweep_never_deletes_what_it_archived_in_the_same_pass(self):
+        retention.set_settings(1, {"archive_hours": 24, "delete_days": 30})
+        made = self.project()
+        thread, pk = self.session(made)
+        db.execute("UPDATE user_projects SET created_at=?, updated_at=? WHERE id=?", (ago(days=40), ago(days=40), made["id"]))
+        db.execute("UPDATE chat_threads SET active_at=?, updated_at=?, created_at=? WHERE id=?", (ago(days=40), ago(days=40), ago(days=40), pk))
+        stats = retention.sweep_user(1)
+        self.assertEqual((stats["archived_projects"], stats["deleted_projects"], stats["deleted_chats"]), (1, 0, 0))
+        self.assertIsNotNone(hosts.get_project(1, 7, made["id"]))
+        self.assertIsNotNone(chats.get_thread(1, thread["id"]))
+
     def test_instance_ceiling_applies_when_user_has_none(self):
         prefs = retention.get_settings(1)
         prefs["limits"] = {"archive_days": 90, "delete_days": 0}

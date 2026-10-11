@@ -187,6 +187,12 @@ def count_for(user_id: int) -> int:
     return int(row["n"]) if row else 0
 
 
+def owns(user_id: int, endpoint: str) -> bool:
+    return db.fetchone(
+        "SELECT 1 FROM push_subscriptions WHERE user_id=? AND endpoint=?", (user_id, endpoint)
+    ) is not None
+
+
 def subscriptions_for(user_id: int) -> list:
     return db.fetchall(
         "SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE user_id=?",
@@ -243,6 +249,9 @@ def _send_one(row, payload: str) -> bool:
             data=payload,
             vapid_private_key=(_keys or {}).get("private_key") or "",
             vapid_claims={"sub": _subject()},
+            # The caller's wait_for cannot stop this worker thread: without a
+            # socket timeout a stalled endpoint pins a shared executor slot.
+            timeout=15,
         )
         db.execute(
             "UPDATE push_subscriptions SET last_push_at=? WHERE id=?",

@@ -31,7 +31,8 @@ CONTENT_CSP = (
     "object-src 'none'; "
     "base-uri 'none'; "
     "form-action 'none'; "
-    "frame-ancestors 'self'"
+    "frame-ancestors 'self'; "
+    "sandbox allow-scripts allow-forms allow-modals"
 )
 
 
@@ -346,13 +347,19 @@ def update(
         if fresh is None:
             raise ArtifactError("artifact not found", 404)
         version = int(fresh["current_version"]) + (1 if new_html is not None else 0)
+        # Write only the fields this call changes: metadata updates do not
+        # move current_version, so writing back the other field's read value
+        # could undo a concurrent change (e.g. re-publish a just-hidden one).
+        sets, args = ["current_version=?", "updated_at=?"], [version, ts]
+        if new_title is not None:
+            sets.append("title=?")
+            args.append(new_title)
+        if new_vis is not None:
+            sets.append("visibility=?")
+            args.append(new_vis)
         cursor = conn.execute(
-            "UPDATE artifacts SET title=?, visibility=?, current_version=?, updated_at=? WHERE id=? AND user_id=? AND current_version=?",
-            (
-                new_title if new_title is not None else fresh["title"],
-                new_vis if new_vis is not None else fresh["visibility"],
-                version, ts, row["id"], user_id, int(fresh["current_version"]),
-            ),
+            f"UPDATE artifacts SET {', '.join(sets)} WHERE id=? AND user_id=? AND current_version=?",
+            (*args, row["id"], user_id, int(fresh["current_version"])),
         )
         if cursor.rowcount == 0:
             # Either a concurrent update moved current_version (real conflict,

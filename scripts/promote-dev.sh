@@ -66,7 +66,12 @@ BEFORE="$(git rev-parse --short HEAD)"
 # Check before the merge: production's venv must already satisfy dev's
 # requirements, so a crash restart (Restart=on-failure) cannot come up on
 # code whose deps are missing. The merge brings the requirements file itself.
-if "$PROD/venv/bin/python" -m pip install --dry-run -r "$DEV/requirements.txt" 2>&1 | grep -q "Would install"; then
+# A failed dry run (resolver or index error) proves nothing: refuse, do not
+# read its silence as "nothing to install".
+DRY_RUN="$("$PROD/venv/bin/python" -m pip install --dry-run -r "$DEV/requirements.txt" 2>&1)" \
+  || die "pip could not check requirements.txt against $PROD/venv:
+$DRY_RUN"
+if grep -q "Would install" <<<"$DRY_RUN"; then
   die "requirements.txt changed; install it into $PROD/venv before promoting"
 fi
 "$PROD/backup-db.sh"

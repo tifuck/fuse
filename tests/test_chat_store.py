@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app import chat_store as store, chats, db
 from app import chat_tx
+from tests.mariadb_fixture import isolated_database
 
 
 class ChatStoreTest(unittest.TestCase):
@@ -403,10 +404,16 @@ class ChatStoreTest(unittest.TestCase):
         self.assertConflict(lambda: chats.set_user_context(1, profile="stale", expected_revision=0))
         thread = chats.create_thread(1, command_id="create", messages=[{"role": "user", "content": "find me"}])
         self.assertEqual(thread, chats.create_thread(1, command_id="create", messages=[{"role": "user", "content": "find me"}]))
+        # The ledger keeps a receipt, not a transcript copy: a retry answers
+        # with the thread as it is now. Same thread and revision (the edit
+        # did not apply twice); only the live cursors may have moved.
+        def settled(view):
+            return {k: v for k, v in view.items() if k not in ("event_cursor", "thread_cursor")}
+
         updated = chats.update_thread(1, thread["id"], title="New", expected_revision=0, command_id="edit")
-        self.assertEqual(updated, chats.update_thread(1, thread["id"], title="New", expected_revision=0, command_id="edit"))
+        self.assertEqual(settled(updated), settled(chats.update_thread(1, thread["id"], title="New", expected_revision=0, command_id="edit")))
         copied = chats.duplicate_thread(1, thread["id"], expected_revision=1, command_id="copy")
-        self.assertEqual(copied, chats.duplicate_thread(1, thread["id"], expected_revision=1, command_id="copy"))
+        self.assertEqual(settled(copied), settled(chats.duplicate_thread(1, thread["id"], expected_revision=1, command_id="copy")))
         self.assertNotEqual(copied["messages"][0]["id"], thread["messages"][0]["id"])
         for summary in chats.list_threads(1) + chats.search_threads(1, "find me"):
             self.assertIn("revision", summary)
@@ -1032,15 +1039,11 @@ class RecordUsageWeekRolloverTest(unittest.TestCase):
     """db.record_usage weekly counters roll over atomically."""
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(prefix="fuse-usage-week-")
-        self.addCleanup(self.tmp.cleanup)
-        self.conn = sqlite3.connect(str(Path(self.tmp.name) / "test.db"), check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        db._init(self.conn)
-        self.addCleanup(self.conn.close)
-        self.connection_patch = patch.object(db, "connect", return_value=self.conn)
-        self.connection_patch.start()
-        self.addCleanup(self.connection_patch.stop)
+        # MariaDB, not SQLite: SET-clause evaluation order differs, and that
+        # order is what this rollover depends on.
+        fixture = isolated_database()
+        fixture.__enter__()
+        self.addCleanup(fixture.__exit__, None, None, None)
         db.execute("INSERT INTO users(id,email,password_hash,created_at) VALUES(1,'1@test.invalid','unused',?)",
                    (db.now(),))
         db.execute("INSERT INTO sources(id,type,name,created_at) VALUES(1,'grok','grok',?)", (db.now(),))

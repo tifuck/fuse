@@ -353,7 +353,7 @@ async def openai_chat(
                 # Only frames that carry a usage dict update the counts; a
                 # later delta frame must not zero what an earlier usage frame
                 # reported.
-                if isinstance(obj.get("usage"), dict):
+                if isinstance(obj.get("usage"), dict) and obj["usage"]:
                     collected.update(usage_from_obj(obj, reasoning_separate=reasoning_separate))
 
             try:

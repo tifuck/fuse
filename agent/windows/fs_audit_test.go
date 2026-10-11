@@ -23,6 +23,22 @@ func TestExpandBraces(t *testing.T) {
 	}
 }
 
+func TestUnmatchedBraceIsAnErrorNotARecursion(t *testing.T) {
+	for _, p := range []string{"*.{", "a}b", "*.{ts"} {
+		if _, err := pathMatch(p, "x.ts"); err == nil {
+			t.Fatalf("%q: want an unmatched-brace error", p)
+		}
+	}
+}
+
+func TestReplaceAllRefusesOversizeResultBeforeAllocating(t *testing.T) {
+	text := strings.Repeat("a", 60_000)
+	_, _, err := applyEdit(text, fileEdit{"a", strings.Repeat("b", 200_000), true})
+	if err == nil || !strings.Contains(err.Error(), "replacement too large") {
+		t.Fatalf("got %v", err)
+	}
+}
+
 func TestGlobOKAcceptsRealNames(t *testing.T) {
 	for _, p := range []string{"src/routes/**/+page.svelte", "node_modules/@scope/**", "docs/My File.md", "**/*.{py,js}"} {
 		if !globOK(p) {

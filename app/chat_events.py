@@ -40,6 +40,13 @@ async def stop():
     await asyncio.gather(*(ws.close(code=1012) for ws in sockets), return_exceptions=True)
 
 
+async def reauth_user(uid):
+    """Drop every socket for uid with a retryable code: each reconnects with
+    its current cookie, and a cookie a password change revoked gets 4401."""
+    sockets = list(_subscribers.get(uid, {}))
+    await asyncio.gather(*(ws.close(code=1012) for ws in sockets), return_exceptions=True)
+
+
 async def close_session(uid, csrf):
     sockets = [ws for ws in _subscribers.get(uid, {}) if ws.session.get("csrf") == csrf]
     await asyncio.gather(*(ws.close(code=4401) for ws in sockets), return_exceptions=True)
@@ -117,7 +124,8 @@ async def events(ws: WebSocket):
         logger.warning("chat/events rejected origin=%r expected=%r scheme=%r", ws.headers.get("origin", ""), expected, ws.url.scheme)
         await ws.close(code=4403)
         return
-    if not uid or not await asyncio.to_thread(accounts.get_user, uid):
+    stamp = ws.session.get("ph")
+    if not uid or not await asyncio.to_thread(accounts.session_user, uid, stamp):
         logger.warning("chat/events rejected auth uid=%r", uid)
         await ws.close(code=4401)
         return
@@ -200,7 +208,7 @@ async def events(ws: WebSocket):
                 ready = True
             now = time.monotonic()
             if now - last_ping >= 15:
-                owner = await asyncio.to_thread(accounts.get_user, uid)
+                owner = await asyncio.to_thread(accounts.session_user, uid, stamp)
                 if now - started > 1800 or now - last_pong > 60 or not owner:
                     await ws.close(code=4401 if not owner else 1012)
                     return

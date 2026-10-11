@@ -407,7 +407,8 @@ def _take_github() -> None:
         raise SkillError("Install rate limit reached. Try again shortly.", 429)
 
 
-async def _http_get(url: str, *, hosts: set[str], headers: dict | None = None, timeout: float = 8.0):
+async def _http_get(url: str, *, hosts: set[str], headers: dict | None = None, timeout: float = 8.0,
+                    busy: str = "Search is busy. Try again shortly."):
     import httpx
 
     clean = _safe_https(url, hosts)
@@ -416,10 +417,22 @@ async def _http_get(url: str, *, hosts: set[str], headers: dict | None = None, t
         hdrs.update(headers)
     try:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, http2=False) as client:
-            return await client.get(clean, headers=hdrs)
+            # Stream with a byte cap: size checks after a full buffered read
+            # come too late to protect memory.
+            async with client.stream("GET", clean, headers=hdrs) as resp:
+                body = bytearray()
+                async for chunk in resp.aiter_bytes():
+                    body += chunk
+                    if len(body) > MAX_ZIPBALL:
+                        raise SkillError("repository archive too large")
+                # Body is already decoded: drop framing headers so httpx does
+                # not decode it a second time.
+                kept = [(k, v) for k, v in resp.headers.multi_items()
+                        if k.lower() not in ("content-encoding", "content-length", "transfer-encoding")]
+                return httpx.Response(resp.status_code, headers=kept, content=bytes(body), request=resp.request)
     except httpx.HTTPError as exc:
         logger.warning("skills http error: %s", type(exc).__name__)
-        raise SkillError("Search is busy. Try again shortly.", 503) from exc
+        raise SkillError(busy, 503) from exc
 
 
 def _map_catalog_hit(item: dict) -> dict | None:
@@ -500,21 +513,15 @@ async def _github_get(url: str, *, accept: str = "application/vnd.github+json", 
 
 
 async def _follow_github(resp) -> bytes:
-    import httpx
-
     if resp.status_code in (301, 302, 303, 307, 308):
         loc = resp.headers.get("location") or ""
         _take_github()
-        clean = _safe_https(loc, _GH_HOSTS)
         headers = {"User-Agent": "Fuse/skills", "Accept": "application/vnd.github+json"}
         token = (settings.github_token or "").strip()
         if token:
             headers["Authorization"] = f"Bearer {token}"
-        try:
-            async with httpx.AsyncClient(timeout=20.0, follow_redirects=False, http2=False) as client:
-                resp = await client.get(clean, headers=headers)
-        except httpx.HTTPError as exc:
-            raise SkillError("Install failed. Try again shortly.", 503) from exc
+        resp = await _http_get(loc, hosts=_GH_HOSTS, headers=headers, timeout=20.0,
+                               busy="Install failed. Try again shortly.")
     if resp.status_code in (403, 429):
         raise SkillError("Install rate limit reached. Try again shortly.", 429)
     if resp.status_code != 200:

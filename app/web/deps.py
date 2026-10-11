@@ -57,16 +57,14 @@ def current_user(request: Request):
     uid = request.session.get("uid")
     if not uid:
         return None
-    user = accounts.get_user(uid)
-    if not user:
-        return None
-    # Sessions minted since the fingerprint stamp are bound to the password
-    # hash: a password change logs out every cookie issued before it. A
-    # session without a stamp predates the stamp and passes unchanged.
     stamped = request.session.get("ph")
-    if stamped is not None and stamped != accounts.password_fingerprint(user):
-        request.session.clear()
+    user = accounts.session_user(uid, stamped)
+    if not user:
+        if stamped is not None:
+            request.session.clear()
         return None
+    if stamped is None:
+        request.session["ph"] = accounts.password_fingerprint(user)
     return user
 
 

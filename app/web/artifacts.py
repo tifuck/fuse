@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from .. import artifacts, chats
-from .deps import _chat_auth, _json_object, current_user, render, require_user
+from .deps import _chat_auth, _chat_validation_error, _json_object, current_user, render, require_user
 
 router = APIRouter()
 

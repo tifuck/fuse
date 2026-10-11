@@ -37,9 +37,9 @@ GROK_MODELS = [
 def _refresh_lock(cred_id: int) -> asyncio.Lock:
     lock = _refresh_locks.get(cred_id)
     if lock is None:
-        if len(_refresh_locks) > 256:
-            for cid in [cid for cid, v in _refresh_locks.items() if not v.locked()]:
-                _refresh_locks.pop(cid, None)
+        # Never evicted: an unlocked lock may still have a waiter about to
+        # acquire it, and a second lock would let two refreshes spend the
+        # same rotating refresh token. One per credential is small.
         lock = asyncio.Lock()
         _refresh_locks[cred_id] = lock
     return lock
@@ -762,8 +762,14 @@ async def _refresh_one_unlocked(cred) -> bool:
     extra["access_token"] = data["access_token"]
     extra["refresh_token"] = data.get("refresh_token", rt)
     extra["expires_at"] = expires_at(data.get("expires_in"), 21600)
+    # The old refresh token is already spent: a cancellation during this
+    # optional lookup must not skip persisting the rotated pair below.
+    cancelled = False
     if not extra.get("email"):
-        apply_profile(extra, await fetch_userinfo(data["access_token"]))
+        try:
+            apply_profile(extra, await fetch_userinfo(data["access_token"]))
+        except asyncio.CancelledError:
+            cancelled = True
     # `extra` may change while the token endpoint is in flight (re-link or
     # another refresh); persist_rotated re-merges onto the newest copy.
 
@@ -773,7 +779,7 @@ async def _refresh_one_unlocked(cred) -> bool:
         if extra.get("name") and not merged.get("name"):
             merged["name"] = extra["name"]
 
-    return persist_rotated(
+    saved = persist_rotated(
         _cas_update_tokens,
         int(row["id"]),
         row["extra"],
@@ -786,6 +792,9 @@ async def _refresh_one_unlocked(cred) -> bool:
         },
         merge=_merge,
     )
+    if cancelled:
+        raise asyncio.CancelledError
+    return saved
 
 
 async def refresh_one(cred) -> bool:

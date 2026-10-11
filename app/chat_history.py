@@ -58,11 +58,26 @@ def for_model(messages, model):
     # Some backends recycle tool-call IDs across requests. Full replay must
     # keep every call/result pair unambiguous without mutating saved history.
     seen = set()
-    pending = {}
-    for index, row in enumerate(out):
+    pending: dict[str, list[str]] = {}
+    answered: set[str] = set()
+    paired: list[dict] = []
+
+    def close_round():
+        # A duplicate id inside one message gets a fresh id per call; results
+        # pair with those calls in order. When the saved history has fewer
+        # results than calls for such an id, the leftover call would be an
+        # orphan the provider rejects: answer it with an explicit no-result.
+        for ident, left in pending.items():
+            if ident in answered:
+                for replacement in left:
+                    paired.append({"role": "tool", "tool_call_id": replacement, "content": NO_RESULT})
+        pending.clear()
+        answered.clear()
+
+    for row in out:
         if row.get("role") == "assistant" and row.get("tool_calls"):
+            close_round()
             calls = []
-            pending = {}
             for call_index, call in enumerate(row["tool_calls"]):
                 ident = str(call.get("id") or "")
                 replacement = ident
@@ -73,16 +88,23 @@ def for_model(messages, model):
                     while replacement in seen:
                         replacement = "fuse_" + hashlib.sha256(replacement.encode()).hexdigest()[:32]
                 seen.add(replacement)
-                # A duplicate id inside one message: its result pairs with the
-                # first call, deterministically.
-                pending.setdefault(ident, replacement)
+                pending.setdefault(ident, []).append(replacement)
                 calls.append({**call, "id": replacement})
             row["tool_calls"] = calls
         elif row.get("role") == "tool":
-            row["tool_call_id"] = pending.get(str(row.get("tool_call_id") or ""), row.get("tool_call_id"))
+            ident = str(row.get("tool_call_id") or "")
+            left = pending.get(ident)
+            if left:
+                row["tool_call_id"] = left.pop(0)
+                answered.add(ident)
         else:
-            pending = {}
-    return out
+            close_round()
+        paired.append(row)
+    close_round()
+    return paired
+
+
+NO_RESULT = "No result was recorded for this tool call."
 
 
 def _clean(messages):

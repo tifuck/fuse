@@ -136,6 +136,26 @@ def test_tap_usage_survives_later_delta_frames():
     assert rec.call_args.kwargs["request_status"] == "success"
 
 
+def test_tap_scrubs_inline_stream_errors_and_keeps_usage_past_empty_frames():
+    chunks = [
+        _sse({"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 2}}),
+        _sse({"choices": [], "usage": {}}),
+        _sse({"error": {"message": "bad key sk-abcdef0123456789 rejected"}}),
+        b"data: [DONE]\n\n",
+    ]
+
+    async def run():
+        with mock.patch("app.api.db.record_usage") as rec:
+            out = b"".join([c async for c in api._tap(_Stream(chunks), 1, 1, None, "m")])
+            return rec, out
+
+    rec, out = asyncio.run(run())
+    assert b"sk-abcdef0123456789" not in out
+    assert b"sk-***" in out and out.endswith(b"data: [DONE]\n\n")
+    assert rec.call_args[0][4]["prompt_tokens"] == 10
+    assert rec.call_args.kwargs["request_status"] == "failed"
+
+
 def test_tap_records_explicit_unknown_without_usage_frames():
     async def run():
         with mock.patch("app.api.db.record_usage") as rec:

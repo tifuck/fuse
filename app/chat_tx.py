@@ -68,7 +68,11 @@ def transaction(*, immediate=True):
     # Wake observers only after commit; SQLite remains the replay source of truth.
     if cursors or threads:
         with _committed_lock:
-            _committed_threads.update(threads)
+            # Monotonic, like the user cursors: a transaction that committed
+            # first but got here last must not move a watermark backwards.
+            for key, eid in threads.items():
+                if eid > _committed_threads.get(key, 0):
+                    _committed_threads[key] = eid
             for uid, eid in cursors.items():
                 if eid > _committed_cursors.get(uid, 0):
                     _committed_cursors[uid] = eid
@@ -182,11 +186,48 @@ def command(conn, user_id, command_id, request):
                        (user_id, command_id)).fetchone()
     if row and row["fingerprint"] != fingerprint:
         raise ChatValidationError("command_id already used for a different request", 409)
-    return fingerprint, json.loads(row["result"]) if row else None
+    if not row:
+        return fingerprint, None
+    previous = json.loads(row["result"])
+    if _is_receipt(previous):
+        return fingerprint, _expand_receipt(conn, user_id, previous)
+    if isinstance(previous, dict) and _is_receipt(previous.get("thread")):
+        return fingerprint, {**previous, "thread": _expand_receipt(conn, user_id, previous["thread"])}
+    return fingerprint, previous
+
+
+# Thread views carry the whole transcript: the ledger keeps a receipt naming
+# the thread instead of a full copy per command (it is never pruned, and a
+# copy would outlive the thread's own deletion). A retried mutation answers
+# with the thread as it is now.
+_VIEW_RECEIPT = "thread_view_receipt"
+
+
+def _is_thread_view(value) -> bool:
+    return isinstance(value, dict) and "messages" in value and isinstance(value.get("id"), str)
+
+
+def _is_receipt(value) -> bool:
+    return isinstance(value, dict) and set(value) == {_VIEW_RECEIPT}
+
+
+def _expand_receipt(conn, user_id, receipt):
+    from . import chat_views
+    from .chats import ChatValidationError, resolve_thread_pk
+
+    pk = resolve_thread_pk(user_id, receipt[_VIEW_RECEIPT], conn)
+    view = chat_views.thread_view(conn, user_id, pk) if pk is not None else None
+    if view is None:
+        raise ChatValidationError("chat not found", 404)
+    return view
 
 
 def remember(conn, user_id, command_id, fingerprint, result):
     if command_id is not None:
+        if _is_thread_view(result):
+            result = {_VIEW_RECEIPT: result["id"]}
+        elif isinstance(result, dict) and _is_thread_view(result.get("thread")):
+            result = {**result, "thread": {_VIEW_RECEIPT: result["thread"]["id"]}}
         conn.execute("INSERT INTO chat_commands(user_id,command_id,fingerprint,result) VALUES(?,?,?,?)",
                      (user_id, command_id, fingerprint, dumps(result)))
 

@@ -196,6 +196,29 @@ int main(void) {
         assert(memcmp(msg, "abc", 3) == 0);
         free(msg);
     }
+    /* A FIFO with no writer is refused at once, never blocks a worker. */
+    {
+        char fifo[PATH_MAX];
+        snprintf(fifo, sizeof(fifo), "%s/fifo", dir);
+        assert(mkfifo(fifo, 0600) == 0);
+        assert(read_file_slice(fifo, 1, 10, out, sizeof(out)) != 0);
+        char *buf = NULL;
+        size_t blen = 0;
+        assert(load_whole(fifo, &buf, &blen) != 0);
+        assert(unlink(fifo) == 0);
+    }
+    /* Output bytes become valid UTF-8 JSON: good sequences pass, a stray
+     * byte becomes U+FFFD, and a split character is held for the next read. */
+    {
+        const char raw[] = "ok \xc3\xa9 \xff \xe2\x82";
+        cJSON *s = json_string_bytes(raw, sizeof(raw) - 1);
+        assert(s && strcmp(s->valuestring, "\"ok \xc3\xa9 \\ufffd \\ufffd\\ufffd\"") == 0);
+        cJSON_Delete(s);
+        assert(utf8_incomplete_tail("ab\xe2\x82", 4) == 2);
+        assert(utf8_incomplete_tail("ab\xe2\x82\xac", 5) == 0);
+        assert(utf8_incomplete_tail("ab\xf0", 3) == 1);
+        assert(utf8_incomplete_tail("abc", 3) == 0);
+    }
     assert(unlink(link) == 0);
     assert(unlink(path) == 0);
     assert(rmdir(dir) == 0);

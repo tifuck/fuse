@@ -629,6 +629,7 @@ async def execute(name: str, arguments: str, *, user_id: int, bound_host_id=None
         verdict = await permissions_mod.review(
             tool=name, args=args, user_id=user_id, host_id=host_id, host_alias=alias,
             root=root, windows=windows, gate=gate, deny_reason=deny_reason,
+            realpath=lambda paths: _realpaths(user_id, host_id, paths),
         )
         if not verdict.allowed:
             return verdict.detail, _error_rec(name, verdict.detail, host=alias, kind="permission_denied")
@@ -800,6 +801,35 @@ async def _agent_call(user_id, host_id, op: str, args: dict, seconds: int = 30, 
     return _enrich_agent_data(data, op=op)
 
 
+def _shell_path_arg(path: str) -> str:
+    # Bare ~ expands even when HOME is unset (the shell asks the passwd db).
+    if path == "~":
+        return "~"
+    if path.startswith("~/"):
+        rest = path[2:]
+        return "~/" + shlex.quote(rest) if rest else "~/"
+    return shlex.quote(path)
+
+
+async def _realpaths(user_id, host_id, paths: list[str]) -> list[str | None]:
+    """Where each path really points on the host (symlinks followed), one
+    round trip; None where it cannot be resolved. Never raises."""
+    marker = "__fuse_realpath__"
+    script = f"printf '%s\\n' {marker}; " + "; ".join(
+        f'printf "%s\\n" "$(readlink -f -- {_shell_path_arg(p)} 2>/dev/null)"' for p in paths
+    )
+    try:
+        res = await _run_remote(user_id, host_id, script, "", 10, rate=False)
+        out = str(res.stdout or "")
+        # Login shells may print banners first; only what follows the marker counts.
+        lines = out.split(marker + "\n", 1)[1].split("\n") if marker + "\n" in out else []
+    except Exception:
+        return [None] * len(paths)
+    if len(lines) < len(paths):
+        return [None] * len(paths)
+    return [line.strip() or None for line in lines[:len(paths)]]
+
+
 async def _run_remote(user_id, host_id, command: str, cwd: str, seconds: int, *, rate: bool = True):
     """Short synchronous exec used by internal helpers (browse fallback etc.).
     rate=False for Fuse's own bookkeeping, which must not spend the model's
@@ -856,7 +886,7 @@ def _make_agent_runner(user_id, host_id, command: str, cwd: str, timeout_ms: int
         kill_ms = int(timeout_ms)
         payload = {"cwd": _agent_cwd(cwd), "cmd": command, "timeout_ms": kill_ms}
         err_parts: list[str] = []
-        streamed = {"out": False, "nl": True}
+        streamed = {"out": False, "nl": True, "err_len": 0}
 
         def on_chunk(stream: str, data: str) -> None:
             # exec_stream: stdout is sunk live so a running job can be peeked
@@ -865,7 +895,13 @@ def _make_agent_runner(user_id, host_id, command: str, cwd: str, timeout_ms: int
             if not data:
                 return
             if stream == "err":
-                err_parts.append(data)
+                # Bounded: a chatty stderr must not grow server memory until exit.
+                room = _SSH_OUT_MAX - streamed["err_len"]
+                if room > 0:
+                    err_parts.append(data[:room])
+                    if len(data) > room:
+                        err_parts.append("\n[stderr truncated]\n")
+                streamed["err_len"] += len(data)
             else:
                 streamed["out"] = True
                 streamed["nl"] = data.endswith("\n")

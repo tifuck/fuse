@@ -929,6 +929,10 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             _persist_meter(boot)
         await persist_jobs()
         completion_i = start_i
+        # Trace ids are ts_<round>_<call> within one message. A same-message
+        # continuation (late steer) restarts the round counter, so it offsets
+        # ids past the rounds an earlier leg already used.
+        event_base = int(agent.get("event_base") or 0)
         resumes_left = MAX_RESUME_RETRIES
         stall_fails = 0
         idle_stalls = 0
@@ -1555,14 +1559,14 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     continue
                 break
             jobs = None
-            preview = jobs_from_calls(run_calls, completion_i)
+            preview = jobs_from_calls(run_calls, completion_i + event_base)
             await persist_jobs(preview)
             async with contextlib.aclosing(_run_tools(
                 run_calls,
                 user_id=user["id"],
                 allowed_urls=allowed_urls,
                 request=request,
-                completion_i=completion_i,
+                completion_i=completion_i + event_base,
                 budgets=budgets,
                 thread_id=thread_id,
                 bound_host_id=session.get("bound_host_id"),

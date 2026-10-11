@@ -444,17 +444,28 @@ class OutputAndModelTest(unittest.TestCase):
         )
         self.assertEqual(rows[2]["tool_calls"][0]["id"], "same")
 
-    def test_duplicate_call_ids_inside_one_message_pair_with_the_first_call(self):
+    def test_duplicate_call_ids_inside_one_message_pair_in_order_and_never_orphan(self):
         rows = [
             {"role": "assistant", "tool_calls": [
                 {"id": "same", "function": {"name": "read_file", "arguments": "{}"}},
                 {"id": "same", "function": {"name": "grep", "arguments": "{}"}}]},
             {"role": "tool", "tool_call_id": "same", "content": "RESULT"},
+            {"role": "user", "content": "next"},
         ]
         wire = memory.for_model(rows, "glm-5.3")
         first, second = wire[0]["tool_calls"]
         self.assertNotEqual(first["id"], second["id"])
+        # The one recorded result pairs with the first call; the second call
+        # gets an explicit no-result instead of going to the provider unpaired.
         self.assertEqual(wire[1]["tool_call_id"], first["id"])
+        self.assertEqual(wire[2], {"role": "tool", "tool_call_id": second["id"], "content": memory.NO_RESULT})
+        self.assertEqual(wire[3]["role"], "user")
+
+        both = [rows[0], rows[1], {"role": "tool", "tool_call_id": "same", "content": "OTHER"}]
+        wire = memory.for_model(both, "glm-5.3")
+        self.assertEqual([wire[1]["tool_call_id"], wire[2]["tool_call_id"]],
+                         [c["id"] for c in wire[0]["tool_calls"]])
+        self.assertEqual(len(wire), 3)
 
     def test_full_replay_has_separate_internal_transport_budget(self):
         from app import api

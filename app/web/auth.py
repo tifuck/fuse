@@ -4,6 +4,7 @@ import logging
 
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from starlette.background import BackgroundTask
 
 from .. import accounts, chat_events, vault
 from ..security import ensure_csrf
@@ -134,7 +135,15 @@ async def account_password(request: Request):
         if code == "password":
             raise HTTPException(400, "Password must be between 8 and 256 characters.") from None
         raise HTTPException(400, "Password could not be changed.") from None
-    resp = JSONResponse({"ok": True})
+    from .. import host_events
+
+    async def _reauth_sockets():
+        # After the response, so this browser already holds its re-stamped
+        # cookie when its sockets reconnect; revoked cookies then get 4401.
+        await chat_events.reauth_user(user["id"])
+        await host_events.close_user(user["id"], code=1012)
+
+    resp = JSONResponse({"ok": True}, background=BackgroundTask(_reauth_sockets))
     request.session["ph"] = accounts.password_fingerprint(accounts.get_user(user["id"]))
     _set_vault_cookie(resp, user["id"])
     return resp

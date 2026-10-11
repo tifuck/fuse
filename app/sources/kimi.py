@@ -60,9 +60,9 @@ _EFFORT_MAP = {
 def _refresh_lock(cred_id: int) -> asyncio.Lock:
     lock = _refresh_locks.get(cred_id)
     if lock is None:
-        if len(_refresh_locks) > 256:
-            for cid in [cid for cid, v in _refresh_locks.items() if not v.locked()]:
-                _refresh_locks.pop(cid, None)
+        # Never evicted: an unlocked lock may still have a waiter about to
+        # acquire it, and a second lock would let two refreshes spend the
+        # same rotating refresh token. One per credential is small.
         lock = asyncio.Lock()
         _refresh_locks[cred_id] = lock
     return lock

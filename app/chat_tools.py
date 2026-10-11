@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import difflib
 import json
 import logging
@@ -1120,7 +1121,7 @@ async def execute_tool(
             else None
         )
         if name == "list_subagents":
-            return agents.list_agents(user_id=user_id, thread_id=thread_id, scope_run_id=scope_run_id)
+            return await agents.list_agents(user_id=user_id, thread_id=thread_id, scope_run_id=scope_run_id)
         if name == "kill_subagent":
             return await agents.kill(user_id=user_id, arguments=arguments, thread_id=thread_id, scope_run_id=scope_run_id)
         if name == "get_subagent_output":
@@ -1166,7 +1167,8 @@ async def execute_tool(
     if name in ARTIFACT_TOOL_IDS:
         from .artifacts import execute_from_tool
 
-        return execute_from_tool(name, args, user_id=user_id, thread_id=thread_id)
+        # Synchronous storage (pool checkout, row locks): keep it off the loop.
+        return await asyncio.to_thread(execute_from_tool, name, args, user_id=user_id, thread_id=thread_id)
     if name == "web_search":
         queries = merge_queries(args)
         if not queries:

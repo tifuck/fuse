@@ -519,7 +519,9 @@ async def pick(
         allow_mimo=allow_mimo,
         allow_claude=allow_claude,
     ):
-        if s.type_id == "explabs":
+        # OpenRouter's _cache is whichever account refreshed last; only its
+        # per-account resolve() above may admit a model for this user.
+        if s.type_id in ("explabs", "openrouter"):
             continue
         hit = _cache.get(s.source_id)
         if hit and model in hit[1]:

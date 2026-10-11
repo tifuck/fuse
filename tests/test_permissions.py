@@ -268,6 +268,32 @@ class ReviewTest(PermSchemaTest):
         self.assertIsNone(res.root)
         self.assertEqual(permissions.grants_for(1, 1), [])
 
+    def test_symlink_out_of_root_is_judged_by_its_target(self):
+        async def realpath(paths):
+            real = {"/srv/app/src/main.py": "/home/me/.ssh/id_ed25519", "/srv/app": "/srv/app", "/tmp": "/tmp"}
+            return [real.get(p) for p in paths]
+
+        async def run():
+            return await permissions.review(
+                tool="read_file", args={"path": "src/main.py"}, user_id=1, host_id=7, host_alias="prod",
+                root="/srv/app", windows=False, gate=_gate(unattended=True), realpath=realpath,
+            )
+
+        res = asyncio.run(run())
+        self.assertFalse(res.allowed)
+
+    def test_symlinked_root_still_allows_its_own_files(self):
+        async def realpath(paths):
+            return [p.replace("/srv/app", "/data/app") for p in paths]
+
+        async def run():
+            return await permissions.review(
+                tool="read_file", args={"path": "src/main.py"}, user_id=1, host_id=7, host_alias="prod",
+                root="/srv/app", windows=False, gate=_gate(unattended=True), realpath=realpath,
+            )
+
+        self.assertTrue(asyncio.run(run()).allowed)
+
     def test_secret_file_outside_root_asks(self):
         res, events, payload = asyncio.run(self._ask_flow("allow_session", {"path": "/home/other/.env"}))
         self.assertTrue(res.allowed)

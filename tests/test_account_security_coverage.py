@@ -68,6 +68,10 @@ def _login(client, email="owner@account.invalid"):
     client.headers["x-csrf-token"] = meta.group(1)
 
 
+def _session_cookie(http):
+    return [c.value for c in http.cookies.jar if c.name == "session"][-1]
+
+
 def _uid():
     return accounts.user_by_email("owner@account.invalid")["id"]
 
@@ -112,13 +116,37 @@ def test_password_change_invalidates_other_sessions_but_not_the_changer(app, cli
         assert kicked.status_code == 303
         assert kicked.headers["location"] == "/login"
 
-        # A session with no stamp predates the stamp mechanism and passes
-        # unchanged (deps.current_user: `stamped is None`).
+        # A session with no stamp predates the stamp mechanism: it passes,
+        # and is stamped on first use so the next change revokes it.
         signer = itsdangerous.TimestampSigner(settings.app_secret)
         legacy = signer.sign(base64.b64encode(json.dumps({"uid": _uid()}).encode())).decode()
         bystander.cookies.clear()
         bystander.cookies.set("session", legacy)
         assert bystander.get("/chat", follow_redirects=False).status_code == 200
+        stamped = json.loads(base64.b64decode(signer.unsign(_session_cookie(bystander))))
+        assert stamped["ph"] == accounts.password_fingerprint(fresh)
+
+
+def test_websocket_refuses_a_cookie_a_password_change_revoked(app, client):
+    from app import chat_events
+
+    with TestClient(app, base_url="https://testserver") as bystander:
+        _login(client)
+        _login(bystander)
+        stale = _session_cookie(bystander)
+        changed = client.post(
+            "/account/password",
+            json={"old_password": _PASSWORD, "new_password": _NEW_PASSWORD},
+        )
+        assert changed.status_code == 200, changed.text
+        app.include_router(chat_events.router)
+        with pytest.raises(Exception) as closed:
+            with bystander.websocket_connect(
+                "wss://testserver/chat/events",
+                headers={"origin": "https://testserver", "cookie": f"session={stale}"},
+            ) as ws:
+                ws.receive_json()
+        assert getattr(closed.value, "code", None) == 4401
 
 
 def test_password_and_vault_unlock_share_the_login_rate_limit(client):

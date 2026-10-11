@@ -155,12 +155,9 @@ def _default_row_matches(existing, *, inp: str, cached: str | None, write: str |
         "cached_input_known": 1 if cached is not None else 0,
         "cache_write_known": 1 if write is not None else 0,
     }
-    long_rates = (tiers or [{}])[0]
-    want["long_context_threshold"] = threshold if tiers else None
-    want["long_input_micros_per_million"] = long_rates.get("input_rate") if tiers else None
-    want["long_cached_input_micros_per_million"] = long_rates.get("cached_rate") if tiers else None
-    want["long_output_micros_per_million"] = long_rates.get("output_rate") if tiers else None
-    want["long_cached_input_known"] = 1 if (tiers and long_rates.get("cached_rate") is not None) else 0
+    # Long-context rates are compared through tiers_json only: the seeding
+    # call passes tiers alone, so the legacy long_* columns persist as NULL
+    # and comparing them made every boot re-save (and reprice) these rows.
     try:
         want["tiers_json"] = json.dumps(
             [

@@ -1373,11 +1373,13 @@ def record_usage(
             # One conditional UPDATE instead of a read-then-write: two requests
             # finishing on the same credential concurrently would otherwise lose
             # one increment (SQLite's writer lock had masked the race).
+            # week_start is assigned last: MariaDB evaluates SET left to right,
+            # so the CASEs must still see the previous week.
             conn.execute(
                 """UPDATE credentials SET
-                     week_start=?,
                      week_tokens=CASE WHEN week_start=? THEN MIN(9223372036854775807, week_tokens+?) ELSE ? END,
                      week_requests=CASE WHEN week_start=? THEN MIN(9223372036854775807, week_requests+?) ELSE ? END,
+                     week_start=?,
                      prompt_tokens = MIN(9223372036854775807, prompt_tokens + ?),
                      completion_tokens = MIN(9223372036854775807, completion_tokens + ?),
                      output_tokens = MIN(9223372036854775807, output_tokens + ?),
@@ -1390,7 +1392,7 @@ def record_usage(
                      cost_micros = MIN(9223372036854775807, cost_micros + ?)
                    WHERE id=?""",
                 (
-                    week, week, total, total, week, request_inc, request_inc,
+                    week, total, total, week, request_inc, request_inc, week,
                     pt, ct, output, visible, rt, cached, cache_write, total, request_inc,
                     effective_cost, credential_id,
                 ),

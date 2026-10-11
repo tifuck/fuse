@@ -28,14 +28,17 @@ async def notifications_status(request: Request):
     user, err = _chat_auth(request)
     if err:
         return err
-    return JSONResponse(
-        {
-            "enabled": push.ready(),
-            "vapid": push.vapid_public_key(),
-            "count": push.count_for(user["id"]),
-        },
-        headers={"Cache-Control": "no-store"},
-    )
+    payload = {
+        "enabled": push.ready(),
+        "vapid": push.vapid_public_key(),
+        "count": push.count_for(user["id"]),
+    }
+    # A browser's subscription survives sign-out: say whether this one is
+    # registered to the account now signed in.
+    endpoint = request.query_params.get("endpoint") or ""
+    if endpoint:
+        payload["mine"] = len(endpoint) <= 2048 and push.owns(user["id"], endpoint)
+    return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
 
 @router.post("/notifications/subscribe")

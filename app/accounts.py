@@ -130,6 +130,22 @@ def get_user(uid: int):
     return db.fetchone("SELECT * FROM users WHERE id=?", (uid,))
 
 
+def session_user(uid, stamp):
+    """The user a session cookie still authenticates, or None. Sessions minted
+    since the fingerprint stamp are bound to the password hash, so a password
+    change logs out every cookie issued before it (HTTP and WebSocket alike).
+    An unstamped session predates the stamp; HTTP stamps it on first use so
+    the next password change revokes it too."""
+    if not uid:
+        return None
+    user = get_user(uid)
+    if not user:
+        return None
+    if stamp is not None and stamp != password_fingerprint(user):
+        return None
+    return user
+
+
 def user_by_email(email: str):
     return db.fetchone("SELECT * FROM users WHERE email=?", (email.strip().lower(),))
 

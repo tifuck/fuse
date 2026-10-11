@@ -60,12 +60,22 @@ func saveConfig(cfg *agentConfig) error {
 	}
 	body := fmt.Sprintf("url=%s\ntoken=%s\nauto_update=%d\n", cfg.URL, cfg.Token, auto)
 	tmp := cfg.Path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(body), 0600); err != nil {
+	// A stale temp file may carry someone else's handle or ACL: never reuse it.
+	if err := os.Remove(tmp); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	// Windows mode bits are meaningless: restrict the token file's DACL to the
-	// writer, the previous owner, SYSTEM and Administrators before publishing.
-	if err := hardenSecretFile(tmp, cfg.Path); err != nil {
+	// The token file is restricted from creation (see createSecretFile), so
+	// no other local user can ever hold a handle to it.
+	f, err := createSecretFile(tmp, cfg.Path)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(body); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
 		os.Remove(tmp)
 		return err
 	}

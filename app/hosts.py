@@ -696,7 +696,8 @@ def project_session_ids(user_id: int, project_id: int) -> list:
     return [int(r["id"]) for r in rows]
 
 
-def delete_project(user_id: int, host_id: int, project_id: int, *, sessions: str = "delete") -> bool:
+def delete_project(user_id: int, host_id: int, project_id: int, *, sessions: str = "delete",
+                   cancel_active: bool = True) -> bool:
     """Forget a project (the folder on the machine is never touched).
 
     sessions="delete" removes its chats too; "keep" turns them into plain
@@ -714,7 +715,7 @@ def delete_project(user_id: int, host_id: int, project_id: int, *, sessions: str
     if sessions == "delete":
         for tid in project_session_ids(user_id, project_id):
             try:
-                deleted = chats.delete_thread(user_id, tid)
+                deleted = chats.delete_thread(user_id, tid, cancel_active=cancel_active)
             except chats.ChatValidationError:
                 deleted = False
             # False is the refusal contract (thread moved or refused under
@@ -1196,6 +1197,14 @@ def redeem_pairing(code: str, meta: dict | None = None) -> tuple[dict, str]:
             raise HostError("invalid install code", 401)
         if row["expires_at"] <= now:
             raise HostError("install code expired", 401)
+        # Claim before registering: BEGIN IMMEDIATE does not lock this row on
+        # MariaDB, so the conditional UPDATE is what makes the code single-use.
+        claimed = conn.execute(
+            "UPDATE host_pairings SET used_at=?, code='' WHERE id=? AND used_at IS NULL",
+            (now, row["id"]),
+        )
+        if claimed.rowcount != 1:
+            raise HostError("invalid install code", 401)
         user_id = int(row["user_id"])
         agents = conn.execute(
             "SELECT COUNT(*) AS c FROM user_hosts WHERE user_id=? AND auth_type='agent'",
@@ -1244,10 +1253,6 @@ def redeem_pairing(code: str, meta: dict | None = None) -> tuple[dict, str]:
         else:
             raise HostError("could not register connector machine", 500)
         host_id = db.last_id(conn)
-        conn.execute(
-            "UPDATE host_pairings SET used_at=?, code='' WHERE id=?",
-            (now, row["id"]),
-        )
         host_row = conn.execute("SELECT * FROM user_hosts WHERE id=?", (host_id,)).fetchone()
         view = _public_host(host_row, [])
         pairing_id = int(row["id"])

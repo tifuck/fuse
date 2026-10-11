@@ -755,12 +755,12 @@ async def chat_thread_title_regen(request: Request, thread_id: str):
             messages = chats.parse_messages(row["messages"])
         except Exception:
             messages = []
-        return row, chats.first_user_text(messages).strip()
+        return pk, row, chats.first_user_text(messages).strip()
 
     loaded = await asyncio.to_thread(_load)
     if loaded is None:
         raise HTTPException(404, "Chat not found")
-    row, first_user_text = loaded
+    pk, row, first_user_text = loaded
     if not first_user_text:
         raise HTTPException(400, "Nothing to title yet")
     if row["title_job_until"] and row["title_job_until"] > db.now():

@@ -1249,6 +1249,18 @@ def _start_child_run(
             ).fetchone()
             if ancestor:
                 raise SpawnCapError("resume_from cannot be an ancestor of the parent.")
+            if parent_depth >= 1:
+                # A subagent continues only its own descendants, not a sibling.
+                below = conn.execute(
+                    """WITH RECURSIVE ancestors(id, parent_run_id) AS (
+                           SELECT id, parent_run_id FROM chat_runs WHERE id=?
+                           UNION
+                           SELECT r.id, r.parent_run_id FROM chat_runs r JOIN ancestors a ON r.id=a.parent_run_id
+                       ) SELECT 1 FROM ancestors WHERE id=? AND id<>?""",
+                    (source["id"], parent_run_id, source["id"]),
+                ).fetchone()
+                if not below:
+                    raise SpawnCapError("resume_from is not a descendant of this subagent.")
             if (source["parent_run_id"] != parent_run_id or source["root_run_id"] != root
                     or int(source["agent_depth"] or 0) != depth):
                 live_descendant = conn.execute(

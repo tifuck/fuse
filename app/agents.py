@@ -525,6 +525,10 @@ async def spawn(
                 # main agent's later turns are new root runs but still own
                 # every subagent in the chat.
                 same_tree = str(existing.get("thread_id")) == str(parent.get("thread_id"))
+            if same_tree and parent.get("parent_run_id"):
+                # A subagent may steer only its own descendants, never a
+                # sibling outside its delegation (same rule as get/kill/list).
+                same_tree = await asyncio.to_thread(_descends_from, user["id"], existing, parent_run_id)
             if not same_tree:
                 return "task_id is not a child of this session.", {
                     "name": "spawn_subagent",

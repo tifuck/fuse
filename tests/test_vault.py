@@ -155,6 +155,20 @@ class SshSsrfTest(unittest.TestCase):
         with self.assertRaises(SshError):
             resolve_public("localhost", 22)
 
+    def test_private_literal_follows_allow_private_hosts_and_self_is_refused(self):
+        from unittest import mock
+
+        from app import ssh_pool
+
+        with mock.patch.object(ssh_pool.settings, "allow_private_hosts", True):
+            self.assertEqual(ssh_pool.resolve_public("10.0.0.5", 22), ["10.0.0.5"])
+            with mock.patch.object(ssh_pool, "_self_addresses", return_value=frozenset({"10.0.0.5"})):
+                with self.assertRaises(ssh_pool.SshError):
+                    ssh_pool.resolve_public("10.0.0.5", 22)
+        with mock.patch.object(ssh_pool.settings, "allow_private_hosts", False):
+            with self.assertRaises(ssh_pool.SshError):
+                ssh_pool.resolve_public("10.0.0.5", 22)
+
 
 if __name__ == "__main__":
     unittest.main()

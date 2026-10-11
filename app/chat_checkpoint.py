@@ -211,9 +211,16 @@ def checkpoint(run_id, message, events=None, durable=True, future=None):
                     materialized = chat_views._project_thread_messages(chats.parse_messages(thread["messages"]), projected, request)
                     conn.execute("UPDATE chat_threads SET messages=?,revision=revision+1 WHERE id=?", (chat_tx.dumps(materialized), row["thread_id"]))
                     chat_tx.thread_event(conn, row["user_id"], row["thread_id"], transcript_changed=True)
+            wrote = bool(getattr(cur, "rowcount", 1))
         _state_write_at[run_id] = now
-        stamp_state_cursor(run_id, row["user_id"])
-        _state_dirty.discard(run_id)
+        if wrote:
+            stamp_state_cursor(run_id, row["user_id"])
+            _state_dirty.discard(run_id)
+        else:
+            # Superseded: the row does not hold this state, so the cursor must
+            # not claim it does. Keep the debt; the flush loop retries.
+            _state_dirty.add(run_id)
+            force_state = False
     else:
         # Events still publish through the group committer, but the durable
         # row now lags them; the run's flush loop must catch it up (see
@@ -255,9 +262,11 @@ def flush_pending_state(run_id, message, future=None):
             (chat_tx.dumps(message), db.now(), run_id, guard),
         )
         _remember_request(conn, run_id, stored_request, cur, guard, False)
+        wrote = bool(getattr(cur, "rowcount", 1))
     _state_write_at[run_id] = time.monotonic()
-    stamp_state_cursor(run_id, row["user_id"])
-    _state_dirty.discard(run_id)
+    if wrote:
+        stamp_state_cursor(run_id, row["user_id"])
+        _state_dirty.discard(run_id)
     if future is not None:
         chat_pub._resolve_future(future, None)
 

@@ -157,7 +157,14 @@
 
   async function refresh() {
     try {
-      const res = await fetch("/notifications/status", { headers: { Accept: "application/json" } });
+      const reg =
+        "serviceWorker" in navigator
+          ? (await navigator.serviceWorker.getRegistration("/").catch(() => null)) || null
+          : null;
+      localSub =
+        reg && "PushManager" in window ? await reg.pushManager.getSubscription().catch(() => null) : null;
+      const query = localSub ? "?endpoint=" + encodeURIComponent(localSub.endpoint) : "";
+      const res = await fetch("/notifications/status" + query, { headers: { Accept: "application/json" } });
       if (!res.ok) return;
       const data = await res.json();
       if (!data.enabled || !("Notification" in window)) {
@@ -166,9 +173,13 @@
       }
       vapid = data.vapid;
       serverCount = Number(data.count) || 0;
-      const reg = (await navigator.serviceWorker.getRegistration("/").catch(() => null)) || null;
-      localSub =
-        reg && "PushManager" in window ? await reg.pushManager.getSubscription().catch(() => null) : null;
+      if (localSub && data.mine === false) {
+        // Another account's subscription, left behind by a sign-out on this
+        // browser: drop it so that account's alerts stop arriving here.
+        await localSub.unsubscribe().catch(() => {});
+        localSub = null;
+        if (mode === "push") mode = null;
+      }
       if (localSub) mode = "push";
       else if (mode !== "local") mode = null;
       if (mode === "local" && Notification.permission !== "granted") {

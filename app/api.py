@@ -303,45 +303,52 @@ async def _tap(
     saw_done = False
     request_status = "success"
 
-    def inspect(line: bytes) -> None:
+    def inspect(line: bytes) -> bytes:
+        """Account for one SSE line and return it as it may reach the client."""
         nonlocal usage, saw_done, request_status
         text = line.decode(errors="replace").strip()
         if not text.startswith("data:"):
-            return
+            return line
         data = text[5:].strip()
         if not data:
-            return
+            return line
         if data == "[DONE]":
             saw_done = True
-            return
+            return line
         try:
             obj = json.loads(data)
         except json.JSONDecodeError:
             request_status = "failed"
-            return
+            return line
         if not isinstance(obj, dict):
             request_status = "failed"
-            return
-        if obj.get("error"):
-            request_status = "failed"
+            return line
         # Only frames that carry a usage dict update the counts; a later
         # delta frame must not zero what an earlier usage frame reported.
-        if isinstance(obj.get("usage"), dict):
+        if isinstance(obj.get("usage"), dict) and obj["usage"]:
             usage = usage_from_obj(obj, reasoning_separate=(provider == "grok"))
+        if obj.get("error"):
+            request_status = "failed"
+            # Inline errors get the same scrub as non-stream error bodies.
+            return scrub_secrets(line.decode(errors="replace")).encode()
+        return line
 
     try:
         async for chunk in stream:
             buf += chunk
             if len(buf) > _LINE_CAP:
-                buf = b""
-                yield chunk
+                out, buf = buf, b""
+                yield out
                 continue
+            out = b""
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)
-                inspect(line)
-            yield chunk
-        if buf.strip():
-            inspect(buf)
+                out += inspect(line) + b"\n"
+            if out:
+                yield out
+        if buf:
+            yield inspect(buf)
+            buf = b""
     except asyncio.CancelledError:
         # Client disconnected mid-stream. The provider may still have consumed
         # quota; record whatever usage we saw as a cancelled request instead of
@@ -493,17 +500,20 @@ async def _invoke_chat(request: Request, user, body: dict, *, cheap_reasoning: b
     _validate_reasoning(body)
     if "stream" in body and not isinstance(body["stream"], bool):
         raise HTTPException(400, "Invalid stream")
-    if body.get("max_tokens") is not None:
+    # Both spellings reach upstreams; each gets the same ceiling.
+    for field in ("max_tokens", "max_completion_tokens"):
+        if body.get(field) is None:
+            continue
         try:
-            value = body["max_tokens"]
+            value = body[field]
             if isinstance(value, bool):
                 raise ValueError
             number = float(value)
             if not math.isfinite(number) or not number.is_integer():
                 raise ValueError
-            body["max_tokens"] = max(1, min(int(number), settings.max_tokens))
+            body[field] = max(1, min(int(number), settings.max_tokens))
         except (TypeError, ValueError, OverflowError):
-            raise HTTPException(400, "Invalid max_tokens")
+            raise HTTPException(400, f"Invalid {field}")
     grok_ok = user_has_grok(user["id"])
     chatgpt_ok = user_has_chatgpt(user["id"])
     zai_ok = user_has_zai(user["id"])
