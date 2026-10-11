@@ -193,10 +193,13 @@ async def events(ws: WebSocket):
         last_ping = time.monotonic()
         while not _closing and not reader.done():
             signal.clear()
+            rows = await asyncio.to_thread(chat_store.events_after, uid, cursor, limit=64)
+            # Validate after the read: a prune committed between a check and
+            # the read deletes events past the cursor and moves the floor, so
+            # only a floor read after the batch proves the batch is gap-free.
             if not await asyncio.to_thread(replay_valid, uid, cursor):
                 await send({"type": "resync_required"})
                 return
-            rows = await asyncio.to_thread(chat_store.events_after, uid, cursor, limit=64)
             if rows:
                 viewed = view["run_id"]
                 rows = [_downgrade_progress(row, viewed) for row in rows]

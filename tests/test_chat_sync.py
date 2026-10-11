@@ -93,6 +93,22 @@ class ChatSyncTest(unittest.TestCase):
                     return event
         self.fail("Expected event " + event_type)
 
+    def test_prune_between_validation_and_read_forces_resync(self):
+        # The floor check used to run before the read: a prune landing in
+        # between deleted events past the cursor and the socket skipped them.
+        self.create()
+        self.create("second")
+        real = chat_store.events_after
+
+        def prune_then_read(uid, cursor, limit=64):
+            db.execute("UPDATE chat_event_cursors SET floor=cursor WHERE user_id=?", (uid,))
+            db.execute("DELETE FROM chat_events WHERE user_id=?", (uid,))
+            return real(uid, cursor, limit=limit)
+
+        with patch.object(chat_store, "events_after", side_effect=prune_then_read):
+            with self.socket(cursor=0) as ws:
+                self.assertEqual(ws.receive_json()["type"], "resync_required")
+
     def test_snapshot_cursor_skips_projection_but_checks_ownership(self):
         thread = self.create()
         url = f"/chat/threads/{thread['id']}?observed_cursor={thread['event_cursor']}"
