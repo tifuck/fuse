@@ -701,7 +701,7 @@ def _row_agent(row: dict) -> dict:
     return agent
 
 
-def child_writeup(row: dict) -> str:
+def child_writeup(row: dict, conn=None) -> str:
     """Deliver a completed report, or a status-only failure notification.
 
     Partial prose and tool output remain available in the child's transcript,
@@ -727,7 +727,7 @@ def child_writeup(row: dict) -> str:
         return _cap_report(out)
     text = final_report_text(msg)
     if not text:
-        text = _fallback_report(row, msg)
+        text = _fallback_report(row, msg, conn)
     carried = str(agent.get("carried_report") or "").strip()
     if carried and text:
         # A follow-up continuation re-used this run: the report written
@@ -738,11 +738,14 @@ def child_writeup(row: dict) -> str:
     return _cap_report(text)
 
 
-def _fallback_report(row: dict, msg: dict) -> str:
+def _fallback_report(row: dict, msg: dict, conn=None) -> str:
     ident = row.get("id")
     transcript = []
     if ident:
-        stored = db.fetchone("SELECT provider_messages FROM chat_runs WHERE id=?", (ident,))
+        # Use the caller's transaction when it has one: a second pool
+        # checkout while that transaction is open can wait on its own pool.
+        sql, args = "SELECT provider_messages FROM chat_runs WHERE id=?", (ident,)
+        stored = conn.execute(sql, args).fetchone() if conn is not None else db.fetchone(sql, args)
         raw_pm = stored["provider_messages"] if stored and "provider_messages" in stored.keys() else None
         if raw_pm:
             try:
@@ -1070,7 +1073,7 @@ def settle_spawn_traces(conn, user_id, messages):
             msg = json.loads(row["message"] or "{}") if "message" in row.keys() else {}
         except (json.JSONDecodeError, TypeError):
             msg = {}
-        writeup = child_writeup({"id": row["id"], "status": row["status"], "message": msg})
+        writeup = child_writeup({"id": row["id"], "status": row["status"], "message": msg}, conn)
         if isinstance(msg, dict):
             if tool["status"] == "error":
                 tool["error"] = str(msg.get("error") or "Subagent failed without a report.")[:400]

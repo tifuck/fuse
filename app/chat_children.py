@@ -483,7 +483,7 @@ def continue_child_with_followups(run_id: str, followups: list) -> bool:
         # with it rather than silently replacing it.
         prior = chat_views.child_writeup({"id": row["id"], "status": "completed",
                                "message": finished_message if isinstance(finished_message, dict) else {},
-                               "request": req})
+                               "request": req}, conn)
         if prior:
             agent["carried_report"] = prior
         # The continuation starts a fresh message; bank this leg's work time.
