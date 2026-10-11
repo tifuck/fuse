@@ -56,6 +56,17 @@ func writeFileAtomicLimit(path, content string, max int) error {
 		os.Remove(tmpName)
 		return err
 	}
+	if exists {
+		// Before any content lands: the temp file starts with the
+		// directory's inherited ACL, not the original file's.
+		if err := copyFileSecurity(path, tmpName); err != nil {
+			tmp.Close()
+			os.Remove(tmpName)
+			// Cannot carry the original's access over: rewrite the file
+			// itself, which keeps its security descriptor.
+			return writeInPlace(path, content, max)
+		}
+	}
 	if _, err := tmp.WriteString(content); err != nil {
 		tmp.Close()
 		os.Remove(tmpName)

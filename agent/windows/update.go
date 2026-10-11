@@ -29,7 +29,7 @@ type manifestBinary struct {
 }
 
 func httpGet(url string) ([]byte, error) {
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := &http.Client{Timeout: 60 * time.Second, CheckRedirect: httpsOnlyRedirect}
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -44,6 +44,19 @@ func httpGet(url string) ([]byte, error) {
 		return nil, fmt.Errorf("http %d", res.StatusCode)
 	}
 	return io.ReadAll(io.LimitReader(res.Body, 80<<20))
+}
+
+// httpsOnlyRedirect refuses any redirect off https: the manifest carries the
+// binary's checksum, so a downgraded hop could serve both a payload and a
+// hash that vouches for it.
+func httpsOnlyRedirect(req *http.Request, via []*http.Request) error {
+	if req.URL.Scheme != "https" {
+		return fmt.Errorf("refusing non-https redirect to %s", req.URL.Redacted())
+	}
+	if len(via) >= 5 {
+		return fmt.Errorf("too many redirects")
+	}
+	return nil
 }
 
 const updateEvery = time.Hour

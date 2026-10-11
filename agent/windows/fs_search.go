@@ -39,8 +39,21 @@ func globOK(s string) bool {
 // expandBraces turns one {a,b} group at a time into alternatives:
 // "*.{ts,tsx}" -> ["*.ts", "*.tsx"]. Nested groups expand recursively.
 func expandBraces(pattern string) []string {
+	// One budget across the whole recursion: capping each level's result
+	// after the fact still walked every branch (30 {a,b} groups = 2^30).
+	budget := braceMax
+	return expandBracesN(pattern, &budget)
+}
+
+const braceMax = 64
+
+func expandBracesN(pattern string, budget *int) []string {
+	if *budget <= 0 {
+		return nil
+	}
 	open := strings.IndexByte(pattern, '{')
 	if open < 0 {
+		*budget--
 		return []string{pattern}
 	}
 	depth := 0
@@ -67,15 +80,16 @@ func expandBraces(pattern string) []string {
 		}
 	}
 	if closeAt < 0 {
+		*budget--
 		return []string{pattern}
 	}
 	parts = append(parts, pattern[start:closeAt])
 	var out []string
 	for _, part := range parts {
-		out = append(out, expandBraces(pattern[:open]+part+pattern[closeAt+1:])...)
-	}
-	if len(out) > 64 {
-		out = out[:64]
+		if *budget <= 0 {
+			break
+		}
+		out = append(out, expandBracesN(pattern[:open]+part+pattern[closeAt+1:], budget)...)
 	}
 	return out
 }
