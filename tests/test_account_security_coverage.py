@@ -116,15 +116,15 @@ def test_password_change_invalidates_other_sessions_but_not_the_changer(app, cli
         assert kicked.status_code == 303
         assert kicked.headers["location"] == "/login"
 
-        # A session with no stamp predates the stamp mechanism: it passes,
-        # and is stamped on first use so the next change revokes it.
+        # A session with no stamp cannot be tied to the current password, so
+        # a stolen one must not survive a password change: it signs in again.
         signer = itsdangerous.TimestampSigner(settings.app_secret)
         legacy = signer.sign(base64.b64encode(json.dumps({"uid": _uid()}).encode())).decode()
         bystander.cookies.clear()
         bystander.cookies.set("session", legacy)
-        assert bystander.get("/chat", follow_redirects=False).status_code == 200
-        stamped = json.loads(base64.b64decode(signer.unsign(_session_cookie(bystander))))
-        assert stamped["ph"] == accounts.password_fingerprint(fresh)
+        refused = bystander.get("/chat", follow_redirects=False)
+        assert refused.status_code == 303
+        assert refused.headers["location"] == "/login"
 
 
 def test_websocket_refuses_a_cookie_a_password_change_revoked(app, client):

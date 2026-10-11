@@ -82,7 +82,7 @@ def _uid(email):
 
 def test_non_admin_cannot_invite_retarget_or_delete_users(client):
     admin_id, alice_id = _uid("root@authz.invalid"), _uid("alice@authz.invalid")
-    listed = accounts.add_whitelist("invited@authz.invalid")
+    listed, _token = accounts.add_whitelist("invited@authz.invalid")
     invite_id = accounts.list_whitelist()[0]["id"]
 
     _login(client, "root@authz.invalid")

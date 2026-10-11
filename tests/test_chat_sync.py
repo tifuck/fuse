@@ -62,11 +62,14 @@ class ChatSyncTest(unittest.TestCase):
         self.login(1)
 
     def cookie(self, uid):
-        data = base64.b64encode(json.dumps({"uid": uid, "csrf": "test-csrf"}).encode())
+        from app import accounts
+
+        user = accounts.get_user(uid)
+        ph = accounts.password_fingerprint(user) if user else ""
+        data = base64.b64encode(json.dumps({"uid": uid, "ph": ph, "csrf": "test-csrf"}).encode())
         return TimestampSigner(SECRET).sign(data).decode()
 
     def login(self, uid):
-        # The server re-stamps unstamped sessions, so drop its cookie too.
         self.client.cookies.clear()
         self.client.cookies.set("session", self.cookie(uid))
         self.client.headers["x-csrf-token"] = "test-csrf"

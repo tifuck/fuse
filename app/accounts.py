@@ -50,7 +50,12 @@ def password_fingerprint(user: dict) -> str:
     return hashlib.sha256(str(user["password_hash"]).encode()).hexdigest()[:32]
 
 
-def create_user(email: str, password: str, *, admin: bool | None = None, require_invite: bool = False) -> dict:
+def _invite_hash(token: str) -> str:
+    return hashlib.sha256(str(token or "").encode()).hexdigest()
+
+
+def create_user(email: str, password: str, *, admin: bool | None = None, require_invite: bool = False,
+                invite: str = "") -> dict:
     email = normalize_email(email)
     if len(password) < 8 or len(password) > 256:
         raise ValueError("password")
@@ -67,7 +72,12 @@ def create_user(email: str, password: str, *, admin: bool | None = None, require
                 n = 1
         if require_invite:
             open_reg = settings.allow_register or n == 0
-            consumed = conn.execute("DELETE FROM registration_whitelist WHERE email=?", (email,))
+            # Knowing an invited address is not an invitation: the single-use
+            # token from the admin's invite link must match too.
+            consumed = conn.execute(
+                "DELETE FROM registration_whitelist WHERE email=? AND token_hash<>'' AND token_hash=?",
+                (email, _invite_hash(invite)),
+            )
             if not open_reg and consumed.rowcount == 0:
                 raise ValueError("closed")
         if admin is True:
@@ -95,9 +105,9 @@ def create_user(email: str, password: str, *, admin: bool | None = None, require
     return user
 
 
-def register(email: str, password: str) -> dict:
+def register(email: str, password: str, invite: str = "") -> dict:
     try:
-        return create_user(email, password, require_invite=True)
+        return create_user(email, password, require_invite=True, invite=invite)
     except ValueError:
         verify_password((password or "x")[:256], _dummy_hash())
         raise
@@ -107,18 +117,21 @@ def list_whitelist():
     return db.fetchall("SELECT id, email, created_at FROM registration_whitelist ORDER BY id")
 
 
-def add_whitelist(email: str) -> str:
+def add_whitelist(email: str) -> tuple[str, str]:
+    """List an email and return (email, invite token). Only the token's hash
+    is stored; the admin hands the invite link to that person."""
     email = normalize_email(email)
     if user_by_email(email):
         raise ValueError("exists")
+    token = secrets.token_urlsafe(24)
     try:
         db.execute(
-            "INSERT INTO registration_whitelist (email, created_at) VALUES (?,?)",
-            (email, db.now()),
+            "INSERT INTO registration_whitelist (email, created_at, token_hash) VALUES (?,?,?)",
+            (email, db.now(), _invite_hash(token)),
         )
     except IntegrityError:
         raise ValueError("listed") from None
-    return email
+    return email, token
 
 
 def remove_whitelist(invite_id: int) -> bool:
@@ -131,17 +144,16 @@ def get_user(uid: int):
 
 
 def session_user(uid, stamp):
-    """The user a session cookie still authenticates, or None. Sessions minted
-    since the fingerprint stamp are bound to the password hash, so a password
-    change logs out every cookie issued before it (HTTP and WebSocket alike).
-    An unstamped session predates the stamp; HTTP stamps it on first use so
-    the next password change revokes it too."""
-    if not uid:
+    """The user a session cookie still authenticates, or None. Sessions are
+    bound to the password hash, so a password change logs out every cookie
+    issued before it (HTTP and WebSocket alike). An unstamped session cannot
+    be checked against the current password and must sign in again."""
+    if not uid or not stamp:
         return None
     user = get_user(uid)
     if not user:
         return None
-    if stamp is not None and stamp != password_fingerprint(user):
+    if stamp != password_fingerprint(user):
         return None
     return user
 

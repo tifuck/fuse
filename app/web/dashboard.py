@@ -398,7 +398,7 @@ async def admin_users_invite(request: Request, email: str = Form()):
     if redir:
         return redir
     try:
-        listed = accounts.add_whitelist(email)
+        listed, token = accounts.add_whitelist(email)
     except ValueError as exc:
         msg = {
             "email": "Enter a valid email.",
@@ -406,7 +406,11 @@ async def admin_users_invite(request: Request, email: str = Form()):
             "listed": "That email is already listed.",
         }.get(str(exc), "Could not add that email.")
         return _admin_users_page(request, user, error=msg, status_code=400)
-    _notices[user["id"]] = f"Listed {listed}. They can register with their own password."
+    site_url = (settings.public_base_url or "").rstrip("/") or str(request.base_url).rstrip("/")
+    _notices[user["id"]] = (
+        f"Listed {listed}. Send them this one-time invite link (shown only now): "
+        f"{site_url}/register?invite={token}"
+    )
     return RedirectResponse("/admin/users", status_code=303)
 
 

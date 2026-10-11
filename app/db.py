@@ -83,7 +83,8 @@ def _init(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS registration_whitelist (
             id INTEGER PRIMARY KEY,
             email TEXT UNIQUE NOT NULL,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            token_hash TEXT NOT NULL DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS api_keys (
             id INTEGER PRIMARY KEY,
@@ -509,6 +510,7 @@ def _ensure_chat_columns(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "users", "vault_salt", "BLOB")
     _ensure_column(conn, "users", "wrapped_dek", "TEXT")
     _ensure_column(conn, "users", "vault_kdf", "TEXT")
+    _ensure_column(conn, "registration_whitelist", "token_hash", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "chat_threads", "kind", "TEXT NOT NULL DEFAULT 'chat'")
     _ensure_column(conn, "chat_threads", "host_id", "INTEGER")
     _ensure_column(conn, "chat_threads", "project_id", "INTEGER")

@@ -334,7 +334,10 @@ class SteerEndpointTest(unittest.TestCase):
         self.client = TestClient(app, base_url="https://testserver")
         self.client.__enter__()
         self.addCleanup(self.client.__exit__, None, None, None)
-        data = base64.b64encode(json.dumps({"uid": 1, "csrf": "test-csrf"}).encode())
+        from app import accounts
+
+        ph = accounts.password_fingerprint(accounts.get_user(1))
+        data = base64.b64encode(json.dumps({"uid": 1, "ph": ph, "csrf": "test-csrf"}).encode())
         self.client.cookies.set(
             "session", TimestampSigner(SECRET).sign(data).decode()
         )

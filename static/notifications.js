@@ -8,6 +8,40 @@
   "use strict";
   if (!("serviceWorker" in navigator)) return;
 
+  const csrf = () => {
+    const el = document.querySelector('meta[name="csrf-token"]');
+    return el ? el.content : "";
+  };
+
+  async function post(path, body) {
+    const res = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf() },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(String(res.status));
+    return res.json();
+  }
+
+  // Signing out stops this device's alerts: otherwise chat titles and reply
+  // previews keep arriving on a signed-out (possibly shared) device.
+  async function dropDeviceSubscription() {
+    const reg = await navigator.serviceWorker.getRegistration("/").catch(() => null);
+    const sub = reg && "PushManager" in window ? await reg.pushManager.getSubscription().catch(() => null) : null;
+    if (!sub) return;
+    await post("/notifications/unsubscribe", { endpoint: sub.endpoint }).catch(() => {});
+    await sub.unsubscribe().catch(() => {});
+  }
+
+  document.addEventListener("submit", (ev) => {
+    const form = ev.target;
+    if (!(form instanceof HTMLFormElement) || form.getAttribute("action") !== "/logout" || form.dataset.pushCleared) return;
+    ev.preventDefault();
+    form.dataset.pushCleared = "1";
+    const timeout = new Promise((resolve) => setTimeout(resolve, 2500));
+    Promise.race([dropDeviceSubscription(), timeout]).finally(() => form.submit());
+  });
+
   const btn = document.querySelector("[data-notif-toggle]");
   if (!btn) return;
   const label = btn.querySelector("span");
@@ -27,21 +61,6 @@
       return mode === "local";
     },
   };
-
-  const csrf = () => {
-    const el = document.querySelector('meta[name="csrf-token"]');
-    return el ? el.content : "";
-  };
-
-  async function post(path, body) {
-    const res = await fetch(path, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf() },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) throw new Error(String(res.status));
-    return res.json();
-  }
 
   function urlB64ToUint8Array(b64) {
     const pad = "=".repeat((4 - (b64.length % 4)) % 4);
@@ -145,8 +164,13 @@
 
   async function disable() {
     if (mode === "push" && localSub) {
-      await post("/notifications/unsubscribe", { endpoint: localSub.endpoint }).catch(() => {});
-      await localSub.unsubscribe().catch(() => {});
+      const server = await post("/notifications/unsubscribe", { endpoint: localSub.endpoint }).then(() => true, () => false);
+      const browser = await localSub.unsubscribe().catch(() => false);
+      // Either side gone stops delivery; with both still live, alerts are on.
+      if (!server && !browser) {
+        hint("Failed");
+        return;
+      }
     }
     mode = null;
     localSub = null;

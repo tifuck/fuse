@@ -60,11 +60,8 @@ def current_user(request: Request):
     stamped = request.session.get("ph")
     user = accounts.session_user(uid, stamped)
     if not user:
-        if stamped is not None:
-            request.session.clear()
+        request.session.clear()
         return None
-    if stamped is None:
-        request.session["ph"] = accounts.password_fingerprint(user)
     return user
 
 

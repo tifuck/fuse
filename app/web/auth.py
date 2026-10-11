@@ -57,15 +57,16 @@ _REGISTER_CLOSED = "User registration is disabled."
 async def register_get(request: Request):
     if current_user(request):
         return RedirectResponse("/chat", status_code=303)
-    return render(request, "register.html", error=None)
+    return render(request, "register.html", error=None, invite=request.query_params.get("invite", "")[:128])
 
 
 @router.post("/register")
-async def register_post(request: Request, email: str = Form(), password: str = Form()):
+async def register_post(request: Request, email: str = Form(), password: str = Form(), invite: str = Form("")):
     if _auth_limited(request):
-        return render(request, "register.html", error="Too many attempts. Try again in a minute.", status_code=429)
+        return render(request, "register.html", error="Too many attempts. Try again in a minute.", status_code=429,
+                      invite=invite[:128])
     try:
-        user = accounts.register(email, password)
+        user = accounts.register(email, password, invite[:128])
     except ValueError as exc:
         mapped = {
             "email": ("Enter a valid email address.", 400),
@@ -76,7 +77,7 @@ async def register_post(request: Request, email: str = Form(), password: str = F
         if mapped is None:
             raise
         error, status = mapped
-        return render(request, "register.html", error=error, status_code=status)
+        return render(request, "register.html", error=error, status_code=status, invite=invite[:128])
     request.session["uid"] = user["id"]
     request.session["ph"] = accounts.password_fingerprint(user)
     request.session.pop("csrf", None)

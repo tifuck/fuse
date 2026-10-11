@@ -160,9 +160,20 @@ class AccountSecurityTest(unittest.TestCase):
                 "INSERT INTO schema_meta(key, value) VALUES('first_user_claimed', ?)",
                 (db.now(),),
             )
-        accounts.add_whitelist("late@test.invalid")
-        late = accounts.create_user("late@test.invalid", "password12", require_invite=True)
+        _email, token = accounts.add_whitelist("late@test.invalid")
+        late = accounts.create_user("late@test.invalid", "password12", require_invite=True, invite=token)
         self.assertEqual(late["is_admin"], 0)
+
+    def test_invite_requires_the_link_token_not_just_the_email(self):
+        accounts.create_user("first@test.invalid", "password12", require_invite=True)
+        _email, token = accounts.add_whitelist("invited@test.invalid")
+        for wrong in ("", "guess", token + "x"):
+            with self.assertRaises(ValueError) as ctx:
+                accounts.register("invited@test.invalid", "attacker-pw1", wrong)
+            self.assertEqual(str(ctx.exception), "closed")
+        user = accounts.register("invited@test.invalid", "password12", token)
+        self.assertEqual(user["email"], "invited@test.invalid")
+        self.assertEqual(accounts.list_whitelist(), [])
 
     def test_last_admin_guard_and_delete_locks_vault(self):
         admin = accounts.create_user("root@test.invalid", "password12")
