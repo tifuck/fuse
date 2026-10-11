@@ -90,6 +90,42 @@ class MonitorHelpers(unittest.TestCase):
         self.assertTrue(seen)
         self.assertLessEqual(max(len(line) for line in seen), monitor.MAX_LINE_CHARS + 1)
 
+    def test_slow_pattern_has_one_budget_per_feed(self):
+        # Each line can burn the full per-line timeout; one feed must not.
+        import time as _time
+
+        def slow_match(_line, _pattern):
+            _time.sleep(0.03)  # a line that hits the per-line regex timeout
+            return False
+
+        async def run():
+            seen = []
+            batcher = monitor.LineBatcher({"_pattern": monitor.compile_pattern("x")},
+                                          lambda lines, overflow=0: seen.extend(lines))
+            started = _time.monotonic()
+            with patch.object(monitor, "match_line", slow_match):
+                batcher.feed("line\n" * 200)
+            took = _time.monotonic() - started
+            await batcher.close()
+            return took, seen
+
+        took, seen = asyncio.run(run())
+        self.assertLess(took, monitor.FEED_MATCH_BUDGET_S + monitor.MATCH_TIMEOUT_S + 0.5)
+        self.assertTrue(any("not checked" in line for line in seen), seen)
+
+    def test_firehose_keeps_only_shown_lines_and_counts_the_rest(self):
+        async def run():
+            got = []
+            batcher = monitor.LineBatcher({"_pattern": None}, lambda lines, overflow=0: got.append((lines, overflow)))
+            batcher.feed("line\n" * 5000)
+            self.assertLessEqual(len(batcher.pending), monitor.MAX_BATCH_LINES)
+            await batcher.close()
+            return got
+
+        (lines, overflow), = asyncio.run(run())
+        self.assertEqual(overflow, 5000 - monitor.MAX_BATCH_LINES)
+        self.assertIn("more lines in this batch omitted", lines[-1])
+
     def test_catalog_and_pack(self):
         self.assertIn("monitor", agent_catalog.WORKSPACE_NAMES)
         self.assertIn("monitor", agent_catalog.PACKS["shell"])

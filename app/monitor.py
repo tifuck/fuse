@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 
 BATCH_S = 0.2
 MATCH_TIMEOUT_S = 0.05
+# Total matching time one feed() may spend on the event loop. The per-line
+# timeout alone let N slow lines stall the loop for N x MATCH_TIMEOUT_S.
+FEED_MATCH_BUDGET_S = 0.1
 DEFAULT_TIMEOUT_MS = 300_000
 MAX_TIMEOUT_MS = 1_800_000
 DEFAULT_MAX_EVENTS = 1
@@ -184,26 +187,38 @@ class LineBatcher:
         self.pattern = rec.get("_pattern")
         self.closed = False
         self.stamps: list[float] = []
+        self.overflow = 0
+        self.skipped = 0
 
     def feed(self, text: str) -> None:
         if self.closed or not text:
             return
         self.buf += text
+        budget_end = time.monotonic() + FEED_MATCH_BUDGET_S
         while "\n" in self.buf:
             line, self.buf = self.buf.split("\n", 1)
-            self._add(line.rstrip("\r"))
+            self._add(line.rstrip("\r"), budget_end)
         # A stream that never breaks a line must not grow buf without limit.
         while len(self.buf) > MAX_LINE_CHARS:
-            self._add(self.buf[:MAX_LINE_CHARS])
+            self._add(self.buf[:MAX_LINE_CHARS], budget_end)
             self.buf = self.buf[MAX_LINE_CHARS:]
-        if self.pending and self.task is None and not self.closed:
+        if (self.pending or self.skipped) and self.task is None and not self.closed:
             self.task = asyncio.create_task(self._flush())
 
-    def _add(self, line: str) -> None:
+    def _add(self, line: str, budget_end: float | None = None) -> None:
         if len(line) > MAX_LINE_CHARS:
             line = line[:MAX_LINE_CHARS] + "…"
+        if self.pattern is not None and budget_end is not None and time.monotonic() > budget_end:
+            if line.strip():
+                self.skipped += 1
+            return
         if match_line(line, self.pattern):
-            self.pending.append(line)
+            # Only the shown lines are kept; the rest is a count, so a
+            # firehose cannot grow pending without limit.
+            if len(self.pending) < MAX_BATCH_LINES:
+                self.pending.append(line)
+            else:
+                self.overflow += 1
 
     def firehose(self) -> bool:
         now = time.monotonic()
@@ -220,13 +235,15 @@ class LineBatcher:
         self._emit()
 
     def _emit(self) -> None:
-        if not self.pending:
+        if not self.pending and not self.skipped:
             return
-        lines = self.pending[:MAX_BATCH_LINES]
-        overflow = len(self.pending) - len(lines)
-        self.pending = []
+        lines = self.pending
+        overflow, skipped = self.overflow, self.skipped
+        self.pending, self.overflow, self.skipped = [], 0, 0
         if overflow > 0:
             lines.append(f"… {overflow} more lines in this batch omitted")
+        if skipped > 0:
+            lines.append(f"… {skipped} lines not checked: the pattern was too slow for this output")
         self.stamps.append(time.monotonic())
         try:
             self.on_batch(lines, overflow)
