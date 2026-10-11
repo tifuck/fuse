@@ -115,7 +115,7 @@ class LlamaSource(OpenAICompatSource):
                 from .. import context_meter as ctxmod
 
                 for name in names:
-                    ctxmod.remember_window(self.type_id, name, n_ctx)
+                    ctxmod.remember_window(self.type_id, name, n_ctx, source_id=self.source_id)
             if names:
                 _models_cache[self.source_id] = (time.time(), list(names))
             return names

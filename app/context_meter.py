@@ -89,6 +89,9 @@ PREFIX_WINDOWS = (
 )
 
 _WINDOW_CACHE: dict[tuple[str, str], tuple[float, int]] = {}
+# Per-source learned windows behind each (type, model) entry: two sources of
+# one type can serve the same model name with different n_ctx.
+_WINDOW_SOURCES: dict[tuple[str, str], dict[int, tuple[float, int]]] = {}
 _WINDOW_TTL = 600.0
 
 @dataclass(frozen=True)
@@ -158,11 +161,21 @@ def _clamp_window(value, fallback: int) -> int:
             return fallback
     return max(MIN_WINDOW, min(number, MAX_WINDOW))
 
-def remember_window(type_id: str, model: str, tokens: int) -> None:
+def remember_window(type_id: str, model: str, tokens: int, source_id: int | None = None) -> None:
     window = _clamp_window(tokens, 0)
     if window < MIN_WINDOW or not type_id or not model:
         return
-    _WINDOW_CACHE[(str(type_id), str(model))] = (time.time(), window)
+    key = (str(type_id), str(model))
+    now = time.time()
+    if source_id is not None:
+        # The last catalog refresh used to win, so the larger backend's window
+        # could be applied to the smaller one and overflow it. Use the smallest
+        # window any live source reports for this name.
+        known = _WINDOW_SOURCES.setdefault(key, {})
+        known[int(source_id)] = (now, window)
+        fresh = [w for seen, w in known.values() if now - seen <= _WINDOW_TTL]
+        window = min(fresh) if fresh else window
+    _WINDOW_CACHE[key] = (now, window)
 
 
 def cached_window(type_id: str, model: str) -> int | None:

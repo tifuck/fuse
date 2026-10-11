@@ -239,7 +239,7 @@ class OllamaSource:
                         params = data.get("parameters") if isinstance(data.get("parameters"), dict) else {}
                         ctx = next((v for k, v in info.items() if k.endswith(".context_length")), 0) or params.get("num_ctx", 0)
                         if ctx:
-                            context_meter.remember_window(self.type_id, name, ctx)
+                            context_meter.remember_window(self.type_id, name, ctx, source_id=self.source_id)
                 except (httpx.HTTPError, ValueError):
                     pass
 
