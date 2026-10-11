@@ -380,23 +380,23 @@ async def chat_threads(request: Request):
     if err:
         return err
     q = (request.query_params.get("q") or "").strip()
-    if q:
-        return JSONResponse(
-            {
+
+    def build():
+        if q:
+            return {
                 "threads": chats.search_threads(user["id"], q, archived=False),
                 "archived": chats.search_threads(user["id"], q, archived=True),
                 "projects": chats.search_projects(user["id"], q),
-            },
-            headers={"Cache-Control": "no-store"},
-        )
-    return JSONResponse(
-        {
+            }
+        return {
             "threads": chats.list_threads(user["id"], archived=False),
             "archived": chats.list_threads(user["id"], archived=True),
             "projects": chats.list_sidebar_projects(user["id"]),
-        },
-        headers={"Cache-Control": "no-store"},
-    )
+        }
+
+    # Full lists for a large account take real time; keep them off the event
+    # loop that every live stream and socket shares.
+    return JSONResponse(await asyncio.to_thread(build), headers={"Cache-Control": "no-store"})
 
 
 @router.post("/chat/threads")
