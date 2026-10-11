@@ -121,6 +121,15 @@ export function createApply(ctx) {
         delete previousReply._elapsedObserved;
       }
     }
+    // A local transcript edit (delete, attachment removal) waits up to 200 ms
+    // for its save. A snapshot taken at the same revision predates it: keep
+    // the edit and let the queued save carry it. If the server moved on, the
+    // edit conflicts and the server wins, but say so instead of silently
+    // dropping what the user just did.
+    const keepLocalTranscript = S.transcriptDirty && !S.streaming && !traces.runIsActive(data.run) &&
+      Number(data.revision) === Number(S.serverRevision);
+    if (keepLocalTranscript) data = { ...data, messages: S.messages.map((msg) => ({ ...msg })) };
+    else if (S.transcriptDirty) picker.setHint("This chat changed elsewhere; your unsaved edit was not kept.", true);
     const same = S.messages.length <= data.messages.length && S.log.children.length === S.messages.length &&
       S.messages.every((msg, i) => msg.id === data.messages[i].id && S.log.children[i].dataset.messageId === msg.id);
     const oldLength = S.messages.length;
@@ -156,9 +165,9 @@ export function createApply(ctx) {
     context.acceptCacheProbe(data.compaction?.cache);
     if (data.compaction && data.compaction.meter) context.acceptMeter(data.compaction.meter);
     else context.syncContextMeter();
-    S.transcriptDirty = false;
+    S.transcriptDirty = keepLocalTranscript;
     S.pendingSave = null;
-    if (keepLocalSettings) persist.queueSave();
+    if (keepLocalSettings || keepLocalTranscript) persist.queueSave();
     else S.dirty = false;
     panels.syncMemoryUi();
     if (same) {

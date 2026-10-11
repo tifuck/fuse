@@ -118,7 +118,10 @@ export function createPersist(ctx) {
         S.pendingSave = null;
         // A transcript conflict yields to the server. A settings-only save
         // stays dirty so the snapshot keeps the user's choice and re-saves it.
-        if (payload.messages) S.dirty = false;
+        if (payload.messages) {
+          S.dirty = false;
+          picker.setHint("This chat changed elsewhere; your edit was not saved.", true);
+        }
         S.transcriptDirty = false;
         await apply.reconcileThread();
         return;
