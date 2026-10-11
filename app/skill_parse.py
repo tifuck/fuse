@@ -84,7 +84,17 @@ def _consume_block(lines: list[str], start: int, base_indent: int) -> tuple[str,
     return "\n".join(collected), i
 
 
-def _consume_nested(lines: list[str], start: int, base_indent: int) -> tuple[object, int]:
+_MAX_NEST = 4
+
+
+def _skip_deeper(lines: list[str], start: int, base_indent: int) -> int:
+    i = start
+    while i < len(lines) and (not lines[i].strip() or _indent(lines[i]) > base_indent):
+        i += 1
+    return i
+
+
+def _consume_nested(lines: list[str], start: int, base_indent: int, depth: int = 1) -> tuple[object, int]:
     i = start
     mapping: dict[str, str] = {}
     sequence: list[str] = []
@@ -113,7 +123,13 @@ def _consume_nested(lines: list[str], start: int, base_indent: int) -> tuple[obj
                 raw, i = _consume_block(lines, i + 1, ind)
                 mapping[key] = _fold(raw) if match.group(1) == ">" else raw
             elif not rest:
-                nested, i = _consume_nested(lines, i + 1, ind)
+                # Deeper metadata is unused; stringifying it level by level
+                # re-escapes it each time (exponential size), so it is skipped.
+                if depth >= _MAX_NEST:
+                    i = _skip_deeper(lines, i + 1, ind)
+                    mapping[key] = ""
+                    continue
+                nested, i = _consume_nested(lines, i + 1, ind, depth + 1)
                 mapping[key] = nested if isinstance(nested, str) else str(nested)
             else:
                 mapping[key] = _unquote(rest)

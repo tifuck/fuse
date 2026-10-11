@@ -347,7 +347,9 @@ def extract_skill_files(files: dict[str, bytes], *, skill_id: str | None = None)
             matches = []
             for path in md_paths:
                 try:
-                    parsed = parse_skill_md(_decode_md(files[path]), slug=skill_id)
+                    # No slug here: slug= forces the parsed name to skill_id,
+                    # which made every candidate "match".
+                    parsed = parse_skill_md(_decode_md(files[path]))
                 except (SkillError, UnicodeDecodeError):
                     continue
                 if parsed["name"] == skill_id:
@@ -409,14 +411,25 @@ def _take_github() -> None:
 
 async def _http_get(url: str, *, hosts: set[str], headers: dict | None = None, timeout: float = 8.0,
                     busy: str = "Search is busy. Try again shortly."):
+    import asyncio
+
     import httpx
 
-    clean = _safe_https(url, hosts)
+    # DNS checks block; keep them off the event loop.
+    clean = await asyncio.to_thread(_safe_https, url, hosts)
     hdrs = {"User-Agent": "Fuse/skills", "Accept": "application/json"}
     if headers:
         hdrs.update(headers)
     try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, http2=False) as client:
+        from .search.client import CappedTransport
+
+        # The transport bounds inflated bytes too: aiter_bytes alone would let
+        # httpx decompress a gzip bomb before the size check runs.
+        transport = CappedTransport(MAX_ZIPBALL + 1)
+        # httpx timeouts are per read; a server trickling bytes would never
+        # hit them, so the whole request also gets a deadline.
+        async with asyncio.timeout(timeout * 4), \
+                httpx.AsyncClient(timeout=timeout, follow_redirects=False, http2=False, transport=transport) as client:
             # Stream with a byte cap: size checks after a full buffered read
             # come too late to protect memory.
             async with client.stream("GET", clean, headers=hdrs) as resp:
@@ -430,7 +443,7 @@ async def _http_get(url: str, *, hosts: set[str], headers: dict | None = None, t
                 kept = [(k, v) for k, v in resp.headers.multi_items()
                         if k.lower() not in ("content-encoding", "content-length", "transfer-encoding")]
                 return httpx.Response(resp.status_code, headers=kept, content=bytes(body), request=resp.request)
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, TimeoutError) as exc:
         logger.warning("skills http error: %s", type(exc).__name__)
         raise SkillError(busy, 503) from exc
 

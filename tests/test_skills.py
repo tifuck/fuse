@@ -107,6 +107,14 @@ class ParserTest(unittest.TestCase):
         self.assertEqual(parsed["name"], "demo")
         self.assertEqual(parsed["body"], "")
 
+    def test_deeply_nested_frontmatter_stays_small(self):
+        # Each level used to str() the level below, re-escaping it: size
+        # doubled per level, so ~35 levels exhausted memory.
+        nested = "\n".join(" " * (i + 1) + "a:" for i in range(60)) + "\n" + " " * 61 + '"x": "y"'
+        parsed = parse_skill_md(f"---\nname: demo\ndescription: Use when testing.\njunk:\n{nested}\n---\nbody\n")
+        self.assertEqual(parsed["name"], "demo")
+        self.assertLess(len(str(parsed)), 4096)
+
 
 class SkillsDbTest(unittest.TestCase):
     def setUp(self):

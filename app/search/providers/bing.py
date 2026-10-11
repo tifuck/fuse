@@ -62,7 +62,8 @@ def parse_bing_html(raw: str) -> list[SearchHit]:
         cite_url = ""
         cite = _CITE.search(block)
         if cite:
-            host = _strip(cite.group(1)).split()[0]
+            # An empty <cite> must not raise and drop every result.
+            host = (_strip(cite.group(1)).split() or [""])[0]
             if host.startswith("http"):
                 cite_url = public_http_url(host)
             elif "." in host:

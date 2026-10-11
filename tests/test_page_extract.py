@@ -255,5 +255,107 @@ class ParserRegressionTest(unittest.TestCase):
         self.assertNotIn("Cookie settings", got.text)
 
 
+class HostileInputTest(unittest.TestCase):
+    def test_unclosed_metadata_tags_parse_in_linear_time(self):
+        import time
+
+        for page in ("<title>" * 11000, "<meta a" * 11000, "<script type='application/ld+json'>" * 2200):
+            started = time.monotonic()
+            extract_page(page, content_type="text/html")
+            self.assertLess(time.monotonic() - started, 1.0, page[:20])
+
+    def test_find_hit_at_end_of_one_huge_paragraph_is_returned(self):
+        text = "word " * 6000 + "NEEDLE-AT-END"
+        got = extract_page(text, content_type="text/plain", find="NEEDLE-AT-END")
+        self.assertIn("NEEDLE-AT-END", got.text)
+
+    def test_empty_bing_cite_keeps_other_results(self):
+        from app.search.providers.bing import parse_bing_html
+
+        good = '<li class="b_algo"><h2><a href="https://good.test/a">Good</a></h2><cite>good.test</cite><p>ok</p></li>'
+        bad = '<li class="b_algo"><h2><a href="https://bad.test/a">Bad</a></h2><cite> </cite><p>x</p></li>'
+        hits = parse_bing_html(f"<ol id='b_results'>{bad}{good}</ol>")
+        self.assertTrue(any("good.test" in h.url for h in hits), hits)
+
+
+class PdfWorkerTest(unittest.IsolatedAsyncioTestCase):
+    async def test_pdf_extracts_in_limited_child_and_rejects_invalid_input(self):
+        import io
+        from pypdf import PdfWriter
+        from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+        from app.search.engine import _pdf_text
+
+        writer = PdfWriter()
+        page = writer.add_blank_page(width=300, height=300)
+        font = DictionaryObject({NameObject("/Type"): NameObject("/Font"),
+                                 NameObject("/Subtype"): NameObject("/Type1"),
+                                 NameObject("/BaseFont"): NameObject("/Helvetica")})
+        page[NameObject("/Resources")] = DictionaryObject({
+            NameObject("/Font"): DictionaryObject({NameObject("/F1"): writer._add_object(font)})})
+        content = DecodedStreamObject()
+        content.set_data(b"BT /F1 12 Tf 10 10 Td (PDF fixture) Tj ET")
+        page[NameObject("/Contents")] = writer._add_object(content)
+        buffer = io.BytesIO()
+        writer.write(buffer)
+        self.assertIn("PDF fixture", await _pdf_text(buffer.getvalue()))
+        with self.assertRaises(ValueError):
+            await _pdf_text(b"not a PDF")
+
+    async def test_cancellation_kills_and_reaps_worker(self):
+        import asyncio
+        from unittest.mock import AsyncMock, Mock, patch
+        from app.search.engine import _pdf_text
+
+        started = asyncio.Event()
+        async def communicate(_):
+            started.set()
+            await asyncio.Event().wait()
+        proc = Mock(returncode=None, communicate=communicate, wait=AsyncMock())
+        with patch("app.search.engine.asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+            task = asyncio.create_task(_pdf_text(b"pdf"))
+            await started.wait()
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        proc.kill.assert_called_once()
+        proc.wait.assert_awaited_once()
+
+
+class CappedTransportTest(unittest.IsolatedAsyncioTestCase):
+    async def test_gzip_bomb_is_inflated_only_to_the_cap(self):
+        import gzip
+
+        import httpx
+
+        from app.search.client import CappedTransport
+
+        bomb = gzip.compress(b"\0" * (64 * 1024 * 1024))
+
+        class RawBody(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield bomb
+
+        def handler(request):
+            return httpx.Response(200, headers={"content-encoding": "gzip"}, stream=RawBody())
+
+        transport = CappedTransport(100_000, inner=httpx.MockTransport(handler))
+        async with httpx.AsyncClient(transport=transport) as client:
+            resp = await client.get("https://bomb.test/")
+        self.assertEqual(len(resp.content), 100_000)
+
+    async def test_identity_body_is_capped_and_plain_bodies_pass(self):
+        import httpx
+
+        from app.search.client import CappedTransport
+
+        def handler(request):
+            return httpx.Response(200, content=b"x" * 500 if request.url.path == "/big" else b"hello")
+
+        transport = CappedTransport(100, inner=httpx.MockTransport(handler))
+        async with httpx.AsyncClient(transport=transport) as client:
+            self.assertEqual(len((await client.get("https://t.test/big")).content), 100)
+            self.assertEqual((await client.get("https://t.test/small")).content, b"hello")
+
+
 if __name__ == "__main__":
     unittest.main()

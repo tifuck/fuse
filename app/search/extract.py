@@ -142,13 +142,27 @@ def _meta_content(attrs: dict[str, str]) -> str:
     return (attrs.get("content") or "").strip()
 
 
+_TITLE_CLOSE = re.compile(r"(?i)</title>")
+_SCRIPT_CLOSE = re.compile(r"(?i)</script>")
+
+
+def _last_end(closer: re.Pattern, text: str) -> int:
+    end = 0
+    for match in closer.finditer(text):
+        end = match.end()
+    return end
+
+
 def _collect_metadata(raw: str) -> dict[str, str]:
     prefix = raw[:80_000]
     meta = {"title": "", "description": "", "og_title": "", "og_description": "", "ld_headline": "", "ld_body": ""}
-    title_m = _TITLE_RE.search(prefix)
+    # Scan each pattern only up to its last closer: an opener with no closer
+    # after it would otherwise rescan the rest of the page (quadratic in the
+    # number of openers; seconds of CPU on an 80 KB page).
+    title_m = _TITLE_RE.search(prefix[: _last_end(_TITLE_CLOSE, prefix)])
     if title_m:
         meta["title"] = _strip_tags(title_m.group(1))[:200]
-    for tag in _META_RE.finditer(prefix):
+    for tag in _META_RE.finditer(prefix[: prefix.rfind(">") + 1]):
         attrs = _attr_map(tag.group(1))
         name = (attrs.get("name") or "").lower()
         prop = (attrs.get("property") or "").lower()
@@ -161,7 +175,7 @@ def _collect_metadata(raw: str) -> dict[str, str]:
             meta["og_title"] = content[:200]
         if prop == "og:description" and not meta["og_description"]:
             meta["og_description"] = content[:400]
-    for block in _LD_RE.finditer(prefix):
+    for block in _LD_RE.finditer(prefix[: _last_end(_SCRIPT_CLOSE, prefix)]):
         body, headline = _ld_article(block.group(1))
         if body and len(body) > len(meta["ld_body"]):
             meta["ld_body"] = body
@@ -510,19 +524,28 @@ def _passage_chunks(text: str, max_chars: int = PASSAGE_CHARS) -> list[_Passage]
             heading = block
             heading_start = match.start(1)
             continue
-        rendered = block
-        if heading and not parts:
-            rendered = heading + "\n\n" + block
-        projected = len("\n\n".join(parts + [rendered]))
-        if parts and projected > max_chars:
-            chunks.append(_Passage(start, end, "\n\n".join(parts), chunk_heading))
-            start, parts, chunk_heading = -1, [], ""
-            rendered = (heading + "\n\n" if heading else "") + block
-        if start < 0:
-            start = match.start(1)
-            chunk_heading = heading
-        end = match.end(1)
-        parts.append(rendered)
+        if len(block) <= max_chars:
+            pieces = [(match.start(1), match.end(1), block)]
+        else:
+            # One oversized paragraph (plain text, PDFs) is split so a find
+            # hit near its end returns the window that holds it.
+            base = match.start(1) + len(match.group(1)) - len(match.group(1).lstrip())
+            pieces = [(base + k, base + k + len(block[k:k + max_chars]), block[k:k + max_chars])
+                      for k in range(0, len(block), max_chars)]
+        for piece_start, piece_end, piece in pieces:
+            rendered = piece
+            if heading and not parts:
+                rendered = heading + "\n\n" + piece
+            projected = len("\n\n".join(parts + [rendered]))
+            if parts and projected > max_chars:
+                chunks.append(_Passage(start, end, "\n\n".join(parts), chunk_heading))
+                start, parts, chunk_heading = -1, [], ""
+                rendered = (heading + "\n\n" if heading else "") + piece
+            if start < 0:
+                start = piece_start
+                chunk_heading = heading
+            end = piece_end
+            parts.append(rendered)
     if parts:
         chunks.append(_Passage(start, end, "\n\n".join(parts), chunk_heading))
     return chunks

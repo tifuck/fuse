@@ -14,6 +14,10 @@ TIMEOUT_WIKI = httpx.Timeout(2.0, connect=1.5)
 TIMEOUT_DDG = httpx.Timeout(5.0, connect=1.5)
 TIMEOUT_FETCH = httpx.Timeout(6.0, connect=1.5)
 PROVIDER_BODY_MAX = 262_144
+# Hard ceiling on what one response may put in memory, decoded. Callers keep
+# their own smaller caps; this one guards the paths that buffer (client.get)
+# and compressed bodies, which httpx would otherwise inflate without limit.
+TRANSPORT_BODY_MAX = 1_048_576
 
 _search_client: httpx.AsyncClient | None = None
 _fetch_client: httpx.AsyncClient | None = None
@@ -32,6 +36,76 @@ class _NoCookies(http.cookiejar.CookieJar):
         return
 
 
+class _CappedStream(httpx.AsyncByteStream):
+    def __init__(self, inner, max_bytes: int, decoder, *, deflate: bool = False):
+        self._inner = inner
+        self._max = max_bytes
+        self._decoder = decoder
+        self._deflate = deflate
+
+    async def __aiter__(self):
+        sent = received = 0
+        first = True
+        async for chunk in self._inner:
+            received += len(chunk)
+            if self._decoder is not None and received > self._max:
+                raise httpx.DecodingError("compressed response exceeds byte limit")
+            if self._decoder is not None:
+                try:
+                    # max_length bounds the inflated output of this chunk.
+                    chunk = self._decoder.decompress(chunk, self._max - sent + 1)
+                except zlib.error as exc:
+                    if not (first and self._deflate):
+                        raise httpx.DecodingError("invalid compressed response") from exc
+                    self._decoder = zlib.decompressobj(-zlib.MAX_WBITS)
+                    try:
+                        chunk = self._decoder.decompress(chunk, self._max - sent + 1)
+                    except zlib.error as exc:
+                        raise httpx.DecodingError("invalid deflate response") from exc
+                first = False
+            if chunk:
+                chunk = chunk[: self._max - sent]
+                sent += len(chunk)
+                yield chunk
+            if sent >= self._max or (self._decoder is not None and self._decoder.unconsumed_tail):
+                return
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
+class CappedTransport(httpx.AsyncBaseTransport):
+    """Stops every response body at max_bytes and inflates gzip/deflate
+    itself, bounded, so a decompression bomb never reaches httpx's decoder.
+    Other encodings are refused."""
+
+    def __init__(self, max_bytes: int = TRANSPORT_BODY_MAX, inner: httpx.AsyncBaseTransport | None = None):
+        self._inner = inner or httpx.AsyncHTTPTransport()
+        self._max = max_bytes
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        resp = await self._inner.handle_async_request(request)
+        enc = resp.headers.get("content-encoding", "").strip().lower()
+        if enc in ("", "identity"):
+            decoder = None
+        elif enc in ("gzip", "x-gzip", "deflate"):
+            decoder = zlib.decompressobj(zlib.MAX_WBITS | 32)
+        else:
+            await resp.aclose()
+            raise httpx.DecodingError(f"unsupported content-encoding {enc[:20]}", request=request)
+        headers = [(k, v) for k, v in resp.headers.raw if k.lower() not in (b"content-encoding", b"content-length")]
+        return httpx.Response(
+            resp.status_code,
+            headers=headers,
+            stream=_CappedStream(resp.stream, self._max, decoder, deflate=enc == "deflate"),
+            extensions=resp.extensions,
+            request=request,
+        )
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
 def _new_client(*, cookies) -> httpx.AsyncClient:
     return httpx.AsyncClient(
         timeout=CLIENT_DEFAULT_TIMEOUT,
@@ -39,6 +113,7 @@ def _new_client(*, cookies) -> httpx.AsyncClient:
         http2=False,
         cookies=cookies,
         headers={"Accept-Encoding": "identity"},
+        transport=CappedTransport(),
     )
 
 

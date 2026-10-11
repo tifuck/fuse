@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import io
+import contextlib
+import sys
+from pathlib import Path
 import logging
 import re
 import time
@@ -175,11 +177,22 @@ def _host_header(hostname: str, port: int) -> str:
     return host if port == 443 else f"{host}:{port}"
 
 
-def _pdf_text(raw_bytes: bytes) -> str:
-    from pypdf import PdfReader
-
-    reader = PdfReader(io.BytesIO(raw_bytes), strict=False)
-    return "\n\n".join((page.extract_text() or "") for page in reader.pages[:100])
+async def _pdf_text(raw_bytes: bytes) -> str:
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, "-I", str(Path(__file__).with_name("pdf_worker.py")),
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(raw_bytes), timeout=8)
+        if proc.returncode:
+            raise ValueError("PDF extraction failed or exceeded its resource limit")
+        return out.decode("utf-8", errors="replace")
+    finally:
+        if proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+        await proc.wait()
 
 
 def is_fetch_cached(url: str, allowed: set[str] | None = None) -> bool:
@@ -753,7 +766,7 @@ async def fetch_url(
                     del body_bytes
                     if "application/pdf" in ctype:
                         try:
-                            body = await asyncio.to_thread(_pdf_text, raw_bytes)
+                            body = await _pdf_text(raw_bytes)
                         except Exception:
                             logger.warning("fuse.fetch pdf parse failed url_host=%s", hostname)
                             msg = "The PDF could not be extracted as text."
