@@ -20,7 +20,7 @@ _CODE_RE = re.compile(r"^fuse_[A-Za-z0-9_-]{8,64}$")
 CATALOG_CHARS = 2048
 PAIRING_TTL = timedelta(minutes=15)
 MAX_PENDING_PAIRINGS = 3
-MAX_AGENT_HOSTS = 20
+MAX_AGENT_HOSTS = 128
 AGENT_TOKEN_PREFIX = "fa_"
 # Folder colors a new project picks from at random. Users can pick any hex.
 PROJECT_COLORS = (
