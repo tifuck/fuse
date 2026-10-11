@@ -352,6 +352,18 @@ class ResumeTest(unittest.IsolatedAsyncioTestCase):
         misses, _rounds = await self.cache_turn(29000)
         self.assertEqual(misses, [])
 
+    async def test_cache_lifetime_counts_from_each_request_send(self):
+        # Round 1 is sent at t=1000 and its reply runs past the cache lifetime;
+        # round 2 is sent later still. The prefix expired, so a cold round 2
+        # is ordinary expiry, however soon after round 1 *finished* it was sent.
+        from app.chat_generation import cache_watch
+
+        sends = iter([1000.0, 1000.0 + cache_watch.DEFAULT_TTL_S + 30])
+        with patch.object(runtime, "time", SimpleNamespace(time=lambda: next(sends))):
+            misses, rounds = await self.cache_turn(0)
+        self.assertEqual(misses, [])
+        self.assertEqual([r["cache"]["at"] for r in rounds], [1000.0, 1000.0 + cache_watch.DEFAULT_TTL_S + 30])
+
     async def test_tool_growth_can_compact_twice_from_a_small_start(self):
         from app import context_meter as ctx
         count = 0

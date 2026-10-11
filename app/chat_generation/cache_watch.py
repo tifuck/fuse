@@ -1,7 +1,8 @@
 """Notice when a request's prompt should have been cached and was not.
 
 After each model round the runtime records a probe of the request: when it
-ran, its inclusive prompt size, how much the provider served from cache, and
+was sent (cache lifetimes count from the request that used the prefix, not
+from the end of a long reply), its inclusive prompt size, how much the provider served from cache, and
 which model, provider and account served it. The newest probe is kept on the
 thread (compaction state "cache") so it survives across turns, undo and edits.
 

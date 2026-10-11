@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import re
+import time
 
 from fastapi import HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -1070,6 +1071,9 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 request_meter.update(scope="prompt", run_id=run_id, source_type=src_type or src_type_guess)
                 yield _sse(context_meter.context_event(request_meter, phase="request"))
                 _persist_meter(request_meter)
+                # Provider cache lifetimes run from the request that used the
+                # prefix, not from when its reply finished streaming.
+                round_sent_at = time.time()
                 try:
                     _user = src = upstream = requested = result = None
                     # `invoked`, not `payload`: the loop variable must not
@@ -1341,7 +1345,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             round_meter = _live_meter(usage=summary.get("usage"), response=summary)
             probe = None if is_child else cache_watch.probe(
                 summary.get("usage"), model=model, source=src_type or src_type_guess,
-                cred=getattr(result, "credential_id", None), prior=cache_prior)
+                cred=getattr(result, "credential_id", None), prior=cache_prior, now=round_sent_at)
             missed = None
             if probe:
                 if not cache_warned:
