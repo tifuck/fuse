@@ -535,6 +535,10 @@ def update_thread(
 
             permissions_mod.set_auto(user_id, pk, bool(auto_permissions), conn=conn)
         doomed = store.purge_orphan_subagents(conn, user_id, pk, messages) if messages is not None else []
+        # thread_view reads (and on MariaDB locks) this thread's runs. Take
+        # those locks before the cursor upsert in thread_event: publication
+        # locks run then cursor, and the reverse order deadlocks with it.
+        conn.execute("SELECT id FROM chat_runs WHERE thread_id=?", (pk,)).fetchall()
         store.thread_event(conn, user_id, pk)
         result = store.thread_view(conn, user_id, pk)
         store.remember(conn, user_id, command_id, fingerprint, result)
@@ -1134,17 +1138,19 @@ def promote_working_session(user_id: int, thread_id, *, host_id=None, cwd: str =
             )
             pid = db.last_id(conn)
             proj = conn.execute("SELECT * FROM user_projects WHERE id=?", (pid,)).fetchone()
+        # Run before thread: finalization locks the run row first, so locking
+        # the thread here and then the run would deadlock against it.
+        run = conn.execute(
+            """SELECT id, request FROM chat_runs
+               WHERE thread_id=? AND user_id=? AND status IN ('queued','running') AND parent_run_id IS NULL""",
+            (pk, user_id),
+        ).fetchone()
         conn.execute(
             """UPDATE chat_threads
                SET kind='project', host_id=?, project_id=?, updated_at=?, revision=revision+1
                WHERE id=? AND user_id=?""",
             (hid, int(proj["id"]), db.now(), pk, user_id),
         )
-        run = conn.execute(
-            """SELECT id, request FROM chat_runs
-               WHERE thread_id=? AND user_id=? AND status IN ('queued','running') AND parent_run_id IS NULL""",
-            (pk, user_id),
-        ).fetchone()
         if run:
             try:
                 req = json.loads(run["request"] or "{}")
