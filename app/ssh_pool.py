@@ -25,6 +25,9 @@ _BLOCK_NETS = (
 _pool: dict[tuple[int, int], dict] = {}
 _lock = asyncio.Lock()
 _key_locks: dict[tuple[int, int], asyncio.Lock] = {}
+# Bumped by evict(): a connect that started before a pin change or edit must
+# not land in the pool afterwards.
+_gen: dict[tuple[int, int], int] = {}
 IDLE_CLOSE = 300.0
 
 
@@ -227,7 +230,11 @@ async def probe(user_id: int, host_id: int) -> dict:
 
 
 async def trust(user_id: int, host_id: int, algorithm: str, fingerprint: str) -> dict:
-    return set_pin(user_id, host_id, algorithm, fingerprint)
+    item = set_pin(user_id, host_id, algorithm, fingerprint)
+    # A connection authenticated against the previous key must not keep
+    # serving commands after the user trusted a different one.
+    evict(user_id, host_id)
+    return item
 
 
 async def test(user_id: int, host_id: int) -> dict:
@@ -263,6 +270,7 @@ def evict(user_id: int, host_id: int) -> None:
     Callable from sync code: pops are atomic dict ops and asyncssh close()
     only shuts the transport, no await needed."""
     key = (int(user_id), int(host_id))
+    _gen[key] = _gen.get(key, 0) + 1
     rec = _pool.pop(key, None)
     _key_locks.pop(key, None)
     if rec is not None and rec.get("conn") is not None:
@@ -314,10 +322,37 @@ async def connection(user_id: int, host_id: int):
             if _reusable(rec):
                 rec["last"] = time.monotonic()
                 return rec["conn"]
+        gen = _gen.get(key, 0)
         conn, _algo, _digest = await _connect_once(user_id, host_id, probe=False)
         async with _lock:
-            _pool[key] = {"conn": conn, "last": time.monotonic()}
+            current = _gen.get(key, 0) == gen
+            if current:
+                _pool[key] = {"conn": conn, "last": time.monotonic()}
+        if not current:
+            # Evicted mid-connect (pin or host changed): never hand this out.
+            _close(conn)
+            return await connection(user_id, host_id)
         return conn
+
+
+def _busy(conn) -> bool:
+    # Open channels mean a command may still be running on it. Unknown
+    # (attribute missing) counts as busy: never close what may be in use.
+    channels = getattr(conn, "_channels", None)
+    return channels is None or bool(channels)
+
+
+async def reap_idle() -> None:
+    """Close pooled connections idle past IDLE_CLOSE. Reuse only checked
+    expiry on access, so unused sessions (and their keepalives) stayed open
+    until logout or shutdown."""
+    async with _lock:
+        stale = [k for k, rec in _pool.items()
+                 if not _reusable(rec) and not (rec.get("conn") is not None and _busy(rec["conn"]))]
+        items = [_pool.pop(k) for k in stale]
+    for item in items:
+        if item.get("conn") is not None:
+            _close(item["conn"])
 
 
 async def drain() -> None:

@@ -854,8 +854,24 @@ async def _run_remote(user_id, host_id, command: str, cwd: str, seconds: int, *,
         _rate_ok(user_id, host_id)
     conn = await ssh_pool.connection(user_id, host_id)
     proc = await conn.create_process("bash -lc " + shlex.quote(_ssh_job_script(cwd, command)))
+
+    async def drain(stream):
+        # Keep at most _SSH_OUT_MAX but keep reading: communicate() buffered
+        # everything first, so a chatty login profile or helper could grow
+        # Fuse's memory without bound before the slice below.
+        kept, size = [], 0
+        while True:
+            chunk = await stream.read(65536)
+            if not chunk:
+                break
+            if size < _SSH_OUT_MAX:
+                kept.append(chunk[: _SSH_OUT_MAX - size])
+                size += len(kept[-1])
+        return (b"" if kept and isinstance(kept[0], bytes) else "").join(kept)
+
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=seconds)
+        stdout, stderr, _ = await asyncio.wait_for(
+            asyncio.gather(drain(proc.stdout), drain(proc.stderr), proc.wait()), timeout=seconds)
     except asyncio.CancelledError:
         with contextlib.suppress(Exception):
             proc.kill()

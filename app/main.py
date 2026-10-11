@@ -54,6 +54,14 @@ async def _maintenance_loop(app: FastAPI):
         except Exception:
             logger.exception("Chat run reaper failed")
         try:
+            from . import ssh_pool
+
+            await ssh_pool.reap_idle()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("SSH idle reap failed")
+        try:
             await retention.tick()
         except asyncio.CancelledError:
             raise
