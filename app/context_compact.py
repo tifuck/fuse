@@ -453,14 +453,21 @@ def _plain_text(content) -> str:
         return str(content.get("text") or content.get("content") or "")
     return str(content or "")
 
+_USER_ROW_CHARS = 4000
+_USER_BLOCK_CHARS = 24_000
+
+
 def truncate_summary(head: list[dict]) -> str:
     bits = []
+    users = []
     for msg in head:
         role = msg.get("role") or "user"
         text = " ".join(handoff_message_text(msg).split())
         if not text:
             continue
         bits.append(f"{role}: {text[:420]}")
+        if role == "user":
+            users.append(text[:_USER_ROW_CHARS])
     if not bits:
         return "Earlier turns were dropped to free context. Continue from this handoff alone."
     # The opening request plus the newest rows: the latest state matters more
@@ -470,7 +477,24 @@ def truncate_summary(head: list[dict]) -> str:
     body = "\n".join(bits)
     if len(body) > 6000:
         body = body[:1500].rstrip() + "\n…\n" + body[-4500:].lstrip()
-    return "Earlier turns were truncated to free context. Highlights:\n" + body
+    # The user's own words carry constraints ("read-only", "do not deploy")
+    # that clipping to 420 chars or dropping middle rows would silently lose
+    # while the agent keeps its tools. Keep them whole, newest first when the
+    # block must be bounded, then restore their order.
+    kept, size = [], 0
+    for text in reversed(users):
+        if size + len(text) > _USER_BLOCK_CHARS and kept:
+            break
+        kept.append(text)
+        size += len(text)
+    kept.reverse()
+    dropped = len(users) - len(kept)
+    user_block = "\n".join(f"- {text}" for text in kept)
+    if dropped:
+        user_block = f"[{dropped} older user message(s) omitted]\n" + user_block
+    return ("Earlier turns were truncated to free context. Your user's earlier messages, verbatim "
+            "(their instructions and constraints still apply):\n" + user_block
+            + "\n\nHighlights:\n" + body)
 
 class CompactionStrategy(Protocol):
     name: str
