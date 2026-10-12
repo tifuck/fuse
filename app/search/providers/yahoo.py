@@ -55,7 +55,7 @@ def parse_yahoo_html(raw: str) -> list[SearchHit]:
         sn = _SNIP.search(block)
         snippet = _strip(sn.group(1))[:280] if sn else ""
         hits.append(SearchHit(title=title[:200], url=url, snippet=snippet, provider="yahoo", rank=len(hits)))
-        if len(hits) >= 6:
+        if len(hits) >= 8:
             break
     return hits
 
@@ -83,14 +83,18 @@ class YahooProvider:
             params["fr2"] = "time"
             params["age"] = "1m"
         try:
-            resp = await safe_get(
-                client,
-                "https://search.yahoo.com/search",
-                host_ok=_yahoo_host_ok,
-                params=params,
-                headers={"User-Agent": _UA, "Accept": "text/html", "Accept-Language": "en-US,en;q=0.9"},
-                timeout=timeout,
-            )
+            for attempt in range(2):
+                resp = await safe_get(
+                    client,
+                    "https://search.yahoo.com/search",
+                    host_ok=_yahoo_host_ok,
+                    params=params,
+                    headers={"User-Agent": _UA, "Accept": "text/html", "Accept-Language": "en-US,en;q=0.9"},
+                    timeout=timeout,
+                )
+                # Yahoo answers a few percent of requests with a transient 500.
+                if resp.status_code < 500 or attempt:
+                    break
             if resp.status_code != 200:
                 logger.error("fuse.search provider=yahoo status=%s", resp.status_code)
                 return ProviderResponse(hits=[], status=resp.status_code, error="http", last_timeout=timeout)

@@ -227,7 +227,11 @@ class RealPageBehaviorTest(unittest.TestCase):
         # the interlanguage list (inside header chrome) used to eat the window
         self.assertNotIn("Alemannisch", got.text)
         self.assertNotIn("Toggle the table of contents", got.text)
-        self.assertLess(got.text.find("Augusta Ada King"), 400)
+        # The infobox precedes the lead in Wikipedia's markup and is article
+        # content (key facts as a compact table), so the lead follows it
+        # directly rather than sitting in the first few hundred characters.
+        self.assertIn("| Born | Augusta Ada Byron", got.text)
+        self.assertLess(got.text.find("Augusta Ada King"), 1200)
 
 
 if __name__ == "__main__":

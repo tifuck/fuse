@@ -10,7 +10,6 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import replace
-from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -26,9 +25,19 @@ from .client import (
     get_client,
     get_fetch_client,
 )
-from .extract import FETCH_CHARS, FETCH_MAX_BYTES, PageExtract, extract_page, find_windows, select_passages
+from . import adapters
+from .extract import (
+    FETCH_CHARS,
+    FETCH_MAX_BYTES,
+    PDF_MAX_BYTES,
+    PageExtract,
+    extract_page,
+    find_windows,
+    select_passages,
+)
 from .pack import MODEL_SEARCH_FAILED, flatten_hits, pack_page, pack_search
 from .providers.base import QueryResult, SearchHit, canonical_url
+from .text import coverage, terms
 from .providers.brave import BraveProvider, brave_auth_failed, freshness_bucket
 from .providers.bing import BingProvider
 from .providers.ddg import DdgProvider
@@ -53,12 +62,60 @@ MAX_QUERY = 400
 SEARCH_PER_MIN = 30
 SEARCH_PER_HOUR = 200
 FETCH_PER_MIN = 30  # per user, shared by a run and all of its subagents
+# Search-time page reads (excerpts for the top results) have their own
+# budget so they never use up the reads the model asks for itself.
+PREFETCH_PER_MIN = 60
 SEARCH_CONCURRENCY = 8
 MAX_QUERIES_PER_BULK = 8
 QUERY_DEADLINE = 6.0
 QUERY_SOFT_DEADLINE = 1.5
-FETCH_DEADLINE = 8.0
+FETCH_DEADLINE = 10.0
+PDF_DEADLINE = 15.0
 FETCH_MAX_REDIRECTS = 5
+# Browser-shaped request. Markdown is preferred: docs platforms (Mintlify,
+# ReadMe, Cloudflare, Vercel, Stripe, Anthropic, xAI ...) answer
+# "Accept: text/markdown" with the page as clean markdown; every other site
+# ignores it and sends HTML. gzip cuts transfer ~10x (decoded under a cap by
+# client.CappedTransport); some servers stall "identity" requests outright.
+FETCH_ACCEPT = (
+    "text/markdown, text/html;q=0.9, application/xhtml+xml;q=0.9, text/plain;q=0.8, "
+    "application/json;q=0.8, application/pdf;q=0.7, */*;q=0.5"
+)
+# Sent where markdown negotiation misfires: a URL that already names a file
+# (docs.x.ai answers ".../models.md" + "Accept: text/markdown" with a 404),
+# and the one retry after a 404/406 to a markdown-first request.
+BROWSER_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+_FILE_SUFFIXES = (".md", ".markdown", ".txt", ".json", ".csv", ".xml", ".pdf", ".rst", ".yaml", ".yml", ".toml")
+FETCH_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+}
+API_HEADERS = {
+    "User-Agent": "FuseReader/1.0 (dashboard page reader)",
+    "Accept-Encoding": "gzip, deflate",
+}
+# Statuses bot walls answer with; the host is remembered so search-time
+# excerpts stop trying it for a while.
+BLOCK_STATUSES = frozenset({401, 403, 418, 429, 451, 503, 999})
+BLOCKED_HOST_TTL = 900.0
+_TEXT_TYPES = frozenset(
+    {
+        "application/json", "application/xml", "application/javascript", "application/x-javascript",
+        "application/ecmascript", "application/yaml", "application/x-yaml", "application/toml",
+        "application/x-sh", "application/x-ndjson", "application/x-tex", "application/sql",
+        "application/graphql",
+    }
+)
+_SNIFF_TYPES = ("", "application/octet-stream", "binary/octet-stream", "application/x-download", "application/force-download")
 
 _CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _FILLER = re.compile(
@@ -85,7 +142,8 @@ _ENTITY_TOKENS = {"today", "latest", "news", "vs", "versus"}
 _RECENCY_WORDS = re.compile(r"\b(today|latest|news|now)\b", re.I)
 
 _cache = TtlLru(512)
-_page_cache = TtlLru(128)
+_page_cache = TtlLru(256)
+_blocked_hosts = TtlLru(512)
 _search_sem = asyncio.Semaphore(SEARCH_CONCURRENCY)
 _wiki = WikipediaProvider()
 _ddg = DdgProvider()
@@ -94,48 +152,28 @@ _yahoo = YahooProvider()
 _hn = HnProvider()
 _quotes = QuotesProvider()
 MAX_HITS_MERGED = 8
-PAGE_CACHE_TTL = 300.0
-
-
-class _PageLinks(HTMLParser):
-    def __init__(self, base_url: str) -> None:
-        super().__init__(convert_charrefs=True)
-        self.base_url = base_url
-        self.urls: set[str] = set()
-
-    def handle_starttag(self, tag, attrs):
-        if tag.lower() not in ("a", "area"):
-            return
-        href = next((value for key, value in attrs if key.lower() == "href"), None)
-        if not href:
-            return
-        clean = public_http_url(urljoin(self.base_url, href), https_only=True)
-        if clean:
-            self.urls.add(clean)
-
-
-def _discovered_links(raw: str, content_type: str, base_url: str) -> set[str]:
-    if "html" not in content_type:
-        return set()
-    parser = _PageLinks(base_url)
-    try:
-        parser.feed(raw)
-        parser.close()
-    except Exception:
-        pass
-    return parser.urls
+PAGE_CACHE_TTL = 900.0
 
 
 def _parse_page(
     body: str, ctype: str, url: str, download_truncated: bool, received: int
-) -> tuple[set[str], PageExtract]:
-    """Link scan + main-content extraction; CPU-bound, run off the loop."""
-    links = _discovered_links(body, ctype, url)
+) -> PageExtract:
+    """Main-content extraction; CPU-bound, run off the loop."""
     base_extract = extract_page(body, content_type=ctype, url=url)
     if download_truncated:
         base_extract.truncated = True
+        base_extract.download_truncated = True
     base_extract.bytes_in = received
-    return links, base_extract
+    return base_extract
+
+
+def _safe_links(extract: PageExtract) -> set[str]:
+    out: set[str] = set()
+    for link in extract.links:
+        clean = public_http_url(str(link.get("url") or ""), https_only=True)
+        if clean:
+            out.add(clean)
+    return out
 
 
 def _with_find(
@@ -179,12 +217,12 @@ def _host_header(hostname: str, port: int) -> str:
 
 async def _pdf_text(raw_bytes: bytes) -> str:
     proc = await asyncio.create_subprocess_exec(
-        sys.executable, "-I", str(Path(__file__).with_name("pdf_worker.py")),
+        sys.executable, "-I", str(Path(__file__).with_name("pdf_worker.py")), str(PDF_MAX_BYTES),
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
     )
     try:
-        out, _ = await asyncio.wait_for(proc.communicate(raw_bytes), timeout=8)
+        out, _ = await asyncio.wait_for(proc.communicate(raw_bytes), timeout=PDF_DEADLINE)
         if proc.returncode:
             raise ValueError("PDF extraction failed or exceeded its resource limit")
         return out.decode("utf-8", errors="replace")
@@ -198,6 +236,25 @@ async def _pdf_text(raw_bytes: bytes) -> str:
 def is_fetch_cached(url: str, allowed: set[str] | None = None) -> bool:
     clean = allowed_fetch_url(url)
     return bool(clean and _page_cache.get(normalize_url(clean)) is not None)
+
+
+def is_host_blocked(url: str) -> bool:
+    """True while the host recently answered with a bot-wall status."""
+    return _blocked_hosts.get(host_of(url)) is not None
+
+
+_URL_WORDS = re.compile(r"[/._\-?=&+]+")
+# Query-term coverage (title + snippet + URL words) scales the fused score;
+# with enough on-topic hits, hits that match almost none of the query are
+# dropped. Scraped engines answer flagged server IPs with degraded rankings
+# (Bing returned dictionary pages for "won" to "who won the 2026 world cup").
+MIN_COVERAGE = 0.3
+COVERAGE_FLOOR = 0.4
+
+
+def _hit_coverage(qterms: set[str], hit: SearchHit) -> float:
+    words = _URL_WORDS.sub(" ", urlparse(hit.url).path or "")
+    return coverage(qterms, f"{hit.title} {hit.snippet} {words}")
 
 
 def _merge_hits(groups: list[list[SearchHit]], query: str) -> list[SearchHit]:
@@ -228,7 +285,21 @@ def _merge_hits(groups: list[list[SearchHit]], query: str) -> list[SearchHit]:
                     published=current.published or hit.published,
                 )
 
-    ranked = sorted(fused.values(), key=lambda item: (-sum(item["scores"].values()), item["order"]))
+    qterms = set(terms(query))
+    scored = len(qterms) >= 2
+    for entry in fused.values():
+        base = sum(entry["scores"].values())
+        if scored and "quotes" not in entry["providers"]:
+            entry["cov"] = _hit_coverage(qterms, entry["hit"])
+            entry["score"] = base * (COVERAGE_FLOOR + entry["cov"])
+        else:
+            entry["cov"] = None
+            entry["score"] = base
+    candidates = list(fused.values())
+    on_topic = sum(1 for e in candidates if e["cov"] is not None and e["cov"] >= 0.5)
+    if on_topic >= 4:
+        candidates = [e for e in candidates if e["cov"] is None or e["cov"] >= MIN_COVERAGE]
+    ranked = sorted(candidates, key=lambda item: (-item["score"], item["order"]))
     selected: list[dict] = []
     deferred: list[dict] = []
     domains: dict[str, int] = {}
@@ -334,8 +405,8 @@ def cache_ttl(bucket: str | None, kind: str) -> float | None:
 
 
 def _allow(user_id: int, kind: str) -> bool:
-    per_min = FETCH_PER_MIN if kind == "fetch" else SEARCH_PER_MIN
-    if kind != "fetch" and not limiter.allow(f"chat-{kind}-h:{user_id}", SEARCH_PER_HOUR, 3600):
+    per_min = {"fetch": FETCH_PER_MIN, "prefetch": PREFETCH_PER_MIN}.get(kind, SEARCH_PER_MIN)
+    if kind == "search" and not limiter.allow(f"chat-{kind}-h:{user_id}", SEARCH_PER_HOUR, 3600):
         return False
     return limiter.allow(f"chat-{kind}:{user_id}", per_min, 60)
 
@@ -663,6 +734,189 @@ async def search_bulk(
     return out
 
 
+class FetchError(Exception):
+    """A page read that failed for a reason the model should be told."""
+
+    def __init__(self, message: str, *, blocked: bool = False, status: int = 0) -> None:
+        super().__init__(message)
+        self.blocked = blocked
+        self.status = status
+
+
+def _status_message(status: int, host: str) -> str:
+    if status in (404, 410):
+        return f"Page returned HTTP {status} (not found)."
+    if status in BLOCK_STATUSES:
+        return (
+            f"Page returned HTTP {status}: {host} blocks automated readers. "
+            "Use another source for this information."
+        )
+    return f"Page returned HTTP {status}."
+
+
+def _content_kind(ctype: str) -> str | None:
+    """'pdf', 'text', 'sniff' (decide from the first bytes) or None (not readable)."""
+    base = ctype.split(";", 1)[0].strip()
+    if base == "application/pdf":
+        return "pdf"
+    if base.startswith("text/") or base in _TEXT_TYPES or base.endswith(("+json", "+xml")):
+        return "text"
+    if base in _SNIFF_TYPES:
+        return "sniff"
+    # Office formats ("...openxmlformats..."), archives, images, media, fonts.
+    return None
+
+
+def _decode(raw: bytes, ctype: str) -> str:
+    match = re.search(r"charset=([^;\s]+)", ctype, re.I)
+    charset = match.group(1).strip("\"'")[:40] if match else ""
+    if not charset:
+        if raw.startswith(b"\xef\xbb\xbf"):
+            charset = "utf-8-sig"
+        elif raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+            charset = "utf-16"
+        else:
+            head = raw[:4096].decode("ascii", "ignore")
+            declared = re.search(r"""<meta[^>]+charset\s*=\s*["']?([\w-]+)""", head, re.I) or re.search(
+                r"""<\?xml[^>]+encoding\s*=\s*["']([\w-]+)""", head
+            )
+            charset = declared.group(1) if declared else "utf-8"
+    try:
+        text = raw.decode(charset, errors="replace")
+    except LookupError:
+        charset = "utf-8"
+        text = raw.decode("utf-8", errors="replace")
+    if charset.lower() in ("utf-8", "utf8") and text.count("�") > max(20, len(text) // 200):
+        # Undeclared legacy encoding: Windows-1252 is what browsers assume.
+        text = raw.decode("cp1252", errors="replace")
+    return text
+
+
+async def _download(
+    url: str,
+    *,
+    cancel: asyncio.Event | None,
+    accept: str = FETCH_ACCEPT,
+    api: bool = False,
+) -> tuple[str, str, bytes, bool]:
+    """GET one public HTTPS document: (final_url, content_type, body, truncated).
+
+    Every hop is resolved, pinned to a public IP and checked against the
+    domain policy; redirects are followed by hand so none skips the check.
+    """
+    client = get_fetch_client()
+    headers = dict(API_HEADERS if api else FETCH_HEADERS)
+    headers["Accept"] = accept
+    current = url
+    for _ in range(FETCH_MAX_REDIRECTS):
+        if cancel and cancel.is_set():
+            raise asyncio.CancelledError
+        parsed = urlparse(current)
+        hostname = parsed.hostname or ""
+        if parsed.scheme != "https" or is_blocked_host(hostname) or not domain_allowed(hostname):
+            raise FetchError("Refused a non-HTTPS or blocked redirect.")
+        port = parsed.port or 443
+        addrs = await asyncio.to_thread(public_ips, hostname, port)
+        if not addrs:
+            raise FetchError("Refused to fetch a non-public address.")
+        target = pin_https_url(current, addrs[0])
+        req_headers = dict(headers)
+        req_headers["Host"] = _host_header(hostname, port)
+        async with client.stream(
+            "GET",
+            target,
+            headers=req_headers,
+            follow_redirects=False,
+            timeout=TIMEOUT_FETCH,
+            extensions={"sni_hostname": hostname},
+        ) as resp:
+            if resp.status_code in (301, 302, 303, 307, 308):
+                loc = resp.headers.get("location") or ""
+                nxt = public_http_url(urljoin_safe(current, loc), https_only=True)
+                if not nxt:
+                    raise FetchError("Refused an unsafe redirect.")
+                current = nxt
+                continue
+            if resp.status_code not in (200, 203):
+                raise FetchError(
+                    _status_message(resp.status_code, hostname),
+                    blocked=resp.status_code in BLOCK_STATUSES,
+                    status=resp.status_code,
+                )
+            ctype = (resp.headers.get("content-type") or "").lower()
+            kind = _content_kind(ctype)
+            if kind is None:
+                shown = ctype.split(";", 1)[0] or "unknown type"
+                raise FetchError(f"That page is not readable text ({shown}).")
+            limit = FETCH_MAX_BYTES if kind == "text" else PDF_MAX_BYTES
+            body = bytearray()
+            truncated = False
+            async for chunk in resp.aiter_bytes(chunk_size=65536):
+                if cancel and cancel.is_set():
+                    raise asyncio.CancelledError
+                if kind == "sniff" and chunk:
+                    # Untyped download: PDF, text, or a binary to refuse
+                    # before reading megabytes of it.
+                    if chunk.startswith(b"%PDF-"):
+                        kind, ctype = "pdf", "application/pdf"
+                    elif b"\x00" in chunk[:4096]:
+                        raise FetchError("That page is not readable text (binary file).")
+                    else:
+                        kind, ctype, limit = "text", "text/plain", FETCH_MAX_BYTES
+                take = chunk[: limit - len(body)]
+                body.extend(take)
+                if len(take) < len(chunk) or len(body) >= limit:
+                    truncated = True
+                    break
+            return current, ctype, bytes(body), truncated
+    raise FetchError("Too many redirects.")
+
+
+async def _fetch_document(
+    clean: str, cancel: asyncio.Event | None
+) -> tuple[str, str, str, bool, int]:
+    """(final_url, content_type, text, download_truncated, bytes_received)."""
+    plan = adapters.plan_for(clean)
+    if plan is not None:
+
+        async def download_text(url: str, accept: str) -> tuple[str, str, str]:
+            final, ctype, raw, _ = await _download(url, cancel=cancel, accept=accept, api=True)
+            return final, ctype, _decode(raw, ctype)
+
+        try:
+            async with asyncio.timeout(FETCH_DEADLINE):
+                got = await adapters.run(plan, download_text)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.info("fuse.fetch adapter=%s failed: %s", plan.kind, type(exc).__name__)
+            got = None
+        if got:
+            final, ctype, text = got
+            return final, ctype, text, False, len(text.encode("utf-8", "replace"))
+    path = urlparse(clean).path.lower()
+    accept = BROWSER_ACCEPT if path.endswith(_FILE_SUFFIXES) else FETCH_ACCEPT
+    async with asyncio.timeout(FETCH_DEADLINE):
+        try:
+            final, ctype, raw, truncated = await _download(clean, cancel=cancel, accept=accept)
+        except FetchError as exc:
+            if exc.status not in (404, 406) or accept != FETCH_ACCEPT:
+                raise
+            final, ctype, raw, truncated = await _download(clean, cancel=cancel, accept=BROWSER_ACCEPT)
+    if ctype.startswith("application/pdf"):
+        if truncated:
+            raise FetchError(f"The PDF is larger than {PDF_MAX_BYTES // 1_000_000} MB and was not read.")
+        try:
+            text = await _pdf_text(raw)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("fuse.fetch pdf parse failed url_host=%s", host_of(final))
+            raise FetchError("The PDF could not be extracted as text.") from None
+        return final, "text/plain; source=pdf", text, False, len(raw)
+    return final, ctype, _decode(raw, ctype), truncated, len(raw)
+
+
 async def fetch_url(
     url: str,
     *,
@@ -672,6 +926,7 @@ async def fetch_url(
     query: str | None = None,
     cancel: asyncio.Event | None = None,
     offset: int = 0,
+    rate_kind: str = "fetch",
 ) -> tuple[PageExtract | None, str, str]:
     """Return (extract, wrapped_text, error). extract is None on hard failure."""
     clean = allowed_fetch_url(url)
@@ -687,125 +942,58 @@ async def fetch_url(
         # The redirect target fell under the domain policy since it was cached.
         cached = None
     if cached is not None:
-        final_url, base_extract, links = cached
+        final_url, base_extract = cached
         allowed.add(final_url)
-        allowed.update(links)
+        allowed.update(_safe_links(base_extract))
         extract = _with_find(base_extract, find, query=query, offset=offset)
         extract.bytes_in = base_extract.bytes_in
         return extract, pack_page(final_url, extract), ""
-    if not _allow(user_id, "fetch"):
+    if not _allow(user_id, rate_kind):
         msg = "Page-read rate limit reached. Try again shortly."
         return None, msg, msg
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
-        ),
-        "Accept": "text/html, text/plain, application/json, application/pdf;q=0.8, */*;q=0.1",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "identity",
-    }
-    client = get_fetch_client()
-    current = clean
+    host = host_of(clean)
     try:
-        async with asyncio.timeout(FETCH_DEADLINE):
-            for _ in range(FETCH_MAX_REDIRECTS):
-                if cancel and cancel.is_set():
-                    raise asyncio.CancelledError
-                parsed = urlparse(current)
-                hostname = parsed.hostname or ""
-                if parsed.scheme != "https" or is_blocked_host(hostname) or not domain_allowed(hostname):
-                    msg = "Refused a non-HTTPS or blocked redirect."
-                    return None, msg, msg
-                port = parsed.port or 443
-                addrs = await asyncio.to_thread(public_ips, hostname, port)
-                if not addrs:
-                    msg = "Refused to fetch a non-public address."
-                    return None, msg, msg
-                target = pin_https_url(current, addrs[0])
-                req_headers = dict(headers)
-                req_headers["Host"] = _host_header(hostname, port)
-                async with client.stream(
-                    "GET",
-                    target,
-                    headers=req_headers,
-                    follow_redirects=False,
-                    timeout=TIMEOUT_FETCH,
-                    extensions={"sni_hostname": hostname},
-                ) as resp:
-                    if resp.status_code in (301, 302, 303, 307, 308):
-                        loc = resp.headers.get("location") or ""
-                        nxt = public_http_url(urljoin_safe(current, loc), https_only=True)
-                        if not nxt:
-                            msg = "Refused an unsafe redirect."
-                            return None, msg, msg
-                        current = nxt
-                        continue
-                    if resp.status_code != 200:
-                        msg = f"Page returned HTTP {resp.status_code}."
-                        return None, msg, msg
-                    ctype = (resp.headers.get("content-type") or "").lower()
-                    if not any(t in ctype for t in ("text/html", "text/plain", "application/json", "xml", "application/pdf")):
-                        msg = "That page is not readable text."
-                        return None, msg, msg
-                    body_bytes = bytearray()
-                    truncated = False
-                    async for chunk in resp.aiter_bytes(chunk_size=8192):
-                        if cancel and cancel.is_set():
-                            raise asyncio.CancelledError
-                        if len(body_bytes) >= FETCH_MAX_BYTES:
-                            truncated = True
-                            break
-                        take = chunk[: FETCH_MAX_BYTES - len(body_bytes)]
-                        body_bytes.extend(take)
-                        if len(take) < len(chunk):
-                            truncated = True
-                            break
-                    raw_bytes = bytes(body_bytes)
-                    received = len(raw_bytes)
-                    del body_bytes
-                    if "application/pdf" in ctype:
-                        try:
-                            body = await _pdf_text(raw_bytes)
-                        except Exception:
-                            logger.warning("fuse.fetch pdf parse failed url_host=%s", hostname)
-                            msg = "The PDF could not be extracted as text."
-                            return None, msg, msg
-                        ctype = "text/plain; source=pdf"
-                    else:
-                        match = re.search(r"charset=([^;\s]+)", ctype, re.I)
-                        charset = match.group(1).strip("\"'")[:40] if match else "utf-8"
-                        try:
-                            body = raw_bytes.decode(charset, errors="replace")
-                        except LookupError:
-                            body = raw_bytes.decode("utf-8", errors="replace")
-                    del raw_bytes
-                    links, base_extract = await asyncio.to_thread(
-                        _parse_page, body, ctype, current, truncated, received
-                    )
-                    if base_extract.kind == "empty" or (not base_extract.text and base_extract.kind != "spa"):
-                        msg = "The page had no extractable text."
-                        return None, msg, msg
-                    allowed.add(current)
-                    allowed.update(links)
-                    cached_value = (current, base_extract, links)
-                    _page_cache.set(normalize_url(clean), cached_value, PAGE_CACHE_TTL)
-                    _page_cache.set(normalize_url(current), cached_value, PAGE_CACHE_TTL)
-                    extract = _with_find(base_extract, find, query=query, offset=offset)
-                    extract.bytes_in = received
-                    wrapped = pack_page(current, extract)
-                    return extract, wrapped, ""
-            msg = "Too many redirects."
-            return None, msg, msg
+        final_url, ctype, body, truncated, received = await _fetch_document(clean, cancel)
+        base_extract = await asyncio.to_thread(_parse_page, body, ctype, final_url, truncated, received)
+        del body
     except asyncio.CancelledError:
         raise
-    except TimeoutError:
-        msg = "Page fetch timed out."
+    except FetchError as exc:
+        if exc.blocked:
+            _blocked_hosts.set(host, True, BLOCKED_HOST_TTL)
+        msg = str(exc)
+        return None, msg, msg
+    except (TimeoutError, httpx.TimeoutException):
+        msg = f"Page fetch timed out: {host} did not finish sending the page within {int(FETCH_DEADLINE)}s."
+        return None, msg, msg
+    except httpx.ConnectError:
+        msg = f"Could not connect to {host} (DNS, TLS or network failure)."
+        return None, msg, msg
+    except httpx.RemoteProtocolError:
+        msg = f"{host} dropped the connection before the page finished."
+        return None, msg, msg
+    except httpx.DecodingError:
+        msg = "The page's compression could not be decoded."
+        return None, msg, msg
+    except httpx.HTTPError as exc:
+        logger.warning("fuse.fetch http error host=%s error=%s", host, type(exc).__name__)
+        msg = "Network error while reading the page."
         return None, msg, msg
     except Exception:
         logger.exception("fuse.fetch failed")
         msg = "Tool failed."
         return None, msg, msg
+    if base_extract.kind == "empty" or (not base_extract.text and base_extract.kind != "spa"):
+        msg = "The page had no extractable text."
+        return None, msg, msg
+    allowed.add(final_url)
+    allowed.update(_safe_links(base_extract))
+    cached_value = (final_url, base_extract)
+    _page_cache.set(normalize_url(clean), cached_value, PAGE_CACHE_TTL)
+    _page_cache.set(normalize_url(final_url), cached_value, PAGE_CACHE_TTL)
+    extract = _with_find(base_extract, find, query=query, offset=offset)
+    extract.bytes_in = received
+    return extract, pack_page(final_url, extract), ""
 
 
 def urljoin_safe(current: str, loc: str) -> str:

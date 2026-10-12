@@ -41,10 +41,26 @@ _TAG = re.compile(r"(?is)<[^>]+>")
 _fail_streak = 0
 _break_until = 0.0
 _warmed = False
+# DuckDuckGo answers flagged server IPs with a bot challenge (HTTP 202/403,
+# "anomaly" page) on nearly every request; retrying each query twice only
+# added load and latency. One challenge pauses the provider for a while.
+CHALLENGE_BACKOFF = 600.0
 
 
 def ddg_circuit_open() -> bool:
     return time.monotonic() < _break_until
+
+
+def reset_circuit() -> None:
+    global _fail_streak, _break_until
+    _fail_streak = 0
+    _break_until = 0.0
+
+
+def _record_challenge() -> None:
+    global _fail_streak, _break_until
+    _fail_streak = 0
+    _break_until = time.monotonic() + CHALLENGE_BACKOFF
 
 
 def _record_timeout() -> None:
@@ -94,7 +110,7 @@ def parse_ddg_html(raw: str) -> list[SearchHit]:
         seen.add(url)
         snippet = _snippet_after(match.start())
         results.append(SearchHit(title=title[:200], url=url, snippet=snippet[:280], provider="ddg", rank=len(results)))
-        if len(results) >= 6:
+        if len(results) >= 8:
             break
     if not results:
         for match in _LITE_LINK.finditer(raw):
@@ -108,7 +124,7 @@ def parse_ddg_html(raw: str) -> list[SearchHit]:
             results.append(
                 SearchHit(title=title[:200], url=url, snippet=snippet[:280], provider="ddg", rank=len(results))
             )
-            if len(results) >= 6:
+            if len(results) >= 8:
                 break
     return results
 
@@ -208,6 +224,11 @@ class DdgProvider:
                 logger.error("fuse.search provider=ddg error=%s method=%s", type(exc).__name__, method)
                 continue
             last_status = resp.status_code
+            if resp.status_code in (403, 429):
+                last_error = "challenge"
+                _record_challenge()
+                logger.warning("fuse.search provider=ddg status=%s method=%s backoff=%ss", resp.status_code, method, int(CHALLENGE_BACKOFF))
+                break
             if resp.status_code not in (200, 202):
                 last_error = f"http_{resp.status_code}"
                 logger.error("fuse.search provider=ddg status=%s method=%s", resp.status_code, method)
@@ -219,6 +240,13 @@ class DdgProvider:
             last_error = empty_reason(resp.text, "result__a") if resp.status_code == 200 else "challenge"
             if last_error == "empty" and "anomaly" in (resp.text or "").lower():
                 last_error = "blocked"
+            if last_error in ("challenge", "blocked"):
+                _record_challenge()
+                logger.warning(
+                    "fuse.search provider=ddg status=%s method=%s error=%s backoff=%ss",
+                    resp.status_code, method, last_error, int(CHALLENGE_BACKOFF),
+                )
+                break
             logger.warning(
                 "fuse.search provider=ddg status=%s method=%s error=%s body_len=%s",
                 resp.status_code,

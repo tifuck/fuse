@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import socket
 import sys
@@ -293,9 +294,21 @@ class PackLiveTest(unittest.TestCase):
         packed = pack_search(results)
         self.assertLessEqual(len(packed), 24_000)
         self.assertNotIn("[truncated]", packed)
-        for line in packed.splitlines():
-            if "https://" in line:
-                self.assertIn("[web-", line)
+        # Eight queries share the budget at four hits each; every hit shown
+        # keeps its whole record (title, complete URL line, snippet).
+        from app.search.pack import hits_per_query
+
+        self.assertEqual(hits_per_query(8), 4)
+        for index in range(8):
+            for rank in range(8):
+                url = f"https://example{rank}.com/{index}/" + "x" * 300
+                shown = f"Title {index}-{rank}" in packed
+                self.assertEqual(shown, rank < 4, (index, rank))
+                if shown:
+                    self.assertIn("\n   " + url + "\n", packed)
+        # Internal source ids and engine provenance are not model evidence.
+        self.assertNotIn("[web-", packed)
+        self.assertNotIn("found via", packed)
 
 
 class QuoteDetectTest(unittest.TestCase):
@@ -829,6 +842,380 @@ class EngineAsyncTest(unittest.IsolatedAsyncioTestCase):
             _cache.clear()
             out = await search_bulk(["btc price"], user_id=78)
         self.assertEqual(out[0].kind, "provider_error")
+
+
+
+# Bing's current markup: the real target is base64 in an HTML-escaped
+# "&amp;u=a1..." parameter and <cite> is only a breadcrumb.
+REAL_BING_BLOCK = (
+    '<li class="b_algo" data-id iid=SERP.5349><div class="b_tpcn"><a class="tilk" '
+    'href="https://www.bing.com/ck/a?!&amp;&amp;p=abc&amp;u=a1aHR0cHM6Ly93d3cuZ2Vla3Nmb3JnZWVrcy5vcmcvcHl0aG9uL3B5dGhvbi10YXNrZ3JvdXBzLXdpdGgtYXN5bmNpby8&amp;ntb=1">'
+    '<cite>https://www.geeksforgeeks.org &#8250; python &#8250; python-taskgroups-with-asyncio</cite></a></div>'
+    '<h2><a href="https://www.bing.com/ck/a?!&amp;&amp;p=abc&amp;u=a1aHR0cHM6Ly93d3cuZ2Vla3Nmb3JnZWVrcy5vcmcvcHl0aG9uL3B5dGhvbi10YXNrZ3JvdXBzLXdpdGgtYXN5bmNpby8&amp;ntb=1">'
+    'Python Taskgroups with asyncIO - GeeksforGeeks</a></h2><p class="b_lineclamp2">Jul 23, 2025 · Prerequisite</p></li>'
+)
+
+
+class SearchQualityTest(unittest.TestCase):
+    def test_bing_result_url_is_the_page_not_the_breadcrumb_host(self):
+        from app.search.providers.bing import parse_bing_html
+
+        hits = parse_bing_html(REAL_BING_BLOCK)
+        self.assertEqual(hits[0].url, "https://www.geeksforgeeks.org/python/python-taskgroups-with-asyncio/")
+
+    def test_off_topic_hits_sink_and_drop_when_enough_hits_are_on_topic(self):
+        from app.search.engine import _merge_hits
+
+        degraded = [
+            SearchHit("WON Definition & Meaning", "https://dict.example/won", "The meaning of won", provider="bing", rank=0),
+            SearchHit("South Korean won", "https://wiki.example/won", "Currency of South Korea", provider="bing", rank=1),
+        ]
+        good = [
+            SearchHit(f"2026 FIFA World Cup final {i}", f"https://site{i}.example/world-cup-2026", "Spain won the 2026 World Cup final", provider="yahoo", rank=i)
+            for i in range(5)
+        ]
+        out = _merge_hits([degraded, good], "who won the 2026 world cup")
+        urls = [h.url for h in out]
+        self.assertNotIn("https://dict.example/won", urls)
+        self.assertNotIn("https://wiki.example/won", urls)
+        self.assertEqual(len(urls), 5)
+
+    def test_coverage_only_reorders_when_too_few_hits_are_on_topic(self):
+        from app.search.engine import _merge_hits
+
+        first = [SearchHit("Unrelated page", "https://a.example/x", "nothing", provider="bing", rank=0)]
+        second = [SearchHit("Rust reqwest timeout example", "https://b.example/reqwest-timeout", "", provider="yahoo", rank=3)]
+        out = _merge_hits([first, second], "rust reqwest timeout example")
+        self.assertEqual([h.url for h in out], ["https://b.example/reqwest-timeout", "https://a.example/x"])
+
+    def test_adapter_plans(self):
+        from app.search.adapters import plan_for
+
+        blob = plan_for("https://github.com/encode/httpx/blob/master/httpx/_client.py")
+        self.assertEqual(blob.target, "https://raw.githubusercontent.com/encode/httpx/master/httpx/_client.py")
+        self.assertIsNone(plan_for("https://github.com/encode/httpx"))
+        so = plan_for("https://stackoverflow.com/questions/76196208/rust-request-with-timeout")
+        self.assertEqual((so.kind, so.site, so.ident), ("stackexchange", "stackoverflow", "76196208"))
+        self.assertEqual(plan_for("https://unix.stackexchange.com/questions/42/x").site, "unix")
+        npm = plan_for("https://www.npmjs.com/package/@scope/pkg")
+        self.assertEqual((npm.kind, npm.ident, npm.version), ("npm", "@scope/pkg", "latest"))
+        self.assertIsNone(plan_for("https://example.com/questions/1"))
+
+    def test_pack_search_shows_excerpts_and_drops_them_before_whole_queries(self):
+        from app.search.pack import RESULT_CHARS, pack_search
+        from app.search.providers.base import QueryResult
+
+        hit = SearchHit("Docs", "https://docs.example/a", "snippet", provider="yahoo", excerpt="The answer paragraph.")
+        packed = pack_search([QueryResult("q", [hit], None, "ok", "yahoo", 1, False, 200)])
+        self.assertIn("[page excerpt, read from the page]\nThe answer paragraph.\n   [/page excerpt]", packed)
+        self.assertIn("1 top result page(s) were read", packed)
+        huge = [
+            QueryResult(f"query {i}", [SearchHit(f"T{i}-{r}", f"https://e{r}.example/{i}", "s" * 290, provider="yahoo", excerpt="E" * 3000) for r in range(4)], None, "ok", "yahoo", 1, False, 200)
+            for i in range(6)
+        ]
+        packed = pack_search(huge)
+        self.assertLessEqual(len(packed), RESULT_CHARS)
+        for i in range(6):
+            self.assertIn(f"## Q{i + 1}: query {i}", packed)
+
+    def test_pack_page_has_outline_and_only_this_windows_links(self):
+        from app.search.extract import FETCH_CHARS, extract_page
+        from app.search.pack import pack_page
+
+        body = (
+            "<article><h1>Guide</h1><p>See <a href='/early'>early link</a>.</p>"
+            + "".join(f"<h2>Part {i}</h2><p>{'filler words ' * 400}</p>" for i in range(8))
+            + "<p>Finally <a href='/late'>late link</a>.</p></article>"
+        )
+        first = extract_page(body, content_type="text/html", url="https://docs.example/guide")
+        self.assertGreater(first.total_chars, FETCH_CHARS)
+        packed = pack_page("https://docs.example/guide", first)
+        self.assertIn("Page outline (heading, offset to read it with offset=N):", packed)
+        self.assertIn("- Part 7 @", packed)
+        self.assertIn("- early link: https://docs.example/early", packed)
+        self.assertNotIn("https://docs.example/late", packed)
+        late_at = int(packed.split("- Part 7 @", 1)[1].split()[0])
+        later = extract_page(body, content_type="text/html", url="https://docs.example/guide", offset=late_at)
+        self.assertIn("- late link: https://docs.example/late", pack_page("https://docs.example/guide", later))
+
+
+def _fetch_patches(client):
+    return (
+        patch("app.search.engine.get_fetch_client", return_value=client),
+        patch("app.search.engine.public_ips", return_value=["93.184.216.34"]),
+        patch("app.search.engine._allow", return_value=True),
+    )
+
+
+def _logical_url(target, kwargs):
+    from urllib.parse import urlparse, urlunparse
+
+    parsed = urlparse(target)
+    return urlunparse(("https", kwargs["headers"]["Host"], parsed.path, "", parsed.query, ""))
+
+
+class FetchUpgradeTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        from app.search import engine
+
+        engine._page_cache.clear()
+        engine._blocked_hosts.clear()
+
+    async def _fetch(self, client, url, **kw):
+        from app.search.engine import fetch_url
+
+        a, b, c = _fetch_patches(client)
+        with a, b, c:
+            return await fetch_url(url, user_id=1, allowed=set(), **kw)
+
+    async def test_asks_for_markdown_and_gzip_and_reads_markdown(self):
+        client = FakeClient()
+        md = b"# Models\n\n| Model | Price |\n| --- | --- |\n| grok-4.7 | $2 |\n\n## Limits\n\nRate limits apply."
+        client.stream_impl = lambda method, u, kwargs: FakeStream(200, md, {"content-type": "text/markdown; charset=utf-8"})
+        extract, wrapped, err = await self._fetch(client, "https://docs.example/models")
+        self.assertFalse(err)
+        headers = client.calls[0][2]["headers"]
+        self.assertTrue(headers["Accept"].startswith("text/markdown"))
+        self.assertIn("gzip", headers["Accept-Encoding"])
+        self.assertIn("| grok-4.7 | $2 |", wrapped)
+        self.assertIn("length: ", wrapped)
+        self.assertEqual([t for _, _, t in extract.outline], ["Models", "Limits"])
+
+    async def test_octet_stream_pdf_is_sniffed_and_extracted(self):
+        client = FakeClient()
+        client.stream_impl = lambda method, u, kwargs: FakeStream(200, b"%PDF-1.7 fake", {"content-type": "application/octet-stream"})
+        with patch("app.search.engine._pdf_text", AsyncMock(return_value="Manual text for the 811LM remote.")):
+            extract, wrapped, err = await self._fetch(client, "https://files.example/manual")
+        self.assertFalse(err)
+        self.assertIn("811LM remote", wrapped)
+
+    async def test_office_files_and_untyped_binaries_are_refused_early(self):
+        consumed = []
+
+        class CountingStream(FakeStream):
+            async def aiter_bytes(self, chunk_size=8192):
+                for i in range(50):
+                    consumed.append(i)
+                    yield b"PK\x03\x04\x00\x00" + b"\x00" * 65530
+
+        client = FakeClient()
+        docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        client.stream_impl = lambda method, u, kwargs: FakeStream(200, b"PK\x03\x04", {"content-type": docx})
+        _, _, err = await self._fetch(client, "https://files.example/report.docx")
+        self.assertIn("not readable text", err)
+        client.stream_impl = lambda method, u, kwargs: CountingStream(200, b"", {"content-type": "application/octet-stream"})
+        _, _, err = await self._fetch(client, "https://files.example/archive")
+        self.assertIn("binary file", err)
+        self.assertEqual(consumed, [0])
+
+    async def test_timeouts_and_bot_walls_get_clear_messages(self):
+        import httpx
+
+        from app.search.engine import is_host_blocked
+
+        client = FakeClient()
+
+        def slow(method, u, kwargs):
+            raise httpx.ReadTimeout("slow")
+
+        client.stream_impl = slow
+        _, _, err = await self._fetch(client, "https://slow.example/page")
+        self.assertIn("timed out", err)
+        client.stream_impl = lambda method, u, kwargs: FakeStream(403, b"denied", {"content-type": "text/html"})
+        _, _, err = await self._fetch(client, "https://walled.example/page")
+        self.assertIn("HTTP 403", err)
+        self.assertIn("blocks automated readers", err)
+        self.assertNotIn("refused", err.lower())
+        self.assertTrue(is_host_blocked("https://walled.example/other"))
+
+    async def test_stackexchange_question_read_through_the_api(self):
+        import json as _json
+
+        question = {"items": [{"title": "Rust request with timeout", "score": 3, "answer_count": 2, "tags": ["rust"],
+                               "accepted_answer_id": 9, "body": "<p>How do I set a timeout?</p>"}]}
+        answers = {"items": [{"answer_id": 8, "score": 1, "body": "<p>Low answer.</p>"},
+                             {"answer_id": 9, "score": 5, "body": "<pre><code>client.timeout(Duration::from_secs(5))</code></pre>"}]}
+        client = FakeClient()
+
+        def serve(method, u, kwargs):
+            url = _logical_url(u, kwargs)
+            if url.startswith("https://api.stackexchange.com/2.3/questions/76196208/answers"):
+                return FakeStream(200, _json.dumps(answers).encode(), {"content-type": "application/json"})
+            if url.startswith("https://api.stackexchange.com/2.3/questions/76196208"):
+                return FakeStream(200, _json.dumps(question).encode(), {"content-type": "application/json"})
+            return FakeStream(403, b"blocked", {"content-type": "text/html"})
+
+        client.stream_impl = serve
+        extract, wrapped, err = await self._fetch(client, "https://stackoverflow.com/questions/76196208/rust-request-with-timeout")
+        self.assertFalse(err)
+        self.assertIn("How do I set a timeout?", wrapped)
+        self.assertLess(wrapped.find("## Accepted answer (score 5)"), wrapped.find("## Answer (score 1)"))
+        self.assertIn("client.timeout(Duration::from_secs(5))", wrapped)
+        self.assertFalse(any("stackoverflow.com" in _logical_url(c[1], c[2]) for c in client.calls))
+
+    async def test_failed_adapter_falls_back_to_the_page(self):
+        client = FakeClient()
+
+        def serve(method, u, kwargs):
+            url = _logical_url(u, kwargs)
+            if "raw.githubusercontent.com" in url:
+                return FakeStream(404, b"", {"content-type": "text/plain"})
+            return FakeStream(200, b"<article>" + b"GitHub rendered file view text. " * 20 + b"</article>")
+
+        client.stream_impl = serve
+        extract, wrapped, err = await self._fetch(client, "https://github.com/o/r/blob/main/README.md")
+        self.assertFalse(err)
+        self.assertIn("GitHub rendered file view text", wrapped)
+
+
+class ExcerptTest(unittest.IsolatedAsyncioTestCase):
+    def _results(self):
+        from app.search.providers.base import QueryResult
+
+        return [
+            QueryResult("alpha pricing", [SearchHit(f"A{r}", f"https://a{r}.example/p", "s", provider="yahoo") for r in range(3)], None, "ok", "yahoo", 1, False, 200),
+            QueryResult("beta limits", [SearchHit(f"B{r}", f"https://b{r}.example/p", "s", provider="yahoo") for r in range(3)], None, "ok", "yahoo", 1, False, 200),
+        ]
+
+    async def test_reads_best_hits_first_and_attaches_relevant_passages(self):
+        from app.search import excerpts
+        from app.search.extract import extract_page
+
+        seen = []
+
+        async def fake_fetch(url, **kwargs):
+            seen.append((url, kwargs.get("rate_kind")))
+            page = f"# Page {url}\n\nIntro words.\n\n## Pricing\n\nThe alpha pricing is $5.\n\n## Limits\n\nbeta limits are 10 rps."
+            return extract_page(page, content_type="text/markdown"), "", ""
+
+        with patch.object(excerpts, "fetch_url", fake_fetch):
+            out = await excerpts.attach_excerpts(self._results(), user_id=1, max_pages=3)
+        self.assertEqual([u for u, _ in seen], ["https://a0.example/p", "https://b0.example/p", "https://a1.example/p"])
+        self.assertTrue(all(kind == "prefetch" for _, kind in seen))
+        self.assertIn("alpha pricing is $5", out[0].hits[0].excerpt)
+        self.assertIn("beta limits are 10 rps", out[1].hits[0].excerpt)
+        self.assertEqual(out[1].hits[1].excerpt, "")
+
+    async def test_slow_pages_miss_the_deadline_but_finish_in_background(self):
+        from app.search import excerpts
+        from app.search.extract import extract_page
+
+        release = asyncio.Event()
+        finished = []
+
+        async def fake_fetch(url, **kwargs):
+            if "a0" not in url:
+                await release.wait()
+                finished.append(url)
+            return extract_page("# T\n\nalpha pricing words", content_type="text/markdown"), "", ""
+
+        with patch.object(excerpts, "fetch_url", fake_fetch):
+            out = await excerpts.attach_excerpts(self._results(), user_id=1, max_pages=2, deadline=0.05)
+            self.assertTrue(out[0].hits[0].excerpt)
+            self.assertEqual(out[1].hits[0].excerpt, "")
+            release.set()
+            for _ in range(20):
+                if finished:
+                    break
+                await asyncio.sleep(0.01)
+        self.assertEqual(finished, ["https://b0.example/p"])
+
+    async def test_skips_blocked_hosts_pdfs_and_quotes(self):
+        from app.search import engine, excerpts
+        from app.search.providers.base import QueryResult
+
+        engine._blocked_hosts.set("walled.example", True, 60)
+        hits = [
+            SearchHit("Q", "https://quotes.example/btc", "LIVE", provider="quotes"),
+            SearchHit("W", "https://walled.example/x", "", provider="yahoo"),
+            SearchHit("P", "https://files.example/paper.pdf", "", provider="yahoo"),
+        ]
+        picks = excerpts._pick([QueryResult("q", hits, None, "ok", "x", 1, False, 200)], 5)
+        self.assertEqual(picks, [])
+        engine._blocked_hosts.clear()
+
+    async def test_web_search_tool_marks_read_hits(self):
+        from app import chat_tools
+        from app.search import excerpts
+        from app.search.extract import extract_page
+        from app.search.providers.base import QueryResult
+
+        async def fake_bulk(queries, **kwargs):
+            return [QueryResult(queries[0], [SearchHit("Doc", "https://doc.example/a", "s", provider="yahoo")], None, "ok", "yahoo", 1, False, 200)]
+
+        async def fake_fetch(url, **kwargs):
+            return extract_page("# Doc\n\nThe release date is October 23.", content_type="text/markdown"), "", ""
+
+        with (
+            patch.object(chat_tools, "search_bulk", fake_bulk),
+            patch.object(excerpts, "fetch_url", fake_fetch),
+            patch.object(chat_tools.settings, "web_search_excerpt_pages", 3),
+        ):
+            text, trace = await chat_tools.execute_tool(
+                "web_search", json.dumps({"query": "release date"}), user_id=1, allowed_urls=set()
+            )
+        self.assertIn("The release date is October 23.", text)
+        self.assertEqual(trace["results"][0]["status"], "read")
+
+
+class ProviderTransportTest(unittest.IsolatedAsyncioTestCase):
+    async def test_redirect_hops_do_not_resend_the_first_query_params(self):
+        from app.search.providers.base import safe_get
+
+        client = FakeClient()
+        answers = iter([
+            FakeResp(307, headers={"location": "/_bv/v.gif?orig=%2Fsearch%3Fp%3Dq"}),
+            FakeResp(307, headers={"location": "/search?p=q"}),
+            FakeResp(200, text="results"),
+        ])
+
+        async def get(url, kwargs):
+            return next(answers)
+
+        client.get_impl = get
+        resp = await safe_get(client, "https://search.yahoo.com/search", host_ok=lambda u: "yahoo.com" in u, params={"p": "q"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(client.calls[0][2].get("params"), {"p": "q"})
+        self.assertNotIn("params", client.calls[1][2])
+        self.assertNotIn("params", client.calls[2][2])
+
+    async def test_yahoo_retries_one_transient_server_error(self):
+        from app.search.providers.yahoo import YahooProvider
+
+        page = (
+            '<div class="algo-sr"><a href="https://r.search.yahoo.com/x/RU=https%3a%2f%2fdocs.example%2fpage/RK=2">'
+            '<h3 class="title">Docs page</h3></a><p class="fc-dustygray">About it</p></div>'
+        )
+        client = FakeClient()
+        answers = iter([FakeResp(500, text="oops"), FakeResp(200, text=page)])
+
+        async def get(url, kwargs):
+            return next(answers)
+
+        client.get_impl = get
+        got = await YahooProvider().search(client, "docs", recency_days=None, timeout=YahooProvider.timeout)
+        self.assertEqual([h.url for h in got.hits], ["https://docs.example/page"])
+        self.assertEqual(len(client.calls), 2)
+
+    async def test_ddg_challenge_pauses_the_provider(self):
+        from app.search.providers import ddg as ddg_mod
+
+        ddg_mod.reset_circuit()
+        ddg_mod._warmed = True
+        client = FakeClient()
+
+        async def req(method, url, **kwargs):
+            return FakeResp(202, text="<html>Unfortunately, bots use DuckDuckGo too. anomaly</html>")
+
+        client.request_impl = req
+        provider = ddg_mod.DdgProvider()
+        first = await provider.search(client, "q", recency_days=None, timeout=TIMEOUT_DDG)
+        self.assertEqual(first.error, "challenge")
+        self.assertEqual(len(client.calls), 1)  # no second endpoint tried
+        second = await provider.search(client, "q", recency_days=None, timeout=TIMEOUT_DDG)
+        self.assertEqual(second.error, "circuit")
+        self.assertEqual(len(client.calls), 1)
+        ddg_mod.reset_circuit()
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ import re
 from fastapi import Request
 
 from ..chat_prompts import WEB_CONTEXT_DELIM, _text_of
+from ..config import settings
 from ..search.expand import expand_user_question
 from ..search.pack import pack_search
 
@@ -183,6 +184,13 @@ async def _retrieval_first(request: Request, user_id: int, messages: list[dict],
                 cancel=cancel,
                 on_query_done=on_done,
             )
+            # This model cannot call read_url, so the page excerpts are the
+            # only page text it will see: read one more page than tool runs.
+            pages = int(settings.web_search_excerpt_pages or 0)
+            if pages:
+                from ..search.excerpts import attach_excerpts
+
+                results = await attach_excerpts(results, user_id=user_id, max_pages=pages + 1, deadline=3.0)
             queue.put_nowait(("done", results))
         except Exception:
             queue.put_nowait(("done", []))

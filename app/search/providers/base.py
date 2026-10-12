@@ -102,6 +102,10 @@ async def safe_get(
         resp = await client.get(current, follow_redirects=False, **kwargs)
         if resp.status_code in (301, 302, 303, 307, 308) and resp.headers.get("location"):
             current = urljoin(current, resp.headers["location"])
+            # The Location already carries its own query string; re-sending
+            # the first request's params appended them to every hop (Yahoo's
+            # /_bv/ cookie beacon then looped until "redirect loop").
+            kwargs.pop("params", None)
             continue
         return resp
     raise ValueError("redirect loop")
@@ -125,6 +129,8 @@ class SearchHit:
     rank: int = 0
     query: str = ""
     providers: tuple[str, ...] = ()
+    # Query-relevant passage read from the page itself at search time.
+    excerpt: str = ""
 
     def __post_init__(self) -> None:
         if not self.providers and self.provider:

@@ -4,6 +4,7 @@ import base64
 import html as html_lib
 import logging
 import re
+from urllib.parse import urlparse
 
 import httpx
 
@@ -29,6 +30,8 @@ _H2 = re.compile(r"<h2[^>]*>(.*?)</h2>", re.I | re.S)
 _CITE = re.compile(r"<cite[^>]*>(.*?)</cite>", re.I | re.S)
 _SNIP = re.compile(r'class="b_lineclamp\d*"[^>]*>(.*?)</p>', re.I | re.S)
 _U = re.compile(r"[?&]u=([A-Za-z0-9_-]+)", re.I)
+_H2_HREF = re.compile(r"<h2[^>]*>.*?<a[^>]+href=\"([^\"]+)\"", re.I | re.S)
+MAX_HITS = 8
 
 
 def _strip(text: str) -> str:
@@ -51,6 +54,46 @@ def _decode_u(raw: str) -> str:
     return ""
 
 
+def _target_url(block: str) -> str:
+    """The result's real URL from Bing's click-tracking link.
+
+    Bing writes it as base64 in the ck/a link's u= parameter, HTML-escaped
+    ("&amp;u=a1aHR0cHM6..."): unescape before matching, or every hit falls
+    back to the <cite> text, which is only a breadcrumb ("host › path").
+    """
+    href = _H2_HREF.search(block)
+    candidates = [html_lib.unescape(href.group(1))] if href else []
+    candidates.append(html_lib.unescape(block))
+    for text in candidates:
+        if text.startswith("http") and "bing.com" not in (urlparse(text).hostname or ""):
+            direct = public_http_url(text)
+            if direct:
+                return direct
+        match = _U.search(text)
+        if match:
+            decoded = public_http_url(_decode_u(match.group(1)))
+            if decoded:
+                return decoded
+    return ""
+
+
+def _cite_url(block: str) -> str:
+    cite = _CITE.search(block)
+    if not cite:
+        return ""
+    text = _strip(cite.group(1))
+    if "›" in text:
+        # Breadcrumb ("https://host › a › b"): only the host is real.
+        return ""
+    # An empty <cite> must not raise and drop every result.
+    host = (text.split() or [""])[0]
+    if host.startswith("http"):
+        return public_http_url(host)
+    if "." in host:
+        return public_http_url("https://" + host.strip("/"))
+    return ""
+
+
 def parse_bing_html(raw: str) -> list[SearchHit]:
     hits: list[SearchHit] = []
     seen: set[str] = set()
@@ -59,32 +102,19 @@ def parse_bing_html(raw: str) -> list[SearchHit]:
         h2 = _H2.search(block)
         if h2:
             title = _strip(h2.group(1))
-        cite_url = ""
-        cite = _CITE.search(block)
-        if cite:
-            # An empty <cite> must not raise and drop every result.
-            host = (_strip(cite.group(1)).split() or [""])[0]
-            if host.startswith("http"):
-                cite_url = public_http_url(host)
-            elif "." in host:
-                cite_url = public_http_url("https://" + host.strip("/"))
-        u_url = ""
-        u = _U.search(block)
-        if u:
-            u_url = public_http_url(_decode_u(u.group(1)))
-        if u_url and (not cite_url or len(u_url.rstrip("/")) > len(cite_url.rstrip("/"))):
-            url = u_url
-        else:
-            url = cite_url or u_url
+        url = _target_url(block)
+        cite_url = _cite_url(block)
+        if cite_url and (not url or len(cite_url.rstrip("/")) > len(url.rstrip("/"))):
+            url = cite_url
         if not url or not title or url in seen:
             continue
-        if "bing.com" in (url or ""):
+        if "bing.com" in (urlparse(url).hostname or ""):
             continue
         seen.add(url)
         snip_m = _SNIP.search(block)
-        snippet = _strip(snip_m.group(1))[:280] if snip_m else ""
+        snippet = _strip(snip_m.group(1))[:300] if snip_m else ""
         hits.append(SearchHit(title=title[:200], url=url, snippet=snippet, provider="bing", rank=len(hits)))
-        if len(hits) >= 6:
+        if len(hits) >= MAX_HITS:
             break
     return hits
 

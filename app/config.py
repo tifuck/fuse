@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     auth_rate_per_minute: int = 10
     api_rate_per_minute: int = 90
     web_search_queries_per_turn: int = 32
+    # Top result pages read at search time for query-relevant excerpts
+    # (search/excerpts.py); 0 turns search-time reads off.
+    web_search_excerpt_pages: int = 5
     web_read_successes_per_turn: int = 12
     web_read_attempts_per_turn: int = 18
     web_evidence_chars: int = 24_000

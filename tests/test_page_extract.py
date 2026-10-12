@@ -124,12 +124,16 @@ class ExtractTest(unittest.TestCase):
         )
         got = extract_page(html, content_type="text/html", url="https://example.test/news/item")
         self.assertEqual(
-            got.links,
+            [{"url": link["url"], "text": link["text"]} for link in got.links],
             [
                 {"url": "https://example.test/guide", "text": "the guide"},
                 {"url": "https://other.test/report", "text": "external report"},
             ],
         )
+        # Each link carries where its label sits in the extracted text, so a
+        # read_url window can list the links that belong to it.
+        for link in got.links:
+            self.assertEqual(got.full_text[link["at"]:link["at"] + len(link["text"])], link["text"])
 
     def test_heading_aware_chunks_repeat_context_after_size_split(self):
         text = "# Release notes\n\n" + ("First paragraph about setup. " * 8) + "\n\nSecond paragraph has target details."
@@ -253,6 +257,134 @@ class ParserRegressionTest(unittest.TestCase):
         got = extract_page(html, content_type="text/html")
         self.assertIn("Solid main content", got.text)
         self.assertNotIn("Cookie settings", got.text)
+
+
+class MarkdownRenderTest(unittest.TestCase):
+    """HTML5 tree building and the markdown the model reads."""
+
+    def test_unclosed_list_items_do_not_hide_the_article(self):
+        # Minified Docusaurus pages omit </li>; the old tag stack never
+        # re-synced and nested the whole article inside <nav> (Electron docs
+        # extracted to "Skip to main content").
+        html = (
+            "<body><nav><ul><li><a href=/>Home<li><a href=/docs>Docs</ul></nav>"
+            "<main><article><h1>Releases</h1><p>" + "Electron ships every eight weeks. " * 8
+            + "<ul><li>alpha<li>beta<li>stable</ul></article></main></body>"
+        )
+        got = extract_page(html, content_type="text/html")
+        self.assertIn("# Releases", got.text)
+        self.assertIn("Electron ships every eight weeks", got.text)
+        self.assertIn("- alpha\n- beta\n- stable", got.text)
+        self.assertNotIn("Docs", got.text)
+
+    def test_code_blocks_keep_indentation_fences_and_language(self):
+        html = (
+            "<article><p>" + "Example follows. " * 20 + "</p>"
+            "<div class='highlight-python3'><div class='highlight'><pre>"
+            "<span class='linenos'>1</span>async def main():\n"
+            "    if ready:\n        await run()\n</pre></div></div>"
+            "<p>Call <code>asyncio.run(main())</code> once.</p></article>"
+        )
+        got = extract_page(html, content_type="text/html")
+        self.assertIn("```python3\nasync def main():\n    if ready:\n        await run()\n```", got.text)
+        self.assertIn("Call `asyncio.run(main())` once.", got.text)
+
+    def test_data_table_is_markdown_and_layout_table_is_not(self):
+        html = (
+            "<article><p>" + "Prices below. " * 20 + "</p><table><thead><tr><th>Model</th><th>Input</th></tr></thead>"
+            "<tbody><tr><td>grok-4.7</td><td>$2 | cached $0.5</td></tr><tr><td>glm-5</td><td>$1</td></tr></tbody></table>"
+            "<table><tr><td><b>Site</b> new | past</td></tr></table></article>"
+        )
+        got = extract_page(html, content_type="text/html")
+        self.assertIn("| Model | Input |\n| --- | --- |\n| grok-4.7 | $2 \\| cached $0.5 |", got.text)
+        self.assertIn("Site new | past", got.text)
+
+    def test_table_row_cap_says_rows_were_omitted(self):
+        rows = "".join(f"<tr><td>r{i}</td><td>v{i}</td></tr>" for i in range(TABLE_MAX_ROWS + 5))
+        got = extract_page(f"<article><table>{rows}</table></article>", content_type="text/html")
+        self.assertIn("(… 5 more table rows not shown)", got.text)
+
+    def test_lists_number_and_nest(self):
+        html = "<article><ol start=3><li>three<ul><li>inner</li></ul></li><li>four</li></ol>" + "<p>pad</p>" * 30 + "</article>"
+        got = extract_page(html, content_type="text/html")
+        self.assertIn("3. three\n   - inner\n4. four", got.text)
+
+    def test_definition_lists_keep_term_and_description(self):
+        html = "<article><dl><dt><code>callbackFn</code></dt><dd><p>A function to run.</p></dd></dl>" + "<p>x</p>" * 40 + "</article>"
+        got = extract_page(html, content_type="text/html")
+        self.assertIn("`callbackFn`\n: A function to run.", got.text)
+
+    def test_citation_markers_hidden_text_and_screen_reader_chrome_dropped(self):
+        html = (
+            "<article><p>Spain won the final.<sup class='reference'><a href='#c1'>[3]</a></sup></p>"
+            "<p hidden>secret hidden text</p><span class='sr-only'>Skip to content</span>"
+            "<div style='display: none'>invisible</div>" + "<p>more body text here</p>" * 20 + "</article>"
+        )
+        got = extract_page(html, content_type="text/html")
+        self.assertIn("Spain won the final.", got.text)
+        self.assertNotIn("[3]", got.text)
+        for junk in ("secret hidden text", "Skip to content", "invisible"):
+            self.assertNotIn(junk, got.text)
+
+    def test_listing_of_article_cards_keeps_the_list(self):
+        cards = "".join(f"<article><h2>Story {i}</h2><p>Teaser for story number {i} here.</p></article>" for i in range(6))
+        got = extract_page(f"<body><main>{cards}</main></body>", content_type="text/html")
+        for i in range(6):
+            self.assertIn(f"## Story {i}", got.text)
+
+    def test_published_date_from_meta_and_json_ld(self):
+        meta = "<head><meta property='article:published_time' content='2026-09-09T10:00:00Z'></head>"
+        got = extract_page(f"<html>{meta}<body><article><p>{'Body. ' * 50}</p></article></body></html>")
+        self.assertEqual(got.published, "2026-09-09")
+        ld = json.dumps({"@type": "NewsArticle", "headline": "H", "datePublished": "2026-10-01"})
+        got = extract_page(f"<html><head><script type='application/ld+json'>{ld}</script></head><body><article><p>{'Body. ' * 50}</p></article></body></html>")
+        self.assertEqual(got.published, "2026-10-01")
+
+    def test_outline_lists_headings_with_offsets_but_not_code_comments(self):
+        text = "# Title\n\nintro\n\n```python\n# not a heading\n```\n\n## Install\n\nsteps"
+        got = extract_page(text, content_type="text/markdown")
+        self.assertEqual([(lvl, title) for _, lvl, title in got.outline], [(1, "Title"), (2, "Install")])
+        install_at = got.outline[1][0]
+        self.assertTrue(got.full_text[install_at:].startswith("## Install"))
+
+    def test_plain_text_and_markdown_keep_their_lines(self):
+        text = "line one\n    indented code\n\n\n\n\nlast line   \n"
+        got = extract_page(text, content_type="text/plain")
+        self.assertEqual(got.text, "line one\n    indented code\n\n\nlast line")
+
+    def test_rss_feed_becomes_a_dated_list(self):
+        feed = (
+            "<?xml version='1.0'?><rss><channel><title>Release feed</title>"
+            "<item><title>v2.0 released</title><link>https://example.test/v2</link>"
+            "<pubDate>Mon, 12 Oct 2026 09:00:00 GMT</pubDate><description>&lt;p&gt;Big &amp;amp; fast&lt;/p&gt;</description></item>"
+            "</channel></rss>"
+        )
+        got = extract_page(feed, content_type="application/rss+xml")
+        self.assertIn("# Release feed", got.text)
+        self.assertIn("- v2.0 released (Mon, 12 Oct 2026 09:00:00 GMT)", got.text)
+        self.assertIn("https://example.test/v2", got.text)
+        self.assertNotIn("<item>", got.text)
+
+    def test_nested_junk_elements_are_removed_safely(self):
+        # Freeing a nested match after its parent subtree must never happen.
+        html = "<article><template><template><p>x</p></template></template><object><object>y</object></object>" + "<p>body</p>" * 50 + "</article>"
+        got = extract_page(html, content_type="text/html")
+        self.assertIn("body", got.text)
+        self.assertNotIn("x\n", got.text[:3])
+
+    def test_query_passages_carry_offsets_to_read_on(self):
+        text = "# Setup\n\n" + "Install the package. " * 40 + "\n\n# Recovery\n\nRestore the replica from a verified backup."
+        out = select_passages(text, query="restoring backups")
+        self.assertIn("# Recovery", out)
+        offset = int(out.split("[offset ", 1)[1].split("]", 1)[0])
+        self.assertIn("Restore the replica", text[offset:offset + 200])
+
+    def test_best_excerpt_prefers_relevant_passage_else_opening(self):
+        from app.search.extract import best_excerpt
+
+        text = "# Intro\n\nGeneral words about the product.\n\n# Pricing\n\nThe pro plan costs $20 per month."
+        self.assertIn("$20 per month", best_excerpt(text, "pro plan price per month", 500))
+        self.assertTrue(best_excerpt(text, "zzz unrelated", 40).startswith("# Intro"))
 
 
 class HostileInputTest(unittest.TestCase):

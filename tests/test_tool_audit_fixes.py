@@ -164,9 +164,13 @@ class ReadResultClipTest(unittest.TestCase):
     def test_other_tool_budgets_fit_runtime_clip(self):
         self.assertLess(ws._SEARCH_OUT_CHARS + 2000, runtime.TOOL_RESULT_CHARS)
         self.assertLess(jobs.OUT_HEAD_CHARS + jobs.MODEL_TAIL_CHARS + 1000, runtime.TOOL_RESULT_CHARS)
+        from app.chat_generation import tool_jobs
         from app.search.pack import PAGE_BUDGET
 
-        self.assertLess(PAGE_BUDGET, runtime.TOOL_RESULT_CHARS)
+        # read_url has its own clip: a page window is larger than other tools'
+        # results and its continue-footer must survive.
+        self.assertLess(PAGE_BUDGET, tool_jobs.WEB_PAGE_RESULT_CHARS)
+        self.assertEqual(tool_jobs._tool_result_clip("read_url", "x" * PAGE_BUDGET), "x" * PAGE_BUDGET)
 
 
 class SftpReadTest(unittest.IsolatedAsyncioTestCase):

@@ -209,6 +209,27 @@
         "document.",
         "display:none"
       ]
+    },
+    {
+      "name": "electron_releases",
+      "file": "electron_releases.html",
+      "url": "https://www.electronjs.org/docs/latest/tutorial/electron-timelines",
+      "host": "www.electronjs.org",
+      "content_type": "text/html",
+      "expect_kind": "html",
+      "code_samples": false,
+      "truncated": false,
+      "min_chars_out": 1000,
+      "must_contain": [
+        "Electron frequently releases major versions",
+        "Electron's official support policy is the latest 3 stable releases",
+        "cadence between major version releases is 8 weeks long"
+      ],
+      "must_not_contain": [
+        "docMainContainer",
+        "Skip to main content",
+        "Edit this page"
+      ]
     }
   ]
 }

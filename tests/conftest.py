@@ -31,6 +31,19 @@ def _close_db_handle(db):
 
 
 @pytest.fixture(autouse=True, scope="session")
+def _no_search_time_page_reads():
+    """web_search reads its top result pages for excerpts; tests fake the
+    search client, not the page fetcher, so those reads would leave the
+    machine. Tests of the excerpt step opt back in by patching the setting."""
+    from app.config import settings
+
+    saved = settings.web_search_excerpt_pages
+    settings.web_search_excerpt_pages = 0
+    yield
+    settings.web_search_excerpt_pages = saved
+
+
+@pytest.fixture(autouse=True, scope="session")
 def _sweep_stale_fixture_schemas():
     """Drop fuse_fixture_* schemas left behind by killed runs (best effort)."""
     sweep_stale_schemas()

@@ -12,8 +12,9 @@ CLIENT_DEFAULT_TIMEOUT = httpx.Timeout(10.0, connect=1.5)
 TIMEOUT_BRAVE = httpx.Timeout(2.5, connect=1.5)
 TIMEOUT_WIKI = httpx.Timeout(2.0, connect=1.5)
 TIMEOUT_DDG = httpx.Timeout(5.0, connect=1.5)
-TIMEOUT_FETCH = httpx.Timeout(6.0, connect=1.5)
-PROVIDER_BODY_MAX = 262_144
+TIMEOUT_FETCH = httpx.Timeout(8.0, connect=3.0)
+# Yahoo puts its first result 260-370 KB into the page, after inline CSS/JS.
+PROVIDER_BODY_MAX = 1_048_576
 # Hard ceiling on what one response may put in memory, decoded. Callers keep
 # their own smaller caps; this one guards the paths that buffer (client.get)
 # and compressed bodies, which httpx would otherwise inflate without limit.
@@ -106,15 +107,29 @@ class CappedTransport(httpx.AsyncBaseTransport):
         await self._inner.aclose()
 
 
-def _new_client(*, cookies) -> httpx.AsyncClient:
+def _new_client(*, cookies, max_bytes: int = TRANSPORT_BODY_MAX, reuse: bool = True) -> httpx.AsyncClient:
+    # gzip/deflate are inflated by CappedTransport under max_bytes, so
+    # compression is safe to ask for and cuts transfer roughly tenfold.
+    inner = None if reuse else httpx.AsyncHTTPTransport(limits=httpx.Limits(max_keepalive_connections=0))
     return httpx.AsyncClient(
         timeout=CLIENT_DEFAULT_TIMEOUT,
         follow_redirects=False,
         http2=False,
         cookies=cookies,
-        headers={"Accept-Encoding": "identity"},
-        transport=CappedTransport(),
+        headers={"Accept-Encoding": "gzip, deflate"},
+        transport=CappedTransport(max_bytes, inner=inner),
     )
+
+
+def _new_fetch_client() -> httpx.AsyncClient:
+    from .extract import PDF_MAX_BYTES
+
+    # read_url streams and caps each document itself (HTML/text and PDF
+    # limits differ); this is the outer bound. Requests go to a pinned IP, so
+    # the pool would key connections by IP and hand a TLS session opened for
+    # one site to another site behind the same CDN address (HTTP 421
+    # Misdirected Request): no keep-alive for page reads.
+    return _new_client(cookies=_NoCookies(), max_bytes=PDF_MAX_BYTES + 1, reuse=False)
 
 
 def start_client() -> httpx.AsyncClient:
@@ -122,7 +137,7 @@ def start_client() -> httpx.AsyncClient:
     if _search_client is None or _search_client.is_closed:
         _search_client = _new_client(cookies=httpx.Cookies())
     if _fetch_client is None or _fetch_client.is_closed:
-        _fetch_client = _new_client(cookies=_NoCookies())
+        _fetch_client = _new_fetch_client()
     return _search_client
 
 
@@ -146,7 +161,7 @@ def get_client() -> httpx.AsyncClient:
 def get_fetch_client() -> httpx.AsyncClient:
     global _fetch_client
     if _fetch_client is None or _fetch_client.is_closed:
-        _fetch_client = _new_client(cookies=_NoCookies())
+        _fetch_client = _new_fetch_client()
     return _fetch_client
 
 

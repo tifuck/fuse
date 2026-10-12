@@ -33,6 +33,9 @@ SKILL_RESULT_CHARS = 32_000
 # the "Use offset=N to continue" footer; the safety clip must sit above that
 # budget or the footer is cut off mid-line.
 READ_RESULT_CHARS = 56_000
+# read_url windows (search.pack.PAGE_BUDGET: one extract window plus outline
+# and window links) must reach the model with their continue-footer intact.
+WEB_PAGE_RESULT_CHARS = 32_000
 # Subagent reports must reach the parent whole (chats.CONTENT_MAX plus the
 # task-envelope wrapper). Auto-compaction, not a byte cap, handles overflow.
 SUBAGENT_RESULT_CHARS = 120_000
@@ -104,6 +107,8 @@ def _tool_result_clip(name: str, text: str) -> str:
         limit = SUBAGENT_RESULT_CHARS
     elif name == "read_file":
         limit = READ_RESULT_CHARS
+    elif name == "read_url":
+        limit = WEB_PAGE_RESULT_CHARS
     else:
         limit = SKILL_RESULT_CHARS if name == "load_skill" else TOOL_RESULT_CHARS
     text = text or ""

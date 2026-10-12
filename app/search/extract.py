@@ -1,96 +1,102 @@
 from __future__ import annotations
 
-import html as html_lib
 import json
 import logging
 import re
 import time
 from dataclasses import dataclass, field
-from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse, urlunparse
+
+from selectolax.lexbor import LexborHTMLParser
+
+from .text import bm25_scores, terms
 
 logger = logging.getLogger(__name__)
 
-FETCH_MAX_BYTES = 512_000
-# One page of extracted text per read_url call; pass offset to continue.
-FETCH_CHARS = 16_000
+# Decoded bytes read from one page. Lexbor builds the HTML5 tree of a
+# multi-megabyte page in milliseconds, so this only bounds memory: a 2.7 MB
+# Wikipedia article or a 2 MB docs page now arrives whole instead of losing
+# everything after its inline bundles.
+FETCH_MAX_BYTES = 6_000_000
+PDF_MAX_BYTES = 16_000_000
+# One window of extracted text per read_url call; pass offset to continue.
+FETCH_CHARS = 24_000
 FIND_MAX_CHARS = 80
-FIND_WINDOW = 400
 FIND_MAX_MATCHES = 8
-JSON_CHARS = 16_000
-CODE_BLOCK_CHARS = 1_200
-TABLE_MAX_ROWS = 20
-MAX_LINKS = 40
-PASSAGE_CHARS = 1_000
-PASSAGE_MAX = 6
+JSON_CHARS = FETCH_CHARS
+CODE_BLOCK_CHARS = 20_000
+TABLE_MAX_ROWS = 150
+TABLE_CELL_CHARS = 300
+TABLE_MAX_COLS = 30
+MAX_LINKS = 400
+PASSAGE_CHARS = 1_200
+PASSAGE_MAX = 8
 MIN_MAIN_CHARS = 200
 SPA_MIN_CHARS = 80
+RENDER_MAX_DEPTH = 150
+FEED_MAX_ITEMS = 100
 
-SKIP_TAGS = frozenset(
+# Removed with their whole subtree before anything is read.
+JUNK_TAGS = (
+    "script", "style", "noscript", "template", "svg", "canvas", "iframe", "object",
+    "embed", "link", "meta", "base", "head", "dialog", "video", "audio", "map",
+    "input", "select", "textarea", "button", "option",
+)
+JUNK_SET = frozenset(JUNK_TAGS)
+CHROME_TAGS = frozenset({"nav", "footer"})
+CHROME_ROLES = frozenset(
+    {"navigation", "banner", "contentinfo", "complementary", "search", "menu", "menubar",
+     "toolbar", "tablist", "dialog", "alertdialog"}
+)
+# Exact class/id tokens of site furniture (nav, cookie banners, share bars,
+# screen-reader-only "Skip to content", Wikipedia edit links, heading anchors).
+_CHROME_TOKEN = re.compile(
+    r"^(?:nav|navbar|navbox|navigation|menu|menubar|sidebar|side-bar|sidenav|"
+    r"breadcrumbs?|toc|table-of-contents|site-footer|site-header|footer|masthead|"
+    r"cookies?|cookie-?\w*|\w*-cookies?|\w*consent\w*|gdpr\w*|share|sharing|share-\w+|"
+    r"social|social-\w+|newsletter|subscribe|related|related-\w+|recommended|promo|"
+    r"advert\w*|ads|ad-slot|ad-container|banner-ad|skip-?links?|skip-to-content|"
+    r"sr-only|visually-hidden|screen-reader-text|mw-editsection|mw-jump-link|catlinks|"
+    r"printfooter|noprint|hatnote|announcement-?bar|edit-this-page|"
+    r"vector-(?:header|toc|menu|main-menu|dropdown|page-toolbar|page-titlebar-toc|column-start|column-end|sticky-header|pinned-container|user-links|appearance)[\w-]*|"
+    r"theme-edit-this-page|pagination-nav|headerlink|hash-link|anchor-link|heading-anchor|"
+    r"linenos|lineno|line-numbers-rows|gutter)$"
+)
+_CALLOUT_TOKEN = re.compile(r"note|callout|admonition|warning|tip|info|alert|important|caution")
+MAIN_SELECTOR = ", ".join(
+    [
+        "article", "main", "[role=main]", "[itemprop=articleBody]", "#content",
+        "#main-content", "#main", "#mw-content-text", ".markdown-body", ".post-content",
+        ".entry-content", ".article-content", ".article-body", ".post-body", ".prose",
+        ".theme-doc-markdown", ".md-content", ".rst-content", "div.body", "#readme",
+    ]
+)
+BLOCK_TAGS = frozenset(
     {
-        "script",
-        "style",
-        "noscript",
-        "svg",
-        "iframe",
-        "object",
-        "embed",
-        "template",
-        "canvas",
-        "link",
+        "address", "article", "aside", "blockquote", "body", "caption", "center", "dd",
+        "details", "div", "dl", "dt", "fieldset", "figcaption", "figure", "footer", "form",
+        "h1", "h2", "h3", "h4", "h5", "h6", "header", "hgroup", "hr", "html", "legend", "li",
+        "main", "menu", "nav", "ol", "p", "pre", "search", "section", "summary", "table",
+        "tbody", "td", "tfoot", "th", "thead", "tr", "ul",
     }
 )
-CHROME_TAGS = frozenset({"nav", "footer", "aside", "form", "button", "input", "select"})
-VOID_TAGS = frozenset(
-    {
-        "area",
-        "base",
-        "br",
-        "col",
-        "embed",
-        "hr",
-        "img",
-        "input",
-        "link",
-        "meta",
-        "param",
-        "source",
-        "track",
-        "wbr",
-    }
+HEADING_LEVEL = {"h1": 1, "h2": 2, "h3": 3, "h4": 4, "h5": 5, "h6": 6}
+_ARTICLE_TYPES = frozenset({"article", "newsarticle", "techarticle", "blogposting", "report", "scholarlyarticle"})
+_PUBLISHED_META = frozenset(
+    {"article:published_time", "date", "pubdate", "publishdate", "datepublished", "dc.date",
+     "dcterms.created", "citation_publication_date", "parsely-pub-date", "sailthru.date"}
 )
-# skip-marked void elements never carry a closing tag, so they must not
-# enter the skip counter (a bare <link> in the body would otherwise
-# swallow the rest of the document)
-VOID_SKIP_TAGS = frozenset({"link", "embed", "meta"})
-STACK_MAX = 64
-CHROME_ROLES = frozenset({"navigation", "banner", "contentinfo", "complementary", "search"})
-MAIN_TAGS = frozenset({"article", "main"})
-MAIN_IDS = frozenset({"content", "main-content", "main"})
-MAIN_CLASSES = frozenset({"post-content", "entry-content", "markdown-body", "prose"})
-BLOCK_TAGS = frozenset({"p", "div", "section", "li", "blockquote", "pre", "h1", "h2", "h3", "h4", "h5", "h6", "tr"})
-HEADING_TAGS = {"h1": "#", "h2": "##", "h3": "###", "h4": "####", "h5": "#####", "h6": "######"}
-
-_TITLE_RE = re.compile(r"(?is)<title[^>]*>(.*?)</title>")
-_META_RE = re.compile(r"(?is)<meta\s+([^>]+)/?>")
-_ATTR_RE = re.compile(r"""(?is)([^\s=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?""")
-_LD_RE = re.compile(r"(?is)<script[^>]*type\s*=\s*['\"]application/ld\+json['\"][^>]*>(.*?)</script>")
-_TAG_RE = re.compile(r"(?is)<[^>]+>")
-_WS_RE = re.compile(r"[ \t\x0b\x0c]+")
+_MODIFIED_META = frozenset({"article:modified_time", "og:updated_time", "datemodified", "dcterms.modified", "last-modified"})
+_LANG_RE = re.compile(r"(?:^|\s)(?:language|lang|highlight-source|highlight|brush:?)-([a-z0-9_+#.-]+)", re.I)
+_BR = " "  # <br> marker inside inline runs; never appears in page text we keep
+_INLINE_WS = re.compile(r"[ \t\n\r\f\v ​‌‍﻿]+")
 _MULTI_NL = re.compile(r"\n{3,}")
-_BLANK_LINE_RE = re.compile(r"\n[ \t]+(?=\n)")
-_ARTICLE_TYPES = frozenset({"article", "newsarticle", "techarticle", "blogposting"})
-_ARTICLE_HEADER_CLASSES = frozenset(
-    {"article-header", "article__header", "entry-header", "post-header", "story-header"}
-)
-_WORD_RE = re.compile(r"[\w'-]+", re.UNICODE)
-_STOP_WORDS = frozenset(
-    {
-        "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "how",
-        "in", "is", "it", "of", "on", "or", "that", "the", "this", "to", "was",
-        "what", "when", "where", "which", "who", "why", "with",
-    }
-)
+_TRAILING_WS = re.compile(r"[ \t]+\n")
+_HEADING_TRAIL = re.compile(r"\s*[¶#🔗§]+\s*$")
+_CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_OUTLINE_RE = re.compile(r"^(#{1,6}) (.+)$")
+_FENCE_RE = re.compile(r"^(```|~~~)")
+_CITATION = re.compile(r"\[[^\]\n]{1,24}\]")
 
 
 @dataclass
@@ -102,7 +108,7 @@ class PageExtract:
     used_find: bool
     chars_in: int
     chars_out: int
-    links: list[dict[str, str]] = field(default_factory=list)
+    links: list[dict] = field(default_factory=list)
     # Paging over the full extracted text (plain page mode only; find/query
     # passages are not paged). total_chars is the extracted length.
     offset: int = 0
@@ -114,6 +120,12 @@ class PageExtract:
     # Complete extracted text, unwindowed; kept for cached find/query/offset
     # re-reads so callers never need the raw body again. Not serialized.
     full_text: str = field(default="", repr=False)
+    # Publication / last-modified date the page declares (ISO date when known).
+    published: str = ""
+    # The download stopped at the byte cap, so the page itself is incomplete.
+    download_truncated: bool = False
+    # (offset, level, heading) for every heading in full_text.
+    outline: list[tuple[int, int, str]] = field(default_factory=list, repr=False)
 
 
 @dataclass(frozen=True)
@@ -124,49 +136,72 @@ class _Passage:
     heading: str = ""
 
 
-def _attr_map(raw: str) -> dict[str, str]:
-    out: dict[str, str] = {}
-    for match in _ATTR_RE.finditer(raw or ""):
-        key = (match.group(1) or "").lower()
-        val = match.group(2) or match.group(3) or match.group(4) or ""
-        out[key] = html_lib.unescape(val)
+# --- metadata ----------------------------------------------------------------
+
+
+def _norm_inline(text: str) -> str:
+    lines = (text or "").split(_BR)
+    out = [_INLINE_WS.sub(" ", line).strip() for line in lines]
+    joined = "\n".join(out)
+    return _MULTI_NL.sub("\n\n", joined).strip()
+
+
+def _date_of(value: str) -> str:
+    value = (value or "").strip()
+    match = re.match(r"(\d{4}-\d{2}-\d{2})", value)
+    return match.group(1) if match else value[:40]
+
+
+def _ld_nodes(data) -> list[dict]:
+    nodes = data if isinstance(data, list) else [data]
+    out: list[dict] = []
+    for node in nodes:
+        if isinstance(node, dict) and isinstance(node.get("@graph"), list):
+            out.extend(item for item in node["@graph"] if isinstance(item, dict))
+        elif isinstance(node, dict):
+            out.append(node)
     return out
 
 
-def _strip_tags(text: str) -> str:
-    text = html_lib.unescape(_TAG_RE.sub(" ", text or ""))
-    return re.sub(r"\s+", " ", text).strip()
+def _ld_article(raw: str) -> dict:
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, ValueError, RecursionError):
+        return {}
+    best: dict = {}
+    for node in _ld_nodes(data):
+        types = node.get("@type")
+        if isinstance(types, str):
+            types = [types]
+        if not isinstance(types, list) or not any(str(t).lower() in _ARTICLE_TYPES for t in types):
+            continue
+        found = {
+            "headline": _norm_inline(str(node.get("headline") or ""))[:200],
+            "published": _date_of(str(node.get("datePublished") or "")),
+            "modified": _date_of(str(node.get("dateModified") or "")),
+            "body": "",
+        }
+        body = node.get("articleBody")
+        if isinstance(body, str) and body.strip():
+            found["body"] = _clean_fragment(body)
+        if len(found["body"]) >= len(best.get("body", "")) or not best:
+            best = found
+    return best
 
 
-def _meta_content(attrs: dict[str, str]) -> str:
-    return (attrs.get("content") or "").strip()
-
-
-_TITLE_CLOSE = re.compile(r"(?i)</title>")
-_SCRIPT_CLOSE = re.compile(r"(?i)</script>")
-
-
-def _last_end(closer: re.Pattern, text: str) -> int:
-    end = 0
-    for match in closer.finditer(text):
-        end = match.end()
-    return end
-
-
-def _collect_metadata(raw: str) -> dict[str, str]:
-    prefix = raw[:80_000]
-    meta = {"title": "", "description": "", "og_title": "", "og_description": "", "ld_headline": "", "ld_body": ""}
-    # Scan each pattern only up to its last closer: an opener with no closer
-    # after it would otherwise rescan the rest of the page (quadratic in the
-    # number of openers; seconds of CPU on an 80 KB page).
-    title_m = _TITLE_RE.search(prefix[: _last_end(_TITLE_CLOSE, prefix)])
-    if title_m:
-        meta["title"] = _strip_tags(title_m.group(1))[:200]
-    for tag in _META_RE.finditer(prefix[: prefix.rfind(">") + 1]):
-        attrs = _attr_map(tag.group(1))
-        name = (attrs.get("name") or "").lower()
+def _metadata(tree: LexborHTMLParser) -> dict[str, str]:
+    meta = {
+        "title": "", "og_title": "", "description": "", "og_description": "", "published": "",
+        "modified": "", "site": "", "ld_headline": "", "ld_body": "",
+    }
+    title = tree.css_first("title")
+    if title is not None:
+        meta["title"] = _norm_inline(title.text())[:200]
+    for node in tree.css("meta"):
+        attrs = node.attributes
+        name = (attrs.get("name") or attrs.get("itemprop") or "").lower()
         prop = (attrs.get("property") or "").lower()
-        content = _meta_content(attrs)
+        content = (attrs.get("content") or "").strip()
         if not content:
             continue
         if name == "description" and not meta["description"]:
@@ -175,239 +210,153 @@ def _collect_metadata(raw: str) -> dict[str, str]:
             meta["og_title"] = content[:200]
         if prop == "og:description" and not meta["og_description"]:
             meta["og_description"] = content[:400]
-    for block in _LD_RE.finditer(prefix[: _last_end(_SCRIPT_CLOSE, prefix)]):
-        body, headline = _ld_article(block.group(1))
-        if body and len(body) > len(meta["ld_body"]):
-            meta["ld_body"] = body
-            meta["ld_headline"] = headline
+        if prop == "og:site_name" and not meta["site"]:
+            meta["site"] = content[:100]
+        if (prop in _PUBLISHED_META or name in _PUBLISHED_META) and not meta["published"]:
+            meta["published"] = _date_of(content)
+        if (prop in _MODIFIED_META or name in _MODIFIED_META) and not meta["modified"]:
+            meta["modified"] = _date_of(content)
+    for node in tree.css("script"):
+        if (node.attributes.get("type") or "").strip().lower() != "application/ld+json":
+            continue
+        found = _ld_article(node.text() or "")
+        if not found:
+            continue
+        if len(found["body"]) > len(meta["ld_body"]):
+            meta["ld_body"] = found["body"]
+            meta["ld_headline"] = found["headline"]
+        meta["published"] = meta["published"] or found["published"]
+        meta["modified"] = meta["modified"] or found["modified"]
     return meta
 
 
-def _ld_article(raw: str) -> tuple[str, str]:
-    try:
-        data = json.loads(raw)
-    except (json.JSONDecodeError, ValueError, RecursionError):
-        return "", ""
-    nodes = data if isinstance(data, list) else [data]
-    if isinstance(data, dict) and isinstance(data.get("@graph"), list):
-        nodes = data["@graph"]
-    best_body, best_head = "", ""
-    for node in nodes:
-        if not isinstance(node, dict):
-            continue
-        types = node.get("@type")
-        if isinstance(types, str):
-            types = [types]
-        if not isinstance(types, list):
-            continue
-        if not any(str(t).lower() in _ARTICLE_TYPES for t in types):
-            continue
-        body = node.get("articleBody")
-        if not isinstance(body, str) or not body.strip():
-            continue
-        body = _clean_fragment(body)
-        headline = _strip_tags(str(node.get("headline") or ""))[:200]
-        if len(body) > len(best_body):
-            best_body, best_head = body, headline
-    return best_body, best_head
+# --- cleanup and main-content choice -------------------------------------------
 
 
-class _Node:
-    __slots__ = (
-        "tag", "ident", "classes", "role", "itemprop", "href", "parts", "link_chars",
-        "is_chrome", "is_main",
-    )
-
-    def __init__(self, tag: str, attrs: list[tuple[str, str | None]], *, in_article: bool = False):
-        ad = {k.lower(): (v or "") for k, v in attrs}
-        self.tag = tag
-        self.ident = (ad.get("id") or "").lower()
-        self.classes = set((ad.get("class") or "").lower().split())
-        self.role = (ad.get("role") or "").lower()
-        self.itemprop = (ad.get("itemprop") or "").lower()
-        self.href = (ad.get("href") or "").strip()
-        self.parts: list[str] = []
-        self.link_chars = 0
-        self.is_chrome = (
-            tag in CHROME_TAGS
-            or (
-                tag == "header"
-                and not in_article
-                and not bool(self.classes & _ARTICLE_HEADER_CLASSES)
-                and self.itemprop not in {"headline", "author", "datepublished", "datemodified"}
-            )
-            or self.role in CHROME_ROLES
-            or "cookie" in self.ident
-            or "cookie" in self.classes
-        )
-        self.is_main = (
-            tag in MAIN_TAGS
-            or self.ident in MAIN_IDS
-            or bool(self.classes & MAIN_CLASSES)
-            or self.role == "main"
-            or self.itemprop == "articlebody"
-        )
-
-    def text(self) -> str:
-        return "".join(self.parts)
+def _is_chrome(tag: str, attrs: dict) -> bool:
+    if tag in CHROME_TAGS:
+        return True
+    if (attrs.get("role") or "").lower() in CHROME_ROLES:
+        return True
+    tokens = f"{attrs.get('class') or ''} {attrs.get('id') or ''}".lower().split()
+    if tag == "aside":
+        return not any(_CALLOUT_TOKEN.search(token) for token in tokens)
+    return any(_CHROME_TOKEN.match(token) for token in tokens)
 
 
-class _ContentParser(HTMLParser):
-    def __init__(self, *, base_url: str = "") -> None:
-        super().__init__(convert_charrefs=True)
-        self.skip = 0
-        self.in_head = 0
-        self.stack: list[_Node] = []
-        self.candidates: list[_Node] = []
-        self.body_parts: list[str] = []
-        self.anchor = 0
-        self.in_pre = 0
-        self.in_code = 0
-        self.table_rows: dict[_Node, int] = {}
-        self.row_cells: list[str] = []
-        self.in_td = 0
-        self.base_url = base_url
-        self.links: list[dict[str, str]] = []
-        self._link_urls: set[str] = set()
+def _is_hidden(attrs: dict) -> bool:
+    if "hidden" in attrs or (attrs.get("aria-hidden") or "").lower() == "true":
+        return True
+    style = (attrs.get("style") or "").replace(" ", "").lower()
+    return "display:none" in style or "visibility:hidden" in style
 
-    def handle_starttag(self, tag, attrs):
-        tag = tag.lower()
-        if tag == "head":
-            self.in_head += 1
-            return
-        if self.in_head:
-            return
-        if tag in SKIP_TAGS:
-            if tag not in VOID_SKIP_TAGS:
-                self.skip += 1
-            return
-        if self.skip:
-            return
-        if tag == "br":
-            self._emit("\n")
-            return
-        if tag == "img":
-            alt = ""
-            for k, v in attrs:
-                if k.lower() == "alt" and v:
-                    alt = v.strip()
-                    break
-            if alt:
-                self._emit(alt + " ")
-            return
-        if tag in VOID_TAGS:
-            return
-        if tag == "a":
-            self.anchor += 1
-        if tag in ("pre",):
-            self.in_pre += 1
-        if tag == "code" and not self.in_pre:
-            self.in_code += 1
-        if tag == "tr":
-            self.row_cells = []
-        if tag in ("td", "th"):
-            self.in_td += 1
-        if len(self.stack) >= STACK_MAX:
-            return
-        node = _Node(
-            tag,
-            attrs,
-            in_article=any(n.tag == "article" or n.itemprop == "articlebody" for n in self.stack),
-        )
-        self.stack.append(node)
-        if tag == "table":
-            self.table_rows[node] = 0
 
-    def handle_endtag(self, tag):
-        tag = tag.lower()
-        if tag == "head" and self.in_head:
-            self.in_head -= 1
-            return
-        if self.in_head:
-            return
-        if tag in SKIP_TAGS and self.skip and tag not in VOID_SKIP_TAGS:
-            self.skip -= 1
-            return
-        if self.skip:
-            return
-        if tag == "a" and self.anchor:
-            self.anchor -= 1
-        if tag == "pre" and self.in_pre:
-            self.in_pre -= 1
-        if tag == "code" and self.in_code and not self.in_pre:
-            self.in_code -= 1
-        if tag in ("td", "th") and self.in_td:
-            self.in_td -= 1
-            cell = ""
-            if self.stack and self.stack[-1].tag in ("td", "th"):
-                cell = re.sub(r"\s+", " ", self.stack[-1].text()).strip()
-            if cell:
-                self.row_cells.append(cell)
-        row_line: str | None = None
-        if tag == "tr" and self.row_cells:
-            table = next((node for node in reversed(self.stack) if node.tag == "table"), None)
-            count = self.table_rows.get(table, 0) if table else 0
-            if table is None or count < TABLE_MAX_ROWS:
-                if table is not None:
-                    self.table_rows[table] = count + 1
-                row_line = " | ".join(self.row_cells)
-            self.row_cells = []
-        if not self.stack:
-            return
-        if self.stack[-1].tag != tag:
-            return
-        node = self.stack.pop()
-        self._finish_node(node, row_line=row_line)
-        if tag == "table":
-            self.table_rows.pop(node, None)
+def _text_len(node) -> int:
+    return len(_INLINE_WS.sub(" ", node.text(deep=True) or "").strip())
 
-    def _finish_node(self, node: _Node, *, row_line: str | None = None) -> None:
+
+def _remove(root, judge) -> None:
+    """Decompose every element judge() picks, never descending into one.
+
+    Collecting nested matches first and freeing them in order would free a
+    child after its parent subtree is already gone.
+    """
+    doomed = []
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        for child in node.iter():
+            if judge(child):
+                doomed.append(child)
+            else:
+                stack.append(child)
+    for node in doomed:
+        node.decompose()
+
+
+def _strip_junk(root) -> None:
+    _remove(root, lambda node: node.tag in JUNK_SET)
+
+
+def _prune(body) -> None:
+    """Drop hidden nodes and site chrome, but never a wrapper of the content."""
+    total = max(1, _text_len(body))
+
+    def judge(node) -> bool:
         tag = node.tag
-        prefix = HEADING_TAGS.get(tag)
-        text = node.text()
-        if tag == "tr" and row_line is not None:
-            # the flattened row replaces the raw cell text, which would
-            # otherwise show up twice (once plain, once "a | b | c")
-            node.parts = ["\n" + row_line + "\n\n"]
-            text = "".join(node.parts)
-        elif tag == "tr":
-            # Each table is capped independently. Excess rows are omitted
-            # rather than leaking their unflattened cell text.
-            node.parts = []
-            text = ""
-        elif prefix and text.strip():
-            heading = f"\n{prefix} {text.strip()[:200]}\n"
-            node.parts = [heading]
-            text = heading
-        elif tag == "li":
-            body = text.strip()
-            node.parts = [f"\n- {body}\n"] if body else []
-            text = "".join(node.parts)
-        elif tag == "pre":
-            body = text[:CODE_BLOCK_CHARS]
-            node.parts = [f"\n{body}\n"]
-            text = "".join(node.parts)
-        elif tag in BLOCK_TAGS:
-            node.parts = [text.strip() + "\n\n"] if text.strip() else []
-            text = "".join(node.parts)
-        if tag == "a" and node.href and not any(parent.is_chrome for parent in self.stack):
-            self._collect_link(node.href, re.sub(r"\s+", " ", text).strip())
-        if node.is_main and not node.is_chrome:
-            self.candidates.append(node)
-        if node.is_chrome:
-            # drop nav/header/footer/aside/form/cookie subtrees entirely;
-            # their text nested in lists would otherwise leak into the page
-            return
-        if self.stack:
-            self.stack[-1].parts.extend(node.parts)
-            self.stack[-1].link_chars += node.link_chars
+        attrs = node.attributes
+        if tag == "header":
+            chrome = not _inside_content(node)
+        elif tag == "form":
+            return _text_len(node) < 0.5 * total and node.css_first("article, main, [role=main]") is None
         else:
-            self.body_parts.extend(node.parts)
+            chrome = _is_hidden(attrs) or _is_chrome(tag, attrs)
+        if not chrome:
+            return False
+        if node.css_first("article, main, [role=main]") is not None:
+            return False
+        return _text_len(node) <= 0.4 * total
 
-    def _collect_link(self, href: str, label: str) -> None:
-        if len(self.links) >= MAX_LINKS:
+    _remove(body, judge)
+
+
+def _inside_content(node) -> bool:
+    parent = node.parent
+    while parent is not None and parent.tag not in ("body", "html"):
+        if parent.tag in ("article", "main") or (parent.attributes.get("role") or "") == "main":
+            return True
+        parent = parent.parent
+    return False
+
+
+def _link_len(node) -> int:
+    return sum(len((a.text() or "").strip()) for a in node.css("a"))
+
+
+def _pick_root(tree: LexborHTMLParser, body):
+    seen: set[int] = set()
+    ranked = []
+    articles = 0
+    for node in tree.css(MAIN_SELECTOR):
+        if node.mem_id in seen:
+            continue
+        seen.add(node.mem_id)
+        length = _text_len(node)
+        if not length:
+            continue
+        if node.tag == "article":
+            articles += 1
+        is_main = node.tag == "main" or (node.attributes.get("role") or "") == "main"
+        score = length - 2 * _link_len(node) + (100 if is_main else 0)
+        ranked.append((score, length, node))
+    if not ranked:
+        return body, False
+    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    long = [item for item in ranked if item[1] >= MIN_MAIN_CHARS]
+    score, length, best = (long or ranked)[0]
+    if articles >= 3 and best.tag == "article" and length < 0.4 * _text_len(body):
+        # A listing of article cards: the page is the list, not one card.
+        mains = [node for _, _, node in ranked if node.tag == "main"]
+        return (mains[0] if mains else body), True
+    return best, True
+
+
+# --- HTML -> markdown --------------------------------------------------------
+
+
+class _Ctx:
+    __slots__ = ("base_url", "links", "_link_urls", "_base")
+
+    def __init__(self, base_url: str) -> None:
+        self.base_url = base_url
+        self.links: list[dict] = []
+        self._link_urls: set[str] = set()
+        self._base = urlunparse(urlparse(base_url)._replace(fragment="")) if base_url else ""
+
+    def add_link(self, href: str, label: str) -> None:
+        if len(self.links) >= MAX_LINKS or not label:
             return
-        href = html_lib.unescape(href).strip()
+        href = (href or "").strip()
         if not href or href.startswith(("#", "javascript:", "data:", "mailto:", "tel:")):
             return
         absolute = urljoin(self.base_url, href) if self.base_url else href
@@ -417,83 +366,423 @@ class _ContentParser(HTMLParser):
         if self.base_url and not parsed.netloc:
             return
         absolute = urlunparse(parsed._replace(fragment=""))
-        base = urlunparse(urlparse(self.base_url)._replace(fragment="")) if self.base_url else ""
-        if not absolute or absolute == base or absolute in self._link_urls:
+        if not absolute or absolute == self._base or absolute in self._link_urls:
             return
         self._link_urls.add(absolute)
         self.links.append({"url": absolute, "text": label[:200]})
 
-    def close(self) -> None:
-        try:
-            super().close()
-        except Exception:
-            pass
-        self._flush_open_nodes()
 
-    def _flush_open_nodes(self) -> None:
-        """Truncated downloads and malformed pages (arxiv, for one) leave
-        elements open at EOF, so their text never reaches candidates or
-        body_parts and the page gets misread as a JavaScript app. Merge the
-        remaining stack upward exactly like handle_endtag would."""
-        if not self.stack:
-            return
-        remaining = self.stack
-        self.stack = []
-        while len(remaining) > 1:
-            child = remaining.pop()
-            self.stack = remaining
-            self._finish_node(child)
-        self.stack = []
-        root = remaining[0]
-        self._finish_node(root)
+def _children(node):
+    return node.iter(include_text=True)
 
-    def handle_data(self, data):
-        if self.skip or self.in_head or not data:
-            return
-        if self.in_pre or self.in_code:
-            chunk = data[:CODE_BLOCK_CHARS]
+
+def _has_block_child(node) -> bool:
+    return any(child.tag in BLOCK_TAGS for child in node.iter())
+
+
+def _render_children(node, ctx: _Ctx, depth: int = 0) -> list[str]:
+    blocks: list[str] = []
+    run: list[str] = []
+
+    def flush() -> None:
+        if run:
+            text = _norm_inline("".join(run))
+            if text:
+                blocks.append(text)
+            run.clear()
+
+    for child in _children(node):
+        tag = child.tag
+        if tag == "-text":
+            run.append(child.text_content or "")
+            continue
+        if not tag or tag.startswith("-"):
+            continue
+        if tag in BLOCK_TAGS or _has_block_child(child):
+            flush()
+            if tag == "a":
+                ctx.add_link(child.attributes.get("href") or "", _norm_inline(child.text() or ""))
+            blocks.extend(_render_block(child, ctx, depth + 1))
         else:
-            chunk = _WS_RE.sub(" ", data)
-        if not chunk:
-            return
-        self._emit(chunk)
-        if self.anchor:
-            n = len(chunk.strip())
-            if self.stack:
-                self.stack[-1].link_chars += n
+            run.append(_inline(child, ctx, depth + 1))
+    flush()
+    return blocks
 
-    def handle_comment(self, data):
-        return
 
-    def _emit(self, chunk: str) -> None:
-        if self.stack:
-            top = self.stack[-1]
-            if top.is_chrome:
-                return
-            top.parts.append(chunk)
+INLINE_TAGS = frozenset(
+    {
+        "a", "abbr", "b", "bdi", "bdo", "big", "br", "cite", "code", "data", "del", "dfn", "em",
+        "font", "i", "img", "ins", "kbd", "label", "mark", "math", "meter", "nobr", "output",
+        "picture", "progress", "q", "rp", "rt", "ruby", "s", "samp", "small", "source", "span",
+        "strike", "strong", "sub", "sup", "time", "tt", "u", "var", "wbr",
+    }
+)
+_CODE_TAGS = frozenset({"code", "kbd", "samp", "tt"})
+
+
+def _inline(node, ctx: _Ctx, depth: int) -> str:
+    tag = node.tag
+    if depth > RENDER_MAX_DEPTH:
+        return " " + (node.text() or "") + " "
+    if tag == "br":
+        return _BR
+    if tag == "wbr":
+        return ""
+    if tag == "img":
+        attrs = node.attributes
+        alt = _INLINE_WS.sub(" ", attrs.get("alt") or "").strip()
+        if not alt:
+            return ""
+        if "math" in (attrs.get("class") or ""):
+            return f" ${alt}$ "
+        if len(alt.split()) < 2 or _in_link(node):
+            return ""
+        return f" [image: {alt[:200]}] "
+    if tag == "math":
+        alt = (node.attributes.get("alttext") or "").strip()
+        return f" ${alt}$ " if alt else (node.text() or "")
+    if tag in _CODE_TAGS:
+        code = _INLINE_WS.sub(" ", node.text() or "").strip()
+        if not code:
+            return ""
+        fence = "``" if "`" in code else "`"
+        return f"{fence}{code}{fence}"
+    parts: list[str] = []
+    for child in _children(node):
+        ctag = child.tag
+        if ctag == "-text":
+            parts.append(child.text_content or "")
+        elif ctag and not ctag.startswith("-"):
+            if ctag in BLOCK_TAGS:
+                parts.append(" " + " ".join(_render_block(child, ctx, depth + 1)) + " ")
+            else:
+                parts.append(_inline(child, ctx, depth + 1))
+    text = "".join(parts)
+    if tag == "sup" and _CITATION.fullmatch(text.strip()):
+        # Wikipedia-style reference markers ("[3]", "[citation needed]").
+        return ""
+    if tag == "a":
+        ctx.add_link(node.attributes.get("href") or "", _norm_inline(text))
+    elif tag == "q":
+        text = f'"{text}"'
+    return text
+
+
+def _in_link(node) -> bool:
+    parent = node.parent
+    for _ in range(6):
+        if parent is None:
+            return False
+        if parent.tag == "a":
+            return True
+        parent = parent.parent
+    return False
+
+
+_LIST_START = re.compile(r"^(?:- |\d+\. )")
+
+
+def _join_item(blocks: list[str]) -> str:
+    """Blocks of one list item: nested lists stay tight, paragraphs get a gap."""
+    out = ""
+    for block in blocks:
+        if out:
+            out += "\n" if _LIST_START.match(block) else "\n\n"
+        out += block
+    return out
+
+
+def _indent(text: str, marker: str) -> str:
+    pad = " " * len(marker)
+    lines = text.split("\n")
+    out = [marker + lines[0]]
+    out.extend((pad + line) if line.strip() else "" for line in lines[1:])
+    return "\n".join(out)
+
+
+def _render_block(node, ctx: _Ctx, depth: int) -> list[str]:
+    tag = node.tag
+    if depth > RENDER_MAX_DEPTH:
+        text = _norm_inline(node.text() or "")
+        return [text] if text else []
+    level = HEADING_LEVEL.get(tag)
+    if level:
+        text = _HEADING_TRAIL.sub("", _norm_inline(_inline(node, ctx, depth)).replace("\n", " "))
+        return [f"{'#' * level} {text[:300]}"] if text else []
+    if tag == "pre":
+        return _render_pre(node)
+    if tag in ("ul", "ol", "menu"):
+        return _render_list(node, ctx, depth, ordered=tag == "ol")
+    if tag == "li":
+        body = _join_item(_render_children(node, ctx, depth))
+        return [_indent(body, "- ")] if body else []
+    if tag == "table":
+        return _render_table(node, ctx, depth)
+    if tag == "dl":
+        return _render_dl(node, ctx, depth)
+    if tag == "blockquote":
+        inner = "\n\n".join(_render_children(node, ctx, depth))
+        if not inner:
+            return []
+        return ["\n".join(("> " + line) if line else ">" for line in inner.split("\n"))]
+    if tag == "hr":
+        return []
+    return _render_children(node, ctx, depth)
+
+
+def _render_pre(node) -> list[str]:
+    for br in node.css("br"):
+        br.replace_with("\n")
+    code = (node.text(deep=True) or "").replace("\r\n", "\n").replace("\r", "\n").replace(" ", " ")
+    code = "\n".join(line.rstrip() for line in code.split("\n")).strip("\n")
+    if not code.strip():
+        return []
+    lang = ""
+    parent = node.parent
+    probes = [node, node.css_first("code"), parent, parent.parent if parent is not None else None]
+    for probe in probes:
+        if probe is None:
+            continue
+        match = _LANG_RE.search(probe.attributes.get("class") or "")
+        if match:
+            lang = match.group(1).lower()[:20]
+            break
+    if len(code) > CODE_BLOCK_CHARS:
+        omitted = len(code) - CODE_BLOCK_CHARS
+        code = code[:CODE_BLOCK_CHARS].rstrip() + f"\n… ({omitted} more characters of this code block omitted)"
+    fence = "~~~" if "```" in code else "```"
+    return [f"{fence}{lang}\n{code}\n{fence}"]
+
+
+def _render_list(node, ctx: _Ctx, depth: int, *, ordered: bool) -> list[str]:
+    try:
+        number = int(node.attributes.get("start") or 1)
+    except ValueError:
+        number = 1
+    items: list[str] = []
+    for child in node.iter():
+        if child.tag == "li":
+            body = _join_item(_render_children(child, ctx, depth + 1))
+            marker = f"{number}. " if ordered else "- "
+            number += 1
+            if body:
+                items.append(_indent(body, marker))
         else:
-            self.body_parts.append(chunk)
+            items.extend(_render_block(child, ctx, depth + 1))
+    return ["\n".join(items)] if items else []
+
+
+def _render_dl(node, ctx: _Ctx, depth: int) -> list[str]:
+    lines: list[str] = []
+    for child in node.iter():
+        if child.tag == "dt":
+            term = _norm_inline(_inline(child, ctx, depth + 1)).replace("\n", " ")
+            if term:
+                lines.append(term)
+        elif child.tag == "dd":
+            body = "\n".join(_render_children(child, ctx, depth + 1))
+            if body:
+                lines.append(_indent(body, ": "))
+        else:
+            lines.extend(_render_block(child, ctx, depth + 1))
+    return ["\n".join(lines)] if lines else []
+
+
+def _table_rows(table) -> tuple[str, list]:
+    caption = ""
+    rows = []
+    for child in table.iter():
+        if child.tag in ("thead", "tbody", "tfoot"):
+            rows.extend(row for row in child.iter() if row.tag == "tr")
+        elif child.tag == "tr":
+            rows.append(child)
+        elif child.tag == "caption":
+            caption = _norm_inline(child.text() or "")
+    return caption, rows
+
+
+def _cells(row) -> list:
+    return [cell for cell in row.iter() if cell.tag in ("td", "th")]
+
+
+def _is_layout_table(table, rows: list) -> bool:
+    if (table.attributes.get("role") or "").lower() in ("presentation", "none"):
+        return True
+    # css() matches the node itself too, so a nested table means two hits.
+    if len(rows) < 2 or len(table.css("table")) > 1 or table.css_first("pre") is not None:
+        return True
+    widths = [len(_cells(row)) for row in rows]
+    if max(widths, default=0) < 2:
+        return True
+    cells = sum(widths) or 1
+    return _text_len(table) / cells > 400
+
+
+def _render_table(table, ctx: _Ctx, depth: int) -> list[str]:
+    caption, rows = _table_rows(table)
+    if not rows:
+        return _render_children(table, ctx, depth)
+    if _is_layout_table(table, rows):
+        blocks: list[str] = []
+        for row in rows:
+            rendered = []
+            for cell in _cells(row):
+                parts = _render_children(cell, ctx, depth + 1)
+                text = "\n\n".join(parts).strip()
+                if text and not re.fullmatch(r"[\d\s]+", text):
+                    rendered.append(text)
+            if not rendered:
+                continue
+            if all("\n" not in part and len(part) <= 200 for part in rendered):
+                blocks.append(" | ".join(rendered))
+            else:
+                blocks.extend(rendered)
+        return ([caption] if caption else []) + blocks
+    grid: list[list[str]] = []
+    for row in rows:
+        line: list[str] = []
+        for cell in _cells(row):
+            text = " ".join(_render_children(cell, ctx, depth + 1)).replace("\n", " ")
+            text = _INLINE_WS.sub(" ", text).strip()[:TABLE_CELL_CHARS].replace("|", "\\|")
+            line.append(text)
+            try:
+                span = max(1, min(int(cell.attributes.get("colspan") or 1), TABLE_MAX_COLS))
+            except ValueError:
+                span = 1
+            line.extend([""] * (span - 1))
+        if any(line):
+            grid.append(line[:TABLE_MAX_COLS])
+    if not grid:
+        return []
+    width = max(len(line) for line in grid)
+    lines = []
+    shown = grid[:TABLE_MAX_ROWS]
+    for index, line in enumerate(shown):
+        padded = line + [""] * (width - len(line))
+        lines.append("| " + " | ".join(padded) + " |")
+        if index == 0:
+            lines.append("|" + " --- |" * width)
+    if len(grid) > TABLE_MAX_ROWS:
+        lines.append(f"(… {len(grid) - TABLE_MAX_ROWS} more table rows not shown)")
+    return ([caption] if caption else []) + ["\n".join(lines)]
+
+
+_SELF_RENDERED = frozenset({"ul", "ol", "menu", "table", "pre", "dl", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6"})
+
+
+def _render_root(root, ctx: _Ctx) -> str:
+    if root.tag in _SELF_RENDERED:
+        blocks = _render_block(root, ctx, 0)
+    else:
+        blocks = _render_children(root, ctx, 0)
+    return _collapse("\n\n".join(blocks))
 
 
 def _collapse(text: str) -> str:
-    text = _WS_RE.sub(" ", text)
-    # A line of only spaces is blank: without this, layout padding between
-    # list items survives as runs of " \n \n" that _MULTI_NL cannot see.
-    text = _BLANK_LINE_RE.sub("\n", text)
+    text = _TRAILING_WS.sub("\n", text)
     text = _MULTI_NL.sub("\n\n", text)
     return text.strip()
 
 
 def _clean_fragment(fragment: str) -> str:
-    """Apply normal script/chrome/tag cleanup to structured article HTML."""
-    parser = _ContentParser()
-    try:
-        parser.feed(fragment or "")
-        parser.close()
-    except Exception:
-        pass
-    cleaned = _collapse("".join(parser.body_parts))
-    return cleaned or _collapse(_strip_tags(fragment or ""))
+    """Render HTML found inside structured data (JSON-LD articleBody)."""
+    if "<" not in (fragment or ""):
+        return _collapse(fragment or "")
+    tree = LexborHTMLParser(fragment)
+    root = tree.body or tree.root
+    if root is None:
+        return ""
+    _strip_junk(root)
+    return _render_root(root, _Ctx(""))
+
+
+def _html_extract(raw: str, url: str) -> tuple[str, str, list[dict], dict[str, str], bool]:
+    """(title, text, links, meta, structured) for an HTML document."""
+    tree = LexborHTMLParser(raw)
+    meta = _metadata(tree)
+    title = meta.get("og_title") or meta.get("title") or ""
+    body = tree.body
+    if body is None:
+        return title, "", [], meta, False
+    _strip_junk(body)
+    _prune(body)
+    root, structured = _pick_root(tree, body)
+    ctx = _Ctx(url)
+    picked = _render_root(root, ctx)
+    ld_body = meta.get("ld_body") or ""
+    if len(ld_body) >= MIN_MAIN_CHARS and len(picked) < 0.6 * len(ld_body):
+        # The markup lost the story (paywall shell, client render); the
+        # publisher's structured copy has it.
+        head = meta.get("ld_headline") or title
+        picked = (f"# {head}\n\n" if head else "") + ld_body
+        structured = True
+    return title, picked, ctx.links, meta, structured or bool(ld_body)
+
+
+# --- other content types ----------------------------------------------------
+
+
+def _clean_plain(raw: str) -> str:
+    """Plain text, markdown and code keep their lines and indentation."""
+    text = (raw or "").replace("\r\n", "\n").replace("\r", "\n").lstrip("﻿")
+    text = _CTRL.sub("", text)
+    text = _TRAILING_WS.sub("\n", text)
+    text = re.sub(r"\n{4,}", "\n\n\n", text)
+    return text.strip("\n")
+
+
+_FEED_ITEM = re.compile(r"(?is)<(item|entry)\b.*?</\1>")
+_FEED_FIELD = {
+    "title": re.compile(r"(?is)<title[^>]*>(.*?)</title>"),
+    "link": re.compile(r"(?is)<link[^>]*>(.*?)</link>|<link[^>]*href=[\"']([^\"']+)[\"']"),
+    "date": re.compile(r"(?is)<(?:pubDate|published|updated|dc:date)[^>]*>(.*?)</"),
+    "summary": re.compile(r"(?is)<(?:description|summary|content)[^>]*>(.*?)</(?:description|summary|content)>"),
+}
+
+
+def _feed_text(raw: str) -> str:
+    """RSS/Atom feeds as a dated markdown list instead of raw XML."""
+
+    def field_of(name: str, block: str) -> str:
+        match = _FEED_FIELD[name].search(block)
+        if not match:
+            return ""
+        value = next((g for g in match.groups() if g), "")
+        value = re.sub(r"(?is)^<!\[CDATA\[(.*)\]\]>$", r"\1", value.strip())
+        if "<" in value or "&" in value:
+            value = _clean_fragment(value) if "<" in value else _norm_inline(value)
+        return value.strip()
+
+    lines: list[str] = []
+    channel = _FEED_FIELD["title"].search(raw[:4000])
+    if channel:
+        lines.append("# " + _norm_inline(re.sub(r"(?is)<!\[CDATA\[(.*)\]\]>", r"\1", channel.group(1))))
+    for index, match in enumerate(_FEED_ITEM.finditer(raw)):
+        if index >= FEED_MAX_ITEMS:
+            lines.append(f"(… more feed items not shown)")
+            break
+        block = match.group(0)
+        title = _norm_inline(field_of("title", block)).replace("\n", " ")
+        link = field_of("link", block)
+        date = field_of("date", block)
+        summary = _norm_inline(field_of("summary", block))[:500]
+        head = f"- {title or '(untitled)'}"
+        if date:
+            head += f" ({date[:40]})"
+        lines.append(head)
+        if link:
+            lines.append(f"  {link}")
+        if summary:
+            lines.append(f"  {summary}")
+    return "\n".join(lines)
+
+
+def _is_feed(raw: str, ctype: str) -> bool:
+    head = (raw or "")[:2000].lower()
+    return ("rss" in ctype or "atom" in ctype or "xml" in ctype) and ("<rss" in head or "<feed" in head)
+
+
+# --- passages, find, outline -------------------------------------------------
 
 
 def _passage_chunks(text: str, max_chars: int = PASSAGE_CHARS) -> list[_Passage]:
@@ -507,7 +796,6 @@ def _passage_chunks(text: str, max_chars: int = PASSAGE_CHARS) -> list[_Passage]
         return [_Passage(0, len(text), text)]
     chunks: list[_Passage] = []
     heading = ""
-    heading_start = 0
     start = -1
     end = -1
     parts: list[str] = []
@@ -522,7 +810,6 @@ def _passage_chunks(text: str, max_chars: int = PASSAGE_CHARS) -> list[_Passage]
                 chunks.append(_Passage(start, end, "\n\n".join(parts), chunk_heading))
                 start, parts, chunk_heading = -1, [], ""
             heading = block
-            heading_start = match.start(1)
             continue
         if len(block) <= max_chars:
             pieces = [(match.start(1), match.end(1), block)]
@@ -571,43 +858,92 @@ def _merge_passages(passages: list[_Passage]) -> list[_Passage]:
     return merged
 
 
+def _render_passages(passages: list[_Passage], budget: int) -> str:
+    out: list[str] = []
+    used = 0
+    for passage in _merge_passages(passages):
+        block = f"[offset {passage.start}]\n{passage.text}"
+        if out and used + len(block) + 5 > budget:
+            break
+        out.append(block)
+        used += len(block) + 5
+    return "\n---\n".join(out)[:budget]
+
+
+def rank_passages(text: str, query: str) -> list[tuple[float, _Passage]]:
+    """Chunks of text scored against query (BM25 + heading and phrase bonus)."""
+    chunks = _passage_chunks(text)
+    wanted = terms(query)
+    if not chunks or not wanted:
+        return []
+    docs = [terms(chunk.text) for chunk in chunks]
+    scores = bm25_scores(docs, wanted)
+    phrase = re.sub(r"\s+", " ", query).strip().lower()
+    unique = set(wanted)
+    ranked: list[tuple[float, _Passage]] = []
+    for score, chunk, doc in zip(scores, chunks, docs):
+        if not score:
+            continue
+        heading_terms = set(terms(chunk.heading))
+        score += 0.5 * len(unique & heading_terms)
+        if len(phrase) > 3 and phrase in chunk.text.lower():
+            score += 2.0
+        ranked.append((score, chunk))
+    ranked.sort(key=lambda item: (-item[0], item[1].start))
+    return ranked
+
+
 def select_passages(text: str, *, query: str | None = None, find: str | None = None) -> str:
     """Select relevant passages by exact phrase or lexical query relevance."""
-    chunks = _passage_chunks(text)
     literal = re.sub(r"\s+", " ", (find or "")).strip()[:FIND_MAX_CHARS]
-    selected: list[_Passage] = []
     if literal and len(literal) >= 2:
+        chunks = _passage_chunks(text)
+        selected: list[_Passage] = []
         low = text.lower()
         cursor = 0
-        while len(selected) < FIND_MAX_MATCHES:
+        hits = 0
+        while hits < FIND_MAX_MATCHES:
             index = low.find(literal.lower(), cursor)
             if index < 0:
                 break
+            hits += 1
             selected.extend(chunk for chunk in chunks if chunk.start <= index < chunk.end)
             cursor = index + max(1, len(literal))
         if not selected:
             return f"No literal match for {literal!r} in the extracted text.\nPage opening:\n{text[:FETCH_CHARS]}"
-    elif query:
-        phrase = re.sub(r"\s+", " ", query).strip().lower()
-        terms = [word for word in _WORD_RE.findall(phrase) if len(word) > 1 and word not in _STOP_WORDS]
-        if not terms:
+        return _render_passages(selected, FETCH_CHARS)
+    if query:
+        ranked = rank_passages(text, query)
+        if not ranked:
             return text[:FETCH_CHARS]
-        scored: list[tuple[float, int, _Passage]] = []
-        for chunk in chunks:
-            low = chunk.text.lower()
-            words = _WORD_RE.findall(low)
-            score = sum(words.count(term) for term in terms)
-            score += 3 * sum(1 for term in set(terms) if term in (chunk.heading or "").lower())
-            if phrase and phrase in low:
-                score += 8
-            if score:
-                scored.append((score / max(1.0, len(words) ** 0.25), -chunk.start, chunk))
-        selected = [item[2] for item in sorted(scored, reverse=True)[:PASSAGE_MAX]]
-        if not selected:
-            return text[:FETCH_CHARS]
-    else:
-        return text[:FETCH_CHARS]
-    return "\n---\n".join(item.text for item in _merge_passages(selected))[:FETCH_CHARS]
+        best = ranked[0][0]
+        chosen = [chunk for score, chunk in ranked[:PASSAGE_MAX] if score >= 0.35 * best]
+        return _render_passages(chosen, FETCH_CHARS)
+    return text[:FETCH_CHARS]
+
+
+def best_excerpt(text: str, query: str, budget: int) -> str:
+    """The most query-relevant passages of a page, in page order, within budget.
+
+    Falls back to the page opening when nothing matches (the lead of an
+    article or doc page usually summarises it).
+    """
+    ranked = rank_passages(text, query)
+    picked: list[_Passage] = []
+    used = 0
+    if ranked:
+        best = ranked[0][0]
+        for score, chunk in ranked[:3]:
+            if score < 0.5 * best or (picked and used + len(chunk.text) > budget):
+                continue
+            picked.append(chunk)
+            used += len(chunk.text)
+    if not picked:
+        opening = text[:budget]
+        cut = opening.rfind("\n\n", budget // 2)
+        return (opening[:cut] if cut > 0 and len(text) > budget else opening).strip()
+    out = "\n…\n".join(chunk.text for chunk in _merge_passages(picked))
+    return out[:budget].strip()
 
 
 def find_windows(text: str, needle: str) -> str:
@@ -615,6 +951,41 @@ def find_windows(text: str, needle: str) -> str:
     if len(normalized) < 2:
         return text[:FETCH_CHARS]
     return select_passages(text, find=normalized)
+
+
+def _outline(text: str) -> list[tuple[int, int, str]]:
+    out: list[tuple[int, int, str]] = []
+    in_fence = ""
+    pos = 0
+    for line in text.split("\n"):
+        fence = _FENCE_RE.match(line)
+        if fence:
+            if not in_fence:
+                in_fence = fence.group(1)
+            elif line.startswith(in_fence):
+                in_fence = ""
+        elif not in_fence:
+            match = _OUTLINE_RE.match(line)
+            if match:
+                out.append((pos, len(match.group(1)), match.group(2).strip()[:120]))
+        pos += len(line) + 1
+    return out
+
+
+def _place_links(full: str, links: list[dict]) -> list[dict]:
+    """Attach the character offset where each link's label sits in full."""
+    cursor = 0
+    placed: list[dict] = []
+    for link in links:
+        label = link.get("text") or ""
+        at = full.find(label, cursor) if label else -1
+        if at < 0 and label:
+            at = full.find(label)
+        if at < 0:
+            continue
+        cursor = at + len(label)
+        placed.append({**link, "at": at})
+    return placed
 
 
 def _spa_text(meta: dict[str, str]) -> str:
@@ -637,6 +1008,13 @@ def _window(full: str, offset: int, size: int) -> tuple[str, bool]:
     return full[start:start + size], len(full) > start + size
 
 
+def _looks_html(raw: str) -> bool:
+    head = raw.lstrip()[:200].lower()
+    return head.startswith("<!doctype html") or head.startswith("<html") or (
+        head.startswith("<") and "<body" in raw[:5000].lower()
+    )
+
+
 def extract_page(
     raw: str,
     *,
@@ -655,7 +1033,8 @@ def extract_page(
     kind = "html"
     title = ""
     text = ""
-    links: list[dict[str, str]] = []
+    links: list[dict] = []
+    published = ""
 
     full = ""
     if "json" in ctype and "html" not in ctype:
@@ -663,53 +1042,22 @@ def extract_page(
         try:
             parsed = json.loads(raw)
             full = json.dumps(parsed, indent=2, ensure_ascii=False)
-        except (json.JSONDecodeError, TypeError, ValueError):
+        except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
             kind = "text"
-            full = re.sub(r"\s+", " ", raw).strip()
+            full = _clean_plain(raw)
         text, truncated = _window(full, offset, JSON_CHARS)
-    elif "html" in ctype or raw.lstrip()[:15].lower().startswith("<!doctype html") or raw.lstrip()[:6].lower().startswith("<html"):
-        meta = _collect_metadata(raw)
-        title = meta.get("og_title") or meta.get("title") or ""
-        parser = _ContentParser(base_url=url)
-        try:
-            parser.feed(raw)
-        except Exception:
-            pass
-        try:
-            parser.close()
-        except Exception:
-            pass
-        links = parser.links
-        picked = ""
-        ld_body = meta.get("ld_body") or ""
-        if len(ld_body) >= MIN_MAIN_CHARS:
-            head = meta.get("ld_headline") or title
-            picked = (f"# {head}\n\n" if head else "") + ld_body
-        if not picked:
-            ranked = []
-            for node in parser.candidates:
-                body = _collapse("".join(node.parts))
-                if not body:
-                    continue
-                # Prefer a page's explicit main region when its density is
-                # effectively tied with a nested article. The wrapper often
-                # carries useful repository/article metadata immediately
-                # before the article body.
-                score = len(body) - 2 * node.link_chars + (100 if node.tag == "main" else 0)
-                ranked.append((score, len(body), body))
-            ranked.sort(reverse=True)
-            long = [body for score, length, body in ranked if length >= MIN_MAIN_CHARS]
-            if long:
-                picked = long[0]
-            elif ranked:
-                picked = ranked[0][2]
-        if not picked:
-            picked = _collapse("".join(parser.body_parts))
-        structured = bool(parser.candidates) or bool(ld_body)
+    elif _is_feed(raw, ctype):
+        kind = "text"
+        full = _feed_text(raw)
+        text, truncated = _window(full, offset, FETCH_CHARS)
+    elif "html" in ctype or _looks_html(raw):
+        title, picked, links, meta, structured = _html_extract(raw, url)
+        published = meta.get("published") or meta.get("modified") or ""
         if len(picked) < SPA_MIN_CHARS and not structured:
             kind = "spa"
             full = _spa_text(meta)
             text = full
+            links = []
         else:
             kind = "html"
             if title and title.lower() not in picked[:400].lower():
@@ -718,7 +1066,7 @@ def extract_page(
             text, truncated = _window(full, offset, FETCH_CHARS)
     else:
         kind = "text"
-        full = re.sub(r"\s+", " ", raw).strip()
+        full = _clean_plain(raw)
         text, truncated = _window(full, offset, FETCH_CHARS)
 
     if used_find:
@@ -744,12 +1092,14 @@ def extract_page(
         used_find=used_find,
         chars_in=len(raw),
         chars_out=len(text),
-        links=links,
+        links=_place_links(full, links) if kind == "html" else [],
         offset=start,
         total_chars=len(full),
         next_offset=window_end if paged and window_end < len(full) else None,
         paged=paged,
         full_text=full,
+        published=published,
+        outline=_outline(full) if kind in ("html", "text") else [],
     )
     host = ""
     try:

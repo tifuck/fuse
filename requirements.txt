@@ -17,3 +17,5 @@ urllib3>=2.8.0
 PyMySQL==1.2.3
 sqlglot==28.10.1
 regex>=2024.11.6
+# HTML5 tree builder (lexbor) for read_url page extraction.
+selectolax==1.0.0
