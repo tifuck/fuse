@@ -150,5 +150,5 @@
 <script type="application/json" id="sched-config">{{ schedule_bundle | tojson }}</script>
 {% endblock %}
 {% block scripts %}
-<script src="/static/schedules.js?v=9"></script>
+<script src="{{ asset('schedules.js') }}"></script>
 {% endblock %}

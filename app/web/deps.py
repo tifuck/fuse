@@ -12,7 +12,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from .. import accounts, chats, hosts, skills, vault
+from .. import accounts, chats, hosts, skills, static_assets, vault
 from ..config import ROOT, settings
 from ..crypto import decrypt, encrypt
 from ..security import client_ip, ensure_csrf, limiter
@@ -41,6 +41,9 @@ def provider_logo_url(type_id: str) -> str:
 
 _logo_versions: dict[tuple, str] = {}
 templates.env.globals["provider_logo_url"] = provider_logo_url
+# Content-versioned /static URLs (immutable caching); see app/static_assets.py.
+templates.env.globals["asset"] = static_assets.asset_url
+templates.env.globals["asset_preloads"] = static_assets.preloads
 logger = logging.getLogger("app.web")
 _pending: dict[int, dict] = {}
 _chatgpt_pending: dict[int, dict] = {}

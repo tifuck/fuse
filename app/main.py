@@ -11,9 +11,10 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 
 from .config import ROOT, settings
+from . import static_assets
 from . import accounts, db, chat_store, chat_runs, chat_events, chat_recaps, chat_titles, host_events, issues_pipeline, retention, sources as sources_module
 from .api import router as api_router
 from .web import router as web_router
@@ -172,6 +173,8 @@ async def lifespan(app: FastAPI):
             thread_name_prefix="fuse-io",
         )
     )
+    # Hash /static once before the first page asks for asset versions.
+    await asyncio.to_thread(static_assets.warm)
     try:
         url = (getattr(settings, "database_url", "") or "").strip()
         if settings.database_mariadb_enabled and url.startswith("mysql://"):
@@ -334,21 +337,42 @@ _VERSIONED = re.compile(rb"(?:^|&)v=[^&]")
 
 
 class VersionedStaticFiles(StaticFiles):
-    """Versioned assets (?v=N, raised on every change by promote-dev.sh) are
-    cached without revalidation. Everything else must revalidate: without a
-    Cache-Control header browsers cache heuristically (a fraction of the file's
-    age), so a phone could pair a new versioned chat.js with hours-old internal
-    modules it never re-requested, and the mismatched module graph failed at
-    init (the chat sidebar went dead)."""
+    """Scripts and stylesheets are served with every local import rewritten to
+    its content version (app/static_assets.py), and templates link entries the
+    same way, so a ?v= URL names exact bytes and is cached without
+    revalidation. Everything else must revalidate: without a Cache-Control
+    header browsers cache heuristically (a fraction of the file's age), so a
+    phone could pair a new chat.js with hours-old internal modules it never
+    re-requested, and the mismatched module graph failed at init (the chat
+    sidebar went dead)."""
 
     async def get_response(self, path, scope):
+        versioned = settings.static_immutable and _VERSIONED.search(scope.get("query_string", b""))
+        cache = "public, max-age=31536000, immutable" if versioned else "no-cache"
+        if scope.get("method") in ("GET", "HEAD") and path.endswith(static_assets._TEXT):
+            found = await asyncio.to_thread(static_assets.rewritten, path)
+            if found:
+                version, body = found
+                # Only the current bytes are immutable under their version. A
+                # page rendered before a deploy can still ask for an old ?v=;
+                # it gets today's file, which must not be cached as that URL.
+                if versioned and (b"v=" + version.encode()) not in scope.get("query_string", b"").split(b"&"):
+                    cache = "no-cache"
+                etag = f'"{version}"'
+                media = "text/css; charset=utf-8" if path.endswith(".css") else "text/javascript; charset=utf-8"
+                headers = {"ETag": etag, "Cache-Control": cache}
+                match = [tag.strip() for tag in dict(
+                    (k.decode("latin-1").lower(), v.decode("latin-1")) for k, v in scope.get("headers") or []
+                ).get("if-none-match", "").split(",")]
+                if etag in match or "*" in match:
+                    return Response(status_code=304, headers=headers)
+                if scope.get("method") == "HEAD":
+                    return Response(headers={**headers, "Content-Length": str(len(body))}, media_type=media)
+                return Response(body, headers=headers, media_type=media)
         response = await super().get_response(path, scope)
         if response.status_code not in (200, 304):
             return response
-        if settings.static_immutable and _VERSIONED.search(scope.get("query_string", b"")):
-            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
-        else:
-            response.headers["Cache-Control"] = "no-cache"
+        response.headers["Cache-Control"] = cache
         return response
 
 

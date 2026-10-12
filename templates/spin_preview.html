@@ -1,10 +1,10 @@
 {% extends "base.html" %}
 {% block title %}Motion Studies · Fuse{% endblock %}
 {% block head_extra %}
-<link rel="stylesheet" href="/static/spinner-loaders.css?v=1">
-<link rel="stylesheet" href="/static/spinner-preview.css?v=5">
-<link rel="stylesheet" href="/static/spinner-next.css?v=3">
-<link rel="stylesheet" href="/static/spinner-future.css?v=3">
+<link rel="stylesheet" href="{{ asset('spinner-loaders.css') }}">
+<link rel="stylesheet" href="{{ asset('spinner-preview.css') }}">
+<link rel="stylesheet" href="{{ asset('spinner-next.css') }}">
+<link rel="stylesheet" href="{{ asset('spinner-future.css') }}">
 {% endblock %}
 {% block body %}
 <div class="motion-lab">
@@ -55,8 +55,8 @@
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="/static/spinner-loaders.js?v=1"></script>
-<script src="/static/spinner-next.js?v=3"></script>
-<script src="/static/spinner-future.js?v=3"></script>
-<script src="/static/spinner-preview.js?v=5"></script>
+<script src="{{ asset('spinner-loaders.js') }}"></script>
+<script src="{{ asset('spinner-next.js') }}"></script>
+<script src="{{ asset('spinner-future.js') }}"></script>
+<script src="{{ asset('spinner-preview.js') }}"></script>
 {% endblock %}

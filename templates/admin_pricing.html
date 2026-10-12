@@ -2,7 +2,7 @@
 {% block title %}Pricing · Fuse{% endblock %}
 {% block page_title %}Pricing{% endblock %}
 {% block page_lead %}<p>USD per million tokens, used only to estimate cost on Usage.</p>{% endblock %}
-{% block head_extra %}<link rel="stylesheet" href="/static/usage.css?v=8">{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="{{ asset('usage.css') }}">{% endblock %}
 {% block body %}
 <div class="uz">
   {% if pricing_synced %}<p class="callout ok">Synced {{ pricing_synced }} model rates from OpenRouter.</p>{% endif %}

@@ -1,8 +1,8 @@
 /* Fuse dashboard styles. Split from the former monolithic app.css into
    static/styles/**: import order IS the cascade order, so do not reorder
    these lines. Each chunk is an exact slice of the original file; edit the
-   chunk, not this list, unless a section moves. Imports stay relative and
-   unversioned (only ?v= URLs are served immutable). */
+   chunk, not this list, unless a section moves. Imports stay relative; the
+   server inlines them in place and versions the result (app/static_assets.py). */
 @import url("styles/tokens/root.css");
 @import url("styles/tokens/reset.css");
 @import url("styles/components/app-shell.css");

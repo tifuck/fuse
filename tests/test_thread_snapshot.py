@@ -65,19 +65,26 @@ process.stdout.write(JSON.stringify(ctx.unpackThread(data)));
 
 def test_versioned_static_assets_are_immutable(monkeypatch):
     from app.config import settings
+    from app import static_assets
     from app.main import VersionedStaticFiles
 
     files = VersionedStaticFiles(directory=str(ROOT / "static"))
 
-    def headers(query):
-        scope = {"type": "http", "method": "GET", "path": "/chat-boot.js", "query_string": query, "headers": []}
-        return asyncio.run(files.get_response("chat-boot.js", scope)).headers
+    def headers(query, path="chat-boot.js"):
+        scope = {"type": "http", "method": "GET", "path": "/" + path, "query_string": query, "headers": []}
+        return asyncio.run(files.get_response(path, scope)).headers
 
+    current = static_assets.version("chat-boot.js").encode()
     monkeypatch.setattr(settings, "static_immutable", True)
-    assert headers(b"v=3")["cache-control"] == "public, max-age=31536000, immutable"
+    assert headers(b"v=" + current)["cache-control"] == "public, max-age=31536000, immutable"
+    # A script's ?v= is its content version: a stale one (a page rendered
+    # before a deploy) gets today's bytes, which must not be cached as that URL.
+    assert headers(b"v=3")["cache-control"] == "no-cache"
     # Unversioned internal modules must revalidate, or a heuristically cached
     # copy can mismatch a newer versioned entry script.
     assert headers(b"")["cache-control"] == "no-cache"
-    assert headers(b"xv=3")["cache-control"] == "no-cache"
+    assert headers(b"xv=" + current)["cache-control"] == "no-cache"
+    # Other files keep the plain rule: any ?v= is immutable.
+    assert headers(b"v=3", "icon.svg")["cache-control"] == "public, max-age=31536000, immutable"
     monkeypatch.setattr(settings, "static_immutable", False)
-    assert headers(b"v=3")["cache-control"] == "no-cache"
+    assert headers(b"v=" + current)["cache-control"] == "no-cache"
