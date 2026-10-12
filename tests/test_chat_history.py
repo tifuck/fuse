@@ -333,6 +333,24 @@ class HistoryTest(unittest.TestCase):
         redo = store.start_turn(1, view["id"], "question two", view["revision"], None, replace_from=index)["run"]
         self.assertNotIn("auto handoff", json.dumps(redo["request"]["messages"]))
 
+    def test_clipped_display_does_not_replay_the_reply_twice(self):
+        # Production thread 444: the page showed the first 3.7k characters of
+        # a 19.9k-character reply. The saved reply already holds that text.
+        run = self.start("audit it")
+        full = "# Audit\n\n" + "finding line\n" * 400 + "Tell me which groups to start on."
+        rows = [*run["request"]["messages"],
+                {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function",
+                    "function": {"name": "read_file", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": "c1", "content": "file body"},
+                {"role": "assistant", "content": full}]
+        store.save_provider_messages(run["id"], rows)
+        shown = full[:1200]
+        store.finish_run(run["id"], {"content": shown, "reasoning": "",
+                                     "segments": [{"type": "content", "text": shown}]}, "completed")
+        replay = self.start("next")["request"]["messages"]
+        self.assertEqual(replay[:-1], rows)
+        self.assertEqual(sum(m["role"] == "assistant" and full[:200] in str(m.get("content")) for m in replay), 1)
+
     def test_auto_compaction_snapshot_survives_next_turn(self):
         run = self.start()
         rows = [{"role": "user", "content": context.COMPACT_PREAMBLE + "auto handoff"},

@@ -51,21 +51,38 @@ def strip_special_tokens(text: str) -> str:
     return _SPECIAL_TOKENS.sub("", text)
 
 
-def drop_tool_xml(text: str) -> tuple[str, str]:
+def drop_tool_xml(text: str, start: int = 0) -> tuple[str, str]:
     """Split assistant text into (visible, incomplete <tool_call> tail).
 
     Complete XML tool dumps are dropped so they are not shown as the answer.
     An unclosed opener is held back until the next chunk or round end.
+    Markdown code is quoted text that extract_text_tool_calls never runs, so a
+    call shown there stays visible. Only text[start:] is rewritten; the settled
+    prefix is read to tell whether a later opener sits inside code.
     """
     if not text:
         return "", ""
-    visible = _TOOL_XML_BLOCK.sub("", text)
+    if not _TOOL_XML_OPEN.search(text, start):
+        return text, ""
+    code = [match.span() for match in _MD_CODE.finditer(text)]
+
+    def quoted(index: int) -> bool:
+        return any(lo <= index < hi for lo, hi in code)
+
+    parts, pos = [text[:start]], start
+    for block in _TOOL_XML_BLOCK.finditer(text, start):
+        if not quoted(block.start()):
+            parts.append(text[pos:block.start()])
+            pos = block.end()
     last = None
-    for match in _TOOL_XML_OPEN.finditer(visible):
-        last = match
+    for match in _TOOL_XML_OPEN.finditer(text, pos):
+        if not quoted(match.start()):
+            last = match
     if last:
-        return visible[: last.start()], visible[last.start() :]
-    return visible, ""
+        parts.append(text[pos:last.start()])
+        return "".join(parts), text[last.start():]
+    parts.append(text[pos:])
+    return "".join(parts), ""
 
 
 _TOOL_XML_NAME = re.compile(

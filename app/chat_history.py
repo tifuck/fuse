@@ -378,7 +378,10 @@ def finalize(conn, run, request, display, message):
             latest = latest if after_compact.endswith(latest) else after_compact
         last_saved = next((str(m.get("content") or "") for m in reversed(source)
                            if m.get("role") == "assistant" and m.get("content")), "")
-        if latest.strip() != last_saved.strip():
+        # A display that shows less than the saved reply (a clipped or
+        # lagging view) is missing nothing; appending it would replay the
+        # reply twice, the second copy cut short, on every later turn.
+        if latest.strip() not in last_saved:
             missing = latest[len(last_saved):] if last_saved and latest.startswith(last_saved) else latest
     if missing.strip():
         source.append({"role": "assistant", "content": missing})

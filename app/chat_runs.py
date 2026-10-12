@@ -211,9 +211,12 @@ class Output:
             return
         text = segments[-1].get("text") or ""
         stable = min(self._scrub_stable, len(text))
-        visible, pending = chat_runtime.drop_tool_xml(text[stable:])
+        merged, pending = chat_runtime.drop_tool_xml(text, stable)
         self._xml_pending = pending
-        merged = text[:stable] + visible
+        if pending and self._think_pending and pending.endswith(self._think_pending):
+            # The held tail already carries the partial tag; restoring both on
+            # the next chunk doubled it ("<tool_call<tool_call>").
+            self._think_pending = ""
         delta = len(merged) - len(text)
         if merged:
             segments[-1]["text"] = merged
@@ -261,7 +264,20 @@ class Output:
         self._round_tool_chars = 0
         self._stream_out = 0
 
+    def settle_tool_xml(self):
+        """Release text held back as a possible text-format tool call once its
+        round is over and it did not parse as one (prose that names
+        <tool_call>). The provider transcript keeps that text; dropping it here
+        cut the visible reply short, and finalize then replayed the short copy
+        as a second assistant message."""
+        pending, self._xml_pending = self._xml_pending, ""
+        if not pending or chat_runtime.extract_text_tool_calls(pending)[1]:
+            return
+        self._append_text("content", pending, "tagged")
+        self._scrub_stable = len(self.message["segments"][-1].get("text") or "")
+
     def _reset_stream_round(self):
+        self.settle_tool_xml()
         self._ensure_aggregates()
         self._round_content = len(self.message.get("content") or "")
         self._round_reasoning = len(self.message.get("reasoning") or "")
@@ -1405,6 +1421,7 @@ async def _run(request, user, run):
                     raise ValueError("Generation frame limit reached.")
             if not done:
                 raise ValueError("Generation stream ended without [DONE].")
+            output.settle_tool_xml()
             if (
                 not output.message.get("content")
                 and not output.message.get("reasoning")
