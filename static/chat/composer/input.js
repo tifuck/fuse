@@ -223,10 +223,13 @@ export function createInput(ctx) {
   function fitChatBar() {
     const bar = S.root.querySelector(".chat-bar");
     if (!bar) return;
+    const beforeH = S.root.style.getPropertyValue("--chat-bar-h");
+    const mobile = window.matchMedia("(max-width: 800px)").matches;
+    // Desktop with nothing published: no change, so no forced layout read.
+    if (!mobile && !beforeH) return;
     const following = S.stickToBottom;
     const savedTop = S.thread ? S.thread.scrollTop : 0;
-    const beforeH = S.root.style.getPropertyValue("--chat-bar-h");
-    if (window.matchMedia("(max-width: 800px)").matches) {
+    if (mobile) {
       S.root.style.setProperty("--chat-bar-h", Math.ceil(bar.getBoundingClientRect().height) + "px");
     } else {
       S.root.style.removeProperty("--chat-bar-h");

@@ -32,9 +32,13 @@ export function createFollow(ctx) {
   }
 
     function captureThreadViewport() {
+    const threadId = S.log._threadId === undefined ? S.currentId : S.log._threadId;
+    // Another thread's reading position is never restored (see
+    // restoreThreadViewport), so do not force a layout to measure it.
+    if (threadId !== S.currentId) return { threadId, top: S.lastThreadScrollTop || 0, following: S.stickToBottom };
     const edge = S.thread.getBoundingClientRect().top;
     const anchor = [...S.log.children].find(el => !el.hidden && el.getBoundingClientRect().bottom > edge);
-    return { threadId: S.log._threadId === undefined ? S.currentId : S.log._threadId, top: S.thread.scrollTop, following: S.stickToBottom,
+    return { threadId, top: S.thread.scrollTop, following: S.stickToBottom,
       anchorId: anchor?.dataset.messageId, offset: anchor ? anchor.getBoundingClientRect().top - edge : 0 };
   }
 

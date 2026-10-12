@@ -243,6 +243,11 @@ export function createThreads(ctx) {
 
     function showOpenedThread(data) {
     if (!Number.isSafeInteger(data.event_cursor)) throw new Error("Thread snapshot is missing event_cursor.");
+    // Every article of another thread is about to be replaced. Hidden, it is
+    // skipped by the layout reads below (queue, dock, composer) instead of
+    // being laid out once more just before paint() drops it; paint's
+    // setActive shows the log again in this same task, so nothing flashes.
+    if (S.log._threadId !== data.id) S.log.hidden = true;
     transcript.setPartialTranscript(Boolean(data.partial));
     S.drafts.set(S.currentId, S.input.value);
     S.draftFiles.set(S.currentId, S.pendingAttachments);

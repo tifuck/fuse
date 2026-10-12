@@ -230,9 +230,11 @@ function revealTick(md) {
     const done = md._revealShown >= text.length;
     streamMarkdown(md, done ? text : text.slice(0, md._revealShown), done ? md._revealWriting : true, catalog);
     if (done) md._src = md._revealSrc;
-    md.querySelectorAll("pre").forEach((el, i) => {
-      const saved = md._revealPre && md._revealPre[i];
-      if (saved) { el.scrollLeft = saved[0]; el.scrollTop = saved[1]; }
+    // Re-rendered code blocks keep a position the reader scrolled them to.
+    // Writing scrollLeft forces a layout, so blocks never scrolled are skipped.
+    if (md._revealPre?.some(Boolean)) md.querySelectorAll("pre").forEach((el, i) => {
+      const saved = md._revealPre[i];
+      if (saved && (saved[0] || saved[1])) { el.scrollLeft = saved[0]; el.scrollTop = saved[1]; }
     });
     if (deps.stickToBottom) deps.snapThread();
     if (!done) md._revealRaf = requestAnimationFrame(() => revealTick(md));
@@ -264,7 +266,15 @@ function paintContentBlock(md, text, writing, catalog, srcKey) {
       revealNow(md, text, writing, catalog);
       return;
     }
-    md._revealPre = [...md.querySelectorAll("pre")].map((el) => [el.scrollLeft, el.scrollTop]);
+    // Recorded as the reader scrolls a code block, instead of reading every
+    // block's position (a forced layout) on each streamed chunk.
+    if (!md._revealPre) {
+      md._revealPre = [];
+      md.addEventListener("scroll", (event) => {
+        if (event.target.tagName !== "PRE") return;
+        md._revealPre[[...md.querySelectorAll("pre")].indexOf(event.target)] = [event.target.scrollLeft, event.target.scrollTop];
+      }, { capture: true, passive: true });
+    }
     if (!md._revealRaf) {
       md._revealAt = 0;
       md._revealRaf = requestAnimationFrame(() => revealTick(md));
