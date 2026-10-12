@@ -84,10 +84,11 @@ async def fake_model(request, user, raw, **kwargs):
             finally:
                 queue_gates.pop(run_id, None)
             return
-        if text.startswith("Cache fixture miss"):
+        if text.startswith(("Cache fixture miss", "Cache fixture effort")):
             # What chat_runtime emits when a round loses a warm cache.
+            why = {"reason": "effort", "effort_from": "", "effort_to": "xhigh"} if "effort" in text else {"reason": ""}
             yield ("data: " + json.dumps({"fuse": {"event": "cache", "state": "miss", "prompt": 52000,
-                "cached": 1000, "idle_s": 40, "reason": "", "run_id": raw.get("run_id")}}) + "\n\n").encode()
+                "cached": 1000, "idle_s": 40, **why, "run_id": raw.get("run_id")}}) + "\n\n").encode()
         response = "Synchronized answer: " + text + ". " + "Live output across both devices. " * 16
         for chunk in ["<think>", "Shared reasoning ", "is preserved.", "</think>"] + [response[i:i + 12] for i in range(0, len(response), 12)]:
             yield ("data: " + json.dumps({"choices": [{"delta": {"content": chunk}}]}) + "\n\n").encode()

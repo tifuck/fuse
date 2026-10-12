@@ -142,13 +142,30 @@ class CacheWatchTest(unittest.TestCase):
         self.assertEqual(cold["changed"], "history")
         self.assertEqual(watch.miss(warm, cold)["reason"], "provider")
 
-    def test_tools_effort_or_system_changes_are_settings(self):
+    def test_tools_or_system_changes_are_settings(self):
         warm = probe(50_000, 45_000, request=sent(user("q")))
-        for request in (sent(user("q"), tools=[]), sent(user("q"), effort="high"),
+        for request in (sent(user("q"), tools=[]),
                         watch.fingerprint([{"role": "system", "content": "New rules."}, user("q")], TOOLS, "medium")):
             current = probe(50_000, 0, at=1100, prior=warm, request=request)
             self.assertEqual(current["changed"], "settings")
             self.assertEqual(watch.miss(warm, current)["reason"], "settings")
+
+    def test_an_effort_change_is_named(self):
+        # Thread 472: a wake turn sent no effort (Claude's default, low), the
+        # user's next turn sent xhigh, and only tools + system stayed cached.
+        warm = probe(50_000, 45_000, request=sent(user("q"), effort=None))
+        current = probe(52_000, 20_000, at=1100, prior=warm, request=sent(user("q"), user("go"), effort="xhigh"))
+        self.assertEqual(current["changed"], "settings")
+        event = watch.miss(warm, current)
+        self.assertEqual((event["reason"], event["effort_from"], event["effort_to"]), ("effort", "", "xhigh"))
+        state = context.parse_state(context.dump_state({"cache": current}))
+        self.assertEqual(state["cache"]["effort"], "xhigh")
+        # A refreshed system prompt outranks the effort.
+        self.assertEqual(watch.miss(warm, current, settings_changed=True)["reason"], "settings")
+        # A probe stored before efforts were recorded cannot name one.
+        legacy = {k: v for k, v in warm.items() if k != "effort"}
+        self.assertIsNone(watch.parse(legacy)["effort"])
+        self.assertEqual(watch.miss(legacy, current)["reason"], "settings")
 
     def test_probes_without_a_fingerprint_keep_an_unexplained_reason(self):
         self.assertEqual(watch.miss(self.warm, probe(52_000, 0, at=1100, prior=self.warm))["reason"], "")

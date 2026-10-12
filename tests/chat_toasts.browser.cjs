@@ -99,6 +99,17 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
     assert.equal(await toast(), '', 'a dismissed miss does not come back');
     console.log('PASS cache miss toast is sticky, returns after a passing hint, and dismisses');
 
+    // A miss caused by a different reasoning effort names both efforts.
+    await send('Cache fixture effort');
+    await streaming();
+    await idle();
+    await toastShows('Cache miss · 51k of 52k input tokens uncached (reasoning effort changed: Default → Extra high)×');
+    await page.locator('.chat-toast-close').click();
+    await toastGoneWithin(1000, 'Dismissed effort miss');
+    await page.waitForTimeout(3000);
+    assert.equal(await toast(), '', 'a dismissed effort miss does not come back');
+    console.log('PASS an effort cache miss names the old and new effort');
+
     // Deleting from the middle of a warm chat says the rest re-caches;
     // trimming the tail (Undo/Retry/Edit) keeps the cached prefix and says nothing extra.
     await page.evaluate(() => fuseToolFixture.cacheProbe({ at: Date.now() / 1000, prompt: 50000, ttl: 300, hit: true, model: 'offline' }));

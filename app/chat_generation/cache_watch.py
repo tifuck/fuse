@@ -20,10 +20,12 @@ A round is a cache miss only when all of these hold:
   served less than half of it from cache.
 
 The reason says why the cache was lost: "settings" (instructions, tools or
-reasoning effort changed), "history" (an edit or undo changed earlier
-messages, and that alone explains the loss), "account" (another pool account
-served it), "provider" (Fuse resent the same prefix and the provider did not
-reuse it), or "" when there is no fingerprint to compare.
+reasoning effort changed), "effort" (the reasoning effort changed, named in
+effort_from/effort_to; Anthropic keeps a message cache per effort),
+"history" (an edit or undo changed earlier messages, and that alone explains
+the loss), "account" (another pool account served it), "provider" (Fuse
+resent the same prefix and the provider did not reuse it), or "" when there
+is no fingerprint to compare.
 
 A miss is reported once per run, also across a resume, as a `cache` fuse
 event; the chat shows it as a dismissible toast. Devin reports billing deltas
@@ -99,7 +101,7 @@ def fingerprint(messages, tools=None, effort=None) -> dict:
         text = _json(part)
         hashes.append(hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[:_PART])
         weights.append(_weight(part, text))
-    return {"parts": "".join(hashes), "weights": weights}
+    return {"parts": "".join(hashes), "weights": weights, "effort": str(effort or "")[:20]}
 
 
 def _divergence(prior_parts: str, request: dict | None, prompt: int) -> tuple[str, int]:
@@ -146,6 +148,9 @@ def parse(raw) -> dict | None:
         "run": str(raw.get("run") or "")[:80],
         "warned": bool(raw.get("warned")),
         "parts": parts if len(parts) <= MAX_PARTS * _PART and re.fullmatch(r"[0-9a-f]*", parts) else "",
+        # The reasoning effort sent ("" for the provider default); None when
+        # the probe predates recording it.
+        "effort": raw["effort"][:20] if isinstance(raw.get("effort"), str) else None,
         # Set on the probe being judged: what changed since the prior request,
         # and roughly how many prompt tokens the two still share.
         "changed": changed if changed in ("settings", "history") else "",
@@ -197,6 +202,7 @@ def probe(usage, *, model: str, source: str | None, cred=None, prior=None, now: 
         "run": run,
         "warned": bool(run and prior and prior["run"] == run and prior["warned"]),
         "parts": str((request or {}).get("parts") or ""),
+        "effort": request["effort"][:20] if isinstance((request or {}).get("effort"), str) else None,
         "changed": changed,
         "shared": shared,
     }
@@ -216,8 +222,14 @@ def miss(prior, current, *, settings_changed: bool = False) -> dict | None:
     uncached = current["prompt"] - current["cached"]
     if shared < MIN_TOKENS or uncached < MIN_TOKENS or current["cached"] * 2 >= shared:
         return None
+    effort = {}
+    new_effort = None not in (prior["effort"], current["effort"]) and prior["effort"] != current["effort"]
     if settings_changed or current["changed"] == "settings":
-        reason = "settings"
+        # A refreshed system prompt is the bigger change; otherwise a
+        # different effort explains a changed header on its own.
+        reason = "effort" if new_effort and not settings_changed else "settings"
+        if reason == "effort":
+            effort = {"effort_from": prior["effort"], "effort_to": current["effort"]}
     elif current["changed"] == "history" and current["cached"] * 2 >= current["shared"]:
         # The provider served what the edit left in place; the edit cost the rest.
         reason = "history"
@@ -230,4 +242,4 @@ def miss(prior, current, *, settings_changed: bool = False) -> dict | None:
     else:
         reason = ""
     return {"event": "cache", "state": "miss", "prompt": current["prompt"],
-            "cached": current["cached"], "idle_s": int(idle), "reason": reason}
+            "cached": current["cached"], "idle_s": int(idle), "reason": reason, **effort}

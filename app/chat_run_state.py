@@ -277,6 +277,17 @@ def _start_turn(user_id, thread_id, text, expected_revision, command_id, model=N
         if replace_from is not None:
             state = ctxmod.invalidate_edited_checkpoints(state, original_messages, original_messages[:replace_from])
         send_model = model if model is not None else row["model"]
+        # A wake turn carries on the turn that started the background work,
+        # so it runs at that turn's reasoning effort. Without one it fell back
+        # to the provider default (Claude: low), and Anthropic keeps a separate
+        # message cache per effort: every switch between a wake and the user's
+        # next turn re-sent the whole conversation uncached.
+        if auto and not scheduled:
+            last = state.get("effort") or {}
+            if reasoning_effort is None and last.get("model") == send_model:
+                reasoning_effort = last.get("value") or None
+        else:
+            state["effort"] = {"model": send_model or "", "value": reasoning_effort or ""}
         prior_meter = state.get("meter") if isinstance(state.get("meter"), dict) else None
         send_type_id = context_meter.source_type_for_model(send_model, prior_meter)
         from . import chat_history

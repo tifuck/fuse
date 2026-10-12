@@ -293,9 +293,11 @@ export function createContext(ctx) {
     S.cacheNoticed.add(id);
     const prompt = Number(event.prompt) || 0;
     const uncached = Math.max(0, prompt - (Number(event.cached) || 0));
+    const effort = (value) => (value ? picker.effortLabel(value) : "Default");
     const why = {
       account: " (another pool account served it)",
       settings: " (instructions, tools or effort changed)",
+      effort: ` (reasoning effort changed: ${effort(event.effort_from)} → ${effort(event.effort_to)})`,
       history: " (earlier messages changed)",
       provider: " (the provider dropped its cache)",
     }[event.reason] || "";

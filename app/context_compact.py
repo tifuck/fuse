@@ -224,7 +224,16 @@ def parse_state(raw) -> dict:
         "auto_ratio": _clamp_ratio(data.get("auto_ratio"), cfg.auto_ratio),
         "keep_tail": _keep_tail_value(data.get("keep_tail"), cfg.keep_tail),
         "window_override": _positive_int(data.get("window_override")),
+        # Model and reasoning effort of the newest turn a wake turn may continue.
+        "effort": _turn_effort(data.get("effort")),
     }
+
+def _turn_effort(value) -> dict | None:
+    if not isinstance(value, dict) or not isinstance(value.get("model"), str):
+        return None
+    from .chat_schema import parse_reasoning_effort
+
+    return {"model": value["model"][:200], "value": parse_reasoning_effort(value.get("value")) or ""}
 
 def _keep_tail_value(value, fallback: int) -> int:
     try:

@@ -528,18 +528,31 @@ class ResumeTest(unittest.IsolatedAsyncioTestCase):
         system = iter([f"{label} system\n\n{frame}" for label in ("first", "wake", "third")])
         for auto in (False, True, False):
             view = chats.get_thread(1, thread["id"])
-            run = store.start_turn(1, thread["id"], "wake event" if auto else "go", view["revision"], None, auto=auto)["run"]
+            # The page always sends the picked effort; a wake turn sends none
+            # and must carry on at the effort of the turn before it.
+            run = store.start_turn(1, thread["id"], "wake event" if auto else "go", view["revision"], None,
+                                   auto=auto, reasoning_effort=None if auto else "xhigh")["run"]
             self.assertEqual(bool(run["request"]["agent"].get("auto")), auto)
+            self.assertEqual(run["request"].get("reasoning_effort"), "xhigh")
             with patch.object(runtime, "build_system_prompt", return_value=next(system)):
                 await self.stream_turn(invoke, run["request"], frozen_context=chats.get_user_context(1))
             store.finish_run(run["id"], {"content": "final answer", "reasoning": ""}, "completed")
         names = [[t["function"]["name"] for t in body["tools"]] for body in sent]
         self.assertIn("propose_skill", names[0])
+        self.assertEqual([body.get("reasoning_effort") for body in sent], ["xhigh"] * 3)
         self.assertEqual(sent[1]["tools"], sent[0]["tools"])
         self.assertEqual(sent[2]["tools"], sent[0]["tools"])
         for earlier, later in zip(sent, sent[1:]):
             self.assertEqual(later["messages"][:len(earlier["messages"])], earlier["messages"])
         self.assertEqual(sent[2]["messages"][0]["content"], f"first system\n\n{frame}")
+
+    def test_wake_turn_takes_the_effort_only_for_the_same_model(self):
+        thread = chats.create_thread(1, model="offline", tools=["web_search"])
+        run = store.start_turn(1, thread["id"], "go", thread["revision"], None, reasoning_effort="high")["run"]
+        store.finish_run(run["id"], {"content": "done", "reasoning": ""}, "completed")
+        view = chats.update_thread(1, thread["id"], model="other-model", expected_revision=chats.get_thread(1, thread["id"])["revision"])
+        wake = store.start_turn(1, thread["id"], "wake event", view["revision"], None, auto=True)["run"]
+        self.assertNotIn("reasoning_effort", wake["request"])
 
     async def test_next_turn_replays_tool_rounds_reasoning_and_session_tail_verbatim(self):
         # Every request extends the previous one: within a turn (tool round,

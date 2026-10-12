@@ -264,7 +264,7 @@ import { createBoot } from './chat/boot.js';
 
   const context = createContext({
     net,
-    picker: { holdHint: (...args) => picker.holdHint(...args), pinHint: (...args) => picker.pinHint(...args), releaseHint: (...args) => picker.releaseHint(...args), setHint: (...args) => picker.setHint(...args) },
+    picker: { effortLabel: (...args) => picker.effortLabel(...args), holdHint: (...args) => picker.holdHint(...args), pinHint: (...args) => picker.pinHint(...args), releaseHint: (...args) => picker.releaseHint(...args), setHint: (...args) => picker.setHint(...args) },
     sync: { acceptThread: (...args) => sync.acceptThread(...args), showFailure: (...args) => sync.showFailure(...args) },
     traces,
     ui,
