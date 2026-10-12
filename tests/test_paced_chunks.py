@@ -114,6 +114,17 @@ class PacedChunksTest(unittest.IsolatedAsyncioTestCase):
             out.append(item)
         self.assertIn(("chunk", b"data: hi\n\n"), out)
 
+    async def test_long_data_line_split_across_chunks_resets_idle(self):
+        # A tool-call frame can be one SSE line well past the 64KB carry.
+        # Its `data:` prefix arrives in the first chunk and its newline in a
+        # later one; that completed line is progress, not silence.
+        line = b"data: " + b"x" * 100_000 + b"\n"
+        frames = [b"data: a\n\n", line[:70_000], line[70_000:], b'data: {"ok":1}\n\n']
+        out = []
+        async for item in _paced_chunks(_stream(frames, delays=[0.0, 0.3, 0.0, 0.3]), 30.0, 0.5, 30.0):
+            out.append(item)
+        self.assertEqual([p for k, p in out if k == "chunk"][-1], b'data: {"ok":1}\n\n')
+
 
 class ConsumeRoundBeatTest(unittest.IsolatedAsyncioTestCase):
     async def test_beats_and_frames_flow_through_consume_round(self):

@@ -100,7 +100,8 @@ def _sse_data_progress(carry: bytearray, chunk: bytes) -> bool:
         nl = carry.find(b"\n")
         if nl < 0:
             if len(carry) > 65_536:
-                del carry[: len(carry) - 4_096]
+                # Keep the head too: its `data:` prefix decides the line.
+                del carry[4_096: len(carry) - 4_096]
             return progressed
         line = bytes(carry[:nl]).strip()
         del carry[: nl + 1]
