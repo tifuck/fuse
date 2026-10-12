@@ -55,6 +55,7 @@ _TEXT_HINTS = (
     ("not loaded", "tool_not_loaded"),
     ("invalid json", "invalid_arguments"),
     ("invalid pattern", "invalid_arguments"),
+    ("is required", "invalid_arguments"),
     ("invalid include", "invalid_arguments"),
     ("regex parse", "invalid_arguments"),
     ("unclosed group", "invalid_arguments"),
@@ -200,7 +201,8 @@ def record(
             classify(error, kind=kind, name=tool_name),
             _clip(error, ERROR_MAX),
             trace_json,
-            _clip(exception, EXCEPTION_MAX),
+            # A traceback's last lines name the exception; keep those.
+            str(exception or "")[-EXCEPTION_MAX:],
             int(latency_ms) if latency_ms is not None else None,
             _clip(reasoning, REASONING_MAX),
             _clip(user_text, USER_TEXT_MAX),

@@ -628,3 +628,17 @@ class OutputAndModelTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RecoveredTraceTest(unittest.TestCase):
+    def test_failed_call_gives_its_error_once(self):
+        error = "Permission request timed out (no user response). Do not access /srv; continue without it."
+        rows = memory._trace_rows({"id": "m1", "tools": [
+            {"name": "run_terminal_command", "status": "error", "error": error, "output": error, "command": "ls /srv"},
+            {"name": "read_file", "status": "error", "error": "not found", "output": "", "path": "/x"},
+        ]})
+        first, second = rows[1]["content"], rows[3]["content"]
+        self.assertEqual(first.count("Permission request timed out"), 1)
+        self.assertIn('"status":"error"', first)
+        # With no output to carry it, the error stays in the evidence.
+        self.assertIn('"error":"not found"', second)

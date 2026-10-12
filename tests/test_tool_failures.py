@@ -166,6 +166,13 @@ class RecordTest(unittest.TestCase):
         self.assertIn("internal_exception", pack["guide"])
         self.assertIn("upstream_error", pack["summary"]["by_kind"])
 
+    def test_long_traceback_keeps_the_exception_line(self):
+        trace = "Traceback (most recent call last):\n" + "  frame\n" * 1000 + "TypeError: cannot unpack non-iterable coroutine object"
+        tool_failures.record(tool_name="list_subagents", error="Tool failed.", kind="internal_exception", exception=trace)
+        row = tool_failures.recent()[0]
+        self.assertEqual(len(row["exception"]), tool_failures.EXCEPTION_MAX)
+        self.assertTrue(row["exception"].endswith("TypeError: cannot unpack non-iterable coroutine object"))
+
     def test_record_never_raises(self):
         with patch.object(db, "tx", side_effect=RuntimeError("boom")):
             self.assertIsNone(tool_failures.record(tool_name="x", error="y"))

@@ -147,6 +147,10 @@ def _trace_rows(message):
             arguments = _json({"recorded_details": details})
         output = max((str(trace.get(k) or "") for k in ("output", "preview", "summary")), key=len)
         evidence = {k: trace[k] for k in ("status", "exit_code", "error", "results", "queries") if trace.get(k) is not None}
+        # A failed call's stored output is usually the error text the model
+        # was given; sent in both places it reads as two failures.
+        if evidence.get("error") and " ".join(str(evidence["error"]).split()) in " ".join(output.split()):
+            del evidence["error"]
         if trace.get("image"):
             output += "\n[Image pixels are unavailable in this recovered trace. Re-read the file to inspect it; metadata is not visual evidence.]"
         body = ("[Recovered historical tool trace. The original provider exchange is unavailable; "

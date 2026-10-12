@@ -1022,8 +1022,10 @@ async def _shell(user_id, host_id, alias, args, root, *, windows: bool = False, 
     from . import command_jobs
 
     command = str(args.get("command") or "")
-    if not command.strip() or len(command) > 8000:
-        raise WorkspaceError("invalid command")
+    if not command.strip():
+        raise WorkspaceError("command is required: pass the shell command to run in `command`")
+    if len(command) > 8000:
+        raise WorkspaceError(f"command is {len(command)} characters; the limit is 8000. Put a long script in a file with write_file and run that file")
     cwd = _shell_cwd(args, root, windows=windows)
     background = _as_bool(args.get("background"))
     timeout_ms, wait_ms = _command_timeouts(args, background)
@@ -1301,7 +1303,7 @@ async def _monitor(user_id, host_id, alias, args, root, *, windows: bool = False
         raise WorkspaceError("description is required: say in a few words what you are monitoring (the user sees it instead of the command)")
     if command:
         if len(command) > 8000:
-            raise WorkspaceError("invalid command")
+            raise WorkspaceError(f"command is {len(command)} characters; the limit is 8000. Put a long script in a file with write_file and run that file")
     pattern = str(args.get("pattern") or "")
     try:
         monitor_mod.compile_pattern(pattern)
