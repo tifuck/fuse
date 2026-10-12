@@ -6,7 +6,9 @@ and prompt-cache breakpoints ride on the newest eligible block each turn.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 
 from ..config import settings
 from .claude_catalog import _meta_for, efforts_for
@@ -96,6 +98,23 @@ def _thinking_blocks(msg: dict) -> list[dict]:
     return out
 
 
+_TOOL_ID = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def _tool_id(raw) -> str:
+    """An id Anthropic accepts (^[a-zA-Z0-9_-]+$) for a call from any model.
+
+    History from other backends carries ids like Kimi's `functions.grep:0` or
+    Devin's `call_…#…`; sent as-is after a model switch, Anthropic refuses the
+    whole request. The mapping is a pure function of the id, so the call and
+    its result stay paired and every later request replays the same bytes.
+    """
+    ident = str(raw or "")[:128]
+    if not ident or _TOOL_ID.fullmatch(ident):
+        return ident
+    return "toolu_" + hashlib.sha256(str(raw).encode()).hexdigest()[:24]
+
+
 def _tool_use_block(call: dict) -> dict | None:
     if not isinstance(call, dict):
         return None
@@ -115,7 +134,7 @@ def _tool_use_block(call: dict) -> dict | None:
             parsed = {}
     return {
         "type": "tool_use",
-        "id": str(call.get("id") or "")[:128] or f"toolu_{name[:24]}",
+        "id": _tool_id(call.get("id")) or f"toolu_{name[:24]}",
         "name": name[:64],
         "input": parsed,
     }
@@ -233,7 +252,7 @@ def build_messages_payload(body: dict, model: str) -> dict:
             pending_results.append(
                 {
                     "type": "tool_result",
-                    "tool_use_id": call_id[:128],
+                    "tool_use_id": _tool_id(call_id),
                     "content": _text_of(msg.get("content")) or "",
                 }
             )

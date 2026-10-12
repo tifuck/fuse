@@ -128,6 +128,30 @@ class ClaudeParseTest(unittest.TestCase):
         total = len(marked) + sum("cache_control" in b for b in payload["system"]) + sum("cache_control" in t for t in payload["tools"])
         self.assertLessEqual(total, 4)
 
+    def test_foreign_tool_ids_map_to_ids_anthropic_accepts(self):
+        # History from Kimi/Devin/gpt-oss carries ids Anthropic rejects
+        # (^[a-zA-Z0-9_-]+$); a switch to Claude must still replay it, with
+        # each call paired to its result and the same bytes every request.
+        ids = ["functions.grep:0", "call_ab#cd", "toolu_ok-1"]
+        body = {
+            "messages": [
+                {"role": "user", "content": "go"},
+                {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": ident, "type": "function", "function": {"name": "grep", "arguments": "{}"}} for ident in ids]},
+                *({"role": "tool", "tool_call_id": ident, "content": "r"} for ident in ids),
+            ],
+        }
+        first = claude_mod.build_messages_payload(body, "claude-sonnet-4-6")
+        second = claude_mod.build_messages_payload(body, "claude-sonnet-4-6")
+        uses = [block["id"] for block in first["messages"][1]["content"] if block["type"] == "tool_use"]
+        results = [block["tool_use_id"] for block in first["messages"][2]["content"]]
+        self.assertEqual(uses, results)
+        self.assertEqual(uses[2], "toolu_ok-1")
+        self.assertEqual(len(set(uses)), 3)
+        for ident in uses:
+            self.assertRegex(ident, r"^[a-zA-Z0-9_-]+$")
+        self.assertEqual(first["messages"], second["messages"])
+
     def test_breakpoint_walks_back_inside_a_block_array(self):
         payload = claude_mod.build_messages_payload(
             {
