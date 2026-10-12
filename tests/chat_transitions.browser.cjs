@@ -11,6 +11,10 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
     for (const width of [1440, 390]) {
       const context = await browser.newContext({ viewport: { width, height: 950 }, reducedMotion: 'no-preference' });
       await context.route('**/*', route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
+      // Thinking is hidden unless the reader opts in (0a37cc0); the steer
+      // split below is checked around a visible live thought.
+      // (Sandboxed artifact frames have no storage.)
+      await context.addInitScript(() => { try { localStorage.setItem('fuse.chat.thinking.v1', 'shown'); } catch (_) {} });
       const page = await context.newPage();
       page.on('pageerror', error => errors.push(error.message));
       await page.goto(origin);
