@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 
 import httpx
 
 from ..proxy import usage_from_obj
+
+logger = logging.getLogger(__name__)
 
 
 def _sse(obj: dict) -> bytes:
@@ -120,19 +123,41 @@ class _CallBook:
         self.order: list[str] = []
         self.calls: dict[str, dict] = {}
 
-    def add(self, item_id: str, call_id: str, name: str, arguments: str) -> dict:
+    def add(self, item_id: str, call_id: str, name: str, arguments: str, output_index=None) -> dict:
         rec = {
             "index": len(self.order),
             "id": call_id,
             "name": name,
             "arguments": arguments,
+            "output_index": output_index,
         }
-        self.calls[item_id] = rec
-        self.order.append(item_id)
+        # Two items without an id must not share one record.
+        key = item_id or f"_call{len(self.order)}"
+        self.calls[key] = rec
+        self.order.append(key)
         return rec
 
     def get(self, item_id: str) -> dict | None:
         return self.calls.get(item_id)
+
+    def find(self, event: dict) -> dict | None:
+        """The call an argument or item event belongs to: by item id, else by
+        the call id or output index the event carries. Parallel calls whose
+        events named another id used to land nowhere, and the model's calls
+        ran with empty arguments."""
+        item = event.get("item") if isinstance(event.get("item"), dict) else {}
+        rec = self.calls.get(str(event.get("item_id") or item.get("id") or ""))
+        if rec:
+            return rec
+        call_id = str(item.get("call_id") or event.get("call_id") or "")
+        index = event.get("output_index")
+        for rec in self.calls.values():
+            if call_id and rec["id"] == call_id:
+                return rec
+        for rec in self.calls.values():
+            if index is not None and rec["output_index"] == index:
+                return rec
+        return None
 
     def tool_calls(self) -> list[dict]:
         return [
@@ -203,6 +228,33 @@ class _Translator:
         }
         return _sse(obj)
 
+    def _settle(self, rec: dict, final) -> bytes | None:
+        """Make the streamed arguments match the call's final arguments.
+
+        Deltas are not the only carrier: the final text also arrives on
+        function_call_arguments.done and output_item.done, and some parallel
+        calls stream no deltas at all. Whatever the deltas left out is sent
+        now, as one more delta."""
+        if final is None:
+            return None
+        final = str(final)
+        sent = rec["arguments"]
+        if not final:
+            if sent:
+                return None
+            # Zero-argument call: clients still need valid JSON.
+            rec["arguments"] = "{}"
+            return self._chunk({"tool_calls": [{"index": rec["index"], "function": {"arguments": "{}"}}]})
+        if final == sent:
+            return None
+        if not final.startswith(sent):
+            logger.warning("chatgpt call %s: streamed arguments disagree with the final ones; keeping the streamed text", rec["id"])
+            return None
+        if sent == "" and rec["name"]:
+            logger.info("chatgpt call %s (%s): %d argument chars arrived only with the finished call", rec["id"], rec["name"], len(final))
+        rec["arguments"] = final
+        return self._chunk({"tool_calls": [{"index": rec["index"], "function": {"arguments": final[len(sent):]}}]})
+
     def _handle(self, event: dict) -> bytes | None:
         etype = event.get("type") or ""
         if etype == "response.created":
@@ -228,6 +280,7 @@ class _Translator:
                     str(item.get("call_id") or item.get("id") or f"call_{len(self.book.order)}"),
                     str(item.get("name") or ""),
                     str(item.get("arguments") or ""),
+                    event.get("output_index"),
                 )
                 return self._chunk(
                     {
@@ -243,10 +296,14 @@ class _Translator:
                 )
             return None
         if etype == "response.output_item.done":
-            block = reasoning_block(event.get("item"), self.account)
+            item = event.get("item") if isinstance(event.get("item"), dict) else {}
+            if item.get("type") == "function_call":
+                rec = self.book.find(event)
+                return self._settle(rec, item.get("arguments")) if rec else None
+            block = reasoning_block(item, self.account)
             return self._chunk({"claude_thinking": [block]}) if block else None
         if etype == "response.function_call_arguments.delta":
-            rec = self.book.get(str(event.get("item_id") or ""))
+            rec = self.book.find(event)
             if rec and event.get("delta"):
                 rec["arguments"] += str(event.get("delta"))
                 return self._chunk(
@@ -254,17 +311,8 @@ class _Translator:
                 )
             return None
         if etype == "response.function_call_arguments.done":
-            rec = self.book.get(str(event.get("item_id") or ""))
-            if rec and event.get("arguments") is not None:
-                rec["arguments"] = str(event.get("arguments") or "")
-                if not rec["arguments"]:
-                    # Zero-argument call: the concatenated deltas are empty,
-                    # but clients still need valid JSON.
-                    rec["arguments"] = "{}"
-                    return self._chunk(
-                        {"tool_calls": [{"index": rec["index"], "function": {"arguments": "{}"}}]}
-                    )
-            return None
+            rec = self.book.find(event)
+            return self._settle(rec, event.get("arguments")) if rec else None
         if etype == "response.completed":
             response = event.get("response") if isinstance(event.get("response"), dict) else {}
             if not response:
@@ -385,19 +433,26 @@ async def _aggregate(resp: httpx.Response, client: httpx.AsyncClient, model: str
                         str(item.get("call_id") or item.get("id") or f"call_{len(translator.book.order)}"),
                         str(item.get("name") or ""),
                         str(item.get("arguments") or ""),
+                        event.get("output_index"),
                     )
             elif etype == "response.output_item.done":
-                block = reasoning_block(event.get("item"), account)
+                item = event.get("item") if isinstance(event.get("item"), dict) else {}
+                if item.get("type") == "function_call":
+                    rec = translator.book.find(event)
+                    if rec and item.get("arguments"):
+                        rec["arguments"] = str(item.get("arguments"))
+                    continue
+                block = reasoning_block(item, account)
                 if block:
                     thinking.append(block)
             elif etype == "response.function_call_arguments.delta":
-                rec = translator.book.get(str(event.get("item_id") or ""))
+                rec = translator.book.find(event)
                 if rec and event.get("delta"):
                     rec["arguments"] += str(event.get("delta"))
             elif etype == "response.function_call_arguments.done":
-                rec = translator.book.get(str(event.get("item_id") or ""))
+                rec = translator.book.find(event)
                 if rec and event.get("arguments") is not None:
-                    rec["arguments"] = str(event.get("arguments") or "") or "{}"
+                    rec["arguments"] = str(event.get("arguments") or "") or rec["arguments"] or "{}"
             elif etype == "response.completed":
                 response = event.get("response") if isinstance(event.get("response"), dict) else {}
                 if not response:

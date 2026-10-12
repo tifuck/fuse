@@ -104,6 +104,74 @@ class ChatgptStreamEdgeTest(unittest.IsolatedAsyncioTestCase):
         call = body["choices"][0]["message"]["tool_calls"][0]
         self.assertEqual(call["function"]["arguments"], "{}")
 
+    async def _streamed_calls(self, frames):
+        """Arguments per call as a chat-completions client accumulates them."""
+        chunks = [c async for c in _translated_stream(_StreamResp(frames), _FakeClient(), "gpt-5", {})]
+        calls: dict[int, dict] = {}
+        for chunk in chunks:
+            text = chunk.decode()
+            if not text.startswith("data: {"):
+                continue
+            for choice in json.loads(text[6:]).get("choices") or []:
+                for call in (choice.get("delta") or {}).get("tool_calls") or []:
+                    rec = calls.setdefault(call["index"], {"name": "", "arguments": ""})
+                    fn = call.get("function") or {}
+                    rec["name"] += fn.get("name") or ""
+                    rec["arguments"] += fn.get("arguments") or ""
+        return [calls[i] for i in sorted(calls)]
+
+    @staticmethod
+    def _added(n, item_id="", output_index=None):
+        event = {"type": "response.output_item.added",
+                 "item": {"type": "function_call", "id": item_id, "call_id": f"call_{n}", "name": "grep", "arguments": ""}}
+        if output_index is not None:
+            event["output_index"] = output_index
+        return _frame(event)
+
+    async def test_parallel_calls_keep_arguments_that_arrive_only_when_done(self):
+        # Production (Oct 2026): rounds of parallel ChatGPT calls all ran
+        # with "{}" while single calls kept their arguments.
+        frames = [
+            _frame({"type": "response.created", "response": {"id": "r5"}}),
+            self._added(1, "fc_1", 0), self._added(2, "fc_2", 1), self._added(3, "fc_3", 2),
+            _frame({"type": "response.function_call_arguments.done", "item_id": "fc_1", "output_index": 0, "arguments": '{"pattern":"a"}'}),
+            _frame({"type": "response.output_item.done", "output_index": 1,
+                    "item": {"type": "function_call", "id": "fc_2", "call_id": "call_2", "name": "grep", "arguments": '{"pattern":"b"}'}}),
+            _frame({"type": "response.function_call_arguments.delta", "item_id": "other_3", "output_index": 2, "delta": '{"pattern":'}),
+            _frame({"type": "response.function_call_arguments.delta", "item_id": "other_3", "output_index": 2, "delta": '"c"}'}),
+            _frame({"type": "response.function_call_arguments.done", "item_id": "other_3", "output_index": 2, "arguments": '{"pattern":"c"}'}),
+            _frame({"type": "response.output_item.done", "output_index": 2,
+                    "item": {"type": "function_call", "id": "fc_3", "call_id": "call_3", "name": "grep", "arguments": '{"pattern":"c"}'}}),
+            _frame({"type": "response.completed", "response": {"id": "r5", "usage": {}}}),
+        ]
+        calls = await self._streamed_calls(frames)
+        self.assertEqual([c["arguments"] for c in calls], ['{"pattern":"a"}', '{"pattern":"b"}', '{"pattern":"c"}'])
+        body = await _aggregate(_StreamResp(frames), _FakeClient(), "gpt-5")
+        self.assertEqual([c["function"]["arguments"] for c in body["choices"][0]["message"]["tool_calls"]],
+                         ['{"pattern":"a"}', '{"pattern":"b"}', '{"pattern":"c"}'])
+
+    async def test_streamed_arguments_are_not_sent_twice(self):
+        frames = [
+            _frame({"type": "response.created", "response": {"id": "r6"}}),
+            self._added(1, "fc_1", 0),
+            _frame({"type": "response.function_call_arguments.delta", "item_id": "fc_1", "delta": '{"pattern":'}),
+            _frame({"type": "response.function_call_arguments.delta", "item_id": "fc_1", "delta": '"a"}'}),
+            _frame({"type": "response.function_call_arguments.done", "item_id": "fc_1", "arguments": '{"pattern":"a"}'}),
+            _frame({"type": "response.output_item.done", "item": {"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "grep", "arguments": '{"pattern":"a"}'}}),
+            _frame({"type": "response.completed", "response": {"id": "r6", "usage": {}}}),
+        ]
+        self.assertEqual(await self._streamed_calls(frames), [{"name": "grep", "arguments": '{"pattern":"a"}'}])
+
+    async def test_items_without_ids_stay_separate_calls(self):
+        frames = [
+            _frame({"type": "response.created", "response": {"id": "r7"}}),
+            self._added(1, "", 0), self._added(2, "", 1),
+            _frame({"type": "response.function_call_arguments.done", "output_index": 0, "arguments": '{"pattern":"a"}'}),
+            _frame({"type": "response.function_call_arguments.done", "output_index": 1, "arguments": '{"pattern":"b"}'}),
+            _frame({"type": "response.completed", "response": {"id": "r7", "usage": {}}}),
+        ]
+        self.assertEqual([c["arguments"] for c in await self._streamed_calls(frames)], ['{"pattern":"a"}', '{"pattern":"b"}'])
+
     async def test_disconnect_mid_stream_is_cancelled_not_failed(self):
         resp = _StreamResp(
             [
