@@ -401,6 +401,20 @@ class HostileInputTest(unittest.TestCase):
         got = extract_page(text, content_type="text/plain", find="NEEDLE-AT-END")
         self.assertIn("NEEDLE-AT-END", got.text)
 
+    def test_find_phrase_split_by_passage_cut_is_returned_whole(self):
+        from app.search.extract import PASSAGE_CHARS
+
+        phrase = "restore the replica"
+        text = "a" * (PASSAGE_CHARS - len(phrase) // 2) + phrase + " and then more words. " + ("tail " * 100)
+        self.assertIn(phrase, text)
+        out = find_windows(text, phrase)
+        self.assertIn(phrase, out)
+        self.assertNotIn("No literal match", out)
+        for content_type in ("text/plain", "text/html"):
+            raw = text if content_type == "text/plain" else f"<html><body><article><p>{text}</p></article></body></html>"
+            got = extract_page(raw, content_type=content_type, url="https://example.test/a", find=phrase)
+            self.assertIn(phrase, got.text, content_type)
+
     def test_empty_bing_cite_keeps_other_results(self):
         from app.search.providers.bing import parse_bing_html
 

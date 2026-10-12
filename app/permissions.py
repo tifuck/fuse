@@ -125,7 +125,9 @@ def is_secret_name(name: str) -> bool:
 
 
 def is_secret_path(path: str) -> bool:
-    parts = str(path or "").replace("\\", "/").lower().split("/")
+    parts = [part for part in str(path or "").replace("\\", "/").lower().split("/") if part not in ("", ".")]
+    if not parts:
+        return False
     if is_secret_name(parts[-1]):
         return True
     return any(part in {".aws", ".docker", ".kube", ".ssh", ".gnupg"} for part in parts[:-1])
@@ -1075,10 +1077,13 @@ async def review(*, tool: str, args: dict, user_id: int,
             for cand, is_dir in paths:
                 # Secret-named targets inside an approved dir are in scope and
                 # silent; only ones outside the roots raise the card.
-                if is_secret_path(cand) and (secret_dir_in_path(cand) or not scope_allows(cand, base, roots, windows)[0]):
+                ok, resolved_cand = scope_allows(cand, base, roots, windows)
+                # Judge the resolved path: a trailing slash on the raw token
+                # (`/etc/app.env/`) is the same file, and must not fall through
+                # to a directory grant of its parent.
+                if is_secret_path(resolved_cand) and (secret_dir_in_path(resolved_cand) or not ok):
                     secret = True
                     reasons.append("secret-named file")
-                ok, resolved_cand = scope_allows(cand, base, roots, windows)
                 if ok:
                     continue
                 reasons.append(f"{resolved_cand} is outside the allowed roots")
@@ -1087,7 +1092,7 @@ async def review(*, tool: str, args: dict, user_id: int,
                     # A secret-named target grants that exact file, never its
                     # directory (which would silently cover siblings).
                     grant_kind, grant_value = (
-                        ("file", resolved_cand) if is_secret_path(cand) else
+                        ("file", resolved_cand) if is_secret_path(resolved_cand) else
                         ("dir", resolved_cand if is_dir else _grant_dir_for("read_file", resolved_cand, windows))
                     )
         offending = [r.split(" is outside")[0] for r in reasons if "outside" in r]

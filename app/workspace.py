@@ -61,6 +61,7 @@ from .workspace_ops.previews import (
     _edit_snippet,
     _multi_diff,
     _parse_edits,
+    _inserted_at,
     _post_edit_snippet,
     _read_render,
     _replace_preview,
@@ -2635,13 +2636,13 @@ async def _replace(user_id, host_id, alias, args, root, *, windows: bool = False
             fresh = await _agent_read_sample(user_id, host_id, path)
             starts: list[int | None] = []
             snippet = ""
-            for _o, n, _a in edits:
-                snip, start = _post_edit_snippet(fresh, n) if fresh else ("", None)
+            for o, n, _a in edits:
+                snip, start = _post_edit_snippet(fresh, n, o) if fresh else ("", None)
                 starts.append(start)
                 if snip and not snippet:
                     snippet = snip
             diff = "\n".join(
-                _replace_preview(path, *reversed(_whole_lines(fresh, n, o)), 1, start=s)
+                _replace_preview(path, *reversed(_whole_lines(fresh, n, o, at=_inserted_at(fresh, n, o))), 1, start=s)
                 for (o, n, _a), s in zip(edits, starts)
             )
             preview = diff[:800]

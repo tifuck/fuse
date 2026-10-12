@@ -366,6 +366,23 @@ class ReplaceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("@@ -50 +50 @@\n-line 050 xxxx\n+LINE 050 (edited) xxxx", body)
         self.assertIn("@@ -60 +60 @@\n-line 060 xxxx\n+LINE 060 (last) xxxx", body)
 
+    async def test_connector_edit_anchors_on_the_changed_copy(self):
+        # new_string already occurs earlier in the file. The numbered snippet
+        # and the hunk header must name the edit, not that earlier copy.
+        fresh = "KEEP\n" + "".join(f"line{i}\n" for i in range(30)) + "KEEP\nTAIL\n"
+        with patch.object(ws, "_is_agent", return_value=True), patch.object(ws, "_agent_version", return_value=(1, 7, 1)), \
+                patch.object(ws, "_agent_call", AsyncMock(return_value={"ok": True, "out": "1 replacement"})), \
+                patch.object(ws, "_agent_read_sample", AsyncMock(return_value=fresh)):
+            text, rec = await ws._replace(
+                1, 2, "h",
+                {"path": "a.txt", "old_string": "line29\nalpha\nTAIL", "new_string": "line29\nKEEP\nTAIL"},
+                "/repo",
+            )
+        body = ws.unlabel_host("h", text)
+        self.assertIn("32: KEEP", body)
+        self.assertNotIn("1: KEEP\n2: line0", body)
+        self.assertIn("@@ -31,3 +31,3 @@", rec["preview"])
+
     async def test_success_returns_numbered_snippet(self):
         body = "".join(f"line{i}\n" for i in range(1, 21)).encode()
         sftp = FakeSFTP({"/repo/a.py": body})
@@ -420,6 +437,15 @@ class SearchTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("\napp.py:3:", text)
         self.assertNotIn("hunter2", text)
         self.assertIn("withheld", text)
+
+    async def test_grep_withholds_secret_path_with_trailing_slash(self):
+        data = {"exit": 0, "out": "./.env/:1:SECRET=2\n./cert.pem/:1:KEY2\n./main.py:1:ok\n", "err": "", "timed_out": False}
+        with patch.object(ws, "_is_agent", return_value=False), patch.object(ws, "_tool_exec", AsyncMock(return_value=data)):
+            text, _ = await ws._grep(1, 2, "h", {"pattern": "KEY"}, "/repo")
+        self.assertNotIn("SECRET", text)
+        self.assertNotIn("KEY2", text)
+        self.assertIn("main.py:1:ok", text)
+        self.assertIn("2 result(s) in secret-named files", text)
 
     async def test_grep_explicit_secret_target_is_shown(self):
         data = {"exit": 0, "out": ".env:1:KEY=hunter2\n", "err": "", "timed_out": False}
@@ -587,6 +613,32 @@ class ReadUrlPagingTest(unittest.TestCase):
         self.assertIsNone(last.next_offset)
         past = extract_mod.extract_page(full, content_type="text/plain", offset=len(full) + 5)
         self.assertIn("past the end", pack_page("https://example.com/a", past))
+
+    def test_page_seam_whitespace_is_in_exactly_one_page(self):
+        from app.search.extract import FETCH_CHARS
+
+        full = "A" * (FETCH_CHARS - 1) + "\n" + "SECOND" + " tail " * 100
+        pages = []
+        offset = 0
+        for _ in range(4):
+            page = extract_mod.extract_page(full, content_type="text/plain", offset=offset)
+            self.assertEqual(page.offset + len(page.text), page.next_offset or page.offset + len(page.text))
+            packed = pack_page("https://example.com/a", page)
+            self.assertIn(f"covers {page.offset}-{page.offset + len(page.text)}", packed)
+            pages.append(page.text)
+            if page.next_offset is None:
+                break
+            self.assertIn(f"Showing characters {page.offset}-{page.next_offset}", packed)
+            offset = page.next_offset
+        self.assertEqual("".join(pages), full)
+
+    def test_paged_windows_stay_contiguous_after_leading_whitespace(self):
+        from app.search.extract import FETCH_CHARS
+
+        full = "x\n\n" + "B" * FETCH_CHARS + "TAIL"
+        first = extract_mod.extract_page(full, content_type="text/plain")
+        second = extract_mod.extract_page(full, content_type="text/plain", offset=first.next_offset)
+        self.assertEqual(first.text + second.text, full)
 
     def test_query_mode_is_not_paged(self):
         full = "".join(f"word{i} " for i in range(8000))

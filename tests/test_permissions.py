@@ -62,6 +62,18 @@ class SecretNameTest(PermSchemaTest):
         for name in no:
             self.assertFalse(permissions.is_secret_name(name), name)
 
+    def test_trailing_slash_does_not_hide_a_secret_name(self):
+        # A trailing slash must not move the filename into a parent slot:
+        # `/etc/app.env/` is the same file as `/etc/app.env`.
+        for path in ("/etc/app.env/", "/etc/cert.pem/", "/srv/app/.env/", "cert.pem/"):
+            self.assertTrue(permissions.is_secret_path(path), path)
+        # The credential directory itself, with or without a slash, is not a
+        # secret-named file. A file inside it still is.
+        for path in ("/home/u/.ssh", "/home/u/.ssh/", ".ssh", ".ssh/"):
+            self.assertFalse(permissions.is_secret_path(path), path)
+        self.assertTrue(permissions.is_secret_path("/home/u/.ssh/config"))
+        self.assertTrue(permissions.is_secret_path("/home/u/.ssh/config/"))
+
 
 class ScopeTest(PermSchemaTest):
     def test_roots(self):
@@ -330,6 +342,19 @@ class ReviewTest(PermSchemaTest):
         self.assertEqual(grants[0]["value"], "/home/other/.env")
         self.assertEqual(events[0]["grant_kind"], "file")
         self.assertEqual(events[0]["grant_value"], "/home/other/.env")
+
+    def test_trailing_slash_secret_shell_is_not_a_dir_grant(self):
+        # `cat /etc/app.env/` is the same secret file as `cat /etc/app.env`.
+        # A secret shell is never Allow-always, and the slash must not turn
+        # that into a directory grant of /etc.
+        res, events, payload = asyncio.run(
+            self._ask_flow("allow_session", {"command": "cat /etc/app.env/", "cwd": ""}, tool="run_terminal_command")
+        )
+        self.assertTrue(res.allowed)
+        self.assertTrue(events[0]["secret"])
+        self.assertEqual(events[0]["grant_kind"], "")
+        self.assertEqual(events[0]["grant_value"], "")
+        self.assertEqual(permissions.grants_for(1, 1), [])
 
     def test_shell_cwd_and_paths_ask(self):
         # A simple read of an out-of-root path asks, and allowing it for the

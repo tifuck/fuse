@@ -851,7 +851,9 @@ def _merge_passages(passages: list[_Passage]) -> list[_Passage]:
             addition = passage.text if passage.text not in prior.text else ""
             if addition and prior.heading and passage.heading == prior.heading:
                 addition = addition.removeprefix(prior.heading).lstrip()
-            text = prior.text + ("\n\n" if addition else "") + addition
+            # end == start is one paragraph sliced by the size cut, not two paragraphs.
+            gap = "" if passage.start <= prior.end else "\n\n"
+            text = prior.text + (gap if addition else "") + addition
             merged[-1] = _Passage(prior.start, max(prior.end, passage.end), text, prior.heading)
         else:
             merged.append(passage)
@@ -907,7 +909,10 @@ def select_passages(text: str, *, query: str | None = None, find: str | None = N
             if index < 0:
                 break
             hits += 1
-            selected.extend(chunk for chunk in chunks if chunk.start <= index < chunk.end)
+            # A hit can start in one chunk and end in the next: the 1200-char
+            # paragraph cut does not know where the phrase is.
+            end = index + len(literal)
+            selected.extend(chunk for chunk in chunks if chunk.start < end and index < chunk.end)
             cursor = index + max(1, len(literal))
         if not selected:
             return f"No literal match for {literal!r} in the extracted text.\nPage opening:\n{text[:FETCH_CHARS]}"
@@ -1083,10 +1088,12 @@ def extract_page(
     elif not text.strip() and kind != "spa":
         kind = "empty"
     window_end = start + len(text)
+    if not paged:
+        text = text.strip()
 
     out = PageExtract(
         title=title,
-        text=text.strip(),
+        text=text,
         truncated=truncated,
         kind=kind,
         used_find=used_find,
