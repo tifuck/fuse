@@ -55,8 +55,16 @@ def _flatten(content, images_out: list) -> str:
     return "\n".join(parts)
 
 
+def _tool_name(msg: dict, names: dict) -> str:
+    own = msg.get("name")
+    if isinstance(own, str) and own.strip():
+        return own.strip()
+    return names.get(str(msg.get("tool_call_id") or ""), "")
+
+
 def to_ollama(messages: list) -> list:
     out = []
+    names: dict[str, str] = {}
     for msg in messages:
         role = msg.get("role", "user")
         images: list[str] = []
@@ -75,12 +83,18 @@ def to_ollama(messages: list) -> list:
                 call = {"function": {"name": fn.get("name", ""), "arguments": args or {}}}
                 if tc.get("id"):
                     call["id"] = str(tc["id"])
+                    if fn.get("name"):
+                        names[str(tc["id"])] = str(fn["name"])
                 calls.append(call)
             item["tool_calls"] = calls
         if role == "tool":
             item = {"role": "tool", "content": content}
             if msg.get("tool_call_id"):
                 item["tool_call_id"] = str(msg["tool_call_id"])
+            # Ollama pairs a result by tool_name, not the OpenAI call id.
+            tool_name = _tool_name(msg, names)
+            if tool_name:
+                item["tool_name"] = tool_name
         images = [*(msg.get("images") or []), *images]
         if images:
             item["images"] = images
@@ -100,17 +114,30 @@ def to_openai_tools(calls: list, include_index=False, *, state: dict | None = No
         native_index = fn.get("index", tc.get("index"))
         if isinstance(native_index, bool) or not isinstance(native_index, int) or native_index < 0:
             native_index = None
-        identity = ("index", native_index) if native_index is not None else (
-            ("id", raw_id) if isinstance(raw_id, str) and raw_id.strip() else ("call", len(state))
-        )
-        previous = state.get(identity)
-        index = previous[0] if previous else (native_index if native_index is not None else max(
-            (value[0] for value in state.values()), default=-1
-        ) + 1)
+        # A native index continues one call across chunks, but Ollama restarts
+        # index at 0 in each chunk: a named call is always a new call (the
+        # index is rebound to it), only a nameless follow-up continues.
+        name = fn.get("name") if isinstance(fn.get("name"), str) else ""
+        if native_index is not None:
+            identity = ("index", native_index)
+        elif isinstance(raw_id, str) and raw_id.strip():
+            identity = ("id", raw_id)
+        else:
+            identity = ("call", len(state))
+        previous = None if native_index is not None and name else state.get(identity)
+        if previous:
+            index = previous[0]
+        else:
+            taken = {value[0] for value in state.values()}
+            if native_index is not None and native_index not in taken:
+                index = native_index
+            else:
+                index = max(taken, default=-1) + 1
         call_id = previous[1] if previous else (
             raw_id if isinstance(raw_id, str) and raw_id.strip() else f"ollama_{index}"
         )
-        state[identity] = (index, call_id)
+        kept_name = name or (previous[2] if previous else "")
+        state[identity] = (index, call_id, kept_name)
         call = {
             "id": call_id,
             "type": "function",

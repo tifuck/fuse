@@ -162,6 +162,31 @@ class ChatgptStreamEdgeTest(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual(await self._streamed_calls(frames), [{"name": "grep", "arguments": '{"pattern":"a"}'}])
 
+    async def test_reused_item_id_stays_two_calls(self):
+        # A repeated item id must not collapse both calls onto one record:
+        # the second add used to overwrite the first while order kept both keys.
+        frames = [
+            _frame({"type": "response.created", "response": {"id": "r8"}}),
+            self._added(1, "fc", 0),
+            _frame({"type": "response.function_call_arguments.delta", "item_id": "fc", "output_index": 0, "delta": '{"a":1}'}),
+            self._added(2, "fc", 1),
+            _frame({"type": "response.function_call_arguments.delta", "item_id": "fc", "output_index": 1, "delta": '{"b":2}'}),
+            _frame({"type": "response.output_item.done", "output_index": 0,
+                    "item": {"type": "function_call", "id": "fc", "call_id": "call_1", "name": "grep", "arguments": '{"a":1}'}}),
+            _frame({"type": "response.completed", "response": {"id": "r8", "usage": {}}}),
+        ]
+        calls = await self._streamed_calls(frames)
+        self.assertEqual(calls, [
+            {"name": "grep", "arguments": '{"a":1}'},
+            {"name": "grep", "arguments": '{"b":2}'},
+        ])
+        body = await _aggregate(_StreamResp(frames), _FakeClient(), "gpt-5")
+        message_calls = body["choices"][0]["message"]["tool_calls"]
+        self.assertEqual(
+            [(c["id"], c["function"]["arguments"]) for c in message_calls],
+            [("call_1", '{"a":1}'), ("call_2", '{"b":2}')],
+        )
+
     async def test_items_without_ids_stay_separate_calls(self):
         frames = [
             _frame({"type": "response.created", "response": {"id": "r7"}}),

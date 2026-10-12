@@ -48,6 +48,26 @@ class OllamaToolsTest(unittest.TestCase):
         )
         self.assertEqual(msgs[0]["tool_calls"][0]["id"], "call_9")
         self.assertEqual(msgs[1]["tool_call_id"], "call_9")
+        self.assertEqual(msgs[1]["tool_name"], "web_search")
+
+    def test_tool_name_from_message_or_matching_call(self):
+        msgs = to_ollama(
+            [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {"id": "c1", "function": {"name": "get_temperature", "arguments": "{}"}},
+                        {"id": "c2", "function": {"name": "get_conditions", "arguments": "{}"}},
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "c1", "content": "22C"},
+                {"role": "tool", "tool_call_id": "c2", "name": "overridden", "content": "sunny"},
+            ]
+        )
+        self.assertEqual(msgs[1]["tool_name"], "get_temperature")
+        self.assertEqual(msgs[2]["tool_name"], "overridden")
+        self.assertEqual(msgs[1]["tool_call_id"], "c1")
 
 
 class _FakeResp:
@@ -106,6 +126,36 @@ class OllamaStreamToolIdentityTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("id", deltas[1])
         self.assertIn("name", deltas[0]["function"])
         self.assertNotIn("name", deltas[1]["function"])
+
+    async def test_restarted_native_index_is_a_new_call(self):
+        # Ollama numbers each chunk's calls from 0, so a later chunk's
+        # complete call at index 0 is not a fragment of the previous one.
+        deltas = await self._deltas(
+            {"message": {"tool_calls": [
+                {"function": {"name": "get_temperature", "index": 0, "arguments": {"city": "NY"}}}], "content": ""}},
+            {"message": {"tool_calls": [
+                {"function": {"name": "get_conditions", "index": 0, "arguments": {"city": "London"}}}], "content": ""}},
+            {"done": True, "message": {}},
+        )
+        self.assertEqual([d["index"] for d in deltas], [0, 1])
+        self.assertEqual(deltas[0]["function"]["name"], "get_temperature")
+        self.assertEqual(deltas[1]["function"]["name"], "get_conditions")
+        self.assertEqual(json.loads(deltas[0]["function"]["arguments"])["city"], "NY")
+        self.assertEqual(json.loads(deltas[1]["function"]["arguments"])["city"], "London")
+        self.assertIn("id", deltas[1])
+        self.assertNotEqual(deltas[0]["id"], deltas[1]["id"])
+
+    async def test_restarted_native_index_with_same_name_is_a_new_call(self):
+        deltas = await self._deltas(
+            {"message": {"tool_calls": [
+                {"function": {"name": "read_file", "index": 0, "arguments": {"path": "a"}}}], "content": ""}},
+            {"message": {"tool_calls": [
+                {"function": {"name": "read_file", "index": 0, "arguments": {"path": "b"}}}], "content": ""}},
+            {"done": True, "message": {}},
+        )
+        self.assertEqual([d["index"] for d in deltas], [0, 1])
+        self.assertNotEqual(deltas[0]["id"], deltas[1]["id"])
+        self.assertEqual(json.loads(deltas[1]["function"]["arguments"])["path"], "b")
 
     async def test_indexless_calls_get_distinct_indexes(self):
         # Old behavior: every chunk restarted at 0, so downstream keyed on

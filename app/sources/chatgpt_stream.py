@@ -131,8 +131,10 @@ class _CallBook:
             "arguments": arguments,
             "output_index": output_index,
         }
-        # Two items without an id must not share one record.
+        # Two items without an id, or two items reusing one id, must not share a record.
         key = item_id or f"_call{len(self.order)}"
+        if key in self.calls:
+            key = f"{key}#{output_index if output_index is not None else len(self.order)}"
         self.calls[key] = rec
         self.order.append(key)
         return rec
@@ -146,16 +148,20 @@ class _CallBook:
         events named another id used to land nowhere, and the model's calls
         ran with empty arguments."""
         item = event.get("item") if isinstance(event.get("item"), dict) else {}
-        rec = self.calls.get(str(event.get("item_id") or item.get("id") or ""))
-        if rec:
-            return rec
         call_id = str(item.get("call_id") or event.get("call_id") or "")
         index = event.get("output_index")
+        # An item id can name more than one call; the output index is the one
+        # this event belongs to. Fall back to the id only when it is unique.
+        if index is not None:
+            for rec in self.calls.values():
+                if rec["output_index"] == index:
+                    return rec
+        item_id = str(event.get("item_id") or item.get("id") or "")
+        rec = self.calls.get(item_id)
+        if rec:
+            return rec
         for rec in self.calls.values():
             if call_id and rec["id"] == call_id:
-                return rec
-        for rec in self.calls.values():
-            if index is not None and rec["output_index"] == index:
                 return rec
         return None
 
