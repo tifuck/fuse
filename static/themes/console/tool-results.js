@@ -162,7 +162,9 @@ function consoleFold(trace, presentation, verbose) {
       };
     }
     if (shell) {
-      const raw = typeof trace.output === "string" ? deps.cleanToolOutput(trace, trace.output)
+      // A failure prints its error once (ccFailure), then any output of its own.
+      const failure = failed ? deps.ccFailure(trace) : null;
+      const raw = failure ? failure.output : typeof trace.output === "string" ? deps.cleanToolOutput(trace, trace.output)
         : [trace.preview, trace.summary].find((value) => { const text = String(value || "").trim(); return text && text !== "still running" && text !== "background task started"; }) || "";
       const lines = String(raw).replace(/\s+$/, "").split("\n");
       const empty = !String(raw).trim();
@@ -177,7 +179,8 @@ function consoleFold(trace, presentation, verbose) {
       const stillRunning = !origin || deps.executionPending(origin) || deps.toolPresentation(origin, true).running;
       // A failure prints red with its "Error: " mark, like every other family
       // (ccErrorFold); an error that already carries a mark is kept verbatim.
-      const failedHead = failed && !/^(Error|Cancelled): /.test(status) ? `Error: ${status}` : status;
+      const reason = failure ? deps.ccFlat(failure.error) : status;
+      const failedHead = failed && !/^(Error|Cancelled): /.test(reason) ? `Error: ${reason}` : reason;
       const head = nonzero ? `Exit code ${exit}` : failed ? failedHead
         : wait ? (deps.executionState(trace) !== "running" ? "" : stillRunning ? "Still running" : "Returned while the command was still running")
         : deps.toolBackground(trace) ? status : "";

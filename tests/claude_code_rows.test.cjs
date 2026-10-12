@@ -128,9 +128,5 @@ test('an interrupted call says why, never naming Claude', () => {
   // The hub's restart and lost-connection errors say so, not "the run ended".
   assert.equal(ctx.ccInterruptedText({ name: 'run_terminal_command', status: 'interrupted', error: 'connector restarted; remote outcome is unknown', host: 'box' }), 'Interrupted · the connector on box restarted');
   assert.equal(ctx.ccInterruptedText({ name: 'read_file', status: 'interrupted', error: 'agent connection lost; remote outcome is unknown', host: 'box' }), 'Interrupted · box lost its connection');
-  // A group line counts its interrupted calls when not all of them were.
-  const restarted = { name: 'run_terminal_command', status: 'interrupted', error: 'connector restarted; remote outcome is unknown', host: 'box' };
-  assert.equal(ctx.ccInterruptedText(restarted, { interrupted: 1, calls: 9 }), '1 of 9 interrupted · the connector on box restarted');
-  assert.equal(ctx.ccInterruptedText(restarted, { interrupted: 2, calls: 2 }), 'Interrupted · the connector on box restarted');
   assert.ok(!/claude/i.test(source.source.slice(source.source.indexOf('  function ccInterruptedText('), source.source.indexOf('\n  }', source.source.indexOf('  function ccInterruptedText(')))));
 });

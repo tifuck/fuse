@@ -133,10 +133,6 @@ function ccGroupHtml(group, msg, live, active, openMap, thinking) {
     let latestThought;
     let hint;
     let errored = false;
-    let interrupted = 0;
-    let calls = 0;
-    let interruptedTrace = null;
-    let errorTrace = null;
     let runningSince = 0;
     let shell = null;
     const readPaths = new Set();
@@ -153,17 +149,9 @@ function ccGroupHtml(group, msg, live, active, openMap, thinking) {
         return;
       }
       latestThought = undefined;
-      calls += 1;
       const trace = item.entry.trace;
       const presentation = deps.toolPresentation(trace, live);
-      if (presentation.failed) {
-        errored = true;
-        errorTrace ||= trace;
-      }
-      if (presentation.interrupted) {
-        interrupted += 1;
-        interruptedTrace ||= trace;
-      }
+      if (presentation.failed) errored = true;
       if (presentation.running && !deps.toolBackground(trace)) {
         const since = ccSince(trace);
         runningSince = Math.max(runningSince, since);
@@ -209,7 +197,7 @@ function ccGroupHtml(group, msg, live, active, openMap, thinking) {
     // Both sides always count: a path read plus a shell read is two files.
     const reads = readPaths.size + readOps;
     const shells = Math.max(0, bash - gitOpBash);
-    if (!thought && !search && !reads && !list && !shells && !gitOpBash && !interrupted) return "";
+    if (!thought && !search && !reads && !list && !shells && !gitOpBash) return "";
 
     const parts = [];
     if (thought) {
@@ -280,10 +268,8 @@ function ccGroupHtml(group, msg, live, active, openMap, thinking) {
       `<div class="chat-step-head">` + (group.items.length
         ? `<button type="button" class="chat-step-toggle" data-step-toggle aria-expanded="${open ? "true" : "false"}"><span class="chat-step-label">${label}</span></button>`
         : `<div class="chat-step-toggle"><span class="chat-step-label">${label}</span></div>`) + `</div>` +
-      (interrupted ? hang(`<span class="chat-console-result-text">${deps.escapeHtml((deps.ccInterruptedText(interruptedTrace, { interrupted, calls })))}</span>`, " is-group-note") : "") +
-      // A failing member surfaces on the line too, as its own row reads
-      // ("Error: …"), the way an interrupted member's note does above.
-      (errored ? hang(`<span class="chat-console-result-text">${deps.escapeHtml((deps.ccGroupErrorText(errorTrace)))}</span>`, " is-group-note") : "") +
+      // A failed or interrupted member says so on its own row once the line
+      // is opened; the folded line is only its summary.
       (hintHtml ? hang(hintHtml, " is-group-hint") : "") +
       `<div class="chat-console-bundle"${open ? ' tabindex="0" role="group" aria-label="Summary details. Press Enter to collapse."' : ""}><ol class="chat-timeline">${rows}</ol></div>` +
       `</div></li>`
@@ -317,8 +303,10 @@ function consoleActivityEntriesHtml(entries, msg, live, blockLive = false) {
         if (!(entries[k].type === "tool" && deps.ccToolClass(entries[k].trace)?.kind === "silent")) newest = k;
       }
     }
-    const holds = (entry, at, cls) => (cls.kind !== "silent") &&
-      (at === newest || deps.toolPresentation(entry.trace, live).running);
+    // A silent call (search_tools) stays hidden unless it was cut short: an
+    // interrupted one prints on its own row, saying what the run was doing.
+    const holds = (entry, at, cls) => cls.kind === "silent" ? deps.toolPresentation(entry.trace, live).interrupted
+      : at === newest || deps.toolPresentation(entry.trace, live).running;
     let i = 0;
     while (i < entries.length) {
       const entry = entries[i];

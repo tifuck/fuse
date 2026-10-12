@@ -73,7 +73,7 @@ function scenarios() {
     const cmd = sh('make -j8 all', { extra: { status: 'interrupted', state: 'lost', execution_status: 'lost', error: '', exit_code: null } });
     return { rows: [user('Go.'), turn([say('Building.\n\n'), T(cmd)], [cmd], ended)],
       truth: { call: { [cmd.id]: 'interrupted' }, exec: { [cmd.command_id]: 'interrupted' } },
-      has: ['Interrupted · the result was lost'], lacks: ['the run ended before it finished'] };
+      has: ['Interrupted · the result was lost'], lacks: ['the run ended before it finished'], open: true };
   });
   add('a user stop says stopped, and warns when the process may still run', () => {
     const confirmed = sh('npm test', { extra: { status: 'interrupted', state: 'cancelled', execution_status: 'cancelled', error: 'cancelled', exit_code: null } });
@@ -86,13 +86,13 @@ function scenarios() {
     const cmd = sh('npm test', { extra: { status: 'interrupted', state: 'interrupted', execution_status: 'interrupted', error: 'agent is offline', exit_code: null } });
     return { rows: [user('Go.'), turn([say('Running.\n\n'), T(cmd)], [cmd], ended)],
       truth: { call: { [cmd.id]: 'interrupted' }, exec: { [cmd.command_id]: 'interrupted' } },
-      has: ['Interrupted · qa-box went offline'], lacks: ['the host went offline'] };
+      has: ['Interrupted · qa-box went offline'], lacks: ['the host went offline'], open: true };
   });
   add('an interrupted read keeps a red dot and says why', () => {
     const read = tool('read_file', { path: '/srv/qa/app/run.py', status: 'interrupted', error: 'Tool interrupted.', call_duration_ms: undefined, duration_ms: undefined });
     return { rows: [user('Go.'), turn([say('Reading.\n\n'), T(read)], [read], ended)],
       truth: { call: { [read.id]: 'interrupted' } },
-      has: ['Interrupted · the run ended before it finished'] };
+      has: ['Interrupted · the run ended before it finished'], open: true };
   });
 
   // —— Running rows: one clock, full width, never folded ——
@@ -234,7 +234,7 @@ function scenarios() {
     const kill = tool('kill_command', { child_id: 'kill2', command_id: 'kill2' });
     return { rows: [user('Go.'), turn([say('Stopping.\n\n'), T(cmd), T(kill)], [cmd, kill], ended)],
       truth: { call: { [cmd.id]: 'interrupted', [kill.id]: 'done' }, exec: { kill2: 'interrupted' } },
-      has: ['Stop Task', 'sleep 30 · stopped', 'Interrupted · stopped'] };
+      has: ['Stop Task', 'sleep 30 · stopped', 'Interrupted · stopped'], open: true };
   });
 
   // —— search_replace locates the edit ——

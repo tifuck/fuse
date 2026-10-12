@@ -134,19 +134,7 @@ function ccAgentDoneText(trace) {
 function consoleOnlyFold(trace, presentation, verbose) {
     const { running, failed, interrupted } = presentation;
     const name = trace && trace.name;
-    if (interrupted && !running) {
-      const kept = name === "run_terminal_command" && typeof trace.output === "string" ? deps.cleanToolOutput(trace, trace.output).replace(/\s+$/, "") : "";
-      const lines = kept ? kept.split("\n") : [];
-      const show = lines.length === 4 ? 4 : 3;
-      const cut = lines.slice(0, show);
-      const hidden = lines.length - cut.length;
-      return {
-        status: ccInterruptedText(trace),
-        preview: kept ? deps.consoleStdoutHtml(cut) + (hidden > 0 ? `<div class="chat-console-more" data-step-toggle>… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : "") : "",
-        full: hidden > 0 ? deps.consoleDetailHtml(trace, false, false) : "",
-        keep: Boolean(kept),
-      };
-    }
+    if (interrupted && !running) return ccInterruptedFold(trace, name === "run_terminal_command");
     // Wait (Fuse's get_command_output) blocks on a background command; Claude
     // Code has no such call, so it reads as what it does.
     if (name === "get_command_output" && running) return { status: "Waiting for output…", preview: "", full: "" };
@@ -182,14 +170,7 @@ function consoleOnlyFold(trace, presentation, verbose) {
     if (name === "run_terminal_command") {
       if (deps.toolBackground(trace)) {
         if (running && !["interrupted", "cancelled"].includes(trace.status)) return { status: "Running in the background", preview: "", full: "", keep: true };
-        if (["interrupted", "cancelled"].includes(trace.status)) {
-          const kept = typeof trace.output === "string" ? deps.cleanToolOutput(trace, trace.output).replace(/\s+$/, "") : "";
-          const lines = kept ? kept.split("\n") : [];
-          const show = lines.length === 4 ? 4 : 3;
-          const cut = lines.slice(0, show);
-          const hidden = lines.length - cut.length;
-          return { status: ccInterruptedText(trace), preview: kept ? deps.consoleStdoutHtml(cut) + (hidden > 0 ? `<div class="chat-console-more" data-step-toggle>… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : "") : "", full: hidden > 0 ? deps.consoleDetailHtml(trace, false, false) : "", keep: true };
-        }
+        if (["interrupted", "cancelled"].includes(trace.status)) return { ...ccInterruptedFold(trace, true), keep: true };
         // Ended: say how, not what the launch said. (Interrupted is above.)
         const out = deps.consoleDetailHtml(trace, false, false);
         const exit = deps.shellExitCode(trace);
@@ -206,8 +187,9 @@ function consoleOnlyFold(trace, presentation, verbose) {
       const exit = deps.shellExitCode(trace);
       const meaning = deps.ccExitMeaning(deps.displayCommand(trace), exit);
       if (failed || meaning.isError) {
-        const head = exit !== null && exit !== 0 ? `Exit code ${exit}` : deps.ccFlat(trace.error || trace.summary || "failed");
-        return deps.ccErrorFold([head, ...(empty ? [] : lines)]);
+        if (exit !== null && exit !== 0) return deps.ccErrorFold([`Exit code ${exit}`, ...(empty ? [] : lines)]);
+        const failure = ccFailure(trace);
+        return deps.ccErrorFold([deps.ccFlat(failure.error), ...(failure.output ? failure.output.split("\n") : [])]);
       }
       // No file diff here: a working-tree snapshot around the call cannot tell
       // its edits from another agent's in the same repository.
@@ -234,14 +216,53 @@ function consoleOnlyFold(trace, presentation, verbose) {
       if (body) return { status: deps.consoleResultLine(trace, presentation), preview: deps.consoleStdoutHtml(body.split("\n").slice(0, 4)), full: "", keep: true };
     }
     if (failed && name !== "run_terminal_command" && name !== "get_command_output") {
-      return deps.ccErrorFold(String(trace.error || trace.summary || "failed").split("\n"));
+      return deps.ccErrorFold(ccFailure(trace).error.split("\n"));
     }
     return null;
   }
 
-function ccInterruptedText(trace, counts) {
-    // A group line says how many of its calls were cut short when not all were.
-    const head = counts && counts.interrupted < counts.calls ? `${counts.interrupted} of ${counts.calls} interrupted` : "Interrupted";
+// An interrupted command's kept output, then why it stopped: the output came
+// first, so the note under it reads as where the run ended.
+function ccInterruptedFold(trace, shell) {
+    const text = ccInterruptedText(trace);
+    const kept = shell && typeof trace.output === "string" ? deps.cleanToolOutput(trace, trace.output).replace(/\s+$/, "") : "";
+    if (!kept) return { status: text, preview: "", full: "", keep: false };
+    const lines = kept.split("\n");
+    const show = lines.length === 4 ? 4 : 3;
+    const cut = lines.slice(0, show);
+    const hidden = lines.length - cut.length;
+    const note = `<div class="chat-console-result-text is-stop-note">${deps.escapeHtml(text)}</div>`;
+    return {
+      status: "",
+      preview: deps.consoleStdoutHtml(cut) + (hidden > 0 ? `<div class="chat-console-more" data-step-toggle>… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : "") + note,
+      full: hidden > 0 ? deps.consoleDetailHtml(trace, false, false) + note : "",
+      keep: true,
+    };
+  }
+
+// What a failed call prints as its error, and what as its output. A call that
+// failed before anything ran (no command execution behind it) keeps the
+// model's result text as its output, and that text is the error: printed
+// under the error it read as the same failure twice. When one contains the
+// other the fuller one is the error, since it is what the model was told. A
+// command's own output stays its output unless it only repeats the error.
+function ccFailure(trace) {
+    const error = String((trace && (trace.error || trace.summary)) || "").trim();
+    // Traces saved before calls kept their output carry only the preview.
+    const stored = trace && (typeof trace.output === "string" ? trace.output
+      : ["still running", "background task started"].includes(String(trace.preview || "").trim().toLowerCase()) ? "" : String(trace.preview || ""));
+    const output = stored ? deps.cleanToolOutput(trace, stored).replace(/\s+$/, "").replace(/^\s*\n/, "") : "";
+    const key = (text) => deps.ccFlat(text).toLowerCase().replace(/^(tool )?error: /, "");
+    const ran = Boolean(deps.executionState(trace));
+    if (!output) return { error: error || "failed", output: "" };
+    if (!error) return ran ? { error: "failed", output } : { error: output, output: "" };
+    if (key(output) === key(error) || (!ran && key(error).includes(key(output)))) return { error, output: "" };
+    if (!ran && key(output).includes(key(error))) return { error: output, output: "" };
+    return { error, output };
+  }
+
+function ccInterruptedText(trace) {
+    const head = "Interrupted";
     const error = String((trace && trace.error) || "").toLowerCase();
     const state = trace ? deps.executionState(trace) : "";
     if (/connector restarted/.test(error)) {
@@ -260,11 +281,6 @@ function ccInterruptedText(trace, counts) {
     }
     if (state === "lost") return `${head} · the result was lost`;
     return `${head} · the run ended before it finished`;
-  }
-
-function ccGroupErrorText(trace) {
-    const reason = deps.ccFlat(trace && (trace.error || trace.summary) || "failed");
-    return deps.ccClip(/^(Error|Cancelled): /.test(reason) ? reason : `Error: ${reason}`, 200);
   }
 
 function ccCleanBackgroundEnd(trace) {
@@ -501,5 +517,5 @@ const CC_CALL_NAMES = {
 
 const CC_TURN_VERBS = ["Baked", "Brewed", "Churned", "Cogitated", "Cooked", "Crunched", "Sautéed", "Worked"];
 
-  return { ccCallClockHtml, ccCallName, ccCallSummary, ccCallKind, ccCountsText, ccAgentLastCall, ccCallLine, ccAgentProgressHtml, ccAgentType, ccAgentDoneText, consoleOnlyFold, ccInterruptedText, ccGroupErrorText, ccCleanBackgroundEnd, consoleMonitorEventHtml, consoleAgentNoticeHtml, consoleAutoStepsHtml, ccAgentsGroupHtml, ccTurnVerb, ccDoneAt, ccStillRunningText, ccStillRunningCount, CC_CALL_NAMES, CC_TURN_VERBS };
+  return { ccCallClockHtml, ccCallName, ccCallSummary, ccCallKind, ccCountsText, ccAgentLastCall, ccCallLine, ccAgentProgressHtml, ccAgentType, ccAgentDoneText, consoleOnlyFold, ccInterruptedFold, ccFailure, ccInterruptedText, ccCleanBackgroundEnd, consoleMonitorEventHtml, consoleAgentNoticeHtml, consoleAutoStepsHtml, ccAgentsGroupHtml, ccTurnVerb, ccDoneAt, ccStillRunningText, ccStillRunningCount, CC_CALL_NAMES, CC_TURN_VERBS };
 }
