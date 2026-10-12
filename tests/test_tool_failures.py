@@ -63,6 +63,7 @@ def _mk_request():
 class ClassifyTest(unittest.TestCase):
     def test_explicit_kind_wins(self):
         self.assertEqual(tool_failures.classify("whatever", kind="upstream_error"), "upstream_error")
+        self.assertEqual(tool_failures.classify("whatever", kind="permission_denied"), "permission_denied")
 
     def test_text_hints(self):
         cases = {
@@ -84,6 +85,8 @@ class ClassifyTest(unittest.TestCase):
             "agent is busy": "upstream_error",
             "unknown host alias": "not_found",
             "invalid pattern": "invalid_arguments",
+            "Permission denied by Jev (Auto mode automation), not by the user.": "permission_denied",
+            "Permission request timed out (no user response).": "permission_denied",
             "rg: regex parse error:\n    print(\nunclosed group": "invalid_arguments",
         }
         for text, want in cases.items():

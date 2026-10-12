@@ -40,6 +40,7 @@ KINDS = (
     "no_valid_query",  # web_search with no usable query after sanitizing
     "budget_exhausted",  # per-turn search/fetch budget spent
     "not_allowed",  # private/blocked address or non-HTTPS URL
+    "permission_denied",  # user, Jev or an unattended run refused a location
     "rate_limited",  # Fuse-side search/read rate limit
     "upstream_error",  # provider or target site failed; not the model's fault
     "not_found",  # job / subagent / child id no longer exists
@@ -51,6 +52,10 @@ KINDS = (
 )
 
 _TEXT_HINTS = (
+    # Before "timed out": a timed-out permission ask is a denial, not an outage.
+    ("permission denied", "permission_denied"),
+    ("permission request timed out", "permission_denied"),
+    ("permission cannot be requested", "permission_denied"),
     ("unknown tool", "unknown_tool"),
     ("not loaded", "tool_not_loaded"),
     ("invalid json", "invalid_arguments"),
@@ -316,6 +321,8 @@ GUIDE = (
     "model behavior problems (fixable with prompting or schema changes); "
     "tool_not_loaded / refused = coding-catalog usage mistakes; not_allowed = the model "
     "used a URL it was not given, a private address, or a path outside the project; "
+    "permission_denied = the user, Jev (Auto mode) or an unattended run refused access to a "
+    "location (frequent denials of the same path mean the model keeps reaching outside its grant); "
     "budget_exhausted / rate_limited = Fuse-side limits the model ran into; "
     "upstream_error / not_found = environment or provider problems, not the model "
     "(agent timed out / agent is busy are upstream_error; unknown host alias is not_found); "
