@@ -330,6 +330,9 @@ def invalidate_model_cache(source_type: str | None = None) -> None:
 
 
 def catalog_unavailable_for(model: str) -> bool:
+    if not model:
+        # No id (an empty /v1/models listing): any catalog outage explains it.
+        return bool(_unavailable_types)
     if model.startswith("explabs/"):
         return False
     if model.startswith("devin/") or model.startswith("devin-"):

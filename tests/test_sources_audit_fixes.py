@@ -128,7 +128,8 @@ def test_prefixed_pool_outage_does_not_mark_a_bare_id_unavailable():
         sources._unavailable_types.clear()
         sources._unavailable_types.add("grok")
         assert sources.catalog_unavailable_for("my-local-alias") is False
-        assert sources.catalog_unavailable_for("") is False
+        # An empty listing is still explained by any outage (/v1/models 503).
+        assert sources.catalog_unavailable_for("") is True
         assert sources.catalog_unavailable_for("grok-4.6") is True
         sources._unavailable_types.add("llama")
         assert sources.catalog_unavailable_for("my-local-alias") is True
