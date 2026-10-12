@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -622,6 +623,37 @@ class SummarizerModelTest(unittest.IsolatedAsyncioTestCase):
             text = await chat_runtime.summarize_conversation(None, user, "grok-4.6", head)
         self.assertEqual(text, "same model summary")
         self.assertEqual(calls, ["grok-4.6"])
+
+    async def test_summary_request_is_projected_for_the_summarizing_model(self):
+        from app import chat_runtime
+        from app.config import settings
+
+        result = SimpleNamespace(status=200, body={}, stream=None, usage={}, credential_id=None, attempts=[])
+        src = SimpleNamespace(source_id=1, type_id="openai")
+        sent = []
+
+        async def invoke(request, user_in, payload, **_kwargs):
+            sent.append(payload["messages"])
+            return user_in, src, "m", payload["model"], result
+
+        async def consume_round(*args, **kwargs):
+            yield "done", {"content": "summary"}
+
+        head = [{"role": "user", "content": "q"},
+                {"role": "assistant", "content": "a", "reasoning_content": "OTHER_MODEL_THOUGHT",
+                 "claude_thinking": [{"thinking": "t", "signature": "s"}], "_fuse_reasoning_model": "kimi-k3"}]
+        with (
+            patch.object(settings, "context_summarizer_model", ""),
+            patch("app.chat_runtime.api.invoke_chat", side_effect=invoke),
+            patch("app.chat_runtime._consume_round", consume_round),
+        ):
+            await chat_runtime.summarize_conversation(None, {"id": 1}, "grok-4.6", head)
+        wire = json.dumps(sent[0])
+        # Internal markers never go upstream, nor another model's reasoning.
+        self.assertNotIn("_fuse_", wire)
+        self.assertNotIn("OTHER_MODEL_THOUGHT", wire)
+        self.assertNotIn("claude_thinking", wire)
+        self.assertEqual(sent[0][1]["content"], "a")
 
 
 class RunningEventTest(unittest.TestCase):

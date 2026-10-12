@@ -189,6 +189,26 @@ class QueueCachePrefixTest(unittest.TestCase):
         self.assertEqual(sum(str(m.get("content") or "").count(NUDGE) for m in replay), 1)
         self.assertTrue(str(replay[-1].get("content") or "").startswith("Second"))
 
+    def test_model_switch_keeps_the_other_models_reasoning_durable(self):
+        request = copy.deepcopy(self.run["request"])
+        earlier = [{"role": "user", "content": "earlier"},
+                   {"role": "assistant", "content": "answer", "reasoning_content": "A-THOUGHT",
+                    "_fuse_reasoning_model": "model-a"}]
+        request["messages"] = [*earlier, *request["messages"]]
+        request["model"] = "model-b"
+        payloads = []
+
+        def ok(n, user):
+            return user, SimpleNamespace(type_id="llama", source_id=1), "model-b", "model-b", ok_result("b answer")
+
+        self.dispatch({**self.run, "request": request}, self.capturing(payloads, ok))
+        # model-b is not sent model-a's reasoning ...
+        self.assertNotIn("A-THOUGHT", json.dumps(payloads[0]["messages"]))
+        # ... but the retained transcript keeps it, so switching back to
+        # model-a replays the bytes it was sent before.
+        durable = self.provider_messages()
+        self.assertEqual(durable[1], earlier[1])
+
     def test_forced_wrap_retry_sends_same_bytes_with_single_nudge(self):
         payloads = []
 

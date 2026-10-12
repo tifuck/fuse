@@ -32,6 +32,13 @@ class AgentCapsTest(unittest.TestCase):
         self.connection_patch = patch.object(db, "connect", return_value=self.conn)
         self.connection_patch.start()
         self.addCleanup(self.connection_patch.stop)
+        # command_jobs remembers its schema per process; this database is new,
+        # so an earlier module's flag must not skip creating its table.
+        from app import command_jobs
+
+        schema_patch = patch.object(command_jobs, "_schema_ready", False)
+        schema_patch.start()
+        self.addCleanup(schema_patch.stop)
         db.execute("INSERT INTO users(id,email,password_hash,created_at) VALUES(1,'1@test.invalid','unused',?)", (db.now(),))
         store.init_schema()
 
@@ -1948,6 +1955,48 @@ class AgentCapsTest(unittest.TestCase):
         self.assertEqual(msgs[-1]["role"], "user")
         self.assertIn("also tests", msgs[-1]["content"])
         self.assertIn("looked around", json.dumps(msgs))
+
+    def test_followup_continuation_replays_the_childs_tool_transcript(self):
+        from types import SimpleNamespace
+        from app import chat_runs, chat_runtime
+
+        thread, parent = self._parent()
+        child = store.start_child_run(
+            user_id=1, thread_id=thread["id"], parent_run_id=parent["id"],
+            prompt="inspect", description="inspect",
+        )
+        transcript = [
+            {"role": "user", "content": "inspect"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function",
+                "function": {"name": "read_file", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "FILE_BODY"},
+            {"role": "assistant", "content": "looked around"},
+        ]
+        store.save_turn_progress(child["id"], transcript)
+        self.assertTrue(store.queue_followup(child["id"], "also tests"))
+        store.finish_run(child["id"], {"content": "looked around", "tools": []}, "completed")
+        self.assertTrue(store.continue_child_with_followups(child["id"], store.take_followups(child["id"])))
+        row = store.get_run(1, child["id"])
+        sent = []
+
+        async def invoke(request, user, payload, **_kwargs):
+            sent.append(payload["messages"])
+            result = SimpleNamespace(status=200, body={"choices": [{"message": {"content": "tests pass"}, "finish_reason": "stop"}]},
+                                     usage={}, stream=None, credential_id=1)
+            return user, SimpleNamespace(type_id="llama", source_id=1), "offline", "offline", result
+
+        async def go():
+            with patch.object(chat_runtime.api, "invoke_chat", invoke), patch.object(chat_runtime.api, "_safe_record_usage"):
+                response = await chat_runtime.stream_dashboard_chat(
+                    chat_runs.internal_request(1), {"id": 1}, row["request"], frozen_context=row["request"])
+                return b"".join([chunk async for chunk in response.body_iterator])
+
+        asyncio.run(go())
+        # The continuation is the sealed transcript plus the follow-up, sent
+        # as-is: tool calls and results intact, nothing re-sanitized away.
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][1:len(transcript) + 1], transcript)
+        self.assertIn("also tests", sent[0][len(transcript) + 1]["content"])
 
     def test_continue_child_with_followups_skips_cancelled(self):
         thread, parent = self._parent()

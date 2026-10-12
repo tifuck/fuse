@@ -617,6 +617,81 @@ def _lock_revision(conn, table: str, column: str, seen, where: str, args: tuple)
         raise ChatValidationError("revision conflict; reload the latest state", 409)
 
 
+def _held_rows(conn, row, stored: list[dict], incoming) -> dict:
+    """Rows the server already holds for the ids a transcript save sends: the
+    stored transcript, plus the display rows a finished run wrote for rows the
+    save brings back (Redo after Undo)."""
+    held = {msg["id"]: msg for msg in stored}
+    missing = list(dict.fromkeys(
+        item["id"] for item in incoming if isinstance(item, dict) and item.get("role") == "assistant"
+        and isinstance(item.get("id"), str) and item["id"] not in held))
+    if not missing:
+        return held
+    from . import chat_views
+
+    for start in range(0, len(missing), 400):
+        batch = missing[start:start + 400]
+        runs = conn.execute(
+            "SELECT message_id,message,request FROM chat_runs WHERE user_id=? AND thread_id=? AND parent_run_id IS NULL "
+            "AND status NOT IN ('queued','running') AND message_id IN (" + ",".join("?" for _ in batch) + ")",
+            (row["user_id"], row["id"], *batch),
+        ).fetchall()
+        for run in runs:
+            try:
+                request = json.loads(run["request"] or "{}")
+                message = chat_views._message(json.loads(run["message"] or "{}"), run["message_id"])
+            except (TypeError, ValueError):
+                continue
+            projected = chat_views.display_messages(request if isinstance(request, dict) else {}, message, run["message_id"])
+            for mid, msg in projected.items():
+                parsed = parse_messages([msg])
+                if mid not in held and parsed:
+                    held[mid] = parsed[0]
+    return held
+
+
+def _rebase_saved_rows(conn, row, stored: list[dict], messages) -> list[dict]:
+    """Parse a transcript save from the page, keeping server-owned state of the
+    rows it already holds.
+
+    The page re-serializes every row it shows. Its tool traces are a settled,
+    clipped view (child summaries, folded results, dropped fields) and it never
+    sends permission records, so writing them back rewrote every earlier row:
+    the retained provider history no longer matched, the next turn rebuilt the
+    conversation from display traces, and the provider cache missed from the
+    first row. A save may delete rows and whole traces and change user text and
+    attachments; traces the server holds keep the server's bytes.
+    """
+    incoming = messages
+    if isinstance(incoming, str):
+        try:
+            incoming = json.loads(incoming)
+        except (TypeError, ValueError):
+            return parse_messages(messages, strict=True)
+    if not isinstance(incoming, list):
+        return parse_messages(incoming, strict=True)
+    held = _held_rows(conn, row, stored, incoming)
+    raw = []
+    for item in incoming:
+        server = held.get(item.get("id")) if isinstance(item, dict) and isinstance(item.get("id"), str) else None
+        if server and server.get("role") == item.get("role") and "permissions" not in item and server.get("permissions"):
+            # Before the strict parse: a permission segment must find its record.
+            item = {**item, "permissions": json.loads(json.dumps(server["permissions"]))}
+        raw.append(item)
+    msgs = parse_messages(raw, strict=True)
+    for msg in msgs:
+        server = held.get(msg["id"])
+        if not server or server.get("role") != msg["role"] or not msg.get("tools"):
+            continue
+        by_id = {}
+        for trace in server.get("tools") or []:
+            if trace.get("id"):
+                by_id.setdefault(trace["id"], trace)
+        msg["tools"] = [json.loads(json.dumps(by_id.pop(trace["id"]))) if trace.get("id") in by_id else trace
+                        for trace in msg["tools"]]
+    return msgs
+
+
 def _update_thread(conn, row, *, title, model, archived, pinned, messages, context, tools):
     if not row:
         return None
@@ -641,10 +716,11 @@ def _update_thread(conn, row, *, title, model, archived, pinned, messages, conte
             pin_bits = ", pinned=0"
     edited = False
     if messages is not None:
-        msgs = parse_messages(messages, strict=True)
+        stored_msgs = parse_messages(row["messages"])
+        msgs = _rebase_saved_rows(conn, row, stored_msgs, messages)
         payload = json.dumps(msgs, ensure_ascii=False, separators=(",", ":"))
         from . import chat_recaps
-        if dump_messages(msgs) != dump_messages(parse_messages(row["messages"])):
+        if dump_messages(msgs) != dump_messages(stored_msgs):
             chat_recaps.activity(conn, row["user_id"], row["id"])
             edited = True
     else:
@@ -666,7 +742,7 @@ def _update_thread(conn, row, *, title, model, archived, pinned, messages, conte
         from . import context_compact as ctxmod, hosts, context_meter
 
         state = ctxmod.parse_state(row["compaction"] if "compaction" in row.keys() else None)
-        state = ctxmod.invalidate_edited_checkpoints(state, parse_messages(row["messages"]), msgs)
+        state = ctxmod.invalidate_edited_checkpoints(state, stored_msgs, msgs)
         previous = state.get("meter") or {}
         from . import chat_history
         replay, _history_info = chat_history.build(conn, row["user_id"], row["id"], msgs, state)

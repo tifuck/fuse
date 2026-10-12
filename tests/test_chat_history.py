@@ -380,6 +380,80 @@ class HistoryTest(unittest.TestCase):
         self._sent_turn(retry, "RESULT_again", "answer again", snapshot)
         self.assertEqual(self._retry_last("third")["request"]["messages"], sent)
 
+    def _spawn_turn(self, text):
+        """A finished turn whose display trace is a background subagent still
+        running at finish time, with a resolved permission card."""
+        from app.chat_generation.messages import _inject_session_tail, _session_tail_block
+        run = self.start(text)
+        rows = _inject_session_tail(list(run["request"]["messages"]), _session_tail_block([]))
+        rows.extend([{"role": "assistant", "content": "", "tool_calls": [{"id": "spawn-call", "type": "function",
+                         "function": {"name": "spawn_subagent", "arguments": "{}"}}]},
+                     {"role": "tool", "tool_call_id": "spawn-call", "content": "FULL_SPAWN_RESULT"},
+                     {"role": "assistant", "content": "spawned"}])
+        store.save_provider_messages(run["id"], rows)
+        store.finish_run(run["id"], {"content": "spawned", "reasoning": "", "tools": [
+            {"id": "ts_0_0", "name": "spawn_subagent", "status": "running", "child_id": "child-1",
+             "background": True, "model": "glm-5.3", "description": "W10 block",
+             "preview": "W10 block", "summary": "Background task started", "error": ""}],
+            "permissions": [{"id": "perm-1", "kind": "tool_permission", "status": "allowed",
+                             "tool": "run_terminal_command", "command": "make"}]}, "completed")
+
+    @staticmethod
+    def _as_page_sends(rows):
+        """What the chat page's serialMessages() sends: settled, clipped trace
+        copies and no permission records."""
+        out = json.loads(json.dumps(rows))
+        for row in out:
+            row.pop("permissions", None)
+            for trace in row.get("tools") or []:
+                trace.pop("model", None)
+                trace.pop("error", None)
+                trace.update(status="done", execution_status="completed", agent_work_ms=4940585,
+                             summary="All done. Final report", preview="All done. Final report")
+        return out
+
+    def test_page_undo_keeps_the_exact_sent_prefix(self):
+        self._spawn_turn("first")
+        self._sent_turn(self.start("second"), "R2", "answer second")
+        third = self.start("third")
+        sent = third["request"]["messages"]
+        self._sent_turn(third, "R3", "answer third")
+        view = chats.get_thread(1, self.thread["id"])
+        chats.update_thread(1, view["id"], messages=self._as_page_sends(view["messages"])[:-2],
+                            expected_revision=view["revision"])
+        stored = chats.get_thread(1, self.thread["id"])["messages"]
+        self.assertEqual(stored[1]["tools"][0]["summary"], "Background task started")
+        self.assertEqual(stored[1]["tools"][0]["model"], "glm-5.3")
+        self.assertEqual(stored[1]["permissions"][0]["id"], "perm-1")
+        retry = self.start("third")
+        # The earlier rows, session tails and full tool results included, are
+        # the bytes already sent, not a rebuild from display traces.
+        self.assertEqual(retry["request"]["messages"], sent)
+        self.assertEqual(retry["request"]["history_info"]["trace_fallbacks"], 0)
+
+    def test_page_redo_restores_the_exact_sent_prefix(self):
+        self._spawn_turn("first")
+        self._sent_turn(self.start("second"), "R2", "answer second")
+        sent = json.loads(db.fetchone("SELECT retained_history FROM chat_threads WHERE public_id=?",
+                                      (self.thread["id"],))[0])["messages"]
+        view = chats.get_thread(1, self.thread["id"])
+        page = self._as_page_sends(view["messages"])
+        chats.update_thread(1, view["id"], messages=page[:2], expected_revision=view["revision"])
+        undone = chats.get_thread(1, self.thread["id"])
+        chats.update_thread(1, view["id"], messages=page, expected_revision=undone["revision"])
+        nxt = self.start("next")["request"]
+        self.assertEqual(nxt["messages"][:len(sent)], sent)
+        self.assertEqual(nxt["history_info"]["trace_fallbacks"], 0)
+
+    def test_page_save_still_deletes_rows_and_traces(self):
+        self._spawn_turn("first")
+        view = chats.get_thread(1, self.thread["id"])
+        page = self._as_page_sends(view["messages"])
+        page[1]["tools"] = []
+        chats.update_thread(1, view["id"], messages=page, expected_revision=view["revision"])
+        self.assertNotIn("tools", chats.get_thread(1, self.thread["id"])["messages"][1])
+        self.assertNotIn("FULL_SPAWN_RESULT", json.dumps(self.start("next")["request"]["messages"]))
+
     def test_retry_keeps_full_results_of_an_earlier_steered_turn(self):
         run = self.start("original request")
         store.steer_turn(1, self.thread["id"], "STEERED", "steer-1")

@@ -42,11 +42,15 @@ async def summarize_conversation(request: Request, user, model: str, head: list[
 
 
 async def summarize_once(request: Request, user, model: str, head: list[dict], instructions: str = "", *, tools=None, limit: int | None = None, cache_key: str | None = None, consume) -> str:
-    from .. import api
+    from .. import api, chat_history
 
     payload = {
         "model": (model or "").strip(),
-        "messages": ctxmod.summarize_payload(head, instructions=instructions, limit=limit, tools=tools),
+        # The same projection a chat round sends: no internal `_fuse_*` keys or
+        # another model's reasoning upstream, and the prefix the conversation
+        # already cached.
+        "messages": ctxmod.summarize_payload(chat_history.for_model(head, (model or "").strip()),
+                                             instructions=instructions, limit=limit, tools=tools),
         "stream": False,
         # The handoff replaces the whole conversation, so it needs room to carry
         # the work. Reply caps are about chat answers, not internal handoffs.

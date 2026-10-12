@@ -338,7 +338,7 @@ async def _compact_current(
     run_id: str | None = None,
     agent: dict | None = None,
 ) -> tuple[list[dict], dict, str | None]:
-    from . import chat_store as store
+    from . import chat_history, chat_store as store
 
     cfg = context_meter.config()
     # Children share the parent's thread row; their compaction must stay in
@@ -349,8 +349,11 @@ async def _compact_current(
     # results with stubs, and the handoff would never see the evidence.
     system = [msg for msg in current_messages if isinstance(msg, dict) and msg.get("role") == "system"]
     source = [msg for msg in current_messages if isinstance(msg, dict) and msg.get("role") != "system"]
+    # Measure what this model is sent: another model's retained reasoning
+    # stays in the transcript but never reaches this request.
     snap = context_meter.meter_from_messages(
-        current_messages, model=model, type_id=type_id, tools=tools, override=override, calibration=calibration
+        chat_history.for_model(current_messages, model), model=model, type_id=type_id, tools=tools,
+        override=override, calibration=calibration,
     )
     dropped, kept = source, []
     can_summarize = bool(dropped) and ctxmod.compactable_transcript(source, provider=True) and (
@@ -389,7 +392,8 @@ async def _compact_current(
             *ctxmod.continuation(checkpoint["summary"], kept, pinned=pinned),
             *ctxmod.retained_skill_rows(source),
         ]
-        after = context_meter.meter_from_messages(rebuilt, model=model, type_id=type_id, tools=tools, override=override, calibration=calibration)
+        after = context_meter.meter_from_messages(chat_history.for_model(rebuilt, model), model=model, type_id=type_id,
+                                                  tools=tools, override=override, calibration=calibration)
         after["estimated"] = True
         after["standing"] = True
         after["scope"] = "transcript"
@@ -413,7 +417,8 @@ async def _compact_current(
     # would re-send the full bodies anyway. Shrinking history is compaction's
     # job; a non-compactable transcript is returned untouched.
     snap = context_meter.meter_from_messages(
-        current_messages, model=model, type_id=type_id, tools=tools, override=override, calibration=calibration
+        chat_history.for_model(current_messages, model), model=model, type_id=type_id, tools=tools,
+        override=override, calibration=calibration,
     )
     return current_messages, snap, None
 
@@ -435,8 +440,10 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             raise HTTPException(400, "Invalid messages")
     else:
         messages = sanitize_messages(raw.get("messages"))
-    messages = [{k: v for k, v in m.items() if k != "reasoning_content" or m.get("_fuse_reasoning_model") == model}
-                for m in messages]
+    # Native reasoning stays in the retained transcript whichever model runs
+    # this turn: chat_history.for_model drops another model's reasoning from
+    # each outgoing request. Stripping it here made the loss durable, so
+    # switching back replayed different bytes than that model was sent.
     tools = parse_tool_names(raw.get("tools"))
     # Only the server-owned run scheduler supplies this keyword, never JSON overrides.
     prefs = frozen_context if frozen_context is not None else chats.get_user_context(user["id"])

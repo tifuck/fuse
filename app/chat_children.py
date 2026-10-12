@@ -502,6 +502,9 @@ def continue_child_with_followups(run_id: str, followups: list) -> bool:
         agent.pop("followup_marks", None)
         agent["background"] = True
         agent["followup_continuation"] = True
+        # The sealed provider transcript (tool calls and results) replays as-is;
+        # a fresh spawn's seed was sanitized, but this one must not be.
+        agent["skip_sanitize"] = True
         agent["delivery_generation"] = uuid4().hex
         agent["wake_sent"] = False
         agent["wake_attempts"] = 0
