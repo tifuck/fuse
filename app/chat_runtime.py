@@ -408,6 +408,7 @@ async def _compact_current(
                     # this summary instead of re-summarizing every turn.
                     ctxmod.durable_checkpoint(durable_messages, checkpoint) or checkpoint,
                     meter=after,
+                    run_id=run_id,
                 )
             except Exception:
                 logger.exception("Could not persist compaction checkpoint")

@@ -274,9 +274,12 @@ def invalidate_edited_checkpoints(state: dict, before: list[dict], after: list[d
     positions = {msg.get("id"): index for index, msg in enumerate(before) if msg.get("id")}
     kept = []
     for checkpoint in state.get("checkpoints") or []:
-        boundary = positions.get(checkpoint.get("through_message_id"))
-        # Provider-only indexes do not establish a display edit boundary.
-        if not checkpoint.get("provider") and boundary is not None and boundary < unchanged:
+        # A provider checkpoint indexes a live transcript; its display edit
+        # boundary is the last row it summarized (display_through_id). One
+        # without it cannot be placed, so any edit drops it.
+        key = "display_through_id" if checkpoint.get("provider") else "through_message_id"
+        boundary = positions.get(checkpoint.get(key))
+        if boundary is not None and boundary < unchanged:
             kept.append(checkpoint)
     return {**state, "checkpoints": kept}
 

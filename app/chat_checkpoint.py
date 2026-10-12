@@ -576,8 +576,11 @@ def finish_compact(user_id, thread_id, checkpoint, *, command_id, fingerprint, e
             raise chats.ChatValidationError("revision conflict; reload the latest state", 409)
         keys = row.keys() if hasattr(row, "keys") else []
         state = ctxmod.parse_state(row["compaction"] if "compaction" in keys else None)
-        state = ctxmod.append_checkpoint(state, checkpoint)
         messages = chats.parse_messages(row["messages"])
+        if checkpoint.get("provider") and messages:
+            # The handoff summarizes every row; an edit after them keeps it.
+            checkpoint = {**checkpoint, "display_through_id": messages[-1]["id"]}
+        state = ctxmod.append_checkpoint(state, checkpoint)
         from . import chat_history
         if replay is not None:
             rebuilt = [*ctxmod.continuation(checkpoint["summary"]), *ctxmod.retained_skill_rows(replay or [])]
@@ -613,7 +616,7 @@ def finish_compact(user_id, thread_id, checkpoint, *, command_id, fingerprint, e
         return view
 
 
-def apply_compaction_checkpoint(user_id, thread_id, checkpoint, *, meter=None):
+def apply_compaction_checkpoint(user_id, thread_id, checkpoint, *, meter=None, run_id=None):
     from . import chats, context_compact as ctxmod, context_meter
 
     for attempt in range(3):
@@ -629,6 +632,15 @@ def apply_compaction_checkpoint(user_id, thread_id, checkpoint, *, meter=None):
                 continue
             keys = row.keys() if hasattr(row, "keys") else []
             state = ctxmod.parse_state(row["compaction"] if "compaction" in keys else None)
+            if checkpoint and checkpoint.get("provider") and run_id:
+                # A turn's handoff summarizes up to that turn's reply row; an
+                # Undo, Retry or Edit after it keeps the handoff.
+                owner = conn.execute(
+                    "SELECT message_id FROM chat_runs WHERE id=? AND thread_id=? AND parent_run_id IS NULL",
+                    (run_id, pk),
+                ).fetchone()
+                if owner is not None and owner["message_id"]:
+                    checkpoint = {**checkpoint, "display_through_id": str(owner["message_id"])}
             if checkpoint:
                 state = ctxmod.append_checkpoint(state, checkpoint)
             if meter:

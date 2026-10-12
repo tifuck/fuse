@@ -280,6 +280,59 @@ class HistoryTest(unittest.TestCase):
         self.assertEqual(sum(m["role"] == "tool" for m in replay), 0)
         self.assertLess(view["compaction"]["meter"]["used"], 15000)
 
+    def _retry_in_place(self, text):
+        view = chats.get_thread(1, self.thread["id"])
+        index = max(i for i, m in enumerate(view["messages"]) if m["role"] == "user")
+        return store.start_turn(1, view["id"], text, view["revision"], None, replace_from=index)["run"]
+
+    def test_undo_and_retry_after_manual_compaction_keep_the_compacted_prefix(self):
+        self.complete(self.start("question one"), result="OLD_CONTEXT_" + "x" * 3000, rounds=3)
+        view = chats.get_thread(1, self.thread["id"])
+        prepared = store.prepare_compact(1, view["id"], view["revision"], "compact-retry")
+        cp = context.make_checkpoint(summary="saved handoff", strategy="summarize", trigger="manual", provider=True)
+        store.finish_compact(1, view["id"], cp, command_id="compact-retry", fingerprint=prepared["fingerprint"],
+            expected_revision=view["revision"], replay=prepared["history"], history_info=prepared["history_info"])
+        after = self.start("after compact")
+        sent = after["request"]["messages"]
+        self.assertIn("saved handoff", sent[0]["content"])
+        self._sent_turn(after, "R_after", "answer after")
+        # Undo, Retry and Edit only change rows after the compaction: the
+        # handoff stays and the request replays the exact compacted prefix.
+        undo = self._retry_last("after compact")
+        self.assertEqual(undo["request"]["messages"], sent)
+        self._sent_turn(undo, "R_undo", "answer undo")
+        retry = self._retry_in_place("after compact")
+        self.assertEqual(retry["request"]["messages"], sent)
+        self.assertEqual(retry["request"]["history_info"]["trace_fallbacks"], 0)
+        self._sent_turn(retry, "R_retry", "answer retry")
+        # Deleting a row the handoff summarizes still drops it.
+        view = chats.get_thread(1, self.thread["id"])
+        chats.update_thread(1, view["id"], messages=view["messages"][1:], expected_revision=view["revision"])
+        self.assertNotIn("saved handoff", json.dumps(self.start("after edit")["request"]["messages"]))
+
+    def test_retry_after_a_mid_turn_compaction_keeps_the_compacted_prefix(self):
+        self.complete(self.start("question one"), content="answer one")
+        run = self.start("question two")
+        compacted = [{"role": "user", "content": context.COMPACT_PREAMBLE + "auto handoff"},
+                     {"role": "assistant", "content": context.COMPACT_ACK},
+                     {"role": "assistant", "content": "answer two"}]
+        cp = context.make_checkpoint(summary="auto handoff", strategy="summarize", trigger="auto", provider=True)
+        store.apply_compaction_checkpoint(1, self.thread["id"], cp, run_id=run["id"])
+        store.save_provider_messages(run["id"], compacted)
+        store.finish_run(run["id"], {"content": "answer two", "reasoning": ""}, "completed")
+        nxt = self.start("question three")
+        sent = nxt["request"]["messages"]
+        self.assertEqual(sent[:3], compacted)
+        self._sent_turn(nxt, "R3", "answer three")
+        retry = self._retry_in_place("question three")
+        self.assertEqual(retry["request"]["messages"], sent)
+        self._sent_turn(retry, "R3b", "answer three again")
+        # Retrying the compacted turn itself discards its handoff.
+        view = chats.get_thread(1, self.thread["id"])
+        index = [i for i, m in enumerate(view["messages"]) if m["role"] == "user"][1]
+        redo = store.start_turn(1, view["id"], "question two", view["revision"], None, replace_from=index)["run"]
+        self.assertNotIn("auto handoff", json.dumps(redo["request"]["messages"]))
+
     def test_auto_compaction_snapshot_survives_next_turn(self):
         run = self.start()
         rows = [{"role": "user", "content": context.COMPACT_PREAMBLE + "auto handoff"},
