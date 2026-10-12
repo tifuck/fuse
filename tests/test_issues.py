@@ -15,6 +15,31 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app import db, issues, issues_pipeline
 
 
+class ClipTreeTest(unittest.TestCase):
+    def test_depth_limit_keeps_empty_container(self):
+        # A container at the depth boundary is an empty container of the same
+        # type, not None: its parent keeps the key instead of dropping it. The
+        # value passed in is itself at the boundary, so it comes back empty.
+        clipped = issues._clip_tree(
+            {"a": {"b": 1}, "c": [1], "d": "hi", "e": (2, 3)},
+            text=100, items=20, depth=0,
+        )
+        self.assertEqual(clipped, {})
+        self.assertEqual(issues._clip_tree([{"b": 1}, "hi"], text=100, items=20, depth=0), [])
+
+    def test_depth_boundary_keeps_scalars_and_drops_deeper(self):
+        # depth counts every container level, so the nested dict is kept one
+        # level down and its own children stop at the boundary.
+        clipped = issues._clip_tree(
+            {"outer": {"n": 0, "flag": False, "empty": "", "gone": None, "inner": {"x": 1}, "items": [1, None]}},
+            text=100, items=20, depth=2,
+        )
+        self.assertEqual(
+            clipped,
+            {"outer": {"n": 0, "flag": False, "empty": "", "inner": {}, "items": []}},
+        )
+
+
 class IssuesQueueTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="fuse-issues-")

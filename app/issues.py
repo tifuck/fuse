@@ -106,6 +106,11 @@ def _clip_tree(value, *, text: int, items: int, depth: int):
     if value is None or isinstance(value, (bool, int, float)):
         return value
     if depth <= 0:
+        # Keep the key: a None here makes the parent drop the whole container.
+        if isinstance(value, (list, tuple)):
+            return []
+        if isinstance(value, dict):
+            return {}
         return None
     if isinstance(value, (list, tuple)):
         out = []
