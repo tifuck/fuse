@@ -558,6 +558,33 @@ def _loaded_line(names: list[str], read_only: bool = False) -> str:
     )
 
 
+def session_frame(*, project_session: bool, bound_label: str = "") -> str:
+    """The coding prompt's statement of where this session works.
+
+    The system prompt is frozen per conversation for prefix caching, but this
+    paragraph follows explicit user actions (attaching a chat to a project,
+    editing its path, detaching it, deleting its machine). The runtime checks
+    the frozen prompt still contains the current one and rebuilds it if not.
+    """
+    if project_session and bound_label:
+        return (
+            f"Project session bound to {bound_label}. Omit host to use that machine; "
+            "pass host=<alias> for a different connected host."
+        )
+    if project_session:
+        return (
+            "This project session is not bound to one machine. Pass host=<alias> on every file or shell "
+            "call. To run the same command on every host, call the tool once per alias in the same step."
+        )
+    return (
+        "This is a regular chat, not a project session. Pass host=<alias> on every file or shell call; "
+        "there is no shared project working directory across hosts. To use home instead of a configured default, "
+        "pass cwd=\"~\" — that prompts if home is not a listed root. Always work only on hosts the "
+        "user names, or run the same check on every host in parallel. Working in a specific project "
+        "folder binds this chat to that project. Do not invent file contents, host state, or tool names."
+    )
+
+
 def build_system_prompt(
     *,
     instructions: str,
@@ -658,16 +685,7 @@ def build_system_prompt(
         parts.append("Web search is off for this turn. Do not claim you browsed the web.")
     _loaded = [str(n) for n in (loaded_tools or []) if isinstance(n, str)]
     if coding and project_session:
-        if bound_label:
-            parts.append(
-                f"Project session bound to {bound_label}. Omit host to use that machine; "
-                "pass host=<alias> for a different connected host."
-            )
-        else:
-            parts.append(
-                "This project session is not bound to one machine. Pass host=<alias> on every file or shell "
-                "call. To run the same command on every host, call the tool once per alias in the same step."
-            )
+        parts.append(session_frame(project_session=True, bound_label=bound_label))
         parts.append(_loaded_line(_loaded, read_only))
         if host_catalog:
             parts.append(
@@ -691,13 +709,7 @@ def build_system_prompt(
             )
     elif coding:
         parts.append(_loaded_line(_loaded, read_only))
-        parts.append(
-            "This is a regular chat, not a project session. Pass host=<alias> on every file or shell call; "
-            "there is no shared project working directory across hosts. To use home instead of a configured default, "
-            "pass cwd=\"~\" — that prompts if home is not a listed root. Always work only on hosts the "
-            "user names, or run the same check on every host in parallel. Working in a specific project "
-            "folder binds this chat to that project. Do not invent file contents, host state, or tool names."
-        )
+        parts.append(session_frame(project_session=False))
         if host_catalog:
             parts.append(
                 "Connected machines (alias, user@host, auth type, allowed roots, project paths; never secrets)."

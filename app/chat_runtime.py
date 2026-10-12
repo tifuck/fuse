@@ -24,6 +24,7 @@ from .chat_prompts import (
     RECAP_SYSTEM,
     TITLE_SYSTEM,
     build_system_prompt,
+    session_frame,
     expand_slash_messages,
     sanitize_messages,
     _clip,
@@ -654,8 +655,13 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                       "thread_context": thread_context}
     schemas = copy.deepcopy(prompt_snapshot.get("tools", candidate_schemas))
     prompt_refreshed = False
+    # Attaching the chat to a project, editing its path, detaching it or
+    # deleting its machine changes where the session works without changing
+    # the tool list; a frozen prompt must not keep stating the old place.
+    frame = session_frame(project_session=project_session, bound_label=bound_label) if coding else ""
     if not (agent.get("resumed") or agent.get("followup_continuation")) and (
         schemas != candidate_schemas or prompt_snapshot.get("context") != prompt_context
+        or (frame and frame not in system)
     ):
         prompt_refreshed = "system" in prompt_snapshot
         # Explicit settings changes take effect on the next turn. Resumes keep

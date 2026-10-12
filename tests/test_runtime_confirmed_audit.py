@@ -97,3 +97,44 @@ def test_final_history_never_repeats_tool_round_content(thread, final):
         {k: v for k, v in m.items() if not k.startswith("_fuse_")} for m in history
     ]
     assert len(payloads) == (3 if not final.body["choices"][0]["message"]["content"] and not final.body["choices"][0]["message"]["reasoning_content"] else 2)
+
+
+def test_frozen_prompt_follows_project_attach_and_edit(thread):
+    # Moving a chat into a project or editing the project's path changes no
+    # tool schema, so the frozen prompt used to keep telling the model it was
+    # a regular chat (or name the old folder) until a compaction.
+    hosts.set_settings(1, agent_coding=True)
+    db.execute("INSERT INTO user_hosts(user_id,alias,hostname,username,auth_type,secret,created_at,updated_at) "
+               "VALUES(1,'box','box.invalid','u','agent','',?,?)", (db.now(), db.now()))
+    host = db.fetchone("SELECT id FROM user_hosts WHERE user_id=1 AND alias='box'")["id"]
+    project = hosts.add_project(1, host, {"name": "api", "remote_path": "/srv/api"})
+    first, _, _ = run_turn(thread, [result("answer")])
+    assert "This is a regular chat, not a project session." in first[0]["messages"][0]["content"]
+    chats.move_thread_to_project(1, thread["id"], host, project["id"])
+    attached, _, _ = run_turn(thread, [result("answer")])
+    system = attached[0]["messages"][0]["content"]
+    assert "Project session bound to box cwd=/srv/api." in system
+    assert "This is a regular chat" not in system
+    # The refresh rebuilds only the system prompt, never the transcript.
+    assert attached[0]["messages"][1:len(first[0]["messages"])] == first[0]["messages"][1:]
+    # Unchanged framing keeps the cached prefix: no refresh on the next turn.
+    again, _, _ = run_turn(thread, [result("answer")])
+    assert again[0]["messages"][:len(attached[0]["messages"])] == attached[0]["messages"]
+    hosts.patch_project(1, host, project["id"], {"remote_path": "/srv/api-v2"})
+    edited, _, _ = run_turn(thread, [result("answer")])
+    assert "Project session bound to box cwd=/srv/api-v2." in edited[0]["messages"][0]["content"]
+
+
+@pytest.mark.parametrize("project_session,bound_label", [(False, ""), (True, ""), (True, "box cwd=/srv/api")])
+@pytest.mark.parametrize("kind", ["", "general-purpose", "explore", "plan"])
+@pytest.mark.parametrize("subagent", [False, True])
+def test_every_coding_prompt_states_its_session_frame(project_session, bound_label, kind, subagent):
+    # The runtime rebuilds a frozen prompt that lacks the current framing; a
+    # coding prompt built without it would be rebuilt on every turn and never
+    # keep its cached prefix.
+    system = runtime.build_system_prompt(
+        instructions="", profile="", thread_context="", tools=["web_search"], coding=True,
+        project_session=project_session, bound_label=bound_label, loaded_tools=["read_file"],
+        subagent=subagent, subagent_type=kind,
+    )
+    assert runtime.session_frame(project_session=project_session, bound_label=bound_label) in system

@@ -519,7 +519,10 @@ class ResumeTest(unittest.IsolatedAsyncioTestCase):
             sent.append(json.loads(json.dumps(body)))
             return user, src(), "offline", "offline", ok_result()
 
-        system = iter(["first system", "wake system", "third system"])
+        # Every real coding prompt states the session framing; a frozen prompt
+        # without the current one is rebuilt, so the stand-ins carry it too.
+        frame = runtime.session_frame(project_session=False)
+        system = iter([f"{label} system\n\n{frame}" for label in ("first", "wake", "third")])
         for auto in (False, True, False):
             view = chats.get_thread(1, thread["id"])
             run = store.start_turn(1, thread["id"], "wake event" if auto else "go", view["revision"], None, auto=auto)["run"]
@@ -533,7 +536,7 @@ class ResumeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent[2]["tools"], sent[0]["tools"])
         for earlier, later in zip(sent, sent[1:]):
             self.assertEqual(later["messages"][:len(earlier["messages"])], earlier["messages"])
-        self.assertEqual(sent[2]["messages"][0]["content"], "first system")
+        self.assertEqual(sent[2]["messages"][0]["content"], f"first system\n\n{frame}")
 
     async def test_next_turn_replays_tool_rounds_reasoning_and_session_tail_verbatim(self):
         # Every request extends the previous one: within a turn (tool round,
