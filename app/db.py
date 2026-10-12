@@ -1449,19 +1449,21 @@ def _estimated_cost(
     if tier is not None:
         input_rate = int(tier.get("input_rate") if tier.get("input_rate") is not None else input_rate)
         output_rate = int(tier.get("output_rate") if tier.get("output_rate") is not None else output_rate)
-        cached_rate = int(tier.get("cached_rate") if tier.get("cached_rate") is not None else cached_rate)
-        write_rate = int(tier.get("cache_write_rate") if tier.get("cache_write_rate") is not None else write_rate)
+        # A rate the tier does not publish bills at the tier's own input rate,
+        # the same way an unknown base cache rate bills at the base input rate.
+        cached_rate = int(tier.get("cached_rate") if tier.get("cached_rate") is not None else input_rate)
+        write_rate = int(tier.get("cache_write_rate") if tier.get("cache_write_rate") is not None else input_rate)
     reasoning_known = bool(_pget(price, "reasoning_known"))
     reasoning_rate = int(_pget(price, "reasoning_micros_per_million") or 0)
     output = max(int(output or 0), 0)
-    visible = min(max(int(visible or 0), 0), output)
+    # Reasoning is part of output, never extra: overlap with the visible count
+    # bills once, at the reasoning rate.
     reasoning = min(max(int(reasoning or 0), 0), output)
-    other_output = max(output - visible - reasoning, 0)
     numerator = (
         normal_input * input_rate
         + cached * cached_rate
         + cache_write * write_rate
-        + (output * output_rate if not reasoning_known else (visible + other_output) * output_rate + reasoning * reasoning_rate)
+        + (output * output_rate if not reasoning_known else (output - reasoning) * output_rate + reasoning * reasoning_rate)
     )
     return min(SQLITE_INT_MAX, max(0, (numerator + 500_000) // 1_000_000))
 

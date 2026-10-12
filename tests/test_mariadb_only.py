@@ -109,6 +109,14 @@ class RewriteMarkerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _rewrite("SELECT '__fuse_parameter__' AS marker")
 
+    def test_integer_division_floors(self):
+        # CAST(a / b AS SIGNED) rounds in MariaDB; SQLite's integer division
+        # truncates, so the rewrite must floor before the cast.
+        sql = "SELECT (CAST(strftime('%s', e.created_at) AS INTEGER) / ?) * ? AS bucket FROM t e"
+        self.assertIn("CAST(FLOOR(", _rewrite(sql))
+        heatmap = "SELECT (CAST(strftime('%s', e.created_at) AS INTEGER) / 3600) * 3600 AS hour FROM t e"
+        self.assertIn("CAST(FLOOR(", _rewrite(heatmap))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -59,6 +59,19 @@ def test_summary_reliability_sources_and_models():
         assert data["series_models"][0]["provider_label"]
 
 
+def test_bucket_boundary_truncates_instead_of_rounding():
+    # 1800s into a 3600s bucket is still that bucket. CAST(a/b AS SIGNED)
+    # rounds it into the next one; integer division must not.
+    with isolated_database():
+        _seed()
+        start = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        _event((start + timedelta(seconds=1800)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        data = stats.usage_analytics(1, range_id="24h")
+        hit = [point for point in data["series"] if point["requests"]]
+        assert len(hit) == 1
+        assert hit[0]["at"] == start.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def test_heatmap_spans_a_week_even_for_short_ranges():
     with isolated_database():
         _seed()

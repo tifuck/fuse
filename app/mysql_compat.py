@@ -48,7 +48,10 @@ def _node(node):
     if isinstance(node, exp.Is) and isinstance(node.expression, exp.Placeholder):
         return exp.NullSafeEQ(this=node.this, expression=exp.Var(this="__fuse_parameter__"))
     if isinstance(node, exp.Div) and isinstance(node.this, exp.Cast):
-        return exp.IntDiv(this=node.this.transform(_node), expression=node.expression.transform(_node))
+        # SQLite integer division truncates; sqlglot's IntDiv renders as
+        # CAST(a / b AS SIGNED), which MariaDB rounds.
+        quotient = exp.Div(this=node.this.transform(_node), expression=node.expression.transform(_node))
+        return exp.cast(exp.Floor(this=quotient), "BIGINT")
     if isinstance(node, exp.Placeholder):
         return exp.Var(this="__fuse_parameter__")
     if isinstance(node, exp.Column) and node.table.lower() == "excluded":

@@ -273,6 +273,27 @@ class EstimatedCostTest(unittest.TestCase):
         cost = db._estimated_cost(price, 500_000, 0, 0, 0, 0, 100_000)
         self.assertEqual(cost, 400_000 * 2 + 100_000 * 2)
 
+    def test_omitted_tier_cache_rate_uses_the_tier_input_rate(self):
+        # An OpenRouter override that publishes only the long-context prompt
+        # rate stores cached_rate/cache_write_rate as null. Those tokens bill
+        # at the tier's input rate, not the cheaper short-context base rate.
+        price = _price_row(
+            input_micros_per_million=2_000_000,
+            cached_input_micros_per_million=200_000,
+            cache_write_micros_per_million=2_500_000,
+            cache_write_known=1,
+            tiers_json='[{"min_prompt_tokens": 272000, "input_rate": 4000000, "cached_rate": null, "cache_write_rate": null, "output_rate": null}]',
+        )
+        cached = db._estimated_cost(price, 272_000, 0, 0, 0, 272_000, 0)
+        written = db._estimated_cost(price, 272_000, 0, 0, 0, 0, 272_000)
+        self.assertEqual(cached, 272_000 * 4)
+        self.assertEqual(written, 272_000 * 4)
+        # A rate the tier does publish, including an explicit zero, still wins.
+        free = _price_row(
+            tiers_json='[{"min_prompt_tokens": 272000, "input_rate": 4000000, "cached_rate": 0, "output_rate": 6000000}]'
+        )
+        self.assertEqual(db._estimated_cost(free, 272_000, 0, 0, 0, 272_000, 0), 0)
+
     def test_long_context_tier_inclusive_boundary(self):
         price = _price_row(
             tiers_json='[{"min_prompt_tokens": 200000, "input_rate": 4000000, "cached_rate": 1000000, "output_rate": 12000000}]'
@@ -294,6 +315,9 @@ class EstimatedCostTest(unittest.TestCase):
         # Reasoning is a subset: 100 output with 100 reasoning is not 200.
         cost = db._estimated_cost(price, 0, 100, 0, 100, 0, 0)
         self.assertEqual(cost, 100 * 30)
+        # Overlap is billed once: 70 visible and 60 reasoning share 30 tokens.
+        cost = db._estimated_cost(price, 0, 100, 70, 60, 0, 0)
+        self.assertEqual(cost, 40 * 20 + 60 * 30)
 
     def test_reasoning_unknown_bills_output_once(self):
         price = _price_row(output_micros_per_million=6_000_000)
