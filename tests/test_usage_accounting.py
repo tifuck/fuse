@@ -273,21 +273,23 @@ class EstimatedCostTest(unittest.TestCase):
         cost = db._estimated_cost(price, 500_000, 0, 0, 0, 0, 100_000)
         self.assertEqual(cost, 400_000 * 2 + 100_000 * 2)
 
-    def test_omitted_tier_cache_rate_uses_the_tier_input_rate(self):
-        # An OpenRouter override that publishes only the long-context prompt
-        # rate stores cached_rate/cache_write_rate as null. Those tokens bill
-        # at the tier's input rate, not the cheaper short-context base rate.
+    def test_omitted_tier_cache_rate_keeps_base_or_bills_as_tier_input(self):
+        tier = '[{"min_prompt_tokens": 272000, "input_rate": 4000000, "cached_rate": null, "cache_write_rate": null, "output_rate": null}]'
+        # An override that leaves a published base rate out keeps that rate.
         price = _price_row(
-            input_micros_per_million=2_000_000,
             cached_input_micros_per_million=200_000,
             cache_write_micros_per_million=2_500_000,
             cache_write_known=1,
-            tiers_json='[{"min_prompt_tokens": 272000, "input_rate": 4000000, "cached_rate": null, "cache_write_rate": null, "output_rate": null}]',
+            tiers_json=tier,
         )
-        cached = db._estimated_cost(price, 272_000, 0, 0, 0, 272_000, 0)
-        written = db._estimated_cost(price, 272_000, 0, 0, 0, 0, 272_000)
-        self.assertEqual(cached, 272_000 * 4)
-        self.assertEqual(written, 272_000 * 4)
+        self.assertEqual(db._estimated_cost(price, 272_000, 0, 0, 0, 272_000, 0), 272_000 * 0.2)
+        self.assertEqual(db._estimated_cost(price, 272_000, 0, 0, 0, 0, 272_000), 272_000 * 2.5)
+        # With no published base rate, cache tokens bill as input: in the tier
+        # that is the tier's input rate, not the short-context input rate
+        # (built-in GPT-5.4/5.5 and Grok tiers have no write rate).
+        unknown = _price_row(cached_input_known=0, cache_write_known=0, tiers_json=tier)
+        self.assertEqual(db._estimated_cost(unknown, 272_000, 0, 0, 0, 272_000, 0), 272_000 * 4)
+        self.assertEqual(db._estimated_cost(unknown, 272_000, 0, 0, 0, 0, 272_000), 272_000 * 4)
         # A rate the tier does publish, including an explicit zero, still wins.
         free = _price_row(
             tiers_json='[{"min_prompt_tokens": 272000, "input_rate": 4000000, "cached_rate": 0, "output_rate": 6000000}]'

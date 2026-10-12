@@ -143,8 +143,8 @@ class _CallBook:
         return self.calls.get(item_id)
 
     def find(self, event: dict) -> dict | None:
-        """The call an argument or item event belongs to: by item id, else by
-        the call id or output index the event carries. Parallel calls whose
+        """The call an argument or item event belongs to: by output index,
+        else by item id, else by call id. Parallel calls whose
         events named another id used to land nowhere, and the model's calls
         ran with empty arguments."""
         item = event.get("item") if isinstance(event.get("item"), dict) else {}

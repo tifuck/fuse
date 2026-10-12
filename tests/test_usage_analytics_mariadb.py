@@ -64,7 +64,8 @@ def test_bucket_boundary_truncates_instead_of_rounding():
     # rounds it into the next one; integer division must not.
     with isolated_database():
         _seed()
-        start = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        # The previous hour, so the event is never in the future.
+        start = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
         _event((start + timedelta(seconds=1800)).strftime("%Y-%m-%dT%H:%M:%SZ"))
         data = stats.usage_analytics(1, range_id="24h")
         hit = [point for point in data["series"] if point["requests"]]

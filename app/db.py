@@ -1449,10 +1449,17 @@ def _estimated_cost(
     if tier is not None:
         input_rate = int(tier.get("input_rate") if tier.get("input_rate") is not None else input_rate)
         output_rate = int(tier.get("output_rate") if tier.get("output_rate") is not None else output_rate)
-        # A rate the tier does not publish bills at the tier's own input rate,
-        # the same way an unknown base cache rate bills at the base input rate.
-        cached_rate = int(tier.get("cached_rate") if tier.get("cached_rate") is not None else input_rate)
-        write_rate = int(tier.get("cache_write_rate") if tier.get("cache_write_rate") is not None else input_rate)
+        # A rate the tier leaves out keeps the published base rate. A base
+        # rate that was never published means "bills as input", which in the
+        # tier is the tier's input rate.
+        if tier.get("cached_rate") is not None:
+            cached_rate = int(tier["cached_rate"])
+        elif not cache_known:
+            cached_rate = input_rate
+        if tier.get("cache_write_rate") is not None:
+            write_rate = int(tier["cache_write_rate"])
+        elif not write_known:
+            write_rate = input_rate
     reasoning_known = bool(_pget(price, "reasoning_known"))
     reasoning_rate = int(_pget(price, "reasoning_micros_per_million") or 0)
     output = max(int(output or 0), 0)
