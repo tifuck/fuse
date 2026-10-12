@@ -751,18 +751,23 @@ class ClipToFitTest(unittest.TestCase):
             if row.get("role") == "user":
                 self.assertLessEqual(len(row["content"]), 40_100)
 
-    def test_never_clips_system_or_toolcall_rows(self):
+    def test_clips_toolcall_text_but_not_system_or_the_calls(self):
+        # A long reply that also carries a tool call used to be skipped, so the
+        # summary request sent it whole and overflowed. The text is clipped;
+        # the call list and system rows stay byte-identical.
+        calls = [{"id": "c1", "function": {"name": "t", "arguments": "{}"}}]
         rows = [
             {"role": "system", "content": "s" * 200_000},
-            {
-                "role": "assistant",
-                "content": "a" * 200_000,
-                "tool_calls": [{"id": "c1", "function": {"name": "t", "arguments": "{}"}}],
-            },
+            {"role": "assistant", "content": "a" * 200_000, "tool_calls": calls},
         ]
         out, clipped = context_compact.clip_to_fit(rows, limit=20_000)
-        self.assertEqual(clipped, 0)
-        self.assertIs(out, rows)
+        self.assertGreaterEqual(clipped, 1)
+        self.assertIs(out[0], rows[0])
+        self.assertLess(len(out[1]["content"]), 120_000)
+        self.assertIn("truncated to fit", out[1]["content"])
+        self.assertEqual(out[1]["tool_calls"], calls)
+        self.assertEqual(rows[1]["content"], "a" * 200_000)
+        self.assertLess(context_meter.estimate_messages(out[1:]), 20_000)
 
     def test_frozen_prefix_is_never_reclipped(self):
         old = "O" * 50_000
@@ -1129,6 +1134,26 @@ class SubagentHandoffTest(unittest.IsolatedAsyncioTestCase):
         fit = context_compact.fit_summary_messages(rows, 128_000, tools=tools)
         budget = 128_000 - context_meter.config().output_reserve - 8_000
         self.assertLessEqual(context_meter.estimate_messages(fit) + context_meter.estimate_tools(tools), budget + 64)
+
+    def test_summary_request_clips_assistant_text_that_also_has_tool_calls(self):
+        limit = 128_000
+        tools = [{"type": "function", "function": {"name": "read_file", "description": "read", "parameters": {}}}]
+        prose = "Here is the full file I rewrote:\n" + ("line\n" * 300_000)
+        calls = [{"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": "{\"path\":\"a.py\"}"}}]
+        rows = [
+            {"role": "user", "content": "refactor it"},
+            {"role": "assistant", "content": prose, "tool_calls": calls},
+            {"role": "tool", "tool_call_id": "c1", "content": "file has 12 lines"},
+        ]
+        payload = context_compact.summarize_payload(rows, instructions="focus on the refactor", limit=limit, tools=tools)
+        sent = context_meter.estimate_messages(payload) + context_meter.estimate_tools(tools)
+        self.assertLessEqual(sent, limit)
+        assistant = payload[1]
+        self.assertLess(len(assistant["content"]), len(prose))
+        self.assertIn("truncated to fit", assistant["content"])
+        self.assertEqual(assistant["tool_calls"], calls)
+        self.assertEqual(payload[2]["tool_call_id"], "c1")
+        self.assertEqual(rows[1]["content"], prose)
 
 
 if __name__ == "__main__":

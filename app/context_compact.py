@@ -1076,8 +1076,9 @@ def clip_to_fit(
     a message larger than the window would otherwise fail terminally on
     context overflow. Only plain user/assistant/tool text is trimmed,
     head-kept with a visible marker inside the content. System rows,
-    tool_calls structure, and images are never touched, and no rows are added
-    or dropped, so tool pairing survives. Returns (rows, clipped count); the
+    the tool_calls list, and images are never touched, and no rows are added
+    or dropped, so tool pairing survives. A reply that also carries a tool
+    call still has its text trimmed. Returns (rows, clipped count); the
     input is never mutated.
 
     Rows before `frozen` were already sent to the provider in an earlier
@@ -1106,7 +1107,6 @@ def clip_to_fit(
         and msg.get("role") in ("user", "assistant", "tool")
         and isinstance(msg.get("content"), str)
         and msg["content"].strip()
-        and not msg.get("tool_calls")
     ]
     if not clip_idx:
         return original, 0
