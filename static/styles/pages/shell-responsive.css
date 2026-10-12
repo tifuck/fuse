@@ -24,8 +24,8 @@
   .catalog-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 800px) {
-  html:has(body.is-settings) { scrollbar-gutter: auto; }
-  html:has(body.is-chat) { scrollbar-gutter: auto; }
+  html.is-settings-root { scrollbar-gutter: auto; }
+  html.is-chat-root { scrollbar-gutter: auto; }
   body.is-nav { overflow: hidden; }
   form.stack .btn { align-self: stretch; width: 100%; }
   .row-actions { min-width: 0; }

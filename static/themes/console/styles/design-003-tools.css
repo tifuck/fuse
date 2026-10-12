@@ -236,7 +236,7 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-picker-btn small
 
 html[data-chat-console="true"] .chat[data-view="console"] .chat-picker-chev { color: var(--mute); }
 
-html[data-chat-console="true"] body.is-chat:has(.chat[data-view="console"]) .chat-picker-menu.is-sheet { max-width: none; }
+html[data-chat-console="true"] body.is-chat.is-chat.is-chat .chat-picker-menu.is-sheet { max-width: none; }
 
 html[data-chat-console="true"] .chat[data-view="console"] .chat-picker-menu {
   font-family: var(--mono);

@@ -110,11 +110,13 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-box.is-drop {
   box-shadow: 0 0.85rem 1.1rem -0.9rem color-mix(in srgb, var(--brass) 50%, transparent);
 }
 
-html[data-chat-console="true"] body.is-chat:has(.chat[data-view="console"]) :is(.chat-pop, .chat-picker-menu, .chat-context-pop, .chat-perms-menu) { border-radius: 0; box-shadow: none; background: var(--ink); }
+/* The repeated class keeps the specificity of the old body:has(.chat[data-view])
+   anchor; a :has() on body re-ran over the whole page on every DOM change. */
+html[data-chat-console="true"] body.is-chat.is-chat.is-chat :is(.chat-pop, .chat-picker-menu, .chat-context-pop, .chat-perms-menu) { border-radius: 0; box-shadow: none; background: var(--ink); }
 
-html[data-chat-console="true"] body.is-chat:has(.chat[data-view="console"]) :is(.chat-perms-row, .chat-perms-x, .chat-perms-modes, .chat-perms-modes button) { border-radius: 0; }
+html[data-chat-console="true"] body.is-chat.is-chat.is-chat :is(.chat-perms-row, .chat-perms-x, .chat-perms-modes, .chat-perms-modes button) { border-radius: 0; }
 
-html[data-chat-console="true"] body.is-chat:has(.chat[data-view="console"]) .chat-view-menu { background: var(--panel); }
+html[data-chat-console="true"] body.is-chat.is-chat.is-chat .chat-view-menu { background: var(--panel); }
 
 @media (max-width: 800px) {
   .chat[data-view="console"] .chat-md { font-size: calc(0.86rem * var(--chat-text-scale, 1)); line-height: 1.6; }
@@ -125,7 +127,7 @@ html[data-chat-console="true"] body.is-chat:has(.chat[data-view="console"]) .cha
 }
 
 @media (max-width: 800px) {
-  html[data-chat-console="true"] body.is-chat:has(.chat[data-view="console"]) .chat-view-menu { border-radius: 0; }
+  html[data-chat-console="true"] body.is-chat.is-chat.is-chat .chat-view-menu { border-radius: 0; }
 }
 
 @media (max-width: 800px) {

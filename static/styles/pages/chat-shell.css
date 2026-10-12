@@ -1,5 +1,5 @@
 /* —— Chat —— */
-html:has(body.is-chat),
+html.is-chat-root,
 body.is-chat,
 body.is-chat.is-app {
   display: flex;
