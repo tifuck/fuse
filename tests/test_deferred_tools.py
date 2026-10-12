@@ -429,6 +429,16 @@ class CodingPromptTest(unittest.TestCase):
         self.assertIn("search_models", text)
         self.assertIn("clone this agent", text)
 
+    def test_general_subagent_joins_background_work_before_reporting(self):
+        text = build_system_prompt(instructions="", profile="", thread_context="", tools=["web_search"],
+                                   coding=True, project_session=True, subagent=True,
+                                   subagent_type="general-purpose")
+        self.assertIn("`monitor`", text)
+        self.assertIn("Nothing wakes a subagent", text)
+        self.assertIn("its events reach you until you report", text)
+        self.assertNotIn("the event wakes you", text)
+        self.assertNotIn("end your turn with a short status", text)
+
     def test_coding_prefers_file_tools_over_shell(self):
         for kwargs in (
             {"project_session": True, "loaded_tools": None},
@@ -470,6 +480,9 @@ class CodingPromptTest(unittest.TestCase):
             self.assertIn('echo "exit=$?" > /tmp/fuse/job.status', text)
             self.assertIn("Silence is not success", text)
             self.assertIn("the event wakes you", text)
+            # Only the main agent is woken by background results.
+            self.assertIn("end your turn with a short status instead of joining them", text)
+            self.assertNotIn("Nothing wakes a subagent", text)
             if kwargs.get("loaded_tools"):
                 self.assertIn("Loaded tools: run_terminal_command", text)
                 self.assertIn("Call them directly without `search_tools`", text)
@@ -496,6 +509,10 @@ class CodingPromptTest(unittest.TestCase):
         self.assertIn("Pick the wait by how many notifications you need", explore)
         # Explore still runs foreground waits, so it gets the self-match rule.
         self.assertIn("Process-name checks match themselves", explore)
+        # Nothing wakes a subagent after its report (command_jobs drops its
+        # late results), so it joins instead of ending its turn.
+        self.assertIn("Nothing wakes a subagent", explore)
+        self.assertNotIn("the event wakes you", explore)
         plan = build_system_prompt(
             instructions="", profile="", thread_context="", tools=["web_search"],
             coding=True, subagent=True, subagent_type="plan",

@@ -326,16 +326,39 @@ _WAIT = (
     "than expected, check the condition directly before assuming the job is still running."
 )
 # Explore children cannot load monitor (agent_catalog.EXPLORE_TOOLS).
-_WAIT_VS_HOOK = (
-    _WAIT + "\n"
+_MONITOR_HOW = (
     "- One notification per occurrence is a `monitor`, never a single event. With no known end (errors "
     "in a log, new files), use an unbounded command (`tail -n0 -F app.log | grep --line-buffered -E "
     "'ERROR|Traceback'`, `inotifywait -m`, a `while true` poll) with `max_events` raised, and re-arm it "
     "when it times out. Up to a known end (CI steps, rollout stages), use a script that prints a line "
-    "per step and then exits. Its filter must match every terminal state, not just success. Then keep "
-    "working, or end your turn if nothing else is left: the event wakes you. `monitor`'s description "
-    "covers filters, output volume, Windows, and what `<monitor_event>` and `<monitor_result>` mean. "
-    "Load it via `search_tools` query `shell` if it is not loaded."
+    "per step and then exits. Its filter must match every terminal state, not just success. "
+)
+_MONITOR_REF = (
+    "`monitor`'s description covers filters, output volume, Windows, and what `<monitor_event>` and "
+    "`<monitor_result>` mean. Load it via `search_tools` query `shell` if it is not loaded."
+)
+# Only the main agent is woken: a wake turn runs on the thread
+# (chat_runs.schedule_wake), and command_jobs drops results and monitor events
+# for a subagent whose run has ended.
+_IDLE_MAIN = (
+    "- When background commands, monitors or subagents are all that is left, end your turn with a short "
+    "status instead of joining them: each result starts a new turn for you, unless the user stops the "
+    "chat. Join (`get_command_output`, `get_subagent_output`) only when you need the result to continue."
+)
+_IDLE_CHILD = (
+    "- Nothing wakes a subagent: your final report ends your run, and background work still running "
+    "then is never delivered to you. Before you report, join what the report needs "
+    "(`get_command_output`, or `get_subagent_output` for your own subagents) and stop watches you no "
+    "longer need (`kill_command`)."
+)
+_WAIT_VS_HOOK = (
+    _WAIT + "\n" + _MONITOR_HOW
+    + "Then keep working, or end your turn if nothing else is left: the event wakes you. "
+    + _MONITOR_REF + "\n" + _IDLE_MAIN
+)
+_WAIT_VS_HOOK_CHILD = (
+    _WAIT + "\n" + _MONITOR_HOW + "Then keep working; its events reach you until you report. "
+    + _MONITOR_REF + "\n" + _IDLE_CHILD
 )
 _RISKY_TARGETS = (
     "deleting files you did not create, `git reset --hard`, `git checkout -- .`, `git clean`, "
@@ -611,12 +634,12 @@ def build_system_prompt(
     if coding and not read_only:
         parts.append("How to work:\n" + (_ACT_CHILD if subagent else _ACT_MAIN) + "\n" + _TASK_METHOD)
         parts.append("Tools:\n" + _FILE_TOOLS_OVER_SHELL + "\n" + _PARALLEL + "\n" + _EDITS)
-        parts.append(_SHELL + "\n" + _WAIT_VS_HOOK)
+        parts.append(_SHELL + "\n" + (_WAIT_VS_HOOK_CHILD if subagent else _WAIT_VS_HOOK))
         parts.append(_RISKY_CHILD if subagent else _RISKY_MAIN)
     elif coding:
         parts.append("Tools:\n" + _PARALLEL)
         if kind == "explore":
-            parts.append(_SHELL + "\n" + _WAIT)
+            parts.append(_SHELL + "\n" + _WAIT + "\n" + _IDLE_CHILD)
     if coding:
         parts.append(_HOSTS if kind == "plan" else _HOSTS + _HOSTS_SHELL)
     if "web_search" in tools:
