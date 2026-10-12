@@ -332,6 +332,10 @@ def invalidate_model_cache(source_type: str | None = None) -> None:
 def catalog_unavailable_for(model: str) -> bool:
     if model.startswith("explabs/"):
         return False
+    if model.startswith("devin/") or model.startswith("devin-"):
+        return "devin" in _unavailable_types
+    if model.startswith("claude/"):
+        return "claude" in _unavailable_types
     if model.startswith("openrouter/") or ("/" in model and not model.startswith("/")):
         return "openrouter" in _unavailable_types
     if model.startswith("grok"):
@@ -340,15 +344,11 @@ def catalog_unavailable_for(model: str) -> bool:
         return "zai" in _unavailable_types
     if model.startswith("gpt-"):
         return "chatgpt" in _unavailable_types
-    if model.startswith("devin/") or model.startswith("devin-"):
-        return "devin" in _unavailable_types
     if model in KIMI_MODELS or model.startswith("kimi-for-coding") or model == "k3" or model.startswith("k3-"):
         return "kimi" in _unavailable_types
     if model in MIMO_MODELS or model.startswith("mimo-"):
         return "mimo" in _unavailable_types
-    if model.startswith("claude/"):
-        return "claude" in _unavailable_types
-    return bool(_unavailable_types)
+    return bool(_unavailable_types & {"llama", "openai", "ollama"})
 
 
 def _sources(

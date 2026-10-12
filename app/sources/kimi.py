@@ -953,9 +953,12 @@ def _remember_catalog(rows: list[dict]) -> list[str]:
         names = list(KIMI_MODELS)
         rows = [{"id": mid, **KIMI_MODEL_META[mid]} for mid in names if mid in KIMI_MODEL_META]
     else:
+        prior = dict(_catalog_meta)
         for mid in list(_models_cache[1] if _models_cache and _models_cache[1] else []) + list(KIMI_MODELS):
             if mid not in names:
                 names.append(mid)
+                if mid in prior:
+                    rows.append(prior[mid])
     _catalog_meta = {row["id"]: row for row in rows if row.get("id")}
     for mid, seeded in KIMI_MODEL_META.items():
         _catalog_meta.setdefault(mid, {"id": mid, **seeded})

@@ -193,6 +193,8 @@ async def fetch_catalog(*, force: bool = False) -> dict:
             "pricing": item.get("pricing") if isinstance(item.get("pricing"), dict) else {},
             "context_length": _context_length(item.get("context_length")),
         }
+        if mid in by_id:
+            (free_ids if by_id[mid]["free"] else paid_ids).remove(mid)
         by_id[mid] = rec
         (free_ids if free else paid_ids).append(mid)
     catalog = {"by_id": by_id, "free_ids": free_ids, "paid_ids": paid_ids, "all_ids": free_ids + paid_ids}

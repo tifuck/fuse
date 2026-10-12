@@ -8,7 +8,7 @@ import pytest
 
 from app import accounts
 from app.proxy import openai_chat
-from app.sources import chatgpt_stream, claude_catalog, ollama, openrouter, usage_walk
+from app.sources import chatgpt_stream, claude_catalog, kimi, ollama, openrouter, usage_walk
 
 
 def test_schema_failure_keeps_reported_usage():
@@ -118,3 +118,93 @@ def test_stale_openrouter_rejection_does_not_disable_replacement_key():
     current = db.fetchone("SELECT secret FROM credentials WHERE id=?", (cid,))["secret"]
     openrouter.disable_credential(cid, secret=current)
     assert db.fetchone("SELECT disabled FROM credentials WHERE id=?", (cid,))["disabled"] == 1
+
+
+def test_prefixed_pool_outage_does_not_mark_a_bare_id_unavailable():
+    import app.sources as sources
+
+    saved = set(sources._unavailable_types)
+    try:
+        sources._unavailable_types.clear()
+        sources._unavailable_types.add("grok")
+        assert sources.catalog_unavailable_for("my-local-alias") is False
+        assert sources.catalog_unavailable_for("") is False
+        assert sources.catalog_unavailable_for("grok-4.6") is True
+        sources._unavailable_types.add("llama")
+        assert sources.catalog_unavailable_for("my-local-alias") is True
+    finally:
+        sources._unavailable_types.clear()
+        sources._unavailable_types.update(saved)
+
+
+def test_pool_prefixes_win_over_the_openrouter_slash_test():
+    import app.sources as sources
+
+    saved = set(sources._unavailable_types)
+    try:
+        sources._unavailable_types.clear()
+        sources._unavailable_types.add("openrouter")
+        assert sources.catalog_unavailable_for("claude/claude-opus-4.6") is False
+        assert sources.catalog_unavailable_for("devin/gpt-6-astra") is False
+        assert sources.catalog_unavailable_for("author/slug") is True
+        sources._unavailable_types.add("claude")
+        assert sources.catalog_unavailable_for("claude/claude-opus-4.6") is True
+    finally:
+        sources._unavailable_types.clear()
+        sources._unavailable_types.update(saved)
+
+
+def test_kimi_catalog_keeps_metadata_for_retained_ids():
+    saved = (kimi._models_cache, dict(kimi._catalog_meta))
+    try:
+        kimi._models_cache, kimi._catalog_meta = None, {}
+        kimi._remember_catalog([{"id": "kimi-k2", "name": "Kimi K2", "window": 131072, "efforts": ("low", "high")}])
+        assert kimi.model_window("kimi-k2") == 131072
+        kimi._remember_catalog([{"id": "kimi-k3", "name": "Kimi K3", "window": 262144}])
+        assert "kimi-k2" in (kimi._models_cache[1] if kimi._models_cache else [])
+        assert kimi.model_window("kimi-k2") == 131072
+        assert kimi.model_label("kimi-k2") == "Kimi K2"
+    finally:
+        kimi._models_cache, kimi._catalog_meta = saved
+
+
+def test_openrouter_catalog_lists_a_duplicate_id_once():
+    payload = {"data": [
+        {"id": "vendor/model:free", "name": "M", "pricing": {"prompt": "0", "completion": "0"}},
+        {"id": "vendor/model:free", "name": "M", "pricing": {"prompt": "0.000002", "completion": "0.00001"}},
+    ]}
+
+    class _Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return payload
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def get(self, *args, **kwargs):
+            return _Response()
+
+    saved = (openrouter._catalog, openrouter._catalog_available)
+
+    async def run():
+        with patch.object(openrouter.httpx, "AsyncClient", _Client):
+            return await openrouter.fetch_catalog(force=True)
+
+    try:
+        openrouter._catalog = None
+        catalog = asyncio.run(run())
+    finally:
+        openrouter._catalog, openrouter._catalog_available = saved
+    assert catalog["free_ids"].count("vendor/model:free") + catalog["paid_ids"].count("vendor/model:free") == 1
+    listed_paid = "vendor/model:free" in catalog["paid_ids"]
+    assert listed_paid is (catalog["by_id"]["vendor/model:free"]["free"] is False)
