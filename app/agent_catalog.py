@@ -379,7 +379,7 @@ SCHEMAS = {
                 "(or name it in include). "
                 "Stops after max_matches; a search over 20 s "
                 "returns partial matches with a note. Matches inside secret files (.env, keys) are withheld. "
-                "To search one file, set path to that file. include filters the files under path: a glob "
+                "include filters the files under path: a glob "
                 "without / (\"*.py\", \"*.{ts,tsx}\") matches file names at any depth under path; a glob with / "
                 "(\"web/*.py\", \"**/tests/*.py\") matches the path relative to path. A plain file name as include "
                 "searches just that file when it sits directly in path, else every file of that name below it. "

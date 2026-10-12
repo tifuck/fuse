@@ -260,14 +260,20 @@ _PARALLEL = (
     "writes, edits, and shell commands on the same host still run in the order you issue them. "
     "Split calls across "
     "steps only when one needs another's result.\n"
-    "- Locate, then read: find where things live with `grep` (output_mode files_with_matches for broad "
-    "sweeps) or `glob`, then `read_file` what matters. Read a whole file when you need its structure; "
-    "otherwise read the region you need rather than many tiny slices."
+    "- Locate, then read, with the cheapest search that answers the question: `glob` when you know a "
+    "file name or extension; `grep` with output_mode files_with_matches to learn which files mention "
+    "something; then `grep` content mode narrowed by path or include (context for surrounding lines), "
+    "or `read_file` on just those files. `list_dir` with depth 2-3 shows a project's layout. Read a "
+    "whole file when you need its structure; otherwise read the region you need rather than many tiny "
+    "slices."
 )
 _FILE_TOOLS_OVER_SHELL = (
     "- Use `list_dir`, `grep`, `glob`, `read_file`, `search_replace`, and `write_file` — not shell with "
-    "ls/find/rg/grep/cat/sed — for listing, searching, reading, and editing files; file tools stay inside "
-    "the host's listed roots. Reserve the shell for git, tests, builds, and other programs."
+    "ls/find/rg/grep/cat/sed — for listing, searching, reading, and editing files. They cost fewer "
+    "tokens: results are capped, paths are project-relative, vendor/build dirs and .gitignored files "
+    "are skipped, and they work the same on Windows hosts, while a shell `find` or `grep -r` can return "
+    "thousands of vendor paths and a glob in a shell command needs the user's approval. File tools stay "
+    "inside the host's listed roots. Reserve the shell for git, tests, builds, and other programs."
 )
 _EDITS = (
     "- Read a file before editing it. Prefer `search_replace` for targeted edits (`edits` for several "

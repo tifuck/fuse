@@ -457,6 +457,9 @@ class CodingPromptTest(unittest.TestCase):
                 self.assertIn(f"`{name}`", text)
             self.assertIn("not shell with ls/find/rg/grep/cat/sed", text)
             self.assertIn("Reserve the shell for git, tests, builds", text)
+            # The reason (token cost, vendor dirs, Windows) is what makes models comply.
+            self.assertIn("They cost fewer tokens", text)
+            self.assertIn("`glob` when you know a file name or extension", text)
             self.assertIn("Prefer `search_replace` for targeted edits", text)
             self.assertIn("`monitor`", text)
             self.assertIn("never sleep or poll", text)
