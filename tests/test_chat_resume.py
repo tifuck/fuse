@@ -344,6 +344,9 @@ class ResumeTest(unittest.IsolatedAsyncioTestCase):
         misses, rounds = await self.cache_turn(0)
         self.assertEqual(len(misses), 1)
         self.assertEqual((misses[0]["state"], misses[0]["prompt"], misses[0]["cached"]), ("miss", 30002, 0))
+        # Round 2 resent round 1's request plus the tool exchange, so the
+        # loss is the provider's, not an edit or a settings change.
+        self.assertEqual(misses[0]["reason"], "provider")
         # The page learns warmth from the round meter, without the account id.
         self.assertTrue(rounds[-1]["cache"]["hit"])
         self.assertNotIn("cred", rounds[-1]["cache"])

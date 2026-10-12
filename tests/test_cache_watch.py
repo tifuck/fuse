@@ -9,8 +9,21 @@ def usage(prompt, cached, status="known"):
     return {"prompt_tokens": prompt, "cached_tokens": cached, "cache_usage_status": status}
 
 
-def probe(prompt, cached, *, at=1000.0, prior=None, model="m", source="chatgpt", cred=1, status="known"):
-    return watch.probe(usage(prompt, cached, status), model=model, source=source, cred=cred, prior=prior, now=at)
+def probe(prompt, cached, *, at=1000.0, prior=None, model="m", source="zai", cred=1, status="known", run=None, request=None):
+    return watch.probe(usage(prompt, cached, status), model=model, source=source, cred=cred, prior=prior, now=at,
+                       run=run, request=request)
+
+
+SYSTEM = {"role": "system", "content": "You are Fuse."}
+TOOLS = [{"type": "function", "function": {"name": "read_file", "parameters": {}}}]
+
+
+def sent(*messages, tools=TOOLS, effort="medium"):
+    return watch.fingerprint([SYSTEM, *messages], tools, effort)
+
+
+def user(text):
+    return {"role": "user", "content": text}
 
 
 class CacheWatchTest(unittest.TestCase):
@@ -32,12 +45,37 @@ class CacheWatchTest(unittest.TestCase):
         warm = probe(50_000, 45_000, source="claude")
         self.assertIsNotNone(watch.miss(warm, probe(52_000, 0, at=1000 + 1800, prior=warm, source="claude")))
 
+    def test_openrouter_anthropic_models_get_claudes_hour(self):
+        # Fuse sends OpenRouter cache_control ttl "1h" for anthropic/ models only.
+        self.assertEqual(watch.ttl_for("openrouter", "openrouter/anthropic/claude-sonnet-5"), 3600)
+        self.assertEqual(watch.ttl_for("openrouter", "openrouter/z-ai/glm-5.3"), watch.DEFAULT_TTL_S)
+
+    def test_chatgpt_keeps_gpt_5_6_and_later_for_thirty_minutes(self):
+        # OpenAI: GPT-5.6+ prompts are cached 30 min by default; older GPT-5
+        # models keep them in memory for 5-10 minutes.
+        for model in ("gpt-5.6-sol", "gpt-6.1-sol", "gpt-6-astra"):
+            self.assertEqual(watch.ttl_for("chatgpt", model), 1800, model)
+        for model in ("gpt-5", "gpt-5-codex", "gpt-5.4-mini", "gpt-5.5"):
+            self.assertEqual(watch.ttl_for("chatgpt", model), watch.DEFAULT_TTL_S, model)
+        warm = probe(50_000, 45_000, source="chatgpt", model="gpt-6.1-sol")
+        self.assertIsNotNone(watch.miss(warm, probe(52_000, 0, at=1000 + 1200, prior=warm, source="chatgpt", model="gpt-6.1-sol")))
+        self.assertIsNone(watch.miss(warm, probe(52_000, 0, at=1000 + 1801, prior=warm, source="chatgpt", model="gpt-6.1-sol")))
+
     def test_first_turn_and_never_cached_chats_stay_silent(self):
         # Nothing was ever served from cache, so there is nothing to lose.
         cold = probe(50_000, 0)
         self.assertFalse(cold["hit"])
         self.assertIsNone(watch.miss(cold, probe(52_000, 0, at=1100, prior=cold)))
         self.assertIsNone(watch.miss(None, probe(52_000, 0, at=1100)))
+
+    def test_a_token_cached_count_is_not_a_hit(self):
+        # Grok reports 128 cached tokens on a cold prompt. A new chat whose
+        # first two rounds both came back with 128 was never warm.
+        first = probe(13_204, 128, source="grok")
+        self.assertFalse(first["hit"])
+        second = probe(16_213, 128, at=1009, prior=first, source="grok")
+        self.assertIsNone(watch.miss(first, second))
+        self.assertTrue(probe(13_204, watch.HIT_MIN_TOKENS)["hit"])
 
     def test_hit_is_sticky_across_requests(self):
         missed = probe(52_000, 0, at=1100, prior=self.warm)
@@ -46,7 +84,7 @@ class CacheWatchTest(unittest.TestCase):
 
     def test_model_or_provider_change_is_not_judged(self):
         self.assertIsNone(watch.miss(self.warm, probe(52_000, 0, at=1100, prior=self.warm, model="other")))
-        self.assertIsNone(watch.miss(self.warm, probe(52_000, 0, at=1100, prior=self.warm, source="zai")))
+        self.assertIsNone(watch.miss(self.warm, probe(52_000, 0, at=1100, prior=self.warm, source="grok")))
 
     def test_small_prompts_and_small_shared_prefixes_are_ignored(self):
         small = probe(5_000, 4_000)
@@ -62,6 +100,63 @@ class CacheWatchTest(unittest.TestCase):
         current = probe(52_000, 0, at=1100, prior=self.warm, cred=2)
         self.assertEqual(watch.miss(self.warm, current)["reason"], "account")
         self.assertEqual(watch.miss(self.warm, current, settings_changed=True)["reason"], "settings")
+
+    def test_one_warning_per_run_survives_a_resume(self):
+        warm = probe(50_000, 45_000, run="r1")
+        missed = {**probe(52_000, 0, at=1100, prior=warm, run="r1"), "warned": True}
+        self.assertTrue(watch.warned(missed, "r1"))
+        self.assertFalse(watch.warned(missed, "r2"))
+        self.assertFalse(watch.warned(warm, "r1"))
+        # The flag rides along on later rounds of the same run (stored on the
+        # thread), so a resumed run does not warn again; a new run starts clean.
+        later = probe(53_000, 52_000, at=1200, prior=missed, run="r1")
+        self.assertTrue(watch.warned(later, "r1"))
+        self.assertFalse(probe(54_000, 0, at=1300, prior=later, run="r2")["warned"])
+
+    def test_resending_the_same_prefix_blames_the_provider(self):
+        first = sent(user("question"))
+        warm = probe(50_000, 45_000, request=first)
+        # A later round extends the request it follows...
+        grown = sent(user("question"), {"role": "assistant", "content": "answer"}, user("more"))
+        event = watch.miss(warm, probe(52_000, 128, at=1100, prior=warm, request=grown))
+        self.assertEqual(event["reason"], "provider")
+        # ...and a retry resends a prefix of it.
+        retry = probe(30_000, 0, at=1100, prior=probe(50_000, 45_000, request=grown), request=first)
+        self.assertEqual(retry["changed"], "")
+        self.assertEqual(watch.miss(probe(50_000, 45_000, request=grown), retry)["reason"], "provider")
+
+    def test_an_edit_that_explains_the_loss_names_the_history(self):
+        long = "x" * 4000
+        before = sent(user("first " + long), {"role": "assistant", "content": long}, user("second " + long))
+        warm = probe(50_000, 45_000, request=before)
+        # The first user message was edited: only the system prompt survives.
+        early = sent(user("FIRST " + long), {"role": "assistant", "content": long}, user("second " + long))
+        current = probe(50_000, 2_000, at=1100, prior=warm, request=early)
+        self.assertEqual(current["changed"], "history")
+        self.assertLess(current["shared"], 4_000)
+        self.assertEqual(watch.miss(warm, current)["reason"], "history")
+        # Only the newest message changed: the provider should still have
+        # served the rest, so a cold request is the provider's miss.
+        late = sent(user("first " + long), {"role": "assistant", "content": long}, user("SECOND " + long))
+        cold = probe(50_000, 128, at=1100, prior=warm, request=late)
+        self.assertEqual(cold["changed"], "history")
+        self.assertEqual(watch.miss(warm, cold)["reason"], "provider")
+
+    def test_tools_effort_or_system_changes_are_settings(self):
+        warm = probe(50_000, 45_000, request=sent(user("q")))
+        for request in (sent(user("q"), tools=[]), sent(user("q"), effort="high"),
+                        watch.fingerprint([{"role": "system", "content": "New rules."}, user("q")], TOOLS, "medium")):
+            current = probe(50_000, 0, at=1100, prior=warm, request=request)
+            self.assertEqual(current["changed"], "settings")
+            self.assertEqual(watch.miss(warm, current)["reason"], "settings")
+
+    def test_probes_without_a_fingerprint_keep_an_unexplained_reason(self):
+        self.assertEqual(watch.miss(self.warm, probe(52_000, 0, at=1100, prior=self.warm))["reason"], "")
+
+    def test_images_weigh_like_text_when_estimating_the_shared_prefix(self):
+        image = {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64," + "A" * 200_000}}]}
+        weights = watch.fingerprint([SYSTEM, image])["weights"]
+        self.assertLess(weights[2], 5_000)
 
     def test_public_view_hides_the_account(self):
         view = watch.public(self.warm)

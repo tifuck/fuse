@@ -794,9 +794,9 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 window_override = None
 
         # The newest request's prompt-cache probe, carried across turns on the
-        # thread; one miss notice per turn at most (chat_generation.cache_watch).
+        # thread; one miss notice per run at most, a resumed run included
+        # (chat_generation.cache_watch).
         cache_prior = None
-        cache_warned = False
         if not is_child and thread_id:
             try:
                 from .chat_checkpoint import load_compaction
@@ -804,6 +804,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 cache_prior = (load_compaction(user["id"], thread_id) or {}).get("cache")
             except Exception:
                 logger.exception("Could not load the prompt-cache probe")
+        cache_warned = cache_watch.warned(cache_prior, run_id)
 
         # Last provider prompt_tokens, and the projected messages that prompt covered.
         # Later readings add only the suffix. A rebuilt transcript clears this.
@@ -1371,11 +1372,15 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             round_meter = _live_meter(usage=summary.get("usage"), response=summary)
             probe = None if is_child else cache_watch.probe(
                 summary.get("usage"), model=model, source=src_type or src_type_guess,
-                cred=getattr(result, "credential_id", None), prior=cache_prior, now=round_sent_at)
+                cred=getattr(result, "credential_id", None), prior=cache_prior, now=round_sent_at,
+                run=run_id, request=cache_watch.fingerprint(
+                    send["messages"], send.get("tools"), send.get("reasoning_effort")))
             missed = None
             if probe:
                 if not cache_warned:
                     missed = cache_watch.miss(cache_prior, probe, settings_changed=prompt_refreshed and completion_i == start_i)
+                if missed:
+                    probe["warned"] = True
                 cache_prior = probe
             # The page reads cache warmth from the round meter (no account id).
             yield _sse(context_meter.context_event({**round_meter, "cache": cache_watch.public(probe)} if probe else round_meter, phase="round"))

@@ -293,7 +293,12 @@ export function createContext(ctx) {
     S.cacheNoticed.add(id);
     const prompt = Number(event.prompt) || 0;
     const uncached = Math.max(0, prompt - (Number(event.cached) || 0));
-    const why = event.reason === "account" ? " (another pool account served it)" : event.reason === "settings" ? " (instructions or tools changed)" : "";
+    const why = {
+      account: " (another pool account served it)",
+      settings: " (instructions, tools or effort changed)",
+      history: " (earlier messages changed)",
+      provider: " (the provider dropped its cache)",
+    }[event.reason] || "";
     picker.pinHint("cache:" + id, `Cache miss · ${formatTokens(uncached)} of ${formatTokens(prompt)} input tokens uncached${why}`);
   }
 
