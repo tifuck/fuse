@@ -27,30 +27,18 @@
 
 :is( html[data-chat-console="true"] .chat[data-view="console"]) .chat-tool-image figcaption span { display: block; }
 
+/* The recap sits on the tool-row grid: an empty dot column, then the text
+   where every call's text starts. */
 html[data-chat-console="true"] .chat[data-view="console"] .chat-recap {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.5em;
+  display: grid;
+  grid-template-columns: var(--console-col) minmax(0, 1fr);
+  column-gap: 0.45rem;
   margin: 0.6rem 0 0.2rem;
   color: color-mix(in srgb, var(--mute) 85%, var(--ink));
-  font-size: calc(0.88rem * var(--chat-text-scale, 1));
-  font-weight: 400;
-  line-height: 1.45;
+  font: 400 var(--console-type, calc(0.78rem * var(--chat-text-scale, 1)))/var(--console-leading, 1.4) var(--mono);
 }
 
-html[data-chat-console="true"] .chat[data-view="console"] .chat-recap { font-size: var(--console-type, calc(0.78rem * var(--chat-text-scale, 1))); }
-
-html[data-chat-console="true"] .chat[data-view="console"] .chat-recap-icon {
-  display: inline-flex;
-  flex: 0 0 auto;
-  width: 1em;
-  height: 1em;
-  margin-top: 0.2em;
-}
-
-html[data-chat-console="true"] .chat[data-view="console"] .chat-recap-icon svg { width: 100%; height: 100%; }
-
-html[data-chat-console="true"] .chat[data-view="console"] .chat-recap-copy { min-width: 0; }
+html[data-chat-console="true"] .chat[data-view="console"] .chat-recap-copy { grid-column: 2; min-width: 0; }
 
 html[data-chat-console="true"] .chat[data-view="console"] .chat-recap-label { font-weight: 650; }
 

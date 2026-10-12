@@ -108,64 +108,60 @@ const hits = (n, prefix = 'Result') => Array.from({ length: n }, (_, i) => ({
     const eq = (actual, expected, where) => check(actual === expected, `${where}: ${JSON.stringify(actual)} !== ${JSON.stringify(expected)}`);
 
     // ————————————————————————————————————————————————
-    // load_skill: semantic content (name, loaded indication, outcomes) plus
-    // the condensed settled row — one line carrying call and outcome
-    // together, no second sub-line, with the loaded body opening on demand.
+    // load_skill: a tool row like any other — Skill(name) on the call line,
+    // what the skill is for on the line under it, and the loaded body
+    // opening on demand.
     // ————————————————————————————————————————————————
     console.log('edge: skill load');
     await width(1440);
-    const singleLine = (id) => page.evaluate((id) => {
-      const li = document.querySelector(`[data-step="tool-${id}"]`);
-      const head = li.querySelector(':scope > .chat-step-main > .chat-step-head');
-      const label = li.querySelector('.chat-step-label');
-      return {
-        liH: li.getBoundingClientRect().height,
-        headH: head.getBoundingClientRect().height,
-        labelH: label.getBoundingClientRect().height,
-        result: (li.querySelector('.chat-console-result-text')?.innerText || '').trim(),
-        visible: li.innerText.replace(/\s+/g, ' ').trim(),
-      };
-    }, id);
     try {
-      const sk = tool('load_skill', { preview: 'café-🚀-über', output: 'Loaded.\n\n# Café 🚀\n\nBe excellent.', call_duration_ms: 900 });
+      const sk = tool('load_skill', { preview: 'café-🚀-über', summary: 'Writes  excellent\ncafé menus.', output: 'Loaded.\n\n# Café 🚀\n\nBe excellent.', call_duration_ms: 900 });
       await mount([turn([sk], [T(sk)])]);
       await frame();
       let row = await rowOf(sk.id);
-      eq(row.head, 'Loaded the café-🚀-über skill', 'skill done line is the outcome sentence');
-      eq(row.result, '', 'the settled skill row keeps no second sub-line');
+      eq(row.head, 'Skill(café-🚀-über)', 'skill call line names the skill');
+      eq(row.result, 'Writes excellent café menus.', 'the line under it is the skill description, on one line');
       eq(row.state, 'done', 'skill done state');
       eq(row.stateTitle, 'Done', 'skill done dot title');
-      // The settled default row is a single line: the row is exactly as tall
-      // as its head.
-      const one = await singleLine(sk.id);
-      check(Math.abs(one.liH - one.headH) <= 1, `the settled skill row is a single line: row ${one.liH}px vs head ${one.headH}px`);
-      check(/loaded/i.test(one.visible) && one.visible.includes('café-🚀-über'), `the one line carries the name and the outcome: ${one.visible}`);
       await openRow(sk.id);
       row = await rowOf(sk.id);
       check(row.body.includes('Café') && row.body.includes('Be excellent'), `skill body keeps the loaded content: ${row.body}`);
       check(!row.body.includes('Loaded.'), `skill body drops the transport prelude: ${row.body}`);
 
-      // A missing preview falls back to the bare noun, and the outcome stands.
-      const bare = tool('load_skill', { output: 'Loaded.\n\n# Bare\n\nFine.' });
+      // Without a stored description the body's first line of prose stands
+      // in; without either, the outcome. A missing name is the bare noun.
+      const lead = tool('load_skill', { preview: 'lead', output: 'Loaded.\n\n# Lead\n\n## Rules\n\n- one\n\nFirst prose line.\nSecond.' });
+      await mount([turn([lead], [T(lead)])]);
+      await frame();
+      row = await rowOf(lead.id);
+      eq(row.result, 'First prose line.', 'skill without a description reads the body lead');
+      const bare = tool('load_skill', { output: 'Loaded.' });
       await mount([turn([bare], [T(bare)])]);
       await frame();
       row = await rowOf(bare.id);
-      eq(row.head, 'Loaded the skill', 'skill without preview');
-      eq(row.result, '', 'skill without preview keeps one line');
+      eq(row.head, 'Skill(skill)', 'skill without preview');
+      eq(row.result, 'Loaded skill', 'skill without description or body says it loaded');
 
-      // While it runs the line is progressive; the family's running mark
-      // hangs under it.
+      // A supporting file names the file on both lines.
+      const file = tool('load_skill', { preview: 'ponytail', path: 'reference/forms.md', output: 'Skill `ponytail` file `reference/forms.md`.\n\nText.' });
+      await mount([turn([file], [T(file)])]);
+      await frame();
+      row = await rowOf(file.id);
+      eq(row.head, 'Skill(ponytail / reference/forms.md)', 'skill file load names the file');
+      eq(row.result, 'Loaded reference/forms.md', 'skill file load outcome');
+
+      // While it runs the family's running mark hangs under it.
       const bad = tool('load_skill', { preview: 'nope', status: 'running', output: '' });
       await mount([turn([bad], [T(bad)])], true);
       await frame();
       row = await rowOf(bad.id);
-      eq(row.head, 'Loading the nope skill', 'skill running line');
+      eq(row.head, 'Skill(nope)', 'skill running line');
       eq(row.result, 'Running…', 'skill running mark');
       await send({ event: 'tool', id: bad.id, name: 'load_skill', status: 'error', preview: 'nope', error: "Unknown skill 'nope'." });
       await frame();
       row = await rowOf(bad.id);
-      eq(row.head, 'Failed to load the nope skill', 'skill failed line keeps the name');
-      check(!row.head.includes('loaded'), `a failed skill never claims loaded: ${row.head}`);
+      eq(row.head, 'Skill(nope)', 'skill failed line keeps the name');
+      check(!/loaded/i.test(row.body), `a failed skill never claims loaded: ${row.body}`);
       check(row.body.includes('Error:') && row.body.includes("Unknown skill 'nope'."), `skill failure keeps the family Error: mark: ${row.body}`);
       eq(row.state, 'error', 'skill failed state');
       eq(row.stateTitle, 'Failed', 'skill failed dot title');
@@ -175,38 +171,25 @@ const hits = (n, prefix = 'Result') => Array.from({ length: n }, (_, i) => ({
       await mount([turn([lost], [T(lost)])]);
       await frame();
       row = await rowOf(lost.id);
-      eq(row.head, 'Loading the ponytail skill', 'an interrupted load keeps its in-flight line');
+      eq(row.head, 'Skill(ponytail)', 'an interrupted load keeps its call line');
       eq(row.result, 'Interrupted · the result was lost', 'skill lost result');
-      check(!row.head.includes('loaded'), `a lost skill never claims loaded: ${row.head}`);
       eq(row.state, 'interrupted', 'skill lost state');
       eq(row.stateTitle, 'Lost', 'skill lost dot title');
 
-      // A very long skill name truncates with an ellipsis and never widens
-      // the page, at both widths.
+      // A very long skill name or description truncates with an ellipsis and
+      // never widens the page, at both widths.
       for (const w of [1440, 390]) {
         await width(w);
-        const long = tool('load_skill', { preview: `skill-${'x'.repeat(160)}`, output: 'Loaded.\n\n# Long\n\nFine.' });
+        const long = tool('load_skill', { preview: `skill-${'x'.repeat(160)}`, summary: 'd'.repeat(600), output: 'Loaded.\n\n# Long\n\nFine.' });
         await mount([turn([long], [T(long)])]);
         await frame();
         row = await rowOf(long.id);
-        check(row.head.startsWith('Loaded the ') && row.head.endsWith(' skill'), `skill long head keeps the sentence: ${row.head}`);
-        check(row.head.includes('…'), `skill long name truncates with an ellipsis: ${row.head}`);
-        check(row.head.length < 120, `skill long name stays one row: ${row.head.length} chars`);
+        check(row.head.startsWith('Skill(skill-') && row.head.includes('…'), `skill long name truncates with an ellipsis: ${row.head}`);
+        check(row.head.length < 120, `skill long name stays short: ${row.head.length} chars`);
+        check(row.result.endsWith('…') && row.result.length <= 161, `skill long description is clipped: ${row.result.length} chars`);
         check((await overflow()) <= 0, `skill long name overflows at ${w}px: ${await overflow()}`);
-        const line = await singleLine(long.id);
-        check(Math.abs(line.liH - line.headH) <= 1, `the long skill row stays a single line at ${w}px: row ${line.liH}px vs head ${line.headH}px`);
       }
       await width(1440);
-
-      // Remount preserves the compact skill sentence and Unicode name.
-      await mount([turn([sk], [T(sk)])]);
-      await frame();
-      row = await rowOf(sk.id);
-      eq(row.head, 'Loaded the café-🚀-über skill', 'default skill line reads the same sentence');
-      eq(row.result, '', 'default skill row keeps no second sub-line');
-      const mf = await singleLine(sk.id);
-      check(mf.liH < mf.labelH * 2, `the default skill row is one line: row ${mf.liH}px vs line ${mf.labelH}px`);
-      check(/loaded/i.test(mf.visible) && mf.visible.includes('café-🚀-über'), `default one line carries the name and the outcome: ${mf.visible}`);
     } catch (error) { failures.push(`block threw: ${error.message}`); }
 
     // ————————————————————————————————————————————————

@@ -24,19 +24,16 @@ function consoleDiffHtml(text, { limit, numbers = true } = {}) {
         newN = Number(hunk[2]);
         return;
       }
-      if (/^(--- |\+\+\+ |diff |index )/.test(line)) return;
-      if (line.startsWith("-")) {
-        rows.push({ n: oldN++, kind: "del", text: line.slice(1) });
-        return;
-      }
-      if (line.startsWith("+")) {
-        rows.push({ n: newN++, kind: "add", text: line.slice(1) });
-        return;
-      }
-      const body = line.startsWith(" ") ? line.slice(1) : line;
-      rows.push({ n: oldN, kind: "ctx", text: body });
-      oldN += 1;
-      newN += 1;
+      if (/^(--- |\+\+\+ |diff |index |\\ )/.test(line)) return;
+      // Blank lines carry no change worth reading: they keep their place in
+      // the numbering but print no row. Removed lines are numbered in the old
+      // file; added and unchanged lines in the new one, as Claude Code does.
+      const kind = line.startsWith("-") ? "del" : line.startsWith("+") ? "add" : "ctx";
+      const text = kind === "ctx" && !line.startsWith(" ") ? line : line.slice(1);
+      const n = kind === "del" ? oldN : newN;
+      if (kind !== "add") oldN += 1;
+      if (kind !== "del") newN += 1;
+      if (text.trim()) rows.push({ n, kind, text });
     });
     if (!rows.length) return "";
     const cap = Number.isFinite(limit) ? Math.min(limit, rows.length) : rows.length;
@@ -51,6 +48,17 @@ function consoleDiffHtml(text, { limit, numbers = true } = {}) {
       ? `<div class="chat-console-more">… +${rows.length - cap} lines</div>`
       : "";
     return `<div class="chat-console-lines is-diff">${table}</div>${extra}`;
+  }
+
+// The first prose line of a skill body (after its "# Title"), skipping
+// headings, lists, fences and the load preamble above the title.
+function skillBodyLead(text) {
+    const body = String(text || "");
+    const start = body.search(/^#\s/m);
+    if (start < 0) return "";
+    const line = body.slice(start).split("\n").map((row) => row.trim())
+      .find((row) => row && !/^(#|[-*+>|]|\d+[.)]\s|```|~~~|<)/.test(row));
+    return line ? deps.ccFlat(line) : "";
   }
 
 function consoleFileBody(trace) {
@@ -375,9 +383,13 @@ function consoleResultLine(trace, presentation) {
       if (took) return `finished · ${took}`;
       return preview && preview !== "still running" ? deps.shortToolText(preview, 100) : "finished";
     }
-    // The settled skill load carries its outcome on the call line ("Loaded
-    // the ponytail skill"); there is no second sub-line left to print.
-    if (name === "load_skill") return "";
+    // A loaded skill reads as what it is for: its description, else the
+    // body's first line of prose. The whole body opens below.
+    if (name === "load_skill") {
+      if (trace.path) return `Loaded ${deps.shortToolText(trace.path, 100)}`;
+      const about = deps.ccFlat(trace.summary) || skillBodyLead(trace.output);
+      return about ? deps.shortToolText(about, 160) : "Loaded skill";
+    }
     if (name === "read_transcript") {
       const range = deps.transcriptRange(trace);
       return range ? `Read ${range}` : (preview || "Read transcript");

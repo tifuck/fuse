@@ -97,9 +97,14 @@ async def main(screenshots=False):
             assert await recap.count() == 1
             assert await recap.inner_text() == "Recap: " + TEXT
             assert await recap.locator("img").count() == 0
-            assert await recap.locator(".chat-recap-icon svg").count() == 1
-            assert await recap.locator(".chat-recap-icon").get_attribute("aria-hidden") == "true"
-            assert await recap.locator(".chat-recap-icon").evaluate("e => e.getBoundingClientRect().width > 0 && e.getBoundingClientRect().height > 0")
+            # No icon: the text starts where a tool row's text does, past the dot column.
+            assert await recap.locator("svg, .chat-recap-icon").count() == 0
+            assert await recap.evaluate("""e => {
+                const s = getComputedStyle(e);
+                const col = parseFloat(s.gridTemplateColumns) + parseFloat(s.columnGap);
+                const off = e.querySelector('.chat-recap-copy').getBoundingClientRect().left - e.getBoundingClientRect().left;
+                return Math.abs(off - col) < 0.5;
+            }""")
             for theme in ("fuse", "paper"):
                 await page.evaluate("theme => window.FuseChatAppearance.setTheme(theme)", theme)
                 style = await recap.locator(".chat-recap-text").evaluate("""e => {

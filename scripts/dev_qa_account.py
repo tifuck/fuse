@@ -302,8 +302,9 @@ def _unified(path, before, after, n=2, strip_header=False):
 
 
 def _edits_thread(now):
-    """Every tool that shows text: edits (diffs), writes, reads, shell output,
-    grep and listings, with long and deeply indented lines for wrap checks."""
+    """Every tool that shows text: a skill load, edits (diffs), writes, reads,
+    shell output, grep and listings, with long and deeply indented lines for
+    wrap checks, and a resume-after-restart marker between two calls."""
     old_sig = "    def __init__(self, queue, transport, *, retries=3):\n        self.queue = queue\n        self.transport = transport\n        self.retries = retries"
     new_sig = "    def __init__(self, queue, transport, *, retries=3, backoff=0.5):\n        self.queue = queue\n        self.transport = transport\n        self.retries = retries\n        self.backoff = backoff"
     read_out = "\n".join(f"{i}: {line}" for i, line in enumerate(_BEFORE.split("\n"), 1))
@@ -316,6 +317,9 @@ def _edits_thread(now):
         "tests/test_dispatcher.py:40:    transport.send.assert_awaited_once_with(event.recipient, event.payload, timeout=10)",
     ])
     tools = [
+        _tool("te_skill", "load_skill", preview="python-testing", summary="Write and run focused pytest suites for a change.",
+              output="Skill `python-testing` loaded (origin=bundled).\nNo supporting files listed.\n\n# Python testing\n\n"
+                     "Run the narrowest suite first.\n\n## Rules\n\n- One behaviour per test\n- No sleeps\n"),
         _tool("te_0", "read_file", path=EDIT_PATH, cwd="/srv/fuse-qa", host="qa-box", platform="posix",
               project_root="/srv/fuse-qa", offset=1, limit=200, output=read_out, preview=read_out[:120]),
         _tool("te_1", "grep", pattern=r"transport\.send\(", path="/srv/fuse-qa", cwd="/srv/fuse-qa", host="qa-box",
@@ -340,9 +344,11 @@ def _edits_thread(now):
     say = lambda text: {"type": "content", "text": text}  # noqa: E731
     segments = [
         {"type": "reasoning", "text": "Read the dispatcher, then add backoff."},
+        {"type": "tool", "id": "te_skill"},
         {"type": "tool", "id": "te_0"}, {"type": "tool", "id": "te_1"},
         say("Adding a backoff parameter first.\n\n"),
         {"type": "tool", "id": "te_2"},
+        {"type": "marker", "kind": "resume", "text": "Resumed after server restart from the last saved tool results."},
         say("Now the retry loop.\n\n"),
         {"type": "tool", "id": "te_3"},
         say("And a shared helper.\n\n"),

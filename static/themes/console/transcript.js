@@ -50,7 +50,7 @@ function noticeBlockHtml(lines, live) {
 
 function markerBlockHtml(block) {
     if (block.markerKind === "resume") {
-      return `<p class="chat-notice" data-resume-marker role="status">${deps.escapeHtml(block.text)}</p>`;
+      return `<ul class="chat-notice" data-resume-marker role="status" aria-label="Fuse status"><li class="chat-notice-line">${deps.escapeHtml(block.text)}</li></ul>`;
     }
     return deps.compactionMarkHtml(block.text, block.summary);
   }

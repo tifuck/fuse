@@ -335,16 +335,9 @@ function consoleCallHtml(trace, presentation, full = false) {
     } else if (name === "read_transcript") {
       inner = consoleArgText(transcriptRange(trace), 90);
     } else if (name === "load_skill") {
-      // The skill row reads as its outcome sentence ("Loaded the ponytail
-      // skill"). The name keeps its cap and ellipsis; failures keep the
-      // family's Error: fold below, interruptions their established mark.
-      const skill = consoleArgText(trace.preview || "", 80);
-      const tail = skill ? `<span class="chat-console-val">${deps.escapeHtml(skill)}</span> skill` : "skill";
-      const p = presentation || deps.toolPresentation(trace, false);
-      const sentence = p && p.failed ? `Failed to load the ${tail}`
-        : p && (p.running || p.interrupted) ? `Loading the ${tail}`
-        : `Loaded the ${tail}`;
-      return `<span class="chat-console-call">${sentence}</span>` + hostHtml + clock;
+      // Skill(name), or Skill(name / file) for a supporting file; the line
+      // under it says what the skill is for.
+      inner = consoleArgText([trace.preview || "skill", trace.path].filter(Boolean).join(" / "), 90);
     } else {
       inner = consoleArgText(toolSubject(trace), 90);
     }

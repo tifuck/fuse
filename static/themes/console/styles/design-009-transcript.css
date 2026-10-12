@@ -321,27 +321,39 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-ste
 }
 
 
-/* Fuse status (provider retries, cut-off tool calls, limits): server notices,
-   not model tool calls, so they never use the tool-row grid. A rule-led mono
-   list where the step stalled (end-of-turn status sits under the reply); the
-   newest line stays bright while the turn is live. */
+/* Fuse status (a resume after restart, provider retries, cut-off tool calls,
+   limits, end-of-turn status): server notices, not model tool calls. Each
+   line sits on the tool-row grid with a hollow ring in the dot column, so it
+   lines up with the calls around it but never reads as one. The newest line
+   stays bright while the turn is live. */
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-notice {
   list-style: none;
-  margin: 0.35rem 0 0;
-  padding: 0.1rem 0 0.1rem 0.7rem;
-  border-left: 2px solid color-mix(in srgb, var(--status-live) 55%, var(--line));
-  color: var(--mute);
-  font-family: var(--mono);
-  font-size: calc(0.78rem * var(--chat-text-scale, 1));
-  line-height: 1.5;
+  margin: 0;
+  padding: 0;
+  color: color-mix(in srgb, var(--mist) 58%, var(--ink));
+  font: var(--console-type)/var(--console-leading) var(--mono);
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-notice[hidden],
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-error-actions[hidden] {
   display: none !important;
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-notice-line {
-  margin: 0;
+  display: grid;
+  grid-template-columns: var(--console-col) minmax(0, 1fr);
+  column-gap: 0.45rem;
+  min-height: var(--console-row);
+  margin: 0 0 0.12rem;
   overflow-wrap: anywhere;
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-notice-line::before {
+  content: "";
+  box-sizing: border-box;
+  justify-self: center;
+  width: var(--console-dot);
+  height: var(--console-dot);
+  margin-top: calc((var(--console-row) - var(--console-dot)) / 2);
+  border: 1px solid currentColor;
+  border-radius: 50%;
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-notice.is-live .chat-notice-line:not(.is-current) {
   opacity: 0.7;

@@ -83,7 +83,7 @@ const TOOLS = [
     trace: { status: 'done', preview: '2 live, 1 finished', output: '{"live":[{"id":"n1","description":"Rewrite auth","status":"running"}],"finished":[{"id":"old","description":"Prior audit","status":"completed"}]}', call_duration_ms: DUR } },
   { name: 'search_models', verb: 'Models', subject: 'grok', clock: true, disclosure: true,
     trace: { status: 'done', query: 'grok', preview: '2 models', output: MODELS, call_duration_ms: DUR } },
-  { name: 'load_skill', verb: 'Loaded the', subject: 'ponytail', clock: true, disclosure: true,
+  { name: 'load_skill', verb: 'Skill', subject: 'ponytail', clock: true, disclosure: true,
     trace: { status: 'done', preview: 'ponytail', output: 'Loaded.\n\n# Ponytail\n\nBe lazy.', call_duration_ms: DUR } },
   { name: 'propose_skill', verb: 'Draft', subject: 'ponytail', clock: true, disclosure: true,
     trace: { status: 'done', preview: 'ponytail', output: 'Proposed skill `ponytail` (not saved).', call_duration_ms: DUR } },
@@ -317,12 +317,12 @@ const COLLECT = () => {
         ok(/\d/.test(note.text), `${t.name}: truncation note without sizes: "${note.text}"`);
       }
     }
-    // The skill row: semantics only (its one-line condensation is pinned by
-    // tests/tool_edge_cases.browser.cjs). The loaded outcome now rides the
-    // call line, so both texts count.
+    // The skill row: semantics only (its wording is pinned by
+    // tests/tool_edge_cases.browser.cjs). Skill(name) on the call line, a
+    // line under it saying what the skill is, and a done outcome.
     const skill = settled.load_skill;
-    ok(/ponytail/.test(skill.headText + skill.bodyAll) && /loaded/i.test(skill.headText + skill.bodyAll) && skill.title === 'Done',
-      `load_skill semantics (name + loaded + outcome): "${skill.headText}" / "${skill.bodyAll}"`);
+    ok(/Skill\(ponytail\)/.test(skill.headText) && /└\s*Be lazy\./.test(skill.bodyAll) && skill.title === 'Done',
+      `load_skill semantics (name + detail line + outcome): "${skill.headText}" / "${skill.bodyAll}"`);
 
     // —— 3. Outcome vocabulary: done vs error vs interrupted vs cancelled/lost ——
     const vocab = await page.evaluate(async ({ TOOLS, ROOT }) => {
@@ -379,7 +379,9 @@ const COLLECT = () => {
       }
       if (v.key === 'interrupted') {
         ok(v.state === 'interrupted' && v.title === 'Stopped', `${v.name}: confirmed stop reads "${v.title}"/${v.state}`);
-        ok(say(v).startsWith('Interrupted · '), `${v.name}: interrupted reason prefix, got "${say(v)}"`);
+        // Partial output reads before the reason (f4b4635), and the reason
+        // prints once while the row is folded.
+        ok((say(v).match(/Interrupted · /g) || []).length === 1, `${v.name}: one interrupted reason, got "${say(v)}"`);
       }
       if (v.key === 'cancelled') {
         ok(v.state === 'interrupted' && v.title === 'Stopped', `${v.name}: cancelled (confirmed) reads "${v.title}"/${v.state}`);
@@ -544,15 +546,10 @@ const COLLECT = () => {
     await raf();
     g = await groupRows();
     const failGroup = g.find((r) => r.cls.includes('is-console-group'));
-    // Both members that ended badly surface on the summary line itself, each
-    // as the note its own row prints: "Interrupted · …" and "Error: …".
-    ok(failGroup.notes.some((n) => n.includes('Interrupted · the run ended before it finished')),
-      `an interrupted member surfaces on the summary: ${JSON.stringify(failGroup.notes)}`);
-    // …and a failing member too, mirroring the interrupted note: same
-    // "Error: …" line the member's own row prints.
+    // The summary line is only its summary (f4b4635): members that ended
+    // badly say so on their own rows once it opens (checked below).
+    ok(failGroup.notes.length === 0, `the summary line carries no member note: ${JSON.stringify(failGroup.notes)}`);
     ok(failGroup.headText === 'Read 2 files, ran 1 shell command', `the summary keeps its counts: "${failGroup.headText}"`);
-    ok(failGroup.notes.some((n) => n.replace(/^└\s*/, '').startsWith('Error: permission denied')),
-      `a failing member surfaces on the folded summary: ${JSON.stringify(failGroup.notes)}`);
     await page.evaluate(() => {
       const btn = document.querySelector('.is-console-group > .chat-step-main > .chat-step-head > .chat-step-toggle');
       if (btn) btn.click();

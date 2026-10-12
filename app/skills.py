@@ -127,6 +127,13 @@ def resolved_row(user_id: int, slug: str, conn=None) -> dict | None:
     return None
 
 
+def description_for(user_id: int, slug: str) -> str:
+    """One line on what the skill is for (its SKILL.md description), for the transcript."""
+    slug = (slug or "").strip().lower()
+    row = resolved_row(user_id, slug) if NAME_RE.fullmatch(slug) else None
+    return " ".join(str((row or {}).get("description") or "").split())[:DESC_MAX]
+
+
 def find_by_source_id(user_id: int, source_id: str, conn=None) -> dict | None:
     sid = (source_id or "").strip()
     if not sid:

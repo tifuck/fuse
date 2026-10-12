@@ -182,8 +182,8 @@ function toolStepHtml(trace, index, live, open, openMap, opts = {}) {
       // deadline (the command line under a described shell) is left as it is.
       const timeout = (running) && !verbose && !/\btimeout: [^)]*/.test(`${status} ${preview}`) ? deps.ccTimeoutNote(trace) : "";
       const showHang = Boolean(status || preview || inner || timeout);
-      // A fold with only its hidden body (the settled skill load) prints one
-      // line: the branch glyph and the hang's margins wait for the open.
+      // A fold with only its hidden body prints one line: the branch glyph
+      // and the hang's margins wait for the open.
       const bodyOnly = !status && !preview;
       // A non-zero exit Console prints as an error ("Error: Exit code 1")
       // gets the red dot too; exit 1 from grep and friends stays finished.

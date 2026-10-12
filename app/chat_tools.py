@@ -860,6 +860,13 @@ async def execute_tool(
             if status == "error":
                 rec["error"] = "Unknown skill."
                 rec["kind"] = "unknown_skill"
+            elif not file_name:
+                # The row's line under the call says what the skill is for.
+                from . import skills as skills_mod
+
+                description = skills_mod.description_for(user_id, preview)
+                if description:
+                    rec["summary"] = description
             return body, rec
         if name == "read_transcript":
             if not agent_catalog.READ_TRANSCRIPT_ENABLED:

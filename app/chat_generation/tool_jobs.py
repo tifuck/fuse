@@ -203,6 +203,7 @@ def apply_skill_preload(
             "name": "load_skill",
             "status": "done",
             "preview": slug[:80],
+            "summary": skills_mod.description_for(user_id, slug),
             "id": call_id,
         }
     }

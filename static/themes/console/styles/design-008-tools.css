@@ -20,6 +20,36 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-con
   color: var(--diff-add);
 }
 
+/* Unchanged lines read gray on a gray band, so the diff is one solid block
+   with the changes standing out of it. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-nline.is-ctx {
+  background: color-mix(in srgb, var(--mist) 6%, transparent);
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-nline.is-ctx .chat-console-nbody {
+  color: color-mix(in srgb, var(--mist) 55%, var(--ink));
+}
+
+/* Every row is as wide as the widest line, so the bands follow a horizontal
+   scroll instead of stopping at the edge of the view. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-lines.is-diff {
+  grid-template-columns: minmax(max-content, 1fr);
+  scrollbar-color: transparent transparent;
+}
+
+/* The scrollbar shows only while the pointer is over the diff. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-lines.is-diff:hover {
+  scrollbar-color: var(--scroll-thumb) transparent;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-lines.is-diff::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-lines.is-diff:hover::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+}
+
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-more {
   color: color-mix(in srgb, var(--mist) 42%, var(--ink));
 }
@@ -289,7 +319,8 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-con
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-hang:not(.is-expanded) .chat-console-preview + .chat-console-out,
 /* The folded row shows only its preview; the body's other roots (error-fold
    output, an edit diff riding the body) wait for the open like .chat-console-out. */
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-hang:not(.is-expanded) .chat-console-hang-body > .chat-console-lines {
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-hang:not(.is-expanded) .chat-console-hang-body > .chat-console-lines,
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-hang:not(.is-expanded) .chat-console-hang-body > .is-full-note {
   display: none;
 }
 

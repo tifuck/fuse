@@ -231,11 +231,13 @@ function ccInterruptedFold(trace, shell) {
     const show = lines.length === 4 ? 4 : 3;
     const cut = lines.slice(0, show);
     const hidden = lines.length - cut.length;
-    const note = `<div class="chat-console-result-text is-stop-note">${deps.escapeHtml(text)}</div>`;
+    const note = (extra = "") => `<div class="chat-console-result-text is-stop-note${extra}">${deps.escapeHtml(text)}</div>`;
     return {
       status: "",
-      preview: deps.consoleStdoutHtml(cut) + (hidden > 0 ? `<div class="chat-console-more" data-step-toggle>… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : "") + note,
-      full: hidden > 0 ? deps.consoleDetailHtml(trace, false, false) + note : "",
+      preview: deps.consoleStdoutHtml(cut) + (hidden > 0 ? `<div class="chat-console-more" data-step-toggle>… +${hidden} ${hidden === 1 ? "line" : "lines"}</div>` : "") + note(),
+      // The opened body repeats the reason under the whole output; folded,
+      // only the preview's copy shows.
+      full: hidden > 0 ? deps.consoleDetailHtml(trace, false, false) + note(" is-full-note") : "",
       keep: true,
     };
   }

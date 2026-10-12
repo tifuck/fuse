@@ -320,6 +320,8 @@ class SkillsDbTest(unittest.TestCase):
         self.assertIsNotNone(event)
         self.assertEqual(event["fuse"]["name"], "load_skill")
         self.assertTrue(event["fuse"]["id"].startswith("skill_"))
+        # The transcript row's line under Skill(ponytail) is its description.
+        self.assertEqual(event["fuse"]["summary"], "Use when testing skills.")
         user = [m for m in out if m["role"] == "user"][-1]
         self.assertEqual(user["content"], "restyle")
         snap = _provider_snapshot(out)
@@ -529,6 +531,19 @@ class AsyncSkillTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Review instructions", text)
         self.assertEqual(rec["preview"], "demo")
         self.assertEqual(rec["path"], "references/review.md")
+        # A supporting file is not the skill: no description rides its row.
+        self.assertNotIn("summary", rec)
+
+    async def test_load_skill_trace_carries_description(self):
+        files = {"SKILL.md": _md(name="demo", desc="Review   pull requests.", body="Body.\n").encode()}
+        with patch("app.skill_install.data_dir", return_value=Path(self.tmp.name) / "skills"):
+            skills.install_files(1, files, origin="upload", slug="demo")
+            text, rec = await execute_tool("load_skill", '{"name":"demo"}', user_id=1, allowed_urls=set(), coding=True)
+            _missing, miss = await execute_tool("load_skill", '{"name":"nope"}', user_id=1, allowed_urls=set(), coding=True)
+        self.assertIn("Body.", text)
+        self.assertEqual(rec["summary"], "Review pull requests.")
+        self.assertEqual(miss["status"], "error")
+        self.assertNotIn("summary", miss)
 
 
 class ValidSourceTest(unittest.TestCase):
