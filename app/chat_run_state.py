@@ -1711,6 +1711,12 @@ def _requeue_for_resume(row, messages, allowed=None, *, by_user=False):
             pass
     req["agent"] = agent
     message = json.loads(row["message"])
+    # Live-only fields: the worker strips them before saving, but a Stop that
+    # lands at the final commit stamps status on the stored message
+    # (finish_run). Left in, the strict parse below refuses the message and
+    # the resume silently leaves the run stopped.
+    for key in ("status", "startedAt"):
+        message.pop(key, None)
     # UI checkpoints are turn-local and own display-part offsets. Provider
     # snapshots include earlier turns and must never replace this text.
     message.setdefault("content", "")
