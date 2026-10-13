@@ -421,6 +421,17 @@ class ProjectsRetentionTest(unittest.TestCase):
         self.assertIsNone(db.fetchone("SELECT id FROM command_jobs WHERE id='job-old'"))
         self.assertIsNotNone(db.fetchone("SELECT id FROM command_jobs WHERE id='job-new'"))
 
+    def test_trace_of_a_pruned_command_settles_as_lost(self):
+        thread = chats.create_thread(1, model="offline")
+        pk = chats.resolve_thread_pk(1, thread["id"])
+        tool = {"id": "call-1", "name": "run_terminal_command", "status": "running", "job_id": "job-pruned"}
+        db.execute("UPDATE chat_threads SET messages=? WHERE id=?", (json.dumps([
+            {"id": "u1", "role": "user", "content": "run it"},
+            {"id": "a1", "role": "assistant", "content": "", "tools": [tool]},
+        ]), pk))
+        settled = chats.get_thread(1, thread["id"])["messages"][1]["tools"][0]
+        self.assertEqual((settled["status"], settled["execution_status"]), ("interrupted", "lost"))
+
 
 if __name__ == "__main__":
     unittest.main()

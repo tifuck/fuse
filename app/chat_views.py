@@ -969,12 +969,20 @@ def settle_command_traces(conn, user_id, thread_id, messages):
         if tool.get("name") == "kill_command":
             settle_kill_receipt(tool)
     rows = command_rows(conn, user_id, thread_id, [t.get("job_id") or t["child_id"] for t in wanted])
+    jobs_table = bool(wanted) and conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='command_jobs'").fetchone() is not None
     for tool in wanted:
         # Only the invocation's result can finish a wait. Returned observations
         # are historical receipts, not subscriptions to later execution state.
         if tool.get("name") not in ("run_terminal_command", "monitor"):
             continue
         row = rows.get(tool.get("job_id") or tool.get("child_id"))
+        if row is None and jobs_table and tool.get("status") not in _SETTLED_TRACE:
+            # Job rows are inserted before a trace can name them, so a missing
+            # one was pruned (retention.prune_history): settle as lost rather
+            # than leave the trace running forever.
+            tool.update(status="interrupted", execution_status="lost",
+                        error=tool.get("error") or "The command's record has expired; its final state is unknown.")
         if row:
             update = command_trace(row, tool["name"])
             if row["status"] in ("running", "cancelling"):
