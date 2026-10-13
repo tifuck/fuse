@@ -281,3 +281,15 @@ def test_openrouter_catalog_lists_a_duplicate_id_once():
     assert catalog["free_ids"].count("vendor/model:free") + catalog["paid_ids"].count("vendor/model:free") == 1
     listed_paid = "vendor/model:free" in catalog["paid_ids"]
     assert listed_paid is (catalog["by_id"]["vendor/model:free"]["free"] is False)
+
+
+def test_device_tokens_without_expires_in_are_kept():
+    from app.web.source_routes.context import _oauth_tokens
+
+    # The device code is spent once tokens are issued; rejecting them for a
+    # missing optional expires_in forced the donor to link again.
+    tokens = _oauth_tokens({"access_token": "a", "refresh_token": "r"})
+    assert (tokens["access_token"], tokens["refresh_token"], tokens["expires_in"]) == ("a", "r", None)
+    assert _oauth_tokens({"access_token": "a", "expires_in": "3600"})["expires_in"] == 3600
+    with pytest.raises(ValueError):
+        _oauth_tokens({"access_token": "a", "expires_in": -5})

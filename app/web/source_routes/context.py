@@ -110,6 +110,11 @@ def _oauth_tokens(raw) -> dict:
         ord(char) < 32 or 0xD800 <= ord(char) <= 0xDFFF for char in refresh
     ):
         raise ValueError("Token response contained an invalid refresh token.")
+    if expires in (None, ""):
+        # Optional in OAuth (RFC 6749 5.1): the issued tokens are already
+        # spent from the device code, so keep them; expires_at() applies the
+        # provider default.
+        return {**raw, "access_token": access, "refresh_token": refresh, "expires_in": None}
     if isinstance(expires, bool):
         raise ValueError("Token response contained an invalid expiry.")
     try:
