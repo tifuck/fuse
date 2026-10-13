@@ -190,7 +190,7 @@ html[data-chat-console="true"] body.is-settings .settings-shell :is(.badge, .pil
 }
 
 /* —— Tabs and segmented controls = chat Context tabs —— */
-html[data-chat-console="true"] body.is-settings .settings-shell :is(.usage-tabs, .uz-seg, .interval, .proj-tabs, .or-seg, .pool-controls) {
+html[data-chat-console="true"] body.is-settings .settings-shell :is(.usage-tabs, .uz-seg, .interval, .proj-tabs, .or-seg) {
   background: transparent;
   border: 0;
   padding: 0;

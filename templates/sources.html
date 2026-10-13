@@ -14,12 +14,12 @@
 
 {% macro pool_share_button(ui) %}
 {% if ui.can_override %}
-<button type="button" class="pool-share" id="pool-{{ ui.kind }}" data-dialog-open="share-{{ ui.kind }}-dialog" aria-haspopup="dialog" title="Who may use your {{ ui.label }} accounts, and which accounts your requests use">
+<button type="button" class="pool-share" data-dialog-open="share-{{ ui.kind }}-dialog" aria-haspopup="dialog" title="Who may use your {{ ui.label }} accounts, and which accounts your requests use">
   <span class="pool-share-key">Sharing</span>
   <span class="pool-share-val is-{{ ui.share }}">{{ ui.share_label }}</span>
 </button>
 {% else %}
-<span class="pool-share is-locked" id="pool-{{ ui.kind }}" title="The admin has turned sharing off for this pool: everyone uses only the accounts they link">
+<span class="pool-share is-locked" title="The admin has turned sharing off for this pool: everyone uses only the accounts they link">
   <span class="pool-share-key">Sharing</span>
   <span class="pool-share-val">Off site-wide</span>
 </span>
@@ -76,16 +76,62 @@
 {% endif %}
 {% endmacro %}
 
-{% macro pool_status(ok, ui, locked) %}
-  {%- if not ok %}{{ locked }}{% elif ui.own_only %}your accounts only{% elif ui.n_mine %}yours first, then the pool{% else %}shared pool{% endif -%}
+{# One status line per pool: whether the user may use it, then how their
+   requests are routed. Replaces the old subline + gauge state pair. #}
+{% macro pool_state(ok, reason, ui, locked, no_sub='No active plan') -%}
+  {%- if ok -%}
+  <p class="pool-state is-ok"><b>{% if reason == 'open' %}Open to everyone{% elif reason == 'pool' %}Unlocked by your shared accounts{% else %}Unlocked{% endif %}</b><span>{% if ui.own_only %}your accounts only{% elif ui.n_mine %}yours first, then the pool{% else %}shared pool{% endif %}</span></p>
+  {%- elif reason == 'no_sub' -%}
+  <p class="pool-state is-fault"><b>{{ no_sub }}</b><span>models locked</span></p>
+  {%- elif reason == 'unauthed' -%}
+  <p class="pool-state is-fault"><b>Sign-in failed</b><span>models locked</span></p>
+  {%- else -%}
+  <p class="pool-state"><b>Locked</b><span>{{ locked }}</span></p>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro pool_meter(label, m, title) %}
+<div class="pool-meter{% if not m.available %} is-empty{% endif %}" role="group" aria-label="{{ title }} {{ label|lower }} usage">
+  <div class="pool-meter-top"><span class="pool-meter-label">{{ label }}</span><span class="pool-meter-pct">{{ m.percent_label }}</span></div>
+  <div class="usage-meter" aria-hidden="true"><span style="--pct: {{ m.meter }}%"></span></div>
+  <span class="pool-meter-note">{{ m.count_label }}</span>
+</div>
 {% endmacro %}
 
-{% macro mine_filter(ui, accounts, group='') %}
-{% if accounts and accounts|selectattr('mine')|list and accounts|rejectattr('mine')|list %}
-<label class="pool-switch source-mine-filter" title="View only: hides other people's accounts in the table below. Routing is unchanged.">
-  <input type="checkbox" data-mine-only{% if group %} data-mine-group="{{ group }}"{% endif %}>
-  <span>Show only mine</span>
-</label>
+{# Provider row: identity + status | usage meters | Sharing + the add action
+   (passed with call). Fixed columns keep every pool aligned. #}
+{% macro pool_head(ui, title, logo, state, meters) %}
+<header class="pool-head">
+  <div class="pool-id">
+    <h2><img class="provider-logo" src="{{ provider_logo_url(logo) }}" alt="" aria-hidden="true">{{ title }}</h2>
+    {{ state }}
+  </div>
+  <div class="pool-meters{% if meters|length > 1 %} is-split{% endif %}">
+    {% for label, m in meters %}{{ pool_meter(label, m, title) }}{% endfor %}
+  </div>
+  <div class="pool-actions">
+    {{ pool_share_button(ui) }}
+    {{ caller() }}
+  </div>
+</header>
+{% endmacro %}
+
+{% macro add_button(dialog, label, pending) -%}
+<button type="button" class="btn sm{{ '' if pending else ' ghost' }}" data-dialog-open="{{ dialog }}">{{ 'Continue linking' if pending else label }}</button>
+{%- endmacro %}
+
+{# "Show only mine" filters the table under it (view only). It shows only
+   when that table mixes the user's accounts with other people's. #}
+{% macro table_bar(accounts, group='') %}
+{% set mine = accounts|selectattr('mine')|list %}
+{% if mine and mine|length < accounts|length %}
+<div class="pool-table-bar">
+  <span>{{ accounts|length }} accounts · {{ mine|length }} yours</span>
+  <label class="pool-switch source-mine-filter" title="View only: hides other people's accounts in the table. Routing is unchanged.">
+    <input type="checkbox" data-mine-only{% if group %} data-mine-group="{{ group }}"{% endif %}>
+    <span>Show only mine</span>
+  </label>
+</div>
 {% endif %}
 {% endmacro %}
 
@@ -193,9 +239,9 @@
         <th>Status</th>
         <th>Usage</th>
         <th class="num">Tokens</th>
-        <th class="num">Reqs</th>
-        <th>Linked</th>
-        <th></th>
+        <th class="num source-reqs">Reqs</th>
+        <th class="source-linked">Linked</th>
+        <th><span class="visually-hidden">Actions</span></th>
       </tr>
     </thead>
     <tbody>
@@ -232,9 +278,9 @@
           <span class="dim">—</span>
           {% endif %}
         </td>
-        <td class="num mono source-tokens" title="{{ source_fuse_title(a) }}">{% if a.fuse and (a.fuse.has or a.fuse.week_only) %}{{ '{:,}'.format(a.fuse.display_tokens) }}{% else %}<span class="dim">—</span>{% endif %}</td>
-        <td class="num mono">{% if a.fuse and a.fuse.has %}{{ '{:,}'.format(a.fuse.requests) }}{% elif a.fuse and a.fuse.week_only %}{{ '{:,}'.format(a.fuse.week_requests) }}{% else %}<span class="dim">—</span>{% endif %}</td>
-        <td class="mono source-linked" title="{{ a.fuse.since if a.fuse and a.fuse.since else '' }}">{{ source_since(a) }}</td>
+        <td class="num mono source-tokens" data-label="Tokens" title="{{ source_fuse_title(a) }}">{% if a.fuse and (a.fuse.has or a.fuse.week_only) %}{{ '{:,}'.format(a.fuse.display_tokens) }}{% else %}<span class="dim">—</span>{% endif %}</td>
+        <td class="num mono source-reqs" data-label="Reqs">{% if a.fuse and a.fuse.has %}{{ '{:,}'.format(a.fuse.requests) }}{% elif a.fuse and a.fuse.week_only %}{{ '{:,}'.format(a.fuse.week_requests) }}{% else %}<span class="dim">—</span>{% endif %}</td>
+        <td class="mono source-linked" data-label="Linked" title="{{ a.fuse.since if a.fuse and a.fuse.since else '' }}">{{ source_since(a) }}</td>
         <td class="source-act">
           {% if a.can_revoke %}
           <form method="post" action="{{ revoke_path }}/{{ a.id }}/revoke" data-confirm="{{ confirm }}">
@@ -270,150 +316,64 @@
     {% endif %}
 
 
-    <section class="stack-y">
-      <div class="pool-head">
-        <div class="section-heading">
-          <h2><img class="provider-logo" src="{{ provider_logo_url('grok') }}" alt="" aria-hidden="true">x.ai</h2>
-          <span class="usage-sub">{{ pool_status(grok_ok, grok_ui, 'needs SuperGrok') }}</span>
-        </div>
-        <div class="pool-gauge" aria-label="x.ai pool usage">
-          <span class="pool-gauge-pct">{{ grok_pool.percent_label }}</span>
-          <div class="usage-meter" aria-hidden="true"><span style="--pct: {{ grok_pool.meter }}%"></span></div>
-          <span class="pool-gauge-count">{{ grok_pool.count_label }}</span>
-          <span class="pool-gauge-state metric-delta{% if grok_ok %} up{% elif grok_reason in ('no_sub', 'unauthed') %} down{% endif %}">{% if grok_ok and grok_reason == 'open' %}Unlocked for everyone{% elif grok_ok %}Unlocked{% elif grok_reason == 'no_sub' %}No SuperGrok sub{% elif grok_reason == 'unauthed' %}Auth failed{% else %}Not linked{% endif %}</span>
-        </div>
-        <div class="pool-controls">
-          {{ pool_share_button(grok_ui) }}
-          {{ mine_filter(grok_ui, accounts) }}
-          <button type="button" class="btn sm{{ '' if pending else ' ghost' }}" data-dialog-open="grok-connect-dialog">{{ 'Continue linking' if pending else 'Link x.ai' }}</button>
-        </div>
-      </div>
+    <section class="pool stack-y" id="pool-grok">
+      {% call pool_head(grok_ui, 'x.ai', 'grok', pool_state(grok_ok, grok_reason, grok_ui, 'needs SuperGrok', 'No SuperGrok subscription'), [('Pool usage', grok_pool)]) %}{{ add_button('grok-connect-dialog', 'Add account', pending) }}{% endcall %}
       {% if grok_reason == 'no_sub' %}
       <p class="callout fault">A Grok account is linked, but x.ai is not showing an active SuperGrok subscription. Grok models stay locked.</p>
       {% elif grok_reason == 'unauthed' %}
       <p class="callout fault">The linked Grok sign-in is no longer valid. Remove it and add the account again.</p>
       {% endif %}
+      {{ table_bar(accounts) }}
       {{ source_table(accounts, 'x.ai', '/sources/grok', 'Remove this Grok account from the shared pool?', 'Optional — Grok is already unlocked. Add a SuperGrok account if you want to donate one.' if grok_ok and grok_reason == 'open' else ('Add a Grok account with an active SuperGrok subscription to join the shared pool.' if grok_ui.uses_shared else 'Add a Grok account with an active SuperGrok subscription. This pool is limited to accounts you link.'), grok_ui) }}
     </section>
 
-    <section class="stack-y">
-      <div class="pool-head">
-        <div class="section-heading">
-          <h2><img class="provider-logo" src="{{ provider_logo_url('chatgpt') }}" alt="" aria-hidden="true">OpenAI</h2>
-          <span class="usage-sub">{{ pool_status(chatgpt_ok, chatgpt_ui, 'needs Plus or Pro') }}</span>
-        </div>
-        <div class="pool-gauge" aria-label="OpenAI paid pool usage"><span class="pool-gauge-label">Paid</span>
-          <span class="pool-gauge-pct">{{ chatgpt_paid_pool.percent_label }}</span>
-          <div class="usage-meter" aria-hidden="true"><span style="--pct: {{ chatgpt_paid_pool.meter }}%"></span></div>
-          <span class="pool-gauge-count">{{ chatgpt_paid_pool.count_label }}</span>
-          <span class="pool-gauge-state metric-delta{% if chatgpt_ok %} up{% elif chatgpt_reason == 'unauthed' %} down{% endif %}">{% if chatgpt_ok and chatgpt_reason == 'open' %}Unlocked for everyone{% elif chatgpt_ok %}Unlocked{% elif chatgpt_reason == 'unauthed' %}Auth failed{% else %}Not linked{% endif %}</span>
-        </div>
-        <div class="pool-gauge" aria-label="OpenAI Free / Go pool usage"><span class="pool-gauge-label">Free / Go</span>
-          <span class="pool-gauge-pct">{{ chatgpt_free_pool.percent_label }}</span>
-          <div class="usage-meter" aria-hidden="true"><span style="--pct: {{ chatgpt_free_pool.meter }}%"></span></div>
-          <span class="pool-gauge-count">{{ chatgpt_free_pool.count_label }}</span>
-          <span class="pool-gauge-state metric-delta{% if chatgpt_ok %} up{% elif chatgpt_reason == 'unauthed' %} down{% endif %}">{% if chatgpt_ok and chatgpt_reason == 'open' %}Unlocked for everyone{% elif chatgpt_ok %}Unlocked{% elif chatgpt_reason == 'unauthed' %}Auth failed{% else %}Not linked{% endif %}</span>
-        </div>
-        <div class="pool-controls">
-          {{ pool_share_button(chatgpt_ui) }}
-          {% if chatgpt_paid_accounts or chatgpt_free_accounts %}{{ mine_filter(chatgpt_ui, chatgpt_accounts, 'chatgpt') }}{% endif %}
-          <button type="button" class="btn sm{{ '' if chatgpt_pending else ' ghost' }}" data-dialog-open="openai-connect-dialog">{{ 'Continue linking' if chatgpt_pending else 'Link OpenAI' }}</button>
-        </div>
-      </div>
+    <section class="pool stack-y" id="pool-chatgpt">
+      {% call pool_head(chatgpt_ui, 'OpenAI', 'chatgpt', pool_state(chatgpt_ok, chatgpt_reason, chatgpt_ui, 'needs a ChatGPT sign-in'), [('Paid plans', chatgpt_paid_pool), ('Free / Go plans', chatgpt_free_pool)]) %}{{ add_button('openai-connect-dialog', 'Add account', chatgpt_pending) }}{% endcall %}
       {% if chatgpt_own_failed %}
       <p class="callout fault">{% if chatgpt_own_failed == 1 %}A ChatGPT account you linked is no longer signed in.{% else %}{{ chatgpt_own_failed }} ChatGPT accounts you linked are no longer signed in.{% endif %} They stay out of the pool until you remove them and add them again.</p>
       {% endif %}
+      {{ table_bar(chatgpt_accounts, 'chatgpt') }}
       {% if chatgpt_paid_accounts %}
+      {% if chatgpt_free_accounts %}<h3 class="pool-sub">Paid plans <span>{{ chatgpt_paid_accounts|length }}</span></h3>{% endif %}
       {{ source_table(chatgpt_paid_accounts, 'OpenAI', '/sources/chatgpt', 'Remove this ChatGPT account from the shared pool?', 'No paid OpenAI accounts in this list.', chatgpt_ui, 'chatgpt', False) }}
-      {% elif not chatgpt_accounts %}
-      <section class="panel"><p class="empty">{% if chatgpt_ok and chatgpt_reason == 'open' %}Optional — OpenAI is already unlocked. Add a ChatGPT account if you want to donate one.{% elif chatgpt_ui.uses_shared %}Add a ChatGPT Plus or Pro account to join the shared pool.{% else %}Add a ChatGPT Plus or Pro account. This pool is limited to accounts you link.{% endif %}</p></section>
+      {% endif %}
+      {% if chatgpt_free_accounts %}
+      <h3 class="pool-sub">Free / Go plans <span>{{ chatgpt_free_accounts|length }}</span></h3>
+      {{ source_table(chatgpt_free_accounts, 'OpenAI', '/sources/chatgpt', 'Remove this ChatGPT account from the shared pool?', 'No Free or Go accounts in this list.', chatgpt_ui, 'chatgpt', False) }}
+      {% endif %}
+      {% if not chatgpt_accounts %}
+      <section class="panel"><p class="empty">{% if chatgpt_ok and chatgpt_reason == 'open' %}Optional — OpenAI is already unlocked. Add a ChatGPT account if you want to donate one.{% elif chatgpt_ui.uses_shared %}Add a ChatGPT account (Plus or Pro unlocks every model) to join the shared pool.{% else %}Add a ChatGPT account. This pool is limited to accounts you link.{% endif %}</p></section>
       {% endif %}
     </section>
 
-    {% if chatgpt_free_accounts %}
-    <section class="stack-y">
-      <div class="section-heading">
-        <h2><img class="provider-logo" src="{{ provider_logo_url('chatgpt') }}" alt="" aria-hidden="true">OpenAI Free / Go</h2>
-        <span class="usage-sub">{{ chatgpt_free_pool.count_label }}</span>
-      </div>
-      {{ source_table(chatgpt_free_accounts, 'OpenAI', '/sources/chatgpt', 'Remove this ChatGPT account from the shared pool?', 'No Free or Go accounts in this list.', chatgpt_ui, 'chatgpt', False) }}
-    </section>
-    {% endif %}
-
-    <section class="stack-y">
-      <div class="pool-head">
-        <div class="section-heading">
-          <h2><img class="provider-logo" src="{{ provider_logo_url('zai') }}" alt="" aria-hidden="true">Z.AI</h2>
-          <span class="usage-sub">{{ pool_status(zai_ok, zai_ui, 'needs a live plan') }}</span>
-        </div>
-        <div class="pool-gauge" aria-label="Z.AI pool usage">
-          <span class="pool-gauge-pct">{{ zai_pool.percent_label }}</span>
-          <div class="usage-meter" aria-hidden="true"><span style="--pct: {{ zai_pool.meter }}%"></span></div>
-          <span class="pool-gauge-count">{{ zai_pool.count_label }}</span>
-          <span class="pool-gauge-state metric-delta{% if zai_ok %} up{% elif zai_reason in ('no_sub', 'unauthed') %} down{% endif %}">{% if zai_ok and zai_reason == 'open' %}Unlocked for everyone{% elif zai_ok and zai_reason == 'pool' %}Unlocked via pool{% elif zai_ok %}Unlocked{% elif zai_reason == 'no_sub' %}No Coding Plan{% elif zai_reason == 'unauthed' %}Auth failed{% else %}Not linked{% endif %}</span>
-        </div>
-        <div class="pool-controls">
-          {{ pool_share_button(zai_ui) }}
-          {{ mine_filter(zai_ui, zai_accounts) }}
-          <button type="button" class="btn sm ghost" data-dialog-open="zai-add-dialog">Add Z.AI key</button>
-        </div>
-      </div>
+    <section class="pool stack-y" id="pool-zai">
+      {% call pool_head(zai_ui, 'Z.AI', 'zai', pool_state(zai_ok, zai_reason, zai_ui, 'needs a Coding Plan key or a shared x.ai / OpenAI account', 'No GLM Coding Plan'), [('Pool usage', zai_pool)]) %}{{ add_button('zai-add-dialog', 'Add key', False) }}{% endcall %}
       {% if zai_reason == 'no_sub' %}
-      <p class="callout fault">A Z.AI key is linked, but it is not showing a live GLM Coding Plan. GLM models stay locked unless you also link a live x.ai or OpenAI subscription.</p>
+      <p class="callout fault">A Z.AI key is linked, but it is not showing a live GLM Coding Plan. GLM models stay locked unless you also share a live x.ai or OpenAI account.</p>
       {% elif zai_reason == 'unauthed' %}
-      <p class="callout fault">The linked Z.AI key is no longer valid. Remove it and add a new key, or link a live x.ai or OpenAI subscription.</p>
+      <p class="callout fault">The linked Z.AI key is no longer valid. Remove it and add a new key, or share a live x.ai or OpenAI account.</p>
       {% endif %}
       {% if zai_flash_kind == 'ok' %}
       <p class="callout ok" role="alert">{{ zai_flash_msg }}</p>
       {% endif %}
-      {{ source_table(zai_accounts, 'Z.AI', '/sources/zai', 'Remove this Z.AI key from the shared pool?', 'Optional — GLM is already unlocked. Add a Coding Plan key if you want to donate one to the pool.' if zai_ok else ('Add a GLM Coding Plan API key, or link a live x.ai or OpenAI subscription.' if zai_ui.uses_shared else 'Add a GLM Coding Plan API key. This pool is limited to keys you link.'), zai_ui) }}
+      {{ table_bar(zai_accounts) }}
+      {{ source_table(zai_accounts, 'Z.AI', '/sources/zai', 'Remove this Z.AI key from the shared pool?', 'Optional — GLM is already unlocked. Add a Coding Plan key if you want to donate one to the pool.' if zai_ok else ('Add a GLM Coding Plan API key, or share a live x.ai or OpenAI account.' if zai_ui.uses_shared else 'Add a GLM Coding Plan API key. This pool is limited to keys you link.'), zai_ui) }}
     </section>
 
-    <section class="stack-y">
-      <div class="pool-head">
-        <div class="section-heading">
-          <h2><img class="provider-logo" src="{{ provider_logo_url('devin') }}" alt="" aria-hidden="true">Devin</h2>
-          <span class="usage-sub">{{ pool_status(devin_ok, devin_ui, 'needs a Devin sign-in') }}</span>
-        </div>
-        <div class="pool-gauge" aria-label="Devin pool usage">
-          <span class="pool-gauge-pct">{{ devin_pool.percent_label }}</span>
-          <div class="usage-meter" aria-hidden="true"><span style="--pct: {{ devin_pool.meter }}%"></span></div>
-          <span class="pool-gauge-count">{{ devin_pool.count_label }}</span>
-          <span class="pool-gauge-state metric-delta{% if devin_ok %} up{% elif devin_reason in ('no_sub', 'unauthed') %} down{% endif %}">{% if devin_ok and devin_reason == 'open' %}Unlocked for everyone{% elif devin_ok %}Unlocked{% elif devin_reason == 'unauthed' %}Auth failed{% else %}Not linked{% endif %}</span>
-        </div>
-        <div class="pool-controls">
-          {{ pool_share_button(devin_ui) }}
-          {{ mine_filter(devin_ui, devin_accounts) }}
-          <form method="post" action="/sources/devin/start"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit" class="btn sm{{ '' if devin_pending else ' ghost' }}">{{ 'Continue linking' if devin_pending else 'Link Devin' }}</button></form>
-        </div>
-      </div>
+    <section class="pool stack-y" id="pool-devin">
+      {% call pool_head(devin_ui, 'Devin', 'devin', pool_state(devin_ok, devin_reason, devin_ui, 'needs a Devin sign-in'), [('Pool usage', devin_pool)]) %}<form method="post" action="/sources/devin/start"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit" class="btn sm{{ '' if devin_pending else ' ghost' }}">{{ 'Continue linking' if devin_pending else 'Add account' }}</button></form>{% endcall %}
       {% if devin_reason == 'unauthed' %}
       <p class="callout fault">The linked Devin sign-in is no longer valid. Remove it and add the account again.</p>
       {% endif %}
       {% if devin_flash_kind == 'ok' %}
       <p class="callout ok" role="alert">{{ devin_flash_msg }}</p>
       {% endif %}
+      {{ table_bar(devin_accounts) }}
       {{ source_table(devin_accounts, 'Devin', '/sources/devin', 'Remove this Devin account from the shared pool?', 'Optional — Devin is already unlocked. Add an account if you want to donate one.' if devin_ok and devin_reason == 'open' else ('Sign in to Devin to unlock its catalog. No API key needed.' if devin_ui.uses_shared else 'Add a Devin account. This pool is limited to accounts you link.'), devin_ui) }}
     </section>
 
-    <section class="stack-y">
-      <div class="pool-head">
-        <div class="section-heading">
-          <h2><img class="provider-logo" src="{{ provider_logo_url('kimi') }}" alt="" aria-hidden="true">Kimi</h2>
-          <span class="usage-sub">{{ pool_status(kimi_ok, kimi_ui, 'needs a membership') }}</span>
-        </div>
-        <div class="pool-gauge" aria-label="Kimi pool usage">
-          <span class="pool-gauge-pct">{{ kimi_pool.percent_label }}</span>
-          <div class="usage-meter" aria-hidden="true"><span style="--pct: {{ kimi_pool.meter }}%"></span></div>
-          <span class="pool-gauge-count">{{ kimi_pool.count_label }}</span>
-          <span class="pool-gauge-state metric-delta{% if kimi_ok %} up{% elif kimi_reason in ('no_sub', 'unauthed') %} down{% endif %}">{% if kimi_ok and kimi_reason == 'open' %}Unlocked for everyone{% elif kimi_ok %}Unlocked{% elif kimi_reason == 'no_sub' %}No membership{% elif kimi_reason == 'unauthed' %}Auth failed{% else %}Not linked{% endif %}</span>
-        </div>
-        <div class="pool-controls">
-          {{ pool_share_button(kimi_ui) }}
-          {{ mine_filter(kimi_ui, kimi_accounts) }}
-          <button type="button" class="btn sm{{ '' if kimi_pending else ' ghost' }}" data-dialog-open="kimi-connect-dialog">{{ 'Continue linking' if kimi_pending else 'Link Kimi' }}</button>
-        </div>
-      </div>
+    <section class="pool stack-y" id="pool-kimi">
+      {% call pool_head(kimi_ui, 'Kimi', 'kimi', pool_state(kimi_ok, kimi_reason, kimi_ui, 'needs a Kimi membership', 'No Kimi membership'), [('Pool usage', kimi_pool)]) %}{{ add_button('kimi-connect-dialog', 'Add account', kimi_pending) }}{% endcall %}
       {% if kimi_reason == 'no_sub' %}
       <p class="callout fault">A Kimi account is linked, but it is not showing an active membership. Kimi models stay locked.</p>
       {% elif kimi_reason == 'unauthed' %}
@@ -422,27 +382,12 @@
       {% if kimi_flash_kind == 'ok' %}
       <p class="callout ok" role="alert">{{ kimi_flash_msg }}</p>
       {% endif %}
+      {{ table_bar(kimi_accounts) }}
       {{ source_table(kimi_accounts, 'Kimi', '/sources/kimi', 'Remove this Kimi account from the shared pool?', 'Optional — Kimi is already unlocked. Add a membership if you want to donate one.' if kimi_ok and kimi_reason == 'open' else ('Add a Kimi membership via device sign-in, or paste a Kimi Code console API key.' if kimi_ui.uses_shared else 'Add a Kimi membership. This pool is limited to accounts you link.'), kimi_ui) }}
     </section>
 
-    <section class="stack-y">
-      <div class="pool-head">
-        <div class="section-heading">
-          <h2><img class="provider-logo" src="{{ provider_logo_url('mimo') }}" alt="" aria-hidden="true">Xiaomi</h2>
-          <span class="usage-sub">{{ pool_status(mimo_ok, mimo_ui, 'needs a Token Plan') }}</span>
-        </div>
-        <div class="pool-gauge" aria-label="Xiaomi pool usage">
-          <span class="pool-gauge-pct">{{ mimo_pool.percent_label }}</span>
-          <div class="usage-meter" aria-hidden="true"><span style="--pct: {{ mimo_pool.meter }}%"></span></div>
-          <span class="pool-gauge-count">{{ mimo_pool.count_label }}</span>
-          <span class="pool-gauge-state metric-delta{% if mimo_ok %} up{% elif mimo_reason in ('no_sub', 'unauthed') %} down{% endif %}">{% if mimo_ok and mimo_reason == 'open' %}Unlocked for everyone{% elif mimo_ok %}Unlocked{% elif mimo_reason == 'no_sub' %}No Token Plan{% elif mimo_reason == 'unauthed' %}Auth failed{% else %}Not linked{% endif %}</span>
-        </div>
-        <div class="pool-controls">
-          {{ pool_share_button(mimo_ui) }}
-          {{ mine_filter(mimo_ui, mimo_accounts) }}
-          <button type="button" class="btn sm{{ '' if mimo_pending else ' ghost' }}" data-dialog-open="mimo-connect-dialog">{{ 'Continue linking' if mimo_pending else 'Link Xiaomi' }}</button>
-        </div>
-      </div>
+    <section class="pool stack-y" id="pool-mimo">
+      {% call pool_head(mimo_ui, 'Xiaomi', 'mimo', pool_state(mimo_ok, mimo_reason, mimo_ui, 'needs a Token Plan', 'No Token Plan'), [('Pool usage', mimo_pool)]) %}{{ add_button('mimo-connect-dialog', 'Add account', mimo_pending) }}{% endcall %}
       {% if mimo_reason == 'no_sub' %}
       <p class="callout fault">A Xiaomi key is linked, but it is not showing a Token Plan. MiMo models stay locked.</p>
       {% elif mimo_reason == 'unauthed' %}
@@ -451,33 +396,19 @@
       {% if mimo_flash_kind == 'ok' %}
       <p class="callout ok" role="alert">{{ mimo_flash_msg }}</p>
       {% endif %}
+      {{ table_bar(mimo_accounts) }}
       {{ source_table(mimo_accounts, 'Xiaomi', '/sources/mimo', 'Remove this Xiaomi account from the shared pool?', 'Optional — Xiaomi is already unlocked. Add a Token Plan if you want to donate one.' if mimo_ok and mimo_reason == 'open' else ('Sign in with Xiaomi, or paste the Token Plan key from the console (tp-… or ttp-…).' if mimo_ui.uses_shared else 'Add a Xiaomi Token Plan. This pool is limited to accounts you link.'), mimo_ui) }}
     </section>
 
-    <section class="stack-y">
-      <div class="pool-head">
-        <div class="section-heading">
-          <h2><img class="provider-logo" src="{{ provider_logo_url('claude') }}" alt="" aria-hidden="true">Claude</h2>
-          <span class="usage-sub">{{ pool_status(claude_ok, claude_ui, 'needs a Claude sign-in') }}</span>
-        </div>
-        <div class="pool-gauge" aria-label="Claude pool usage">
-          <span class="pool-gauge-pct">{{ claude_pool.percent_label }}</span>
-          <div class="usage-meter" aria-hidden="true"><span style="--pct: {{ claude_pool.meter }}%"></span></div>
-          <span class="pool-gauge-count">{{ claude_pool.count_label }}</span>
-          <span class="pool-gauge-state metric-delta{% if claude_ok %} up{% elif claude_reason in ('no_sub', 'unauthed') %} down{% endif %}">{% if claude_ok and claude_reason == 'open' %}Unlocked for everyone{% elif claude_ok %}Unlocked{% elif claude_reason == 'unauthed' %}Auth failed{% else %}Not linked{% endif %}</span>
-        </div>
-        <div class="pool-controls">
-          {{ pool_share_button(claude_ui) }}
-          {{ mine_filter(claude_ui, claude_accounts) }}
-          <button type="button" class="btn sm{{ '' if claude_pending else ' ghost' }}" data-dialog-open="claude-connect-dialog">{{ 'Continue linking' if claude_pending else 'Link Claude' }}</button>
-        </div>
-      </div>
+    <section class="pool stack-y" id="pool-claude">
+      {% call pool_head(claude_ui, 'Claude', 'claude', pool_state(claude_ok, claude_reason, claude_ui, 'needs a Claude sign-in'), [('Pool usage', claude_pool)]) %}{{ add_button('claude-connect-dialog', 'Add account', claude_pending) }}{% endcall %}
       {% if claude_reason == 'unauthed' %}
       <p class="callout fault">The linked Claude sign-in is no longer valid. Remove it and add the account again.</p>
       {% endif %}
       {% if claude_flash_kind == 'ok' %}
       <p class="callout ok" role="alert">{{ claude_flash_msg }}</p>
       {% endif %}
+      {{ table_bar(claude_accounts) }}
       {{ source_table(claude_accounts, 'Claude', '/sources/claude', 'Remove this Claude account from the shared pool?', 'Optional — Claude is already unlocked. Add an account if you want to donate one.' if claude_ok and claude_reason == 'open' else ('Sign in with the same Claude account you use for Claude Code.' if claude_ui.uses_shared else 'Add a Claude account. This pool is limited to accounts you link.'), claude_ui) }}
     </section>
   </div>

@@ -233,6 +233,19 @@ class ChatGPTPoolMeterTest(unittest.TestCase):
         self.assertEqual(free["count_label"], "1 Free · 1 Go")
 
     @patch("app.stats.accounts.cred_extra")
+    def test_count_names_plans_without_a_reading(self, cred_extra):
+        rows = [_row(id=1), _row(id=2), _row(id=3)]
+        extras = {
+            1: self._extra("go", [{"percent": 30.0, "seconds": 30 * 86400}]),
+            2: self._extra("free", []),
+            3: self._extra("free", []),
+        }
+        cred_extra.side_effect = lambda r: extras[r["id"]]
+        _paid, free = stats.chatgpt_pool_meters(rows)
+        self.assertEqual(free["percent"], 30.0)
+        self.assertEqual(free["count_label"], "1 Go · 2 no reading")
+
+    @patch("app.stats.accounts.cred_extra")
     def test_unauthed_excluded_zero_included(self, cred_extra):
         rows = [_row(id=1), _row(id=2)]
         extras = {

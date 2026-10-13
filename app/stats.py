@@ -991,7 +991,12 @@ def pool_meter(percents: list[float], *, plans: list[str] | None = None) -> dict
 
 def _finish_pool_meter(percents: list[float], plans: list[str], unread: int) -> dict:
     if percents:
-        return pool_meter(percents, plans=plans)
+        meter = pool_meter(percents, plans=plans)
+        # The mean covers measured plans only; say how many it left out, or
+        # "2 Go" reads as the whole pool when two Free plans had no reading.
+        if unread:
+            meter["count_label"] += f" · {unread} no reading"
+        return meter
     if unread:
         return _empty_pool_meter("No reading yet")
     return _empty_pool_meter("No plans")

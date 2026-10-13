@@ -113,27 +113,6 @@ label.check input[type="checkbox"] {
 label.check.is-locked {
   opacity: 0.7;
 }
-.pool-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem 1.25rem;
-  flex-wrap: wrap;
-  margin: 0.85rem 0 0;
-}
-.pool-head .section-heading { margin: 0; min-width: 0; }
-.pool-controls {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-  margin-left: auto;
-  padding: 0.2rem;
-  background: var(--raise);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-}
-.pool-bar,
 .pool-switch.source-mine-filter {
   display: flex;
   align-items: center;
@@ -162,29 +141,6 @@ label.pool-switch {
   margin: 0;
   accent-color: var(--brass);
   flex-shrink: 0;
-}
-.pool-switch.is-locked { opacity: 0.62; cursor: default; }
-.pool-bar.is-locked { padding-right: 0.15rem; }
-.pool-bar-note {
-  padding: 0 0.65rem 0 0.15rem;
-  color: var(--mute);
-  font-family: var(--mono);
-  font-size: 0.66rem;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-.pool-policy {
-  display: flex;
-  flex-direction: column;
-  gap: 0.45rem;
-  padding: 0.75rem 0;
-  border-top: 1px solid var(--line, rgba(255,255,255,0.08));
-}
-.pool-policy:first-of-type { border-top: 0; padding-top: 0; }
-.pool-policy h3 {
-  margin: 0 0 0.15rem;
-  font-size: 0.95rem;
 }
 form.stack, .auth-card form {
   display: flex;
