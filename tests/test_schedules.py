@@ -202,6 +202,18 @@ class FireStatusPropagationTest(unittest.TestCase):
         result = start_turn(self.uid, thread["id"], "hello", None, None, auto=True, scheduled=True)
         return result["run"]
 
+    def test_invalid_stored_variables_do_not_break_list_or_tick(self):
+        import asyncio
+
+        item = self._schedule()
+        db.execute("UPDATE chat_schedules SET variables=?, next_fire_at=? WHERE id=?",
+                   ('{"api_key": "x", "1bad": "y"}', iso_utc(utcnow()), item["id"]))
+        listed = next(s for s in schedules.list_schedules(self.uid) if s["id"] == item["id"])
+        self.assertEqual(listed["variables"], {})
+        with patch.object(schedules, "_fire", new=AsyncMock()) as fire:
+            asyncio.run(schedules.tick())
+        self.assertIn(item["id"], [call.args[0]["id"] for call in fire.await_args_list])
+
     def test_finish_run_updates_fire_and_schedule(self):
         item = self._schedule()
         run = self._scheduled_run()

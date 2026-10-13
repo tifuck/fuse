@@ -123,6 +123,17 @@ def _int_field(value, name: str) -> int:
         raise ScheduleError(f"{name} must be an integer") from exc
 
 
+def _stored_vars(schedule_id, raw) -> dict[str, str]:
+    """A stored row that fails today's rules must not roll back the tick for
+    every user or 500 its owner's list; its fire fails on the unknown
+    variable instead, and an edit re-validates."""
+    try:
+        return _parse_vars(raw)
+    except ScheduleError as exc:
+        logger.warning("Schedule %s has invalid stored variables (%s); ignoring them", schedule_id, exc.detail)
+        return {}
+
+
 def _row(row) -> dict:
     keys = row.keys() if hasattr(row, "keys") else []
     return {
@@ -138,7 +149,7 @@ def _row(row) -> dict:
         "fresh_each_fire": bool(row["fresh_each_fire"]),
         "allow_coding": bool(row["allow_coding"]),
         "prompt": row["prompt"],
-        "variables": _parse_vars(row["variables"] if "variables" in keys else "{}"),
+        "variables": _stored_vars(row["id"], row["variables"] if "variables" in keys else "{}"),
         "model": row["model"],
         "tools": chats.parse_thread_tools(row["tools"]),
         "reasoning_effort": row["reasoning_effort"] or "",
