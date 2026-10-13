@@ -359,8 +359,13 @@ class _Ctx:
         href = (href or "").strip()
         if not href or href.startswith(("#", "javascript:", "data:", "mailto:", "tel:")):
             return
-        absolute = urljoin(self.base_url, href) if self.base_url else href
-        parsed = urlparse(absolute)
+        try:
+            absolute = urljoin(self.base_url, href) if self.base_url else href
+            parsed = urlparse(absolute)
+        except ValueError:
+            # e.g. a docs placeholder like https://[your-project].example.co:
+            # one bad link must not fail the whole page.
+            return
         if parsed.scheme and parsed.scheme not in {"http", "https"}:
             return
         if self.base_url and not parsed.netloc:

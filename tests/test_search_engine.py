@@ -1220,3 +1220,15 @@ class ProviderTransportTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+class MalformedPageInputTest(unittest.TestCase):
+    def test_bad_charset_redirect_and_hostname_fail_cleanly(self):
+        from app.search.engine import _decode, urljoin_safe
+        from app.search.ssrf import public_ips
+
+        self.assertEqual(_decode(b"hello", "text/html; charset=idna"), "hello")
+        self.assertIsInstance(_decode(b"<meta charset=punycode>\xff hi", "text/html"), str)
+        self.assertEqual(urljoin_safe("https://a.example/", "https://[bad"), "")
+        self.assertEqual(public_ips("a" * 64 + ".example.com"), [])

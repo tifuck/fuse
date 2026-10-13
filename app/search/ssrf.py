@@ -180,7 +180,7 @@ def public_ips(host: str, port: int = 443) -> list[str]:
         return []
     try:
         infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-    except OSError:
+    except (OSError, UnicodeError):  # UnicodeError: a label longer than 63 chars
         return []
     addrs: list[str] = []
     for info in infos:

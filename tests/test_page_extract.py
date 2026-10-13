@@ -16,6 +16,13 @@ from app.search.extract import TABLE_MAX_ROWS, chunk_text, extract_page, find_wi
 
 
 class ExtractTest(unittest.TestCase):
+    def test_one_unparsable_link_does_not_fail_the_page(self):
+        html = ("<html><body><article><p>" + "text " * 200 + "</p>"
+                '<a href="https://[your-project].supabase.co/rest/v1">project</a>'
+                '<a href="https://example.com/ok">ok</a></article></body></html>')
+        page = extract_page(html, url="https://example.com/docs")
+        self.assertIn("https://example.com/ok", [link["url"] for link in page.links])
+
     def test_skips_css_js_keeps_article(self):
         html = (
             "<html><head><style>" + ("body{color:red}" * 5000) + "</style>"

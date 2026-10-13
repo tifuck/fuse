@@ -783,7 +783,9 @@ def _decode(raw: bytes, ctype: str) -> str:
             charset = declared.group(1) if declared else "utf-8"
     try:
         text = raw.decode(charset, errors="replace")
-    except LookupError:
+    except (LookupError, UnicodeError):
+        # Unknown charset, or one that cannot decode with errors="replace"
+        # (idna, punycode): read it as UTF-8.
         charset = "utf-8"
         text = raw.decode("utf-8", errors="replace")
     if charset.lower() in ("utf-8", "utf8") and text.count("�") > max(20, len(text) // 200):
@@ -997,4 +999,8 @@ async def fetch_url(
 
 
 def urljoin_safe(current: str, loc: str) -> str:
-    return urljoin(current, loc)
+    """'' for an unparsable Location (e.g. https://[bad): refused, not a crash."""
+    try:
+        return urljoin(current, loc)
+    except ValueError:
+        return ""
