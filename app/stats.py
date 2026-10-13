@@ -1091,7 +1091,6 @@ def claude_pool_meter(rows, *, owner_id: int | None = None) -> dict:
         if not claude_mod.billing_has_subscription(billing):
             unread += 1
             continue
-        plans.append(str(billing.get("plan_type") or extra.get("subscription_type") or "Claude"))
         pct = _as_float(billing.get("credit_usage_percent"))
         if pct is None:
             for win in billing.get("windows") or []:
@@ -1103,6 +1102,8 @@ def claude_pool_meter(rows, *, owner_id: int | None = None) -> dict:
             unread += 1
             continue
         percents.append(pct)
+        # Only measured accounts: pool_meter pairs plans with readings by index.
+        plans.append(str(billing.get("plan_type") or extra.get("subscription_type") or "Claude"))
     return _finish_pool_meter(percents, plans, unread)
 
 

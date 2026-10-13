@@ -359,13 +359,13 @@ async def openai_chat(
             try:
                 async for chunk in resp.aiter_bytes():
                     buf += chunk
-                    if len(buf) > 1_048_576:
-                        buf = b""
-                        yield chunk
-                        continue
+                    # Inspect complete lines first: a capped chunk may still
+                    # carry the usage and [DONE] frames after a huge one.
                     while b"\n" in buf:
                         line, buf = buf.split(b"\n", 1)
                         inspect(line)
+                    if len(buf) > 1_048_576:
+                        buf = b""
                     yield chunk
                 if buf.strip():
                     inspect(buf)

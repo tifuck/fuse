@@ -523,6 +523,17 @@ class ClaudeStreamTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["choices"][0]["finish_reason"], "length")
         self.assertEqual(body["choices"][0]["message"]["content"], "cut")
 
+    async def test_tool_call_cut_by_max_tokens_finishes_length(self):
+        events = [
+            {"type": "message_start", "message": {"id": "msg_4", "usage": {"input_tokens": 1}}},
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "toolu_0", "name": "run"}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": '{"command":"echo'}},
+            {"type": "message_delta", "delta": {"stop_reason": "max_tokens"}, "usage": {"output_tokens": 2}},
+            {"type": "message_stop"},
+        ]
+        body = await claude_mod._aggregate(_FakeResp(events), AsyncMock(), "claude-opus-4-6")
+        self.assertEqual(body["choices"][0]["finish_reason"], "length")
+
 
 class ClaudePoolTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):

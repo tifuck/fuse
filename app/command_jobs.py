@@ -421,9 +421,17 @@ async def launch_async(**kwargs) -> dict:
     now = db.now()
     _reserved[job_id] = {"status": "starting", "host_id": int(host_id), "source": source}
     inserted = False
+
+    def insert(**row):
+        # Flag from inside the drained write: a cancellation raised after the
+        # INSERT committed must still close the row.
+        nonlocal inserted
+        _insert_job_row(**row)
+        inserted = True
+
     try:
         await durable_call(
-            _insert_job_row,
+            insert,
             job_id=job_id, user_id=kwargs["user_id"], host_id=host_id, host=kwargs["host"],
             thread_id=kwargs.get("thread_id"), run_id=kwargs.get("run_id"),
             command=kwargs["command"], cwd=kwargs.get("cwd", ""), background=background,
@@ -431,7 +439,6 @@ async def launch_async(**kwargs) -> dict:
             url=kwargs.get("url", ""), pattern=kwargs.get("pattern", ""), max_events=max_events,
             description=kwargs.get("description", ""),
         )
-        inserted = True
         if kind == "monitor":
             await durable_call(_set_monitor_notify, job_id)
     except BaseException:
@@ -499,7 +506,7 @@ def _on_monitor_batch(rec: dict, lines: list[str], overflow: int = 0) -> None:
 
     if rec.get("status") in TERMINAL or rec.get("status") == "cancelling":
         return
-    matched = [ln for ln in lines if not str(ln).startswith("… ")]
+    matched = [ln for ln in lines if not monitor_mod.is_batch_note(ln)]
     added = len(matched) + max(0, int(overflow or 0))
     rec["event_count"] = int(rec.get("event_count") or 0) + added
     rec["event_seq"] = int(rec.get("event_seq") or 0) + 1

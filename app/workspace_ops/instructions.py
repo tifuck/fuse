@@ -63,7 +63,7 @@ def unlabel_host(alias: str, text: str) -> str:
 
 
 def invalidate_agents_cache(user_id, host_id, path: str = "") -> None:
-    base = posixpath.basename(path or "").lower()
+    base = posixpath.basename((path or "").replace("\\", "/")).lower()
     if path and base not in _AGENTS_BASENAMES:
         return
     uid, hid = int(user_id), int(host_id)

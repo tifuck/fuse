@@ -43,7 +43,9 @@ def resumed_after_stop(agent, stopped_at: str) -> bool:
     """The user resumed this child after the main agent was stopped: that is
     an explicit request to carry on, so its report may wake the thread."""
     resumed = str((agent or {}).get("user_resumed_at") or "")
-    return bool(resumed and stopped_at and resumed > stopped_at)
+    # Timestamps are whole seconds: a tie is a resume clicked right after the
+    # Stop, which must not be rejected as older intent.
+    return bool(resumed and stopped_at and resumed >= stopped_at)
 
 
 # chat_runs.cancel_requested value for a subagent the user stopped on its own
@@ -1342,14 +1344,17 @@ def descendant_ids(run_id):
     if row is None:
         return []
     root = row["root_run_id"] or row["id"]
+    # Walk finished nodes too: a background grandchild can outlive its parent.
     tree = db.fetchall(
-        """SELECT id, parent_run_id FROM chat_runs
-           WHERE root_run_id=? AND status IN ('queued','running')""",
+        "SELECT id, parent_run_id, status FROM chat_runs WHERE root_run_id=?",
         (root,),
     )
     by_parent: dict[str, list] = {}
+    live = set()
     for item in tree:
         by_parent.setdefault(item["parent_run_id"], []).append(item["id"])
+        if item["status"] in ("queued", "running"):
+            live.add(item["id"])
     out = []
     frontier = list(by_parent.get(run_id, []))
     seen = set()
@@ -1358,7 +1363,8 @@ def descendant_ids(run_id):
         if current in seen:
             continue
         seen.add(current)
-        out.append(current)
+        if current in live:
+            out.append(current)
         frontier.extend(by_parent.get(current, []))
     return out
 

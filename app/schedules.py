@@ -389,14 +389,20 @@ def _normalize(user_id: int, raw: dict, *, existing: dict | None = None) -> dict
     once_at = raw.get("once_at") if "once_at" in raw else (existing or {}).get("once_at")
     if recur_kind == "cron":
         builder = str(raw.get("builder") or "")
-        if builder == "daily" or (at_local and not raw.get("cron_expr") and not weekdays):
+        if not builder and raw.get("cron_expr"):
+            builder = "custom"
+        # Builder metadata only describes daily/weekly: clear what the chosen
+        # builder does not use, or a later PATCH re-infers the old builder.
+        if builder == "daily" or (not builder and at_local and not weekdays):
             hour, minute = cron.parse_hhmm(at_local)
             cron_expr = cron.compile_daily(hour, minute)
-        elif builder == "weekly" or weekdays:
+            weekdays = 0
+        elif builder == "weekly" or (not builder and weekdays):
             hour, minute = cron.parse_hhmm(at_local)
             cron_expr = cron.compile_weekly(hour, minute, int(weekdays))
         else:
             cron_expr = str(raw.get("cron_expr") if "cron_expr" in raw else (existing or {}).get("cron_expr") or "")
+            weekdays, at_local = 0, ""
         cron.parse_cron(cron_expr)
     elif recur_kind == "every":
         every_seconds = _int_field(raw.get("every_seconds") if "every_seconds" in raw else (existing or {}).get("every_seconds") or 0, "every_seconds")

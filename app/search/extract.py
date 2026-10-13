@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import re
@@ -644,17 +645,36 @@ def _render_table(table, ctx: _Ctx, depth: int) -> list[str]:
                 blocks.extend(rendered)
         return ([caption] if caption else []) + blocks
     grid: list[list[str]] = []
+    # column -> (text, rows still covered) for cells with rowspan > 1, so later
+    # rows' cells land in their own columns.
+    carried: dict[int, tuple[str, int]] = {}
+
+    def take_carried(line: list[str]) -> None:
+        while len(line) in carried:
+            text, left = carried.pop(len(line))
+            if left > 1:
+                carried[len(line)] = (text, left - 1)
+            line.append(text)
+
     for row in rows:
         line: list[str] = []
         for cell in _cells(row):
+            take_carried(line)
             text = " ".join(_render_children(cell, ctx, depth + 1)).replace("\n", " ")
             text = _INLINE_WS.sub(" ", text).strip()[:TABLE_CELL_CHARS].replace("|", "\\|")
-            line.append(text)
             try:
                 span = max(1, min(int(cell.attributes.get("colspan") or 1), TABLE_MAX_COLS))
             except ValueError:
                 span = 1
-            line.extend([""] * (span - 1))
+            try:
+                down = max(1, min(int(cell.attributes.get("rowspan") or 1), TABLE_MAX_ROWS))
+            except ValueError:
+                down = 1
+            for k in range(span):
+                if down > 1:
+                    carried[len(line)] = (text if k == 0 else "", down - 1)
+                line.append(text if k == 0 else "")
+        take_carried(line)
         if any(line):
             grid.append(line[:TABLE_MAX_COLS])
     if not grid:
@@ -908,19 +928,23 @@ def select_passages(text: str, *, query: str | None = None, find: str | None = N
     if literal and len(literal) >= 2:
         chunks = _passage_chunks(text)
         selected: list[_Passage] = []
-        low = text.lower()
-        cursor = 0
-        hits = 0
-        while hits < FIND_MAX_MATCHES:
-            index = low.find(literal.lower(), cursor)
-            if index < 0:
-                break
-            hits += 1
+        # Match on the original text: lower() can lengthen it ("İ"), which
+        # shifts every later offset off the chunk intervals.
+        for hit in itertools.islice(re.finditer(re.escape(literal), text, re.I), FIND_MAX_MATCHES):
+            index, end = hit.span()
             # A hit can start in one chunk and end in the next: the 1200-char
             # paragraph cut does not know where the phrase is.
-            end = index + len(literal)
-            selected.extend(chunk for chunk in chunks if chunk.start < end and index < chunk.end)
-            cursor = index + max(1, len(literal))
+            found = [chunk for chunk in chunks if chunk.start < end and index < chunk.end]
+            if not found:
+                # Headings sit outside chunk intervals: use the section chunk
+                # that carries this heading, else the heading line itself.
+                found = next(([chunk] for chunk in chunks if chunk.start >= index
+                              and re.search(re.escape(literal), chunk.heading, re.I)), [])
+                if not found:
+                    line_end = text.find("\n", end)
+                    line_end = len(text) if line_end < 0 else line_end
+                    found = [_Passage(index, line_end, text[index:line_end])]
+            selected.extend(found)
         if not selected:
             return f"No literal match for {literal!r} in the extracted text.\nPage opening:\n{text[:FETCH_CHARS]}"
         return _render_passages(selected, FETCH_CHARS)

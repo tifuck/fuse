@@ -200,6 +200,8 @@ def build_chat_request(
         except (TypeError, ValueError):
             max_tokens = None
     tools = _tools_from_body(body)
+    stop = body.get("stop")
+    stops = [stop] if isinstance(stop, str) else [s for s in stop if isinstance(s, str)] if isinstance(stop, list) else []
     parallel = body.get("parallel_tool_calls")
     disable_parallel = False if parallel is None else not bool(parallel)
     choice = body.get("tool_choice")
@@ -225,7 +227,7 @@ def build_chat_request(
             "first_temperature": temperature,
             "top_k": 50,
             "top_p": float(body.get("top_p") or 1) or 1,
-            "stop_patterns": [] if tools else list(DEFAULT_STOP),
+            "stop_patterns": [s for s in stops if s] + ([] if tools else list(DEFAULT_STOP)),
             "fim_eot": 1,
         },
         "tools": tools,

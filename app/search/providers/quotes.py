@@ -156,7 +156,9 @@ async def _coincap(client: httpx.AsyncClient, coin: str, fiat: str, timeout: htt
         return []
     price = row.get("priceUsd")
     try:
-        price = f"{float(price):.2f}"
+        value = float(price)
+        # Sub-dollar assets keep 4 significant digits instead of rounding to 0.00.
+        price = f"{value:.2f}" if abs(value) >= 1 else f"{value:.4g}"
     except (TypeError, ValueError):
         pass
     return [

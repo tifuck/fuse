@@ -355,14 +355,14 @@ async def _tap(
     try:
         async for chunk in stream:
             buf += chunk
-            if len(buf) > _LINE_CAP:
-                out, buf = buf, b""
-                yield out
-                continue
+            # Inspect complete lines first: a capped chunk may still carry the
+            # usage and [DONE] frames after a huge one.
             out = b""
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)
                 out += inspect(line) + b"\n"
+            if len(buf) > _LINE_CAP:
+                out, buf = out + buf, b""
             if out:
                 yield out
         if buf:

@@ -629,7 +629,7 @@ class KeyPool:
             # re-triggers its 429 and burns a retry slot. Wait while the wait is
             # short; hand back the cooldown (NoAvailableKeyError) when it is not.
             wait = key_state.available_at - time.time()
-            if wait > 0:
+            if key_state.state == COOLING and wait > 0:
                 if wait > 5.0:
                     continue
                 await asyncio.sleep(wait)

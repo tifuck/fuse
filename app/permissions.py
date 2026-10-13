@@ -1045,6 +1045,8 @@ async def review(*, tool: str, args: dict, user_id: int,
     out_of_root = False
     target = _target_of(tool, args)
     grant_kind, grant_value = "", ""
+    # Shell: every out-of-scope target must be covered, not just the first.
+    shell_grants: list[tuple[str, str]] = []
     perm_kind = "path"
     compound = False
     cwd = ""
@@ -1071,6 +1073,7 @@ async def review(*, tool: str, args: dict, user_id: int,
             reasons.append(f"working directory {cwd} is outside the allowed roots")
             out_of_root = True
             grant_kind, grant_value = "dir", resolved_cwd
+            shell_grants.append((grant_kind, grant_value))
         base = resolved_cwd if resolved_cwd and not _is_home_marker(resolved_cwd) else "~"
         paths = extract_shell_paths(command, base, windows)
         # Ask mode is scope-based: a command that parses and whose extracted
@@ -1109,13 +1112,16 @@ async def review(*, tool: str, args: dict, user_id: int,
                     continue
                 reasons.append(f"{resolved_cand} is outside the allowed roots")
                 out_of_root = True
-                if not grant_value and not secret:
+                if not secret:
                     # A secret-named target grants that exact file, never its
                     # directory (which would silently cover siblings).
-                    grant_kind, grant_value = (
+                    need = (
                         ("file", resolved_cand) if is_secret_path(resolved_cand) else
                         ("dir", resolved_cand if is_dir else _grant_dir_for("read_file", resolved_cand, windows))
                     )
+                    shell_grants.append(need)
+                    if not grant_value:
+                        grant_kind, grant_value = need
         offending = [r.split(" is outside")[0] for r in reasons if "outside" in r]
         display = offending[0] if offending else cwd
     else:
@@ -1173,13 +1179,14 @@ async def review(*, tool: str, args: dict, user_id: int,
     if bypass:
         return ReviewResult(allowed=True, root_override=relax, resolved=resolved)
 
-    covered = (
-        await asyncio.to_thread(
-            grant_covers, gate.user_id, gate.thread_id, host_id, grant_kind, grant_value, windows
-        )
-        if grant_value and not (perm_kind == "shell" and (restricted_shell or secret or compound))
-        else False
-    )
+    needed = shell_grants if perm_kind == "shell" else [(grant_kind, grant_value)]
+    covered = False
+    if grant_value and not (perm_kind == "shell" and (restricted_shell or secret or compound)):
+        covered = True
+        for kind, value in needed:
+            if not await asyncio.to_thread(grant_covers, gate.user_id, gate.thread_id, host_id, kind, value, windows):
+                covered = False
+                break
     if covered:
         return ReviewResult(allowed=True, root_override=relax, resolved=resolved)
 

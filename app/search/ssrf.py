@@ -4,7 +4,7 @@ import html
 import ipaddress
 import re
 import socket
-from urllib.parse import parse_qs, quote, unquote, urlparse, urlunparse
+from urllib.parse import parse_qs, quote, urlparse, urlunparse
 
 _BLOCKED_HOSTS = {
     "localhost",
@@ -85,7 +85,7 @@ def decode_ddg_url(href: str) -> str:
         qs = parse_qs(parsed.query)
         target = (qs.get("uddg") or [""])[0]
         if target:
-            href = unquote(target)
+            href = target  # parse_qs already decoded it; a second pass alters %2F etc.
     return public_http_url(href)
 
 

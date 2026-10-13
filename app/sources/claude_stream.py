@@ -246,10 +246,11 @@ class _Translator:
         return None
 
     def finish_reason(self) -> str:
-        if self.tool_order or self.stop_reason == "tool_use":
-            return "tool_calls"
+        # A call cut off by max_tokens has incomplete arguments: never runnable.
         if self.stop_reason == "max_tokens":
             return "length"
+        if self.tool_order or self.stop_reason == "tool_use":
+            return "tool_calls"
         return "stop"
 
     def tool_calls(self) -> list[dict]:

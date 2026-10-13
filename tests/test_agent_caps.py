@@ -518,6 +518,9 @@ class AgentCapsTest(unittest.TestCase):
         self.assertEqual(store.descendant_ids(a["id"]), [grand["id"]])
         self.assertNotIn(b["id"], store.descendant_ids(a["id"]))
         self.assertCountEqual(store.descendant_ids(parent["id"]), [a["id"], b["id"], grand["id"]])
+        # A background grandchild outlives its finished parent: still found.
+        db.execute("UPDATE chat_runs SET status='completed' WHERE id=?", (a["id"],))
+        self.assertCountEqual(store.descendant_ids(parent["id"]), [b["id"], grand["id"]])
 
     def test_cancel_self_leaves_sibling_running(self):
         thread, parent = self._parent()

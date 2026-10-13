@@ -49,7 +49,7 @@ def parse_yahoo_html(raw: str) -> list[SearchHit]:
             url = public_http_url(unquote(ru.group(1)))
         if not url or not title or url in seen:
             continue
-        if "yahoo.com" in url:
+        if _yahoo_host_ok(url):
             continue
         seen.add(url)
         sn = _SNIP.search(block)

@@ -39,7 +39,7 @@ async def csrf_guard(request: Request) -> None:
             form = await request.form()
             token = str(form.get("csrf_token") or "")
     expected = request.session.get("csrf") or ""
-    if not expected or not token or not hmac.compare_digest(str(token), str(expected)):
+    if not expected or not token or not hmac.compare_digest(str(token).encode(), str(expected).encode()):
         # Compare against a dummy so missing tokens still do some work.
         hmac.compare_digest(_DUMMY_CSRF, _DUMMY_CSRF)
         raise HTTPException(403, "CSRF")

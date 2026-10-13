@@ -282,7 +282,7 @@ def sweep_user(user_id: int, prefs: dict | None = None, *, now: datetime | None 
             except hosts.HostError:
                 continue
         for t in threads:
-            if not t["archived"] or t["id"] in busy:
+            if not t["archived"] or t["schedule_id"] is not None or t["id"] in busy:
                 continue
             since = t["archived_at"] or t["updated_at"]
             if not since or since >= delete_cutoff:

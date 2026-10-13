@@ -1077,6 +1077,11 @@ CLIP_MARKER = (
 CLIP_FLOOR_CHARS = 2_000
 
 
+def _chars_for_tokens(text: str, tokens: int) -> int:
+    """Characters of `text` holding about `tokens` (CJK runs are ~1 char/token)."""
+    return max(1, tokens * len(text) // max(1, estimate_text(text)))
+
+
 def _clip_text(role: str, text: str, keep_chars: int) -> str:
     marker = CLIP_MARKER.format(role=role, kept=keep_chars, total=len(text))
     body = text[: max(256, keep_chars - len(marker))].rstrip()
@@ -1135,7 +1140,7 @@ def clip_to_fit(
     # A single message that cannot fit even alone gets one hard cut first.
     for i in clip_idx:
         if estimate_text(rows[i]["content"]) > budget:
-            keep = budget * CHARS_PER_TOKEN
+            keep = _chars_for_tokens(rows[i]["content"], budget)
             rows[i] = {
                 **rows[i],
                 "content": _clip_text(str(rows[i].get("role") or "message"), rows[i]["content"], keep),
@@ -1147,9 +1152,10 @@ def clip_to_fit(
             break
         largest = max(clip_idx, key=lambda i: len(rows[i]["content"]))
         text = rows[largest]["content"]
-        if len(text) <= CLIP_FLOOR_CHARS:
+        floor = _chars_for_tokens(text, CLIP_FLOOR_CHARS // CHARS_PER_TOKEN)
+        if len(text) <= floor:
             break
-        keep = max(CLIP_FLOOR_CHARS, len(text) // 2)
+        keep = max(floor, len(text) // 2)
         rows[largest] = {
             **rows[largest],
             "content": _clip_text(str(rows[largest].get("role") or "message"), text, keep),

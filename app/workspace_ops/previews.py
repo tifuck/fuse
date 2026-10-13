@@ -154,11 +154,13 @@ def _apply_replace(text: str, old: str, new: str, replace_all: bool) -> tuple[st
     if not old:
         raise WorkspaceError("old_string is empty. Set it to the exact text to replace; use write_file to create a file")
     count = text.count(old)
-    if count == 0:
-        normalized = _crlf_normalize(text, old, new)
-        if normalized is not None:
-            old, new = normalized
-            count = text.count(old)
+    normalized = _crlf_normalize(text, old, new)
+    if normalized is not None and (count == 0 or "\n" not in old):
+        # A single-line match in a CRLF file still needs CRLF in `new`.
+        old, new = normalized
+        count = text.count(old)
+    if count == 1 and not replace_all and text.find(old, text.find(old) + 1) >= 0:
+        count = 2  # overlapping occurrences (`aa` in `aaa`) are ambiguous too
     if count == 0:
         hint = " This file uses CRLF line endings; match them or edit single lines." if "\r\n" in text else ""
         raise WorkspaceError(_NOT_FOUND_HINT + hint)

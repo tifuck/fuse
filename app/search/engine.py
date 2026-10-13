@@ -411,8 +411,9 @@ def _allow(user_id: int, kind: str) -> bool:
     return limiter.allow(f"chat-{kind}:{user_id}", per_min, 60)
 
 
-def _cache_key(normalized: str, bucket: str | None, provider: str) -> str:
-    raw = f"{normalized}|{bucket or '-'}|{provider}"
+def _cache_key(normalized: str, bucket: str | None, provider: str, recency: int | None = None) -> str:
+    # Exact days too: HN filters by them, so 2 and 7 days share a bucket only.
+    raw = f"{normalized}|{bucket or '-'}|{provider}|{recency if recency is not None else '-'}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -448,7 +449,7 @@ async def _one_query(
     bucket = freshness_bucket(recency)
     key = _brave_key()
     use_brave = bool(key) and not brave_auth_failed()
-    ck = _cache_key(normalize_query(query), bucket, "mix-b" if use_brave else "mix")
+    ck = _cache_key(normalize_query(query), bucket, "mix-b" if use_brave else "mix", recency)
     cached = _cache.get(ck)
     if isinstance(cached, QueryResult):
         hit = QueryResult(
@@ -504,7 +505,7 @@ async def _one_query(
                 )
                 ttl = cache_ttl(bucket, kind)
                 if ttl:
-                    _cache.set(_cache_key(normalize_query(query), bucket, "mix-b" if use_brave else "mix"), result, ttl)
+                    _cache.set(ck, result, ttl)
                 _log(
                     logging.INFO if hits else logging.WARNING,
                     user_id=user_id,

@@ -47,7 +47,8 @@ def _parse_field(part: str, lo: int, hi: int) -> set[int]:
         if not chunk:
             raise CronError("empty cron list item")
         step = 1
-        if "/" in chunk:
+        stepped = "/" in chunk
+        if stepped:
             base, step_s = chunk.split("/", 1)
             if not step_s.isdigit() or int(step_s) < 1:
                 raise CronError("invalid cron step")
@@ -63,7 +64,9 @@ def _parse_field(part: str, lo: int, hi: int) -> set[int]:
         else:
             if not chunk.isdigit():
                 raise CronError("invalid cron value")
-            start = end = int(chunk)
+            # `5/15` steps from 5 to the field maximum, as in cron(5).
+            start = int(chunk)
+            end = hi if stepped else start
         if start > end or start < lo or end > hi:
             raise CronError("cron value out of range")
         values.update(range(start, end + 1, step))
@@ -142,7 +145,10 @@ def next_fire(expr: str, tz_name: str, after_utc: datetime) -> datetime | None:
         if local.month not in month or not date_ok:
             wall = datetime(local.year, local.month, local.day) + timedelta(days=1)
         elif local.hour not in hour:
-            wall = datetime(local.year, local.month, local.day, local.hour) + timedelta(hours=1)
+            # Step to the next local hour boundary in real time: a wall-clock
+            # jump can leap over a repeated slot (a 2-hour fall-back).
+            cursor += timedelta(minutes=60 - local.minute)
+            continue
         elif local.minute not in minute:
             cursor += timedelta(minutes=1)
             continue

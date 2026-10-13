@@ -66,9 +66,19 @@ def max_events(raw) -> int:
     return max(1, min(val, MAX_MAX_EVENTS))
 
 
+_BATCH_NOTE = re.compile(
+    r"… \d+ (?:more lines in this batch omitted|lines not checked: the pattern was too slow for this output)"
+)
+
+
+def is_batch_note(line: str) -> bool:
+    """A note LineBatcher appends to a batch, not a matched output line."""
+    return _BATCH_NOTE.fullmatch(str(line)) is not None
+
+
 def compile_pattern(raw: str):
-    text = str(raw or "").strip()
-    if not text:
+    text = str(raw or "")
+    if not text.strip():
         return None
     try:
         return regex.compile(text)

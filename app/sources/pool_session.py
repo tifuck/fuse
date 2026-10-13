@@ -111,18 +111,22 @@ def fallback_session_id(*, user_id: int | None, model: str, body: dict) -> str:
     messages or prefix cache is already busted). Model is included because
     Grok/OpenAI caches are model-isolated.
     """
-    first_system = ""
-    first_user = ""
+    # None = not seen yet; an empty or image-only first message still counts,
+    # or a later turn's text would replace it and move the session.
+    first_system = None
+    first_user = None
     for msg in body.get("messages") or []:
         if not isinstance(msg, dict):
             continue
         role = msg.get("role")
-        if role in ("system", "developer") and not first_system:
+        if role in ("system", "developer") and first_system is None:
             first_system = _message_text(msg)
-        elif role == "user" and not first_user:
+        elif role == "user" and first_user is None:
             first_user = _message_text(msg)
-        if first_system and first_user:
+        if first_system is not None and first_user is not None:
             break
+    first_system = first_system or ""
+    first_user = first_user or ""
     names: list[str] = []
     tools = body.get("tools")
     if isinstance(tools, list):

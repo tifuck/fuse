@@ -105,12 +105,15 @@ def tool_xml_name(text: str, at: int) -> str:
 
 def _xml_param_value(raw: str):
     text = (raw or "").strip()
-    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+    quoted = len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'"
+    if quoted:
         text = text[1:-1]
     try:
-        return json.loads(text)
+        value = json.loads(text)
     except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
         return text
+    # A quoted scalar is a string: "123" must not become 123 (or true/null).
+    return text if quoted and not isinstance(value, (dict, list)) else value
 
 
 def _xml_params(body: str) -> dict:
@@ -170,7 +173,8 @@ def _calls_from_xml_body(body: str, *, coding: bool, start: int = 0) -> list[dic
             continue
         fn = item.get("function") if isinstance(item.get("function"), dict) else {}
         name = item.get("name") or fn.get("name")
-        args = item.get("arguments") if "arguments" in item else item.get("parameters") or item.get("input") or {}
+        args = (item.get("arguments") if "arguments" in item
+                else item.get("parameters") or item.get("input") or fn.get("arguments") or {})
         if isinstance(args, str):
             try:
                 args = json.loads(args)
@@ -186,7 +190,18 @@ def _calls_from_xml_body(body: str, *, coding: bool, start: int = 0) -> list[dic
 
 # Markdown code (fenced blocks, inline spans) is quoted text: a tool call shown
 # as an example there must never execute.
-_MD_CODE = re.compile(r"(```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)|`[^`\n]+`)")
+# A fence closes only on a run of its own length (a ```` block may quote ```).
+_MD_CODE = re.compile(r"(`{3,}|~{3,})[\s\S]*?(?:\1|$)|`[^`\n]+`")
+
+
+def _md_split(content: str) -> list[str]:
+    """Alternate plain text (even) and markdown code (odd), like re.split."""
+    parts, pos = [], 0
+    for match in _MD_CODE.finditer(content):
+        parts += [content[pos:match.start()], match.group(0)]
+        pos = match.end()
+    parts.append(content[pos:])
+    return parts
 
 
 def extract_text_tool_calls(content: str, *, coding: bool = False) -> tuple[str, list[dict]]:
@@ -196,7 +211,7 @@ def extract_text_tool_calls(content: str, *, coding: bool = False) -> tuple[str,
     lowered = content.lower()
     if "<tool" not in lowered and "<function" not in lowered and "<invoke" not in lowered:
         return content, []
-    parts = _MD_CODE.split(content)
+    parts = _md_split(content)
     if len(parts) == 1:
         return _extract_plain_tool_calls(content, coding=coding)
     calls: list[dict] = []

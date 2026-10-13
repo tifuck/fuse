@@ -139,6 +139,9 @@ def to_openai_tools(calls: list, include_index=False, *, state: dict | None = No
             raw_id if isinstance(raw_id, str) and raw_id.strip() else f"ollama_{index}"
         )
         kept_name = name or (previous[2] if previous else "")
+        if previous is None and identity in state:
+            # Rebinding a native index: the earlier call keeps its index taken.
+            state[("retired", len(state))] = state[identity]
         state[identity] = (index, call_id, kept_name)
         call = {
             "id": call_id,

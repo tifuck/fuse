@@ -333,6 +333,14 @@ class ProjectsRetentionTest(unittest.TestCase):
         self.assertEqual(retention.sweep_user(1)["archived_projects"], 0)
         self.assertFalse(chats.get_thread(1, thread["id"])["archived"])
 
+    def test_sweep_never_deletes_an_archived_scheduled_chat(self):
+        retention.set_settings(1, {"archive_hours": 24, "delete_days": 30})
+        owned = chats.create_thread(1, model="offline")
+        chats.update_thread(1, owned["id"], archived=True)
+        db.execute("UPDATE chat_threads SET archived_at=?, schedule_id=99 WHERE public_id=?", (ago(days=31), owned["id"]))
+        self.assertEqual(retention.sweep_user(1)["deleted_chats"], 0)
+        self.assertIsNotNone(chats.get_thread(1, owned["id"]))
+
     def test_sweep_does_not_delete_a_project_restored_mid_sweep(self):
         retention.set_settings(1, {"archive_hours": 24, "delete_days": 30})
         made = self.project()

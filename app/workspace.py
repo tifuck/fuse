@@ -2051,9 +2051,6 @@ async def _read(user_id, host_id, alias, args, root, *, windows: bool = False, m
     if not raw and isinstance(data, bytes) and (file_images.image_magic(data) or b"\x00" in data):
         return await _image_read(user_id, host_id, alias, path, args)
     text = _decode_text(data) if isinstance(data, bytes) else str(data)
-    whole = offset == 1 and not bytes_truncated
-    file_ledger.note_read(run_id, host_id, ledger_path, gen=gen, version=version, windows=windows,
-                          digest=file_ledger.digest(data) if whole and isinstance(data, bytes) else None)
     lines = text.split("\n")
     if lines and lines[-1] == "":
         lines.pop()
@@ -2064,6 +2061,10 @@ async def _read(user_id, host_id, alias, args, root, *, windows: bool = False, m
         if len(lines) == 1:
             raise WorkspaceError("line exceeds the read byte limit; use grep")
         lines.pop()  # never present a byte-clipped final line as complete
+    # Only a read that returned content counts as having seen the file.
+    whole = offset == 1 and not bytes_truncated
+    file_ledger.note_read(run_id, host_id, ledger_path, gen=gen, version=version, windows=windows,
+                          digest=file_ledger.digest(data) if whole and isinstance(data, bytes) else None)
     chunk = lines[:limit]
     total = offset - 1 + len(lines) if not bytes_truncated else None
     more = len(chunk) < len(lines) or bytes_truncated
