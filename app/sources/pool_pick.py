@@ -120,6 +120,11 @@ def _cooling_down(cid: int) -> bool:
     return until > time.time()
 
 
+def cooling_down(cid: int) -> bool:
+    """Whether a credential row is in a failure cooldown."""
+    return _cooling_down(int(cid))
+
+
 def _hard_cooldown(cid: int) -> bool:
     with _failure_lock:
         until, safe = _cooldown_until.get(cid, (0.0, True))

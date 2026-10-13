@@ -90,9 +90,13 @@ class ProtoEncoder:
 
 
 class ProtoDecoder:
-    def __init__(self, data: bytes):
+    def __init__(self, data: bytes, strict: bool = False):
         self.bytes = data if isinstance(data, (bytes, bytearray)) else bytes(data)
         self.pos = 0
+        # strict: a truncated varint or a length past the message end raises
+        # instead of decoding a partial value (chat frames; best-effort
+        # status parsing stays lenient).
+        self.strict = strict
 
     def _varint(self) -> int:
         result = 0
@@ -102,11 +106,20 @@ class ProtoDecoder:
             self.pos += 1
             result |= (byte & 0x7F) << shift
             if byte & 0x80 == 0:
-                break
+                return result
             shift += 7
             if shift > 70:
                 break
+        if self.strict:
+            raise ValueError("truncated protobuf varint")
         return result
+
+    def _advance(self, n: int) -> int:
+        start = self.pos
+        if self.strict and start + n > len(self.bytes):
+            raise ValueError("protobuf field overruns its message")
+        self.pos = min(len(self.bytes), start + n)
+        return start
 
     def tag(self) -> tuple[int, int]:
         n = self._varint()
@@ -116,20 +129,18 @@ class ProtoDecoder:
         return self.raw().decode("utf-8", errors="replace")
 
     def raw(self) -> bytes:
-        n = self._varint()
-        start = self.pos
-        self.pos = min(len(self.bytes), start + n)
+        start = self._advance(self._varint())
         return self.bytes[start : self.pos]
 
     def skip(self, wire: int) -> None:
         if wire == 0:
             self._varint()
         elif wire == 1:
-            self.pos = min(len(self.bytes), self.pos + 8)
+            self._advance(8)
         elif wire == 2:
             self.raw()
         elif wire == 5:
-            self.pos = min(len(self.bytes), self.pos + 4)
+            self._advance(4)
         else:
             self.pos = len(self.bytes)
 
@@ -138,7 +149,7 @@ class ProtoDecoder:
         return self.pos >= len(self.bytes)
 
     def sub(self) -> "ProtoDecoder":
-        return ProtoDecoder(self.raw())
+        return ProtoDecoder(self.raw(), self.strict)
 
 
 def gunzip(data: bytes, *, cap: int = MAX_GUNZIP) -> bytes:
@@ -381,7 +392,7 @@ def _decode_usage(d: ProtoDecoder) -> dict:
 
 
 def decode_get_chat_message(data: bytes) -> dict:
-    d = ProtoDecoder(maybe_gunzip(data))
+    d = ProtoDecoder(maybe_gunzip(data), strict=True)
     out: dict[str, Any] = {
         "message_id": "",
         "delta_text": "",

@@ -175,6 +175,16 @@ def build_responses_payload(body: dict, model: str, session_id: str | None = Non
     return payload
 
 
+def _same_account(raw, account) -> bool:
+    # raw is client-replayed history: anything but a matching id is dropped.
+    if raw is None or account is None:
+        return False
+    try:
+        return int(raw) == int(account)
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
 def for_account(payload: dict, account) -> dict:
     """The payload one pooled account may receive.
 
@@ -184,7 +194,7 @@ def for_account(payload: dict, account) -> dict:
     items = []
     for item in payload.get("input") or []:
         if isinstance(item, dict) and item.get("type") == "reasoning":
-            if item.get("_fuse_account") is None or account is None or int(item["_fuse_account"]) != int(account):
+            if not _same_account(item.get("_fuse_account"), account):
                 continue
             item = {k: v for k, v in item.items() if k != "_fuse_account"}
         items.append(item)

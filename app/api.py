@@ -7,6 +7,7 @@ import math
 
 import anyio
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import accounts, db, model_caps, opencode as opencode_mod
@@ -50,6 +51,20 @@ def _bearer(request: Request) -> str:
     if auth.lower().startswith("bearer "):
         return auth[7:].strip()
     return ""
+
+
+async def http_errors(request: Request, exc):
+    """App-wide HTTPException handler (registered in main). OpenAI SDKs read
+    error.message; Fuse's own /v1 rejections carry it beside FastAPI's detail,
+    like the upstream errors /v1 relays."""
+    if request.url.path.startswith("/v1/") and isinstance(exc.detail, str):
+        kind = "invalid_request_error" if exc.status_code < 500 else "api_error"
+        return JSONResponse(
+            {"detail": exc.detail, "error": {"message": exc.detail, "type": kind, "code": exc.status_code}},
+            status_code=exc.status_code,
+            headers=getattr(exc, "headers", None),
+        )
+    return await http_exception_handler(request, exc)
 
 
 def require_key(request: Request):
@@ -301,11 +316,12 @@ async def _tap(
     usage = {}
     buf = b""
     saw_done = False
+    saw_error = False
     request_status = "success"
 
     def inspect(line: bytes) -> bytes:
         """Account for one SSE line and return it as it may reach the client."""
-        nonlocal usage, saw_done, request_status
+        nonlocal usage, saw_done, saw_error, request_status
         text = line.decode(errors="replace").strip()
         if not text.startswith("data:"):
             return line
@@ -329,6 +345,7 @@ async def _tap(
             usage = usage_from_obj(obj, reasoning_separate=(provider == "grok"))
         if obj.get("error"):
             request_status = "failed"
+            saw_error = True
             # Inline errors get the same scrub as non-stream error bodies.
             return scrub_secrets(line.decode(errors="replace")).encode()
         return line
@@ -349,6 +366,19 @@ async def _tap(
         if buf:
             yield inspect(buf)
             buf = b""
+        if not saw_done:
+            # Upstream closed cleanly but early: without a terminal frame the
+            # client would read a cut-off answer as a normal end.
+            if not saw_error:
+                error = {
+                    "error": {
+                        "message": "upstream stream ended before completion",
+                        "type": "api_error",
+                        "code": 502,
+                    }
+                }
+                yield f"data: {json.dumps(error, separators=(',', ':'))}\n\n".encode()
+            yield b"data: [DONE]\n\n"
     except asyncio.CancelledError:
         # Client disconnected mid-stream. The provider may still have consumed
         # quota; record whatever usage we saw as a cancelled request instead of

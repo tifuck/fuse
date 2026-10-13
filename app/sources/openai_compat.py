@@ -8,6 +8,7 @@ import httpx
 from .. import accounts, db
 from ..proxy import UsageStream, openai_chat
 from .base import ChatResult
+from .pool_pick import Failover, cooling_down
 from .pool_session import bind, lookup
 
 # Rotation cursors must survive source reconstruction: routing builds a fresh
@@ -68,7 +69,8 @@ class OpenAICompatSource:
         exclude = exclude or set()
         if not self.creds:
             return []
-        pool = [c for c in self.creds if c["id"] not in exclude]
+        # Keys cooling after a failed request go last (stable: rotation kept).
+        pool = sorted((c for c in self.creds if c["id"] not in exclude), key=lambda c: cooling_down(c["id"]))
         if not pool:
             return []
         if prefer_id is not None:
@@ -133,6 +135,7 @@ class OpenAICompatSource:
         last = ChatResult(status=503, body={"error": "All keys failed"})
         prefer_id = lookup(self.pin_kind, session_id) if session_id else None
         model = body.get("model", "")
+        failover = Failover()
         for cred in self._next_creds(tried, prefer_id=prefer_id):
             tried.add(cred["id"])
             key = accounts.cred_secret(cred)
@@ -150,9 +153,12 @@ class OpenAICompatSource:
                 close_client=True,
             )
             if stream is not None:
+                failover.served()
                 return self._stream_result(stream, usage, cred, session_id, model, attempts)
-            if status == 200 and session_id:
-                bind(self.pin_kind, session_id, cred["id"])
+            if status == 200:
+                failover.served()
+                if session_id:
+                    bind(self.pin_kind, session_id, cred["id"])
             last = ChatResult(
                 status=status,
                 body=obj,
@@ -167,8 +173,10 @@ class OpenAICompatSource:
             # Rotate only what cannot have generated output upstream: an auth
             # rejection is credential-specific and a 5xx arrived before any
             # tokens. 429 stays terminal (callers must see the rate limit) and
-            # 504 is a read timeout — upstream may still be running it.
-            if status == 401 or status in (500, 502, 503):
+            # 504 is a read timeout — upstream may still be running it. A 5xx
+            # fails over to at most FAILOVER_SERVER_ERRORS keys, so one
+            # poisonous request cannot walk (and bill) every key.
+            if status == 401 or (status in (500, 502, 503) and failover.server_error(cred["id"], status, 30)):
                 attempts.append({"credential_id": cred["id"], "status": status, "usage": usage or {}})
                 continue
             last.attempts = attempts

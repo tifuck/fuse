@@ -263,6 +263,8 @@ class ChatgptReasoningReplayTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(same["input"][1], {"type": "reasoning", "summary": [], "encrypted_content": "e"})
         self.assertNotIn("reasoning", [i.get("type") for i in for_account(payload, 8)["input"]],
                          "another account cannot decrypt it")
+        forged = {"input": [{"type": "reasoning", "_fuse_account": "abc", "encrypted_content": "e"}]}
+        self.assertEqual(for_account(forged, 7)["input"], [], "a malformed replayed account id is dropped")
         self.assertIn("_fuse_account", payload["input"][1], "the shared payload is not mutated")
         self.assertTrue(drop_reasoning(payload))
         self.assertFalse(drop_reasoning(payload))

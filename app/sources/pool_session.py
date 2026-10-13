@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import random
 import threading
 from datetime import datetime, timedelta, timezone
@@ -27,6 +28,8 @@ from typing import Mapping
 
 from .. import db
 from ..config import settings
+
+logger = logging.getLogger(__name__)
 
 # Pin retention: days, not minutes. This is Fuse's pin policy, not a provider
 # contract; rows are forgotten only after this long without a lookup or bind.
@@ -212,18 +215,23 @@ def bind(kind: str, session_id: str | None, credential_id: int | None, *, now: d
         for key in [k for k, (_, updated) in _mem.items() if updated < cutoff]:
             _mem.pop(key, None)
     if persist:
-        db.execute(
-            """INSERT INTO pool_sessions (kind, session_id, credential_id, updated_at)
-               VALUES (?,?,?,?)
-               ON CONFLICT(kind, session_id) DO UPDATE SET
-                 credential_id=excluded.credential_id,
-                 updated_at=excluded.updated_at""",
-            (kind, session_id, cid, stamp),
-        )
-        # Full-table vacuum per bind scans updated_at on every chat turn; run
-        # it rarely — expired rows are harmless and refreshed on lookup anyway.
-        if random.random() < 0.02:
-            db.execute("DELETE FROM pool_sessions WHERE updated_at < ?", (cutoff,))
+        # Pinning runs after the upstream already served the request: a DB
+        # error here must not turn a delivered (and billed) reply into a 502.
+        try:
+            db.execute(
+                """INSERT INTO pool_sessions (kind, session_id, credential_id, updated_at)
+                   VALUES (?,?,?,?)
+                   ON CONFLICT(kind, session_id) DO UPDATE SET
+                     credential_id=excluded.credential_id,
+                     updated_at=excluded.updated_at""",
+                (kind, session_id, cid, stamp),
+            )
+            # Full-table vacuum per bind scans updated_at on every chat turn; run
+            # it rarely — expired rows are harmless and refreshed on lookup anyway.
+            if random.random() < 0.02:
+                db.execute("DELETE FROM pool_sessions WHERE updated_at < ?", (cutoff,))
+        except Exception:
+            logger.warning("Could not persist pool session pin kind=%s credential=%s", kind, cid, exc_info=True)
 
 
 def lookup(kind: str, session_id: str | None, *, now: datetime | None = None) -> int | None:

@@ -918,7 +918,8 @@ class StreamUsageDetailsTest(unittest.IsolatedAsyncioTestCase):
         )
         stop_msg = proto.ProtoEncoder()
         stop_msg.uint32(5, proto.STOP_MAX_TOKENS)
-        frames = [proto.connect_frame(usage_msg.finish()), proto.connect_frame(stop_msg.finish())]
+        end = bytes([proto.CONNECT_END_STREAM]) + (2).to_bytes(4, "big") + b"{}"
+        frames = [proto.connect_frame(usage_msg.finish()), proto.connect_frame(stop_msg.finish()), end]
         collected: dict = {}
         client = unittest.mock.AsyncMock()
         chunks = []

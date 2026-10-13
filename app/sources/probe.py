@@ -14,6 +14,7 @@ from .grok import (
     is_held,
     refresh_billing,
 )
+from .openrouter import catalog_available as openrouter_catalog_available
 from .openrouter import fetch_catalog as openrouter_fetch_catalog
 from .zai import (
     billing_has_subscription as zai_billing_has_subscription,
@@ -626,7 +627,11 @@ async def _probe_openrouter(src) -> list[dict]:
         checks.append(_check("Catalog", False, f"Could not list models ({type(e).__name__})"))
     else:
         n = len(catalog.get("all_ids") or [])
-        checks.append(_check("Catalog", n > 0, f"{n} models"))
+        if not openrouter_catalog_available():
+            # fetch_catalog falls back to the cached copy when the live fetch fails.
+            checks.append(_check("Catalog", False, f"Live fetch failed; serving {n} cached models"))
+        else:
+            checks.append(_check("Catalog", n > 0, f"{n} models"))
     checks.append(
         _check(
             "Chat",

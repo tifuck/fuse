@@ -106,6 +106,11 @@ def _api_server() -> str:
     return (settings.devin_api_server or "https://server.codeium.com").rstrip("/")
 
 
+def _error_text(body) -> str:
+    err = body.get("error") if isinstance(body, dict) else None
+    return str(err.get("message") or "") if isinstance(err, dict) else str(err or "")
+
+
 def _headers(*, streaming: bool = False) -> dict:
     if streaming:
         return {
@@ -650,6 +655,14 @@ class DevinSource:
                     note_failure(cred["id"], cooldown_seconds=60)
                     attempts.append({"credential_id": cred["id"], "status": 429, "usage": result.usage or {}})
                     continue
+                if (result.usage or {}).get("failure_phase") == "response_received":
+                    last.attempts = attempts
+                    return last
+                if result.status == 502 and "quota" in _error_text(result.body).lower():
+                    # Same daily-window cooldown the stream path applies.
+                    note_failure(cred["id"], cooldown_seconds=900, affinity_safe=False)
+                    attempts.append({"credential_id": cred["id"], "status": 502, "usage": result.usage or {}})
+                    continue
                 if result.status >= 500 and failover.server_error(cred["id"], result.status, 15):
                     attempts.append({"credential_id": cred["id"], "status": result.status, "usage": result.usage or {}})
                     continue
@@ -712,10 +725,9 @@ class DevinSource:
             await resp.aclose()
             await client.aclose()
             status = resp.status_code
+            # Not classified for the SKU breaker: a non-200 on this streaming
+            # endpoint is an HTTP-level failure (gateway, auth, outage).
             msg = err_body.decode("utf-8", errors="replace")[:400] or f"http {status}"
-            kind = sku_error_kind(msg)
-            if kind:
-                note_sku_failure(model_uid, kind)
             return ChatResult(
                 status=status,
                 body={"error": {"message": msg}},
@@ -736,14 +748,21 @@ class DevinSource:
             result.attempts = attempts
             return result
         try:
-            obj, usage, trailer_error = await _collect_completion(resp, model)
+            obj, usage, trailer_error = await _collect_completion(resp, model, model_uid)
+        except (httpx.HTTPError, OSError, EOFError, ValueError) as exc:
+            # After a 200 upstream may already have run the generation: report
+            # it on this credential and do not resubmit it elsewhere.
+            return ChatResult(
+                status=504 if isinstance(exc, httpx.TimeoutException) else 502,
+                body={"error": {"message": f"Devin response failed mid-read ({type(exc).__name__})"}},
+                usage={"failure_phase": "response_received"},
+                credential_id=cred["id"],
+                model=model,
+            )
         finally:
             await resp.aclose()
             await client.aclose()
         if trailer_error:
-            kind = sku_error_kind(trailer_error)
-            if kind:
-                note_sku_failure(model_uid, kind)
             return ChatResult(
                 status=502,
                 body={"error": {"message": trailer_error}},

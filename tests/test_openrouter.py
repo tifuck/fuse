@@ -340,3 +340,11 @@ class EndpointParseTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AuthFailureTest(unittest.TestCase):
+    def test_moderation_metadata_is_not_an_auth_failure(self):
+        body = {"error": {"code": 403, "message": "Input was flagged",
+                          "metadata": {"flagged_input": "why is my api unauthorized"}}}
+        self.assertFalse(or_mod._is_auth_failure(403, body))
+        self.assertTrue(or_mod._is_auth_failure(403, {"error": {"message": "Invalid API key"}}))

@@ -12,6 +12,7 @@ import os
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import accounts, api
 from app.config import settings
@@ -31,6 +32,7 @@ def client():
         accounts.create_user("owner@keys.invalid", _PASSWORD, admin=True)
         app = FastAPI()
         app.include_router(api.router)
+        app.add_exception_handler(StarletteHTTPException, api.http_errors)  # as app.main wires it
         with TestClient(app, base_url="https://testserver") as http:
             limiter._hits.clear()
             yield http
@@ -60,6 +62,8 @@ def test_missing_or_malformed_bearer_keys_are_rejected_on_both_endpoints(client)
     assert wrong_scheme.json()["detail"] == "Missing API key"
     garbage = client.get("/v1/models", headers={"Authorization": "Bearer not-a-key"})
     assert garbage.json()["detail"] == "Invalid API key"
+    # OpenAI SDKs read error.message.
+    assert garbage.json()["error"] == {"message": "Invalid API key", "type": "invalid_request_error", "code": 401}
     # The same key under the required scheme is accepted.
     assert _get(client, key).json()["object"] == "list"
 

@@ -12,6 +12,7 @@ from ..config import settings
 from ..crypto import encrypt
 from ..proxy import openai_chat
 from .base import ChatResult
+from .pool_pick import auth_failure_confirmed
 
 BASE_URL = "https://openrouter.ai/api/v1"
 CATALOG_TTL = 600
@@ -754,8 +755,14 @@ def _is_auth_failure(status: int, obj) -> bool:
         return True
     if status != 403 or not isinstance(obj, dict):
         return False
+    # Only the error's own code/message: metadata (e.g. a moderation 403's
+    # flagged_input) carries the user's prompt text.
     err = obj.get("error")
-    text = json.dumps(err if err is not None else obj, ensure_ascii=True).lower()[:1000]
+    if isinstance(err, dict):
+        text = f"{err.get('code') or ''} {err.get('message') or ''}"
+    else:
+        text = str(err or "")
+    text = text.lower()[:1000]
     return any(marker in text for marker in ("invalid api key", "invalid_api_key", "authentication", "unauthorized"))
 
 
@@ -899,7 +906,9 @@ class OpenRouterSource:
         if stream is not None:
             return ChatResult(status=200, stream=stream, credential_id=cred["id"], model=upstream)
         if _is_auth_failure(status, obj):
-            disable_credential(cred["id"], secret=cred["secret"])
+            # One rejection can be transient; disable only when it repeats.
+            if auth_failure_confirmed(cred["id"]):
+                disable_credential(cred["id"], secret=cred["secret"])
             status = 502
             obj = {"error": {"message": "OpenRouter rejected the configured API key"}}
         return ChatResult(

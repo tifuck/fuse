@@ -262,6 +262,22 @@ def _connect_error(payload: bytes) -> str:
     return ""
 
 
+# Connect codes that describe the call (outage, auth, quota, deadline), not
+# the model SKU: they must never trip the SKU circuit breaker.
+_TRANSIENT_CODES = {"unavailable", "unauthenticated", "permission_denied", "resource_exhausted",
+                    "deadline_exceeded", "canceled", "aborted"}
+
+
+def _trailer_sku_kind(payload: bytes) -> str:
+    try:
+        error = json.loads(payload).get("error")
+    except (ValueError, UnicodeDecodeError, AttributeError):
+        return ""
+    if not isinstance(error, dict) or str(error.get("code") or "").lower() in _TRANSIENT_CODES:
+        return ""
+    return sku_error_kind(str(error.get("message") or ""))
+
+
 async def _stream_sse(resp, client, collected: dict, model: str, uid: str = "", hints: dict | None = None):
     cid = _completion_id()
     created = int(time.time())
@@ -286,7 +302,7 @@ async def _stream_sse(resp, client, collected: dict, model: str, uid: str = "", 
                     if error:
                         collected["stream_status"] = "failed"
                         collected["trailer_error"] = error
-                        kind = sku_error_kind(error)
+                        kind = _trailer_sku_kind(payload)
                         if kind:
                             note_sku_failure(uid, kind)
                         yield _sse({"error": {"message": error}})
@@ -332,7 +348,9 @@ async def _stream_sse(resp, client, collected: dict, model: str, uid: str = "", 
                 if msg.get("stop_reason"):
                     stop = msg["stop_reason"]
                     stop_terminal = True
-        if pending or not (ended or stop_terminal):
+        # Connect always ends a stream with an end-stream frame; a stop_reason
+        # alone may be an internal segment boundary of a truncated body.
+        if pending or not ended:
             collected["stream_status"] = "failed"
             yield _sse({"error": {"message": "incomplete Devin Connect response"}})
             return
@@ -408,7 +426,7 @@ async def _stream_sse(resp, client, collected: dict, model: str, uid: str = "", 
         await client.aclose()
 
 
-async def _collect_completion(resp, model: str) -> tuple[dict, dict, str]:
+async def _collect_completion(resp, model: str, uid: str = "") -> tuple[dict, dict, str]:
     pending = b""
     text = ""
     thinking = ""
@@ -432,7 +450,12 @@ async def _collect_completion(resp, model: str) -> tuple[dict, dict, str]:
                 # ("an internal error occurred (trace ID: ...)", version
                 # gates). Swallowing them made failed completions look
                 # like empty 200s.
-                trailer_error = trailer_error or _connect_error(payload)
+                error = _connect_error(payload)
+                if error and not trailer_error:
+                    trailer_error = error
+                    kind = _trailer_sku_kind(payload)
+                    if kind:
+                        note_sku_failure(uid, kind)
                 continue
             msg = proto.decode_get_chat_message(payload)
             if msg.get("delta_text"):
@@ -459,7 +482,7 @@ async def _collect_completion(resp, model: str) -> tuple[dict, dict, str]:
             if msg.get("stop_reason"):
                 stop = msg["stop_reason"]
                 stop_terminal = True
-    if pending or not (ended or stop_terminal):
+    if pending or not ended:
         trailer_error = trailer_error or "incomplete Devin Connect response"
     if trailer_error:
         return {"error": {"message": trailer_error}}, usage, trailer_error

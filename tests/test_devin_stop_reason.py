@@ -188,12 +188,43 @@ class DevinStopReasonTest(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("choices", obj)
 
     async def test_collect_clean_trailer_is_empty(self):
+        end = bytes([proto.CONNECT_END_STREAM]) + struct.pack(">I", 2) + b"{}"
         obj, _usage, trailer = await devin_stream._collect_completion(
-            _FakeResp([_frame(text="done"), _frame(stop=1)]),
+            _FakeResp([_frame(text="done"), _frame(stop=1), end]),
             "test-model",
         )
         self.assertEqual(trailer, "")
         self.assertIsNotNone(obj["choices"][0]["message"]["content"])
+
+    async def test_stop_without_end_stream_is_incomplete(self):
+        # A segment stop followed by EOF (no Connect end-stream frame) is a
+        # truncated body, not an empty successful answer.
+        frames = [_frame(text="partial"), _frame(stop=3)]
+        collected = {}
+        chunks = [chunk async for chunk in devin_stream._stream_sse(
+            _FakeResp(frames), _FakeClient(), collected, "test-model")]
+        self.assertEqual(collected["stream_status"], "failed")
+        self.assertNotIn(b"[DONE]", b"".join(chunks))
+        _obj, _usage, error = await devin_stream._collect_completion(_FakeResp(frames), "test-model")
+        self.assertEqual(error, "incomplete Devin Connect response")
+
+    def test_transient_trailer_codes_never_trip_the_breaker(self):
+        from app.sources.devin_catalog import sku_error_kind
+
+        for message in ("503 Service Temporarily Unavailable", "api key is not valid"):
+            self.assertEqual(sku_error_kind(message), "", message)
+        payload = b'{"error":{"code":"unavailable","message":"an internal error occurred"}}'
+        self.assertEqual(devin_stream._trailer_sku_kind(payload), "")
+        payload = b'{"error":{"code":"internal","message":"an internal error occurred (trace ID: t)"}}'
+        self.assertEqual(devin_stream._trailer_sku_kind(payload), "internal")
+
+    def test_strict_decoder_rejects_overrun_fields(self):
+        e = proto.ProtoEncoder()
+        e.string(3, "hello")
+        data = bytearray(e.finish())
+        data[1] = 200  # declared length far past the message end
+        with self.assertRaises(ValueError):
+            proto.decode_get_chat_message(bytes(data))
 
 
 class DevinSkuTrailerHealthTest(unittest.IsolatedAsyncioTestCase):

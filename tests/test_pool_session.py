@@ -564,6 +564,14 @@ class PoolSessionTest(unittest.TestCase):
             )
 
 
+class PinFailureTest(unittest.TestCase):
+    def test_pin_write_failure_never_fails_a_served_reply(self):
+        with patch.object(pool_session.db, "execute", side_effect=RuntimeError("lock wait timeout")):
+            pool_session.bind("grok", "pin-failure-session", 7)
+        self.assertEqual(pool_session._mem[("grok", "pin-failure-session")][0], 7)
+        pool_session._mem.pop(("grok", "pin-failure-session"), None)
+
+
 class GrokChatStickyTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         reset_health()

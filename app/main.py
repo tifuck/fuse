@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -16,7 +17,7 @@ from starlette.responses import JSONResponse, Response
 from .config import ROOT, settings
 from . import static_assets
 from . import accounts, db, chat_store, chat_runs, chat_events, chat_recaps, chat_titles, host_events, issues_pipeline, retention, sources as sources_module
-from .api import router as api_router
+from .api import http_errors, router as api_router
 from .web import router as web_router
 from .agent_http import router as agent_http_router
 from .sources import bootstrap, start_pools
@@ -386,6 +387,8 @@ app.include_router(web_router)
 app.include_router(chat_events.router)
 app.include_router(host_events.router)
 app.include_router(agent_http_router)
+
+app.add_exception_handler(StarletteHTTPException, http_errors)
 
 
 @app.get("/v1/health")

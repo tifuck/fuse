@@ -151,3 +151,24 @@ def test_failed_response_does_not_bind_or_fail_over(upstream):
     assert result.credential_id == 1
     assert pins == {}
     assert len(seen) == 1
+
+
+def test_server_errors_fail_over_to_at_most_two_keys(monkeypatch):
+    seen = []
+
+    def handler(req):
+        seen.append(req.headers["Authorization"])
+        return httpx.Response(500, json={"error": "boom"})
+
+    client_type = httpx.AsyncClient
+    monkeypatch.setattr(compat, "_cursors", {})
+    monkeypatch.setattr(compat.accounts, "cred_secret", lambda cred: f"test-key-{cred['id']}")
+    monkeypatch.setattr(compat.httpx, "AsyncClient",
+                        lambda **kwargs: client_type(transport=httpx.MockTransport(handler), **kwargs))
+    source = compat.OpenAICompatSource(
+        {"id": 72, "name": "test"}, {"rotation": "none", "base_url": "https://upstream.test/v1"},
+        [{"id": 1}, {"id": 2}, {"id": 3}, {"id": 4}],
+    )
+    result = asyncio.run(source.chat({"model": "m"}))
+    assert result.status == 500
+    assert len(seen) == 2  # pool_pick.FAILOVER_SERVER_ERRORS

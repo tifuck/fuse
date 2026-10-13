@@ -167,6 +167,20 @@ def test_tap_records_explicit_unknown_without_usage_frames():
     assert rec.call_args[0][4]["usage_status"] == "unknown"
 
 
+def test_tap_ends_a_truncated_stream_with_an_error_frame():
+    """Upstream EOF without [DONE] must not look like a normal end to /v1 clients."""
+    async def run():
+        with mock.patch("app.api.db.record_usage") as rec:
+            out = b"".join([c async for c in api._tap(
+                _Stream([_sse({"choices": [{"delta": {"content": "cut"}}]})]), 1, 1, None, "m")])
+            return rec, out
+
+    rec, out = asyncio.run(run())
+    assert b"upstream stream ended before completion" in out
+    assert out.endswith(b"data: [DONE]\n\n")
+    assert rec.call_args.kwargs["request_status"] == "failed"
+
+
 def test_openai_chat_collected_usage_survives_later_deltas():
     body = (
         _sse({"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 2}})

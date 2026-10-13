@@ -69,9 +69,12 @@ _SKU_INTERNAL_FAIL_S = 30 * 60.0
 _SKU_VERSION_FAIL_S = 6 * 3600.0
 _sku_lock = threading.Lock()
 _sku_dead_until: dict[str, float] = {}
+# Model-specific wording only: bare "unavailable" / "not valid" also match
+# Connect's transient `unavailable` code and auth errors ("api key is not
+# valid"), which tripped the breaker for every user on an outage.
 _SKU_ERROR_INTERNAL = re.compile(
-    r"internal error|not (?:a )?(?:valid|available|supported)|"
-    r"unavailable|unknown model|no longer available",
+    r"internal error|not (?:a )?(?:available|supported)|not a valid model|"
+    r"model (?:is )?unavailable|unknown model|no longer available",
     re.I,
 )
 _SKU_ERROR_VERSION = re.compile(r"out of date|update.*version|version.*update", re.I)

@@ -100,10 +100,15 @@ def save(source_id: int) -> None:
     with _lock:
         data = _cache.get(source_id) or {}
         path = _path(source_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=0, sort_keys=True))
-        tmp.replace(path)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, indent=0, sort_keys=True))
+            tmp.replace(path)
+        except OSError:
+            # The in-memory map stays authoritative; a served reply must not
+            # fail because the cache file could not be written.
+            logger.warning("Could not save ollama access cache for source %s", source_id, exc_info=True)
 
 
 def note(source_id: int, model: str, access: str, *, status: int = 0, error: str = "") -> None:
