@@ -813,9 +813,11 @@ class Gate:
 def _insert_ask(gate: Gate, ask_id: str, expires_iso: str, payload: dict) -> bool:
     """Admit one ask, bounded per thread. False when the pending queue is full."""
     with db.tx() as conn:
+        # Expired asks stay 'pending' when their waiter died (crash, restart):
+        # counting them would answer every later ask deny_busy for good.
         pending = conn.execute(
-            "SELECT COUNT(*) FROM chat_permission_asks WHERE thread_id=? AND status='pending'",
-            (gate.thread_id,),
+            "SELECT COUNT(*) FROM chat_permission_asks WHERE thread_id=? AND status='pending' AND expires_at > ?",
+            (gate.thread_id, db.now()),
         ).fetchone()[0]
         if pending >= MAX_PENDING_PER_THREAD:
             return False
@@ -934,7 +936,9 @@ async def _ask_and_wait(gate: Gate, payload: dict, auto_judge=None) -> str:
                 gate._notify({"event": "permission", "kind": "tool_permission", "id": ask_id, "status": "timeout"})
                 return "timeout"
             await asyncio.sleep(0.25)
-    except asyncio.CancelledError:
+    except BaseException:
+        # Any exit without an answer (cancel, a failed poll, a judge error)
+        # closes the card instead of leaving it pending.
         await durable_call(_finish_ask, ask_id, "cancelled")
         raise
 

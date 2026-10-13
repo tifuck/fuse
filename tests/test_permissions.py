@@ -859,6 +859,36 @@ class PendingAsksTest(PermSchemaTest):
         ids = [p["id"] for p in panel["pending"]]
         self.assertEqual(ids, ["pa_live_sub", "pa_live_main"])
 
+    def test_expired_asks_do_not_fill_the_pending_cap(self):
+        past = "2020-01-01T00:00:00Z"
+        with db.tx() as conn:
+            conn.execute("DELETE FROM chat_permission_asks")
+            for n in range(permissions.MAX_PENDING_PER_THREAD):
+                conn.execute(
+                    """INSERT INTO chat_permission_asks(
+                           id,user_id,thread_id,run_id,status,decision,kind,tool,host_id,host,path,cwd,command,
+                           secret,requester,grant_kind,grant_value,created_at,expires_at)
+                       VALUES (?,1,1,'run-x','pending','','path','read_file',7,'prod','/etc','','',0,'Main agent','','',?,?)""",
+                    (f"pa_stale_{n}", past, past),
+                )
+        gate = permissions.Gate(user_id=1, thread_id=1, run_id="run-y", requester=None, unattended=False,
+                                notify=lambda event: None, cancel=None)
+        self.assertTrue(permissions._insert_ask(gate, "pa_fresh", "2099-01-01T00:00:00Z", {"tool": "read_file"}))
+
+    def test_a_failed_poll_closes_the_ask(self):
+        import asyncio
+        from unittest.mock import patch
+
+        with db.tx() as conn:
+            conn.execute("DELETE FROM chat_permission_asks")
+        gate = permissions.Gate(user_id=1, thread_id=1, run_id="run-z", requester=None, unattended=False,
+                                notify=lambda event: None, cancel=None)
+        with patch.object(permissions, "_poll_ask", side_effect=RuntimeError("pool exhausted")):
+            with self.assertRaises(RuntimeError):
+                asyncio.run(permissions._ask_and_wait(gate, {"tool": "read_file", "path": "/etc"}))
+        row = db.fetchone("SELECT status FROM chat_permission_asks WHERE run_id='run-z'")
+        self.assertEqual(row["status"], "cancelled")
+
 
 if __name__ == "__main__":
     unittest.main()
