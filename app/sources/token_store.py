@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
@@ -20,6 +21,9 @@ from ..crypto import encrypt
 logger = logging.getLogger(__name__)
 
 CAS_ATTEMPTS = 5
+# The old refresh token is already spent when persist_rotated runs: a
+# transient DB error is retried rather than losing the account.
+PERSIST_BACKOFF = (0.5, 2.0, 5.0)
 _MAX_SPAN = 365 * 86400
 OWNER_KEY = "oauth_token_owner"
 
@@ -54,15 +58,47 @@ def expires_at(seconds, default: int) -> str:
     return (datetime.now(timezone.utc) + timedelta(seconds=span)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def log_refresh_failures(what: str, rows, results) -> None:
+    """Log the exceptions asyncio.gather(..., return_exceptions=True) collected."""
+    for row, result in zip(rows, results):
+        if isinstance(result, Exception):
+            logger.warning(
+                "%s failed for credential %s", what, row["id"],
+                exc_info=(type(result), result, result.__traceback__),
+            )
+
+
 def persist_rotated(cas, cred_id: int, old_extra_raw, secret: str, extra: dict, rotated: dict, *, merge=None) -> bool:
     """Write refreshed tokens with compare-and-swap.
 
     `cas(cred_id, old_raw, secret, new_extra) -> bool` is the source's
     conditional update. On a lost race the rotated fields (plus `merge`, a
     callback that folds other refresh results into the newest copy) are
-    re-applied to the current row until the write lands.
+    re-applied to the current row until the write lands. DB errors are
+    retried with backoff (this blocks: call it through durable_call).
     """
     cid = int(cred_id)
+    delays = iter(PERSIST_BACKOFF)
+    while True:
+        try:
+            return _persist_once(cas, cid, old_extra_raw, secret, extra, rotated, merge)
+        except Exception:
+            delay = next(delays, None)
+            if delay is None:
+                logger.error("Credential %s: rotated OAuth tokens could not be saved; the account will need re-linking",
+                             cid, exc_info=True)
+                raise
+            logger.warning("Credential %s: saving rotated OAuth tokens failed; retrying in %ss", cid, delay, exc_info=True)
+            time.sleep(delay)
+
+
+def _already_saved(current: dict, rotated: dict) -> bool:
+    # Access tokens are unique per refresh; the refresh token may not rotate.
+    return bool(rotated.get("access_token")) and all(current.get(k) == rotated.get(k)
+                                                    for k in ("access_token", "refresh_token"))
+
+
+def _persist_once(cas, cid: int, old_extra_raw, secret: str, extra: dict, rotated: dict, merge) -> bool:
     if cas(cid, old_extra_raw, secret, extra):
         return True
     try:
@@ -77,6 +113,8 @@ def persist_rotated(cas, cred_id: int, old_extra_raw, secret: str, extra: dict, 
             logger.warning("Credential %s was removed during token refresh; rotated tokens dropped", cid)
             return False
         merged = accounts.cred_extra(row)
+        if _already_saved(merged, rotated):
+            return True  # An earlier attempt committed before its error.
         if row["disabled"] or merged.get("refresh_token") != orig_refresh:
             return False  # Removed/re-linked credentials supersede this refresh.
         merged.update(rotated)
@@ -91,6 +129,8 @@ def persist_rotated(cas, cred_id: int, old_extra_raw, secret: str, extra: dict, 
         if row is None or row["disabled"]:
             return False
         merged = accounts.cred_extra(row)
+        if _already_saved(merged, rotated):
+            return True
         if merged.get("refresh_token") != orig_refresh:
             return False
         merged.update(rotated)

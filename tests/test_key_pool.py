@@ -16,6 +16,7 @@ from app.sources.key_pool import (
     DISABLED,
     DISABLED_UNAVAILABLE,
     KeyPool,
+    NoAvailableKeyError,
     RESTING,
 )
 from app.sources.ollama_access import (
@@ -91,6 +92,41 @@ class RotationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bad.disabled_reason, DISABLED_UNAVAILABLE)
         self.assertGreater(bad.available_at, time.time() + 60 * 60 * 12)
         self.assertEqual(pool.states["keyB"].state, RESTING)
+
+    def test_rebuild_keeps_live_cooldown(self):
+        # Sources are rebuilt per request; the on-disk snapshot is older than
+        # the in-memory state and must not revive an exhausted key.
+        pool = make_pool(self.tmp.name, ["keyA", "keyB"])
+        pool._handle_error_status(429, httpx.Headers(), "weekly usage limit reached", pool.states["keyA"])
+        pool.load_from_list(["keyA", "keyB"])
+        self.assertEqual(pool.states["keyA"].state, DISABLED)
+
+    async def test_gated_model_rotates_to_a_paid_key(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.headers["Authorization"].endswith("free"):
+                return httpx.Response(403, content=b'{"error":"this model requires a subscription"}')
+            return httpx.Response(200, content=b'{"message":{"role":"assistant","content":"ok"},"done":true}')
+
+        pool = make_pool(self.tmp.name, ["free", "paid"])
+        deterministic = patch(
+            "app.sources.key_pool.random.choices",
+            side_effect=lambda population, weights=None, k=1: [population[0]] * k,
+        )
+        deterministic.start()
+        self.addCleanup(deterministic.stop)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            response, state, _ = await pool.send_request(client, "https://ollama.com/api/chat", {"model": "m"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(state.key, "paid")
+
+    async def test_all_keys_cooling_hands_back_retry_after(self):
+        pool = make_pool(self.tmp.name, ["keyA", "keyB"])
+        for state in pool.states.values():
+            state.mark_error("rate_limit", 100)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200))) as client:
+            with self.assertRaises(NoAvailableKeyError) as caught:
+                await pool.send_request(client, "https://ollama.com/api/chat", {"model": "m"})
+        self.assertGreater(caught.exception.retry_after, 90)
 
     def test_unavailable_reenables_after_cooldown(self):
         pool = make_pool(self.tmp.name, ["keyA"])

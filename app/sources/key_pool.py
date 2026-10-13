@@ -41,6 +41,11 @@ DEFAULTS = {
 class NoAvailableKeyError(ConnectionError):
     """Raised when every key is DISABLED and no key can be selected."""
 
+    def __init__(self, message: str = "", retry_after: float | None = None):
+        super().__init__(message)
+        # Seconds until the soonest key is usable again, when one will be.
+        self.retry_after = retry_after
+
 
 # ---------------------------------------------------------------------------
 # KeyState — a small state machine per Ollama Cloud API key
@@ -461,17 +466,20 @@ class KeyPool:
                 seen.add(k)
                 unique.append(k)
         self._key_order = unique
-        for k in unique:
-            if k not in self.states:
-                self.states[k] = KeyState(k)
+        added = [k for k in unique if k not in self.states]
+        for k in added:
+            self.states[k] = KeyState(k)
         for k in list(self.states):
             if k not in seen:
                 self.states.pop(k, None)
-        self.load_state()
+        # Only keys new to this pool take the on-disk snapshot: live keys keep
+        # their in-memory cooldowns, which are newer than the last save.
+        if added:
+            self.load_state(only=set(added))
         logger.info("Loaded %d keys from list", len(unique))
         return len(unique)
 
-    def load_state(self) -> None:
+    def load_state(self, only: set[str] | None = None) -> None:
         if not self.state_file.exists():
             return
         try:
@@ -480,7 +488,7 @@ class KeyPool:
             by_hash = {hashlib.sha256(k.encode()).hexdigest(): k for k in self.states}
             for key, state_dict in data.items():
                 real = key if key in self.states else by_hash.get(key)
-                if real in self.states:
+                if real in self.states and (only is None or real in only):
                     self.states[real] = KeyState.from_dict(real, state_dict)
             logger.info("Restored state for %d keys from %s", len(data), self.state_file)
         except Exception as e:
@@ -611,21 +619,20 @@ class KeyPool:
                     return last_response, last_state, bool(attempts)
                 if last_connect_error is not None:
                     raise last_connect_error
-                raise ConnectionError("No upstream keys available")
+                raise NoAvailableKeyError("No upstream keys available", retry_after=self._soonest_wait())
 
             key = key_state.key
             tried.add(key)
 
             # If the only key available is a not-yet-ready COOLING key (last-resort
-            # selection when every key is cooling/excluded), firing immediately just
+            # selection when every key is cooling/excluded), firing early just
             # re-triggers its 429 and burns a retry slot. Wait while the wait is
-            # short; hand back the cooldown when it is not.
+            # short; hand back the cooldown (NoAvailableKeyError) when it is not.
             wait = key_state.available_at - time.time()
             if wait > 0:
-                if wait > 5.0 and len(tried) < len(self.states):
-                    tried.add(key)
+                if wait > 5.0:
                     continue
-                await asyncio.sleep(min(wait, 0.5))
+                await asyncio.sleep(wait)
 
             req = http_client.build_request(
                 "POST",
@@ -688,15 +695,14 @@ class KeyPool:
             last_response = fake
             last_state = key_state
 
-            # Plan-gated model (402/403 "requires a subscription") is the same
-            # for every unpaid key. Stop rotating — this is not a key failure.
-            from .ollama_access import is_gated_error
+            # Plan-gated model (402/403 "requires a subscription"): nothing was
+            # generated, and another key may be on a paid plan, so rotate. When
+            # every key refuses, the loop returns this gated response.
+            from .ollama_access import is_credential_auth_error, is_account_unavailable_error, is_gated_error
 
             if is_gated_error(status, error_text):
-                fake.extensions["fuse_attempts"] = attempts
-                return fake, key_state, attempt > 0
-
-            from .ollama_access import is_credential_auth_error, is_account_unavailable_error
+                attempts.append({"credential_id": None, "status": status, "usage": {}})
+                continue
 
             # Account-level flag ("Your account is currently unavailable") is
             # specific to this credential and nothing was generated — fail over
@@ -729,7 +735,12 @@ class KeyPool:
             return last_response, last_state, True
         if last_connect_error is not None:
             raise last_connect_error
-        raise ConnectionError("No upstream keys available")
+        raise NoAvailableKeyError("No upstream keys available", retry_after=self._soonest_wait())
+
+    def _soonest_wait(self) -> float | None:
+        now = time.time()
+        waits = [s.available_at - now for s in self.states.values() if s.available_at > now]
+        return min(waits) if waits else None
 
     def _retry_after_capped(self, retry_after: Optional[float]) -> Optional[float]:
         """Retry-After, never trusted past the longest cooldown tier.

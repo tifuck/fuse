@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import math
 import time
 from datetime import datetime, timedelta, timezone
@@ -10,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 
 from .. import accounts, db
+from ..async_work import durable_call
 from ..config import settings
 from ..crypto import encrypt
 from ..proxy import UsageStream, openai_chat
@@ -18,7 +20,9 @@ from .pool_pick import Failover, note_failure, pick_account, release, reserve
 from . import pool_policy
 from .grok_version import current_version
 from .pool_session import bind, drop_cache_routing_fields, lookup
-from .token_store import expires_at, persist_rotated
+from .token_store import expires_at, log_refresh_failures, persist_rotated
+
+logger = logging.getLogger(__name__)
 
 CLIENT_ID = settings.grok_client_id
 BILLING_TTL = 300
@@ -781,7 +785,8 @@ async def _refresh_one_unlocked(cred) -> bool:
         if extra.get("name") and not merged.get("name"):
             merged["name"] = extra["name"]
 
-    saved = persist_rotated(
+    saved = await durable_call(
+        persist_rotated,
         _cas_update_tokens,
         int(row["id"]),
         row["extra"],
@@ -867,6 +872,7 @@ async def refresh_billing(cred, *, force: bool = False) -> dict | None:
                     except json.JSONDecodeError:
                         payload = None
         except Exception:
+            logger.warning("Grok billing fetch failed for credential %s", row["id"], exc_info=True)
             return _store_billing(row["id"], {}, error="fetch failed")
         if status != 200 or not isinstance(payload, dict):
             return _store_billing(row["id"], {}, error=f"http {status or 0}")
@@ -884,7 +890,8 @@ async def refresh_pool_billing(*, force: bool = False) -> None:
     )
     if not rows:
         return
-    await asyncio.gather(*(refresh_billing(c, force=force) for c in rows), return_exceptions=True)
+    results = await asyncio.gather(*(refresh_billing(c, force=force) for c in rows), return_exceptions=True)
+    log_refresh_failures("Grok billing refresh", rows, results)
 
 
 async def refresh_due() -> None:
@@ -907,4 +914,5 @@ async def refresh_due() -> None:
         if when <= soon:
             due.append(cred)
     if due:
-        await asyncio.gather(*(refresh_one(c) for c in due), return_exceptions=True)
+        results = await asyncio.gather(*(refresh_one(c) for c in due), return_exceptions=True)
+        log_refresh_failures("Grok OAuth refresh", due, results)

@@ -23,6 +23,7 @@ from urllib.parse import urlencode
 import httpx
 
 from .. import accounts, db
+from ..async_work import durable_call
 from ..config import settings
 from ..crypto import encrypt
 from ..proxy import UsageStream
@@ -31,7 +32,7 @@ from .grok import apply_usage_guard, is_held as credential_is_held
 from .pool_pick import Failover, auth_failure_confirmed, note_failure, pick_account, release, reserve
 from . import pool_policy
 from .pool_session import bind, lookup
-from .token_store import persist_rotated
+from .token_store import log_refresh_failures, persist_rotated
 
 from .claude_catalog import (
     CLAUDE_MODELS,
@@ -589,7 +590,8 @@ async def _refresh_one_unlocked(cred) -> bool:
     for key in ("account_id", "email", "organization_uuid"):
         if ident.get(key) and not extra.get(key):
             extra[key] = ident[key]
-    return persist_rotated(
+    return await durable_call(
+        persist_rotated,
         _cas_update_tokens,
         int(row["id"]),
         row["extra"],
@@ -614,7 +616,8 @@ async def refresh_pool_quota(*, force: bool = False) -> None:
         "SELECT c.* FROM credentials c JOIN sources s ON s.id=c.source_id WHERE s.type='claude' AND c.disabled=0"
     )
     if rows:
-        await asyncio.gather(*(refresh_quota(c, force=force) for c in rows), return_exceptions=True)
+        results = await asyncio.gather(*(refresh_quota(c, force=force) for c in rows), return_exceptions=True)
+        log_refresh_failures("Claude quota refresh", rows, results)
 
 
 async def refresh_due() -> None:
@@ -631,7 +634,8 @@ async def refresh_due() -> None:
         if not when or when <= soon:
             due.append(cred)
     if due:
-        await asyncio.gather(*(refresh_one(c) for c in due), return_exceptions=True)
+        results = await asyncio.gather(*(refresh_one(c) for c in due), return_exceptions=True)
+        log_refresh_failures("Claude OAuth refresh", due, results)
 
 
 async def revoke_remote(cred) -> None:

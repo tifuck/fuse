@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import time
 import uuid
 import httpx
@@ -10,12 +11,13 @@ from .. import accounts, context_meter, model_caps
 from ..config import ROOT
 from ..proxy import UsageStream, usage_from_obj
 from .base import ChatResult
-from .key_pool import KeyPool
+from .key_pool import KeyPool, NoAvailableKeyError
 from . import ollama_access
 from .pool_session import bind, lookup
 
 _pools: dict[int, KeyPool] = {}
 _tags_cache: dict[int, tuple[float, list[str]]] = {}
+_access_tasks: dict[int, asyncio.Task] = {}
 _TAGS_TTL = 300.0
 
 
@@ -176,7 +178,6 @@ class OllamaSource:
             _pools[self.source_id].load_from_list([accounts.cred_secret(c) for c in creds])
         self.pool = _pools[self.source_id]
         self._cred_by_key = {accounts.cred_secret(c): c for c in creds}
-        self._refresh_task = None
         self._maybe_start_sweeper()
 
     def _maybe_start_sweeper(self) -> None:
@@ -284,10 +285,11 @@ class OllamaSource:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        task = self._refresh_task
+        # Per source, not per instance: sources are rebuilt on every request.
+        task = _access_tasks.get(self.source_id)
         if task is not None and not task.done():
             return
-        self._refresh_task = loop.create_task(self._refresh_access(pending))
+        _access_tasks[self.source_id] = loop.create_task(self._refresh_access(pending))
 
     async def _refresh_access(self, names: list[str]) -> None:
         keys: list[str] = []
@@ -421,6 +423,15 @@ class OllamaSource:
                 status=504,
                 body={"error": {"message": f"upstream timeout ({type(exc).__name__})"}},
                 model=payload["model"],
+            )
+        except NoAvailableKeyError as exc:
+            await client.aclose()
+            headers = {"Retry-After": str(max(1, math.ceil(exc.retry_after)))} if exc.retry_after else {}
+            return ChatResult(
+                status=503,
+                body={"error": {"message": "Every Ollama key is cooling down or out of usage; try again later."}},
+                model=payload["model"],
+                response_headers=headers,
             )
         except (httpx.TransportError, ConnectionError) as exc:
             await client.aclose()

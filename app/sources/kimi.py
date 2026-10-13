@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 
 from .. import accounts, db
+from ..async_work import durable_call
 from ..config import settings
 from ..crypto import encrypt
 from ..proxy import UsageStream, openai_chat
@@ -21,7 +22,7 @@ from .grok import apply_usage_guard, is_held
 from .pool_pick import Failover, auth_failure_confirmed, note_failure, pick_account, release, reserve
 from . import pool_policy
 from .pool_session import bind, drop_cache_routing_fields, lookup
-from .token_store import expires_at, persist_rotated
+from .token_store import expires_at, log_refresh_failures, persist_rotated
 
 USAGE_TTL = 300
 HOLD_HOURS = 24
@@ -841,7 +842,8 @@ async def _refresh_one_unlocked(cred) -> bool:
     extra["refresh_token"] = data.get("refresh_token", rt)
     extra["expires_at"] = expires_at(data.get("expires_in"), 21600)
     extra["auth_kind"] = "oauth"
-    return persist_rotated(
+    return await durable_call(
+        persist_rotated,
         _cas_update_tokens,
         int(row["id"]),
         row["extra"],
@@ -917,7 +919,8 @@ async def refresh_pool_quota(*, force: bool = False) -> None:
     )
     if not rows:
         return
-    await asyncio.gather(*(refresh_quota(c, force=force) for c in rows), return_exceptions=True)
+    results = await asyncio.gather(*(refresh_quota(c, force=force) for c in rows), return_exceptions=True)
+    log_refresh_failures("Kimi quota refresh", rows, results)
 
 
 async def refresh_due() -> None:
@@ -938,7 +941,8 @@ async def refresh_due() -> None:
         if not when or when <= soon:
             due.append(cred)
     if due:
-        await asyncio.gather(*(refresh_one(c) for c in due), return_exceptions=True)
+        results = await asyncio.gather(*(refresh_one(c) for c in due), return_exceptions=True)
+        log_refresh_failures("Kimi OAuth refresh", due, results)
 
 
 def _remember_catalog(rows: list[dict]) -> list[str]:

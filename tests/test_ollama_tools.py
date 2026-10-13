@@ -279,6 +279,19 @@ class OllamaRefreshAccessTest(_OllamaSourceTestMixin, unittest.IsolatedAsyncioTe
         self.assertEqual(ollama_access.of(self.SOURCE_ID, "m-locked"), "gated")
 
 
+    async def test_transient_probe_failure_keeps_known_verdict(self):
+        ollama_access.note(self.SOURCE_ID, "m-free", ollama_access.FREE, status=200)
+        self._network(lambda request: httpx.Response(429, json={"error": "rate limited"}), keys={1: "kg"})
+        src = self._source([{"id": 1}])
+        await src._refresh_access(["m-free", "m-new"])
+        self.assertEqual(ollama_access.of(self.SOURCE_ID, "m-free"), "free")
+        self.assertEqual(ollama_access.of(self.SOURCE_ID, "m-new"), "unknown")
+        self.assertFalse(ollama_access.stale(self.SOURCE_ID, "m-free"))
+        with patch.object(ollama_access, "_now", return_value=ollama_access._now() + ollama_access.UNKNOWN_TTL + 1):
+            self.assertTrue(ollama_access.stale(self.SOURCE_ID, "m-free"))
+            self.assertTrue(ollama_access.stale(self.SOURCE_ID, "m-new"))
+
+
 class OllamaTagsGuardTest(_OllamaSourceTestMixin, unittest.IsolatedAsyncioTestCase):
     async def test_non_200_tags_raises_and_caches_nothing(self):
         self._network(

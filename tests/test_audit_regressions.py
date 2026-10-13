@@ -43,10 +43,12 @@ def test_shell_in_scope_runs_without_asking(command):
 
 def test_out_of_scope_secret_reaches_auto_judge():
     # Secret-named files inside the working root are silent; outside it, auto
-    # mode sends them to Jev (here refusing) and the card carries the flag.
+    # mode sends them to Jev with the secret flag, and a Jev deny is final
+    # (ac3f8ce): no card is asked.
     gate = SimpleNamespace(thread_id=1, user_id=1, unattended=False, requester={})
     ask = AsyncMock(return_value="deny")
-    with patch.object(permissions, "bypass_enabled", return_value=False), patch.object(permissions, "grant_covers", return_value=False), patch.object(permissions, "auto_enabled", return_value=True), patch.object(permissions, "_auto_verdict", AsyncMock(return_value=False)), patch.object(permissions, "_ask_and_wait", ask):
+    judge = AsyncMock(return_value=False)
+    with patch.object(permissions, "bypass_enabled", return_value=False), patch.object(permissions, "grant_covers", return_value=False), patch.object(permissions, "auto_enabled", return_value=True), patch.object(permissions, "_auto_verdict", judge), patch.object(permissions, "_ask_and_wait", ask):
         inside = asyncio.run(permissions.review(
             tool="read_file", args={"path": ".env"}, user_id=1,
             host_id=1, host_alias="test", root="/srv/app", windows=False, gate=gate,
@@ -57,7 +59,8 @@ def test_out_of_scope_secret_reaches_auto_judge():
         ))
     assert inside.allowed
     assert not result.allowed
-    assert ask.call_args.args[1]["secret"]
+    assert "secret-named file" in judge.call_args.args[2]["reasons"]
+    ask.assert_not_called()
 
 
 def test_cleanup_preserves_hourly_bucket():

@@ -18,6 +18,7 @@ from .grok import apply_usage_guard, grok_own_access, is_held
 from .pool_pick import Failover, auth_failure_confirmed, note_failure, pick_account, release, reserve
 from . import pool_policy
 from .pool_session import bind, drop_cache_routing_fields, lookup
+from .token_store import log_refresh_failures
 
 USAGE_TTL = 300
 HOLD_HOURS = 24
@@ -533,7 +534,8 @@ async def refresh_pool_quota(*, force: bool = False) -> None:
     )
     if not rows:
         return
-    await asyncio.gather(*(refresh_quota(c, force=force) for c in rows), return_exceptions=True)
+    results = await asyncio.gather(*(refresh_quota(c, force=force) for c in rows), return_exceptions=True)
+    log_refresh_failures("Z.AI quota refresh", rows, results)
 
 
 def _remember_models(names: list[str]) -> list[str]:

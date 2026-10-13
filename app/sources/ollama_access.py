@@ -11,6 +11,8 @@ from ..config import ROOT
 logger = logging.getLogger(__name__)
 
 ACCESS_TTL = 12 * 3600
+# A probe that only proved "could not tell" (429, 5xx, network) is retried soon.
+UNKNOWN_TTL = 15 * 60
 FREE = "free"
 GATED = "gated"
 UNKNOWN = "unknown"
@@ -109,6 +111,13 @@ def note(source_id: int, model: str, access: str, *, status: int = 0, error: str
     if not model or access not in (FREE, GATED, UNKNOWN):
         return
     data = load(source_id)
+    prior = data.get(model) or {}
+    if access == UNKNOWN and prior.get("access") in (FREE, GATED):
+        # A transient probe failure must not hide (or unlock) a known model:
+        # keep the verdict and look again after UNKNOWN_TTL.
+        data[model] = {**prior, "checked_at": _now() - ACCESS_TTL + UNKNOWN_TTL}
+        save(source_id)
+        return
     data[model] = {
         "access": access,
         "status": int(status or 0),
@@ -129,8 +138,9 @@ def stale(source_id: int, model: str) -> bool:
     row = load(source_id).get((model or "").strip())
     if not row:
         return True
+    ttl = UNKNOWN_TTL if row.get("access") == UNKNOWN else ACCESS_TTL
     try:
-        return _now() - float(row.get("checked_at") or 0) > ACCESS_TTL
+        return _now() - float(row.get("checked_at") or 0) > ttl
     except (TypeError, ValueError):
         return True
 

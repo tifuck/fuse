@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 
 from .. import accounts, db
+from ..async_work import durable_call
 from ..config import settings
 from ..crypto import encrypt
 from ..proxy import UsageStream
@@ -37,7 +38,7 @@ from .pool_pick import (
 )
 from . import pool_policy
 from .pool_session import bind, lookup
-from .token_store import expires_at, persist_rotated
+from .token_store import expires_at, log_refresh_failures, persist_rotated
 
 from .chatgpt_catalog import (
     CHATGPT_MODELS,
@@ -438,7 +439,8 @@ async def _refresh_one_unlocked(cred) -> bool:
     apply_profile(extra, data)
     # `extra` may change while the token endpoint is in flight (re-link or
     # another refresh); persist_rotated re-merges onto the newest copy.
-    return persist_rotated(
+    return await durable_call(
+        persist_rotated,
         _cas_update_tokens,
         int(row["id"]),
         row["extra"],
@@ -477,7 +479,8 @@ async def refresh_due() -> None:
         if when <= soon:
             due.append(cred)
     if due:
-        await asyncio.gather(*(refresh_one(c) for c in due), return_exceptions=True)
+        results = await asyncio.gather(*(refresh_one(c) for c in due), return_exceptions=True)
+        log_refresh_failures("ChatGPT OAuth refresh", due, results)
 
 
 USAGE_TTL = 300
@@ -671,6 +674,7 @@ async def refresh_usage(cred, *, force: bool = False) -> dict | None:
                     except json.JSONDecodeError:
                         payload = None
         except Exception:
+            logger.warning("ChatGPT usage fetch failed for credential %s", row["id"], exc_info=True)
             return _store_usage(row["id"], {}, error="fetch failed")
         if status != 200 or not isinstance(payload, dict):
             return _store_usage(row["id"], {}, error=f"http {status or 0}")
@@ -684,7 +688,8 @@ async def refresh_pool_usage(*, force: bool = False) -> None:
     )
     if not rows:
         return
-    await asyncio.gather(*(refresh_usage(c, force=force) for c in rows), return_exceptions=True)
+    results = await asyncio.gather(*(refresh_usage(c, force=force) for c in rows), return_exceptions=True)
+    log_refresh_failures("ChatGPT usage refresh", rows, results)
 
 
 class ChatGPTSource:

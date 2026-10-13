@@ -300,6 +300,41 @@ class TokenStoreTest(unittest.TestCase):
         self.assertFalse(ok)
 
 
+    def test_transient_db_error_is_retried(self):
+        calls = []
+
+        def cas(cid, old, secret, extra):
+            calls.append(old)
+            if len(calls) == 1:
+                raise RuntimeError("lost connection")
+            return True
+
+        with patch.object(token_store.time, "sleep") as sleep:
+            ok = token_store.persist_rotated(cas, 1, "v1", "s", {}, {"access_token": "a2", "refresh_token": "r2"})
+        self.assertTrue(ok)
+        self.assertEqual(len(calls), 2)
+        sleep.assert_called_once()
+
+    def test_commit_that_raised_is_recognised_as_saved(self):
+        def cas(cid, old, secret, extra):
+            return False
+
+        with (
+            patch.object(token_store.db, "fetchone", return_value={"id": 1, "extra": "v2", "disabled": 0}),
+            patch.object(token_store.accounts, "cred_extra",
+                         side_effect=[{"refresh_token": "r1"}, {"access_token": "a2", "refresh_token": "r2"}]),
+        ):
+            ok = token_store.persist_rotated(cas, 1, "v1", "s", {}, {"access_token": "a2", "refresh_token": "r2"})
+        self.assertTrue(ok)
+
+    def test_persistent_db_error_is_raised(self):
+        def cas(*_a):
+            raise RuntimeError("db down")
+
+        with patch.object(token_store.time, "sleep"), self.assertRaises(RuntimeError):
+            token_store.persist_rotated(cas, 1, "v1", "s", {}, {"access_token": "a2", "refresh_token": "r2"})
+
+
 class SearchEmptyClassificationTest(unittest.TestCase):
     def test_empty_reason(self):
         self.assertEqual(empty_reason("<html>Please solve this CAPTCHA</html>", "b_algo"), "blocked")
