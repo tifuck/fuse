@@ -53,22 +53,40 @@ int save_config(const char *path) {
         *slash = 0;
         mkdir(dir, 0700);
     }
-    /* Create 0600 from the start: fopen("w") would use 0666&umask and only
-     * fchmod afterwards, leaving a window where the token is readable. */
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    /* Write a temp file and rename it over the config: this file holds the
+     * only copy of the device token (the pairing code is already spent), so
+     * a full disk or I/O error must leave the old file intact. Every write
+     * error counts, including the final flush that fclose performs. Create
+     * 0600 from the start: fopen("w") would use 0666&umask and only fchmod
+     * afterwards, leaving a window where the token is readable. */
+    char tmp[PATH_MAX];
+    if (snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp)) return -1;
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
     if (fd < 0) return -1;
     fchmod(fd, 0600);
     FILE *f = fdopen(fd, "w");
     if (!f) {
         close(fd);
+        unlink(tmp);
         return -1;
     }
     fprintf(f, "url=%s\n", g_url);
     fprintf(f, "token=%s\n", g_token);
     fprintf(f, "auto_update=%d\n", g_auto_update);
-    int bad = ferror(f);
-    fclose(f);
-    return bad ? -1 : 0;
+    int bad = fflush(f) != 0 || ferror(f) || fsync(fileno(f)) != 0;
+    if (fclose(f) != 0) bad = 1;
+    if (bad || rename(tmp, path) != 0) {
+        unlink(tmp);
+        return -1;
+    }
+    if (slash) {
+        int dfd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (dfd >= 0) {
+            fsync(dfd);
+            close(dfd);
+        }
+    }
+    return 0;
 }
 
 void default_config_path(char *dst, size_t cap, int system_wide) {

@@ -187,17 +187,56 @@ int format_update_staging(char *dst, size_t cap, const char *self) {
  * never become a second live daemon (two instances on one token replace each
  * other forever), so it stages the verified binary and leaves restart
  * ownership to the operator or systemd. */
+/* A failed update says why and returns non-zero ("already current" is 0):
+ * a manual `fuse-agent update` exited 0 silently on every failure. */
+#define UPDATE_FAIL(msg)                                              \
+    do {                                                              \
+        fprintf(stderr, "fuse-agent: update failed: %s\n", (msg));   \
+        rc = 1;                                                       \
+        goto out;                                                     \
+    } while (0)
+#if defined(__aarch64__)
+#define FUSE_ARCH_LABEL "linux-arm64"
+#else
+#define FUSE_ARCH_LABEL "linux-amd64"
+#endif
+
+/* Set by the session: non-zero when work arrived while the update was
+ * downloading (frames unread on the socket, jobs queued). execv would drop
+ * that work, so the restart waits for the next idle check instead. */
+int (*update_exec_veto)(void) = NULL;
+static int s_exec_pending = 0;
+
+int update_exec_pending(void) { return s_exec_pending; }
+
+static void exec_self(const char *self) {
+    char *argv[] = {(char *)self, "run", "--config", g_config, NULL};
+    execv(self, argv); /* O_CLOEXEC fds (incl. the lock) close here */
+}
+
 int maybe_update(int allow_exec) {
-    if (!g_auto_update || !g_url[0]) return 0;
+    if (!g_auto_update) return 0;
+    if (!g_url[0]) {
+        fprintf(stderr, "fuse-agent: update failed: no server url configured\n");
+        return 1;
+    }
     char self[PATH_MAX];
     ssize_t k = readlink("/proc/self/exe", self, sizeof(self) - 1);
-    if (k < 0) return 0;
+    if (k < 0) {
+        fprintf(stderr, "fuse-agent: update failed: cannot locate the running binary: %s\n", strerror(errno));
+        return 1;
+    }
     self[k] = 0;
     char lockpath[PATH_MAX];
     int lockfd = update_lock_acquire(self, lockpath, sizeof(lockpath));
     if (lockfd < 0) {
         fprintf(stderr, "fuse-agent: update skipped; another updater is active\n");
-        return 0;
+        return 1;
+    }
+    if (allow_exec && s_exec_pending && !(update_exec_veto && update_exec_veto())) {
+        fprintf(stderr, "fuse-agent: restarting into the staged update\n");
+        exec_self(self);
+        _exit(0);
     }
     int rc = 0;
     char tmp[PATH_MAX] = {0}, neu[PATH_MAX] = {0};
@@ -208,17 +247,17 @@ int maybe_update(int allow_exec) {
      * root. */
     snprintf(tmp, sizeof(tmp), "/tmp/fuse-manifest.XXXXXX");
     int mfd = mkstemp(tmp);
-    if (mfd < 0) goto out;
+    if (mfd < 0) UPDATE_FAIL("could not create a temp file");
     int fetched = http_get_file(g_url, "/agent/v1/manifest", mfd, 300000);
     close(mfd);
     mfd = -1;
-    if (fetched != 0) goto out;
+    if (fetched != 0) UPDATE_FAIL("could not download the manifest");
     /* /tmp is sticky and the file is ours 0600, so reopening by name cannot
      * be swapped by another user. */
     mfd = open(tmp, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-    if (mfd < 0) goto out;
+    if (mfd < 0) UPDATE_FAIL("could not reopen the manifest");
     struct stat st;
-    if (fstat(mfd, &st) != 0 || st.st_size <= 0 || st.st_size >= 200000) goto out;
+    if (fstat(mfd, &st) != 0 || st.st_size <= 0 || st.st_size >= 200000) UPDATE_FAIL("manifest has an invalid size");
     body = malloc((size_t)st.st_size + 1);
     if (body) {
         size_t want = (size_t)st.st_size, got = 0;
@@ -235,39 +274,43 @@ int maybe_update(int allow_exec) {
     mfd = -1;
     unlink(tmp);
     tmp[0] = 0;
-    if (!body) goto out;
+    if (!body) UPDATE_FAIL("could not read the manifest");
     root = cJSON_Parse(body);
     free(body);
     body = NULL;
-    if (!root) goto out;
+    if (!root) UPDATE_FAIL("manifest is not valid JSON");
     const char *ver = json_cstr(root, "version", "");
-    if (!ver[0] || !ver_newer(ver, FUSE_AGENT_VERSION)) goto out;
+    if (!ver[0]) UPDATE_FAIL("manifest has no version");
+    if (!ver_newer(ver, FUSE_AGENT_VERSION)) {
+        if (!allow_exec) fprintf(stderr, "fuse-agent: already up to date (%s)\n", FUSE_AGENT_VERSION);
+        goto out;
+    }
     cJSON *bins = cJSON_GetObjectItemCaseSensitive(root, "binaries");
     cJSON *bin = bins ? cJSON_GetObjectItemCaseSensitive(bins, arch_sku()) : NULL;
     const char *path = json_cstr(bin, "path", "");
     const char *expect = json_cstr(bin, "sha256", "");
     /* The path goes into a raw HTTP request line: spaces or CR/LF in a
      * crafted manifest would inject extra headers. Require a clean path. */
-    if (path[0] != '/' || !expect[0] || strpbrk(path, " \t\r\n\"?#")) goto out;
+    if (path[0] != '/' || !expect[0] || strpbrk(path, " \t\r\n\"?#")) UPDATE_FAIL("manifest has no usable binary for " FUSE_ARCH_LABEL);
     if (update_is_self(self, expect)) goto out;
-    if (format_update_staging(neu, sizeof(neu), self) != 0) goto out;
+    if (format_update_staging(neu, sizeof(neu), self) != 0) UPDATE_FAIL("install path is too long");
     int sfd = mkstemp(neu);
-    if (sfd < 0) goto out;
+    if (sfd < 0) UPDATE_FAIL("could not create the staging file next to the binary (is the directory writable?)");
     int got_bin = http_get_file(g_url, path, sfd, 128 * 1024 * 1024);
     close(sfd);
     if (got_bin != 0) {
         unlink(neu);
-        goto out;
+        UPDATE_FAIL("could not download the new binary");
     }
     char got[72];
     if (sha256_file(neu, got, sizeof(got)) != 0 || strcmp(got, expect) != 0) {
         unlink(neu);
-        goto out;
+        UPDATE_FAIL("downloaded binary failed its sha256 check");
     }
     chmod(neu, 0755);
     if (rename(neu, self) != 0) {
         unlink(neu);
-        goto out;
+        UPDATE_FAIL("could not replace the installed binary");
     }
     if (!allow_exec) {
         fprintf(stderr, "fuse-agent: updated to %s\n", ver);
@@ -276,11 +319,13 @@ int maybe_update(int allow_exec) {
                 "(systemctl restart fuse-agent, or rerun it)\n");
         goto out;
     }
-    fprintf(stderr, "fuse-agent: updated to %s, restarting\n", ver);
-    {
-        char *argv[] = {self, "run", "--config", g_config, NULL};
-        execv(self, argv); /* O_CLOEXEC fds (incl. the lock) close here */
+    if (update_exec_veto && update_exec_veto()) {
+        s_exec_pending = 1;
+        fprintf(stderr, "fuse-agent: updated to %s; restart deferred until pending work is done\n", ver);
+        goto out;
     }
+    fprintf(stderr, "fuse-agent: updated to %s, restarting\n", ver);
+    exec_self(self);
     _exit(0);
 out:
     if (mfd >= 0) close(mfd);

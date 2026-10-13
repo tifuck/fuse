@@ -7,7 +7,11 @@
 #include "../src/outq.h"
 #include "../src/update.h"
 #include <assert.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
+#include "../src/config.h"
 
 int main(void) {
     char dir[] = "/tmp/opencode/fuse-files-XXXXXX";
@@ -225,6 +229,34 @@ int main(void) {
         assert(utf8_incomplete_tail("ab\xe2\x82\xac", 5) == 0);
         assert(utf8_incomplete_tail("ab\xf0", 3) == 1);
         assert(utf8_incomplete_tail("abc", 3) == 0);
+    }
+    /* A failed in-place rewrite (hard-linked file, write past RLIMIT_FSIZE
+     * standing in for ENOSPC) puts the old bytes back, not a truncated file;
+     * a failed config save leaves the previous config intact. */
+    {
+        char hard[PATH_MAX], twin[PATH_MAX], conf[PATH_MAX], back[64];
+        snprintf(hard, sizeof(hard), "%s/hard", dir);
+        snprintf(twin, sizeof(twin), "%s/twin", dir);
+        snprintf(conf, sizeof(conf), "%s/agent.conf", dir);
+        assert(write_file_atomic(hard, "abc") == 0);
+        assert(linkat(AT_FDCWD, hard, AT_FDCWD, twin, 0) == 0); /* `link` is shadowed here */
+        strcpy(g_url, "https://fuse.test");
+        strcpy(g_token, "fa_token");
+        assert(save_config(conf) == 0);
+        signal(SIGXFSZ, SIG_IGN);
+        struct rlimit old, lim;
+        assert(getrlimit(RLIMIT_FSIZE, &old) == 0);
+        lim.rlim_cur = 16; /* soft limit only: the hard one could not be raised back */
+        lim.rlim_max = old.rlim_max;
+        assert(setrlimit(RLIMIT_FSIZE, &lim) == 0);
+        assert(write_file_atomic(hard, "a much longer replacement that does not fit") != 0);
+        strcpy(g_token, "fa_a_much_longer_replacement_token");
+        assert(save_config(conf) != 0);
+        assert(setrlimit(RLIMIT_FSIZE, &old) == 0);
+        assert(read_file_slice(hard, 1, 10, back, sizeof(back)) == 0 && strcmp(back, "abc") == 0);
+        g_token[0] = 0;
+        assert(load_config(conf) == 0 && strcmp(g_token, "fa_token") == 0);
+        assert(unlink(twin) == 0 && unlink(hard) == 0 && unlink(conf) == 0);
     }
     assert(unlink(link) == 0);
     assert(unlink(path) == 0);

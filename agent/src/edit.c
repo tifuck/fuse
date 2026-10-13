@@ -33,18 +33,55 @@ static int write_all_fd(int fd, const char *content, size_t n) {
     return 0;
 }
 
+/* The whole file, or NULL (unreadable, or no memory): a restore copy only. */
+static char *read_all_fd(int fd, size_t *len) {
+    struct stat st;
+    if (fstat(fd, &st) != 0 || st.st_size < 0) return NULL;
+    size_t want = (size_t)st.st_size, got = 0;
+    char *buf = malloc(want ? want : 1);
+    if (!buf) return NULL;
+    while (got < want) {
+        ssize_t r = read(fd, buf + got, want - got);
+        if (r < 0 && errno == EINTR) continue;
+        if (r <= 0) {
+            free(buf);
+            return NULL;
+        }
+        got += (size_t)r;
+    }
+    *len = got;
+    return buf;
+}
+
 /* Rewrite an existing regular file in place: same inode, so hard links,
  * owner, ACLs and xattrs are untouched. Not atomic; used only when a sibling
- * temp file would break a hard link or cannot be created at all. */
+ * temp file would break a hard link or cannot be created at all. The old
+ * bytes are kept so a failed write (ENOSPC, EIO) puts them back instead of
+ * leaving the file truncated. */
 static int write_in_place(const char *path, const char *content, size_t n) {
-    int fd = open(path, O_WRONLY | O_TRUNC | O_NOFOLLOW | O_CLOEXEC);
+    char *orig = NULL;
+    size_t olen = 0;
+    int fd = open(path, O_RDWR | O_NOFOLLOW | O_CLOEXEC);
+    if (fd >= 0) orig = read_all_fd(fd, &olen);
+    else fd = open(path, O_WRONLY | O_NOFOLLOW | O_CLOEXEC); /* write-only: no copy */
     if (fd < 0) return -1;
-    if (write_all_fd(fd, content, n) != 0 || fsync(fd) != 0) {
+    if (ftruncate(fd, 0) != 0 || lseek(fd, 0, SEEK_SET) < 0) {
         int e = errno;
+        free(orig);
         close(fd);
         errno = e;
         return -1;
     }
+    if (write_all_fd(fd, content, n) != 0 || fsync(fd) != 0) {
+        int e = errno;
+        if (orig && ftruncate(fd, 0) == 0 && lseek(fd, 0, SEEK_SET) == 0 && write_all_fd(fd, orig, olen) == 0)
+            fsync(fd);
+        free(orig);
+        close(fd);
+        errno = e;
+        return -1;
+    }
+    free(orig);
     return close(fd);
 }
 

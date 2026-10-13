@@ -14,6 +14,21 @@
 #include "session.h"
 #include "update.h"
 
+/* The live session socket, for the update exec veto below. */
+static struct tls *s_live_tls = NULL;
+
+/* update_exec_veto: jobs queued or running, or frames waiting unread on the
+ * live socket (the server sent work while the update was downloading). An
+ * execv now would drop that work. */
+static int work_waiting(void) {
+    if (!agent_idle()) return 1;
+    struct tls *t = s_live_tls;
+    if (!t) return 0;
+    if (t->pb_off < t->pb_len || (t->ssl && SSL_pending(t->ssl) > 0)) return 1;
+    struct pollfd p = {t->fd, POLLIN, 0};
+    return poll(&p, 1, 0) > 0 && (p.revents & POLLIN);
+}
+
 /* Server-supplied strings go to stderr (journal): keep them one line and
  * free of control bytes so a crafted error cannot inject log lines or
  * terminal escape sequences. */
@@ -59,6 +74,7 @@ static void wait_interruptible_ms(int ms) {
 int session_loop(void) {
     struct url base, u;
     if (parse_url(g_url, &base) != 0) die("invalid url");
+    update_exec_veto = work_waiting;
     u = base;
     strncpy(u.path, "/agent/v1/connect", sizeof(u.path) - 1);
     char host[128], user[64];
@@ -177,7 +193,10 @@ int session_loop(void) {
             }
             strcpy(g_token, tok);
             g_code[0] = 0;
-            if (g_config[0]) save_config(g_config);
+            if (g_config[0] && save_config(g_config) != 0)
+                fprintf(stderr, "fuse-agent: could not save the device token to %s: %s; "
+                        "this connector will need a new install code after it restarts\n",
+                        g_config, strerror(errno));
         }
         {
             char alias[128];
@@ -196,6 +215,7 @@ int session_loop(void) {
         struct conn_watch watch;
         conn_watch_init(&watch, now_mono_ms(), now_boot_ms());
         set_live_fd(t.fd);
+        s_live_tls = &t;
         while (!g_stop_main) {
             int send_ping = 0;
             consume_wake();
@@ -219,7 +239,9 @@ int session_loop(void) {
             if (g_auto_update && now_mono_ms() >= next_update_ms) {
                 if (agent_idle()) {
                     maybe_update(1); /* execv on success; returns on failure */
-                    next_update_ms = now_mono_ms() + UPDATE_EVERY_MS;
+                    /* A restart deferred by work that arrived mid-download
+                     * is retried soon, not at the next full interval. */
+                    next_update_ms = now_mono_ms() + (update_exec_pending() ? 60000 : UPDATE_EVERY_MS);
                 } else {
                     /* Jobs in flight: retry soon rather than starve updates. */
                     next_update_ms = now_mono_ms() + 60000;
@@ -338,6 +360,7 @@ int session_loop(void) {
             cJSON_Delete(o);
         }
         set_live_fd(-1);
+        s_live_tls = NULL;
         tls_close(&t);
         if (!g_stop_main) {
             if (replaced) {

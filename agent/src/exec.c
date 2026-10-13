@@ -209,6 +209,9 @@ int run_exec(const char *cwd, const char *cmd, int timeout_ms, char *out, size_t
     if (out_len) *out_len = stream ? strlen(out) : o;
     if (err_len) *err_len = stream ? strlen(errb) : e;
     if (WIFEXITED(status)) *code = WEXITSTATUS(status);
+    /* Shell convention 128+N: an OOM kill (137) or SIGSEGV (139) must not
+     * read as an ordinary exit 1. */
+    else if (WIFSIGNALED(status)) *code = 128 + WTERMSIG(status);
     else *code = 1;
     if (timed_out) *timed_out = by_timeout;
     return 0;
