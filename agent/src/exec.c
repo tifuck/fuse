@@ -206,6 +206,22 @@ int run_exec(const char *cwd, const char *cmd, int timeout_ms, char *out, size_t
         memcpy(errb + end, mark, marklen + 1);
         e = end + marklen;
     }
+    /* A signal death the agent did not cause (OOM killer, SIGSEGV) is told,
+     * not left as a bare exit code. */
+    if (WIFSIGNALED(status) && !killed && ecap) {
+        if (stream) e = strlen(errb);
+        char note[48];
+        size_t nl = (size_t)snprintf(note, sizeof(note), "%s[killed by signal %d]\n",
+                                     e && errb[e - 1] != '\n' ? "\n" : "", WTERMSIG(status));
+        if (nl < ecap) {
+            if (e + nl >= ecap) {
+                e = ecap - nl - 1;
+                while (e && ((unsigned char)errb[e] & 0xc0) == 0x80) e--;
+            }
+            memcpy(errb + e, note, nl + 1);
+            e += nl;
+        }
+    }
     if (out_len) *out_len = stream ? strlen(out) : o;
     if (err_len) *err_len = stream ? strlen(errb) : e;
     if (WIFEXITED(status)) *code = WEXITSTATUS(status);

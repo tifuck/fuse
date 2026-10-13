@@ -61,5 +61,14 @@ int main(void) {
     assert(g_saw_first);
     assert(g_bytes == 1288895); /* every byte of `seq 1 200000` arrived */
     assert(g_frames > OUT_QMAX);
+
+    /* A child killed by a signal reports 128+N and says so on stderr. */
+    code = -1;
+    assert(run_exec("/tmp", "echo partial >&2; kill -KILL $$", 30000, out, sizeof(out), err, sizeof(err),
+                    &code, NULL, &timed_out, 0, NULL, &clipped, &out_len, &err_len) == 0);
+    assert(code == 137);
+    assert(!timed_out);
+    assert(!strcmp(err, "partial\n[killed by signal 9]\n"));
+    assert(err_len == strlen(err));
     return 0;
 }
