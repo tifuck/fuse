@@ -188,7 +188,9 @@ def test_hosts_are_private_to_their_owner(client):
     deleted = client.delete(f"/hosts/{host_id}")
     assert deleted.status_code == 404
     probed = client.post(f"/hosts/{host_id}/probe")
-    assert probed.status_code == 400
+    # Not his host: the same 404 as patch/delete (the probe used to flatten
+    # this into a generic 400 "probe failed").
+    assert probed.status_code == 404
     # Alice's host is untouched — not renamed, not deleted, and bob's failed
     # probe (which records an error against *his* copy of the id) never
     # wrote an error onto her row.

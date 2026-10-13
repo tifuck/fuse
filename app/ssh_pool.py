@@ -226,7 +226,8 @@ async def probe(user_id: int, host_id: int) -> dict:
     except HostError as exc:
         if exc.status_code == 401:  # secret_plain's vault-locked HostError
             raise SshError("vault locked", 401) from exc
-        set_host_status(user_id, host_id, ok=False, error=exc.detail)
+        if exc.status_code != 404:  # no such host for this user: nothing to record
+            set_host_status(user_id, host_id, ok=False, error=exc.detail)
         raise SshError(exc.detail, exc.status_code) from exc
     except Exception as exc:
         set_host_status(user_id, host_id, ok=False, error="probe failed")
@@ -250,7 +251,8 @@ async def test(user_id: int, host_id: int) -> dict:
     except HostError as exc:
         if exc.status_code == 401:  # secret_plain's vault-locked HostError
             raise SshError("vault locked", 401) from exc
-        set_host_status(user_id, host_id, ok=False, error=exc.detail)
+        if exc.status_code != 404:  # no such host for this user: nothing to record
+            set_host_status(user_id, host_id, ok=False, error=exc.detail)
         raise SshError(exc.detail, exc.status_code) from exc
     except Exception as exc:
         set_host_status(user_id, host_id, ok=False, error="test failed")
