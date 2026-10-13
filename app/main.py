@@ -193,6 +193,9 @@ async def lifespan(app: FastAPI):
                 raise RuntimeError("Dashboard runs require one Fuse worker per database.") from None
         db.connect()
         accounts.validate_credential_encryption()
+        from .sources.token_store import claim_refresh_ownership
+
+        claim_refresh_ownership()
         chat_store.recover_runs()
         from . import command_jobs
 

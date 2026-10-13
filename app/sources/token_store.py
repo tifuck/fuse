@@ -11,14 +11,37 @@ from __future__ import annotations
 import logging
 import json
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit
 
 from .. import accounts, db
+from ..config import settings
 from ..crypto import encrypt
 
 logger = logging.getLogger(__name__)
 
 CAS_ATTEMPTS = 5
 _MAX_SPAN = 365 * 86400
+OWNER_KEY = "oauth_token_owner"
+
+
+def claim_refresh_ownership() -> bool:
+    """Turn OAuth refresh off unless this database owns the pooled tokens.
+
+    Refresh tokens are single use, so exactly one database may spend them:
+    the schema that schema_meta names as owner. Clones and restores copy that
+    row verbatim, so they never own the tokens, whatever their .env says (a
+    clone refreshing a shared token kills the owner's copy). Runs at boot.
+    """
+    row = db.fetchone("SELECT value FROM schema_meta WHERE key=?", (OWNER_KEY,))
+    owner = row["value"] if row else ""
+    schema = urlsplit(settings.database_url).path.strip("/")
+    if owner != schema:
+        if settings.oauth_refresh_enabled:
+            logger.warning("OAuth refresh off: database %r does not own the pooled tokens (schema_meta %s=%r)",
+                           schema, OWNER_KEY, owner)
+        settings.oauth_refresh_enabled = False
+    logger.info("OAuth refresh %s for database %r", "on" if settings.oauth_refresh_enabled else "off", schema)
+    return settings.oauth_refresh_enabled
 
 
 def expires_at(seconds, default: int) -> str:

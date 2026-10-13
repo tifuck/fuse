@@ -159,6 +159,27 @@ def test_metadata_write_from_a_stale_copy_keeps_rotated_tokens():
     assert row["last_usage_percent"] == 12.5
 
 
+@pytest.mark.usefixtures("isolated_db")
+def test_only_the_database_that_owns_the_tokens_refreshes_them():
+    from urllib.parse import urlsplit
+
+    from app import db
+    from app.config import settings
+    from app.sources import token_store
+
+    schema = urlsplit(settings.database_url).path.strip("/")
+    for owner, expected in ((None, False), ("fuse_live", False), (schema, True)):
+        db.execute("DELETE FROM schema_meta WHERE `key`=?", (token_store.OWNER_KEY,))
+        if owner:
+            db.execute("INSERT INTO schema_meta(`key`, value) VALUES(?, ?)", (token_store.OWNER_KEY, owner))
+        with patch.object(settings, "oauth_refresh_enabled", True):
+            assert token_store.claim_refresh_ownership() is expected
+            assert settings.oauth_refresh_enabled is expected
+    # The kill switch wins even for the owner.
+    with patch.object(settings, "oauth_refresh_enabled", False):
+        assert token_store.claim_refresh_ownership() is False
+
+
 @pytest.mark.parametrize("module", ["chatgpt", "claude", "grok", "kimi"])
 def test_oauth_refresh_is_off_where_the_instance_does_not_own_the_tokens(module):
     import importlib
