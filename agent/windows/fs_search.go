@@ -139,6 +139,16 @@ func globDir(root, pattern string) (string, error) {
 	return globDirSorted(root, pattern, "path")
 }
 
+// walkError: an unreadable entry below the root is skipped (WalkDir then
+// moves on to its siblings); only an unreadable search root fails the search.
+// Returning the error emptied the whole glob/grep for one locked folder.
+func walkError(root, p string, err error) error {
+	if filepath.Clean(p) == filepath.Clean(root) {
+		return err
+	}
+	return nil
+}
+
 // globDirSorted collects up to globScanMax matches, sorts them ("path", or
 // "modified" = newest first), and returns the first 400.
 func globDirSorted(root, pattern, order string) (string, error) {
@@ -154,7 +164,7 @@ func globDirSorted(root, pattern, order string) (string, error) {
 	pat := filepath.ToSlash(pattern)
 	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
-			return err
+			return walkError(root, p, err)
 		}
 		if d.Name() == "." || d.Name() == ".." {
 			return nil
@@ -310,7 +320,7 @@ func grepDirMode(root, pattern, include string, maxMatches int, opt grepOpts) (s
 	n := 0
 	walkErr := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
-			return err
+			return walkError(root, p, err)
 		}
 		if d.IsDir() {
 			if skipSearchDir(root, p, d) {

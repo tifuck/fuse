@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -168,8 +169,12 @@ func runExec(cwd, cmd string, timeoutMS int, cancel <-chan struct{}, setKill fun
 	if waitErr != nil {
 		if ee, ok := waitErr.(*exec.ExitError); ok {
 			code = ee.ExitCode()
-		} else if ctx.Err() != nil {
-			code = 1
+		} else if errors.Is(waitErr, exec.ErrWaitDelay) && ps.ProcessState != nil {
+			// The shell exited but a child (Start-Process, start /b) still
+			// held the output pipe: report the shell's own exit status, not
+			// a failure, and say the output may be incomplete.
+			code = ps.ProcessState.ExitCode()
+			stderr.WriteString("\n[fuse-agent: a background process kept the output open; output may be incomplete]\n")
 		} else {
 			code = 1
 		}

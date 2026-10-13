@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -339,7 +340,7 @@ func runSession(cfg *agentConfig, stop chan struct{}) {
 		default:
 		}
 		if failIndex == 0 && wake == 0 && s.idleForUpdate() {
-			maybeUpdate(cfg, false, s.reserveUpdateAdmission)
+			logUpdate(maybeUpdate(cfg, false, s.reserveUpdateAdmission))
 		}
 		if wake == wakeResume {
 			log.Printf("fuse-agent: resume detected")
@@ -549,7 +550,19 @@ func (s *session) pump(conn *websocket.Conn, stop chan struct{}, cfg *agentConfi
 			}
 			if !time.Now().Before(nextUpdate) && s.idleForUpdate() {
 				nextUpdate = time.Now().Add(updateEvery)
-				maybeUpdate(cfg, false, s.reserveUpdateAdmission)
+				err := maybeUpdate(cfg, false, func() (func(), bool) {
+					// The download ran on this goroutine: frames that arrived
+					// meanwhile wait unread in incoming, and exiting now would
+					// drop those jobs.
+					if len(incoming) != 0 {
+						return nil, false
+					}
+					return s.reserveUpdateAdmission()
+				})
+				if errors.Is(err, errUpdateDeferred) {
+					nextUpdate = time.Now().Add(time.Minute)
+				}
+				logUpdate(err)
 			}
 			if send {
 				if err := s.sendJSON(map[string]any{"v": 1, "t": "ping"}); err != nil {

@@ -115,6 +115,12 @@ func doSwap(args []string) int {
 }
 
 func runSwapHelper(target, staged, config string, asService bool) int {
+	// A detached helper has no stderr: keep its log next to the binary, or a
+	// failed swap leaves no trace at all.
+	if lf, err := os.OpenFile(target+".update.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600); err == nil {
+		defer lf.Close()
+		log.SetOutput(lf)
+	}
 	f, err := os.OpenFile(updateLockPath(target), os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		log.Printf("fuse-agent: swap helper: %v", err)
@@ -134,30 +140,57 @@ func runSwapHelper(target, staged, config string, asService bool) int {
 		return 1
 	}
 	if asService {
-		_ = exec.Command("net", "stop", serviceName).Run()
+		if out, err := exec.Command("net", "stop", serviceName).CombinedOutput(); err != nil {
+			log.Printf("fuse-agent: swap helper: net stop: %v: %s", err, out)
+		}
 	}
 	time.Sleep(2 * time.Second) // let the stopped updater's handles drop
-	old := target + ".old"
-	if err := os.Rename(target, old); err != nil {
-		log.Printf("fuse-agent: swap helper: %v", err)
-		return 1
-	}
-	if err := os.Rename(staged, target); err != nil {
-		_ = os.Rename(old, target) // restore
-		log.Printf("fuse-agent: swap helper: %v", err)
-		return 1
+	// From here on every exit restarts the connector: the updater already
+	// exited, so returning without a restart left the machine offline until
+	// reboot.
+	rc := 0
+	if err := swapBinaries(target, staged); err != nil {
+		log.Printf("fuse-agent: swap helper: %v; restarting the current binary", err)
+		rc = 1
 	}
 	if asService {
-		_ = exec.Command("net", "start", serviceName).Run()
+		if out, err := exec.Command("net", "start", serviceName).CombinedOutput(); err != nil {
+			log.Printf("fuse-agent: swap helper: net start: %v: %s", err, out)
+			rc = 1
+		}
 	} else if config != "" {
 		c := exec.Command(target, "run", "--config", config)
 		c.SysProcAttr = &syscall.SysProcAttr{
 			HideWindow:    true,
 			CreationFlags: createNoWindow | windowsDetached | createNewProcessGroup,
 		}
-		_ = c.Start()
+		if err := c.Start(); err != nil {
+			log.Printf("fuse-agent: swap helper: relaunch: %v", err)
+			rc = 1
+		}
 	}
 	// Lock is released when the helper exits; until then no contender can
 	// commit. The parent has already exited by the time the moves ran.
-	return 0
+	return rc
+}
+
+// swapBinaries moves target aside and staged into place, restoring target on
+// failure. The backup name is unique when a previous one cannot be removed:
+// the tray from an earlier update may still be running from target.old, and
+// a running image cannot be replaced.
+func swapBinaries(target, staged string) error {
+	old := target + ".old"
+	if err := os.Remove(old); err != nil && !os.IsNotExist(err) {
+		old = fmt.Sprintf("%s.old-%d", target, time.Now().UnixNano())
+	}
+	if err := os.Rename(target, old); err != nil {
+		return err
+	}
+	if err := os.Rename(staged, target); err != nil {
+		if rerr := os.Rename(old, target); rerr != nil {
+			return fmt.Errorf("%v; restoring %s failed: %v", err, target, rerr)
+		}
+		return err
+	}
+	return nil
 }

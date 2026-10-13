@@ -167,3 +167,13 @@ func TestListDirMarksDirectories(t *testing.T) {
 		t.Fatalf("missing file: %q", out)
 	}
 }
+
+func TestWalkErrorSkipsUnreadableEntriesBelowTheRoot(t *testing.T) {
+	root := t.TempDir()
+	if err := walkError(root, filepath.Join(root, "locked"), os.ErrPermission); err != nil {
+		t.Fatalf("an unreadable subdirectory must be skipped, got %v", err)
+	}
+	if err := walkError(root, root, os.ErrPermission); err == nil {
+		t.Fatal("an unreadable search root must fail the search")
+	}
+}

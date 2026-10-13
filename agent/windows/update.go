@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -215,15 +216,15 @@ func fileHasSHA256(path, want string) bool {
 // dispatching jobs during the download. admit==nil means stage-only (manual
 // CLI): the binary is verified and staged, restart stays with the operator,
 // so a manual update can never kill active work or become a second daemon.
-func maybeUpdate(cfg *agentConfig, force bool, admit func() (hold func(), ok bool)) {
+func maybeUpdate(cfg *agentConfig, force bool, admit func() (hold func(), ok bool)) error {
 	if cfg == nil || cfg.URL == "" {
-		return
+		return errors.New("no server url configured")
 	}
 	if !force && !cfg.AutoUpdate {
-		return
+		return nil
 	}
 	if !tryBeginUpdate() {
-		return
+		return errors.New("another update is already running")
 	}
 	defer endUpdate()
 	base := strings.TrimRight(cfg.URL, "/")
@@ -231,23 +232,25 @@ func maybeUpdate(cfg *agentConfig, force bool, admit func() (hold func(), ok boo
 		base = "https://" + strings.TrimPrefix(base, "wss://")
 	}
 	if !strings.HasPrefix(base, "https://") {
-		log.Printf("fuse-agent: update refused; https is required")
-		return
+		return errors.New("update refused; https is required")
 	}
 	body, err := httpGet(base + "/agent/v1/manifest")
 	if err != nil {
-		return
+		return fmt.Errorf("could not download the manifest: %w", err)
 	}
 	var man manifest
-	if json.Unmarshal(body, &man) != nil {
-		return
+	if err := json.Unmarshal(body, &man); err != nil {
+		return fmt.Errorf("manifest is not valid JSON: %w", err)
 	}
-	if man.Version == "" || !versionNewer(man.Version, version) {
-		return
+	if man.Version == "" {
+		return errors.New("manifest has no version")
+	}
+	if !versionNewer(man.Version, version) {
+		return errUpToDate
 	}
 	bin, ok := man.Binaries[archSKU()]
 	if !ok || bin.SHA256 == "" {
-		return
+		return fmt.Errorf("manifest has no binary for %s", archSKU())
 	}
 	ref := bin.Path
 	if ref == "" && bin.URL != "" {
@@ -255,36 +258,33 @@ func maybeUpdate(cfg *agentConfig, force bool, admit func() (hold func(), ok boo
 	}
 	path, ok := updateFetchURL(base, ref)
 	if !ok {
-		log.Printf("fuse-agent: update refused; download URL is not https")
-		return
+		return errors.New("update refused; download URL is not https")
 	}
 	self, err := os.Executable()
 	if err != nil {
-		return
+		return fmt.Errorf("cannot locate the running binary: %w", err)
 	}
 	self, _ = filepath.Abs(self)
 	if fileHasSHA256(self, bin.SHA256) {
-		return
+		return errUpToDate
 	}
 	data, err := httpGet(path)
 	if err != nil {
-		return
+		return fmt.Errorf("could not download the new binary: %w", err)
 	}
 	sum := sha256.Sum256(data)
 	got := hex.EncodeToString(sum[:])
 	if !strings.EqualFold(got, bin.SHA256) {
-		log.Printf("fuse-agent: update checksum mismatch")
-		return
+		return errors.New("downloaded binary failed its sha256 check")
 	}
 	release, lock, ok := acquireUpdateLock(self)
 	if !ok {
-		log.Printf("fuse-agent: update skipped; another updater is active")
-		return
+		return errors.New("another updater is active")
 	}
 	neu, err := stageUpdateBinary(self, data)
 	if err != nil {
 		release()
-		return
+		return fmt.Errorf("could not stage the new binary: %w", err)
 	}
 	if admit == nil {
 		// Manual CLI update: never restarts anything itself. Moving the
@@ -297,7 +297,7 @@ func maybeUpdate(cfg *agentConfig, force bool, admit func() (hold func(), ok boo
 			log.Printf("fuse-agent: update staged at %s; to activate: stop the connector, replace %s with it, then start the connector (rename failed: %v)", neu, self, err)
 		}
 		release()
-		return
+		return nil
 	}
 	// Reserve admission only now, after the (minutes-long) download: the
 	// holder refuses job intake and no in-flight work remains, so the swap
@@ -307,28 +307,49 @@ func maybeUpdate(cfg *agentConfig, force bool, admit func() (hold func(), ok boo
 		log.Printf("fuse-agent: update deferred; jobs are in flight")
 		os.Remove(neu)
 		release()
-		return
+		return errUpdateDeferred
 	}
 	log.Printf("fuse-agent: updated to %s, restarting", man.Version)
 	// The helper acquires its own lock before reporting ready and keeps it
 	// across the whole move/start, so ownership is continuous from here to
 	// helper exit. On failure the ownership is released explicitly below.
 	if err := swapAndRelaunch(self, neu, cfg.Path, lock); err != nil {
-		log.Printf("fuse-agent: update restart failed: %v", err)
 		os.Remove(neu)
 		hold()
 		release()
-		return
+		return fmt.Errorf("update restart failed: %w", err)
 	}
 	// Commit: the process ends here. The failure-path hold()/release() must
 	// NOT run - os.Exit skips them - because the helper owns the lock and
 	// job admission must stay refused until this process is gone.
 	os.Exit(0)
+	return nil
+}
+
+var (
+	errUpToDate       = errors.New("already up to date")
+	errUpdateDeferred = errors.New("update deferred; work is pending")
+)
+
+// logUpdate reports a daemon update attempt; up to date is not news.
+func logUpdate(err error) {
+	if err != nil && !errors.Is(err, errUpToDate) && !errors.Is(err, errUpdateDeferred) {
+		log.Printf("fuse-agent: update failed: %v", err)
+	}
 }
 
 func doUpdate(cfg *agentConfig) int {
 	// Stage-only: a manual CLI update never restarts anything, never
-	// interrupts active work, and never becomes a second daemon.
-	maybeUpdate(cfg, true, nil)
+	// interrupts active work, and never becomes a second daemon. It says why
+	// it failed and exits non-zero (it exited 0 silently on every failure).
+	err := maybeUpdate(cfg, true, nil)
+	if errors.Is(err, errUpToDate) {
+		log.Printf("fuse-agent: already up to date (%s)", version)
+		return 0
+	}
+	if err != nil {
+		log.Printf("fuse-agent: update failed: %v", err)
+		return 1
+	}
 	return 0
 }

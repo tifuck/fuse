@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
@@ -192,6 +193,15 @@ func installWindowsService(bin, cfg string) error {
 		return err
 	}
 	defer s.Close()
+	// Restart after a crash: a connector that dies (or an update that does)
+	// must not stay down until the next reboot.
+	if err := s.SetRecoveryActions([]mgr.RecoveryAction{
+		{Type: mgr.ServiceRestart, Delay: 10 * time.Second},
+		{Type: mgr.ServiceRestart, Delay: 30 * time.Second},
+		{Type: mgr.ServiceRestart, Delay: 60 * time.Second},
+	}, 86400); err != nil {
+		fmt.Fprintf(os.Stderr, "fuse-agent: could not set service recovery actions: %v\n", err)
+	}
 	return s.Start()
 }
 

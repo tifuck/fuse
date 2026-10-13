@@ -111,9 +111,12 @@ func writeInPlace(path, content string, max int) error {
 	var orig []byte
 	restorable := false
 	if rf, err := os.Open(path); err == nil {
-		orig, _ = io.ReadAll(io.LimitReader(rf, int64(max)+1))
+		var rerr error
+		orig, rerr = io.ReadAll(io.LimitReader(rf, int64(max)+1))
 		rf.Close()
-		restorable = len(orig) <= max
+		// A short read is not the original: "restoring" it on a failed
+		// write would truncate the file to that length.
+		restorable = rerr == nil && len(orig) <= max
 	}
 	f, err := openInPlaceFile(path)
 	if err != nil {
