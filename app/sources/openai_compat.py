@@ -179,8 +179,10 @@ class OpenAICompatSource:
             if status == 401 or (status in (500, 502, 503) and failover.server_error(cred["id"], status, 30)):
                 attempts.append({"credential_id": cred["id"], "status": status, "usage": usage or {}})
                 continue
+            failover.failed(10)
             last.attempts = attempts
             return last
+        failover.failed(10)
         if attempts and last.credential_id == attempts[-1].get("credential_id"):
             attempts.pop()
         last.attempts = attempts

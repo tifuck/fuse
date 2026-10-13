@@ -6,6 +6,14 @@ import httpx
 import pytest
 
 from app.sources import openai_compat as compat
+from app.sources import pool_pick
+
+
+@pytest.fixture(autouse=True)
+def _health():
+    pool_pick.reset_health()
+    yield
+    pool_pick.reset_health()
 
 
 @pytest.fixture(params=compat.ROTATION_MODES)
@@ -172,3 +180,26 @@ def test_server_errors_fail_over_to_at_most_two_keys(monkeypatch):
     result = asyncio.run(source.chat({"model": "m"}))
     assert result.status == 500
     assert len(seen) == 2  # pool_pick.FAILOVER_SERVER_ERRORS
+
+
+def test_request_failing_every_tried_key_moves_next_request_off_first_key(monkeypatch):
+    seen = []
+
+    def handler(req):
+        seen.append(req.headers["Authorization"])
+        return httpx.Response(502 if len(seen) <= 2 else 200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    client_type = httpx.AsyncClient
+    monkeypatch.setattr(compat, "_cursors", {})
+    monkeypatch.setattr(compat.accounts, "cred_secret", lambda cred: f"test-key-{cred['id']}")
+    monkeypatch.setattr(compat.httpx, "AsyncClient",
+                        lambda **kwargs: client_type(transport=httpx.MockTransport(handler), **kwargs))
+    source = compat.OpenAICompatSource(
+        {"id": 73, "name": "test"}, {"rotation": "sticky", "base_url": "https://upstream.test/v1"},
+        [{"id": 1}, {"id": 2}, {"id": 3}],
+    )
+    assert asyncio.run(source.chat({"model": "m"})).status == 502
+    # Only the first failing key cools; the second may be the request's fault.
+    assert pool_pick.cooling_down(1) and not pool_pick.cooling_down(2)
+    nxt = asyncio.run(source.chat({"model": "m"}))
+    assert nxt.status == 200 and nxt.credential_id == 2

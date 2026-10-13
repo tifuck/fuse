@@ -105,6 +105,14 @@ class Failover:
             note_failure(cid, cooldown_seconds=seconds, affinity_safe=True)
         self._suspect.clear()
 
+    def failed(self, cooldown_seconds: float) -> None:
+        """No account served the request: deprioritize only the first one that
+        5xx'd, so the next request starts elsewhere while one bad request
+        still cannot cool the whole pool."""
+        if self._suspect:
+            note_failure(self._suspect[0][0], cooldown_seconds=cooldown_seconds, affinity_safe=True)
+        self._suspect.clear()
+
 
 def reset_health() -> None:
     """Clear cooldowns and in-flight reservations. Tests only."""
