@@ -5,6 +5,9 @@ import { newSession } from '../state.js';
 import { readQueue, writeQueueItem, deleteQueueItem } from './queue-store.js';
 
 let queueDraining = false;
+// Ids of queued items being sent now. Kept apart from the item objects: a
+// storage reload (another tab) or a Stop hold replaces those mid-send.
+const inFlight = new Set();
 // Held queue item ids per thread, when storage is unavailable.
 const heldMemory = new Map();
 
@@ -107,7 +110,7 @@ export function createQueue(ctx) {
     }
     try { S.queuedTurns = readQueue(S.currentId); } catch (_) {}
     const ids = heldIds();
-    for (const item of S.queuedTurns) if (!item.sending) ids.add(item.id);
+    for (const item of S.queuedTurns) if (!inFlight.has(item.id)) ids.add(item.id);
     heldMemory.set(String(S.currentId), [...ids]);
     try { for (const id of ids) localStorage.setItem(queueHoldKey() + '.' + id, '1'); } catch (_) {}
     renderQueue();
@@ -125,9 +128,7 @@ export function createQueue(ctx) {
       const items = readQueue(S.currentId);
       sweepCauses();
       if (Array.isArray(items))
-        S.queuedTurns = items
-          .filter((item) => item && typeof item.text === "string")
-          .map((item) => ({ ...item, sending: false }));
+        S.queuedTurns = items.filter((item) => item && typeof item.text === "string");
     } catch (_) {}
     retireAcceptedQueue();
     renderQueue();
@@ -160,21 +161,22 @@ export function createQueue(ctx) {
       composer.scheduleFitChatBar();
       return;
     }
-    if (!S.queuedTurns.some((item) => item.id === S.queueMenuId && !item.sending)) S.queueMenuId = "";
+    if (!S.queuedTurns.some((item) => item.id === S.queueMenuId && !inFlight.has(item.id))) S.queueMenuId = "";
     // One line per message: the header says "Queued", so a row names only an
     // exceptional state. Edit and Cancel live behind the row's ⋮ menu.
     const html = S.queuedTurns
       .map((item, index) => {
-        const state = [item.sending ? "Sending…" : item.immediate ? "Next" : held.has(item.id) ? "Stopped" : "",
+        const sending = inFlight.has(item.id);
+        const state = [sending ? "Sending…" : item.immediate ? "Next" : held.has(item.id) ? "Stopped" : "",
           item.attachments?.length ? `${item.attachments.length} attached` : ""].filter(Boolean).join(" · ");
         const open = item.id === S.queueMenuId;
-        const off = item.sending ? " disabled" : "";
-        return `<li class="chat-queue-item${item.immediate ? " is-immediate" : ""}${item.sending ? " is-sending" : ""}" data-queue-index="${index}" data-queue-id="${escapeHtml(item.id)}" aria-busy="${Boolean(item.sending)}">` +
+        const off = sending ? " disabled" : "";
+        return `<li class="chat-queue-item${item.immediate ? " is-immediate" : ""}${sending ? " is-sending" : ""}" data-queue-index="${index}" data-queue-id="${escapeHtml(item.id)}" aria-busy="${sending}">` +
           `<span class="chat-queue-dot" aria-hidden="true"></span>` +
           `<span class="chat-queue-text" title="${escapeHtml(item.text)}">${escapeHtml(item.text || "Attached files")}</span>` +
           `<span class="chat-queue-state" role="status">${state}</span>` +
           '<span class="chat-queue-actions">' +
-          `<button type="button" class="chat-queue-action" data-queue-send="${index}" title="${S.streaming ? "Stop the current reply and send this message now" : "Send this message now"}"${!S.streaming && !held.has(item.id) ? " hidden" : ""}${item.sending || (!S.streaming && !held.has(item.id)) ? " disabled" : ""}>Send now</button>` +
+          `<button type="button" class="chat-queue-action" data-queue-send="${index}" title="${S.streaming ? "Stop the current reply and send this message now" : "Send this message now"}"${!S.streaming && !held.has(item.id) ? " hidden" : ""}${sending || (!S.streaming && !held.has(item.id)) ? " disabled" : ""}>Send now</button>` +
           '<span class="chat-queue-more-wrap">' +
           `<button type="button" class="chat-queue-more" data-queue-more="${index}" aria-haspopup="menu" aria-expanded="${open}" aria-label="More actions" title="Edit or cancel"${off}>` +
           '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="3.5" r="1.3" fill="currentColor"/><circle cx="8" cy="8" r="1.3" fill="currentColor"/><circle cx="8" cy="12.5" r="1.3" fill="currentColor"/></svg></button>' +
@@ -218,7 +220,6 @@ export function createQueue(ctx) {
       text: trimmed,
       attachments: (attachments || []).slice(),
       immediate: Boolean(opts && opts.immediate),
-      sending: false,
     };
     S.queuedTurns.push(item);
     // Storage full or blocked: a queued item that is not persisted vanishes
@@ -243,24 +244,26 @@ export function createQueue(ctx) {
     if (queueDraining || traces.runIsActive(S.activeRun) || S.streaming || S.sending || S.loading) return;
     const held = heldIds();
     const item = S.queuedTurns.find((entry) => !held.has(entry.id));
-    if (!item || item.sending) return;
-    item.sending = true;
+    if (!item || inFlight.has(item.id)) return;
+    inFlight.add(item.id);
     renderQueue();
     queueDraining = true;
     const origin = S.currentId;
     try {
       const ok = await send.completeTurn(item.text, item.attachments || [], { queueId: item.id, commandId: item.id + ":turn", follow: opts?.follow !== false });
+      inFlight.delete(item.id);
       if (ok) {
         acknowledgeQueuedTurn(origin, item.id);
         composer.scheduleFitChatBar();
       } else {
-        item.sending = false;
+        // A reload may have replaced `item` meanwhile; update the shown copy.
         item.immediate = false;
+        for (const entry of S.queuedTurns) if (entry.id === item.id) entry.immediate = false;
         persistQueue(item);
         renderQueue();
       }
     } catch (_) {
-      item.sending = false;
+      inFlight.delete(item.id);
       renderQueue();
     } finally {
       queueDraining = false;
@@ -294,8 +297,12 @@ export function createQueue(ctx) {
     sync.syncStatus();
   }
 
+    function queueItemSending(item) {
+    return Boolean(item && inFlight.has(item.id));
+  }
+
     async function sendQueuedNow(item) {
-    if (!item || item.sending) return;
+    if (!item || inFlight.has(item.id)) return;
     // Send now interrupts: the running reply is stopped outright (Stop kills
     // its tree and force-finishes a wedged worker after the grace window),
     // then this message starts a new turn. Steering kept the old request
@@ -313,14 +320,13 @@ export function createQueue(ctx) {
     renderQueue();
     if (traces.runIsActive(S.activeRun) || S.streaming) {
       const origin = S.currentId;
-      item.sending = true;
+      inFlight.add(item.id);
       renderQueue();
       if (S.activeRun?.id) {
         S.sendNowRuns.add(S.activeRun.id);
         markCause(S.activeRun.id, 'send-now');
       }
-      await send.stopActiveRun();
-      item.sending = false;
+      try { await send.stopActiveRun(); } finally { inFlight.delete(item.id); }
       if (origin !== S.currentId) return;
       renderQueue();
     }
@@ -337,6 +343,7 @@ export function createQueue(ctx) {
     queueHoldKey,
     parseSlashCommand,
     queueIncomingTurn,
+    queueItemSending,
     queueStoreKey,
     removeQueuedTurn,
     renderQueue,

@@ -890,14 +890,14 @@ import { createBoot } from './chat/boot.js';
       if (sendBtnEl) {
         const index = Number(sendBtnEl.getAttribute("data-queue-send"));
         const item = S.queuedTurns[index];
-        if (!item || item.sending) return;
+        if (!item || turns.queueItemSending(item)) return;
         turns.sendQueuedNow(item);
         return;
       }
       if (editBtnEl) {
         const index = Number(editBtnEl.getAttribute("data-queue-edit"));
         const item = S.queuedTurns[index];
-        if (!item || item.sending) return;
+        if (!item || turns.queueItemSending(item)) return;
         // Queue what is in the box first: if that cannot be saved, editing
         // would overwrite it with the queued text and lose it.
         if ((S.input.value.trim() || S.pendingAttachments.length) && !turns.enqueueTurn(S.input.value, S.pendingAttachments)) {
@@ -916,7 +916,7 @@ import { createBoot } from './chat/boot.js';
       }
       if (undoBtnEl) {
         const index = Number(undoBtnEl.getAttribute("data-queue-cancel"));
-        if (!S.queuedTurns[index]?.sending) turns.removeQueuedTurn(index);
+        if (S.queuedTurns[index] && !turns.queueItemSending(S.queuedTurns[index])) turns.removeQueuedTurn(index);
       }
     });
     const closeQueueMenu = () => { if (S.queueMenuId) { S.queueMenuId = ""; turns.renderQueue(); } };
@@ -965,6 +965,7 @@ import { createBoot } from './chat/boot.js';
     S.transcriptDirty = false;
     S.revision += 1;
     S.editingIndex = -1;
+    S.editingFiles = [];
     S.sessionId = newSession();
     S.liveMeter = null;
     S.compacting = false;
@@ -983,6 +984,10 @@ import { createBoot } from './chat/boot.js';
     if (!stayOnList) sidebar.setHistoryOpen(false);
     S.currentArtifact = null;
     artifacts.setArtifactOpen(false);
+    // Every path that leaves a thread for an empty chat (new chat, archive or
+    // delete of the open one, project removal) drops its agents, commands and
+    // any subagent transcript on screen.
+    agents.resetAgents();
     sync.syncStatus();
     if (window.matchMedia("(hover: hover) and (pointer: fine)").matches) S.input.focus();
     if (window.FuseComposerSpell) {
@@ -1005,7 +1010,6 @@ import { createBoot } from './chat/boot.js';
     if (nav === S.navigation) {
       sidebar.setHistoryTab("chats");
       clearChatState();
-      agents.resetAgents();
     }
   }
 

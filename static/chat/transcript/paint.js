@@ -313,6 +313,7 @@ export function createPaint(ctx) {
     setActive,
     setPartialTranscript,
     transcriptDomOptions,
+    viewMessages,
     visibleRecaps,
     assistantSegments,
     markArriving,

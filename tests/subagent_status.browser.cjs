@@ -333,6 +333,19 @@ function bump(id, patch) {
     assert.doesNotMatch(ui.main, /JULIET_REPORT_ONLY/);
     console.log('PASS compaction handoff stays in the owning pane');
 
+    // --- 8. Leaving the thread for an empty chat drops its agents ---
+    // Archiving or deleting the open chat clears it in place (clearChatState),
+    // without opening another thread; the strip, the open pane and the
+    // commands must not stay behind on the empty chat.
+    await page.evaluate(() => fuseToolFixture.clearChat({ keepList: true }));
+    await page.locator('[data-agent-view]').waitFor({ state: 'hidden' });
+    ui = await read();
+    assert.deepEqual(ui.rows, [], 'no agent rows from the previous thread');
+    assert.deepEqual(ui.jobs, [], 'no background commands from the previous thread');
+    assert.deepEqual(await page.evaluate(() => fuseToolFixture.agentState()), { open: false, viewId: '', rows: 0, jobs: 0 });
+    assert.equal(await page.locator('[data-agents-list]').isHidden(), true);
+    console.log('PASS clearing the chat drops its agents');
+
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }
 })().catch((error) => { console.error(error); process.exitCode = 1; });

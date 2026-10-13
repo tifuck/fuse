@@ -274,8 +274,10 @@ export function createSend(ctx) {
       const request = S.pendingTurn;
       const data = await net.api("/chat/threads/" + request.id + "/turns", { method: "POST", body: JSON.stringify(request.body) });
       if (opts?.queueId) queue.acknowledgeQueuedTurn(origin, opts.queueId);
+      // Accepted, so no longer unconfirmed, even if the user navigated away
+      // meanwhile: cleared by its own thread id, not whichever chat is open.
+      sync.setPendingTurn(null, request.id);
       if (gen !== S.generation) return;
-      sync.setPendingTurn(null);
       if (usedPending) {
         // Files pasted or dropped while this send was in flight stay queued.
         const sent = new Set(attachments);
@@ -299,14 +301,15 @@ export function createSend(ctx) {
       pending.remove();
       sync.acceptThread(data.thread);
       sidebar.rememberUndo(request.undoSnap || undoSnap);
-      // The acknowledgment is already a consistent snapshot. Subsequent
-      // progress is replayed by the socket from its independent cursor.
+      // The acknowledgment is a consistent snapshot. If the socket already
+      // applied later progress of this run, acceptThread keeps that reply.
       return true;
     } catch (error) {
       if (gen !== S.generation) return false;
-      if (opts?.undoSnap && !S.input.value.trim() && !S.pendingAttachments.length) {
+      if (opts?.undoSnap && !opts.edit && !S.input.value.trim() && !S.pendingAttachments.length) {
         // The transcript was never truncated, so a failed replacement only
-        // needs its text (and files) back in the composer to try again.
+        // needs its text (and files) back in the composer to try again. An
+        // edit still has them in its open editor.
         S.input.value = text;
         S.drafts.set(origin, text);
         S.pendingAttachments = attachments;

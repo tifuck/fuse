@@ -5,6 +5,10 @@ import { deltaParts, messageRunLive, splitThink, untimed } from '../core.js';
 
 export function createApply(ctx) {
   const { agents, artifacts, composer, context, net, panels, perms, persist, picker, sidebar, status, traces, transcript, turns, ui } = ctx;
+  // Patches are suffixes of the last published text. One that does not fit
+  // means events between this view's snapshot and the patch were never
+  // applied; sync/stream.js replays them from the snapshot cursor.
+  const gapError = (message) => Object.assign(new Error(message), { gap: true });
     async function runTitleRegen() {
     if (S.titleRegenRequest) return;
     if (!S.currentId || !S.messages.length) {
@@ -72,10 +76,6 @@ export function createApply(ctx) {
       sidebar.renderHistory();
     }
     transcript.setPartialTranscript(false);
-    // A snapshot may carry an older durable replay cursor than the patches
-    // already applied (server state writes are throttled). Accept it and let
-    // the socket replay the gap; the snapshot is the authoritative base.
-    if (Number(data.event_cursor) < S.viewCursor) S.viewCursor = Number(data.event_cursor);
     S.lastRunReceiptAt = Date.now();
     perms.acceptPermThread(data);
     S.acceptedQueueCommands = new Set(data.accepted_queue_ids || []);
@@ -91,6 +91,7 @@ export function createApply(ctx) {
     const viewport = transcript.captureThreadViewport();
     const old = new Map(S.messages.map((msg) => [msg.id, msg]));
     const previousReply = old.get(S.activeRun?.message_id);
+    let rekeyed = false;
     if (previousReply && S.activeRun?.id === data.run?.id) {
       // The steer response freezes the run's *durable* row, which can lag the
       // streamed patches by up to a flush interval — the snapshot's frozen
@@ -107,6 +108,7 @@ export function createApply(ctx) {
           (msg.tools || []).every(tool => prevTools.some(p => p.id === tool.id)) ||
           prevTools.every(tool => (msg.tools || []).some(next => next.id === tool.id))));
       if (frozen) {
+        rekeyed = true;
         // A stale snapshot would drop the streamed tail until the next
         // checkpoint update arrives; keep the client's longer text.
         if (String(frozen.content || "").length < String(previousReply.content || "").length ||
@@ -121,6 +123,14 @@ export function createApply(ctx) {
         delete previousReply._elapsedObserved;
       }
     }
+    // A live run's snapshot is durable only up to its stamped cursor (state
+    // writes are throttled), and this view may already hold the run's later
+    // patches. Rolling the reply back to the stamp would leave the next patch
+    // past the end of its text, and those patches are never resent, so the
+    // reply this view holds is kept, with the cursors that describe it.
+    const ahead = !rekeyed && traces.runIsActive(data.run) && S.activeRun?.id === data.run.id &&
+      Number(data.event_cursor) < S.viewCursor;
+    const keepLive = ahead ? old.get(data.run.message_id) || null : null;
     // A local transcript edit (delete, attachment removal) waits up to 200 ms
     // for its save. A snapshot taken at the same revision predates it: keep
     // the edit and let the queued save carry it. If the server moved on, the
@@ -139,15 +149,19 @@ export function createApply(ctx) {
     S.messages = data.messages.map((msg) => {
       const prior = old.get(msg.id);
       if (!prior) return { ...msg };
+      if (prior === keepLive) return prior;
       Object.assign(prior, msg);
       delete prior._raw;
       delete prior._reason;
       return prior;
     });
     S.serverRevision = data.revision;
-    S.viewCursor = Number(data.event_cursor || 0);
-    S.threadWatermark = Number.isSafeInteger(data.thread_cursor) ? Number(data.thread_cursor) : S.viewCursor;
-    S.activeRun = data.run;
+    if (!keepLive) {
+      S.viewCursor = Number(data.event_cursor || 0);
+      S.threadWatermark = Number.isSafeInteger(data.thread_cursor) ? Number(data.thread_cursor) : S.viewCursor;
+    }
+    const priorRun = S.activeRun;
+    S.activeRun = keepLive ? { ...data.run, status: priorRun.status, activity: priorRun.activity || data.run.activity } : data.run;
     if (S.activeRun && S.stoppingRunId && S.activeRun.id === S.stoppingRunId) S.activeRun.cancel_requested = true;
     if (!traces.runIsActive(S.activeRun) && (!S.activeRun || !S.stoppingRunId || S.activeRun.id === S.stoppingRunId)) S.stoppingRunId = "";
     status.setRunning(false);
@@ -170,7 +184,10 @@ export function createApply(ctx) {
     if (keepLocalSettings || keepLocalTranscript) persist.queueSave();
     else S.dirty = false;
     panels.syncMemoryUi();
-    if (same) {
+    // The fast path patches the articles of S.messages in place. A compacted
+    // thread shows its context view instead, so a snapshot that switches
+    // views repaints even when the message ids are unchanged.
+    if (same && transcript.viewMessages() === S.messages) {
       traces.foldAutoCommandResults(S.messages);
       traces.reconcileBgTraces([...S.completedJobs.values()], false);
       S.messages.forEach((msg, i) => {
@@ -313,7 +330,7 @@ export function createApply(ctx) {
       for (const field of ["content", "reasoning"]) {
         const patch = event[field];
         if (!patch || !Number.isInteger(patch.from) || patch.from < 0 || patch.from > (msg[field] || "").length) {
-          throw new Error("Output checkpoint mismatch; reconnecting.");
+          throw gapError("Output checkpoint mismatch; replaying missed patches.");
         }
         msg[field] = (msg[field] || "").slice(0, patch.from) + patch.text;
       }
@@ -322,7 +339,7 @@ export function createApply(ctx) {
         const change = event.segments;
         if (Number.isInteger(change.from)) {
           if (change.from < 0 || change.from > msg.segments.length || !Array.isArray(change.items)) {
-            throw new Error("Segment checkpoint mismatch; reconnecting.");
+            throw gapError("Segment checkpoint mismatch; replaying missed patches.");
           }
           msg.segments.splice(change.from, msg.segments.length - change.from, ...change.items);
         } else {
@@ -330,7 +347,7 @@ export function createApply(ctx) {
             const segment = msg.segments[patch.index];
             if (!segment || (segment.type !== "content" && segment.type !== "reasoning") ||
                 !Number.isInteger(patch.from) || patch.from < 0 || patch.from > segment.text.length) {
-              throw new Error("Segment checkpoint mismatch; reconnecting.");
+              throw gapError("Segment checkpoint mismatch; replaying missed patches.");
             }
             segment.text = segment.text.slice(0, patch.from) + patch.text;
             if (segment.type === "reasoning" && Number.isInteger(patch.ms)) segment.ms = patch.ms;
@@ -340,7 +357,7 @@ export function createApply(ctx) {
               if (change.base === msg.segments.length) msg.segments.push(...change.append);
               // A resend may carry a thought's newer duration; only content must match.
               else if (change.base < 0 || JSON.stringify(msg.segments.slice(change.base, change.base + change.append.length).map(untimed)) !== JSON.stringify(change.append.map(untimed))) {
-                throw new Error("Segment append base mismatch; refetching snapshot.");
+                throw gapError("Segment append base mismatch; replaying missed patches.");
               }
             } else msg.segments.push(...change.append); // pre-upgrade replay
           }

@@ -4,8 +4,11 @@ import { newSession } from '../state.js';
 
 export function createPersist(ctx) {
   const { apply, net, overlays, panels, picker, sidebar, status, traces } = ctx;
-    function setPendingTurn(value) {
-    S.pendingTurn = value;
+    // Clearing names the thread whose send settled. The open chat is only the
+    // default, for callers that have not awaited since reading it.
+    function setPendingTurn(value, id = S.currentId) {
+    if (value) S.pendingTurns.set(String(value.id), value);
+    else S.pendingTurns.delete(String(id));
     try {
       // The full undo snapshot makes an uncertain-ACK retry restorable after
       // a reload, but a multi-megabyte transcript must not evict the whole

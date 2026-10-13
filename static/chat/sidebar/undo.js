@@ -375,15 +375,16 @@ export function createUndo(ctx) {
     if (!net.requireLive()) return;
     const next = (text || "").trim();
     const kept = S.editingFiles.slice();
-    S.editingFiles = [];
     if (!next && !kept.length) {
       S.editingIndex = -1;
+      S.editingFiles = [];
       transcript.paint();
       return;
     }
-    const snap = snapshotMessages();
-    S.editingIndex = -1;
-    turns.completeTurn(next, kept, { undoSnap: snap, truncatedTo: index, restoreDraft: true, progress: "Sending edit…" });
+    // The editor stays open until the replacement is accepted: acceptThread
+    // closes it once the snapshot replaces this message. A failed or refused
+    // send leaves the text and files in the editor, matching what it shows.
+    return turns.completeTurn(next, kept, { undoSnap: snapshotMessages(), truncatedTo: index, edit: true, progress: "Sending edit…" });
   }
 
   return {

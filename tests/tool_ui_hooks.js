@@ -72,6 +72,9 @@ window.fuseToolFixture = {
     agents(rows) { S.agentsRows = structuredClone(rows); transcript.syncTodoSections(); },
     reset() { Object.values(S.todoSections).forEach((sec) => { sec.sig = ''; sec.shownKey = ''; sec.lingerUntil = 0; sec.expanded = false; }); S.todoDismissedKeys = new Set(); },
   },
+  // Leaves the thread for an empty chat (archive/delete of the open one).
+  clearChat: (opts) => clearChatState(opts),
+  agentState: () => ({ open: S.agentsOpen, viewId: S.agentViewId, rows: S.agentsRows.length, jobs: S.jobsRows.length }),
   pollAgent: agents.pollAgentView,
   refreshAgents: agents.refreshAgents,
   jobs: traces.reconcileBgTraces,

@@ -194,6 +194,10 @@ function initState() {
   S.viewCursor = 0;
   S.threadWatermark = 0;
   S.cursor = 0;
+  // Events at or below this were handled before a gap replay resent them.
+  S.replayedThrough = 0;
+  // The snapshot cursor the last gap replay started from.
+  S.gapReplayFrom = 0;
   S.socket = null;
   S.reconnectTimer = 0;
   S.dockResizeObserver = null;

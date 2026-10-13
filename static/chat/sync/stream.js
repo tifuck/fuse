@@ -5,6 +5,13 @@ export function createStream(ctx) {
   const { agents, apply, context, net, perms, persist, picker, sidebar, status, traces, transcript, turns, ui } = ctx;
     async function receiveEvent(event) {
     if (event.id <= S.cursor) return;
+    // A gap replay (replayGap) resends events this view already handled. Only
+    // the open thread's run events can be new to it; the rest would fire their
+    // side effects (notifications, refetches, unread badges) a second time.
+    if (event.id <= S.replayedThrough && !(event.thread_id === S.currentId && event.type.startsWith("run."))) {
+      S.cursor = event.id;
+      return;
+    }
     const payload = event.payload || {};
     if (event.type === "context.updated") {
       if (S.contextSaving) await S.contextSaving.catch(() => {});
@@ -18,8 +25,9 @@ export function createStream(ctx) {
       }
     } else if (event.type.startsWith("thread.")) {
       if (S.renameSaving) await S.renameSaving.catch(() => {});
-      S.searchGen += 1;
-      sidebar.resetSearchLists();
+      // Refresh the search, but keep its current hits on screen until the new
+      // ones land: clearing them first flipped content matches to the local
+      // title filter on every thread event.
       if (S.historyQuery) sidebar.queueSearch();
       if (event.type === "thread.deleted") {
         sidebar.threadGone(payload.id || event.thread_id);
@@ -137,7 +145,9 @@ export function createStream(ctx) {
       S.lastRunReceiptAt = Date.now();
       if (event.type === "run.started" || !S.activeRun || S.activeRun.id !== payload.run_id) {
         await apply.reconcileThread();
-      } else if (event.type === "run.progress" && S.editingIndex < 0) {
+      } else if (event.type === "run.progress") {
+        // Applied while a message is being edited too: S.cursor moves past
+        // this event either way, so a skipped patch would never come back.
         if (S.activeRun.status === "queued") S.activeRun.status = "running";
         const msg = S.messages.find((item) => item.id === payload.message_id);
         if (!msg) await apply.reconcileThread();
@@ -216,8 +226,23 @@ export function createStream(ctx) {
     S.cursor = Math.max(S.cursor, event.id);
   }
 
-    async function connectSync(resync = !S.syncInitialized) {
-    if (!resync && net.isLive()) return;
+    // A live run's snapshot is durable only up to its stamped cursor, and the
+    // run's later patches may already have gone by on this socket (another
+    // thread was open, or the snapshot landed after them). Only the server can
+    // resend them: reopen the socket at the snapshot's cursor. Once per cursor,
+    // so a gap a replay cannot close falls back to a snapshot instead of looping.
+    function replayGap() {
+    const from = S.viewCursor;
+    if (!Number.isSafeInteger(from) || from <= 0 || from >= S.cursor || from === S.gapReplayFrom) return false;
+    S.gapReplayFrom = from;
+    S.replayedThrough = Math.max(S.replayedThrough, S.cursor);
+    S.cursor = from;
+    connectSync(false, true);
+    return true;
+  }
+
+    async function connectSync(resync = !S.syncInitialized, reopen = false) {
+    if (!resync && !reopen && net.isLive()) return;
     const epoch = ++S.syncEpoch;
     window.clearTimeout(S.reconnectTimer);
     window.clearTimeout(S.heartbeatTimer);
@@ -286,6 +311,7 @@ export function createStream(ctx) {
             try {
               await receiveEvent(event);
             } catch (error) {
+              if (error?.gap && event.thread_id === S.currentId && event.type?.startsWith("run.") && replayGap()) return;
               // A single poison event used to reject the whole sync chain,
               // closing the socket and stranding the run spinner until a
               // refresh. Heal instead: skip the event and refetch state.
