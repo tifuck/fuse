@@ -30,6 +30,11 @@ import pytest
 pytestmark = pytest.mark.usefixtures("isolated_db")
 
 
+def teardown_module():
+    # Share levels are cached by user id; the next module's schema reuses ids.
+    pool_policy._share_cache.clear()
+
+
 GROK_EXTRA = {
     "access_token": "tok",
     "email": "grok-owner@test.invalid",
@@ -381,7 +386,12 @@ class PoolPolicyHttpTest(unittest.TestCase):
 
         from app import web
         from app.config import settings
+        from app.security import limiter
 
+        # Several logins per test: start and leave the login limiter empty so
+        # neither these tests nor the next module trip it.
+        limiter._hits.clear()
+        self.addCleanup(limiter._hits.clear)
         db.execute("DELETE FROM credentials")
         db.execute("DELETE FROM api_keys")
         db.execute("DELETE FROM users")
