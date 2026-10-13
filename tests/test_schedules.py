@@ -220,6 +220,9 @@ class FireStatusPropagationTest(unittest.TestCase):
         from app import chat_runs
 
         item = self._schedule()
+        # Runs left active by earlier tests in this shared schema would trip
+        # the capacity check before the fire reaches start_turn.
+        db.execute("UPDATE chat_runs SET status='completed' WHERE status IN ('queued','running')")
         slot = iso_utc(utcnow())
         db.execute(
             """INSERT INTO schedule_fires(schedule_id, user_id, trigger, status, slot_key, fire_id, started_at)
