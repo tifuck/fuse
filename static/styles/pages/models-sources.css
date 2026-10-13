@@ -340,6 +340,8 @@ label.share-option:has(input:disabled) { opacity: 0.5; cursor: not-allowed; }
 .pool-meter.is-empty .pool-meter-pct { color: var(--mute); }
 .pool-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 0.45rem; }
 .pool-actions form { margin: 0; }
+/* "Add key" and "Add account" share a width so Sharing lines up per pool. */
+.pool-actions .btn { min-width: 7rem; }
 /* The table's own toolbar: the view filter sits with what it filters. */
 .pool-table-bar {
   display: flex;
