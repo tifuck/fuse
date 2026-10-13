@@ -393,8 +393,10 @@ def patch_host(user_id: int, host_id: int, raw: dict) -> dict:
         raise HostError("unsupported host fields")
     with db.tx() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        # Row-locked: every column is written back, so a concurrent patch read
+        # from the same snapshot would revert a secret saved in between.
         row = conn.execute(
-            "SELECT * FROM user_hosts WHERE id=? AND user_id=?", (host_id, user_id)
+            "SELECT * FROM user_hosts WHERE id=? AND user_id=?" + db.for_update(conn), (host_id, user_id)
         ).fetchone()
         if row is None:
             raise HostError("host not found", 404)
@@ -485,11 +487,13 @@ def patch_host(user_id: int, host_id: int, raw: dict) -> dict:
                 raise HostError("alias already exists", 409) from exc
             raise HostError("could not update host", 500) from exc
         row = conn.execute("SELECT * FROM user_hosts WHERE id=?", (host_id,)).fetchone()
-        if clear_pin or any(k in raw for k in ("username", "auth_type", "secret", "passphrase")):
-            # Drop the pooled session: it was opened against the old endpoint
-            # or credentials and must not serve new work.
-            _evict_pool(user_id, host_id)
-        return _public_host(row, _projects(conn, user_id, host_id))
+        public = _public_host(row, _projects(conn, user_id, host_id))
+    if clear_pin or any(k in raw for k in ("username", "auth_type", "secret", "passphrase")):
+        # Drop the pooled session: it was opened against the old endpoint or
+        # credentials and must not serve new work. After the commit, or a
+        # connect in between could reopen it from the old row.
+        _evict_pool(user_id, host_id)
+    return public
 
 
 def delete_host(user_id: int, host_id: int) -> bool:

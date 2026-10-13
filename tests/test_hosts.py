@@ -765,5 +765,56 @@ class EnableCodingConcurrencyTest(unittest.TestCase):
                 self.assertEqual(row["agent_coding"], 1)
 
 
+class PatchHostMariaDBTest(unittest.TestCase):
+    def setUp(self):
+        from tests.mariadb_fixture import isolated_database
+
+        fixture = isolated_database()
+        fixture.__enter__()
+        self.addCleanup(fixture.__exit__, None, None, None)
+        vault.lock_all()
+        self.uid = accounts.create_user("patch@test.invalid", "password12", admin=False)["id"]
+        vault.unlock(self.uid, "password12")
+        self.host = hosts.add_host(self.uid, {"alias": "box", "hostname": "box.example.com", "username": "u",
+                                              "auth_type": "key", "secret": "k"})
+
+    def test_pool_is_evicted_only_after_the_new_row_commits(self):
+        import threading
+
+        seen = []
+
+        def evict(user_id, host_id):
+            # A connect racing the eviction reads the committed row.
+            reader = threading.Thread(target=lambda: seen.append(
+                db.fetchone("SELECT username FROM user_hosts WHERE id=?", (host_id,))["username"]))
+            reader.start()
+            reader.join(10)
+
+        with patch.object(hosts, "_evict_pool", evict):
+            hosts.patch_host(self.uid, self.host["id"], {"username": "rotated"})
+        self.assertEqual(seen, ["rotated"])
+
+    def test_concurrent_patch_does_not_revert_a_saved_field(self):
+        import threading
+
+        real_alias = hosts.normalize_alias
+        paused = threading.Event()
+
+        def slow_alias(value):
+            # The alias patch has read the row; a credential patch lands now.
+            paused.set()
+            threading.Event().wait(1.0)
+            return real_alias(value)
+
+        with patch.object(hosts, "normalize_alias", slow_alias):
+            first = threading.Thread(target=hosts.patch_host, args=(self.uid, self.host["id"], {"alias": "renamed"}))
+            first.start()
+            paused.wait(5)
+            hosts.patch_host(self.uid, self.host["id"], {"username": "rotated"})
+            first.join(10)
+        row = db.fetchone("SELECT alias, username FROM user_hosts WHERE id=?", (self.host["id"],))
+        self.assertEqual((row["alias"], row["username"]), ("renamed", "rotated"))
+
+
 if __name__ == "__main__":
     unittest.main()
