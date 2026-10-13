@@ -586,6 +586,22 @@ class AgentCapsTest(unittest.TestCase):
         self.assertIn("run_terminal_command", agent["loaded_tools"])
         self.assertIn("write_file", agent["loaded_tools"])
 
+    def test_child_runs_at_the_parents_effort_on_the_same_model(self):
+        # Without it a Claude subagent fell back to low while the user had
+        # picked xhigh. Another model keeps its default: the level may not exist.
+        thread = chats.create_thread(1, model="offline")
+        parent = store.start_turn(1, thread["id"], "Hello", thread["revision"], "turn", reasoning_effort="xhigh")["run"]
+        child = store.start_child_run(user_id=1, thread_id=thread["id"], parent_run_id=parent["id"],
+                                      prompt="look", description="explore")
+        self.assertEqual(child["request"]["reasoning_effort"], "xhigh")
+        other = store.start_child_run(user_id=1, thread_id=thread["id"], parent_run_id=parent["id"],
+                                      prompt="look", description="other", model="other-model")
+        self.assertNotIn("reasoning_effort", other["request"])
+        store.finish_run(child["id"], {"content": "done"}, "completed")
+        resumed = store.start_child_run(user_id=1, thread_id=thread["id"], parent_run_id=parent["id"],
+                                        prompt="again", description="explore", resume_from_id=child["id"])
+        self.assertEqual(resumed["request"]["reasoning_effort"], "xhigh")
+
     def test_explore_child_does_not_preload_writes(self):
         thread, parent = self._parent()
         child = store.start_child_run(

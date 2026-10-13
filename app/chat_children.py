@@ -1340,19 +1340,24 @@ def _start_child_run(
         else:
             loaded = sanitize_loaded(resume_loaded) if resume_loaded else default_loaded_for_child(kind)
         parent_agent = agent
+        child_model = model or req.get("model") or ""
+        # A subagent on its parent's model thinks as hard as its parent (the
+        # user's picked effort). Another model keeps its provider default: the
+        # parent's level may not exist there.
+        effort = chats.parse_reasoning_effort(req.get("reasoning_effort")) if child_model == (req.get("model") or "") else None
         ts = db.now()
         if resume_from_id and resume_messages:
             # Same session id (OpenCode). Do not mint a new descendant row.
             child_id = str(resume_from_id)
             source_row = conn.execute("SELECT * FROM chat_runs WHERE id=?", (child_id,)).fetchone()
             message_id = source_row["message_id"] if source_row else str(uuid4())
-            child_model = (model or req.get("model") or "")
             assistant = chats.parse_messages(
                 [{"id": message_id, "role": "assistant", "content": "", "tools": [], "segments": [], "model": child_model}],
                 strict=True,
             )[0]
             child_request = {
-                "model": model or req.get("model") or "",
+                "model": child_model,
+                **({"reasoning_effort": effort} if effort else {}),
                 "run_id": child_id,
                 "messages": seed,
                 "display_seed": seed,
@@ -1437,11 +1442,12 @@ def _start_child_run(
         message_id = str(uuid4())
         assistant = chats.parse_messages(
             [{"id": message_id, "role": "assistant", "content": "", "tools": [], "segments": [],
-              "model": (model or req.get("model") or "")}],
+              "model": child_model}],
             strict=True,
         )[0]
         child_request = {
-            "model": model or req.get("model") or "",
+            "model": child_model,
+            **({"reasoning_effort": effort} if effort else {}),
             "run_id": child_id,
             "messages": seed,
             "display_seed": seed,
