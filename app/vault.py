@@ -78,8 +78,11 @@ def create_wrapped_dek(password: str) -> tuple[bytes, str, str]:
 
 def ensure_user_vault(conn, user_id: int, password: str) -> bytes:
     """Create a vault on first use. Returns plaintext DEK. Never blanks existing ciphertext."""
+    # Row-locked: on MariaDB "BEGIN IMMEDIATE" takes no lock, so two first
+    # unlocks of a legacy account both saw no DEK and the second overwrote
+    # the first, whose DEK may already have encrypted a host secret.
     row = conn.execute(
-        "SELECT vault_salt, wrapped_dek, vault_kdf FROM users WHERE id=?", (user_id,)
+        "SELECT vault_salt, wrapped_dek, vault_kdf FROM users WHERE id=?" + db.for_update(conn), (user_id,)
     ).fetchone()
     if row is None:
         raise VaultError("user not found")

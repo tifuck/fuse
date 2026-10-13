@@ -170,5 +170,46 @@ class SshSsrfTest(unittest.TestCase):
                 ssh_pool.resolve_public("10.0.0.5", 22)
 
 
+class VaultMariaDBRaceTest(unittest.TestCase):
+    def setUp(self):
+        from tests.mariadb_fixture import isolated_database
+
+        fixture = isolated_database()
+        fixture.__enter__()
+        self.addCleanup(fixture.__exit__, None, None, None)
+        vault.lock_all()
+        self.uid = accounts.create_user("race@test.invalid", "password12", admin=False)["id"]
+        db.execute("UPDATE users SET vault_salt=NULL, wrapped_dek=NULL, vault_kdf=NULL WHERE id=?", (self.uid,))
+
+    def test_concurrent_first_unlock_of_a_legacy_account_shares_one_dek(self):
+        import threading
+
+        real_create, real_ensure = vault.create_wrapped_dek, vault.ensure_user_vault
+        first_in, second_in, deks = threading.Event(), threading.Event(), []
+
+        def create(password):
+            # Hold the first creator briefly: without the row lock a second
+            # unlock also finds no DEK and creates (and stores) its own.
+            if not first_in.is_set():
+                first_in.set()
+                second_in.wait(1.0)
+            else:
+                second_in.set()
+            return real_create(password)
+
+        def ensure(conn, user_id, password):
+            deks.append(real_ensure(conn, user_id, password))
+            return deks[-1]
+
+        with patch.object(vault, "create_wrapped_dek", create), patch.object(vault, "ensure_user_vault", ensure):
+            threads = [threading.Thread(target=vault.unlock, args=(self.uid, "password12")) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(30)
+        self.assertEqual(len(deks), 2)
+        self.assertEqual(deks[0], deks[1])
+
+
 if __name__ == "__main__":
     unittest.main()
