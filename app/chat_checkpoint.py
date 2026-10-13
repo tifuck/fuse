@@ -37,13 +37,25 @@ def durable_state_cursor(run_id: str) -> int | None:
     return _state_cursors.get(str(run_id))
 
 
-def state_cursor_snapshot() -> dict[str, int]:
+def state_cursor_snapshot(user_id=None) -> dict:
     """Stamps to use for one snapshot; take them BEFORE its transaction's
     first read. A stamp is set only after its row write commits, so a stamp
     taken first is covered by any row the later snapshot sees. A stamp read
     after the snapshot can belong to a newer row the snapshot cannot see,
-    and clamping to it would skip patches the returned row lacks."""
-    return dict(_state_cursors)
+    and clamping to it would skip patches the returned row lacks.
+
+    With user_id, key None holds the user's committed event cursor read at
+    the same moment: the clamp for a run not stamped yet. A run's row write
+    commits before its patches publish, so every one of its events at or
+    below that cursor is already in any row the snapshot sees."""
+    stamps: dict = dict(_state_cursors)
+    if user_id is not None:
+        pre = chat_tx.committed_cursor(user_id)
+        if pre is None:
+            row = db.fetchone("SELECT cursor FROM chat_event_cursors WHERE user_id=?", (user_id,))
+            pre = int(row["cursor"]) if row else 0
+        stamps[None] = pre
+    return stamps
 
 
 def state_write_pending(run_id) -> bool:

@@ -798,8 +798,13 @@ def _durable_cursor(run_id, stamps):
     from . import chat_checkpoint
 
     run_id = str(run_id)
-    if stamps is not None and run_id in stamps:
-        return stamps[run_id]
+    if stamps is not None:
+        # Never fall through to the live stamp once a pre-read set exists: it
+        # can belong to a row newer than the one this snapshot reads.
+        if run_id in stamps:
+            return stamps[run_id]
+        if None in stamps:
+            return stamps[None]
     return chat_checkpoint.durable_state_cursor(run_id)
 
 
@@ -1107,7 +1112,7 @@ def get_run(user_id, run_id):
 def get_run_snapshot(user_id, run_id):
     """Message, execution projections, and replay watermark from one snapshot."""
     from . import chat_checkpoint
-    stamps = chat_checkpoint.state_cursor_snapshot()
+    stamps = chat_checkpoint.state_cursor_snapshot(user_id)
     with db.tx() as conn:
         conn.execute("BEGIN")
         run = run_view(conn.execute("SELECT * FROM chat_runs WHERE user_id=? AND id=?", (user_id, run_id)).fetchone())

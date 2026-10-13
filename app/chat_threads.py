@@ -391,7 +391,7 @@ def get_thread(user_id: int, thread_id, *, observed_cursor: int | None = None, o
     from . import chat_checkpoint, chat_store
 
     # Before the transaction's first read; see state_cursor_snapshot.
-    stamps = chat_checkpoint.state_cursor_snapshot()
+    stamps = chat_checkpoint.state_cursor_snapshot(user_id)
     with db.tx() as conn:
         conn.execute("BEGIN")
         pk = resolve_thread_pk(user_id, thread_id, conn)
