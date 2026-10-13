@@ -251,6 +251,16 @@ class ChatStoreTest(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 413)
         self.assertEqual(chats.get_thread(1, thread["id"]), thread)
 
+    def test_unreadable_transcript_is_never_written_back(self):
+        thread = chats.create_thread(1, model="offline")
+        pk = chats.resolve_thread_pk(1, thread["id"])
+        db.execute("UPDATE chat_threads SET messages=? WHERE id=?", ('[{"role": "user", "cont', pk))
+        current = chats.get_thread(1, thread["id"])
+        self.assertConflict(lambda: self.turn(current))
+        self.assertConflict(lambda: chats.update_thread(1, thread["id"], messages=[{"role": "user", "content": "hi"}]))
+        self.assertEqual(db.fetchone("SELECT messages FROM chat_threads WHERE id=?", (pk,))["messages"],
+                         '[{"role": "user", "cont')
+
     def test_racing_turns_have_one_winner(self):
         thread = chats.create_thread(1)
         def attempt(key):

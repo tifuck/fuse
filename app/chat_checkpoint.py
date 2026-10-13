@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import random
 import re
 import time
 
-from . import db, chat_tx, chat_pub, chat_views
+from . import db, chat_schema, chat_tx, chat_pub, chat_views
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -214,11 +217,12 @@ def checkpoint(run_id, message, events=None, durable=True, future=None):
                 )
             _remember_request(conn, run_id, request if request_changed else stored_request, cur, guard, request_changed)
             if materialize_thread and getattr(cur, "rowcount", 1):
-                from . import chats
-
                 thread = chat_tx.lock_thread(conn, row["thread_id"], row["user_id"])
-                if thread:
-                    materialized = chat_views._project_thread_messages(chats.parse_messages(thread["messages"]), projected, request)
+                stored = chat_schema.stored_messages(thread["messages"]) if thread else None
+                if thread and stored is None:
+                    logger.error("Thread %s transcript is unreadable; not materializing run %s", row["thread_id"], run_id)
+                elif thread:
+                    materialized = chat_views._project_thread_messages(stored, projected, request)
                     conn.execute("UPDATE chat_threads SET messages=?,revision=revision+1 WHERE id=?", (chat_tx.dumps(materialized), row["thread_id"]))
                     chat_tx.thread_event(conn, row["user_id"], row["thread_id"], transcript_changed=True)
             wrote = bool(getattr(cur, "rowcount", 1))

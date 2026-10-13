@@ -23,8 +23,10 @@ from .chat_schema import (
     dump_messages,
     effective_instructions,
     new_public_id,
+    UNREADABLE_TRANSCRIPT,
     parse_messages,
     parse_thread_tools,
+    stored_messages,
 )
 from .chat_titles import _clean_title
 from .chat_generation import cache_watch
@@ -716,7 +718,9 @@ def _update_thread(conn, row, *, title, model, archived, pinned, messages, conte
             pin_bits = ", pinned=0"
     edited = False
     if messages is not None:
-        stored_msgs = parse_messages(row["messages"])
+        stored_msgs = stored_messages(row["messages"])
+        if stored_msgs is None:
+            raise ChatValidationError(UNREADABLE_TRANSCRIPT, 409)
         msgs = _rebase_saved_rows(conn, row, stored_msgs, messages)
         payload = json.dumps(msgs, ensure_ascii=False, separators=(",", ":"))
         from . import chat_recaps

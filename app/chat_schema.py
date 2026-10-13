@@ -447,6 +447,25 @@ def _legacy_json_value(value, depth: int = 0):
             if isinstance(key, str)
         }
     return None
+
+
+def stored_messages(raw) -> list[dict] | None:
+    """A stored transcript for read-modify-write: None when the blob is
+    unreadable, where parse_messages reads [] and the caller would write that
+    back over a transcript that might still be repaired."""
+    if isinstance(raw, (str, bytes)) and raw:
+        try:
+            raw = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
+            return None
+        if not isinstance(raw, list):
+            return None
+    return parse_messages(raw)
+
+
+UNREADABLE_TRANSCRIPT = "this chat's stored transcript is unreadable; it was left unchanged"
+
+
 def parse_messages(raw, *, strict: bool = False) -> list[dict]:
     if isinstance(raw, str):
         try:

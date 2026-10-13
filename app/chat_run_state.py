@@ -9,7 +9,7 @@ import json
 import time
 from uuid import uuid4
 
-from . import db, chat_tx, chat_views, chat_checkpoint, run_inbox
+from . import db, chat_schema, chat_tx, chat_views, chat_checkpoint, run_inbox
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +111,9 @@ def steer_turn(user_id, thread_id, text, command_id, attachments=None):
         pending = agent.setdefault("pending_steers", [])
         if len(pending) >= 8:
             raise chats.ChatValidationError("Too many pending messages; wait for delivery.", 429)
-        messages = chats.parse_messages(row["messages"])
+        messages = chat_schema.stored_messages(row["messages"])
+        if messages is None:
+            raise chats.ChatValidationError(chat_schema.UNREADABLE_TRANSCRIPT, 409)
         if len(messages) + 2 > chats.MSG_MAX:
             raise chats.ChatValidationError("chat message limit reached", 413)
         full = chat_views._message(json.loads(run["message"] or "{}"), run["message_id"])
@@ -261,7 +263,9 @@ def _start_turn(user_id, thread_id, text, expected_revision, command_id, model=N
         if row is None:
             raise chats.ChatValidationError("chat not found", 404)
         chat_tx.check_revision(row["revision"], expected_revision)
-        messages = chats.parse_messages(row["messages"])
+        messages = chat_schema.stored_messages(row["messages"])
+        if messages is None:
+            raise chats.ChatValidationError(chat_schema.UNREADABLE_TRANSCRIPT, 409)
         original_messages = messages
         if replace_from is not None:
             if replace_from >= len(messages) or messages[replace_from].get("role") != "user":
@@ -1088,8 +1092,12 @@ def finish_run(run_id, message, status):
         message = projected[row["message_id"]]
         thread = chat_tx.lock_thread(conn, row["thread_id"], row["user_id"])
         revision = None
+        messages = chat_schema.stored_messages(thread["messages"]) if thread else None
+        if thread and messages is None:
+            # The reply stays on the run row; never overwrite the transcript.
+            logger.error("Thread %s transcript is unreadable; run %s not merged into it", row["thread_id"], run_id)
+            thread = None
         if thread:
-            messages = chats.parse_messages(thread["messages"])
             messages = chat_views._project_thread_messages(messages, projected, request)
             revision = thread["revision"] + 1
             merged_tools = _merge_thread_loaded(thread, row)
@@ -1589,7 +1597,9 @@ def _force_terminal(run_id, status, message):
         revision = None
         if thread:
             try:
-                messages = chats.parse_messages(thread["messages"])
+                messages = chat_schema.stored_messages(thread["messages"])
+                if messages is None:
+                    raise chats.ChatValidationError(chat_schema.UNREADABLE_TRANSCRIPT, 409)
                 messages = [stored if msg["id"] == row["message_id"] else msg for msg in messages]
                 revision = thread["revision"] + 1
                 conn.execute(
