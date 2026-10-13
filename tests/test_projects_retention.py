@@ -349,15 +349,15 @@ class ProjectsRetentionTest(unittest.TestCase):
             hosts.set_project_archived(conn, 1, int(made["id"]), True, skip_running=True)
         db.execute("UPDATE user_projects SET archived_at=? WHERE id=?", (ago(days=31), made["id"]))
         db.execute("UPDATE chat_threads SET archived_at=? WHERE project_id=?", (ago(days=31), made["id"]))
-        real = hosts.project_session_ids
+        real = hosts._delete_archived_project
 
-        def restore_then_list(user_id, project_id):
+        def restore_then_delete(*args):
             # The user restores the project after the sweep's last re-read.
             with store.transaction() as conn:
                 hosts.set_project_archived(conn, 1, int(made["id"]), False)
-            return real(user_id, project_id)
+            return real(*args)
 
-        with patch.object(hosts, "project_session_ids", side_effect=restore_then_list):
+        with patch.object(hosts, "_delete_archived_project", side_effect=restore_then_delete):
             stats = retention.sweep_user(1)
         self.assertEqual(stats["deleted_projects"], 0)
         self.assertIsNotNone(hosts.get_project(1, 7, made["id"]))

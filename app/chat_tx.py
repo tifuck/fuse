@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 import threading
 
 from . import db
+from .database_errors import IntegrityError
 
 
 ACTIVE = ("queued", "running")
@@ -253,8 +254,17 @@ def remember(conn, user_id, command_id, fingerprint, result):
             result = {_VIEW_RECEIPT: result["id"]}
         elif isinstance(result, dict) and _is_thread_view(result.get("thread")):
             result = {**result, "thread": {_VIEW_RECEIPT: result["thread"]["id"]}}
-        conn.execute("INSERT INTO chat_commands(user_id,command_id,fingerprint,result) VALUES(?,?,?,?)",
-                     (user_id, command_id, fingerprint, dumps(result)))
+        try:
+            conn.execute("INSERT INTO chat_commands(user_id,command_id,fingerprint,result) VALUES(?,?,?,?)",
+                         (user_id, command_id, fingerprint, dumps(result)))
+        except IntegrityError as exc:
+            if exc.errno not in (None, 1062):
+                raise
+            from .chats import ChatValidationError
+
+            # The same command_id committed concurrently (the ledger read is
+            # not a lock). Roll this copy back; a retry replays that result.
+            raise ChatValidationError("this command is already being applied; retry to get its result", 409) from exc
 
 
 def event(conn, user_id, type, thread_id=None, payload=None, guard_run=None):

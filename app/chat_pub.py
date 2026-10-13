@@ -4,7 +4,9 @@ from __future__ import annotations
 import logging
 import asyncio
 import collections
+import random
 import threading
+import time
 
 from . import chat_tx
 
@@ -127,13 +129,17 @@ def _commit_publications(batch, attempts=3):
                     continue
                 eids.append(chat_tx.event(conn, user_id, type, thread_id, payload))
     except Exception as exc:
-        # MariaDB may pick the batch as a deadlock victim even under a
-        # disciplined lock order; the whole transaction rolled back, so the
-        # batch can simply retry.
-        code = getattr(exc, "args", (None,))[0]
-        retryable = code == 1213 or "Deadlock found" in str(exc)
+        # MariaDB may pick the batch as a deadlock victim (1213) or time out a
+        # lock wait (1205) even under a disciplined lock order; the whole
+        # transaction rolled back, so the batch can retry after a short,
+        # jittered pause (an immediate retry meets the same contention).
+        args = getattr(exc, "args", ())
+        code = args[0] if args else None
+        text = str(exc)
+        retryable = code in (1205, 1213) or "Deadlock found" in text or "Lock wait timeout" in text
         if retryable and attempts > 1:
-            logger.warning("Event publication batch deadlocked; retrying (%d items)", len(batch))
+            logger.warning("Event publication batch hit lock contention; retrying (%d items)", len(batch))
+            time.sleep(random.uniform(0.02, 0.1) * (4 - attempts))
             return _commit_publications(batch, attempts - 1)
         raise
     return eids

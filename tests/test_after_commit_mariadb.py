@@ -1,5 +1,6 @@
 """In-memory job state follows the database, never runs ahead of it."""
 import asyncio
+import contextlib
 import os
 from unittest.mock import patch
 
@@ -78,3 +79,45 @@ def test_unsaved_terminal_record_is_kept_and_saved_later():
         command_jobs._live.clear()
 
     asyncio.run(run())
+
+
+
+@needs_db
+def test_concurrent_duplicate_command_is_a_conflict_not_a_500():
+    from app.chats import ChatValidationError
+
+    with isolated_database():
+        from app import accounts
+
+        user = accounts.create_user("dup-command@test.invalid", "password12", admin=False)
+        uid = int(user["id"] if isinstance(user, dict) else user)
+        with chat_tx.transaction() as conn:
+            chat_tx.remember(conn, uid, "cmd-1", "fp", {"ok": True})
+        # A second request that passed the (non-locking) ledger read earlier.
+        with pytest.raises(ChatValidationError) as caught:
+            with chat_tx.transaction() as conn:
+                chat_tx.remember(conn, uid, "cmd-1", "fp", {"ok": True})
+        assert caught.value.status_code == 409
+
+
+def test_publication_retry_classifier_handles_argless_and_lock_wait_errors():
+    from app import chat_pub
+
+    calls = []
+
+    @contextlib.contextmanager
+    def failing_tx():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError()  # no args: used to raise IndexError in the classifier
+        if len(calls) == 2:
+            raise Exception(1205, "Lock wait timeout exceeded")
+        yield None
+
+    with patch.object(chat_pub.chat_tx, "transaction", failing_tx):
+        with pytest.raises(RuntimeError):
+            chat_pub._commit_publications([])
+    calls.clear()
+    calls.append(1)  # skip the argless failure
+    with patch.object(chat_pub.chat_tx, "transaction", failing_tx), patch.object(chat_pub.time, "sleep"):
+        assert chat_pub._commit_publications([]) == []

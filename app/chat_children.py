@@ -30,6 +30,17 @@ SCRATCH_MAX_SLOTS = 32
 SCRATCH_VALUE_MAX = 20_000
 
 
+def _stored_request(raw) -> dict | None:
+    """A run's stored JSON object (request or message), or None when it cannot
+    be parsed. Callers then refuse to write it back: a {} stand-in erased the
+    live run's model, messages and tools."""
+    try:
+        value = json.loads(raw or "{}")
+    except (json.JSONDecodeError, TypeError, RecursionError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
 class SpawnCapError(Exception):
     def __init__(self, detail: str):
         super().__init__(detail)
@@ -52,12 +63,9 @@ def queue_child_result(parent_run_id: str, envelope: str, child_id: str | None =
             row = conn.execute("SELECT id,status,request FROM chat_runs WHERE id=?", (parent_run_id,)).fetchone()
             if row is None or row["status"] not in chat_tx.ACTIVE:
                 return False
-            try:
-                req = json.loads(row["request"] or "{}")
-            except (json.JSONDecodeError, TypeError):
-                req = {}
-            if not isinstance(req, dict):
-                req = {}
+            req = _stored_request(row["request"])
+            if req is None:
+                return False
             agent = req.get("agent") if isinstance(req.get("agent"), dict) else {}
             pending = agent.get("pending_child_results")
             if not isinstance(pending, list):
@@ -268,12 +276,9 @@ def scratch_apply(run_id: str, ops: list[dict]) -> dict:
         row = conn.execute("SELECT id,status,request FROM chat_runs WHERE id=?", (run_id,)).fetchone()
         if row is None or row["status"] not in chat_tx.ACTIVE:
             raise ScratchError("no active session")
-        try:
-            req = json.loads(row["request"] or "{}")
-        except (json.JSONDecodeError, TypeError):
-            req = {}
-        if not isinstance(req, dict):
-            req = {}
+        req = _stored_request(row["request"])
+        if req is None:
+            raise ScratchError("this session's state is unreadable")
         agent = req.get("agent") if isinstance(req.get("agent"), dict) else {}
         pad = _scratch_of(agent)
         for index, op in enumerate(ops):
@@ -347,12 +352,9 @@ def queue_followup(run_id: str, text: str) -> bool:
             # Same contract as queue_steer: a stopping child never consumes a
             # queued follow-up, so accepting one would lie to the parent.
             return False
-        try:
-            req = json.loads(row["request"] or "{}")
-        except (json.JSONDecodeError, TypeError):
-            req = {}
-        if not isinstance(req, dict):
-            req = {}
+        req = _stored_request(row["request"])
+        if req is None:
+            return False
         agent = req.get("agent") if isinstance(req.get("agent"), dict) else {}
         pending = agent.get("pending_followups")
         if not isinstance(pending, list):
@@ -437,12 +439,9 @@ def continue_child_with_followups(run_id: str, followups: list) -> bool:
             or not row["parent_run_id"]
         ):
             return False
-        try:
-            req = json.loads(row["request"] or "{}")
-        except (json.JSONDecodeError, TypeError):
-            req = {}
-        if not isinstance(req, dict):
-            req = {}
+        req = _stored_request(row["request"])
+        if req is None:
+            return False
         agent = req.get("agent") if isinstance(req.get("agent"), dict) else {}
         if chat_run_state.automatic_stop_guard(
             conn, row["user_id"], row["thread_id"], parent_run_id=row["parent_run_id"],
@@ -564,22 +563,17 @@ def flag_unconsumed_followups(run_id: str, followups: list) -> None:
         ).fetchone()
         if row is None or row["status"] not in chat_tx.TERMINAL:
             return
-        try:
-            message = json.loads(row["message"] or "{}")
-        except (json.JSONDecodeError, TypeError):
-            message = {}
-        if not isinstance(message, dict):
-            message = {}
+        message = _stored_request(row["message"])
+        if message is None:
+            logger.warning("Child %s message is unreadable; unconsumed follow-ups not recorded", run_id)
+            return
         segments = message.get("segments") if isinstance(message.get("segments"), list) else []
         segments = [*segments, {"type": "content", "text": "\n\n" + note}]
         message["segments"] = segments
         message["content"] = ((str(message.get("content") or "").strip() + "\n\n" + note).strip())[: chats.ASSISTANT_CONTENT_MAX]
-        try:
-            req = json.loads(row["request"] or "{}")
-        except (json.JSONDecodeError, TypeError):
-            req = {}
-        if not isinstance(req, dict):
-            req = {}
+        req = _stored_request(row["request"])
+        if req is None:
+            return
         agent = req.get("agent") if isinstance(req.get("agent"), dict) else {}
         agent["background"] = True
         # Stopped/failed writeups ignore message content; keep the list where
@@ -691,12 +685,9 @@ def queue_steer(run_id: str, steer_id: str, text: str) -> bool:
         ).fetchone()
         if row is None or row["status"] not in chat_tx.ACTIVE or row["cancel_requested"]:
             return False
-        try:
-            req = json.loads(row["request"] or "{}")
-        except (json.JSONDecodeError, TypeError):
-            req = {}
-        if not isinstance(req, dict):
-            req = {}
+        req = _stored_request(row["request"])
+        if req is None:
+            return False
         agent = req.get("agent") if isinstance(req.get("agent"), dict) else {}
         if agent.get("steer_closed"):
             return False

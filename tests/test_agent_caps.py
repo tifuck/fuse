@@ -1793,7 +1793,11 @@ class AgentCapsTest(unittest.TestCase):
             store.finish_run(child["id"], {"content": "ok"}, "completed")
             return None
 
-        with patch("app.hosts.get_host", return_value=host), patch.object(chat_runs, "start", side_effect=finish):
+        # No real host to probe: every path resolves to itself (no symlinks).
+        # An unresolvable path now fails closed, which would deny "lib" too.
+        resolve = AsyncMock(side_effect=lambda _u, _h, paths: list(paths))
+        with patch("app.hosts.get_host", return_value=host), patch.object(chat_runs, "start", side_effect=finish), \
+                patch("app.workspace._realpaths", resolve):
             for cwd in ("/", "/etc", "~"):
                 text, trace = asyncio.run(agents.spawn(
                     user={"id": 1}, request=None, parent_run_id=parent["id"], thread_id=thread["id"],

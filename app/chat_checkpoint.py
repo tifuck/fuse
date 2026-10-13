@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import random
 import re
 import time
 
@@ -619,7 +620,12 @@ def finish_compact(user_id, thread_id, checkpoint, *, command_id, fingerprint, e
 def apply_compaction_checkpoint(user_id, thread_id, checkpoint, *, meter=None, run_id=None):
     from . import chats, context_compact as ctxmod, context_meter
 
-    for attempt in range(3):
+    attempts = 5
+    for attempt in range(attempts):
+        if attempt:
+            # A live run keeps moving the revision; an immediate retry meets
+            # the same writer. Blocking: callers run this off the event loop.
+            time.sleep(random.uniform(0.05, 0.2) * attempt)
         with chat_tx.transaction() as conn:
             pk, row = _compaction_row(conn, user_id, thread_id)
             if row is None:
@@ -627,7 +633,7 @@ def apply_compaction_checkpoint(user_id, thread_id, checkpoint, *, meter=None, r
             # Moved since the read: retry from a fresh snapshot rather than
             # writing back state that lacks the other writer's change.
             if not _hold_revision(conn, pk, user_id, row):
-                if attempt == 2:
+                if attempt == attempts - 1:
                     raise chats.ChatValidationError("revision conflict; reload the latest state", 409)
                 continue
             keys = row.keys() if hasattr(row, "keys") else []

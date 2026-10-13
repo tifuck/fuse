@@ -159,6 +159,22 @@ def _thread_activity(conn, user_id: int) -> tuple[list[dict], set[int]]:
     return out, busy
 
 
+def _project_unchanged(conn, user_id: int, project: dict, sessions: list[dict]) -> bool:
+    """Re-check under the write lock: a project edited, or a session used or
+    added after the sweep's snapshot, is no longer idle."""
+    row = conn.execute(
+        "SELECT archived, updated_at FROM user_projects WHERE id=? AND user_id=?" + db.for_update(conn),
+        (project["id"], user_id),
+    ).fetchone()
+    if row is None or row["archived"] or row["updated_at"] != project["updated_at"]:
+        return False
+    current = {int(r["id"]): int(r["revision"]) for r in conn.execute(
+        "SELECT id, revision FROM chat_threads WHERE user_id=? AND project_id=? AND kind='project'" + db.for_update(conn),
+        (user_id, project["id"]),
+    ).fetchall()}
+    return current == {int(t["id"]): int(t["revision"]) for t in sessions}
+
+
 def sweep_user(user_id: int, prefs: dict | None = None, *, now: datetime | None = None) -> dict:
     """Apply one user's policy once. Returns counts of what changed."""
     from . import chat_store as store, chats, hosts
@@ -201,7 +217,8 @@ def sweep_user(user_id: int, prefs: dict | None = None, *, now: datetime | None 
                 last = _latest(p["updated_at"], p["created_at"], *(t["last_active"] for t in sessions))
                 if last and last < cutoff:
                     with store.transaction() as conn:
-                        if hosts.set_project_archived(conn, user_id, int(p["id"]), True, skip_running=True) is not None:
+                        if _project_unchanged(conn, user_id, p, sessions) and \
+                                hosts.set_project_archived(conn, user_id, int(p["id"]), True, skip_running=True) is not None:
                             stats["archived_projects"] += 1
                             p["archived"] = 1
                     # Archived just now: the delete pass must age them from

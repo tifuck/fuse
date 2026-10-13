@@ -408,7 +408,8 @@ async def _compact_current(
         after["scope"] = "transcript"
         if persist_id:
             try:
-                store.apply_compaction_checkpoint(
+                await asyncio.to_thread(
+                    store.apply_compaction_checkpoint,
                     user["id"],
                     persist_id,
                     # A boot compact on a fresh turn summarizes exactly the

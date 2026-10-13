@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import secrets
 from .database_errors import IntegrityError
@@ -12,6 +13,8 @@ from . import db
 from .config import settings
 from .crypto import DecryptionError, decrypt_with_dek, encrypt_with_dek
 from .vault import VaultLocked, get_dek, unlocked
+
+logger = logging.getLogger(__name__)
 
 RESERVED_ALIASES = frozenset({"local", "localhost", "127.0.0.1"})
 _ALIAS_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,39}$")
@@ -549,8 +552,11 @@ def patch_project(user_id: int, host_id: int, project_id: int, raw: dict) -> dic
     allowed = {"name", "remote_path", "notes", "default_model", "permission_mode", "color", "archived"}
     if set(raw) - allowed:
         raise HostError("unsupported project fields")
-    with db.tx() as conn:
-        conn.execute("BEGIN IMMEDIATE")
+    from . import chat_store as store
+
+    # A chat transaction: archive/restore emits thread events, and only this
+    # one wakes other tabs and moves the watermarks after commit.
+    with store.transaction() as conn:
         row = conn.execute(
             "SELECT * FROM user_projects WHERE id=? AND user_id=? AND host_id=?",
             (project_id, user_id, host_id),
@@ -706,11 +712,14 @@ def delete_project(user_id: int, host_id: int, project_id: int, *, sessions: str
     chats so no thread points at a project id that no longer exists.
     archived_before (cleanup sweeps): delete only while the project is still
     archived since before that time and each session is still archived; a
-    restore at any point stops the deletion (HostError 409)."""
+    restore at any point stops the deletion (HostError 409) with nothing
+    deleted."""
     from . import chats
 
     if sessions not in ("delete", "keep"):
         raise HostError("sessions must be delete or keep")
+    if sessions == "delete" and archived_before is not None:
+        return _delete_archived_project(user_id, host_id, project_id, archived_before)
     row = db.fetchone(
         "SELECT id FROM user_projects WHERE id=? AND user_id=? AND host_id=?",
         (project_id, user_id, host_id),
@@ -719,17 +728,8 @@ def delete_project(user_id: int, host_id: int, project_id: int, *, sessions: str
         return False
     if sessions == "delete":
         for tid in project_session_ids(user_id, project_id):
-            expected = None
-            if archived_before is not None:
-                fresh = db.fetchone("SELECT archived, revision FROM chat_threads WHERE id=? AND user_id=?", (tid, user_id))
-                if fresh is None:
-                    continue
-                if not fresh["archived"]:
-                    raise HostError("project still has sessions; nothing was deleted", 409)
-                # Any change since (restore, new message) moves the revision.
-                expected = int(fresh["revision"])
             try:
-                deleted = chats.delete_thread(user_id, tid, expected_revision=expected, cancel_active=cancel_active)
+                deleted = chats.delete_thread(user_id, tid, cancel_active=cancel_active)
             except chats.ChatValidationError:
                 deleted = False
             # False is the refusal contract (thread moved or refused under
@@ -740,8 +740,7 @@ def delete_project(user_id: int, host_id: int, project_id: int, *, sessions: str
     else:
         from . import chat_store as store
 
-        with db.tx() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+        with store.transaction() as conn:
             ids = [int(r["id"]) for r in conn.execute(
                 "SELECT id FROM chat_threads WHERE user_id=? AND project_id=?", (user_id, project_id)
             ).fetchall()]
@@ -776,6 +775,57 @@ def delete_project(user_id: int, host_id: int, project_id: int, *, sessions: str
             (project_id, user_id, host_id),
         )
         return result.rowcount > 0
+
+
+def _delete_archived_project(user_id: int, host_id: int, project_id: int, archived_before: str) -> bool:
+    """Retention: delete an archived project with its archived sessions in
+    one transaction. Deleting session by session let a restore racing the
+    sweep stop it halfway, with the deleted sessions gone for good."""
+    from . import chat_store as store
+    from .chat_threads import public_id_for
+
+    with store.transaction() as conn:
+        project = conn.execute(
+            "SELECT archived, archived_at, updated_at, created_at FROM user_projects"
+            " WHERE id=? AND user_id=? AND host_id=?" + db.for_update(conn),
+            (project_id, user_id, host_id),
+        ).fetchone()
+        if project is None:
+            return False
+        since = project["archived_at"] or project["updated_at"] or project["created_at"]
+        if not project["archived"] or not since or since >= archived_before:
+            raise HostError("project was restored; nothing was deleted", 409)
+        threads = conn.execute(
+            "SELECT id, archived, revision, public_id FROM chat_threads WHERE user_id=? AND project_id=? AND kind='project'"
+            + db.for_update(conn),
+            (user_id, project_id),
+        ).fetchall()
+        if any(not t["archived"] for t in threads):
+            raise HostError("project still has sessions; nothing was deleted", 409)
+        ids = [int(t["id"]) for t in threads]
+        if ids and conn.execute(
+            "SELECT 1 FROM chat_runs WHERE user_id=? AND status IN ('queued','running') AND thread_id IN ("
+            + ",".join("?" for _ in ids) + ") LIMIT 1",
+            (user_id, *ids),
+        ).fetchone():
+            raise HostError("project has a running session; nothing was deleted", 409)
+        for t in threads:
+            conn.execute("DELETE FROM chat_runs WHERE thread_id=? AND user_id=?", (t["id"], user_id))
+            conn.execute("DELETE FROM chat_threads WHERE id=? AND user_id=?", (t["id"], user_id))
+            store.event(conn, user_id, "thread.deleted", t["id"],
+                        {"revision": int(t["revision"]) + 1, "id": t["public_id"] or public_id_for(t["id"], conn)})
+        result = conn.execute(
+            "DELETE FROM user_projects WHERE id=? AND user_id=? AND host_id=?",
+            (project_id, user_id, host_id),
+        )
+    from . import command_jobs
+
+    for tid in ids:
+        try:
+            command_jobs.cancel_thread(user_id, tid)
+        except Exception:
+            logger.exception("Could not cancel command jobs of deleted thread %s", tid)
+    return result.rowcount > 0
 
 
 def secret_plain(user_id: int, host_id: int) -> tuple[str, str, dict]:
