@@ -77,7 +77,7 @@ _LOCK_COPY = {
         "unauthed": "The linked ChatGPT sign-in is no longer valid.",
     },
     "zai": {
-        "none": "You need to link an x.ai, OpenAI, or Z.AI subscription.",
+        "none": "You need to link a Z.AI key, or share a live x.ai or OpenAI account.",
         "no_sub": "The linked Z.AI key needs an active GLM Coding Plan.",
         "unauthed": "The linked Z.AI key is no longer valid.",
     },

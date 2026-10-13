@@ -316,6 +316,22 @@ def grok_usage_percent(row, extra: dict | None) -> float | None:
         return None
 
 
+def _donor(cred) -> int | None:
+    try:
+        val = cred["donated_by"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    try:
+        return int(val) if val is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+# Health tiers: a lower tier always wins. Busy plans (at USAGE_BUSY) may still
+# serve a short request; a plan known to have no subscription will not.
+_TIER_OK, _TIER_BUSY, _TIER_NO_PLAN = 0, 1, 2
+
+
 def pick_account(
     creds,
     *,
@@ -324,21 +340,36 @@ def pick_account(
     exclude: set[int] | None = None,
     is_held=None,
     is_authed=None,
+    no_plan=None,
     prefer_id: int | None = None,
+    owner_id: int | None = None,
 ):
-    """Lowest usage first. Skip plans at USAGE_BUSY or above when another is under.
+    """The caller's own accounts first, then the least-used plan.
 
     kind is 'grok', 'chatgpt', 'zai', 'devin', 'kimi', 'mimo', or 'claude'. Returns (cred, extra)
     or None.
+
+    Order: healthy plans before busy ones (USAGE_BUSY or above) before ones
+    `no_plan` says have no subscription; then the caller's own accounts
+    (owner_id) before anyone else's, so a donor spends their own plan first
+    and the shared pool is the fallback; then ChatGPT plan tier, usage
+    percent, week_tokens and id.
 
     ChatGPT: models Free/Go can serve (luna, terra, 5.5, 5.4-mini) pick those
     plans first, then paid. Paid-only models (sol, 5.4) never consider Free/Go.
 
     prefer_id, when still eligible, wins over plan tier and usage. That keeps
     a conversation on the account that already holds its prompt-cache prefix.
+    A pin on someone else's account yields to one of the caller's own that
+    can take the request: the cache miss is one turn, the donor's quota is
+    the rest of the conversation.
 
     An account at the in-flight ceiling is skipped unless every candidate is
     saturated, so load spreads instead of dog-piling the freshest account.
+
+    is_held (an off-site usage hold) withholds an account from other users,
+    never from its owner: the owner using their own plan elsewhere is the
+    reason for the hold, not a reason to lock them out of it.
 
     Missing usage percent scores as 0, not week_tokens. Mixing those units
     buried a live SuperGrok plan with no x.ai % behind accounts at 69%.
@@ -346,6 +377,7 @@ def pick_account(
     """
     exclude = exclude or set()
     week = db.iso_week_start()
+    owner = int(owner_id) if owner_id is not None else None
     ready = []
     pinned = []
     for cred in creds:
@@ -367,7 +399,8 @@ def pick_account(
                 _unreadable_logged.add(cid)
                 logger.error("Pool credential %s cannot be decrypted; skipping it", cid)
             continue
-        if is_held is not None and is_held(cred):
+        mine = owner is not None and _donor(cred) == owner
+        if is_held is not None and not mine and is_held(cred):
             continue
         if is_authed is not None and not is_authed(cred, extra):
             continue
@@ -388,23 +421,35 @@ def pick_account(
             pct = kimi_usage_percent(extra)
         else:
             pct = grok_usage_percent(cred, extra)
-        busy = pct is not None and pct >= USAGE_BUSY
+        if no_plan is not None and no_plan(cred, extra):
+            tier = _TIER_NO_PLAN
+        elif pct is not None and pct >= USAGE_BUSY:
+            tier = _TIER_BUSY
+        else:
+            tier = _TIER_OK
         week_tok = int(cred["week_tokens"] or 0) if cred["week_start"] == week else 0
         score = pct if pct is not None else 0.0
-        row = (rank, busy, score, week_tok, cid, cred, extra)
+        row = (tier, 0 if mine else 1, rank, score, week_tok, cid, cred, extra)
         if cooling:
             pinned.append(row)
         else:
             ready.append(row)
+    best = None
+    if ready:
+        top = min(row[0] for row in ready)
+        primary = [row for row in ready if row[0] == top]
+        available = [row for row in primary if in_flight(row[5]) < MAX_IN_FLIGHT] or primary
+        available.sort(key=lambda row: (row[1], row[2], row[3], row[4], row[5]))
+        best = available[0]
     if prefer_id is not None:
         want = int(prefer_id)
-        preferred = [row for row in ready if row[4] == want] or pinned
-        preferred = [row for row in preferred if in_flight(row[4]) < MAX_IN_FLIGHT] or preferred
+        preferred = [row for row in ready if row[5] == want] or pinned
+        preferred = [row for row in preferred if in_flight(row[5]) < MAX_IN_FLIGHT] or preferred
         if preferred:
-            return preferred[0][5], preferred[0][6]
-    if not ready:
+            pin = preferred[0]
+            own_waiting = best is not None and best[1] == 0 and best[0] == _TIER_OK and in_flight(best[5]) < MAX_IN_FLIGHT
+            if pin[1] == 0 or not own_waiting:
+                return pin[6], pin[7]
+    if best is None:
         return None
-    primary = [row for row in ready if not row[1]] or ready
-    available = [row for row in primary if in_flight(row[4]) < MAX_IN_FLIGHT] or primary
-    available.sort(key=lambda row: (row[0], row[2], row[3], row[4]))
-    return available[0][5], available[0][6]
+    return best[6], best[7]

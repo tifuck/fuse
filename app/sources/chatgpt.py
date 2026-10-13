@@ -288,18 +288,13 @@ def listable_models(names: list[str], user_id: int | None) -> list[str]:
     return [name for name in names if any(chatgpt_allows_model(plan, name) for plan in plans)]
 
 
-def _chatgpt_pool_ready() -> bool:
-    sid = ensure_chatgpt_source()
-    rows = db.fetchall(
-        "SELECT * FROM credentials WHERE source_id=? AND disabled=0",
-        (sid,),
-    )
-    return any(credential_is_authed(row) for row in rows)
+def _chatgpt_live(row) -> bool:
+    return credential_is_authed(row)
 
 
 def chatgpt_access_state(user_id: int) -> dict:
     return pool_policy.with_open_access(
-        user_id, "chatgpt", chatgpt_own_access(user_id), _chatgpt_pool_ready()
+        user_id, "chatgpt", chatgpt_own_access(user_id), _chatgpt_live
     )
 
 
@@ -704,7 +699,7 @@ class ChatGPTSource:
         self.cfg = cfg
         self.creds = list(creds)
 
-    def _pick(self, model: str = "", exclude: set[int] | None = None, prefer_id: int | None = None):
+    def _pick(self, model: str = "", exclude: set[int] | None = None, prefer_id: int | None = None, owner_id: int | None = None):
         return pick_account(
             self.creds,
             kind="chatgpt",
@@ -712,6 +707,7 @@ class ChatGPTSource:
             exclude=exclude,
             is_authed=credential_is_authed,
             prefer_id=prefer_id,
+            owner_id=owner_id,
         )
 
     async def models(self) -> list[str]:
@@ -786,7 +782,7 @@ class ChatGPTSource:
         prefer_id = lookup("chatgpt", session_id)
         failover = Failover()
         while True:
-            picked = self._pick(model, exclude=tried, prefer_id=prefer_id)
+            picked = self._pick(model, exclude=tried, prefer_id=prefer_id, owner_id=user_id)
             if not picked:
                 if attempts and last.credential_id == attempts[-1].get("credential_id"):
                     attempts.pop()

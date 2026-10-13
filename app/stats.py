@@ -997,14 +997,21 @@ def _finish_pool_meter(percents: list[float], plans: list[str], unread: int) -> 
     return _empty_pool_meter("No plans")
 
 
-def grok_pool_meter(rows) -> dict:
+def _held_from(row, is_held, owner_id: int | None) -> bool:
+    """An off-site hold withholds an account from everyone but its owner."""
+    if owner_id is not None and row["donated_by"] == owner_id:
+        return False
+    return is_held(row)
+
+
+def grok_pool_meter(rows, *, owner_id: int | None = None) -> dict:
     percents: list[float] = []
     unread = 0
     for row in rows:
         if row["disabled"]:
             continue
         extra = accounts.cred_extra(row)
-        if grok_mod.is_held(row) or not grok_mod.credential_is_authed(row, extra):
+        if _held_from(row, grok_mod.is_held, owner_id) or not grok_mod.credential_is_authed(row, extra):
             continue
         billing = extra.get("billing") if isinstance(extra.get("billing"), dict) else {}
         if not grok_mod.billing_has_subscription(billing):
@@ -1042,7 +1049,7 @@ def devin_pool_meter(rows) -> dict:
     return _finish_pool_meter(percents, plans, unread)
 
 
-def kimi_pool_meter(rows) -> dict:
+def kimi_pool_meter(rows, *, owner_id: int | None = None) -> dict:
     percents: list[float] = []
     plans: list[str] = []
     unread = 0
@@ -1050,7 +1057,7 @@ def kimi_pool_meter(rows) -> dict:
         if row["disabled"]:
             continue
         extra = accounts.cred_extra(row)
-        if kimi_mod.is_held(row) or not kimi_mod.credential_is_authed(row, extra):
+        if _held_from(row, kimi_mod.is_held, owner_id) or not kimi_mod.credential_is_authed(row, extra):
             continue
         billing = extra.get("billing") if isinstance(extra.get("billing"), dict) else {}
         if not kimi_mod.billing_has_subscription(billing):
@@ -1065,7 +1072,7 @@ def kimi_pool_meter(rows) -> dict:
     return _finish_pool_meter(percents, plans, unread)
 
 
-def claude_pool_meter(rows) -> dict:
+def claude_pool_meter(rows, *, owner_id: int | None = None) -> dict:
     percents: list[float] = []
     plans: list[str] = []
     unread = 0
@@ -1073,7 +1080,7 @@ def claude_pool_meter(rows) -> dict:
         if row["disabled"]:
             continue
         extra = accounts.cred_extra(row)
-        if claude_mod.is_held(row) or not claude_mod.credential_is_authed(row, extra):
+        if _held_from(row, claude_mod.is_held, owner_id) or not claude_mod.credential_is_authed(row, extra):
             continue
         billing = extra.get("billing") if isinstance(extra.get("billing"), dict) else {}
         if not claude_mod.billing_has_subscription(billing):
@@ -1094,7 +1101,7 @@ def claude_pool_meter(rows) -> dict:
     return _finish_pool_meter(percents, plans, unread)
 
 
-def mimo_pool_meter(rows) -> dict:
+def mimo_pool_meter(rows, *, owner_id: int | None = None) -> dict:
     percents: list[float] = []
     plans: list[str] = []
     unread = 0
@@ -1102,7 +1109,7 @@ def mimo_pool_meter(rows) -> dict:
         if row["disabled"]:
             continue
         extra = accounts.cred_extra(row)
-        if mimo_mod.is_held(row) or not mimo_mod.credential_is_authed(row, extra):
+        if _held_from(row, mimo_mod.is_held, owner_id) or not mimo_mod.credential_is_authed(row, extra):
             continue
         billing = extra.get("billing") if isinstance(extra.get("billing"), dict) else {}
         if not mimo_mod.billing_has_subscription(billing):
@@ -1117,7 +1124,7 @@ def mimo_pool_meter(rows) -> dict:
     return _finish_pool_meter(percents, plans, unread)
 
 
-def zai_pool_meter(rows) -> dict:
+def zai_pool_meter(rows, *, owner_id: int | None = None) -> dict:
     percents: list[float] = []
     plans: list[str] = []
     unread = 0
@@ -1125,7 +1132,7 @@ def zai_pool_meter(rows) -> dict:
         if row["disabled"]:
             continue
         extra = accounts.cred_extra(row)
-        if zai_mod.is_held(row) or not zai_mod.credential_is_authed(row, extra):
+        if _held_from(row, zai_mod.is_held, owner_id) or not zai_mod.credential_is_authed(row, extra):
             continue
         billing = extra.get("billing") if isinstance(extra.get("billing"), dict) else {}
         if not zai_mod.billing_has_subscription(billing):

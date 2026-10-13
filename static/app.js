@@ -1528,16 +1528,29 @@ document.querySelectorAll(".probe").forEach((btn) => {
     apply(input);
   });
 
-  document.querySelectorAll("[data-pool-own-form]").forEach((form) => {
-    const input = form.querySelector("[data-pool-own]");
-    const value = form.querySelector("[data-pool-own-value]");
-    if (!input || !value) return;
-    input.addEventListener("change", () => {
-      if (form.dataset.saving) return;
-      form.dataset.saving = "1";
-      value.value = input.checked ? "1" : "0";
-      input.disabled = true;
-      form.submit();
+  // A private donor uses only their own accounts (the server enforces it too),
+  // so "Nobody" locks the routing choice to "Only your accounts".
+  document.querySelectorAll("[data-share-form]").forEach((form) => {
+    const pool = form.querySelector("[data-share-use-pool]");
+    const mine = form.querySelector('input[name="use"][value="mine"]');
+    if (!pool || !mine) return;
+    let chosen = pool.checked ? pool : mine;
+    const sync = () => {
+      const isPrivate = Boolean(form.querySelector("[data-share-private]")?.checked);
+      if (isPrivate) {
+        if (!pool.disabled) chosen = pool.checked ? pool : mine;
+        mine.checked = true;
+      } else if (pool.disabled) {
+        chosen.checked = true;
+      }
+      pool.disabled = isPrivate;
+    };
+    form.querySelectorAll('input[name="share"]').forEach((input) => input.addEventListener("change", sync));
+    form.querySelectorAll('input[name="use"]').forEach((input) => {
+      input.addEventListener("change", () => {
+        if (input.checked) chosen = input;
+      });
     });
+    sync();
   });
 })();

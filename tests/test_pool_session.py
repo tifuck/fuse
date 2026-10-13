@@ -30,13 +30,14 @@ from app.sources.pool_session import (
 )
 
 
-def _cred(cid, pct, week=0, extra=None, disabled=0, week_start=None):
+def _cred(cid, pct, week=0, extra=None, disabled=0, week_start=None, donor=None):
     return {
         "id": cid,
         "disabled": disabled,
         "week_tokens": week,
         "week_start": week_start if week_start is not None else db.iso_week_start(),
         "last_usage_percent": pct,
+        "donated_by": donor,
         "_extra": extra or {},
     }
 
@@ -257,6 +258,105 @@ class PoolSessionTest(unittest.TestCase):
             is_authed=lambda cred, extra: cred["id"] != 104,
         )
         self.assertEqual(picked["id"], 105)
+
+    @patch("app.sources.pool_pick.accounts.cred_extra", side_effect=lambda c: c.get("_extra") or {})
+    def test_own_accounts_first_then_the_pool_least_used_first(self, _extra):
+        mine_hot = _cred(201, pct=80.0, donor=7)
+        mine_cool = _cred(202, pct=60.0, donor=7)
+        theirs = _cred(203, pct=5.0, donor=8)
+        rest = _cred(204, pct=30.0, donor=9)
+        pool = [theirs, rest, mine_hot, mine_cool]
+        # A donor spends their own plan first, least used of theirs first.
+        picked, _ = pick_account(pool, kind="grok", owner_id=7)
+        self.assertEqual(picked["id"], 202)
+        # Everyone else spreads by usage, as before.
+        picked, _ = pick_account(pool, kind="grok", owner_id=10)
+        self.assertEqual(picked["id"], 203)
+        picked, _ = pick_account(pool, kind="grok")
+        self.assertEqual(picked["id"], 203)
+        # Fallback: own accounts failed this request (excluded), then busy.
+        picked, _ = pick_account(pool, kind="grok", owner_id=7, exclude={201, 202})
+        self.assertEqual(picked["id"], 203)
+        busy_mine = _cred(205, pct=USAGE_BUSY, donor=7)
+        picked, _ = pick_account([theirs, busy_mine], kind="grok", owner_id=7)
+        self.assertEqual(picked["id"], 203)
+        # Every plan busy: the caller's own busy plan goes first.
+        busy_theirs = _cred(206, pct=USAGE_BUSY, donor=8)
+        picked, _ = pick_account([busy_theirs, busy_mine], kind="grok", owner_id=7)
+        self.assertEqual(picked["id"], 205)
+        # Own accounts at the in-flight ceiling spill onto the pool.
+        for _ in range(pool_pick.MAX_IN_FLIGHT):
+            pool_pick.reserve(202)
+            pool_pick.reserve(201)
+        self.addCleanup(pool_pick.reset_health)
+        picked, _ = pick_account(pool, kind="grok", owner_id=7)
+        self.assertEqual(picked["id"], 203)
+
+    @patch("app.sources.pool_pick.accounts.cred_extra", side_effect=lambda c: c.get("_extra") or {})
+    def test_chatgpt_own_plan_beats_someone_elses_free_plan(self, _extra):
+        free = _cred(211, pct=1.0, donor=8, extra={"refresh_token": "r", "billing": {"plan_type": "free"}})
+        plus = _cred(212, pct=50.0, donor=7, extra={"refresh_token": "r", "billing": {"plan_type": "plus"}})
+        own_free = _cred(213, pct=70.0, donor=7, extra={"refresh_token": "r", "billing": {"plan_type": "free"}})
+        picked, _ = pick_account([free, plus], kind="chatgpt", model="gpt-5.5", owner_id=7)
+        self.assertEqual(picked["id"], 212)
+        # Among the caller's own, a free-capable model still prefers Free/Go.
+        picked, _ = pick_account([free, plus, own_free], kind="chatgpt", model="gpt-5.5", owner_id=7)
+        self.assertEqual(picked["id"], 213)
+        picked, _ = pick_account([free, plus], kind="chatgpt", model="gpt-5.5", owner_id=9)
+        self.assertEqual(picked["id"], 211)
+
+    @patch("app.sources.pool_pick.accounts.cred_extra", side_effect=lambda c: c.get("_extra") or {})
+    def test_pin_on_someone_elses_account_yields_to_an_own_account(self, _extra):
+        mine = _cred(221, pct=40.0, donor=7)
+        theirs = _cred(222, pct=10.0, donor=8)
+        picked, _ = pick_account([mine, theirs], kind="grok", prefer_id=222, owner_id=7)
+        self.assertEqual(picked["id"], 221)
+        # Without an own account free to take it, the pin keeps its cache.
+        picked, _ = pick_account([mine, theirs], kind="grok", prefer_id=222, owner_id=7, exclude={221})
+        self.assertEqual(picked["id"], 222)
+        busy_mine = _cred(221, pct=USAGE_BUSY, donor=7)
+        picked, _ = pick_account([busy_mine, theirs], kind="grok", prefer_id=222, owner_id=7)
+        self.assertEqual(picked["id"], 222)
+        # A pin on the caller's own account stays even when another own
+        # account is less used.
+        other_mine = _cred(223, pct=5.0, donor=7)
+        picked, _ = pick_account([mine, other_mine, theirs], kind="grok", prefer_id=221, owner_id=7)
+        self.assertEqual(picked["id"], 221)
+        picked, _ = pick_account([mine, theirs], kind="grok", prefer_id=222, owner_id=9)
+        self.assertEqual(picked["id"], 222)
+
+    @patch("app.sources.pool_pick.accounts.cred_extra", side_effect=lambda c: c.get("_extra") or {})
+    def test_off_site_hold_never_locks_out_the_owner(self, _extra):
+        held = _cred(231, pct=10.0, donor=7)
+        other = _cred(232, pct=50.0, donor=8)
+        is_held = lambda c: c["id"] == 231  # noqa: E731
+        picked, _ = pick_account([held, other], kind="grok", is_held=is_held, owner_id=7)
+        self.assertEqual(picked["id"], 231)
+        picked, _ = pick_account([held], kind="grok", is_held=is_held, owner_id=7)
+        self.assertEqual(picked["id"], 231)
+        picked, _ = pick_account([held, other], kind="grok", is_held=is_held, owner_id=8)
+        self.assertEqual(picked["id"], 232)
+        self.assertIsNone(pick_account([held], kind="grok", is_held=is_held, owner_id=8))
+        self.assertIsNone(pick_account([held], kind="grok", is_held=is_held))
+
+    @patch("app.sources.pool_pick.accounts.cred_extra", side_effect=lambda c: c.get("_extra") or {})
+    def test_plan_known_unsubscribed_is_the_last_resort(self, _extra):
+        unsub = _cred(
+            241, pct=None, donor=7, extra={"billing": {"fetched_at": "2026-09-20T00:00:00Z", "products": []}}
+        )
+        live = _cred(242, pct=90.0, donor=8, extra={"billing": {"fetched_at": "2026-09-20T00:00:00Z", "period_type": "month", "credit_usage_percent": 90.0}})
+        busy = _cred(243, pct=USAGE_BUSY, donor=9, extra={"billing": {"fetched_at": "2026-09-20T00:00:00Z", "period_type": "month", "credit_usage_percent": USAGE_BUSY}})
+        picked, _ = pick_account([unsub, live], kind="grok", no_plan=grok_mod.known_unsubscribed, owner_id=7)
+        self.assertEqual(picked["id"], 242)
+        picked, _ = pick_account([unsub, busy], kind="grok", no_plan=grok_mod.known_unsubscribed)
+        self.assertEqual(picked["id"], 243)
+        picked, _ = pick_account([unsub], kind="grok", no_plan=grok_mod.known_unsubscribed)
+        self.assertEqual(picked["id"], 241)
+        # No billing read yet is not "no plan": a just-linked account serves.
+        fresh = _cred(244, pct=None, donor=7)
+        self.assertFalse(grok_mod.known_unsubscribed(fresh, {}))
+        self.assertTrue(zai_mod.known_unsubscribed(fresh, {"billing": {"fetched_at": "x"}}))
+        self.assertFalse(zai_mod.known_unsubscribed(fresh, {"billing": {"fetched_at": "x", "plan_type": "pro"}}))
 
     @patch("app.sources.pool_pick.accounts.cred_extra", side_effect=lambda c: c.get("_extra") or {})
     def test_chatgpt_prefer_id_skipped_when_plan_blocks_model(self, _extra):
@@ -577,6 +677,14 @@ class GrokChatStickyTest(unittest.IsolatedAsyncioTestCase):
         reset_health()
         pool_session.persist = False
         reset_store()
+        # db.fetchall is mocked per test; the pool's sharing switch is read
+        # with fetchone and would otherwise reach a real schema.
+        admin = patch(
+            "app.sources.pool_policy.admin_policy",
+            return_value={"pool_shared": True, "open_access": False},
+        )
+        admin.start()
+        self.addCleanup(admin.stop)
 
     def tearDown(self):
         reset_store()
@@ -699,6 +807,14 @@ class ChatGPTChatFailoverTest(unittest.IsolatedAsyncioTestCase):
         reset_health()
         pool_session.persist = False
         reset_store()
+        # db.fetchall is mocked per test; the pool's sharing switch is read
+        # with fetchone and would otherwise reach a real schema.
+        admin = patch(
+            "app.sources.pool_policy.admin_policy",
+            return_value={"pool_shared": True, "open_access": False},
+        )
+        admin.start()
+        self.addCleanup(admin.stop)
 
     def tearDown(self):
         reset_store()

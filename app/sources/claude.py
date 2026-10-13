@@ -676,17 +676,12 @@ def claude_own_access(user_id: int) -> dict:
     return {"ok": False, "reason": "unauthed" if not saw_authed else "no_sub"}
 
 
-def _claude_pool_ready() -> bool:
-    sid = ensure_claude_source()
-    rows = db.fetchall("SELECT * FROM credentials WHERE source_id=? AND disabled=0", (sid,))
-    for row in rows:
-        if credential_is_authed(row, accounts.cred_extra(row)):
-            return True
-    return False
+def _claude_live(row) -> bool:
+    return not is_held(row) and credential_is_authed(row, accounts.cred_extra(row))
 
 
 def claude_access_state(user_id: int) -> dict:
-    return pool_policy.with_open_access(user_id, "claude", claude_own_access(user_id), _claude_pool_ready())
+    return pool_policy.with_open_access(user_id, "claude", claude_own_access(user_id), _claude_live)
 
 
 def user_has_claude(user_id: int) -> bool:
@@ -721,7 +716,7 @@ class ClaudeSource:
         self.cfg = cfg
         self.creds = list(creds)
 
-    def _pick(self, exclude: set[int] | None = None, prefer_id: int | None = None):
+    def _pick(self, exclude: set[int] | None = None, prefer_id: int | None = None, owner_id: int | None = None):
         now = datetime.now(timezone.utc)
         return pick_account(
             self.creds,
@@ -730,6 +725,7 @@ class ClaudeSource:
             is_held=lambda c: is_held(c, now),
             is_authed=credential_is_authed,
             prefer_id=prefer_id,
+            owner_id=owner_id,
         )
 
     async def models(self) -> list[str]:
@@ -766,7 +762,7 @@ class ClaudeSource:
         prefer_id = lookup("claude", session_id)
         failover = Failover()
         while True:
-            picked = self._pick(exclude=tried, prefer_id=prefer_id)
+            picked = self._pick(exclude=tried, prefer_id=prefer_id, owner_id=user_id)
             if not picked:
                 if attempts and last.credential_id == attempts[-1].get("credential_id"):
                     attempts.pop()

@@ -231,24 +231,21 @@ def mimo_own_access(user_id: int) -> dict:
     return {"ok": False, "reason": "no_sub" if saw_authed else "unauthed"}
 
 
-def _mimo_pool_ready() -> bool:
-    sid = ensure_mimo_source()
-    rows = db.fetchall("SELECT * FROM credentials WHERE source_id=? AND disabled=0", (sid,))
-    for row in rows:
-        extra = accounts.cred_extra(row)
-        if not credential_is_authed(row, extra):
-            continue
-        billing = extra.get("billing") if isinstance(extra.get("billing"), dict) else {}
-        if billing_has_subscription(billing):
-            return True
-    return False
+def _mimo_live(row) -> bool:
+    if is_held(row):
+        return False
+    extra = accounts.cred_extra(row)
+    if not credential_is_authed(row, extra):
+        return False
+    billing = extra.get("billing") if isinstance(extra.get("billing"), dict) else {}
+    return billing_has_subscription(billing)
 
 
 def mimo_access_state(user_id: int) -> dict:
     own = mimo_own_access(user_id)
     if own["ok"]:
         return own
-    return pool_policy.with_open_access(user_id, "mimo", own, _mimo_pool_ready())
+    return pool_policy.with_open_access(user_id, "mimo", own, _mimo_live)
 
 
 def user_has_mimo(user_id: int) -> bool:
@@ -611,7 +608,7 @@ class MimoSource:
         self.cfg = cfg
         self.creds = list(creds)
 
-    def _pick(self, exclude: set[int] | None = None, prefer_id: int | None = None):
+    def _pick(self, exclude: set[int] | None = None, prefer_id: int | None = None, owner_id: int | None = None):
         now = datetime.now(timezone.utc)
         return pick_account(
             self.creds,
@@ -620,6 +617,7 @@ class MimoSource:
             is_held=lambda c: is_held(c, now),
             is_authed=credential_is_authed,
             prefer_id=prefer_id,
+            owner_id=owner_id,
         )
 
     async def models(self) -> list[str]:
@@ -650,7 +648,7 @@ class MimoSource:
         prefer_id = lookup("mimo", session_id)
         failover = Failover()
         while True:
-            picked = self._pick(exclude=tried, prefer_id=prefer_id)
+            picked = self._pick(exclude=tried, prefer_id=prefer_id, owner_id=user_id)
             if not picked:
                 if attempts and last.credential_id == attempts[-1].get("credential_id"):
                     attempts.pop()

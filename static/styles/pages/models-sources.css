@@ -66,6 +66,74 @@
   letter-spacing: 0;
   overflow-wrap: anywhere;
 }
+/* Sharing: the pool's "who uses my accounts" state, opening its dialog. */
+.pool-share {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  height: 1.9rem;
+  margin: 0;
+  padding: 0 0.7rem;
+  color: var(--mist);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font: 500 0.8rem/1 var(--sans);
+  white-space: nowrap;
+  cursor: pointer;
+}
+button.pool-share:hover { background: var(--raise); border-color: color-mix(in srgb, var(--mist) 22%, transparent); }
+.pool-share.is-locked { border-style: dashed; }
+button.pool-share:focus-visible { outline: 2px solid var(--steel); outline-offset: 1px; }
+.pool-share.is-locked { opacity: 0.62; cursor: default; }
+.pool-share-key { color: var(--mute); }
+.pool-share-val {
+  font: 500 0.68rem/1 var(--mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.pool-share-val.is-everyone { color: var(--ok); }
+.pool-share-val.is-contributors { color: var(--brass); }
+.pool-share-val.is-private { color: var(--mist); }
+.share-form { display: flex; flex-direction: column; gap: 1rem; margin-top: 1rem; }
+.share-group { display: flex; flex-direction: column; gap: 0.4rem; margin: 0; padding: 0; border: 0; min-width: 0; }
+.share-group legend {
+  margin: 0 0 0.35rem;
+  padding: 0;
+  color: var(--mute);
+  font: 500 0.66rem/1.2 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+label.share-option {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 0.65rem;
+  margin: 0;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+label.share-option:hover { background: color-mix(in srgb, var(--mist) 4%, transparent); }
+label.share-option:has(input:checked) {
+  border-color: color-mix(in srgb, var(--brass) 55%, transparent);
+  background: color-mix(in srgb, var(--brass) 7%, transparent);
+}
+label.share-option:has(input:disabled) { opacity: 0.5; cursor: not-allowed; }
+.share-option input[type="radio"] {
+  width: 0.95rem;
+  height: 0.95rem;
+  margin: 0.15rem 0 0;
+  padding: 0;
+  accent-color: var(--brass);
+  flex-shrink: 0;
+}
+.share-option span { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
+.share-option b { font-size: 0.86rem; font-weight: 600; }
+.share-option small { color: var(--mute); font-size: 0.76rem; line-height: 1.4; }
+.share-note { margin: 0; color: var(--mute); font-size: 0.76rem; line-height: 1.45; }
 .pool-controls > .source-mine-filter {
   border-left: 1px solid var(--line);
   border-radius: 0 999px 999px 0;
@@ -188,6 +256,10 @@
   white-space: normal;
   padding: 0.9rem 0.7rem;
 }
+/* Accounts an admin sees that are not in their own routing (private or
+   sharers-only donors): readable, but quieter than the ones they use. */
+.source-table tr.is-unrouted td { color: var(--mute); }
+.source-table tr.is-unrouted .source-account-name { opacity: 0.8; }
 .source-table-scroll.is-mine-only tbody tr[data-mine="0"] { display: none; }
 .source-table-scroll.is-mine-only:not(:has(tr[data-mine="1"])) .source-empty-row {
   display: table-row;

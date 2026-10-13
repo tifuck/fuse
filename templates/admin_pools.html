@@ -14,7 +14,7 @@
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <header class="set-head">
     <h2>Who can use donated accounts</h2>
-    <p><strong>Shared</strong>: users route across every linked account of the type (each can opt out). <strong>Open</strong>: anyone may use it without linking one.</p>
+    <p><strong>Shared</strong>: linked accounts may serve other users. Each owner chooses everyone, only people who share too, or nobody, and requests use the caller's own accounts first. Off: everyone uses only what they linked. <strong>Open</strong>: users with no account of their own may use accounts shared with everyone.</p>
   </header>
   <table class="pool-matrix">
     <thead><tr><th scope="col">Pool</th><th scope="col">Linked</th><th scope="col">Shared</th><th scope="col">Open</th></tr></thead>
@@ -38,36 +38,24 @@
 <section class="panel set" id="guards">
   <header class="set-head">
     <h2>Off-site usage guards</h2>
-    <p>Pull an account out for 24 hours when its quota rises without Fuse traffic (its owner is using it elsewhere). Turning a guard off releases held accounts.</p>
+    <p>Pull an account out of other users' routing for 24 hours when its quota rises without Fuse traffic (its owner is using it elsewhere). Its owner can still use it. Turning a guard off releases held accounts.</p>
   </header>
-  <form method="post" action="/admin/sources/grok" class="set-row">
+  {% for kind in guard_kinds %}
+  <form method="post" action="/admin/pools/guard/{{ kind }}" class="set-row">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="set-label">
-      <strong>{{ pool_labels.grok }}</strong>
-      <span>{{ pool_counts.grok }} linked</span>
+      <strong>{{ pool_labels[kind] }}</strong>
+      <span>{{ pool_counts[kind] }} linked</span>
     </div>
     <div class="set-control">
       <label class="check">
-        <input type="checkbox" name="offpool_usage_guard" value="1"{% if grok_usage_guard %} checked{% endif %}>
+        <input type="checkbox" name="offpool_usage_guard" value="1"{% if guards[kind] %} checked{% endif %}>
         Hold accounts when usage rises off-site
       </label>
       <button type="submit" class="btn ghost sm">Save</button>
     </div>
   </form>
-  <form method="post" action="/admin/sources/zai" class="set-row">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <div class="set-label">
-      <strong>{{ pool_labels.zai }}</strong>
-      <span>{{ pool_counts.zai }} linked</span>
-    </div>
-    <div class="set-control">
-      <label class="check">
-        <input type="checkbox" name="offpool_usage_guard" value="1"{% if zai_usage_guard %} checked{% endif %}>
-        Hold keys when usage rises off-site
-      </label>
-      <button type="submit" class="btn ghost sm">Save</button>
-    </div>
-  </form>
+  {% endfor %}
 </section>
 </div>
 {% endblock %}

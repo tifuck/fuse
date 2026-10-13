@@ -305,18 +305,13 @@ def devin_own_access(user_id: int) -> dict:
     return {"ok": False, "reason": "unauthed" if not saw_authed else "no_sub"}
 
 
-def _devin_pool_ready() -> bool:
-    sid = ensure_devin_source()
-    rows = db.fetchall(
-        "SELECT * FROM credentials WHERE source_id=? AND disabled=0",
-        (sid,),
-    )
-    return any(_devin_eligible(row, accounts.cred_extra(row)) for row in rows)
+def _devin_live(row) -> bool:
+    return not is_held(row) and _devin_eligible(row, accounts.cred_extra(row))
 
 
 def devin_access_state(user_id: int) -> dict:
     return pool_policy.with_open_access(
-        user_id, "devin", devin_own_access(user_id), _devin_pool_ready()
+        user_id, "devin", devin_own_access(user_id), _devin_live
     )
 
 
@@ -552,7 +547,7 @@ class DevinSource:
         self.cfg = cfg
         self.creds = list(creds)
 
-    def _pick(self, exclude: set[int] | None = None, prefer_id: int | None = None):
+    def _pick(self, exclude: set[int] | None = None, prefer_id: int | None = None, owner_id: int | None = None):
         now = datetime.now(timezone.utc)
         return pick_account(
             self.creds,
@@ -561,6 +556,7 @@ class DevinSource:
             is_held=lambda c: is_held(c, now),
             is_authed=credential_is_authed,
             prefer_id=prefer_id,
+            owner_id=owner_id,
         )
 
     async def models(self) -> list[str]:
@@ -616,7 +612,7 @@ class DevinSource:
         prefer_id = lookup("devin", session_id)
         failover = Failover()
         while True:
-            picked = self._pick(exclude=tried, prefer_id=prefer_id)
+            picked = self._pick(exclude=tried, prefer_id=prefer_id, owner_id=user_id)
             if not picked:
                 # Parity with grok/chatgpt/kimi/zai/mimo: the final failed
                 # attempt is reported once via the returned result; drop the

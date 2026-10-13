@@ -436,22 +436,13 @@ def kimi_own_access(user_id: int) -> dict:
     return {"ok": False, "reason": "unauthed" if not saw_authed else "no_sub"}
 
 
-def _kimi_pool_ready() -> bool:
-    sid = ensure_kimi_source()
-    rows = db.fetchall(
-        "SELECT * FROM credentials WHERE source_id=? AND disabled=0",
-        (sid,),
-    )
-    for row in rows:
-        extra = accounts.cred_extra(row)
-        if credential_is_authed(row, extra):
-            return True
-    return False
+def _kimi_live(row) -> bool:
+    return not is_held(row) and credential_is_authed(row, accounts.cred_extra(row))
 
 
 def kimi_access_state(user_id: int) -> dict:
     return pool_policy.with_open_access(
-        user_id, "kimi", kimi_own_access(user_id), _kimi_pool_ready()
+        user_id, "kimi", kimi_own_access(user_id), _kimi_live
     )
 
 
@@ -998,7 +989,7 @@ class KimiSource:
         self.cfg = cfg
         self.creds = list(creds)
 
-    def _pick(self, exclude: set[int] | None = None, prefer_id: int | None = None):
+    def _pick(self, exclude: set[int] | None = None, prefer_id: int | None = None, owner_id: int | None = None):
         now = datetime.now(timezone.utc)
         return pick_account(
             self.creds,
@@ -1007,6 +998,7 @@ class KimiSource:
             is_held=lambda c: is_held(c, now),
             is_authed=credential_is_authed,
             prefer_id=prefer_id,
+            owner_id=owner_id,
         )
 
     async def models(self) -> list[str]:
@@ -1041,7 +1033,7 @@ class KimiSource:
         prefer_id = lookup("kimi", session_id)
         failover = Failover()
         while True:
-            picked = self._pick(exclude=tried, prefer_id=prefer_id)
+            picked = self._pick(exclude=tried, prefer_id=prefer_id, owner_id=user_id)
             if not picked:
                 if attempts and last.credential_id == attempts[-1].get("credential_id"):
                     attempts.pop()

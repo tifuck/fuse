@@ -583,7 +583,7 @@ async def _invoke_chat(request: Request, user, body: dict, *, cheap_reasoning: b
         raise HTTPException(403, "Connect a ChatGPT account to use ChatGPT models")
     if src.type_id == "zai" and not zai_ok:
         if pool_policy.uses_shared_pool(user["id"], "zai"):
-            raise HTTPException(403, "Connect an x.ai, OpenAI, or Z.AI subscription to use GLM models")
+            raise HTTPException(403, "Connect a Z.AI key, or share a live x.ai or OpenAI account, to use GLM models")
         raise HTTPException(403, "Connect a Z.AI key to use GLM models")
     if src.type_id == "devin" and not devin_ok:
         raise HTTPException(403, "Connect a Devin account to use Devin models")

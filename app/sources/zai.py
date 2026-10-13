@@ -13,8 +13,7 @@ from ..config import settings
 from ..crypto import encrypt
 from ..proxy import UsageStream, openai_chat
 from .base import ChatResult
-from .chatgpt import chatgpt_own_access
-from .grok import apply_usage_guard, grok_own_access, is_held
+from .grok import apply_usage_guard, is_held
 from .pool_pick import Failover, auth_failure_confirmed, note_failure, pick_account, release, reserve
 from . import pool_policy
 from .pool_session import bind, drop_cache_routing_fields, lookup
@@ -272,6 +271,13 @@ def billing_has_subscription(billing: dict | None) -> bool:
     return False
 
 
+def known_unsubscribed(cred, extra: dict | None = None) -> bool:
+    """A successful billing read shows no plan: route there only as a last resort."""
+    extra = extra if extra is not None else accounts.cred_extra(cred)
+    billing = extra.get("billing") if isinstance(extra.get("billing"), dict) else {}
+    return bool(billing.get("fetched_at")) and not billing_has_subscription(billing)
+
+
 def credential_is_authed(cred, extra: dict | None = None) -> bool:
     if _row_get(cred, "disabled"):
         return False
@@ -307,38 +313,34 @@ def zai_own_access(user_id: int) -> dict:
     return {"ok": False, "reason": "no_sub" if saw_authed else "unauthed"}
 
 
-def _zai_pool_ready() -> bool:
-    sid = ensure_zai_source()
-    rows = db.fetchall(
-        "SELECT * FROM credentials WHERE source_id=? AND disabled=0",
-        (sid,),
-    )
-    for row in rows:
-        extra = accounts.cred_extra(row)
-        if not credential_is_authed(row, extra):
-            continue
-        billing = extra.get("billing") if isinstance(extra.get("billing"), dict) else {}
-        if billing_has_subscription(billing):
-            return True
-    return False
+def _zai_live(row) -> bool:
+    """One key another user could be served by right now."""
+    if is_held(row):
+        return False
+    extra = accounts.cred_extra(row)
+    if not credential_is_authed(row, extra):
+        return False
+    billing = extra.get("billing") if isinstance(extra.get("billing"), dict) else {}
+    return billing_has_subscription(billing)
 
 
 def zai_access_state(user_id: int) -> dict:
     """Whether this user may call Z.AI models, and why not if they may not.
 
     A live donated Z.AI Coding Plan key still unlocks GLM. When sharing is
-    on, a live x.ai or OpenAI contribution also unlocks the Z.AI pool, and
-    the admin open-access switch lets any registered user in without a key.
-    Held-out-of-pool is a routing concern and does not revoke access.
+    on, a live x.ai or OpenAI account the user shares also unlocks the Z.AI
+    pool (a private one does not: it gives nothing back), and the admin
+    open-access switch lets any registered user in without a key. Held-out-
+    of-pool is a routing concern and does not revoke access.
     """
     own = zai_own_access(user_id)
     if own["ok"]:
         return own
-    opened = pool_policy.with_open_access(user_id, "zai", own, _zai_pool_ready())
+    opened = pool_policy.with_open_access(user_id, "zai", own, _zai_live)
     if opened.get("ok"):
         return opened
     if pool_policy.uses_shared_pool(user_id, "zai") and (
-        grok_own_access(user_id)["ok"] or chatgpt_own_access(user_id)["ok"]
+        pool_policy.contributes(user_id, "grok") or pool_policy.contributes(user_id, "chatgpt")
     ):
         return {"ok": True, "reason": "pool"}
     return own
@@ -599,7 +601,7 @@ class ZaiSource:
         self.cfg = cfg
         self.creds = list(creds)
 
-    def _pick(self, exclude: set[int] | None = None, prefer_id: int | None = None):
+    def _pick(self, exclude: set[int] | None = None, prefer_id: int | None = None, owner_id: int | None = None):
         now = datetime.now(timezone.utc)
         return pick_account(
             self.creds,
@@ -607,7 +609,9 @@ class ZaiSource:
             exclude=exclude,
             is_held=lambda c: is_held(c, now),
             is_authed=credential_is_authed,
+            no_plan=known_unsubscribed,
             prefer_id=prefer_id,
+            owner_id=owner_id,
         )
 
     async def models(self) -> list[str]:
@@ -641,7 +645,7 @@ class ZaiSource:
         prefer_id = lookup("zai", session_id)
         failover = Failover()
         while True:
-            picked = self._pick(exclude=tried, prefer_id=prefer_id)
+            picked = self._pick(exclude=tried, prefer_id=prefer_id, owner_id=user_id)
             if not picked:
                 # Parity with grok/chatgpt: the final failed attempt is
                 # recorded once via the returned result; drop the duplicate.

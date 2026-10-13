@@ -3,7 +3,7 @@ plus the per-user shared-pool preference toggle."""
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from ... import accounts, db, stats
 from ...security import safe_verify_url
@@ -25,27 +25,36 @@ from .openrouter import _openrouter_model_rows
 
 router = APIRouter()
 
-def _donated_source(user_id: int, source_id: int) -> bool:
-    row = db.fetchone(
-        "SELECT 1 AS ok FROM credentials WHERE source_id=? AND donated_by=? AND disabled=0 LIMIT 1",
-        (source_id, user_id),
-    )
-    return bool(row)
+_SHARE_LABELS = {"everyone": "Everyone", "contributors": "Contributors", "private": "Private"}
 
 
-def _pool_account_visible(user, mine: bool, contributor: bool, ui: dict) -> bool:
-    if mine or user["is_admin"]:
-        return True
-    if not ui["pool_shared"]:
-        return False
-    return bool(contributor or ui["open_access"])
-
-
-def _pool_meter_rows(rows, user, ui: dict):
-    if ui["uses_shared"] or user["is_admin"]:
-        return rows
+def _pool_scope(user, kind: str, rows, ok: bool) -> tuple[dict, set[int], list]:
+    """This user's sharing state for one pool and the accounts they are
+    routed onto. The gauge counts exactly those, so it never includes an
+    account the backend would not use for them; without access it previews
+    what linking one would reach. The table lists them only once the user
+    has access (plus their own; admins also see the rest)."""
     uid = user["id"]
-    return [row for row in rows if row["donated_by"] == uid]
+    ui = pool_policy.ui_state(uid, kind)
+    routable = pool_policy.filter_credentials(rows, kind, uid)
+    ids = {int(row["id"]) for row in routable} if ok else set()
+    ui["n_mine"] = sum(1 for row in rows if row["donated_by"] == uid)
+    ui["n_shared"] = sum(1 for row in routable if row["donated_by"] != uid)
+    ui["contributor"] = pool_policy.contributes(uid, kind) if ui["pool_shared"] else False
+    ui["share_label"] = _SHARE_LABELS[ui["share"]]
+    return ui, ids, routable
+
+
+def _pool_account_visible(user, row, routable_ids: set[int]) -> bool:
+    if row["donated_by"] == user["id"] or user["is_admin"]:
+        return True
+    return int(row["id"]) in routable_ids
+
+
+def _pool_card_scope(card: dict, kind: str, row, user, routable_ids: set[int]) -> None:
+    """Admin view: say why an account in the table is not in their routing."""
+    card["routable"] = card["mine"] or int(row["id"]) in routable_ids
+    card["share"] = "everyone" if card["mine"] else pool_policy.share_level(kind, row["donated_by"])
 
 
 def _fuse_fill(cards: list[dict]) -> None:
@@ -81,12 +90,10 @@ async def user_sources(request: Request):
         (sid,),
     )
     access = grok_access_state(user["id"])
-    grok_ui = pool_policy.ui_state(user["id"], "grok")
-    grok_contributor = bool(user["is_admin"]) or _donated_source(user["id"], sid)
+    grok_ui, grok_ids, grok_routable = _pool_scope(user, "grok", rows, access["ok"])
     visible = []
-    for i, a in enumerate(rows, start=1):
-        mine = a["donated_by"] == user["id"]
-        if not _pool_account_visible(user, mine, grok_contributor, grok_ui):
+    for a in rows:
+        if not _pool_account_visible(user, a, grok_ids):
             continue
         extra = accounts.cred_extra(a)
         billing = extra.get("billing") if isinstance(extra.get("billing"), dict) else None
@@ -94,7 +101,8 @@ async def user_sources(request: Request):
         held = is_held(a)
         authed = grok_mod.credential_is_authed(a, extra)
         subscribed = grok_mod.billing_has_subscription(billing if isinstance(billing, dict) else extra.get("billing"))
-        card = _pool_card(user, a, kind="Grok", index=i, extra=extra)
+        card = _pool_card(user, a, kind="Grok", index=len(visible) + 1, extra=extra)
+        _pool_card_scope(card, "grok", a, user, grok_ids)
         card.update(
             {
                 "billing": stats.billing_view(billing, percent=grok_usage_percent(a, extra)),
@@ -106,7 +114,7 @@ async def user_sources(request: Request):
         )
         visible.append(card)
     _sort_mine_first(visible)
-    grok_pool = stats.grok_pool_meter(_pool_meter_rows(rows, user, grok_ui))
+    grok_pool = stats.grok_pool_meter(grok_routable, owner_id=user["id"])
     _fuse_fill(visible)
     pending = _pending_for(user["id"])
     interval = 5
@@ -128,17 +136,16 @@ async def user_sources(request: Request):
         (chatgpt_sid,),
     )
     chatgpt_access = chatgpt_mod.chatgpt_access_state(user["id"])
-    chatgpt_ui = pool_policy.ui_state(user["id"], "chatgpt")
-    chatgpt_contributor = bool(user["is_admin"]) or _donated_source(user["id"], chatgpt_sid)
+    chatgpt_ui, chatgpt_ids, chatgpt_routable = _pool_scope(user, "chatgpt", chatgpt_rows, chatgpt_access["ok"])
     chatgpt_visible = []
-    for i, a in enumerate(chatgpt_rows, start=1):
-        mine = a["donated_by"] == user["id"]
-        if not _pool_account_visible(user, mine, chatgpt_contributor, chatgpt_ui):
+    for a in chatgpt_rows:
+        if not _pool_account_visible(user, a, chatgpt_ids):
             continue
         extra = accounts.cred_extra(a)
         billing = extra.get("billing") if isinstance(extra.get("billing"), dict) else None
         plan = chatgpt_plan_type(extra)
-        card = _pool_card(user, a, kind="ChatGPT", index=i, extra=extra)
+        card = _pool_card(user, a, kind="ChatGPT", index=len(chatgpt_visible) + 1, extra=extra)
+        _pool_card_scope(card, "chatgpt", a, user, chatgpt_ids)
         card.update(
             {
                 "authed": chatgpt_mod.credential_is_authed(a, extra),
@@ -152,7 +159,7 @@ async def user_sources(request: Request):
     chatgpt_free_accounts = [a for a in chatgpt_visible if a.get("free")]
     chatgpt_own_failed = sum(1 for a in chatgpt_visible if a["mine"] and not a["authed"])
     chatgpt_paid_pool, chatgpt_free_pool = stats.chatgpt_pool_meters(
-        _pool_meter_rows(chatgpt_rows, user, chatgpt_ui)
+        chatgpt_routable
     )
     _fuse_fill(chatgpt_visible)
     chatgpt_pending = _chatgpt_pending_for(user["id"])
@@ -171,12 +178,10 @@ async def user_sources(request: Request):
         (zai_sid,),
     )
     zai_access = zai_mod.zai_access_state(user["id"])
-    zai_ui = pool_policy.ui_state(user["id"], "zai")
-    zai_contributor = bool(user["is_admin"]) or _donated_source(user["id"], zai_sid)
+    zai_ui, zai_ids, zai_routable = _pool_scope(user, "zai", zai_rows, zai_access["ok"])
     zai_visible = []
-    for i, a in enumerate(zai_rows, start=1):
-        mine = a["donated_by"] == user["id"]
-        if not _pool_account_visible(user, mine, zai_contributor, zai_ui):
+    for a in zai_rows:
+        if not _pool_account_visible(user, a, zai_ids):
             continue
         extra = accounts.cred_extra(a)
         billing = extra.get("billing") if isinstance(extra.get("billing"), dict) else None
@@ -184,7 +189,8 @@ async def user_sources(request: Request):
         held = zai_mod.is_held(a)
         authed = zai_mod.credential_is_authed(a, extra)
         subscribed = zai_mod.billing_has_subscription(billing if isinstance(billing, dict) else extra.get("billing"))
-        card = _pool_card(user, a, kind="Z.AI", index=i, extra=extra)
+        card = _pool_card(user, a, kind="Z.AI", index=len(zai_visible) + 1, extra=extra)
+        _pool_card_scope(card, "zai", a, user, zai_ids)
         card.update(
             {
                 "billing": stats.billing_view(billing, last_percent=a["last_usage_percent"]),
@@ -197,7 +203,7 @@ async def user_sources(request: Request):
         )
         zai_visible.append(card)
     _sort_mine_first(zai_visible)
-    zai_pool = stats.zai_pool_meter(_pool_meter_rows(zai_rows, user, zai_ui))
+    zai_pool = stats.zai_pool_meter(zai_routable, owner_id=user["id"])
     _fuse_fill(zai_visible)
 
     devin_sid = devin_mod.ensure_devin_source()
@@ -206,16 +212,15 @@ async def user_sources(request: Request):
         (devin_sid,),
     )
     devin_access = devin_mod.devin_access_state(user["id"])
-    devin_ui = pool_policy.ui_state(user["id"], "devin")
-    devin_contributor = bool(user["is_admin"]) or _donated_source(user["id"], devin_sid)
+    devin_ui, devin_ids, devin_routable = _pool_scope(user, "devin", devin_rows, devin_access["ok"])
     devin_visible = []
-    for i, a in enumerate(devin_rows, start=1):
-        mine = a["donated_by"] == user["id"]
-        if not _pool_account_visible(user, mine, devin_contributor, devin_ui):
+    for a in devin_rows:
+        if not _pool_account_visible(user, a, devin_ids):
             continue
         extra = accounts.cred_extra(a)
         billing = extra.get("billing") if isinstance(extra.get("billing"), dict) else None
-        card = _pool_card(user, a, kind="Devin", index=i, extra=extra)
+        card = _pool_card(user, a, kind="Devin", index=len(devin_visible) + 1, extra=extra)
+        _pool_card_scope(card, "devin", a, user, devin_ids)
         card.update(
             {
                 "authed": devin_mod.credential_is_authed(a, extra),
@@ -227,7 +232,7 @@ async def user_sources(request: Request):
         )
         devin_visible.append(card)
     _sort_mine_first(devin_visible)
-    devin_pool = stats.devin_pool_meter(_pool_meter_rows(devin_rows, user, devin_ui))
+    devin_pool = stats.devin_pool_meter(devin_routable)
     _fuse_fill(devin_visible)
 
     kimi_sid = kimi_mod.ensure_kimi_source()
@@ -236,12 +241,10 @@ async def user_sources(request: Request):
         (kimi_sid,),
     )
     kimi_access = kimi_mod.kimi_access_state(user["id"])
-    kimi_ui = pool_policy.ui_state(user["id"], "kimi")
-    kimi_contributor = bool(user["is_admin"]) or _donated_source(user["id"], kimi_sid)
+    kimi_ui, kimi_ids, kimi_routable = _pool_scope(user, "kimi", kimi_rows, kimi_access["ok"])
     kimi_visible = []
-    for i, a in enumerate(kimi_rows, start=1):
-        mine = a["donated_by"] == user["id"]
-        if not _pool_account_visible(user, mine, kimi_contributor, kimi_ui):
+    for a in kimi_rows:
+        if not _pool_account_visible(user, a, kimi_ids):
             continue
         extra = accounts.cred_extra(a)
         billing = extra.get("billing") if isinstance(extra.get("billing"), dict) else None
@@ -249,7 +252,8 @@ async def user_sources(request: Request):
         held = kimi_mod.is_held(a)
         authed = kimi_mod.credential_is_authed(a, extra)
         subscribed = kimi_mod.billing_has_subscription(billing if isinstance(billing, dict) else extra.get("billing"))
-        card = _pool_card(user, a, kind="Kimi", index=i, extra=extra)
+        card = _pool_card(user, a, kind="Kimi", index=len(kimi_visible) + 1, extra=extra)
+        _pool_card_scope(card, "kimi", a, user, kimi_ids)
         card.update(
             {
                 "billing": stats.billing_view(billing, last_percent=a["last_usage_percent"]),
@@ -262,7 +266,7 @@ async def user_sources(request: Request):
         )
         kimi_visible.append(card)
     _sort_mine_first(kimi_visible)
-    kimi_pool = stats.kimi_pool_meter(_pool_meter_rows(kimi_rows, user, kimi_ui))
+    kimi_pool = stats.kimi_pool_meter(kimi_routable, owner_id=user["id"])
     _fuse_fill(kimi_visible)
     kimi_pending = _kimi_pending_for(user["id"])
     kimi_interval = 5
@@ -282,12 +286,10 @@ async def user_sources(request: Request):
         (mimo_sid,),
     )
     mimo_access = mimo_mod.mimo_access_state(user["id"])
-    mimo_ui = pool_policy.ui_state(user["id"], "mimo")
-    mimo_contributor = bool(user["is_admin"]) or _donated_source(user["id"], mimo_sid)
+    mimo_ui, mimo_ids, mimo_routable = _pool_scope(user, "mimo", mimo_rows, mimo_access["ok"])
     mimo_visible = []
-    for i, a in enumerate(mimo_rows, start=1):
-        mine = a["donated_by"] == user["id"]
-        if not _pool_account_visible(user, mine, mimo_contributor, mimo_ui):
+    for a in mimo_rows:
+        if not _pool_account_visible(user, a, mimo_ids):
             continue
         extra = accounts.cred_extra(a)
         billing = extra.get("billing") if isinstance(extra.get("billing"), dict) else None
@@ -295,7 +297,8 @@ async def user_sources(request: Request):
         held = mimo_mod.is_held(a)
         authed = mimo_mod.credential_is_authed(a, extra)
         subscribed = mimo_mod.billing_has_subscription(billing if isinstance(billing, dict) else extra.get("billing"))
-        card = _pool_card(user, a, kind="Xiaomi", index=i, extra=extra)
+        card = _pool_card(user, a, kind="Xiaomi", index=len(mimo_visible) + 1, extra=extra)
+        _pool_card_scope(card, "mimo", a, user, mimo_ids)
         card.update(
             {
                 "billing": stats.billing_view(billing, last_percent=a["last_usage_percent"]),
@@ -308,7 +311,7 @@ async def user_sources(request: Request):
         )
         mimo_visible.append(card)
     _sort_mine_first(mimo_visible)
-    mimo_pool = stats.mimo_pool_meter(_pool_meter_rows(mimo_rows, user, mimo_ui))
+    mimo_pool = stats.mimo_pool_meter(mimo_routable, owner_id=user["id"])
     _fuse_fill(mimo_visible)
     mimo_pending = _mimo_pending_for(user["id"])
 
@@ -318,12 +321,10 @@ async def user_sources(request: Request):
         (claude_sid,),
     )
     claude_access = claude_mod.claude_access_state(user["id"])
-    claude_ui = pool_policy.ui_state(user["id"], "claude")
-    claude_contributor = bool(user["is_admin"]) or _donated_source(user["id"], claude_sid)
+    claude_ui, claude_ids, claude_routable = _pool_scope(user, "claude", claude_rows, claude_access["ok"])
     claude_visible = []
-    for i, a in enumerate(claude_rows, start=1):
-        mine = a["donated_by"] == user["id"]
-        if not _pool_account_visible(user, mine, claude_contributor, claude_ui):
+    for a in claude_rows:
+        if not _pool_account_visible(user, a, claude_ids):
             continue
         extra = accounts.cred_extra(a)
         billing = extra.get("billing") if isinstance(extra.get("billing"), dict) else None
@@ -331,7 +332,8 @@ async def user_sources(request: Request):
         held = claude_mod.is_held(a)
         authed = claude_mod.credential_is_authed(a, extra)
         subscribed = claude_mod.billing_has_subscription(billing if isinstance(billing, dict) else extra.get("billing"))
-        card = _pool_card(user, a, kind="Claude", index=i, extra=extra)
+        card = _pool_card(user, a, kind="Claude", index=len(claude_visible) + 1, extra=extra)
+        _pool_card_scope(card, "claude", a, user, claude_ids)
         card.update(
             {
                 "billing": stats.billing_view(billing, last_percent=a["last_usage_percent"]),
@@ -343,7 +345,7 @@ async def user_sources(request: Request):
         )
         claude_visible.append(card)
     _sort_mine_first(claude_visible)
-    claude_pool = stats.claude_pool_meter(_pool_meter_rows(claude_rows, user, claude_ui))
+    claude_pool = stats.claude_pool_meter(claude_routable, owner_id=user["id"])
     _fuse_fill(claude_visible)
     claude_pending = _claude_pending_for(user["id"])
 
@@ -492,29 +494,43 @@ async def user_sources(request: Request):
     )
 
 
+_SHARE_COPY = {
+    "everyone": "anyone with access to the {label} pool may use your accounts",
+    "contributors": "only people who also share {label} accounts may use yours",
+    "private": "nobody else may use your accounts",
+}
+
+
 @router.post("/sources/pool/{kind}/prefs")
-async def user_pool_prefs(
-    request: Request,
-    kind: str,
-    own_only: str = Form("0"),
-):
+async def user_pool_prefs(request: Request, kind: str):
     user, redir = require_user(request)
     if redir:
         return redir
     if kind not in pool_policy.POOL_KIND_SET:
         raise HTTPException(404, "Unknown pool")
+    label = pool_policy.POOL_LABELS[kind]
     if not pool_policy.admin_policy(kind)["pool_shared"]:
         _pool_flash[user["id"]] = (
             "ok",
-            f"{pool_policy.POOL_LABELS[kind]} is limited to linked accounts site-wide.",
+            f"{label} is limited to linked accounts site-wide.",
             "pool",
         )
         return RedirectResponse(f"/sources#pool-{kind}", status_code=303)
-    pool_policy.set_user_own_only(user["id"], kind, own_only in ("1", "on", "true"))
-    label = pool_policy.POOL_LABELS[kind]
-    if own_only in ("1", "on", "true"):
-        msg = f"{label} will use only the accounts you have linked. Other users cannot use them either."
+    form = await request.form()
+    share = str(form.get("share") or "")
+    use = str(form.get("use") or "")
+    if not share and "own_only" in form:
+        # A page rendered before share/use existed posts the old switch.
+        private = str(form.get("own_only")) in ("1", "on", "true")
+        share, use = ("private", "mine") if private else ("everyone", "pool")
+    if share not in pool_policy.SHARE_LEVELS or (use and use not in pool_policy.USE_MODES):
+        raise HTTPException(400, "Unknown sharing choice")
+    pref = pool_policy.set_user_pref(user["id"], kind, share=share, use=use or None)
+    eff = pool_policy.effective_pref(user["id"], kind)
+    shared = _SHARE_COPY[pref["share"]].format(label=label)
+    if eff["use"] == "mine":
+        routing = "Your requests use only your accounts"
     else:
-        msg = f"{label} will use the shared pool, including accounts you linked."
-    _pool_flash[user["id"]] = ("ok", msg, "pool")
+        routing = "Your requests use your accounts first, then accounts shared with you"
+    _pool_flash[user["id"]] = ("ok", f"{label}: {routing}; {shared}.", "pool")
     return RedirectResponse(f"/sources#pool-{kind}", status_code=303)

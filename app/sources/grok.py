@@ -184,6 +184,13 @@ def billing_has_subscription(billing: dict | None) -> bool:
     return False
 
 
+def known_unsubscribed(cred, extra: dict | None = None) -> bool:
+    """A successful billing read shows no plan: route there only as a last resort."""
+    extra = extra if extra is not None else accounts.cred_extra(cred)
+    billing = extra.get("billing") if isinstance(extra.get("billing"), dict) else {}
+    return bool(billing.get("fetched_at")) and not billing_has_subscription(billing)
+
+
 def credential_is_authed(cred, extra: dict | None = None) -> bool:
     if _row_get(cred, "disabled"):
         return False
@@ -221,20 +228,15 @@ def grok_own_access(user_id: int) -> dict:
     return {"ok": False, "reason": "unauthed"}
 
 
-def _grok_pool_ready() -> bool:
-    sid = ensure_grok_source()
-    rows = db.fetchall(
-        "SELECT * FROM credentials WHERE source_id=? AND disabled=0",
-        (sid,),
-    )
-    for row in rows:
-        extra = accounts.cred_extra(row)
-        if not credential_is_authed(row, extra):
-            continue
-        billing = extra.get("billing") if isinstance(extra.get("billing"), dict) else {}
-        if billing_has_subscription(billing):
-            return True
-    return False
+def _grok_live(row) -> bool:
+    """One account another user could be served by right now."""
+    if is_held(row):
+        return False
+    extra = accounts.cred_extra(row)
+    if not credential_is_authed(row, extra):
+        return False
+    billing = extra.get("billing") if isinstance(extra.get("billing"), dict) else {}
+    return billing_has_subscription(billing)
 
 
 def grok_access_state(user_id: int) -> dict:
@@ -246,7 +248,7 @@ def grok_access_state(user_id: int) -> dict:
     the user's access.
     """
     return pool_policy.with_open_access(
-        user_id, "grok", grok_own_access(user_id), _grok_pool_ready()
+        user_id, "grok", grok_own_access(user_id), _grok_live
     )
 
 
@@ -498,7 +500,7 @@ class GrokSource:
     def _headers(self, token: str, model: str, conv_id: str | None = None) -> dict:
         return _auth_headers(token, model, conv_id)
 
-    def _pick(self, exclude: set[int] | None = None, prefer_id: int | None = None):
+    def _pick(self, exclude: set[int] | None = None, prefer_id: int | None = None, owner_id: int | None = None):
         now = datetime.now(timezone.utc)
         return pick_account(
             self.creds,
@@ -506,7 +508,9 @@ class GrokSource:
             exclude=exclude,
             is_held=lambda c: is_held(c, now),
             is_authed=credential_is_authed,
+            no_plan=known_unsubscribed,
             prefer_id=prefer_id,
+            owner_id=owner_id,
         )
 
     async def models(self) -> list[str]:
@@ -538,7 +542,7 @@ class GrokSource:
         prefer_id = lookup("grok", session_id)
         failover = Failover()
         while True:
-            picked = self._pick(exclude=tried, prefer_id=prefer_id)
+            picked = self._pick(exclude=tried, prefer_id=prefer_id, owner_id=user_id)
             if not picked:
                 if attempts and last.credential_id == attempts[-1].get("credential_id"):
                     attempts.pop()
@@ -600,6 +604,10 @@ class GrokSource:
                     )
                 if status == 429 or rejected:
                     note_failure(cred["id"], cooldown_seconds=30)
+                elif status == 402:
+                    # Out of plan or credits: without a cooldown every request
+                    # paid a round trip to this account before failing over.
+                    note_failure(cred["id"], cooldown_seconds=300)
                 last.response_headers = response_headers
                 if (
                     status in (402, 429)

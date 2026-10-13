@@ -177,8 +177,6 @@ def _admin_sources_ctx(error: str | None = None, notice: str | None = None, olla
 
 
 def _admin_pools_ctx(notice: str | None = None) -> dict:
-    grok_cfg = _source_cfg(db.fetchone("SELECT config FROM sources WHERE id=?", (ensure_grok_source(),)))
-    zai_cfg = _source_cfg(db.fetchone("SELECT config FROM sources WHERE id=?", (zai_mod.ensure_zai_source(),)))
     ensure = {
         "grok": ensure_grok_source,
         "chatgpt": chatgpt_mod.ensure_chatgpt_source,
@@ -199,8 +197,8 @@ def _admin_pools_ctx(notice: str | None = None) -> dict:
         "pool_policies": {kind: pool_policy.admin_policy(kind) for kind in pool_policy.POOL_KINDS},
         "pool_labels": pool_policy.POOL_LABELS,
         "pool_counts": counts,
-        "grok_usage_guard": grok_cfg.get("offpool_usage_guard", True) is not False,
-        "zai_usage_guard": zai_cfg.get("offpool_usage_guard", True) is not False,
+        "guard_kinds": pool_policy.GUARD_KINDS,
+        "guards": {kind: pool_policy.guard_enabled(kind) for kind in pool_policy.GUARD_KINDS},
         "notice": notice,
     }
 

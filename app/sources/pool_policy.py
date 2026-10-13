@@ -2,16 +2,30 @@
 
 Two admin switches per pool, stored on sources.config:
 
-* pool_shared (default True): pick from every donated account. When False,
-  each user is routed only to accounts they linked.
+* pool_shared (default True): accounts may be shared across users. When
+  False, every user is routed only onto accounts they linked and nobody's
+  accounts are shared.
 * open_access (default False): any registered user may use the pool without
-  linking an account of their own. Only applies while sharing is in effect
-  for that user.
+  linking an account of their own. They reach only accounts shared with
+  everyone.
 
-Users may opt out of sharing (own_only) when the admin has sharing on.
-That override cannot turn sharing back on when the admin has turned it off.
-Opting out is two-way: the user is routed only to accounts they linked, and
-accounts they donated are withheld from every other user.
+Two settings per user and pool, stored on users.pool_prefs, while the admin
+has sharing on:
+
+* share: who else may be routed onto this user's accounts.
+  - "everyone": anyone with access to the pool (the default).
+  - "contributors": only users who share a live account in this pool too.
+  - "private": nobody. A private donor also uses only their own accounts,
+    so keeping accounts back never buys a seat on everyone else's.
+* use: which accounts this user's requests go to.
+  - "pool": their own accounts first, then the accounts shared with them
+    when theirs are busy, at capacity, cooling down, or out of plan.
+  - "mine": only their own accounts.
+
+Before share/use existed the only setting was own_only, a two-way opt-out.
+A row without share/use still reads that way, and every write keeps an
+own_only mirror that is at least as private as the new settings, so code
+rolled back to the old reader never shares more than the user chose.
 """
 
 from __future__ import annotations
@@ -19,7 +33,8 @@ from __future__ import annotations
 import json
 import time
 
-from .. import db
+from .. import accounts, db
+from ..crypto import DecryptionError
 
 POOL_KINDS = ("grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude")
 POOL_KIND_SET = frozenset(POOL_KINDS)
@@ -32,6 +47,10 @@ POOL_LABELS = {
     "mimo": "Xiaomi",
     "claude": "Claude",
 }
+
+SHARE_LEVELS = ("everyone", "contributors", "private")
+USE_MODES = ("pool", "mine")
+DEFAULT_PREF = {"share": "everyone", "use": "pool"}
 
 
 def _source_cfg(kind: str) -> dict:
@@ -76,6 +95,39 @@ def source_id(kind: str) -> int:
     raise ValueError(f"unknown pool kind {kind!r}")
 
 
+def own_access(kind: str, user_id: int) -> dict:
+    """The provider's verdict on this user's own linked accounts alone."""
+    if kind == "grok":
+        from .grok import grok_own_access
+
+        return grok_own_access(user_id)
+    if kind == "chatgpt":
+        from .chatgpt import chatgpt_own_access
+
+        return chatgpt_own_access(user_id)
+    if kind == "zai":
+        from .zai import zai_own_access
+
+        return zai_own_access(user_id)
+    if kind == "devin":
+        from .devin import devin_own_access
+
+        return devin_own_access(user_id)
+    if kind == "kimi":
+        from .kimi import kimi_own_access
+
+        return kimi_own_access(user_id)
+    if kind == "mimo":
+        from .mimo import mimo_own_access
+
+        return mimo_own_access(user_id)
+    if kind == "claude":
+        from .claude import claude_own_access
+
+        return claude_own_access(user_id)
+    raise ValueError(f"unknown pool kind {kind!r}")
+
+
 def admin_policy(kind: str) -> dict:
     """Site-wide switches. Missing keys keep today's defaults."""
     if kind not in POOL_KIND_SET:
@@ -105,88 +157,187 @@ def set_admin_policy(kind: str, *, pool_shared: bool, open_access: bool) -> None
         conn.execute("UPDATE sources SET config=? WHERE id=?", (json.dumps(cfg), sid))
 
 
+# Pools that hold an account out for HOLD_HOURS when its plan usage rises with
+# no Fuse traffic (its owner is using it elsewhere). The hold withholds the
+# account from other users only; pool_pick never applies it to the owner.
+GUARD_KINDS = ("grok", "zai", "kimi", "mimo", "claude")
+
+
+def guard_enabled(kind: str) -> bool:
+    if kind not in GUARD_KINDS:
+        return False
+    return _source_cfg(kind).get("offpool_usage_guard", True) is not False
+
+
+def set_guard(kind: str, enabled: bool) -> None:
+    """Turning a guard off releases every account it is holding."""
+    if kind not in GUARD_KINDS:
+        raise ValueError(f"no usage guard for {kind!r}")
+    sid = source_id(kind)
+    with db.tx() as conn:
+        row = conn.execute("SELECT config FROM sources WHERE id=? FOR UPDATE", (sid,)).fetchone()
+        try:
+            data = json.loads((row["config"] if row else None) or "{}")
+            cfg = data if isinstance(data, dict) else {}
+        except (json.JSONDecodeError, TypeError):
+            cfg = {}
+        cfg["offpool_usage_guard"] = bool(enabled)
+        conn.execute("UPDATE sources SET config=? WHERE id=?", (json.dumps(cfg), sid))
+        if not enabled:
+            conn.execute("UPDATE credentials SET pool_held_until=NULL WHERE source_id=?", (sid,))
+
+
+def _parse_prefs(raw) -> dict:
+    try:
+        data = json.loads(raw or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def user_prefs(user_id: int) -> dict:
     row = db.fetchone("SELECT pool_prefs FROM users WHERE id=?", (int(user_id),))
     if row is None:
         return {}
     try:
-        data = json.loads(row["pool_prefs"] or "{}")
-        return data if isinstance(data, dict) else {}
-    except (json.JSONDecodeError, TypeError, KeyError):
+        return _parse_prefs(row["pool_prefs"])
+    except (KeyError, IndexError):
         return {}
 
 
-def user_own_only(user_id: int, kind: str) -> bool:
+def _normalize(item) -> dict:
+    item = item if isinstance(item, dict) else {}
+    legacy_private = item.get("own_only") is True
+    share = item.get("share")
+    if share not in SHARE_LEVELS:
+        share = "private" if legacy_private else DEFAULT_PREF["share"]
+    use = item.get("use")
+    if use not in USE_MODES:
+        use = "mine" if legacy_private else DEFAULT_PREF["use"]
+    return {"share": share, "use": use}
+
+
+def user_pref(user_id: int, kind: str) -> dict:
+    """What the user saved for this pool, before the admin switch applies."""
     if kind not in POOL_KIND_SET:
-        return False
-    item = user_prefs(user_id).get(kind)
-    if not isinstance(item, dict):
-        return False
-    return item.get("own_only") is True
+        return dict(DEFAULT_PREF)
+    return _normalize(user_prefs(user_id).get(kind))
 
 
-def set_user_own_only(user_id: int, kind: str, own_only: bool) -> None:
+def effective_pref(user_id: int, kind: str) -> dict:
+    """The sharing and routing actually in force for this user."""
+    if not admin_policy(kind)["pool_shared"]:
+        return {"share": "private", "use": "mine"}
+    saved = user_pref(user_id, kind)
+    use = "mine" if saved["share"] == "private" else saved["use"]
+    return {"share": saved["share"], "use": use}
+
+
+def set_user_pref(user_id: int, kind: str, *, share: str | None = None, use: str | None = None) -> dict:
     if kind not in POOL_KIND_SET:
         raise ValueError(f"unknown pool kind {kind!r}")
+    if share is not None and share not in SHARE_LEVELS:
+        raise ValueError(f"unknown share level {share!r}")
+    if use is not None and use not in USE_MODES:
+        raise ValueError(f"unknown routing mode {use!r}")
     uid = int(user_id)
     with db.tx() as conn:
         row = conn.execute("SELECT pool_prefs FROM users WHERE id=? FOR UPDATE", (uid,)).fetchone()
-        try:
-            data = json.loads((row["pool_prefs"] if row else None) or "{}")
-            prefs = data if isinstance(data, dict) else {}
-        except (json.JSONDecodeError, TypeError):
-            prefs = {}
-        item = prefs.get(kind)
-        item = dict(item) if isinstance(item, dict) else {}
-        item["own_only"] = bool(own_only)
+        prefs = _parse_prefs(row["pool_prefs"] if row else None)
+        old = prefs.get(kind)
+        pref = _normalize(old)
+        if share is not None:
+            pref["share"] = share
+        if use is not None:
+            pref["use"] = use
+        item = dict(old) if isinstance(old, dict) else {}
+        item.update(pref)
+        # Rollback mirror: the old reader treats own_only as fully private.
+        item["own_only"] = pref["share"] != "everyone" or pref["use"] == "mine"
         prefs[kind] = item
         conn.execute("UPDATE users SET pool_prefs=? WHERE id=?", (json.dumps(prefs), uid))
-    _private_cache.pop(kind, None)
+    _share_cache.pop(kind, None)
+    return pref
 
 
 def uses_shared_pool(user_id: int | None, kind: str) -> bool:
-    """Whether this user is routed across the whole donated pool."""
+    """Whether this user's requests may fall back onto other users' accounts."""
     if user_id is None:
         return True
     if kind not in POOL_KIND_SET:
         return True
-    if not admin_policy(kind)["pool_shared"]:
+    return effective_pref(int(user_id), kind)["use"] == "pool"
+
+
+def contributes(user_id: int | None, kind: str) -> bool:
+    """A live account of this user's is shared in this pool.
+
+    That is what "contributors" sharing asks of a caller, and what the Z.AI
+    cross-unlock asks of an x.ai or OpenAI donor. A dead or private account
+    does not count.
+    """
+    if user_id is None or kind not in POOL_KIND_SET:
         return False
-    return not user_own_only(int(user_id), kind)
+    uid = int(user_id)
+    if effective_pref(uid, kind)["share"] == "private":
+        return False
+    return bool(own_access(kind, uid).get("ok"))
 
 
 def ui_state(user_id: int, kind: str) -> dict:
     admin = admin_policy(kind)
-    own_only = user_own_only(user_id, kind)
+    saved = user_pref(user_id, kind)
+    eff = effective_pref(user_id, kind)
     shared = bool(admin["pool_shared"])
     return {
         "kind": kind,
         "label": POOL_LABELS.get(kind, kind),
         "pool_shared": shared,
         "open_access": bool(admin["open_access"]),
-        "own_only": own_only,
-        "uses_shared": shared and not own_only,
+        "share": eff["share"],
+        "use": eff["use"],
+        "saved_share": saved["share"],
+        "saved_use": saved["use"],
+        "own_only": eff["use"] == "mine",
+        "uses_shared": eff["use"] == "pool",
         "can_override": shared,
     }
 
 
-def grant_open_access(user_id: int, kind: str, pool_ready: bool) -> bool:
-    if not pool_ready:
+def _live(row, live) -> bool:
+    try:
+        return bool(live(row))
+    except (DecryptionError, accounts.CredentialDataError):
         return False
+
+
+def pool_has_live(kind: str, user_id: int | None, live) -> bool:
+    """Some account this user would be routed onto passes `live`."""
+    rows = load_credentials(source_id(kind), kind, user_id)
+    return any(_live(row, live) for row in rows)
+
+
+def grant_open_access(user_id: int, kind: str, live) -> bool:
+    """Open access admits a user without an account of their own, but only
+    onto accounts their routing can actually reach: a pool whose only live
+    accounts are private or contributor-only must not read as unlocked."""
     if not uses_shared_pool(user_id, kind):
         return False
-    return admin_policy(kind)["open_access"]
+    if not admin_policy(kind)["open_access"]:
+        return False
+    return pool_has_live(kind, user_id, live)
 
 
-def with_open_access(user_id: int, kind: str, own: dict, pool_ready: bool) -> dict:
+def with_open_access(user_id: int, kind: str, own: dict, live) -> dict:
+    """`live(row)` says whether one credential row can serve requests."""
     if own.get("ok"):
         return own
-    if grant_open_access(user_id, kind, pool_ready):
+    if grant_open_access(user_id, kind, live):
         return {"ok": True, "reason": "open"}
     return own
 
 
-def _donated_by(row) -> int | None:
+def donated_by(row) -> int | None:
     try:
         val = row["donated_by"]
     except (KeyError, IndexError, TypeError):
@@ -199,55 +350,80 @@ def _donated_by(row) -> int | None:
         return None
 
 
-_PRIVATE_TTL = 30.0
-_private_cache: dict[str, tuple[float, set[int]]] = {}
+_SHARE_TTL = 30.0
+_share_cache: dict[str, tuple[float, dict[int, str]]] = {}
 
 
-def _private_donors(kind: str) -> set[int]:
-    """Donors who opted out. Their accounts stay off the shared pool.
+def _share_levels(kind: str) -> dict[int, str]:
+    """Donors whose accounts are not shared with everyone, by level.
 
-    Cached briefly: this used to parse every users.pool_prefs row on every
-    pooled request. Writes through set_user_own_only invalidate the entry.
+    Cached briefly: this would otherwise parse every users.pool_prefs row on
+    every pooled request. Writes through set_user_pref invalidate the entry.
     """
     if kind not in POOL_KIND_SET:
-        return set()
-    hit = _private_cache.get(kind)
+        return {}
+    hit = _share_cache.get(kind)
     now = time.time()
-    if hit and now - hit[0] < _PRIVATE_TTL:
-        return set(hit[1])
-    out: set[int] = set()
+    if hit and now - hit[0] < _SHARE_TTL:
+        return dict(hit[1])
+    out: dict[int, str] = {}
     for row in db.fetchall("SELECT id, pool_prefs FROM users"):
         try:
-            data = json.loads(row["pool_prefs"] or "{}")
-        except (json.JSONDecodeError, TypeError, KeyError):
+            data = _parse_prefs(row["pool_prefs"])
+            uid = int(row["id"])
+        except (KeyError, IndexError, TypeError, ValueError):
             continue
-        if not isinstance(data, dict):
-            continue
-        item = data.get(kind)
-        if isinstance(item, dict) and item.get("own_only") is True:
-            try:
-                out.add(int(row["id"]))
-            except (TypeError, ValueError):
-                continue
-    _private_cache[kind] = (now, out)
-    return out
+        share = _normalize(data.get(kind))["share"]
+        if share != "everyone":
+            out[uid] = share
+    _share_cache[kind] = (now, out)
+    return dict(out)
+
+
+def share_level(kind: str, donor_id: int | None) -> str:
+    """How widely this donor's accounts are shared ("everyone" for none)."""
+    if donor_id is None:
+        return "everyone"
+    if not admin_policy(kind)["pool_shared"]:
+        return "private"
+    return _share_levels(kind).get(int(donor_id), "everyone")
 
 
 def filter_credentials(rows, kind: str, user_id: int | None):
     """Keep only the donated accounts this user may be routed onto.
 
-    A donor who opted out is never routed onto anyone else's account, and
-    nobody else — including an anonymous caller — is routed onto theirs.
+    The caller's own accounts always stay. Everyone else's stay only when
+    the caller routes through the shared pool and the donor shares with the
+    caller: "everyone" admits any caller, "contributors" admits a caller who
+    shares a live account here too, and "private" admits nobody. A caller
+    with no user (system work) reaches only accounts shared with everyone.
     """
-    private = _private_donors(kind)
-    if user_id is None:
-        if not private:
-            return list(rows)
-        return [row for row in rows if _donated_by(row) not in private]
-    uid = int(user_id)
-    if uses_shared_pool(uid, kind):
-        return [row for row in rows if _donated_by(row) not in private or _donated_by(row) == uid]
-    return [row for row in rows if _donated_by(row) == uid]
+    rows = list(rows)
+    uid = int(user_id) if user_id is not None else None
+    if uid is not None and not uses_shared_pool(uid, kind):
+        return [row for row in rows if donated_by(row) == uid]
+    if not admin_policy(kind)["pool_shared"]:
+        return []
+    levels = _share_levels(kind)
+    contributor: bool | None = None
+    out = []
+    for row in rows:
+        donor = donated_by(row)
+        if uid is not None and donor == uid:
+            out.append(row)
+            continue
+        level = levels.get(donor, "everyone") if donor is not None else "everyone"
+        if level == "private":
+            continue
+        if level == "contributors":
+            if uid is None:
+                continue
+            if contributor is None:
+                contributor = contributes(uid, kind)
+            if not contributor:
+                continue
+        out.append(row)
+    return out
 
 
 def load_credentials(source_id: int, kind: str, user_id: int | None):

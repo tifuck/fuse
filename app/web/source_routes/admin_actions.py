@@ -11,8 +11,6 @@ from ...crypto import encrypt
 from ...security import allowed_base_url, limiter
 from ...sources import TYPES
 from ...sources import openrouter as openrouter_mod
-from ...sources import zai as zai_mod
-from ...sources.grok import ensure_grok_source
 from ...sources import pool_policy
 from ...sources.probe import probe_source
 from ..deps import _notices, current_user, render, require_admin
@@ -255,6 +253,18 @@ async def admin_pools_save(request: Request):
     return RedirectResponse("/admin/pools", status_code=303)
 
 
+_GUARD_SAVED = {
+    "grok": "Grok outside-usage guard saved.",
+    "zai": "Z.AI outside-usage guard saved.",
+}
+
+
+def _save_guard(user, kind: str, raw: str) -> RedirectResponse:
+    pool_policy.set_guard(kind, raw in ("1", "on", "true"))
+    _notices[user["id"]] = _GUARD_SAVED.get(kind) or f"{pool_policy.POOL_LABELS[kind]} outside-usage guard saved."
+    return RedirectResponse("/admin/pools#guards", status_code=303)
+
+
 @router.post("/admin/sources/grok")
 async def admin_grok_save(
     request: Request,
@@ -263,16 +273,7 @@ async def admin_grok_save(
     user, redir = require_admin(request)
     if redir:
         return redir
-    sid = ensure_grok_source()
-    cfg = _source_cfg(db.fetchone("SELECT config FROM sources WHERE id=?", (sid,)))
-    enabled = offpool_usage_guard in ("1", "on", "true")
-    cfg["offpool_usage_guard"] = enabled
-    with db.tx() as conn:
-        conn.execute("UPDATE sources SET config=? WHERE id=?", (json.dumps(cfg), sid))
-        if not enabled:
-            conn.execute("UPDATE credentials SET pool_held_until=NULL WHERE source_id=?", (sid,))
-    _notices[user["id"]] = "Grok outside-usage guard saved."
-    return RedirectResponse("/admin/pools#guards", status_code=303)
+    return _save_guard(user, "grok", offpool_usage_guard)
 
 
 @router.post("/admin/sources/zai")
@@ -283,16 +284,21 @@ async def admin_zai_save(
     user, redir = require_admin(request)
     if redir:
         return redir
-    sid = zai_mod.ensure_zai_source()
-    cfg = _source_cfg(db.fetchone("SELECT config FROM sources WHERE id=?", (sid,)))
-    enabled = offpool_usage_guard in ("1", "on", "true")
-    cfg["offpool_usage_guard"] = enabled
-    with db.tx() as conn:
-        conn.execute("UPDATE sources SET config=? WHERE id=?", (json.dumps(cfg), sid))
-        if not enabled:
-            conn.execute("UPDATE credentials SET pool_held_until=NULL WHERE source_id=?", (sid,))
-    _notices[user["id"]] = "Z.AI outside-usage guard saved."
-    return RedirectResponse("/admin/pools#guards", status_code=303)
+    return _save_guard(user, "zai", offpool_usage_guard)
+
+
+@router.post("/admin/pools/guard/{kind}")
+async def admin_pool_guard_save(
+    request: Request,
+    kind: str,
+    offpool_usage_guard: str = Form("0"),
+):
+    user, redir = require_admin(request)
+    if redir:
+        return redir
+    if kind not in pool_policy.GUARD_KINDS:
+        raise HTTPException(404, "No usage guard for this pool")
+    return _save_guard(user, kind, offpool_usage_guard)
 
 
 @router.post("/admin/sources/openrouter")
