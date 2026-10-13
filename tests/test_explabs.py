@@ -11,7 +11,7 @@ import pytest
 
 from app import accounts, context_meter as context, db, model_caps, sources
 from app.crypto import encrypt
-from app.sources import explabs
+from app.sources import explabs, pool_pick
 
 pytestmark = pytest.mark.usefixtures("isolated_db")
 _REAL_CLIENT = httpx.AsyncClient
@@ -26,6 +26,7 @@ def users(isolated_db):
 
 @pytest.fixture
 def backend(users, monkeypatch):
+    pool_pick.reset_health()  # 401 strikes are per credential id
     sid = explabs.ensure_explabs_source()
     db.execute("DELETE FROM credentials WHERE source_id=?", (sid,))
     db.execute("DELETE FROM model_routes")
@@ -199,6 +200,9 @@ def test_catalog_invalid_auth_disables_key_but_quota_keeps_it(backend, network, 
         result = await explabs.fetch_catalog(uid, force=True)
         if status == 401:
             assert result == {"by_id": {}}
+            # One 401 may be transient: the key survives until a second one.
+            assert accounts.cred_secret(explabs.user_credential(uid)) == KEY
+            await explabs.fetch_catalog(uid, force=True)
             assert explabs.user_credential(uid) is None
             assert explabs.cached_catalog(uid) is None
         else:
@@ -262,13 +266,17 @@ def test_chat_preserves_quota_errors_and_retry_after_not_invalid_auth(backend, n
         assert result.response_headers == {"Retry-After": "17"}
         if status == 401:
             assert result.status == 502 and result.body["error"]["code"] == "invalid_key"
+            # One 401 may be transient: the key survives until a second one.
+            assert accounts.cred_secret(explabs.user_credential(uid)) == KEY
+            again = await src.chat({"model": "explabs/" + MODEL, "messages": [], "stream": stream}, user_id=uid)
+            assert again.status == 502
             assert explabs.user_credential(uid) is None
         else:
             assert result.status == status and result.body == error
             assert accounts.cred_secret(explabs.user_credential(uid)) == KEY
 
     asyncio.run(run())
-    assert len([request for request in requests if request.method == "POST"]) == 1
+    assert len([request for request in requests if request.method == "POST"]) == (2 if status == 401 else 1)
     assert all(client.is_closed for client in clients)
 
 

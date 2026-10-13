@@ -10,6 +10,7 @@ from .. import accounts, db
 from ..crypto import encrypt
 from ..proxy import openai_chat
 from .base import ChatResult
+from .pool_pick import auth_failure_confirmed
 
 BASE_URL = "https://api.experientiallabs.ai/v1"
 CATALOG_URL = "https://api.experientiallabs.ai/api/models"
@@ -194,7 +195,9 @@ async def fetch_catalog(user_id: int | None, *, force: bool = False) -> dict:
                 return {"by_id": {}}
             _errors[user_id] = str(exc)
             if exc.invalid_key:
-                disable_credential(cred["id"])
+                # One 401 can be transient: disable on the second strike.
+                if auth_failure_confirmed(cred["id"]):
+                    disable_credential(cred["id"])
                 _errors[user_id] = str(exc)
                 return {"by_id": {}}
             if hit and hit[0] == revision:
@@ -332,7 +335,7 @@ class ExperientialLabsSource:
             stream._on_close = close_stream
         if status == 401:
             current = user_credential(user_id, self.source_id)
-            if current and _revision(current) == revision:
+            if current and _revision(current) == revision and auth_failure_confirmed(cred["id"]):
                 disable_credential(cred["id"])
             obj = {"error": {"message": "Experiential Labs rejected the configured API key.", "code": "invalid_key"}}
             status = 502
