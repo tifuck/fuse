@@ -478,7 +478,9 @@ def _oauth_revoked(status: int, data) -> bool:
     code = str(err.get("code") or err.get("type") or "") if isinstance(err, dict) else str(err or "")
     message = str((err.get("message") if isinstance(err, dict) else "") or data.get("error_description") or "")
     text = f"{code} {message}".lower()
-    return "invalid_grant" in text or "revoked" in text or "unauthorized" in text
+    # Only a dead grant disables for good: a bare "unauthorized" (e.g.
+    # unauthorized_client, a transient auth fault) only cools the account.
+    return "invalid_grant" in text or "revoked" in text
 
 
 def _capability_denial(data) -> bool:

@@ -26,6 +26,12 @@ pytestmark = pytest.mark.usefixtures("isolated_db")
 
 
 class KimiParseTest(unittest.TestCase):
+    def test_only_a_dead_grant_counts_as_revoked(self):
+        self.assertTrue(kimi_mod._oauth_revoked(400, {"error": "invalid_grant"}))
+        self.assertTrue(kimi_mod._oauth_revoked(401, {"error": {"message": "token revoked"}}))
+        self.assertFalse(kimi_mod._oauth_revoked(401, {"error": "unauthorized"}))
+        self.assertFalse(kimi_mod._oauth_revoked(401, {"error": "unauthorized_client"}))
+
     def test_device_verify_url_allows_kimi_hosts(self):
         url = kimi_mod.device_verify_url(
             {
