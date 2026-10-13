@@ -123,8 +123,11 @@ void send_res_tmo_len(struct tls *t, const char *id, int ok, int exit_code,
          /* Only the network thread supplies t (intake rejection). It must
           * never wait for itself to drain the outbound queue. Workers retain
           * their slot until their terminal result has bounded queue space. */
-         if (t) ws_send_text(t, s);
-         else out_enqueue_mode(1, (const unsigned char *)s, strlen(s), 1);
+         /* A refusal lost to a dead socket is queued (never waiting) for the
+          * next session; dropped, the server would wait on a job that never ran. */
+         if (t) {
+             if (ws_send_text(t, s) != 0) out_enqueue_mode(1, (const unsigned char *)s, strlen(s), 0);
+         } else out_enqueue_mode(1, (const unsigned char *)s, strlen(s), 1);
          free(s);
      }
 }

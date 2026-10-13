@@ -1,5 +1,7 @@
 #include "../src/agent.h"
 #include "../src/outq.h"
+#include "../src/lifecycle.h"
+#include "../src/net.h"
 #include <assert.h>
 #include <pthread.h>
 #include <string.h>
@@ -50,5 +52,17 @@ int main(void) {
     int last = (g_out_tail + OUT_QMAX - 1) % OUT_QMAX;
     assert(memmem(g_outq[last].data, g_outq[last].n, "\"t\":\"res\"", 9));
     for (int i = 0; i < OUT_QMAX; i++) free(g_outq[i].data);
+    g_out_n = g_out_head = g_out_tail = 0;
+
+    /* An intake refusal whose direct send fails is queued for the next
+     * session instead of vanishing (the write fails at once while stopping). */
+    struct tls dead;
+    memset(&dead, 0, sizeof(dead));
+    g_stop_main = 1;
+    send_res(&dead, "busyjob", 0, 1, "", "", "agent is busy");
+    g_stop_main = 0;
+    assert(g_out_n == 1);
+    assert(memmem(g_outq[g_out_head].data, g_outq[g_out_head].n, "agent is busy", 13));
+    free(g_outq[g_out_head].data);
     return 0;
 }
