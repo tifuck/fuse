@@ -788,6 +788,21 @@ class AgentCapsTest(unittest.TestCase):
         wake = store.start_turn(1, thread["id"], "AUTOMATED EVENT - background report", rev, "wake-t")["run"]
         return wake
 
+    def test_wake_turn_is_flagged_in_the_same_transaction_as_its_run(self):
+        thread, parent = self._parent()
+        child = store.start_child_run(user_id=1, thread_id=thread["id"], parent_run_id=parent["id"],
+                                      prompt="bg", description="bg", background=True)
+        store.finish_run(child["id"], {"content": "report", "tools": []}, "completed")
+        store.finish_run(parent["id"], {"content": "ok", "tools": []}, "completed")
+        rev = chats.get_thread(1, thread["id"])["revision"]
+        with patch.object(store, "mark_run_wake", side_effect=AssertionError("separate write")):
+            wake = store.start_turn(1, thread["id"], "AUTOMATED EVENT - background report", rev, "wake-same-tx",
+                                    auto=True, wake=([child["id"]], {child["id"]: "env"}))["run"]
+        agent = store.get_run(1, wake["id"])["request"]["agent"]
+        self.assertTrue(agent["wake"])
+        self.assertEqual(agent["wake_ids"], [child["id"]])
+        self.assertEqual(agent["wake_receipts"], {child["id"]: "env"})
+
     def test_wake_turn_completing_after_respawn_keeps_child_wakeable(self):
         # Production race: a wake turn resumed the child (spawn task_id) and
         # then completed; its finalize used to mark the child wake_sent even

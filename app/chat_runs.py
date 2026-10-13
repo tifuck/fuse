@@ -1147,6 +1147,7 @@ async def _wake_parent(user_id: int, thread_id) -> None:
                 user_id, thread_id, text, revision, f"wake-{uuid4().hex[:12]}",
                 auto=True, auto_resumed_at=resumed_at,
                 command_receipt_ids=[item["id"] for item in cmd_results],
+                wake=(ids, dict(zip(ids, envelopes))),
             )
         except chats.ChatValidationError as exc:
             logger.exception("Wake turn failed for thread %s", thread_id)
@@ -1162,7 +1163,6 @@ async def _wake_parent(user_id: int, thread_id) -> None:
         if run is None:
             await durable_call(chat_store.bump_wake_attempts, ids)
             return
-        await durable_call(chat_store.mark_run_wake, run["id"], ids, receipts=dict(zip(ids, envelopes)))
         try:
             await start(internal_request(user_id), dict(owner), result["run"])
         except Exception:

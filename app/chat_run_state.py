@@ -187,7 +187,7 @@ def start_turn(*args, **kwargs):
 def _start_turn(user_id, thread_id, text, expected_revision, command_id, model=None, tools=None, context=None,
                 attachments=None, reasoning_effort=None, auto_title=False, invoke_skill=None, auto=False,
                 scheduled=False, coding_override=None, command_receipt_ids=None, replace_from=None,
-                schedule_id=None, schedule_manual=False, auto_resumed_at="", _pinned=None):
+                schedule_id=None, schedule_manual=False, auto_resumed_at="", wake=None, _pinned=None):
     from . import chat_children
     from . import chats
 
@@ -462,6 +462,10 @@ def _start_turn(user_id, thread_id, text, expected_revision, command_id, model=N
             except VaultLocked:
                 vault_ok = False
                 request["agent"]["vault_unlocked"] = False
+        if wake is not None:
+            # Same transaction as the run: flagged separately, a failure in
+            # between left the children wake-pending and delivered them twice.
+            _flag_wake(request, *wake)
         conn.execute(
             """INSERT INTO chat_runs(id,thread_id,user_id,status,request,message_id,message,created_at,updated_at,
                parent_run_id, root_run_id, agent_depth)
@@ -787,6 +791,18 @@ def thread_root_run(user_id, thread_id, *, include_request=True):
     return {"id": row["id"], "status": row["status"], "wake": bool(agent.get("wake")), "stopped_at": stopped_at}
 
 
+def _flag_wake(req: dict, child_ids=None, receipts=None) -> None:
+    agent = req.get("agent") if isinstance(req.get("agent"), dict) else {}
+    agent["wake"] = True
+    if receipts is not None:
+        agent["wake_receipts"] = receipts
+        seed = chat_tx.dumps(req.get("messages") or [])
+        agent["wake_seed_receipts"] = {cid: text for cid, text in receipts.items() if text and chat_tx._json_needle(text) in seed}
+    if child_ids:
+        agent["wake_ids"] = [str(c) for c in child_ids if str(c)][:32]
+    req["agent"] = agent
+
+
 def mark_run_wake(run_id, child_ids=None, receipts=None):
     """Flag a run as an automated wake turn (subagent reports and/or command results)."""
     with chat_tx.transaction() as conn:
@@ -799,15 +815,7 @@ def mark_run_wake(run_id, child_ids=None, receipts=None):
             return
         if not isinstance(req, dict):
             return
-        agent = req.get("agent") if isinstance(req.get("agent"), dict) else {}
-        agent["wake"] = True
-        if receipts is not None:
-            agent["wake_receipts"] = receipts
-            seed = chat_tx.dumps(req.get("messages") or [])
-            agent["wake_seed_receipts"] = {cid: text for cid, text in receipts.items() if text and chat_tx._json_needle(text) in seed}
-        if child_ids:
-            agent["wake_ids"] = [str(c) for c in child_ids if str(c)][:32]
-        req["agent"] = agent
+        _flag_wake(req, child_ids, receipts)
         conn.execute("UPDATE chat_runs SET request=? WHERE id=?", (chat_tx.dumps(req), run_id))
 
 
