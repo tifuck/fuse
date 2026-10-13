@@ -9,6 +9,7 @@ import math
 import re
 import time
 
+import httpx
 from fastapi import HTTPException, Request
 from fastapi.responses import StreamingResponse
 
@@ -102,6 +103,7 @@ from .chat_generation.tool_jobs import (
 )
 from .chat_generation.tool_runner import (
     MAX_CALLS_PER_ROUND,
+    CheckpointFailed,
     _record_failure,
 )
 from .chat_generation.messages import (
@@ -117,8 +119,14 @@ from .chat_generation.messages import (
 
 logger = logging.getLogger(__name__)
 
+# Errors a provider stream raises for upstream/transport faults (httpx and
+# socket errors, idle timeouts, malformed upstream frames). Only these are
+# resumed; other exceptions mid-round are local bugs.
+_UPSTREAM_STREAM_ERRORS = (httpx.HTTPError, OSError, EOFError, ValueError)
+
 
 MAX_COMPLETIONS = 6
+CHECKPOINT_RETRY_DELAYS = (0.5, 2.0)
 
 
 # Consecutive failed tool calls (parent and child). A real audit may run
@@ -694,8 +702,9 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
         command_delivery_ids = []
         src_type = None
         # take_child_results/take_followups/take_steers are non-destructive
-        # peeks; they only clear once the transcript persists. A failed
-        # checkpoint would otherwise re-inject the same envelope next round.
+        # peeks; they only clear once the transcript persists. Until a
+        # checkpoint lands (it is retried; one that keeps failing ends the
+        # turn) the same envelope could be peeked again next round.
         # In-memory dedupe closes that; a real crash still redelivers via the
         # stored transcript / wake path.
         delivered_local: set[str] = set()
@@ -739,18 +748,26 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     "command_delivery_ids": list(command_delivery_ids),
                     "prompt_snapshot": prompt_snapshot,
                 }
-                await durable_call(store.save_turn_progress,
-                    run_id,
-                    _provider_snapshot(current_messages, jobs,
-                        content=str((summary or {}).get("content") or "") if jobs else "",
-                        reasoning=(summary or {}).get("reasoning") if jobs else "", model=model,
-                        thinking=(summary or {}).get("thinking") if jobs else None),
-                    loaded_tools=list(loaded_tools),
-                    extra=extra,
-                )
+                snapshot = _provider_snapshot(current_messages, jobs,
+                    content=str((summary or {}).get("content") or "") if jobs else "",
+                    reasoning=(summary or {}).get("reasoning") if jobs else "", model=model,
+                    thinking=(summary or {}).get("thinking") if jobs else None)
             except Exception:
                 logger.exception("Chat transcript checkpoint failed for %s", run_id)
                 raise
+            # A transient DB error is retried (the snapshot write is a state
+            # overwrite); one that persists ends the turn, as periodic() does.
+            for delay in (*CHECKPOINT_RETRY_DELAYS, None):
+                try:
+                    await durable_call(store.save_turn_progress, run_id, snapshot,
+                                       loaded_tools=list(loaded_tools), extra=extra)
+                    return
+                except Exception as exc:
+                    if delay is None:
+                        logger.exception("Chat transcript checkpoint failed for %s", run_id)
+                        raise CheckpointFailed("Generation stopped: Fuse could not save its progress.") from exc
+                    logger.warning("Chat transcript checkpoint failed for %s; retrying in %ss", run_id, delay, exc_info=True)
+                    await asyncio.sleep(delay)
 
         # One replayable transcript, extended only by new exchanges or replaced
         # wholesale by an explicit compaction checkpoint.
@@ -1320,12 +1337,21 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                         else:
                             summary = payload_obj
             except Exception as exc:
-                logger.warning("Dashboard upstream stream failed: %s", type(exc).__name__)
-                err_msg = f"upstream stream failed ({type(exc).__name__})"
+                # Transport/protocol errors are the provider's; anything else
+                # (TypeError, RecursionError, ...) is a Fuse bug that must not
+                # be retried as paid rounds or blamed on the provider.
+                upstream_fault = isinstance(exc, _UPSTREAM_STREAM_ERRORS)
+                if upstream_fault:
+                    logger.warning("Dashboard upstream stream failed: %s", type(exc).__name__)
+                    err_msg = f"upstream stream failed ({type(exc).__name__})"
+                else:
+                    logger.exception("Dashboard stream processing failed in Fuse")
+                    err_msg = f"Fuse could not process the provider reply ({type(exc).__name__})"
                 if _is_idle_timeout(err_msg):
                     idle_stalls += 1
                 if (
-                    _should_resume(502, err_msg, resumes_left=resumes_left, idle_stalls=idle_stalls)
+                    upstream_fault
+                    and _should_resume(502, err_msg, resumes_left=resumes_left, idle_stalls=idle_stalls)
                     and not await request.is_disconnected()
                 ):
                     resumes_left -= 1

@@ -336,7 +336,7 @@ def _same_host(a, b) -> bool:
         return a is None and b is None
     try:
         return int(a) == int(b)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return False
 
 
@@ -777,7 +777,7 @@ async def get_output(*, user_id: int, arguments: str, thread_id=None, parent_run
         # concurrently in the parent's TaskGroup now, so a long join is cheap
         # and the default is the full 600s cap.
         wait = min(max(int(timeout_ms), 0), 600_000) / 1000 if timeout_ms is not None else 600
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         wait = 600
     deadline = time.monotonic() + wait
     row = None

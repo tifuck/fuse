@@ -109,7 +109,7 @@ def _xml_param_value(raw: str):
         text = text[1:-1]
     try:
         return json.loads(text)
-    except (json.JSONDecodeError, TypeError, ValueError):
+    except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
         return text
 
 
@@ -174,7 +174,7 @@ def _calls_from_xml_body(body: str, *, coding: bool, start: int = 0) -> list[dic
         if isinstance(args, str):
             try:
                 args = json.loads(args)
-            except (json.JSONDecodeError, ValueError):
+            except (json.JSONDecodeError, ValueError, RecursionError):
                 args = {"_": args}
         if not isinstance(args, dict):
             args = {"value": args}
@@ -324,7 +324,7 @@ def _take_calls(bucket: dict, raw) -> None:
             continue
         try:
             idx = int(item.get("index", len(bucket)))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             idx = len(bucket)
         rec = bucket.setdefault(
             idx,

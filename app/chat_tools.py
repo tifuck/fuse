@@ -883,7 +883,7 @@ async def execute_tool(
             def _int_arg(key: str, default: int) -> int:
                 try:
                     return int(args.get(key))
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     return default
 
             offset = max(1, _int_arg("offset", 1))
@@ -1201,7 +1201,7 @@ async def execute_tool(
         recency = args.get("recency_days")
         try:
             recency_i = int(recency) if recency is not None else None
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             recency_i = None
         if recency_i is not None:
             recency_i = infer_recency(queries[0], recency_i)

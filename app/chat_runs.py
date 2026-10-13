@@ -288,7 +288,7 @@ class Output:
         choice = (obj.get("choices") or [{}])[0] if isinstance(obj.get("choices"), list) else {}
         if not isinstance(choice, dict):
             return 0
-        delta = choice.get("delta") or {}
+        delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
         calls = delta.get("tool_calls")
         if not isinstance(calls, list):
             calls = choice.get("message", {}).get("tool_calls") if isinstance(choice.get("message"), dict) else None
@@ -455,7 +455,8 @@ class Output:
             return
         if obj.get("error"):
             error = obj["error"]
-            msg["error"] = chats._legacy_text(error if isinstance(error, str) else error.get("message", "Upstream error"), chats.ERROR_MAX)
+            text = error if isinstance(error, str) else error.get("message", "Upstream error") if isinstance(error, dict) else "Upstream error"
+            msg["error"] = chats._legacy_text(text, chats.ERROR_MAX)
             if chat_runtime._provider_error_content(msg.get("content") or ""):
                 msg["content"] = ""
                 msg["segments"] = [
@@ -463,8 +464,12 @@ class Output:
                     if part.get("type") != "content" or not chat_runtime._provider_error_content(part.get("text") or "")
                 ]
             return
-        choice = (obj.get("choices") or [{}])[0]
-        delta, message = choice.get("delta") or {}, choice.get("message") or {}
+        # Provider frames are untrusted: a non-dict choice/delta/message is
+        # treated as empty instead of failing the whole run.
+        choices = obj.get("choices")
+        choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+        delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
+        message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
         content = _take(delta.get("content")) or ("" if choice.get("delta") is not None else _take(message.get("content")))
         reasoning = [_take(delta.get(key)) or _take(message.get(key)) or _take(obj.get(key))
                      for key in ("reasoning_content", "reasoning", "thinking", "reasoning_text")]
@@ -1298,11 +1303,17 @@ async def _run(request, user, run):
             now = time.monotonic()
             if now >= next_poll:
                 next_poll = now + STATUS_POLL_SECONDS
-                row = await asyncio.to_thread(db.fetchone, "SELECT status,cancel_requested FROM chat_runs WHERE id=? AND user_id=?", (ident, user["id"]))
-                if row is None or row["cancel_requested"] or row["status"] not in chat_store.ACTIVE:
-                    _cancelled.add(ident)
-                    task.cancel()
-                    return
+                try:
+                    row = await asyncio.to_thread(db.fetchone, "SELECT status,cancel_requested FROM chat_runs WHERE id=? AND user_id=?", (ident, user["id"]))
+                except Exception:
+                    # A transient DB error must not end this flusher/watchdog
+                    # for the rest of the run; poll again next interval.
+                    logger.warning("Chat run status poll failed for %s", ident, exc_info=True)
+                else:
+                    if row is None or row["cancel_requested"] or row["status"] not in chat_store.ACTIVE:
+                        _cancelled.add(ident)
+                        task.cancel()
+                        return
             if cancel_signal is not None and cancel_signal.is_set():
                 _cancelled.add(ident)
                 task.cancel()
@@ -1465,7 +1476,9 @@ async def _run(request, user, run):
         if worker is not None:
             worker.cancel()
             try:
-                await asyncio.gather(worker, return_exceptions=True)
+                (outcome,) = await asyncio.gather(worker, return_exceptions=True)
+                if isinstance(outcome, Exception):
+                    logger.error("Chat run %s flusher stopped early", ident, exc_info=outcome)
             except asyncio.CancelledError:
                 pass
         try:

@@ -335,6 +335,56 @@ class TokenStoreTest(unittest.TestCase):
             token_store.persist_rotated(cas, 1, "v1", "s", {}, {"access_token": "a2", "refresh_token": "r2"})
 
 
+class ProviderFrameRobustnessTest(unittest.TestCase):
+    def test_parsers_survive_pathological_model_output(self):
+        from app.chat_generation import parsing
+
+        self.assertEqual(parsing._xml_param_value("[" * 5000), "[" * 5000)
+        bucket = {}
+        parsing._take_calls(bucket, [{"index": float("inf"), "function": {"name": "x"}}])
+        self.assertEqual(list(bucket), [0])
+
+    def test_non_dict_delta_does_not_fail_the_run(self):
+        from app.chat_runs import Output
+
+        out = Output({"message": {"id": "m1", "role": "assistant", "content": "", "segments": []}})
+        out.apply({"choices": [{"delta": "hi"}]})
+        out.apply({"choices": ["junk"]})
+        out.apply({"error": ["not", "a", "dict"]})
+        self.assertEqual(out.message["error"], "Upstream error")
+
+
+class ToolRoundCheckpointFailureTest(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_checkpoint_settles_jobs_before_surfacing(self):
+        from starlette.requests import Request
+
+        from app import chat_runtime as runtime
+        from app.chat_generation.tool_runner import CheckpointFailed
+
+        seen = []
+
+        async def persist(jobs):
+            seen.append([(j.name, j.done, j.trace.get("status")) for j in jobs])
+            if len(seen) == 2:
+                raise CheckpointFailed("Generation stopped: Fuse could not save its progress.")
+
+        async def execute(*args, **kwargs):
+            return "ok", {"status": "done"}
+
+        async def never():
+            await asyncio.Future()
+
+        calls = [{"id": "a", "function": {"name": "todo_write", "arguments": "{}"}}]
+        request = Request({"type": "http", "method": "POST", "path": "/", "headers": []}, receive=never)
+        with patch.object(runtime, "execute_tool", execute), patch.object(runtime, "_record_failure", AsyncMock()):
+            with self.assertRaises(CheckpointFailed):
+                async for _ in runtime._run_tools(calls, user_id=1, allowed_urls=set(), request=request,
+                                                  completion_i=0, budgets={}, persist=persist):
+                    pass
+        # The final persist ran with every job settled, before the error surfaced.
+        self.assertTrue(all(done for _, done, _ in seen[-1]))
+
+
 class SearchEmptyClassificationTest(unittest.TestCase):
     def test_empty_reason(self):
         self.assertEqual(empty_reason("<html>Please solve this CAPTCHA</html>", "b_algo"), "blocked")

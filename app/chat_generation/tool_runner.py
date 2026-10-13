@@ -30,6 +30,11 @@ from .tool_jobs import ToolJob, _redact_tool_args, _running_event, jobs_from_cal
 logger = logging.getLogger(__name__)
 
 
+class CheckpointFailed(ValueError):
+    """The run's transcript could not be saved even after retries. A
+    ValueError so chat_runs shows its message instead of a generic failure."""
+
+
 MAX_CALLS_PER_ROUND = 32
 
 
@@ -314,18 +319,24 @@ async def run_tools(
             if job.name in ("get_command_output", "kill_command"):
                 args = json.loads(job.arguments or "{}")
                 trace.setdefault("child_id", str(args.get("id") or args.get("child_id") or ""))
-            if job.name in ("run_terminal_command", "get_command_output", "kill_command", "monitor") and trace.get("child_id"):
-                from .. import chat_store as store
-                trace["job_id"] = trace["child_id"]
-                if thread_id:
-                    with store.db.tx() as conn:
-                        row = store.command_rows(conn, user_id, thread_id, [trace["child_id"]]).get(trace["child_id"])
-                    if row:
-                        stored_trace = store.command_trace(row, job.name)
-                        trace = {**stored_trace, **trace} if row["status"] in ("running", "cancelling") else {**trace, **stored_trace}
-            if job.name == "kill_command":
-                from .. import chat_store as store
-                store.settle_kill_receipt(trace)
+            try:
+                if job.name in ("run_terminal_command", "get_command_output", "kill_command", "monitor") and trace.get("child_id"):
+                    from .. import chat_store as store
+                    trace["job_id"] = trace["child_id"]
+                    if thread_id:
+                        with store.db.tx() as conn:
+                            row = store.command_rows(conn, user_id, thread_id, [trace["child_id"]]).get(trace["child_id"])
+                        if row:
+                            stored_trace = store.command_trace(row, job.name)
+                            trace = {**stored_trace, **trace} if row["status"] in ("running", "cancelling") else {**trace, **stored_trace}
+                if job.name == "kill_command":
+                    from .. import chat_store as store
+                    store.settle_kill_receipt(trace)
+            except Exception:
+                # The tool already ran: a bookkeeping failure must not replace
+                # its result with "Tool failed." (the model would re-run a
+                # command that succeeded).
+                logger.exception("Post-tool bookkeeping failed for %s", job.name)
             if trace.get("status") == "running" and job.name in ("get_command_output", "get_subagent_output"):
                 trace.update(status="done", execution_status="running", background=True)
             output = trace.get("output") if isinstance(trace.get("output"), str) else (text or "")
@@ -525,10 +536,17 @@ async def run_tools(
             yield item
     finally:
         cancel.set()
+        failure = None
         for t in (wt, ht):
             t.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
+            try:
                 await t
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                # e.g. a checkpoint that kept failing: settle and persist the
+                # jobs below first, then surface it.
+                failure = failure or exc
         for j in jobs:
             if not j.done:
                 j.text = j.text or "Tool interrupted."
@@ -538,4 +556,8 @@ async def run_tools(
             result = persist(jobs)
             if hasattr(result, "__await__"):
                 await result
+        if failure is not None:
+            if isinstance(failure, ExceptionGroup):
+                failure = next((e for e in failure.exceptions if isinstance(e, CheckpointFailed)), failure.exceptions[0])
+            raise failure
     yield jobs

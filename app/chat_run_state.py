@@ -165,14 +165,27 @@ _root_admission_lock = threading.Lock()
 
 
 def start_turn(*args, **kwargs):
+    pinned: list[tuple[int, str]] = []
     with _root_admission_lock:
-        return _start_turn(*args, **kwargs)
+        try:
+            return _start_turn(*args, _pinned=pinned, **kwargs)
+        except BaseException:
+            # Covers the COMMIT too, which runs after _start_turn's body: a pin
+            # for a run that never committed would keep the vault unlocked.
+            from .vault import unpin_run
+
+            for user_id, run_id in pinned:
+                try:
+                    unpin_run(user_id, run_id)
+                except Exception:
+                    logger.exception("Failed to unpin vault after failed turn commit for %s", run_id)
+            raise
 
 
 def _start_turn(user_id, thread_id, text, expected_revision, command_id, model=None, tools=None, context=None,
                 attachments=None, reasoning_effort=None, auto_title=False, invoke_skill=None, auto=False,
                 scheduled=False, coding_override=None, command_receipt_ids=None, replace_from=None,
-                schedule_id=None, schedule_manual=False, auto_resumed_at=""):
+                schedule_id=None, schedule_manual=False, auto_resumed_at="", _pinned=None):
     from . import chat_children
     from . import chats
 
@@ -440,34 +453,28 @@ def _start_turn(user_id, thread_id, text, expected_revision, command_id, model=N
         if coding and vault_ok:
             try:
                 pin_run(user_id, run_id)
+                if _pinned is not None:
+                    _pinned.append((user_id, run_id))
             except VaultLocked:
                 vault_ok = False
                 request["agent"]["vault_unlocked"] = False
-        try:
-            conn.execute(
-                """INSERT INTO chat_runs(id,thread_id,user_id,status,request,message_id,message,created_at,updated_at,
-                   parent_run_id, root_run_id, agent_depth)
-                   VALUES(?,?,?,'queued',?,?,?,?,?,NULL,?,0)""",
-                (run_id, thread_id, user_id, chat_tx.dumps(request), assistant["id"], chat_tx.dumps(assistant), ts, ts, run_id),
-            )
-            conn.execute("""UPDATE chat_threads SET messages=?,title=?,model=?,tools=?,context=?,compaction=?,revision=revision+1,updated_at=? WHERE id=?""",
-                         (chat_tx.dumps(messages), title, request["model"], chat_tx.dumps(request["tools"]), request["thread_context"], ctxmod.dump_state(state), ts, thread_id))
-            chats.unarchive_on_activity(conn, row, ts)
-            chat_tx.thread_event(conn, user_id, thread_id)
-            chat_tx.event(conn, user_id, "run.started", thread_id, {"run_id": run_id, "message_id": assistant["id"]})
-            from . import command_jobs as command_jobs_mod
+        conn.execute(
+            """INSERT INTO chat_runs(id,thread_id,user_id,status,request,message_id,message,created_at,updated_at,
+               parent_run_id, root_run_id, agent_depth)
+               VALUES(?,?,?,'queued',?,?,?,?,?,NULL,?,0)""",
+            (run_id, thread_id, user_id, chat_tx.dumps(request), assistant["id"], chat_tx.dumps(assistant), ts, ts, run_id),
+        )
+        conn.execute("""UPDATE chat_threads SET messages=?,title=?,model=?,tools=?,context=?,compaction=?,revision=revision+1,updated_at=? WHERE id=?""",
+                     (chat_tx.dumps(messages), title, request["model"], chat_tx.dumps(request["tools"]), request["thread_context"], ctxmod.dump_state(state), ts, thread_id))
+        chats.unarchive_on_activity(conn, row, ts)
+        chat_tx.thread_event(conn, user_id, thread_id)
+        chat_tx.event(conn, user_id, "run.started", thread_id, {"run_id": run_id, "message_id": assistant["id"]})
+        from . import command_jobs as command_jobs_mod
 
-            command_jobs_mod.mark_delivered([str(ident) for ident in command_receipt_ids or []], conn=conn)
-            chat_tx.remember(conn, user_id, command_id, fingerprint, {"run_id": run_id, "thread_id": thread_id})
-            thread = chat_views.thread_view(conn, user_id, thread_id)
-            return {"thread": thread, "run": thread["run"], "idempotent": False}
-        except BaseException:
-            if coding and vault_ok:
-                try:
-                    unpin_run(user_id, run_id)
-                except Exception:
-                    logger.exception("Failed to unpin vault after failed turn commit for %s", run_id)
-            raise
+        command_jobs_mod.mark_delivered([str(ident) for ident in command_receipt_ids or []], conn=conn)
+        chat_tx.remember(conn, user_id, command_id, fingerprint, {"run_id": run_id, "thread_id": thread_id})
+        thread = chat_views.thread_view(conn, user_id, thread_id)
+        return {"thread": thread, "run": thread["run"], "idempotent": False}
 
 
 def wake_candidates(user_id, thread_id):

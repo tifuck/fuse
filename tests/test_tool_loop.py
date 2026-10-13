@@ -847,7 +847,8 @@ class LoopTest(unittest.IsolatedAsyncioTestCase):
             consume_calls["n"] += 1
             if consume_calls["n"] == 1:
                 yield ("out", {"choices": [{"delta": {"content": "partial answer"}}]})
-                raise RuntimeError("socket exploded")
+                # A transport fault (OSError); local bugs are not resumed.
+                raise ConnectionResetError("socket exploded")
             yield (
                 "done",
                 {"calls": [], "finish": "stop", "content": "final", "reasoning": "",
@@ -879,6 +880,42 @@ class LoopTest(unittest.IsolatedAsyncioTestCase):
         folded = [m for m in payloads[1]["messages"] if m.get("role") == "assistant"]
         self.assertTrue(any(m.get("content") == "partial answer" for m in folded),
                         "text the client already saw must ride into the retry")
+
+    async def test_local_processing_bug_is_not_resumed_as_provider_failure(self):
+        payloads = []
+
+        async def invoke(request, user, payload, **_kwargs):
+            payloads.append(dict(payload))
+            return user, FakeSrc("llama"), "m", "m", FakeResult(
+                200, {"choices": [{"message": {"content": "unused"}, "finish_reason": "stop"}]}
+            )
+
+        async def consume(*args, **kwargs):
+            yield ("out", {"choices": [{"delta": {"content": "partial"}}]})
+            raise RecursionError("maximum recursion depth exceeded")
+
+        async def never_disconnects():
+            await asyncio.Future()
+
+        from starlette.requests import Request as StarletteRequest
+
+        scope = {"type": "http", "method": "POST", "path": "/", "headers": [], "client": ("127.0.0.1", 1)}
+        request = StarletteRequest(scope, receive=never_disconnects)
+        with patch("app.chat_runtime.api.invoke_chat", invoke), patch(
+            "app.chat_runtime.api._safe_record_usage", lambda *a, **k: None
+        ), patch("app.chat_runtime._consume_round", consume), patch(
+            "app.chat_runtime._resume_delay", lambda *a, **k: 0.0
+        ), patch(
+            "app.chat_runtime.chats.get_user_context",
+            return_value={"instructions": "", "profile": ""},
+        ):
+            resp = await stream_dashboard_chat(
+                request, {"id": 1, "key_id": None},
+                {"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "tools": []},
+            )
+            body = b"".join([chunk async for chunk in resp.body_iterator])
+        self.assertEqual(len(payloads), 1, "a Fuse-side bug must not be retried as paid rounds")
+        self.assertIn(b"Fuse could not process the provider reply (RecursionError)", body)
 
     async def _run_raw(self, invoke, raw):
         from starlette.requests import Request as StarletteRequest
