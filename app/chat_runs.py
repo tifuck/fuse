@@ -1704,9 +1704,14 @@ async def _run(request, user, run):
                             # retry budget only on genuinely undelivered ones.
                             await durable_call(chat_store.settle_wake_children, ident, child_agent.get("wake_ids") or [])
                     schedule_wake(user["id"], run["thread_id"])
-        except Exception:
-            logger.exception("Chat run finalization failed for %s", ident)
+        except (Exception, asyncio.CancelledError) as exc:
+            # A cancel landing mid-finalize (Stop, shutdown) used to leave the
+            # row ACTIVE, so the next boot resumed and re-ran a finished turn.
+            if not isinstance(exc, asyncio.CancelledError):
+                logger.exception("Chat run finalization failed for %s", ident)
             await durable_call(chat_store.abort_active, ident, status if status in chat_store.TERMINAL else "interrupted")
+            if isinstance(exc, asyncio.CancelledError):
+                raise
         finally:
             if iterator is not None and hasattr(iterator, "aclose"):
                 try:

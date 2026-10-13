@@ -352,3 +352,22 @@ class StoreTest(unittest.TestCase):
         tools = store.get_run(1, self.parent["id"])["message"]["tools"]
         self.assertEqual([(t["id"], t["status"]) for t in tools], [("wait", "error"), ("poll", "running")])
         self.assertEqual(tools[0]["error"], "child failed")
+
+    def test_cancel_during_finalization_settles_the_row(self):
+        from starlette.responses import StreamingResponse
+
+        async def frames():
+            yield runtime._sse({"choices": [{"delta": {"content": "done"}}]})
+            yield b"data: [DONE]\n\n"
+
+        async def run():
+            response = StreamingResponse(frames())
+            with patch.object(runtime, "stream_dashboard_chat", AsyncMock(return_value=response)), \
+                    patch.object(chat_runs, "schedule_wake"), \
+                    patch.object(store, "request_cancel_descendants", side_effect=asyncio.CancelledError):
+                with self.assertRaises(asyncio.CancelledError):
+                    await chat_runs._run(Request(), {"id": 1}, self.parent)
+
+        asyncio.run(run())
+        # Left ACTIVE, the next boot would resume and re-run a finished turn.
+        self.assertNotIn(store.get_run(1, self.parent["id"])["status"], store.ACTIVE)
