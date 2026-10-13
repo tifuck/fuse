@@ -203,3 +203,40 @@ def test_maintenance_db_work_off_loop_and_resume_on_loop(monkeypatch):
 
     asyncio.run(exercise())
     assert calls == ["prune", "reap", "resume", "sweep", "retention"]
+
+
+def test_one_failing_refresh_job_does_not_delay_oauth_refresh(monkeypatch):
+    calls = {"oauth": 0, "catalog": 0}
+
+    async def oauth():
+        calls["oauth"] += 1
+
+    async def catalog():
+        calls["catalog"] += 1
+        raise RuntimeError("catalog down")
+
+    ticks = []
+
+    async def sleep(delay):
+        assert delay == main._REFRESH_INTERVAL
+        ticks.append(delay)
+        if len(ticks) > 6:
+            raise asyncio.CancelledError
+
+    async def noop():
+        return None
+
+    monkeypatch.setattr(main.asyncio, "sleep", sleep)
+    for name in ("grok_version_refresh_due", "chatgpt_refresh_due", "kimi_refresh_due",
+                 "claude_refresh_due", "auto_price_due"):
+        monkeypatch.setattr(main, name, noop)
+    monkeypatch.setattr(main, "refresh_due", oauth)
+    monkeypatch.setattr(main, "openrouter_refresh_due", catalog)
+    monkeypatch.setattr(main.issues_pipeline, "tick", noop)
+    app = type("App", (), {"state": type("State", (), {})()})()
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(main._refresh_loop(app))
+    # Six cycles: OAuth refresh ran every cycle; the failing job backed off alone.
+    assert calls["oauth"] == 6
+    assert calls["catalog"] == 2  # cycle 1, then 120 s later (cycle 3); next after 240 s
+    assert app.state.refresh_errors == ["openrouter catalog: RuntimeError"]

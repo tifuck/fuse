@@ -116,30 +116,36 @@ async def _refresh_loop(app: FastAPI):
         ("model pricing", auto_price_due),
         ("bug triage", issues_pipeline.tick),
     )
-    delay = _REFRESH_INTERVAL
+    # Each job backs off on its own: one failing catalog or triage job used to
+    # double the shared delay and hold OAuth refresh back for up to 5 minutes.
+    delays = {name: _REFRESH_INTERVAL for name, _ in (*provider_jobs, *local_jobs)}
+    skip = dict.fromkeys(delays, 0)
+    errors: dict[str, str] = {}
     while True:
-        await asyncio.sleep(delay)
-        failures: list[str] = []
+        await asyncio.sleep(_REFRESH_INTERVAL)
+        for name in skip:
+            skip[name] -= 1
         try:
-            results = await asyncio.gather(
-                *(_run_refresh_job(name, job) for name, job in provider_jobs),
-            )
-            failures.extend(err for err in results if err)
+            due = [(name, job) for name, job in provider_jobs if skip[name] <= 0]
+            results = await asyncio.gather(*(_run_refresh_job(name, job) for name, job in due))
+            outcomes = [(name, err) for (name, _), err in zip(due, results)]
             for name, job in local_jobs:
-                err = await _run_refresh_job(name, job)
-                if err:
-                    failures.append(err)
+                if skip[name] <= 0:
+                    outcomes.append((name, await _run_refresh_job(name, job)))
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("Background refresh cycle failed")
-        if failures:
-            app.state.refresh_errors = failures
-            app.state.refresh_healthy = False
-        else:
-            app.state.refresh_errors = []
-            app.state.refresh_healthy = True
-        delay = min(_REFRESH_MAX_BACKOFF, delay * 2) if failures else _REFRESH_INTERVAL
+            outcomes = []
+        for name, err in outcomes:
+            delays[name] = min(_REFRESH_MAX_BACKOFF, delays[name] * 2) if err else _REFRESH_INTERVAL
+            skip[name] = delays[name] // _REFRESH_INTERVAL
+            if err:
+                errors[name] = err
+            else:
+                errors.pop(name, None)
+        app.state.refresh_errors = list(errors.values())
+        app.state.refresh_healthy = not errors
 
 
 def _refresh_done(app: FastAPI, task: asyncio.Task) -> None:
