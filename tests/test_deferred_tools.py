@@ -897,5 +897,40 @@ class SearchModelsTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("devin/glm-5-3-flash", ids)
 
 
+class StorageOffLoopTest(unittest.IsolatedAsyncioTestCase):
+    async def test_scratch_and_skill_storage_run_off_the_event_loop(self):
+        import threading
+
+        loop_thread = threading.get_ident()
+        seen = {}
+
+        def record(name, value):
+            def call(*_args, **_kwargs):
+                seen[name] = threading.get_ident()
+                return value
+            return call
+
+        session = {"run_id": "run-1"}
+        with patch("app.chat_store.scratch_apply", record("apply", {"a": "x"})), \
+                patch("app.chat_store.scratch_read", record("read", "x")), \
+                patch("app.chat_store.scratch_list", record("list", {})), \
+                patch("app.skills.search_pack", record("skills", "[]")):
+            for args in ({"ops": [{"op": "put", "name": "a", "text": "x"}]}, {"name": "a"}, {}):
+                await execute_tool("scratch", json.dumps(args), user_id=1, allowed_urls=set(),
+                                   coding=True, session=session)
+            await execute_tool("search_tools", json.dumps({"query": "skills"}), user_id=1,
+                               allowed_urls=set(), coding=True)
+        self.assertEqual(set(seen), {"apply", "read", "list", "skills"})
+        self.assertNotIn(loop_thread, seen.values())
+
+    async def test_spawn_gets_the_live_promoted_binding(self):
+        session = {"run_id": "run-1", "allow_spawn": True, "project_promoted": True}
+        with patch("app.agents.spawn", new=AsyncMock(return_value=("ok", {}))) as spawn:
+            await execute_tool("spawn_subagent", "{}", user_id=1, allowed_urls=set(), coding=True,
+                               session=session, parent_run_id="run-1", http_request=object(), user={"id": 1},
+                               bound_host_id=7, bound_cwd="/srv/api")
+        self.assertEqual(spawn.call_args.kwargs["binding"], (7, "/srv/api"))
+
+
 if __name__ == "__main__":
     unittest.main()

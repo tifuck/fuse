@@ -324,8 +324,11 @@ async def run_tools(
                     from .. import chat_store as store
                     trace["job_id"] = trace["child_id"]
                     if thread_id:
-                        with store.db.tx() as conn:
-                            row = store.command_rows(conn, user_id, thread_id, [trace["child_id"]]).get(trace["child_id"])
+                        def _command_row(child_id):
+                            with store.db.tx() as conn:
+                                return store.command_rows(conn, user_id, thread_id, [child_id]).get(child_id)
+
+                        row = await asyncio.to_thread(_command_row, trace["child_id"])
                         if row:
                             stored_trace = store.command_trace(row, job.name)
                             trace = {**stored_trace, **trace} if row["status"] in ("running", "cancelling") else {**trace, **stored_trace}

@@ -63,7 +63,9 @@ def _remember_project_session(session: dict | None, promoted, user_id: int) -> N
             cwd=str(session.get("bound_cwd") or ""),
         )
     except Exception:
-        logger.debug("run binding promotion persist skipped", exc_info=True)
+        # spawn also takes the live binding from this session, so children
+        # still start on the promoted host/cwd; the row stays stale.
+        logger.warning("Could not persist run binding promotion for %s", session.get("run_id"), exc_info=True)
 
 
 TOOL_IDS = ("web_search", "read_url")
@@ -773,7 +775,8 @@ async def execute_tool(
                 from . import hosts as hosts_mod
 
                 child = bool((session or {}).get("parent_run_id") or (session or {}).get("depth"))
-                catalog = hosts_mod.catalog_for_prompt(
+                catalog = await asyncio.to_thread(
+                    hosts_mod.catalog_for_prompt,
                     user_id,
                     clip=False,
                     bound_host_id=bound_host_id,
@@ -785,7 +788,7 @@ async def execute_tool(
             if q in ("skills", "skill"):
                 from . import skills as skills_mod
 
-                packed = skills_mod.search_pack(user_id)
+                packed = await asyncio.to_thread(skills_mod.search_pack, user_id)
                 return packed, {"name": "search_tools", "status": "done", "preview": "skills"}
             names_arg = args.get("names") if isinstance(args.get("names"), list) else None
             found = agent_catalog.search(query, names_arg)
@@ -851,7 +854,8 @@ async def execute_tool(
         if name == "load_skill":
             file_arg = args.get("file")
             file_name = str(file_arg) if isinstance(file_arg, str) and file_arg.strip() else None
-            body = agent_catalog.load_skill(
+            body = await asyncio.to_thread(
+                agent_catalog.load_skill,
                 str(args.get("name") or ""),
                 user_id=user_id,
                 file=file_name,
@@ -869,7 +873,7 @@ async def execute_tool(
                 rec["kind"] = "unknown_skill_file" if file_error else "unknown_skill"
             elif not file_name:
                 # The row's line under the call says what the skill is for.
-                description = skills_mod.description_for(user_id, preview)
+                description = await asyncio.to_thread(skills_mod.description_for, user_id, preview)
                 if description:
                     rec["summary"] = description
             return body, rec
@@ -891,13 +895,16 @@ async def execute_tool(
             if thread_id is None:
                 msg = "Tool error: this run has no thread transcript."
                 return msg, {"name": name, "status": "error", "kind": "no_thread", "error": msg}
-            tid = chats_mod.resolve_thread_pk(int(user_id), thread_id)
-            row = (
-                db.fetchone("SELECT messages FROM chat_threads WHERE id=? AND user_id=?", (tid, int(user_id)))
-                if tid is not None
-                else None
-            )
-            rows = chats_mod.parse_messages(row["messages"]) if row else []
+            def _transcript_rows() -> list:
+                tid = chats_mod.resolve_thread_pk(int(user_id), thread_id)
+                row = (
+                    db.fetchone("SELECT messages FROM chat_threads WHERE id=? AND user_id=?", (tid, int(user_id)))
+                    if tid is not None
+                    else None
+                )
+                return chats_mod.parse_messages(row["messages"]) if row else []
+
+            rows = await asyncio.to_thread(_transcript_rows)
             if not rows:
                 msg = "This thread has no stored transcript."
                 return msg, {"name": name, "status": "error", "kind": "empty", "error": msg}
@@ -939,6 +946,7 @@ async def execute_tool(
                     "preview": "refused",
                 }
             from . import skill_proposals
+            from .async_work import durable_call
             from .skill_parse import SkillError
 
             files_arg = args.get("files") if isinstance(args.get("files"), dict) else None
@@ -946,7 +954,8 @@ async def execute_tool(
             if enable is None:
                 enable = True
             try:
-                item = skill_proposals.create(
+                item = await durable_call(
+                    skill_proposals.create,
                     user_id,
                     thread_id=int(thread_id or 0),
                     run_id=str((session or {}).get("run_id") or ""),
@@ -990,6 +999,7 @@ async def execute_tool(
             }
             return text, rec
         if name == "scratch":
+            from .async_work import durable_call
             from .chat_store import ScratchError, scratch_apply, scratch_list, scratch_read
 
             run_id = str((session or {}).get("run_id") or "")
@@ -1010,7 +1020,7 @@ async def execute_tool(
                     msg = "ops must be an array of {op, name, text} objects"
                     return msg, {"name": "scratch", "status": "error", "kind": "invalid_arguments", "error": msg}
                 try:
-                    pad = scratch_apply(run_id, ops)
+                    pad = await durable_call(scratch_apply, run_id, ops)
                 except ScratchError as exc:
                     msg = str(exc)
                     return msg, {"name": "scratch", "status": "error", "kind": "invalid_arguments", "error": msg}
@@ -1022,12 +1032,12 @@ async def execute_tool(
                 }
             slot = args.get("name")
             if isinstance(slot, str) and slot.strip():
-                text = scratch_read(run_id, slot.strip())
+                text = await asyncio.to_thread(scratch_read, run_id, slot.strip())
                 if text is None:
                     msg = f"scratch slot {slot.strip()!r} not found"
                     return msg, {"name": "scratch", "status": "error", "kind": "not_found", "error": msg}
                 return text, {"name": "scratch", "status": "done", "preview": f"{slot.strip()} ({len(text)} chars)"}
-            shown = {key: len(value) for key, value in scratch_list(run_id).items()}
+            shown = {key: len(value) for key, value in (await asyncio.to_thread(scratch_list, run_id)).items()}
             return json.dumps({"slots": shown}, ensure_ascii=False), {
                 "name": "scratch",
                 "status": "done",
@@ -1097,7 +1107,7 @@ async def execute_tool(
             and hid
             and (promote_path or written)
         ):
-            try:
+            def _promote():
                 if promote_path and not is_child:
                     promoted = chats.promote_working_session(
                         user_id,
@@ -1116,6 +1126,11 @@ async def execute_tool(
                     )
                 if not is_child:
                     _remember_project_session(session, promoted, user_id)
+
+            from .async_work import durable_call
+
+            try:
+                await durable_call(_promote)
             except Exception:
                 logger.exception("Failed to promote chat %s to a project", thread_id)
         return text, rec
@@ -1157,6 +1172,7 @@ async def execute_tool(
             thread_id=thread_id,
             on_started=on_started,
             gate=gate,
+            binding=(bound_host_id, bound_cwd) if (session or {}).get("project_promoted") else None,
         )
     if name in ARTIFACT_TOOL_IDS and coding:
         if loaded is not None and name not in loaded:

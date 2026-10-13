@@ -440,6 +440,7 @@ async def spawn(
     thread_id: int,
     on_started=None,
     gate=None,
+    binding: tuple | None = None,
 ) -> tuple[str, dict]:
     try:
         args = json.loads(arguments or "{}")
@@ -472,6 +473,10 @@ async def spawn(
         return "prompt is required", {"name": "spawn_subagent", "status": "error", "error": "prompt is required", "description": description}
     pagent = (parent.get("request") or {}).get("agent") if isinstance(parent.get("request"), dict) else {}
     pagent = pagent if isinstance(pagent, dict) else {}
+    if binding is not None:
+        # A mid-turn promotion lives in the parent's session first; the row
+        # copy may be stale if persisting it failed.
+        pagent = {**pagent, "bound_host_id": binding[0], "bound_cwd": binding[1] or ""}
     nested = bool(pagent.get("allow_nested_spawn"))
     parent_kind = str(pagent.get("subagent_type") or "")
     if parent_kind in ("explore", "plan"):
@@ -556,7 +561,7 @@ async def spawn(
                         "child_id": existing["id"],
                         "description": description,
                     }
-            if not chat_store.queue_followup(existing["id"], prompt):
+            if not await durable_call(chat_store.queue_followup, existing["id"], prompt):
                 msg = (
                     "Live subagent did not accept the follow-up (it may have just finished, "
                     "be stopping, or its follow-up queue is full). Wait for the completion "
