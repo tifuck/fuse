@@ -1,6 +1,12 @@
 """Storage exceptions exposed to domain repositories, independent of adapters."""
 
 
+class TransactionAborted(RuntimeError):
+    """An earlier statement failed in a way that may have rolled back the
+    whole transaction (deadlock, lock wait timeout, lost connection). The
+    rest of it must not run or commit on its own."""
+
+
 class IntegrityError(Exception):
     """A uniqueness or relational constraint rejected a write."""
 

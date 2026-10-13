@@ -460,10 +460,7 @@ def _cancelled_before_start(rec: dict, task) -> None:
         _apply_finish(rec, status="cancelled", exit_code=None, error="cancelled by request")
 
         async def _finish_cancelled():
-            await asyncio.to_thread(
-                _persist_finish, rec, status="cancelled", exit_code=None,
-                error=rec["error"], duration=int(rec.get("duration_ms") or 0),
-            )
+            await _persist_terminal(rec, status="cancelled", exit_code=None, error=rec["error"])
             if rec.get("notify"):
                 try:
                     await _deliver(rec)
@@ -737,7 +734,7 @@ def _apply_finish(rec: dict, *, status: str, exit_code: int | None, error: str) 
     )
 
 
-def _persist_finish(rec: dict, *, status: str, exit_code: int | None, error: str, duration: int) -> None:
+def _persist_finish(rec: dict, *, status: str, exit_code: int | None, error: str, duration: int) -> bool:
     ensure_schema()
     try:
         with db.tx() as conn:
@@ -767,20 +764,33 @@ def _persist_finish(rec: dict, *, status: str, exit_code: int | None, error: str
             if rec.get("thread_id"):
                 from . import chat_recaps
                 chat_recaps.terminal_activity(conn, int(rec["user_id"]), int(rec["thread_id"]))
+        return True
     except Exception:
         logger.exception("Failed to persist command job %s", rec["id"])
+        return False
+
+
+# A lost terminal write leaves the row 'running'; the next restart's recover()
+# would then record a finished command as interrupted and drop its result.
+PERSIST_RETRY_DELAYS = (1.0, 3.0, 10.0, 30.0)
+
+
+async def _persist_terminal(rec: dict, *, status: str, exit_code: int | None, error: str) -> None:
+    # Through a worker thread so the loop never blocks on the pool.
+    for delay in (*PERSIST_RETRY_DELAYS, None):
+        if await asyncio.to_thread(
+            _persist_finish, rec, status=status, exit_code=exit_code, error=error,
+            duration=int(rec.get("duration_ms") or 0),
+        ) or delay is None:
+            return
+        await asyncio.sleep(delay)
 
 
 async def _finish(rec: dict, *, status: str, exit_code: int | None, error: str) -> None:
     _apply_finish(rec, status=status, exit_code=exit_code, error=error)
     error = rec["error"]
-    # In-memory state lands first (render/job_status read it immediately);
-    # the row write goes through a worker thread so the loop never blocks
-    # on the pool for every completing command.
-    await asyncio.to_thread(
-        _persist_finish, rec, status=status, exit_code=exit_code, error=error,
-        duration=int(rec.get("duration_ms") or 0),
-    )
+    # In-memory state lands first (render/job_status read it immediately).
+    await _persist_terminal(rec, status=status, exit_code=exit_code, error=error)
     if rec.get("notify"):
         try:
             await _deliver(rec)
@@ -888,14 +898,15 @@ async def _deliver_monitor_event(rec: dict, envelope: str, seq: int) -> None:
             logger.exception("Schedule monitor wake failed for job %s", rec["id"])
 
 
-def _apply_delivery(conn, ids: list[str]) -> None:
-    if not ids:
-        return
+def _apply_delivery(conn, ids: list[str]):
+    """Mark ids delivered in conn's transaction. Returns the matching prune of
+    live jobs' pending monitor events, to run only once that commits: pruned
+    early, a rolled-back receipt would drop events no wake ever delivers."""
     from . import monitor as monitor_mod
 
     jobs: list[str] = []
     events: dict[str, int] = {}
-    for raw in ids:
+    for raw in ids or []:
         ident = str(raw or "")
         parsed = monitor_mod.parse_event_receipt(ident)
         if parsed:
@@ -912,16 +923,19 @@ def _apply_delivery(conn, ids: list[str]) -> None:
             "UPDATE command_jobs SET delivered_event_seq=? WHERE id=? AND delivered_event_seq<?",
             (int(seq), job_id, int(seq)),
         )
-        rec = _live.get(job_id)
-        if rec is None:
-            continue
-        rec["delivered_event_seq"] = max(int(rec.get("delivered_event_seq") or 0), int(seq))
-        pending = []
-        for item in rec.get("pending_events") or []:
-            if isinstance(item, dict) and int(item.get("seq") or 0) <= seq:
+
+    def settle():
+        for job_id, seq in events.items():
+            rec = _live.get(job_id)
+            if rec is None:
                 continue
-            pending.append(item)
-        rec["pending_events"] = pending
+            rec["delivered_event_seq"] = max(int(rec.get("delivered_event_seq") or 0), int(seq))
+            rec["pending_events"] = [
+                item for item in rec.get("pending_events") or []
+                if not (isinstance(item, dict) and int(item.get("seq") or 0) <= seq)
+            ]
+
+    return settle
 
 
 def _mark_delivered(ids: list[str]) -> None:
@@ -929,13 +943,18 @@ def _mark_delivered(ids: list[str]) -> None:
         return
     ensure_schema()
     with db.tx() as conn:
-        _apply_delivery(conn, ids)
+        settle = _apply_delivery(conn, ids)
+    settle()
 
 
 def mark_delivered(ids: list[str], conn=None) -> None:
-    """Public delivery receipt for wake turns that embed envelopes in their prompt."""
+    """Public delivery receipt for wake turns that embed envelopes in their prompt.
+    With conn (an open chat_tx.transaction) the receipt joins that transaction."""
     if conn is not None:
-        _apply_delivery(conn, ids)
+        if ids:
+            from . import chat_tx
+
+            chat_tx.after_commit(_apply_delivery(conn, ids))
         return
     _mark_delivered(ids)
 

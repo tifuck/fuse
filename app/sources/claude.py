@@ -98,8 +98,8 @@ def _refresh_lock(cred_id: int) -> asyncio.Lock:
     return lock
 
 
-def disable_credential(cred_id: int) -> None:
-    db.execute("UPDATE credentials SET disabled=1 WHERE id=?", (cred_id,))
+def disable_credential(cred_id: int, *, extra: str | None = None) -> None:
+    accounts.disable_credential(cred_id, extra=extra)
 
 
 def ensure_claude_source() -> int:
@@ -446,11 +446,7 @@ def _store_billing(cred_id: int, billing: dict) -> dict:
     guard_enabled = cfg.get("offpool_usage_guard", True) is not False
     extra, held_until, last_pct = apply_usage_guard(row, extra, billing, enabled=guard_enabled)
     extra["billing"] = billing
-    db.execute(
-        """UPDATE credentials SET extra=?, last_usage_percent=?, usage_percent_at=?, pool_held_until=?
-           WHERE id=?""",
-        (encrypt(json.dumps(extra)), last_pct, db.now(), held_until, cred_id),
-    )
+    accounts.update_extra(cred_id, extra, last_usage_percent=last_pct, usage_percent_at=db.now(), pool_held_until=held_until)
     return billing
 
 
@@ -547,6 +543,8 @@ async def complete_login(raw_code: str, verifier: str, expected_state: str, dona
 
 
 async def _refresh_one_unlocked(cred) -> bool:
+    if not settings.oauth_refresh_enabled:
+        return False
     row = db.fetchone("SELECT * FROM credentials WHERE id=?", (cred["id"],))
     if not row or row["disabled"]:
         return False
@@ -577,7 +575,7 @@ async def _refresh_one_unlocked(cred) -> bool:
         return False
     if not isinstance(data, dict) or r.status_code != 200 or "access_token" not in data:
         if _oauth_revoked(r.status_code, data if isinstance(data, dict) else {}):
-            disable_credential(row["id"])
+            disable_credential(row["id"], extra=row.get("extra"))
         else:
             note_failure(row["id"], cooldown_seconds=60 if r.status_code == 429 else 30)
         return False
@@ -833,7 +831,7 @@ class ClaudeSource:
                     )
                     if status == 401:
                         if auth_failure_confirmed(cred["id"]):
-                            disable_credential(cred["id"])
+                            disable_credential(cred["id"], extra=cred.get("extra"))
                         last.status = 502
                         last.body = {"error": {"message": "Claude rejected the configured account"}}
                         attempts.append({"credential_id": cred["id"], "status": status, "usage": {}})

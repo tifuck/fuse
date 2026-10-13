@@ -699,11 +699,14 @@ def project_session_ids(user_id: int, project_id: int) -> list:
 
 
 def delete_project(user_id: int, host_id: int, project_id: int, *, sessions: str = "delete",
-                   cancel_active: bool = True) -> bool:
+                   cancel_active: bool = True, archived_before: str | None = None) -> bool:
     """Forget a project (the folder on the machine is never touched).
 
     sessions="delete" removes its chats too; "keep" turns them into plain
-    chats so no thread points at a project id that no longer exists."""
+    chats so no thread points at a project id that no longer exists.
+    archived_before (cleanup sweeps): delete only while the project is still
+    archived since before that time and each session is still archived; a
+    restore at any point stops the deletion (HostError 409)."""
     from . import chats
 
     if sessions not in ("delete", "keep"):
@@ -716,8 +719,17 @@ def delete_project(user_id: int, host_id: int, project_id: int, *, sessions: str
         return False
     if sessions == "delete":
         for tid in project_session_ids(user_id, project_id):
+            expected = None
+            if archived_before is not None:
+                fresh = db.fetchone("SELECT archived, revision FROM chat_threads WHERE id=? AND user_id=?", (tid, user_id))
+                if fresh is None:
+                    continue
+                if not fresh["archived"]:
+                    raise HostError("project still has sessions; nothing was deleted", 409)
+                # Any change since (restore, new message) moves the revision.
+                expected = int(fresh["revision"])
             try:
-                deleted = chats.delete_thread(user_id, tid, cancel_active=cancel_active)
+                deleted = chats.delete_thread(user_id, tid, expected_revision=expected, cancel_active=cancel_active)
             except chats.ChatValidationError:
                 deleted = False
             # False is the refusal contract (thread moved or refused under
@@ -742,6 +754,15 @@ def delete_project(user_id: int, host_id: int, project_id: int, *, sessions: str
                 store.thread_event(conn, user_id, tid)
     with db.tx() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        if archived_before is not None:
+            project = conn.execute(
+                "SELECT archived, archived_at, updated_at, created_at FROM user_projects"
+                " WHERE id=? AND user_id=? AND host_id=?" + db.for_update(conn),
+                (project_id, user_id, host_id),
+            ).fetchone()
+            since = (project["archived_at"] or project["updated_at"] or project["created_at"]) if project else ""
+            if project is None or not project["archived"] or not since or since >= archived_before:
+                raise HostError("project was restored; nothing more was deleted", 409)
         # Same guard under the write lock: a session attached after the loop
         # must not outlive the project row it points at.
         live = conn.execute(

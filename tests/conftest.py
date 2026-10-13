@@ -44,6 +44,18 @@ def _no_search_time_page_reads():
 
 
 @pytest.fixture(autouse=True, scope="session")
+def _production_oauth_refresh():
+    """Dev's .env turns pooled OAuth refresh off (production owns those
+    tokens); tests run the production path against faked token endpoints."""
+    from app.config import settings
+
+    saved = settings.oauth_refresh_enabled
+    settings.oauth_refresh_enabled = True
+    yield
+    settings.oauth_refresh_enabled = saved
+
+
+@pytest.fixture(autouse=True, scope="session")
 def _sweep_stale_fixture_schemas():
     """Drop fuse_fixture_* schemas left behind by killed runs (best effort)."""
     sweep_stale_schemas()

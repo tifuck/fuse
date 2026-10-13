@@ -76,8 +76,8 @@ def _refresh_lock(cred_id: int) -> asyncio.Lock:
     return lock
 
 
-def disable_credential(cred_id: int) -> None:
-    db.execute("UPDATE credentials SET disabled=1 WHERE id=?", (cred_id,))
+def disable_credential(cred_id: int, *, extra: str | None = None) -> None:
+    accounts.disable_credential(cred_id, extra=extra)
 
 
 def ensure_mimo_source() -> int:
@@ -526,11 +526,7 @@ def _store_billing(cred_id: int, parsed: dict, *, error: str = "", region: str |
     guard_enabled = cfg.get("offpool_usage_guard", True) is not False
     extra, held_until, last_pct = apply_usage_guard(row, extra, clean, enabled=guard_enabled)
     extra["billing"] = billing
-    db.execute(
-        """UPDATE credentials SET extra=?, last_usage_percent=?, usage_percent_at=?, pool_held_until=?
-           WHERE id=?""",
-        (encrypt(json.dumps(extra)), last_pct, now, held_until, cred_id),
-    )
+    accounts.update_extra(cred_id, extra, last_usage_percent=last_pct, usage_percent_at=now, pool_held_until=held_until)
     return billing
 
 
@@ -686,7 +682,7 @@ class MimoSource:
                     return last
                 if status == 401:
                     if auth_failure_confirmed(cred["id"]):
-                        disable_credential(cred["id"])
+                        disable_credential(cred["id"], extra=cred.get("extra"))
                     last.status = 502
                     last.body = {"error": {"message": "Xiaomi rejected the Token Plan key"}}
                     last.response_headers = response_headers

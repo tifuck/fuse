@@ -106,6 +106,14 @@ def main():
         if not check.stdout.strip():
             drop_target()
             raise SystemExit("clone failed: schema_meta stamp missing; fuse_dev dropped")
+        # Production owns the pooled OAuth refresh tokens and they are single
+        # use: a dev refresh would kill production's copy. Park them in dev.
+        subprocess.run(
+            [*base, TARGET, "-e",
+             "UPDATE credentials c JOIN sources s ON s.id=c.source_id SET c.disabled=1"
+             " WHERE s.type IN ('grok','chatgpt','kimi','claude')"],
+            check=True,
+        )
     print(f"cloned {SOURCE} -> {TARGET}")
     # The clone replaces fuse_dev wholesale; restore the permanent QA login and
     # its fixture chats from the dev tree (password persists in its data/).

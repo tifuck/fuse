@@ -213,8 +213,8 @@ def ensure_devin_source() -> int:
         return db.last_id(conn)
 
 
-def disable_credential(cred_id: int) -> None:
-    db.execute("UPDATE credentials SET disabled=1 WHERE id=?", (cred_id,))
+def disable_credential(cred_id: int, *, extra: str | None = None) -> None:
+    accounts.disable_credential(cred_id, extra=extra)
 
 
 def _row_get(row, key, default=None):
@@ -641,7 +641,7 @@ class DevinSource:
                 last = result
                 if result.status == 401:
                     if auth_failure_confirmed(cred["id"]):
-                        disable_credential(cred["id"])
+                        disable_credential(cred["id"], extra=cred.get("extra"))
                     last.status = 502
                     last.body = {"error": {"message": "Devin rejected the configured account"}}
                     attempts.append({"credential_id": cred["id"], "status": 401, "usage": result.usage or {}})

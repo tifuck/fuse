@@ -135,8 +135,8 @@ def ensure_chatgpt_source() -> int:
         return db.last_id(conn)
 
 
-def disable_credential(cred_id: int) -> None:
-    db.execute("UPDATE credentials SET disabled=1 WHERE id=?", (cred_id,))
+def disable_credential(cred_id: int, *, extra: str | None = None) -> None:
+    accounts.disable_credential(cred_id, extra=extra)
 
 
 def _oauth_revoked(status: int, data) -> bool:
@@ -396,6 +396,8 @@ def _cas_update_tokens(cred_id: int, old_extra_raw: str, new_secret: str, new_ex
 
 
 async def _refresh_one_unlocked(cred) -> bool:
+    if not settings.oauth_refresh_enabled:
+        return False
     row = db.fetchone("SELECT * FROM credentials WHERE id=?", (cred["id"],))
     if not row or row["disabled"]:
         return False
@@ -424,7 +426,7 @@ async def _refresh_one_unlocked(cred) -> bool:
         return False
     if not isinstance(data, dict) or r.status_code != 200 or "access_token" not in data:
         if _oauth_revoked(r.status_code, data):
-            disable_credential(row["id"])
+            disable_credential(row["id"], extra=row.get("extra"))
         else:
             note_failure(row["id"], cooldown_seconds=60 if r.status_code == 429 else 30)
         return False

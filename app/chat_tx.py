@@ -54,9 +54,11 @@ def transaction(*, immediate=True):
     users = set()
     threads: dict[tuple[int, int], int] = {}
     cursors: dict[int, int] = {}
+    after: list = []
     _writes.users = users
     _writes.threads = threads
     _writes.cursors = cursors
+    _writes.after = after
     try:
         with db.tx() as conn:
             conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
@@ -65,6 +67,9 @@ def transaction(*, immediate=True):
         _writes.users = None
         _writes.threads = None
         _writes.cursors = None
+        _writes.after = None
+    for callback in after:
+        callback()
     # Wake observers only after commit; SQLite remains the replay source of truth.
     if cursors or threads:
         with _committed_lock:
@@ -79,6 +84,15 @@ def transaction(*, immediate=True):
     if users:
         from .chat_events import notify
         notify(users)
+
+
+def after_commit(callback) -> None:
+    """Run callback once the open transaction() commits; never on rollback.
+    For in-memory state that must not run ahead of the database."""
+    pending = getattr(_writes, "after", None)
+    if pending is None:
+        raise RuntimeError("after_commit needs an open chat transaction")
+    pending.append(callback)
 
 
 def init_schema(connection=None):
@@ -163,6 +177,17 @@ def _ensure_agent_run_columns(conn):
     conn.execute(
         "CREATE INDEX IF NOT EXISTS chat_runs_thread_children ON chat_runs(thread_id) WHERE parent_run_id IS NOT NULL"
     )
+
+
+def lock_thread(conn, thread_id, user_id):
+    """The thread row under its row lock, for writers that rebuild it.
+
+    On MariaDB a plain SELECT is a transaction snapshot that can predate
+    another writer's commit; writing a messages blob (or title, model, ...)
+    computed from it silently reverts that commit. Take this after any
+    chat_runs reads: run -> thread is the lock order finalization uses."""
+    return conn.execute("SELECT * FROM chat_threads WHERE id=? AND user_id=?" + db.for_update(conn),
+                        (thread_id, user_id)).fetchone()
 
 
 def check_revision(actual, expected):

@@ -266,6 +266,12 @@ def set_admin(user_id: int, admin: bool, *, actor_id: int) -> None:
         conn.execute("UPDATE users SET is_admin=? WHERE id=?", (1 if admin else 0, user_id))
 
 
+_CRED_ROLLUP_EVENT_COLS = (
+    "prompt_tokens", "completion_tokens", "output_tokens", "visible_tokens", "reasoning_tokens",
+    "cached_tokens", "cache_write_tokens", "total_tokens",
+)
+
+
 def delete_user(user_id: int, *, actor_id: int) -> str:
     with db.tx() as conn:
         target = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
@@ -280,6 +286,19 @@ def delete_user(user_id: int, *, actor_id: int) -> str:
         conn.execute(
             "UPDATE credentials SET donated_by=NULL, disabled=1 WHERE donated_by=?",
             (user_id,),
+        )
+        # Credential rollups are SUM(usage_events); the user's events go below.
+        spent = conn.execute(
+            f"""SELECT credential_id, {", ".join(f"COALESCE(SUM({col}), 0) AS {col}" for col in _CRED_ROLLUP_EVENT_COLS)},
+                       COALESCE(SUM(count_request), 0) AS requests,
+                       COALESCE(SUM(COALESCE(reported_cost_micros, estimated_cost_micros)), 0) AS cost_micros
+                FROM usage_events WHERE user_id=? AND credential_id IS NOT NULL GROUP BY credential_id""",
+            (user_id,),
+        ).fetchall()
+        rollup_cols = (*_CRED_ROLLUP_EVENT_COLS, "requests", "cost_micros")
+        conn.executemany(
+            f"UPDATE credentials SET {', '.join(f'{col}={col}-?' for col in rollup_cols)} WHERE id=?",
+            [(*(int(row[col]) for col in rollup_cols), row["credential_id"]) for row in spent],
         )
         conn.execute("DELETE FROM api_keys WHERE user_id=?", (user_id,))
         conn.execute("DELETE FROM provider_usage WHERE user_id=?", (user_id,))
@@ -359,8 +378,41 @@ def validate_credential_encryption() -> None:
             )
 
 
-def update_extra(cred_id: int, extra: dict) -> None:
-    db.execute("UPDATE credentials SET extra=? WHERE id=?", (encrypt(json.dumps(extra)), cred_id))
+# Written only by the token writers (store_tokens re-links and
+# token_store.persist_rotated, both compare-and-swap on `extra`). Metadata
+# writers hand in a copy read earlier; the row's own values win under its row
+# lock, so a stale copy can never roll a rotated refresh token back.
+_TOKEN_KEYS = ("access_token", "refresh_token", "expires_at", "id_token")
+
+
+def update_extra(cred_id: int, extra: dict, **columns) -> None:
+    """Write metadata into a credential's `extra` (plus optional plain columns)."""
+    with db.tx() as conn:
+        row = conn.execute("SELECT extra FROM credentials WHERE id=?" + db.for_update(conn), (cred_id,)).fetchone()
+        if row is None:
+            return
+        current, _legacy = _decode_extra(row["extra"])
+        merged = dict(extra)
+        for key in _TOKEN_KEYS:
+            if key in current:
+                merged[key] = current[key]
+            else:
+                merged.pop(key, None)
+        sets = "".join(f", {name}=?" for name in columns)
+        conn.execute(
+            f"UPDATE credentials SET extra=?{sets} WHERE id=?",
+            (encrypt(json.dumps(merged)), *columns.values(), cred_id),
+        )
+
+
+def disable_credential(cred_id: int, *, extra: str | None = None) -> None:
+    """extra: the stored value the failing call read. A credential re-linked or
+    refreshed since keeps the row id but not that value, and must not be
+    disabled for its predecessor's rejection."""
+    if extra is None:
+        db.execute("UPDATE credentials SET disabled=1 WHERE id=?", (cred_id,))
+    else:
+        db.execute("UPDATE credentials SET disabled=1 WHERE id=? AND extra=?", (cred_id, extra))
 
 
 def delete_credential(cred_id: int) -> None:

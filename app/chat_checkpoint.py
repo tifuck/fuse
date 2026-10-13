@@ -215,7 +215,7 @@ def checkpoint(run_id, message, events=None, durable=True, future=None):
             if materialize_thread and getattr(cur, "rowcount", 1):
                 from . import chats
 
-                thread = conn.execute("SELECT messages FROM chat_threads WHERE id=? AND user_id=?", (row["thread_id"], row["user_id"])).fetchone()
+                thread = chat_tx.lock_thread(conn, row["thread_id"], row["user_id"])
                 if thread:
                     materialized = chat_views._project_thread_messages(chats.parse_messages(thread["messages"]), projected, request)
                     conn.execute("UPDATE chat_threads SET messages=?,revision=revision+1 WHERE id=?", (chat_tx.dumps(materialized), row["thread_id"]))

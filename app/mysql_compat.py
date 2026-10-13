@@ -6,7 +6,7 @@ offline operation; runtime schema probes may only verify existing objects.
 from __future__ import annotations
 
 import re
-from .database_errors import IntegrityError
+from .database_errors import IntegrityError, TransactionAborted
 import threading
 from collections import deque
 from functools import lru_cache
@@ -165,9 +165,19 @@ class Conn:
     def __init__(self, raw):
         self._raw = raw
         self._write_transaction = False
+        # A deadlock rolls back the whole transaction and later statements
+        # start a new one; a lock wait timeout rolls back one statement. Code
+        # that catches the error and carries on would commit a fragment, so
+        # the transaction refuses further statements and its commit.
+        self._aborted = None
         raw.encoders[_Utf8Hex] = _escape_hex
 
+    def _check_open(self):
+        if self._aborted is not None:
+            raise TransactionAborted("transaction aborted by an earlier database error") from self._aborted
+
     def native(self, sql, args=()):
+        self._check_open()
         try:
             with self._raw.cursor() as cursor:
                 cursor.execute(sql, _hex_args(sql, args))
@@ -177,10 +187,15 @@ class Conn:
         except pymysql.IntegrityError as exc:
             # Preserve callers' established duplicate/constraint error contract.
             raise IntegrityError(str(exc), errno=_pymysql_errno(exc)) from exc
+        except pymysql.OperationalError as exc:
+            self._aborted = exc
+            raise
 
     def execute(self, sql, args=()):
         text = sql.strip().rstrip(";")
         if re.fullmatch(r"BEGIN(?: IMMEDIATE)?", text, re.I):
+            # BEGIN implicitly commits whatever is open.
+            self._check_open()
             self._raw.begin()
             self._write_transaction = text.upper() == "BEGIN IMMEDIATE"
             return Cursor()
@@ -225,6 +240,7 @@ class Conn:
                 last = result.lastrowid
             return Cursor(rowcount=total, lastrowid=last)
         rendered = _rewrite(text, self._write_transaction)
+        self._check_open()
         try:
             with self._raw.cursor() as cursor:
                 if re.match(r"(?:INSERT|REPLACE)\b", rendered, re.I):
@@ -241,6 +257,9 @@ class Conn:
                 return Cursor(rowcount=total, lastrowid=last)
         except pymysql.IntegrityError as exc:
             raise IntegrityError(str(exc), errno=_pymysql_errno(exc)) from exc
+        except pymysql.OperationalError as exc:
+            self._aborted = exc
+            raise
 
     def executescript(self, script):
         # Parse statement boundaries, including semicolons inside strings.
@@ -250,6 +269,7 @@ class Conn:
 
     def commit(self):
         try:
+            self._check_open()
             self._raw.commit()
         finally:
             self._write_transaction = False
@@ -264,6 +284,7 @@ class Conn:
             self._raw.rollback()
         finally:
             self._write_transaction = False
+            self._aborted = None
 
     def close(self):
         self._raw.close()

@@ -129,7 +129,7 @@ def _latest(*values) -> str:
 def _thread_activity(conn, user_id: int) -> tuple[list[dict], set[int]]:
     rows = conn.execute(
         """SELECT id, kind, project_id, archived, archived_at, archived_by_project, schedule_id,
-                  created_at, updated_at, active_at
+                  created_at, updated_at, active_at, revision
            FROM chat_threads WHERE user_id=?""",
         (user_id,),
     ).fetchall()
@@ -219,10 +219,12 @@ def sweep_user(user_id: int, prefs: dict | None = None, *, now: datetime | None 
                     continue
                 ts = db.now()
                 with store.transaction() as conn:
+                    # Guard on the snapshot's revision: a chat used since the
+                    # sweep read it is no longer idle.
                     cur = conn.execute(
                         """UPDATE chat_threads SET archived=1, archived_at=?, archived_by_project=0, revision=revision+1
-                           WHERE id=? AND user_id=? AND archived=0""",
-                        (ts, t["id"], user_id),
+                           WHERE id=? AND user_id=? AND archived=0 AND revision=?""",
+                        (ts, t["id"], user_id, t["revision"]),
                     )
                     if cur.rowcount:
                         store.thread_event(conn, user_id, t["id"])
@@ -246,8 +248,7 @@ def sweep_user(user_id: int, prefs: dict | None = None, *, now: datetime | None 
                 continue
             # The snapshot is from the start of the sweep: a project restored
             # (or re-archived) since must be judged by its current row.
-            # ponytail: re-read narrows, not closes, the window; a guarded
-            # delete in hosts.delete_project would close it.
+            # delete_project re-checks it under the row lock (archived_before).
             fresh = db.fetchone(
                 "SELECT archived, archived_at, updated_at, created_at FROM user_projects WHERE id=? AND user_id=?",
                 (p["id"], user_id),
@@ -258,7 +259,8 @@ def sweep_user(user_id: int, prefs: dict | None = None, *, now: datetime | None 
             if not since or since >= delete_cutoff:
                 continue
             try:
-                if hosts.delete_project(user_id, int(p["host_id"]), int(p["id"]), sessions="delete", cancel_active=False):
+                if hosts.delete_project(user_id, int(p["host_id"]), int(p["id"]), sessions="delete", cancel_active=False,
+                                        archived_before=delete_cutoff):
                     stats["deleted_projects"] += 1
             except hosts.HostError:
                 continue

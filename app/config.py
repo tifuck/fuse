@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     # raises ?v= for every changed file, so production is always fresh; dev
     # edits files without bumping, so its .env sets this false.
     static_immutable: bool = True
+    # Refresh pooled OAuth credentials (rotating refresh tokens). Only the
+    # instance that owns the credentials may: dev runs on a clone of
+    # production's rows, and spending a shared refresh token there kills the
+    # production copy. Dev's .env sets this false.
+    oauth_refresh_enabled: bool = True
     max_body_bytes: int = 2_097_152
     chat_body_bytes: int = 8_388_608
     max_tokens: int = 16_384

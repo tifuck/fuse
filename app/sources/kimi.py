@@ -68,8 +68,8 @@ def _refresh_lock(cred_id: int) -> asyncio.Lock:
     return lock
 
 
-def disable_credential(cred_id: int) -> None:
-    db.execute("UPDATE credentials SET disabled=1 WHERE id=?", (cred_id,))
+def disable_credential(cred_id: int, *, extra: str | None = None) -> None:
+    accounts.disable_credential(cred_id, extra=extra)
 
 
 def ensure_kimi_source() -> int:
@@ -787,15 +787,13 @@ def _store_billing(cred_id: int, parsed: dict, *, error: str = "", region: str |
     guard_enabled = cfg.get("offpool_usage_guard", True) is not False
     extra, held_until, last_pct = apply_usage_guard(row, extra, clean, enabled=guard_enabled)
     extra["billing"] = billing
-    db.execute(
-        """UPDATE credentials SET extra=?, last_usage_percent=?, usage_percent_at=?, pool_held_until=?
-           WHERE id=?""",
-        (encrypt(json.dumps(extra)), last_pct, now, held_until, cred_id),
-    )
+    accounts.update_extra(cred_id, extra, last_usage_percent=last_pct, usage_percent_at=now, pool_held_until=held_until)
     return billing
 
 
 async def _refresh_one_unlocked(cred) -> bool:
+    if not settings.oauth_refresh_enabled:
+        return False
     row = db.fetchone("SELECT * FROM credentials WHERE id=?", (cred["id"],))
     if not row or row["disabled"]:
         return False
@@ -835,7 +833,7 @@ async def _refresh_one_unlocked(cred) -> bool:
         return False
     if r.status_code != 200 or "access_token" not in data:
         if _oauth_revoked(r.status_code, data):
-            disable_credential(row["id"])
+            disable_credential(row["id"], extra=row.get("extra"))
         else:
             note_failure(row["id"], cooldown_seconds=60 if r.status_code == 429 else 30)
         return False
@@ -1099,7 +1097,7 @@ class KimiSource:
                         last.attempts = attempts
                         continue
                     if auth_failure_confirmed(cred["id"]):
-                        disable_credential(cred["id"])
+                        disable_credential(cred["id"], extra=cred.get("extra"))
                     last.status = 502
                     last.body = {"error": {"message": "Kimi rejected the configured account"}}
                     last.response_headers = response_headers

@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pymysql
 
 from app import db
-from app.database_errors import IntegrityError
+from app.database_errors import IntegrityError, TransactionAborted
 from app.mysql_compat import Conn, _rewrite
 
 
@@ -66,10 +66,10 @@ class _StubRaw:
         return _StubCursor(self.log, self._fail)
 
     def commit(self):
-        pass
+        self.log.append(("commit", None, None))
 
     def rollback(self):
-        pass
+        self.log.append(("rollback", None, None))
 
     def close(self):
         pass
@@ -102,6 +102,49 @@ class ExecutemanyTests(unittest.TestCase):
         with self.assertRaises(IntegrityError) as raised_many:
             conn.executemany("INSERT INTO t(a) VALUES(?)", [[1], [2]])
         self.assertEqual(raised_many.exception.errno, 1062)
+
+
+class AbortedTransactionTests(unittest.TestCase):
+    """A deadlock rolls back the whole transaction; a caller that swallows it
+    must not be able to run or commit the rest as a fragment."""
+
+    def _deadlocked(self):
+        raw = _StubRaw(fail=pymysql.OperationalError(1213, "Deadlock found"))
+        conn = Conn(raw)
+        with self.assertRaises(pymysql.OperationalError):
+            conn.execute("UPDATE t SET a=? WHERE id=?", (1, 1))
+        raw._fail = None
+        return conn, raw
+
+    def test_later_statements_and_commit_are_refused(self):
+        conn, raw = self._deadlocked()
+        with self.assertRaises(TransactionAborted):
+            conn.execute("UPDATE t SET b=? WHERE id=?", (2, 1))
+        with self.assertRaises(TransactionAborted):
+            conn.executemany("UPDATE t SET b=? WHERE id=?", [[2, 1]])
+        with self.assertRaises(TransactionAborted):
+            conn.execute("BEGIN")
+        with self.assertRaises(TransactionAborted):
+            conn.commit()
+        self.assertNotIn("commit", [kind for kind, _sql, _args in raw.log])
+        self.assertEqual([kind for kind, _sql, _args in raw.log if kind == "execute"], [])
+
+    def test_rollback_reopens_the_connection(self):
+        conn, raw = self._deadlocked()
+        conn.rollback()
+        conn.execute("UPDATE t SET b=? WHERE id=?", (2, 1))
+        conn.commit()
+        self.assertEqual([kind for kind, _sql, _args in raw.log], ["rollback", "execute", "commit"])
+
+    def test_constraint_errors_leave_the_transaction_usable(self):
+        raw = _StubRaw(fail=pymysql.IntegrityError(1062, "Duplicate entry"))
+        conn = Conn(raw)
+        with self.assertRaises(IntegrityError):
+            conn.execute("INSERT INTO t(a) VALUES(?)", (1,))
+        raw._fail = None
+        conn.execute("INSERT INTO t(a) VALUES(?)", (2,))
+        conn.commit()
+        self.assertEqual([kind for kind, _sql, _args in raw.log], ["execute", "commit"])
 
 
 class RewriteMarkerTests(unittest.TestCase):

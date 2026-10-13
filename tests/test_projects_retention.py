@@ -341,6 +341,44 @@ class ProjectsRetentionTest(unittest.TestCase):
         self.assertEqual(stats["deleted_projects"], 0)
         self.assertIsNotNone(hosts.get_project(1, 7, made["id"]))
 
+    def test_sweep_does_not_delete_sessions_of_a_project_restored_during_the_delete(self):
+        retention.set_settings(1, {"archive_hours": 24, "delete_days": 30})
+        made = self.project()
+        thread, _pk = self.session(made)
+        with store.transaction() as conn:
+            hosts.set_project_archived(conn, 1, int(made["id"]), True, skip_running=True)
+        db.execute("UPDATE user_projects SET archived_at=? WHERE id=?", (ago(days=31), made["id"]))
+        db.execute("UPDATE chat_threads SET archived_at=? WHERE project_id=?", (ago(days=31), made["id"]))
+        real = hosts.project_session_ids
+
+        def restore_then_list(user_id, project_id):
+            # The user restores the project after the sweep's last re-read.
+            with store.transaction() as conn:
+                hosts.set_project_archived(conn, 1, int(made["id"]), False)
+            return real(user_id, project_id)
+
+        with patch.object(hosts, "project_session_ids", side_effect=restore_then_list):
+            stats = retention.sweep_user(1)
+        self.assertEqual(stats["deleted_projects"], 0)
+        self.assertIsNotNone(hosts.get_project(1, 7, made["id"]))
+        self.assertFalse(chats.get_thread(1, thread["id"])["archived"])
+
+    def test_sweep_does_not_archive_a_chat_used_after_its_snapshot(self):
+        retention.set_settings(1, {"archive_hours": 72})
+        stale = chats.create_thread(1, model="offline")
+        db.execute("UPDATE chat_threads SET active_at=?, updated_at=?, created_at=? WHERE public_id=?",
+                   (ago(days=5), ago(days=5), ago(days=5), stale["id"]))
+        real = retention._thread_activity
+
+        def snapshot_then_activity(conn, user_id):
+            result = real(conn, user_id)
+            chats.update_thread(1, stale["id"], title="renamed just now")
+            return result
+
+        with patch.object(retention, "_thread_activity", side_effect=snapshot_then_activity):
+            self.assertEqual(retention.sweep_user(1)["archived_chats"], 0)
+        self.assertFalse(chats.get_thread(1, stale["id"])["archived"])
+
     def test_instance_ceiling_applies_when_user_has_none(self):
         prefs = retention.get_settings(1)
         prefs["limits"] = {"archive_days": 90, "delete_days": 0}

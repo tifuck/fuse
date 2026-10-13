@@ -95,13 +95,13 @@ def steer_turn(user_id, thread_id, text, command_id, attachments=None):
         fingerprint, previous = chat_tx.command(conn, user_id, command_id, identity)
         if previous is not None:
             return {"idempotent": True, "thread": chat_views.thread_view(conn, user_id, pk)}
-        row = conn.execute("SELECT * FROM chat_threads WHERE id=? AND user_id=?", (pk, user_id)).fetchone()
-        if row is None:
-            raise chats.ChatValidationError("chat not found", 404)
         run = conn.execute("SELECT * FROM chat_runs WHERE thread_id=? AND user_id=? AND status IN ('queued','running') AND parent_run_id IS NULL",
                            (pk, user_id)).fetchone()
         if run is None or run["cancel_requested"]:
             raise chats.ChatValidationError("No active run; send a turn instead.", 409)
+        row = chat_tx.lock_thread(conn, pk, user_id)
+        if row is None:
+            raise chats.ChatValidationError("chat not found", 404)
         request = json.loads(run["request"] or "{}")
         agent = request.get("agent") if isinstance(request.get("agent"), dict) else {}
         request["agent"] = agent
@@ -130,10 +130,9 @@ def steer_turn(user_id, thread_id, text, command_id, attachments=None):
         messages = [part for msg in messages for part in (replacement if msg.get("id") == run["message_id"] else [msg])]
         pending.append({"id": command_id, "text": text, **({"attachments": attachments} if attachments else {})})
         conn.execute("UPDATE chat_runs SET request=?,updated_at=? WHERE id=?", (chat_tx.dumps(request), db.now(), run["id"]))
-        revision = row["revision"] + 1
         conn.execute(
-            "UPDATE chat_threads SET messages=?,revision=?,updated_at=? WHERE id=?",
-            (chat_tx.dumps(messages), revision, db.now(), pk),
+            "UPDATE chat_threads SET messages=?,revision=revision+1,updated_at=? WHERE id=?",
+            (chat_tx.dumps(messages), db.now(), pk),
         )
         chats.unarchive_on_activity(conn, row, db.now())
         chat_tx.remember(conn, user_id, command_id, fingerprint, {"thread_id": pk, "message_id": user_message.get("id")})
@@ -243,6 +242,12 @@ def _start_turn(user_id, thread_id, text, expected_revision, command_id, model=N
             """SELECT COUNT(*) FROM chat_runs WHERE status IN ('queued','running') AND parent_run_id IS NULL"""
         ).fetchone()[0] >= 32:
             raise chats.ChatValidationError("chat generation capacity reached; try again shortly", 429)
+        # The read above may predate a run that finalized while this waited
+        # on its lock; build the new transcript from the current row.
+        row = chat_tx.lock_thread(conn, thread_id, user_id)
+        if row is None:
+            raise chats.ChatValidationError("chat not found", 404)
+        chat_tx.check_revision(row["revision"], expected_revision)
         messages = chats.parse_messages(row["messages"])
         original_messages = messages
         if replace_from is not None:
@@ -1074,7 +1079,7 @@ def finish_run(run_id, message, status):
         projected = chat_views.display_messages(request, message, row["message_id"])
         aggregate_message = message
         message = projected[row["message_id"]]
-        thread = conn.execute("SELECT * FROM chat_threads WHERE id=? AND user_id=?", (row["thread_id"], row["user_id"])).fetchone()
+        thread = chat_tx.lock_thread(conn, row["thread_id"], row["user_id"])
         revision = None
         if thread:
             messages = chats.parse_messages(thread["messages"])
@@ -1082,8 +1087,8 @@ def finish_run(run_id, message, status):
             revision = thread["revision"] + 1
             merged_tools = _merge_thread_loaded(thread, row)
             conn.execute(
-                "UPDATE chat_threads SET messages=?,loaded_tools=?,revision=?,updated_at=?,unread=1 WHERE id=?",
-                (chat_tx.dumps(messages), chat_tx.dumps(merged_tools), revision, db.now(), row["thread_id"]),
+                "UPDATE chat_threads SET messages=?,loaded_tools=?,revision=revision+1,updated_at=?,unread=1 WHERE id=?",
+                (chat_tx.dumps(messages), chat_tx.dumps(merged_tools), db.now(), row["thread_id"]),
             )
             from . import chat_history
             chat_history.finalize(conn, row, request, messages, aggregate_message)
@@ -1573,10 +1578,7 @@ def _force_terminal(run_id, status, message):
             )
             chat_tx.thread_event(conn, row["user_id"], row["thread_id"])
             return
-        thread = conn.execute(
-            "SELECT * FROM chat_threads WHERE id=? AND user_id=?",
-            (row["thread_id"], row["user_id"]),
-        ).fetchone()
+        thread = chat_tx.lock_thread(conn, row["thread_id"], row["user_id"])
         revision = None
         if thread:
             try:
@@ -1584,8 +1586,8 @@ def _force_terminal(run_id, status, message):
                 messages = [stored if msg["id"] == row["message_id"] else msg for msg in messages]
                 revision = thread["revision"] + 1
                 conn.execute(
-                    "UPDATE chat_threads SET messages=?,revision=?,updated_at=? WHERE id=?",
-                    (chat_tx.dumps(messages), revision, db.now(), row["thread_id"]),
+                    "UPDATE chat_threads SET messages=?,revision=revision+1,updated_at=? WHERE id=?",
+                    (chat_tx.dumps(messages), db.now(), row["thread_id"]),
                 )
                 from . import chat_history
                 chat_history.finalize(conn, row, request, messages, stored)

@@ -254,13 +254,13 @@ def _creating_agent(run_id: str) -> dict:
 
 def _patch_permission(user_id: int, thread_id: int, proposal_id: str, status: str, extra: dict | None = None) -> None:
     from . import chat_store as store
-    from . import chats
+    from . import chat_tx, chats
 
     with store.transaction() as conn:
-        row = conn.execute(
-            "SELECT messages, revision FROM chat_threads WHERE id=? AND user_id=?",
-            (thread_id, user_id),
-        ).fetchone()
+        # Runs before the thread (finalization's lock order), then the
+        # current row: a snapshot read would revert a concurrent turn.
+        conn.execute("SELECT id FROM chat_runs WHERE thread_id=?", (thread_id,)).fetchall()
+        row = chat_tx.lock_thread(conn, thread_id, user_id)
         if row is None:
             return
         messages = chats.parse_messages(row["messages"])

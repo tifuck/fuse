@@ -1211,6 +1211,13 @@ def fetchall(sql: str, args=()):
         return conn.execute(sql, args).fetchall()
 
 
+def for_update(conn) -> str:
+    """Row-lock suffix for a read-modify-write SELECT. MariaDB needs it (a
+    plain read is a snapshot); legacy SQLite test connections reject the
+    syntax and already hold the writer lock from BEGIN IMMEDIATE."""
+    return "" if isinstance(conn, sqlite3.Connection) else " FOR UPDATE"
+
+
 def last_id(conn) -> int:
     sql = "SELECT last_insert_rowid()" if isinstance(conn, sqlite3.Connection) else "SELECT LAST_INSERT_ID()"
     row = conn.execute(sql).fetchone()
@@ -1568,7 +1575,7 @@ def save_model_price(
             """SELECT e.id, e.user_id, e.api_key_id, e.credential_id, e.reported_cost_micros,
                       e.estimated_cost_micros, e.prompt_tokens, e.completion_tokens,
                       e.output_tokens, e.visible_tokens, e.reasoning_tokens, e.cached_tokens,
-                      e.cache_write_tokens
+                      e.cache_write_tokens, e.source_id, e.created_at
                FROM usage_events e LEFT JOIN sources s ON s.id=e.source_id
                WHERE COALESCE(NULLIF(e.source_type, ''), s.type, 'unknown')=? AND e.model=?""",
             (provider, model),
@@ -1577,6 +1584,7 @@ def save_model_price(
         key_deltas: dict[int, int] = {}
         user_deltas: dict[int, int] = {}
         cred_deltas: dict[int, int] = {}
+        hour_deltas: dict[tuple, int] = {}
         for row in rows:
             output, visible = _canonical_output(row)
             estimate = _estimated_cost(
@@ -1597,30 +1605,46 @@ def save_model_price(
                 key_deltas[row["api_key_id"]] = key_deltas.get(row["api_key_id"], 0) + delta
             if row["credential_id"]:
                 cred_deltas[row["credential_id"]] = cred_deltas.get(row["credential_id"], 0) + delta
+            hour = _hour_key(row)
+            hour_deltas[hour] = hour_deltas.get(hour, 0) + delta
         write_conn.executemany(
             "UPDATE usage_events SET estimated_cost_micros=?, pricing_known=1 WHERE id=?",
             updates,
         )
-        write_conn.executemany(
-            "UPDATE api_keys SET cost_micros=MAX(0, cost_micros+?) WHERE id=?",
-            [(delta, key_id) for key_id, delta in key_deltas.items()],
-        )
-        write_conn.executemany(
-            """UPDATE provider_usage SET cost_micros=MAX(0, cost_micros+?)
-               WHERE user_id=? AND provider=?""",
-            [(delta, user_id, provider) for user_id, delta in user_deltas.items()],
-        )
-        write_conn.executemany(
-            "UPDATE credentials SET cost_micros=MAX(0, cost_micros+?) WHERE id=?",
-            [(delta, cred_id) for cred_id, delta in cred_deltas.items()],
-        )
+        _apply_cost_deltas(write_conn, provider, model, key_deltas, user_deltas, cred_deltas, hour_deltas)
+
+
+def _hour_key(row) -> tuple:
+    return (row["user_id"], str(row["created_at"])[:13] + ":00:00Z", int(row["source_id"] or 0))
+
+
+def _apply_cost_deltas(conn, provider, model, key_deltas, user_deltas, cred_deltas, hour_deltas) -> None:
+    """Move every cost rollup by exactly what its events moved. No floor at
+    zero: a clamp would silently break rollup == SUM(events) for good."""
+    conn.executemany(
+        "UPDATE api_keys SET cost_micros=cost_micros+? WHERE id=?",
+        [(delta, key_id) for key_id, delta in key_deltas.items() if delta],
+    )
+    conn.executemany(
+        "UPDATE provider_usage SET cost_micros=cost_micros+? WHERE user_id=? AND provider=?",
+        [(delta, user_id, provider) for user_id, delta in user_deltas.items() if delta],
+    )
+    conn.executemany(
+        "UPDATE credentials SET cost_micros=cost_micros+? WHERE id=?",
+        [(delta, cred_id) for cred_id, delta in cred_deltas.items() if delta],
+    )
+    conn.executemany(
+        "UPDATE usage_hourly SET cost_micros=cost_micros+? WHERE user_id=? AND hour=? AND source_id=? AND model=?",
+        [(delta, user_id, hour, source_id, model) for (user_id, hour, source_id), delta in hour_deltas.items() if delta],
+    )
 
 
 def delete_model_price(provider: str, model: str) -> None:
     with tx() as conn:
         conn.execute("DELETE FROM model_prices WHERE provider=? AND model=?", (provider, model))
         rows = conn.execute(
-            """SELECT e.id, e.user_id, e.api_key_id, e.credential_id, e.reported_cost_micros, e.estimated_cost_micros
+            """SELECT e.id, e.user_id, e.api_key_id, e.credential_id, e.reported_cost_micros, e.estimated_cost_micros,
+                      e.source_id, e.created_at
                FROM usage_events e LEFT JOIN sources s ON s.id=e.source_id
                WHERE COALESCE(NULLIF(e.source_type, ''), s.type, 'unknown')=? AND e.model=?""",
             (provider, model),
@@ -1632,6 +1656,7 @@ def delete_model_price(provider: str, model: str) -> None:
         key_deltas: dict[int, int] = {}
         user_deltas: dict[int, int] = {}
         cred_deltas: dict[int, int] = {}
+        hour_deltas: dict[tuple, int] = {}
         for row in rows:
             if row["reported_cost_micros"] is not None:
                 continue
@@ -1641,19 +1666,9 @@ def delete_model_price(provider: str, model: str) -> None:
                 key_deltas[row["api_key_id"]] = key_deltas.get(row["api_key_id"], 0) + delta
             if row["credential_id"]:
                 cred_deltas[row["credential_id"]] = cred_deltas.get(row["credential_id"], 0) + delta
-        conn.executemany(
-            "UPDATE api_keys SET cost_micros=MAX(0, cost_micros+?) WHERE id=?",
-            [(delta, key_id) for key_id, delta in key_deltas.items()],
-        )
-        conn.executemany(
-            """UPDATE provider_usage SET cost_micros=MAX(0, cost_micros+?)
-               WHERE user_id=? AND provider=?""",
-            [(delta, user_id, provider) for user_id, delta in user_deltas.items()],
-        )
-        conn.executemany(
-            "UPDATE credentials SET cost_micros=MAX(0, cost_micros+?) WHERE id=?",
-            [(delta, cred_id) for cred_id, delta in cred_deltas.items()],
-        )
+            hour = _hour_key(row)
+            hour_deltas[hour] = hour_deltas.get(hour, 0) + delta
+        _apply_cost_deltas(conn, provider, model, key_deltas, user_deltas, cred_deltas, hour_deltas)
 
 
 def provider_usage_for(user_id: int):

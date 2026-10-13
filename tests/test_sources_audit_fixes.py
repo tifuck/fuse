@@ -120,6 +120,57 @@ def test_stale_openrouter_rejection_does_not_disable_replacement_key():
     assert db.fetchone("SELECT disabled FROM credentials WHERE id=?", (cid,))["disabled"] == 1
 
 
+@pytest.mark.usefixtures("isolated_db")
+def test_stale_oauth_rejection_does_not_disable_a_relinked_credential():
+    from app import db
+    from app.sources import grok
+
+    sid = grok.ensure_grok_source()
+    user = accounts.create_user("grokkey@test.invalid", "password12")
+    cid = accounts.add_credential(sid, "mine", "at-old", extra={"refresh_token": "rt-old"}, donated_by=user["id"])
+    dispatched = db.fetchone("SELECT extra FROM credentials WHERE id=?", (cid,))["extra"]
+    db.execute("UPDATE credentials SET extra=? WHERE id=?", (accounts.encrypt(json.dumps({"refresh_token": "rt-new"})), cid))
+    grok.disable_credential(cid, extra=dispatched)
+    assert db.fetchone("SELECT disabled FROM credentials WHERE id=?", (cid,))["disabled"] == 0
+    current = db.fetchone("SELECT extra FROM credentials WHERE id=?", (cid,))["extra"]
+    grok.disable_credential(cid, extra=current)
+    assert db.fetchone("SELECT disabled FROM credentials WHERE id=?", (cid,))["disabled"] == 1
+
+
+@pytest.mark.usefixtures("isolated_db")
+def test_metadata_write_from_a_stale_copy_keeps_rotated_tokens():
+    from app import db
+    from app.sources import kimi
+
+    sid = kimi.ensure_kimi_source()
+    user = accounts.create_user("kimimeta@test.invalid", "password12")
+    cid = accounts.add_credential(sid, "mine", "at-old", extra={"access_token": "at-old", "refresh_token": "rt-old"},
+                                  donated_by=user["id"])
+    stale = accounts.cred_extra(db.fetchone("SELECT extra FROM credentials WHERE id=?", (cid,)))
+    # A refresh rotates the pair while the billing fetch is in flight.
+    db.execute("UPDATE credentials SET extra=? WHERE id=?",
+               (accounts.encrypt(json.dumps({"access_token": "at-new", "refresh_token": "rt-new"})), cid))
+    stale["billing"] = {"checked_at": "now"}
+    accounts.update_extra(cid, stale, last_usage_percent=12.5)
+    row = db.fetchone("SELECT extra, last_usage_percent FROM credentials WHERE id=?", (cid,))
+    extra = accounts.cred_extra(row)
+    assert (extra["access_token"], extra["refresh_token"]) == ("at-new", "rt-new")
+    assert extra["billing"] == {"checked_at": "now"}
+    assert row["last_usage_percent"] == 12.5
+
+
+@pytest.mark.parametrize("module", ["chatgpt", "claude", "grok", "kimi"])
+def test_oauth_refresh_is_off_where_the_instance_does_not_own_the_tokens(module):
+    import importlib
+
+    from app.config import settings
+
+    mod = importlib.import_module(f"app.sources.{module}")
+    with patch.object(settings, "oauth_refresh_enabled", False), \
+            patch.object(mod.db, "fetchone", side_effect=AssertionError("must not read the credential")):
+        assert asyncio.run(mod._refresh_one_unlocked({"id": 1})) is False
+
+
 def test_prefixed_pool_outage_does_not_mark_a_bare_id_unavailable():
     import app.sources as sources
 
