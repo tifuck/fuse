@@ -117,6 +117,12 @@ int main(void) {
                            PING_INTERVAL_MS + 2 * PONG_TIMEOUT_MS, WAKE_NONE, &send_ping);
     expect_str(drop, "ping timeout", "second miss");
 
+    /* A session closed right after hello_ok keeps backing off; a healthy one resets. */
+    expect_int(fail_index_after_session(0, 50, 0), 1, "instant close backs off");
+    expect_int(fail_index_after_session(6, 50, 0), 6, "instant close capped");
+    expect_int(fail_index_after_session(4, 50, 1), 0, "frame after hello resets");
+    expect_int(fail_index_after_session(4, HEALTHY_SESSION_MS, 0), 0, "long session resets");
+
     /* Reconnecting pulls the hourly update check in; it never pushes it out. */
     expect_int((int)update_check_after_connect(3600000, 1000), 1000 + UPDATE_SOON_MS, "update soon after connect");
     expect_int((int)update_check_after_connect(5000, 1000), 5000, "earlier check kept");

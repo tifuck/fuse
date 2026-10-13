@@ -205,15 +205,16 @@ int session_loop(void) {
             fprintf(stderr, "fuse-agent: connected as %s\n", alias);
         }
         cJSON_Delete(reply);
-        fail_index = 0;
         auth_backoff = 0;
         attempts = 0;
         ever_connected = 1;
         next_update_ms = update_check_after_connect(next_update_ms, now_mono_ms());
         int replaced = 0;
         const char *drop_reason = NULL;
+        int got_frame = 0;
+        int64_t session_start = now_mono_ms();
         struct conn_watch watch;
-        conn_watch_init(&watch, now_mono_ms(), now_boot_ms());
+        conn_watch_init(&watch, session_start, now_boot_ms());
         set_live_fd(t.fd);
         s_live_tls = &t;
         while (!g_stop_main) {
@@ -298,6 +299,7 @@ int session_loop(void) {
                 break;
             }
             conn_watch_got_rx(&watch, now_mono_ms());
+            got_frame = 1;
             if (opcode == 9) {
                 int prc = ws_send(&t, 10, (const unsigned char *)msg, n_in);
                 free(msg);
@@ -377,10 +379,12 @@ int session_loop(void) {
                 else if (wake_now == WAKE_NETWORK ||
                          (drop_reason && strcmp(drop_reason, "network change") == 0))
                     fprintf(stderr, "fuse-agent: network up\n");
-                fprintf(stderr, "fuse-agent: disconnected (%s); reconnecting\n",
-                        drop_reason ? drop_reason : "socket closed");
-                fail_index = 0;
-                attempts = 0;
+                fail_index = fail_index_after_session(fail_index, now_mono_ms() - session_start, got_frame);
+                int wait_ms = reconnect_backoff_ms(fail_index, (unsigned)rand());
+                fprintf(stderr, "fuse-agent: disconnected (%s); reconnecting in %dms\n",
+                        drop_reason ? drop_reason : "socket closed", wait_ms);
+                wait_interruptible_ms(wait_ms);
+                if (!fail_index) attempts = 0;
             }
         }
     }

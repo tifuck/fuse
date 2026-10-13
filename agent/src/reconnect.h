@@ -48,6 +48,12 @@ int conn_watch_wait_ms(const struct conn_watch *w, int64_t mono_ms);
 /* Immediate retry, then 1s, 2s, 5s, 10s, 15s, cap 30s. jitter_rand adds 0..base/4. */
 int reconnect_backoff_ms(int fail_index, unsigned jitter_rand);
 
+/* hello_ok alone is not a healthy session: a server that closes right after
+ * it would otherwise get a zero-delay reconnect loop. The backoff resets only
+ * once a frame arrived after hello or the session lasted this long. */
+#define HEALTHY_SESSION_MS 30000
+int fail_index_after_session(int fail_index, int64_t lasted_ms, int got_frame);
+
 /* A server restart drops every session, and the top-of-loop update check
  * runs while that server is still down: check again soon after connecting. */
 #define UPDATE_SOON_MS 60000

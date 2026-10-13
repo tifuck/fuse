@@ -140,6 +140,23 @@ func TestBackoff(t *testing.T) {
 	}
 }
 
+func TestFailIndexAfterSession(t *testing.T) {
+	// A session closed right after hello_ok keeps backing off; a healthy one resets.
+	cases := []struct {
+		idx    int
+		lasted int64
+		frame  bool
+		want   int
+	}{
+		{0, 50, false, 1}, {6, 50, false, 6}, {4, 50, true, 0}, {4, healthySessionMS, false, 0},
+	}
+	for _, c := range cases {
+		if got := failIndexAfterSession(c.idx, c.lasted, c.frame); got != c.want {
+			t.Fatalf("failIndexAfterSession(%d,%d,%v) = %d want %d", c.idx, c.lasted, c.frame, got, c.want)
+		}
+	}
+}
+
 func TestVersionNewer(t *testing.T) {
 	cases := []struct {
 		cand, cur string

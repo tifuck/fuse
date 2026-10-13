@@ -443,7 +443,6 @@ func runSession(cfg *agentConfig, stop chan struct{}) {
 			alias = "machine"
 		}
 		log.Printf("fuse-agent: connected as %s", alias)
-		failIndex = 0
 		authBackoff = 0
 		attempts = 0
 		ever = true
@@ -452,7 +451,8 @@ func runSession(cfg *agentConfig, stop chan struct{}) {
 		s.ready = true
 		_ = s.flushResultsLocked()
 		s.mu.Unlock()
-		replaced, drop := s.pump(conn, stop, cfg)
+		sessionStart := nowMonoMS()
+		replaced, drop, gotFrame := s.pump(conn, stop, cfg)
 		s.closeConn()
 		s.setStatus("offline")
 		if isStopped(stop) {
@@ -471,9 +471,15 @@ func runSession(cfg *agentConfig, stop chan struct{}) {
 		} else if drop == "network change" {
 			log.Printf("fuse-agent: network up")
 		}
-		log.Printf("fuse-agent: disconnected (%s); reconnecting", emptyAs(drop, "socket closed"))
-		failIndex = 0
-		attempts = 0
+		failIndex = failIndexAfterSession(failIndex, nowMonoMS()-sessionStart, gotFrame)
+		wait := reconnectBackoffMS(failIndex, rand.Uint32())
+		log.Printf("fuse-agent: disconnected (%s); reconnecting in %dms", emptyAs(drop, "socket closed"), wait)
+		if sleepStop(stop, s.wake, time.Duration(wait)*time.Millisecond) {
+			return
+		}
+		if failIndex == 0 {
+			attempts = 0
+		}
 	}
 }
 
@@ -484,7 +490,7 @@ func emptyAs(s, fallback string) string {
 	return s
 }
 
-func (s *session) pump(conn *websocket.Conn, stop chan struct{}, cfg *agentConfig) (replaced bool, drop string) {
+func (s *session) pump(conn *websocket.Conn, stop chan struct{}, cfg *agentConfig) (replaced bool, drop string, gotFrame bool) {
 	var watch connWatch
 	connWatchInit(&watch, nowMonoMS(), nowBootMS())
 	connWatchGotRx(&watch, nowMonoMS())
@@ -513,18 +519,19 @@ func (s *session) pump(conn *websocket.Conn, stop chan struct{}, cfg *agentConfi
 	for {
 		select {
 		case <-stop:
-			return false, "stop"
+			return false, "stop", gotFrame
 		case wake := <-s.wake:
 			d, _ := connWatchTick(&watch, nowMonoMS(), nowBootMS(), wake)
 			if d != "" {
-				return false, d
+				return false, d, gotFrame
 			}
 		case err := <-readErr:
 			if err != nil {
-				return false, "socket closed"
+				return false, "socket closed", gotFrame
 			}
 		case data := <-incoming:
 			connWatchGotRx(&watch, nowMonoMS())
+			gotFrame = true
 			var msg map[string]any
 			if json.Unmarshal(data, &msg) != nil {
 				continue
@@ -536,9 +543,9 @@ func (s *session) pump(conn *websocket.Conn, stop chan struct{}, cfg *agentConfi
 				s.jobs.cancel(fmt.Sprint(msg["id"]))
 			case "bye":
 				if fmt.Sprint(msg["reason"]) == "replaced" {
-					return true, "replaced"
+					return true, "replaced", gotFrame
 				}
-				return false, "server bye"
+				return false, "server bye", gotFrame
 			case "ping":
 				_ = s.sendJSON(map[string]any{"v": 1, "t": "pong"})
 			case "pong":
@@ -546,7 +553,7 @@ func (s *session) pump(conn *websocket.Conn, stop chan struct{}, cfg *agentConfi
 		case <-ticker.C:
 			d, send := connWatchTick(&watch, nowMonoMS(), nowBootMS(), wakeNone)
 			if d != "" {
-				return false, d
+				return false, d, gotFrame
 			}
 			if !time.Now().Before(nextUpdate) && s.idleForUpdate() {
 				nextUpdate = time.Now().Add(updateEvery)
@@ -566,7 +573,7 @@ func (s *session) pump(conn *websocket.Conn, stop chan struct{}, cfg *agentConfi
 			}
 			if send {
 				if err := s.sendJSON(map[string]any{"v": 1, "t": "ping"}); err != nil {
-					return false, "io error"
+					return false, "io error", gotFrame
 				}
 				connWatchSentPing(&watch, nowMonoMS())
 			}

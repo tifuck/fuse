@@ -97,6 +97,11 @@ int reconnect_backoff_ms(int fail_index, unsigned jitter_rand) {
     return base + (int)(jitter_rand % (unsigned)(span + 1));
 }
 
+int fail_index_after_session(int fail_index, int64_t lasted_ms, int got_frame) {
+    if (got_frame || lasted_ms >= HEALTHY_SESSION_MS) return 0;
+    return fail_index < 6 ? fail_index + 1 : 6;
+}
+
 int64_t update_check_after_connect(int64_t next_ms, int64_t now_ms) {
     int64_t soon = now_ms + UPDATE_SOON_MS;
     return next_ms < soon ? next_ms : soon;

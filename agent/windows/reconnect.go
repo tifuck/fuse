@@ -6,8 +6,11 @@ const (
 	pingMissLimit  = 1
 	suspendGapMS   = 2000
 	backoffCapMS   = 30000
-	connectTimeout = 10000
-	ioTimeoutMS    = 10000
+	// hello_ok alone is not a healthy session: a server that closes right
+	// after it would otherwise get a zero-delay reconnect loop.
+	healthySessionMS = 30000
+	connectTimeout   = 10000
+	ioTimeoutMS      = 10000
 )
 
 const (
@@ -124,6 +127,18 @@ func reconnectBackoffMS(failIndex int, jitterRand uint32) int {
 	}
 	span := base / 4
 	return base + int(jitterRand%uint32(span+1))
+}
+
+// failIndexAfterSession resets the backoff only once a frame arrived after
+// hello or the session lasted healthySessionMS.
+func failIndexAfterSession(failIndex int, lastedMS int64, gotFrame bool) int {
+	if gotFrame || lastedMS >= healthySessionMS {
+		return 0
+	}
+	if failIndex < 6 {
+		return failIndex + 1
+	}
+	return 6
 }
 
 func wakeReasonStr(wake int) string {
