@@ -914,13 +914,13 @@ class ChatGPTSource:
                     if partial_usage:
                         partial_usage["usage_status"] = "partial"
                     last = ChatResult(
-                        status=502,
+                        status=400 if obj["error"].get("code") == 400 else 502,
                         body=obj,
                         usage=partial_usage,
                         credential_id=cred["id"],
                         model=model,
                     )
-                    if failover.server_error(cred["id"], 502, 60):
+                    if last.status == 502 and failover.server_error(cred["id"], 502, 60):
                         attempts.append({"credential_id": cred["id"], "status": 502, "usage": partial_usage})
                         continue
                     last.attempts = attempts

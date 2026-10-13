@@ -413,12 +413,20 @@ async def _translated_stream(
                 collected["usage_status"] = "complete" if stream_status == "complete" else "partial"
 
 
+_REQUEST_ERROR_CODES = frozenset({"context_length_exceeded", "invalid_prompt", "string_above_max_length"})
+
+
+def _request_caused(err: dict) -> bool:
+    return str(err.get("code") or "") in _REQUEST_ERROR_CODES or err.get("type") == "invalid_request_error"
+
+
 async def _aggregate(resp: httpx.Response, client: httpx.AsyncClient, model: str, account=None) -> dict:
     translator = _Translator(model, account)
     text_parts: list[str] = []
     reasoning_parts: list[str] = []
     thinking: list[dict] = []
     terminal = False
+    request_fault = False
     try:
         async for event in _upstream_events(resp):
             etype = event.get("type") or ""
@@ -476,10 +484,12 @@ async def _aggregate(resp: httpx.Response, client: httpx.AsyncClient, model: str
                     translator.usage = _usage_from_response(usage)
                 err = response.get("error") if isinstance(response.get("error"), dict) else {}
                 translator.error = str(err.get("message") or ("upstream response incomplete" if etype == "response.incomplete" else "upstream response failed"))
+                request_fault = etype == "response.incomplete" or _request_caused(err)
                 break
             elif etype == "error":
                 err = event.get("error") if isinstance(event.get("error"), dict) else {}
                 translator.error = str(err.get("message") or "upstream error")
+                request_fault = _request_caused(err)
                 break
     except (UpstreamProtocolError, httpx.HTTPError) as exc:
         translator.error = f"upstream stream failed ({type(exc).__name__})"
@@ -489,8 +499,11 @@ async def _aggregate(resp: httpx.Response, client: httpx.AsyncClient, model: str
     if not terminal and not translator.error:
         translator.error = "upstream stream ended before a terminal response"
     if translator.error:
+        # A request-caused failure (context length, truncation) is the same on
+        # every account: 400 tells the caller not to fail over and pay again.
         return {
-            "error": {"message": translator.error, "type": "api_error", "code": 502},
+            "error": {"message": translator.error, "type": "invalid_request_error" if request_fault else "api_error",
+                      "code": 400 if request_fault else 502},
             "_fuse_usage": translator.usage,
         }
     message: dict = {"role": "assistant", "content": "".join(text_parts)}

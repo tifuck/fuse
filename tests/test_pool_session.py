@@ -782,6 +782,44 @@ class ChatGPTChatFailoverTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(post.call_count, 1)
         aggregate.assert_not_called()
 
+    @patch("app.sources.chatgpt._note_invoke")
+    @patch("app.sources.chatgpt.accounts.cred_secret", return_value="tok")
+    @patch(
+        "app.sources.chatgpt.accounts.cred_extra",
+        side_effect=lambda c: c.get("_extra") or {"access_token": "tok", "refresh_token": "rt"},
+    )
+    @patch("app.sources.chatgpt._error_body", new_callable=AsyncMock)
+    @patch("app.sources.chatgpt.ChatGPTSource._post", new_callable=AsyncMock)
+    @patch("app.sources.chatgpt.db.fetchall")
+    @patch("app.sources.chatgpt.refresh_pool_usage", new_callable=AsyncMock)
+    @patch("app.sources.chatgpt.refresh_due", new_callable=AsyncMock)
+    async def test_request_caused_response_failed_is_400_without_failover(
+        self, _due, _usage, fetchall, post, _error_body, _extra, _secret, _invoke
+    ):
+        import json as _json
+
+        first = self._free_cred(140, pct=0.0)
+        second = self._free_cred(139, pct=1.0)
+        fetchall.return_value = [first, second]
+        failed = {"type": "response.failed", "response": {"error": {
+            "code": "context_length_exceeded", "message": "Your input exceeds the context window"}}}
+
+        class Resp:
+            status_code = 200
+
+            async def aiter_text(self):
+                yield "data: " + _json.dumps(failed) + "\n\n"
+
+            async def aclose(self):
+                pass
+
+        post.return_value = Resp()
+        src = chatgpt_mod.ChatGPTSource({"id": 4, "name": "ChatGPT"}, {}, [first, second])
+        result = await src.chat({"model": "gpt-5.6-luna", "messages": [{"role": "user", "content": "hi"}]})
+        self.assertEqual(result.status, 400)
+        self.assertIn("context window", result.body["error"]["message"])
+        self.assertEqual(post.call_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
