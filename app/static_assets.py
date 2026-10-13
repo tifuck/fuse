@@ -100,7 +100,13 @@ def _entry(rel: str) -> dict | None:
     if entry and entry["stamp"] == stamp:
         entry["checked"] = now
         return entry
-    data = (ROOT / rel).read_bytes()
+    try:
+        data = (ROOT / rel).read_bytes()
+    except OSError:
+        # Removed or replaced since the stat (a deploy), or a directory:
+        # treat it as missing, never a 500.
+        _files.pop(rel, None)
+        return None
     refs = []
     if rel.endswith(_TEXT):
         text = data.decode("utf-8", "replace")

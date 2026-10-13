@@ -94,6 +94,22 @@ def test_paths_outside_static_are_refused(tree, tmp_path):
     assert static_assets.asset_url("missing.js") == "/static/missing.js"
 
 
+def test_unreadable_paths_are_missing_not_errors(tree, monkeypatch):
+    (static_assets.ROOT / "dir.js").mkdir()  # stat works, read does not
+    assert static_assets.version("dir.js") is None
+    tree("gone.js", "export default 1;\n")
+    real = type(static_assets.ROOT).read_bytes
+
+    def vanished(path):
+        # Replaced by a deploy between the stat and the read.
+        if path.name == "gone.js":
+            raise FileNotFoundError(path)
+        return real(path)
+
+    monkeypatch.setattr(type(static_assets.ROOT), "read_bytes", vanished)
+    assert static_assets.rewritten("gone.js") is None
+
+
 def test_served_scripts_answer_conditional_requests(tree, monkeypatch):
     from app.config import settings
     from app.main import VersionedStaticFiles
