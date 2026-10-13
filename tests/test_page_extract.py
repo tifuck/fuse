@@ -415,6 +415,12 @@ class HostileInputTest(unittest.TestCase):
             got = extract_page(raw, content_type=content_type, url="https://example.test/a", find=phrase)
             self.assertIn(phrase, got.text, content_type)
 
+    def test_find_phrase_cut_before_a_space_under_a_heading_keeps_the_space(self):
+        from app.search.extract import PASSAGE_CHARS
+
+        body = "a" * (PASSAGE_CHARS - 8) + " restore" + " the replica now"
+        self.assertIn("restore the replica", find_windows("# Heading\n\n" + body + "\n", "restore the replica"))
+
     def test_empty_bing_cite_keeps_other_results(self):
         from app.search.providers.bing import parse_bing_html
 

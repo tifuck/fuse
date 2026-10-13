@@ -850,7 +850,9 @@ def _merge_passages(passages: list[_Passage]) -> list[_Passage]:
             prior = merged[-1]
             addition = passage.text if passage.text not in prior.text else ""
             if addition and prior.heading and passage.heading == prior.heading:
-                addition = addition.removeprefix(prior.heading).lstrip()
+                # Only the heading prefix _passage_chunks adds: a size-cut piece
+                # can itself start with the space that separates two words.
+                addition = addition.removeprefix(prior.heading + "\n\n")
             # end == start is one paragraph sliced by the size cut, not two paragraphs.
             gap = "" if passage.start <= prior.end else "\n\n"
             text = prior.text + (gap if addition else "") + addition
