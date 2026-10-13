@@ -124,13 +124,26 @@ def is_secret_name(name: str) -> bool:
     return bool(_SECRET_DOTENV.match(low))
 
 
+_SECRET_DIRS = {".aws", ".docker", ".kube", ".ssh", ".gnupg"}
+
+
+def _path_parts(path: str) -> list[str]:
+    return [part for part in str(path or "").replace("\\", "/").lower().split("/") if part not in ("", ".")]
+
+
 def is_secret_path(path: str) -> bool:
-    parts = [part for part in str(path or "").replace("\\", "/").lower().split("/") if part not in ("", ".")]
+    parts = _path_parts(path)
     if not parts:
         return False
     if is_secret_name(parts[-1]):
         return True
-    return any(part in {".aws", ".docker", ".kube", ".ssh", ".gnupg"} for part in parts[:-1])
+    return any(part in _SECRET_DIRS for part in parts[:-1])
+
+
+def is_secret_dir(path: str) -> bool:
+    """The path is a credential directory itself (`~/.ssh`, `~/.aws/`)."""
+    parts = _path_parts(path)
+    return bool(parts) and parts[-1] in _SECRET_DIRS
 
 
 def secret_dir_in_path(path: str) -> bool:
@@ -138,8 +151,7 @@ def secret_dir_in_path(path: str) -> bool:
 
     A secret-named file inside an approved dir is an ordinary in-scope read,
     but naming `.aws/credentials` reaches a store of secrets, so it still asks."""
-    parts = [part for part in str(path or "").replace("\\", "/").lower().split("/") if part not in ("", ".")]
-    return any(part in {".aws", ".docker", ".kube", ".ssh", ".gnupg"} for part in parts[:-1])
+    return any(part in _SECRET_DIRS for part in _path_parts(path)[:-1])
 
 
 def _norm(path: str, windows: bool) -> str:
@@ -1084,6 +1096,11 @@ async def review(*, tool: str, args: dict, user_id: int,
                 if is_secret_path(resolved_cand) and (secret_dir_in_path(resolved_cand) or not ok):
                     secret = True
                     reasons.append("secret-named file")
+                elif not ok and is_secret_dir(resolved_cand):
+                    # `grep -r . ~/.ssh` reads every key in it: never a
+                    # reusable directory grant.
+                    secret = True
+                    reasons.append("credential directory")
                 if ok:
                     continue
                 reasons.append(f"{resolved_cand} is outside the allowed roots")

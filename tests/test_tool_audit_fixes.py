@@ -366,9 +366,9 @@ class ReplaceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("@@ -50 +50 @@\n-line 050 xxxx\n+LINE 050 (edited) xxxx", body)
         self.assertIn("@@ -60 +60 @@\n-line 060 xxxx\n+LINE 060 (last) xxxx", body)
 
-    async def test_connector_edit_anchors_on_the_changed_copy(self):
-        # new_string already occurs earlier in the file. The numbered snippet
-        # and the hunk header must name the edit, not that earlier copy.
+    async def test_connector_edit_with_context_anchors_past_an_earlier_fragment(self):
+        # Part of new_string (KEEP) occurs earlier in the file; the context
+        # lines it carries make the edit itself the only full match.
         fresh = "KEEP\n" + "".join(f"line{i}\n" for i in range(30)) + "KEEP\nTAIL\n"
         with patch.object(ws, "_is_agent", return_value=True), patch.object(ws, "_agent_version", return_value=(1, 7, 1)), \
                 patch.object(ws, "_agent_call", AsyncMock(return_value={"ok": True, "out": "1 replacement"})), \

@@ -108,16 +108,14 @@ def _replace_preview(path: str, old: str, new: str, count: int, start: int | Non
 _WIDEN_MAX = 400
 
 
-def _whole_lines(text: str, frag: str, other: str, *, at: int = -1) -> tuple[str, str]:
+def _whole_lines(text: str, frag: str, other: str) -> tuple[str, str]:
     """Widen one edit to the whole lines it touches so its diff shows full
     lines, not a bare fragment. frag is located in text (old_string in the
     pre-edit file, or new_string in the post-edit file on the connector
-    path); other is its counterpart. `at` picks which copy, when frag occurs
-    more than once. Returns (frag, other) widened alike; a miss, or a line
-    too long to show, keeps the fragments."""
+    path); other is its counterpart. Returns (frag, other) widened alike; a
+    miss, or a line too long to show, keeps the fragments."""
     text = text.replace("\r\n", "\n")
-    if at < 0 or not frag or not text.startswith(frag, at):
-        at = text.find(frag) if frag else -1
+    at = text.find(frag) if frag else -1
     if at < 0:
         return frag, other
     start = text.rfind("\n", 0, at) + 1
@@ -267,41 +265,16 @@ def _edit_first_line(text: str, old: str, new: str) -> int | None:
     return None if at < 0 else text.count("\n", 0, at) + 1
 
 
-def _inserted_at(text: str, new: str, old: str) -> int:
-    """Offset of the copy of `new` this edit wrote.
-
-    The connector only has the post-edit file. `old` is what used to be there,
-    so the copy that still has the most of `old` beside it is the edit. Copies
-    that share nothing with `old` tie, and the first one wins."""
-    if not old:
-        return text.find(new)
-    best_at, best_size = -1, -1
-    start = 0
-    # ponytail: only the first 64 copies are scored; past that the first wins.
-    for _ in range(64):
-        at = text.find(new, start)
-        if at < 0:
-            break
-        lo = max(0, at - len(old))
-        hi = min(len(text), at + len(new) + len(old))
-        size = difflib.SequenceMatcher(None, old, text[lo:hi], autojunk=False).find_longest_match().size
-        if size > best_size:
-            best_at, best_size = at, size
-        start = at + max(1, len(new))
-    return best_at
-
-
-def _post_edit_snippet(text: str, new: str, old: str = "") -> tuple[str, int | None]:
+def _post_edit_snippet(text: str, new: str) -> tuple[str, int | None]:
     """Numbered edited region from post-edit file text (the connector path
     never sees the pre-edit bytes). Returns (snippet, first line of the edit)."""
     if not new:
         return "", None  # a deletion leaves no anchor in the edited file
-    used, used_old = new, old
-    at = _inserted_at(text, used, used_old)
-    if at < 0 and "\r\n" in text and "\r" not in used and "\r" not in used_old:
+    used = new
+    at = text.find(used)
+    if at < 0 and "\r\n" in text and "\r" not in used:
         used = used.replace("\n", "\r\n")
-        used_old = used_old.replace("\n", "\r\n")
-        at = _inserted_at(text, used, used_old)
+        at = text.find(used)
     if at < 0:
         return "", None
     first = text.count("\n", 0, at) + 1

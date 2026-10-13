@@ -68,9 +68,12 @@ class SecretNameTest(PermSchemaTest):
         for path in ("/etc/app.env/", "/etc/cert.pem/", "/srv/app/.env/", "cert.pem/"):
             self.assertTrue(permissions.is_secret_path(path), path)
         # The credential directory itself, with or without a slash, is not a
-        # secret-named file. A file inside it still is.
+        # secret-named file (grep's secret filter must stay on inside it); the
+        # shell gate judges it with is_secret_dir. A file inside it is secret.
         for path in ("/home/u/.ssh", "/home/u/.ssh/", ".ssh", ".ssh/"):
             self.assertFalse(permissions.is_secret_path(path), path)
+            self.assertTrue(permissions.is_secret_dir(path), path)
+        self.assertFalse(permissions.is_secret_dir("/home/u/.ssh/config"))
         self.assertTrue(permissions.is_secret_path("/home/u/.ssh/config"))
         self.assertTrue(permissions.is_secret_path("/home/u/.ssh/config/"))
 
@@ -355,6 +358,17 @@ class ReviewTest(PermSchemaTest):
         self.assertEqual(events[0]["grant_kind"], "")
         self.assertEqual(events[0]["grant_value"], "")
         self.assertEqual(permissions.grants_for(1, 1), [])
+
+    def test_shell_over_a_credential_directory_is_never_a_dir_grant(self):
+        for command in ("grep -r BEGIN /home/other/.ssh", "tar czf /tmp/k.tgz /home/other/.ssh/"):
+            with self.subTest(command=command):
+                res, events, payload = asyncio.run(
+                    self._ask_flow("allow_session", {"command": command, "cwd": ""}, tool="run_terminal_command")
+                )
+                self.assertTrue(res.allowed)
+                self.assertTrue(events[0]["secret"])
+                self.assertEqual(events[0]["grant_value"], "")
+                self.assertEqual(permissions.grants_for(1, 1), [])
 
     def test_shell_cwd_and_paths_ask(self):
         # A simple read of an out-of-root path asks, and allowing it for the
