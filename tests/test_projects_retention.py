@@ -138,23 +138,35 @@ class ProjectsRetentionTest(unittest.TestCase):
         after = chats.get_thread(1, thread["id"])
         self.assertEqual((after["kind"], after["project_id"]), ("chat", None))
 
-    def test_delete_project_aborts_when_a_session_survives_delete_thread(self):
+    def test_delete_project_is_all_or_nothing(self):
         live = self.project("live")
-        thread, _ = self.session(live)
-        # delete_thread refusing (False) must abort: the project row cannot
-        # be deleted out from under a session that still exists.
-        with patch.object(chats, "delete_thread", return_value=False):
-            with self.assertRaises(hosts.HostError) as raised:
-                hosts.delete_project(1, 7, live["id"])
-        self.assertEqual(raised.exception.status_code, 409)
+        first, _ = self.session(live)
+        second, _ = self.session(live)
+        real_event = store.event
+        deleted = []
+
+        def failing_event(conn, user_id, kind, *args, **kwargs):
+            if kind == "thread.deleted":
+                deleted.append(kind)
+                if len(deleted) == 2:
+                    raise RuntimeError("event write failed")
+            return real_event(conn, user_id, kind, *args, **kwargs)
+
+        # A failure after the first session is gone must not leave it deleted
+        # while the project and the other session survive.
+        with patch.object(store, "event", failing_event), self.assertRaises(RuntimeError):
+            hosts.delete_project(1, 7, live["id"])
         self.assertIsNotNone(hosts.get_project(1, 7, live["id"]))
-        self.assertIsNotNone(chats.get_thread(1, thread["id"]))
-        # A thread another caller already removed is skipped, not fatal.
-        gone = self.project("gone")
-        t2, _ = self.session(gone)
-        self.assertTrue(chats.delete_thread(1, t2["id"]))
-        with patch.object(chats, "delete_thread", return_value=False):
-            self.assertTrue(hosts.delete_project(1, 7, gone["id"]))
+        self.assertIsNotNone(chats.get_thread(1, first["id"]))
+        self.assertIsNotNone(chats.get_thread(1, second["id"]))
+        # A running session is cancelled and deleted with the project.
+        current = chats.get_thread(1, first["id"])
+        run = store.start_turn(1, first["id"], "hello", current["revision"], "send-live")["run"]
+        with patch("app.chat_runs.cancel") as cancel:
+            self.assertTrue(hosts.delete_project(1, 7, live["id"]))
+        cancel.assert_called_once_with(run["id"])
+        self.assertIsNone(chats.get_thread(1, first["id"]))
+        self.assertIsNone(hosts.get_project(1, 7, live["id"]))
 
     # -- fork -------------------------------------------------------------
 
