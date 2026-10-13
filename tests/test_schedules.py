@@ -214,6 +214,31 @@ class FireStatusPropagationTest(unittest.TestCase):
             asyncio.run(schedules.tick())
         self.assertIn(item["id"], [call.args[0]["id"] for call in fire.await_args_list])
 
+    def test_failure_after_the_run_exists_keeps_the_fire_tracking_it(self):
+        import asyncio
+
+        from app import chat_runs
+
+        item = self._schedule()
+        slot = iso_utc(utcnow())
+        db.execute(
+            """INSERT INTO schedule_fires(schedule_id, user_id, trigger, status, slot_key, fire_id, started_at)
+               VALUES(?,?, 'scheduled', 'queued', ?, 'fire-late', ?)""",
+            (item["id"], self.uid, slot, db.now()),
+        )
+        fire = {"slot_key": slot, "fire_id": "fire-late", "status": "queued", "run_id": None}
+        with patch("app.sources.pick", new=AsyncMock(return_value=object())), \
+                patch.object(chat_runs, "start", new=AsyncMock(side_effect=RuntimeError("launch failed"))):
+            asyncio.run(schedules._fire(item, fire, consume_slot=True))
+        row = db.fetchone("SELECT status, run_id FROM schedule_fires WHERE schedule_id=? AND slot_key=?", (item["id"], slot))
+        self.assertEqual(row["status"], "running")
+        self.assertTrue(row["run_id"])
+        # The run still executes later; its real outcome lands on the fire.
+        run = chat_store.get_run(self.uid, row["run_id"])
+        chat_store.finish_run(run["id"], dict(run["message"]), "completed")
+        self.assertEqual(db.fetchone("SELECT status FROM schedule_fires WHERE schedule_id=? AND slot_key=?",
+                                     (item["id"], slot))["status"], "completed")
+
     def test_finish_run_updates_fire_and_schedule(self):
         item = self._schedule()
         run = self._scheduled_run()

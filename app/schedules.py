@@ -1010,6 +1010,12 @@ async def _fire(schedule: dict, fire: dict, *, consume_slot: bool) -> None:
         _finish_fire(schedule, fire, status, error, thread_pk, run_id, consume=True)
     except Exception:
         logger.exception("schedule fire failed")
+        if run_id:
+            # The run is committed and will still execute (resume_queued);
+            # sync_run_status records its real outcome, which a "failed" here
+            # would block (it only updates queued/running fires).
+            _finish_fire(schedule, fire, "running", "", thread_pk, run_id, consume=consume_slot and not slot.startswith("manual:"))
+            return
         _finish_fire(schedule, fire, "failed", "internal error", thread_pk, run_id, consume=True)
 
 
