@@ -699,7 +699,7 @@ class ChatGPTSource:
         self.cfg = cfg
         self.creds = list(creds)
 
-    def _pick(self, model: str = "", exclude: set[int] | None = None, prefer_id: int | None = None, owner_id: int | None = None):
+    def _pick(self, model: str = "", exclude: set[int] | None = None, prefer_id: int | None = None, owner_id: int | None = None, hint_id: int | None = None):
         return pick_account(
             self.creds,
             kind="chatgpt",
@@ -708,6 +708,7 @@ class ChatGPTSource:
             is_authed=credential_is_authed,
             prefer_id=prefer_id,
             owner_id=owner_id,
+            hint_id=hint_id,
         )
 
     async def models(self) -> list[str]:
@@ -762,7 +763,7 @@ class ChatGPTSource:
         elif status == "failed":
             note_failure(cred_id, cooldown_seconds=5, affinity_safe=True)
 
-    async def chat(self, body: dict, *, session_id: str | None = None, user_id: int | None = None) -> ChatResult:
+    async def chat(self, body: dict, *, session_id: str | None = None, user_id: int | None = None, affinity_id: str | None = None) -> ChatResult:
         await refresh_due()
         await refresh_pool_usage()
         self.creds = pool_policy.filter_credentials(
@@ -780,9 +781,10 @@ class ChatGPTSource:
         attempts: list[dict] = []
         last = ChatResult(status=503, body={"error": "No ChatGPT accounts in the pool"})
         prefer_id = lookup("chatgpt", session_id)
+        hint_id = lookup("chatgpt", affinity_id) if prefer_id is None and affinity_id else None
         failover = Failover()
         while True:
-            picked = self._pick(model, exclude=tried, prefer_id=prefer_id, owner_id=user_id)
+            picked = self._pick(model, exclude=tried, prefer_id=prefer_id, owner_id=user_id, hint_id=hint_id)
             if not picked:
                 if attempts and last.credential_id == attempts[-1].get("credential_id"):
                     attempts.pop()

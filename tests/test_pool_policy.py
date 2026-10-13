@@ -378,6 +378,88 @@ class PoolChatOwnFirstTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.credential_id, self.other)
 
 
+class PoolChatCacheAffinityTest(unittest.IsolatedAsyncioTestCase):
+    """Shared-pool routing keeps conversations on the account holding their
+    prompt cache, and starts a subagent where its parent's prefix lives."""
+
+    def setUp(self):
+        from app.sources import pool_session
+
+        reset_health()
+        pool_session.reset_store()
+        self.addCleanup(pool_session.reset_store)
+        db.execute("DELETE FROM credentials")
+        db.execute("DELETE FROM api_keys")
+        db.execute("DELETE FROM users")
+        db.execute("DELETE FROM pool_sessions")
+        pool_policy._share_cache.clear()
+        self.alice = accounts.create_user("aff-a@test.invalid", "password12", admin=False)
+        self.donor = accounts.create_user("aff-d@test.invalid", "password12", admin=False)
+        self.outsider = accounts.create_user("aff-o@test.invalid", "password12", admin=False)
+        sid = grok_mod.ensure_grok_source()
+
+        def extra(pct):
+            return dict(GROK_EXTRA, billing=dict(GROK_EXTRA["billing"], credit_usage_percent=pct))
+
+        self.cool = accounts.add_credential(sid, "cool", "a", extra=extra(5), donated_by=self.donor["id"])
+        self.warm = accounts.add_credential(sid, "warm", "b", extra=extra(40), donated_by=self.donor["id"])
+        pool_policy.set_admin_policy("grok", pool_shared=True, open_access=False)
+        self.src = grok_mod.GrokSource({"id": sid, "name": "Grok"}, {}, [])
+        self.body = {"model": "grok-4.6", "messages": [{"role": "user", "content": "hi"}]}
+
+    def _session(self, key, user):
+        from app.sources.pool_session import session_id_from
+
+        return session_id_from({}, {"prompt_cache_key": key}, user_id=user["id"], model="grok-4.6")
+
+    @staticmethod
+    def _ok():
+        usage = {"prompt_tokens": 1, "completion_tokens": 1, "cached_tokens": 0}
+        return (200, {"id": "c", "usage": usage}, None, usage, {})
+
+    @patch("app.sources.grok.note_pool_invoke")
+    @patch("app.sources.grok.openai_chat", new_callable=AsyncMock)
+    @patch("app.sources.grok.refresh_pool_billing", new_callable=AsyncMock)
+    @patch("app.sources.grok.refresh_due", new_callable=AsyncMock)
+    async def test_subagent_starts_on_its_parents_account_then_keeps_its_own_pin(self, _due, _bill, chat, _invoke):
+        from app.sources import pool_session
+
+        chat.return_value = self._ok()
+        parent = self._session("thread:9", self.outsider)
+        child = self._session("run:child", self.outsider)
+        pool_session.bind("grok", parent, self.warm)
+        result = await self.src.chat(self.body, user_id=self.outsider["id"], session_id=child, affinity_id=parent)
+        self.assertEqual(result.credential_id, self.warm)
+        self.assertEqual(pool_session.lookup("grok", child), self.warm)
+        # Without the parent, a new session takes the least-used account.
+        other = self._session("run:other", self.outsider)
+        result = await self.src.chat(self.body, user_id=self.outsider["id"], session_id=other)
+        self.assertEqual(result.credential_id, self.cool)
+        # Once pinned, the child follows its own pin, not the parent's.
+        pool_session.bind("grok", parent, self.cool)
+        result = await self.src.chat(self.body, user_id=self.outsider["id"], session_id=child, affinity_id=parent)
+        self.assertEqual(result.credential_id, self.warm)
+
+    @patch("app.sources.grok.note_pool_invoke")
+    @patch("app.sources.grok.openai_chat", new_callable=AsyncMock)
+    @patch("app.sources.grok.refresh_pool_billing", new_callable=AsyncMock)
+    @patch("app.sources.grok.refresh_due", new_callable=AsyncMock)
+    async def test_linking_an_own_account_does_not_move_a_warm_conversation(self, _due, _bill, chat, _invoke):
+        chat.return_value = self._ok()
+        convo = self._session("thread:1", self.alice)
+        pool_policy.set_admin_policy("grok", pool_shared=True, open_access=True)
+        result = await self.src.chat(self.body, user_id=self.alice["id"], session_id=convo)
+        self.assertEqual(result.credential_id, self.cool)
+        mine = accounts.add_credential(
+            grok_mod.ensure_grok_source(), "mine", "m", extra=GROK_EXTRA, donated_by=self.alice["id"]
+        )
+        result = await self.src.chat(self.body, user_id=self.alice["id"], session_id=convo)
+        self.assertEqual(result.credential_id, self.cool)
+        fresh = self._session("thread:2", self.alice)
+        result = await self.src.chat(self.body, user_id=self.alice["id"], session_id=fresh)
+        self.assertEqual(result.credential_id, mine)
+
+
 class PoolPolicyHttpTest(unittest.TestCase):
     def setUp(self):
         from fastapi import FastAPI

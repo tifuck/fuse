@@ -343,6 +343,7 @@ def pick_account(
     no_plan=None,
     prefer_id: int | None = None,
     owner_id: int | None = None,
+    hint_id: int | None = None,
 ):
     """The caller's own accounts first, then the least-used plan.
 
@@ -358,11 +359,17 @@ def pick_account(
     ChatGPT: models Free/Go can serve (luna, terra, 5.5, 5.4-mini) pick those
     plans first, then paid. Paid-only models (sol, 5.4) never consider Free/Go.
 
-    prefer_id, when still eligible, wins over plan tier and usage. That keeps
-    a conversation on the account that already holds its prompt-cache prefix.
-    A pin on someone else's account yields to one of the caller's own that
-    can take the request: the cache miss is one turn, the donor's quota is
-    the rest of the conversation.
+    prefer_id, when still eligible, wins over everything above, ownership
+    included. That keeps a conversation on the account that already holds
+    its prompt-cache prefix: moving a warm conversation re-sends its whole
+    context uncached (and on ChatGPT drops its encrypted reasoning), so
+    own-first only decides where new or broken sessions go.
+
+    hint_id is where a related session (a subagent's parent) is pinned. A new
+    session takes it when it ranks with the best choice (same health tier,
+    ownership and plan tier, under the in-flight ceiling): on a provider that
+    caches prefixes per account, the child then reuses the tools and system
+    prompt its parent already cached instead of writing them again.
 
     An account at the in-flight ceiling is skipped unless every candidate is
     saturated, so load spreads instead of dog-piling the freshest account.
@@ -434,22 +441,21 @@ def pick_account(
             pinned.append(row)
         else:
             ready.append(row)
-    best = None
-    if ready:
-        top = min(row[0] for row in ready)
-        primary = [row for row in ready if row[0] == top]
-        available = [row for row in primary if in_flight(row[5]) < MAX_IN_FLIGHT] or primary
-        available.sort(key=lambda row: (row[1], row[2], row[3], row[4], row[5]))
-        best = available[0]
     if prefer_id is not None:
         want = int(prefer_id)
         preferred = [row for row in ready if row[5] == want] or pinned
         preferred = [row for row in preferred if in_flight(row[5]) < MAX_IN_FLIGHT] or preferred
         if preferred:
-            pin = preferred[0]
-            own_waiting = best is not None and best[1] == 0 and best[0] == _TIER_OK and in_flight(best[5]) < MAX_IN_FLIGHT
-            if pin[1] == 0 or not own_waiting:
-                return pin[6], pin[7]
-    if best is None:
+            return preferred[0][6], preferred[0][7]
+    if not ready:
         return None
+    top = min(row[0] for row in ready)
+    primary = [row for row in ready if row[0] == top]
+    available = [row for row in primary if in_flight(row[5]) < MAX_IN_FLIGHT] or primary
+    available.sort(key=lambda row: (row[1], row[2], row[3], row[4], row[5]))
+    best = available[0]
+    if hint_id is not None:
+        for row in available:
+            if row[5] == int(hint_id) and row[1:3] == best[1:3] and in_flight(row[5]) < MAX_IN_FLIGHT:
+                return row[6], row[7]
     return best[6], best[7]

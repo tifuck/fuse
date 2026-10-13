@@ -716,7 +716,7 @@ class ClaudeSource:
         self.cfg = cfg
         self.creds = list(creds)
 
-    def _pick(self, exclude: set[int] | None = None, prefer_id: int | None = None, owner_id: int | None = None):
+    def _pick(self, exclude: set[int] | None = None, prefer_id: int | None = None, owner_id: int | None = None, hint_id: int | None = None):
         now = datetime.now(timezone.utc)
         return pick_account(
             self.creds,
@@ -726,6 +726,7 @@ class ClaudeSource:
             is_authed=credential_is_authed,
             prefer_id=prefer_id,
             owner_id=owner_id,
+            hint_id=hint_id,
         )
 
     async def models(self) -> list[str]:
@@ -741,7 +742,7 @@ class ClaudeSource:
         req = client.build_request("POST", url, headers=_chat_headers(token), json=payload)
         return await client.send(req, stream=True)
 
-    async def chat(self, body: dict, *, session_id: str | None = None, user_id: int | None = None) -> ChatResult:
+    async def chat(self, body: dict, *, session_id: str | None = None, user_id: int | None = None, affinity_id: str | None = None) -> ChatResult:
         await refresh_due()
         await refresh_pool_quota()
         self.creds = pool_policy.filter_credentials(
@@ -760,9 +761,10 @@ class ClaudeSource:
         want_stream = bool(body.get("stream"))
         payload = build_messages_payload(body, upstream)
         prefer_id = lookup("claude", session_id)
+        hint_id = lookup("claude", affinity_id) if prefer_id is None and affinity_id else None
         failover = Failover()
         while True:
-            picked = self._pick(exclude=tried, prefer_id=prefer_id, owner_id=user_id)
+            picked = self._pick(exclude=tried, prefer_id=prefer_id, owner_id=user_id, hint_id=hint_id)
             if not picked:
                 if attempts and last.credential_id == attempts[-1].get("credential_id"):
                     attempts.pop()

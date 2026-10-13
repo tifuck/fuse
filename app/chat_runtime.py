@@ -675,6 +675,18 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             payload["prompt_cache_key"] = f"run:{run_id or parent_run_id}"
         elif thread_id is not None:
             payload["prompt_cache_key"] = f"thread:{thread_id}"
+    # Pool routing hint: a child's first request starts on the account its
+    # parent is pinned to, where the shared tools and system prompt are
+    # already cached. Server-side scope state, never sent upstream.
+    scope = getattr(request, "scope", None)
+    if isinstance(scope, dict):
+        parent_of_child = agent.get("parent_run_id") if isinstance(agent.get("parent_run_id"), str) else ""
+        if is_child and depth > 1 and parent_of_child:
+            scope["fuse_cache_parent"] = f"run:{parent_of_child}"
+        elif is_child and thread_id is not None:
+            scope["fuse_cache_parent"] = f"thread:{thread_id}"
+        else:
+            scope.pop("fuse_cache_parent", None)
     effort = raw.get("reasoning_effort")
     if effort is not None:
         if not isinstance(effort, str) or effort not in api._REASONING_EFFORTS:

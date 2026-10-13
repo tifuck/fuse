@@ -547,7 +547,7 @@ class DevinSource:
         self.cfg = cfg
         self.creds = list(creds)
 
-    def _pick(self, exclude: set[int] | None = None, prefer_id: int | None = None, owner_id: int | None = None):
+    def _pick(self, exclude: set[int] | None = None, prefer_id: int | None = None, owner_id: int | None = None, hint_id: int | None = None):
         now = datetime.now(timezone.utc)
         return pick_account(
             self.creds,
@@ -557,6 +557,7 @@ class DevinSource:
             is_authed=credential_is_authed,
             prefer_id=prefer_id,
             owner_id=owner_id,
+            hint_id=hint_id,
         )
 
     async def models(self) -> list[str]:
@@ -575,7 +576,7 @@ class DevinSource:
             return list(DEVIN_MODELS)
         return await fetch_catalog(token)
 
-    async def chat(self, body: dict, *, session_id: str | None = None, user_id: int | None = None) -> ChatResult:
+    async def chat(self, body: dict, *, session_id: str | None = None, user_id: int | None = None, affinity_id: str | None = None) -> ChatResult:
         await refresh_pool_status()
         self.creds = pool_policy.filter_credentials(
             db.fetchall(
@@ -610,9 +611,10 @@ class DevinSource:
                 model=model,
             )
         prefer_id = lookup("devin", session_id)
+        hint_id = lookup("devin", affinity_id) if prefer_id is None and affinity_id else None
         failover = Failover()
         while True:
-            picked = self._pick(exclude=tried, prefer_id=prefer_id, owner_id=user_id)
+            picked = self._pick(exclude=tried, prefer_id=prefer_id, owner_id=user_id, hint_id=hint_id)
             if not picked:
                 # Parity with grok/chatgpt/kimi/zai/mimo: the final failed
                 # attempt is reported once via the returned result; drop the

@@ -33,7 +33,7 @@ from .sources.base import ChatResult
 from .sources import openrouter as openrouter_mod
 from .sources import explabs as explabs_mod
 from .sources import devin as devin_mod
-from .sources.pool_session import session_id_from
+from .sources.pool_session import related_session_id, session_id_from
 
 router = APIRouter()
 _LINE_CAP = 1_048_576
@@ -269,10 +269,12 @@ def _validate_reasoning(body: dict) -> None:
         raise HTTPException(400, "thinking.clear_thinking must be a boolean")
 
 
-async def _run_chat(src, body: dict, user_id: int, session_id: str | None = None):
+async def _run_chat(src, body: dict, user_id: int, session_id: str | None = None, affinity_id: str | None = None):
     if src.type_id in ("openrouter", "explabs"):
         return await src.chat(body, user_id=user_id, session_id=session_id)
     if src.type_id in POOL_TYPES:
+        if affinity_id:
+            return await src.chat(body, session_id=session_id, user_id=user_id, affinity_id=affinity_id)
         return await src.chat(body, session_id=session_id, user_id=user_id)
     if src.type_id in ("openai", "ollama"):
         return await src.chat(body, session_id=session_id)
@@ -605,12 +607,18 @@ async def _invoke_chat(request: Request, user, body: dict, *, cheap_reasoning: b
     if prepared is not None:
         await prepared()
     session_id = None
+    affinity_id = None
     if src.type_id in POOL_TYPES or src.type_id in ("openai", "ollama", "openrouter"):
         session_id = session_id_from(request.headers, body, user_id=user["id"], model=upstream)
+    if src.type_id in POOL_TYPES:
+        # A subagent's run sets its parent's cache key (server-side scope,
+        # never client input) so its first request can start where the parent
+        # already cached the shared tools and system prompt.
+        affinity_id = related_session_id(request.scope.get("fuse_cache_parent"), user_id=user["id"], model=upstream)
     shed_total = 0
     while True:
         try:
-            result = await _run_chat(src, body, user["id"], session_id=session_id)
+            result = await _run_chat(src, body, user["id"], session_id=session_id, affinity_id=affinity_id)
         except asyncio.CancelledError:
             raise
         except Exception as exc:

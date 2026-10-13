@@ -2,6 +2,8 @@ import os
 import sys
 import tempfile
 import unittest
+
+import pytest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -306,24 +308,77 @@ class PoolSessionTest(unittest.TestCase):
         self.assertEqual(picked["id"], 211)
 
     @patch("app.sources.pool_pick.accounts.cred_extra", side_effect=lambda c: c.get("_extra") or {})
-    def test_pin_on_someone_elses_account_yields_to_an_own_account(self, _extra):
+    def test_warm_pin_beats_own_first(self, _extra):
         mine = _cred(221, pct=40.0, donor=7)
         theirs = _cred(222, pct=10.0, donor=8)
+        # A conversation already cached on someone else's account stays there:
+        # moving it would re-send its whole context uncached.
+        picked, _ = pick_account([mine, theirs], kind="grok", prefer_id=222, owner_id=7)
+        self.assertEqual(picked["id"], 222)
+        # Own-first decides only new sessions and broken pins.
+        picked, _ = pick_account([mine, theirs], kind="grok", owner_id=7)
+        self.assertEqual(picked["id"], 221)
+        pool_pick.note_failure(222, cooldown_seconds=60)
+        self.addCleanup(pool_pick.reset_health)
         picked, _ = pick_account([mine, theirs], kind="grok", prefer_id=222, owner_id=7)
         self.assertEqual(picked["id"], 221)
-        # Without an own account free to take it, the pin keeps its cache.
-        picked, _ = pick_account([mine, theirs], kind="grok", prefer_id=222, owner_id=7, exclude={221})
-        self.assertEqual(picked["id"], 222)
-        busy_mine = _cred(221, pct=USAGE_BUSY, donor=7)
-        picked, _ = pick_account([busy_mine, theirs], kind="grok", prefer_id=222, owner_id=7)
-        self.assertEqual(picked["id"], 222)
-        # A pin on the caller's own account stays even when another own
+        pool_pick.reset_health()
+        # Pins on the caller's own account stay too, even when another own
         # account is less used.
         other_mine = _cred(223, pct=5.0, donor=7)
         picked, _ = pick_account([mine, other_mine, theirs], kind="grok", prefer_id=221, owner_id=7)
         self.assertEqual(picked["id"], 221)
-        picked, _ = pick_account([mine, theirs], kind="grok", prefer_id=222, owner_id=9)
+        # At the in-flight ceiling the pin still holds its conversation.
+        for _ in range(pool_pick.MAX_IN_FLIGHT):
+            pool_pick.reserve(222)
+        picked, _ = pick_account([mine, theirs], kind="grok", prefer_id=222, owner_id=7)
         self.assertEqual(picked["id"], 222)
+
+    @patch("app.sources.pool_pick.accounts.cred_extra", side_effect=lambda c: c.get("_extra") or {})
+    def test_new_session_follows_a_related_pin_when_it_ranks_equal(self, _extra):
+        a = _cred(251, pct=10.0, donor=8)
+        b = _cred(252, pct=50.0, donor=9)
+        mine = _cred(253, pct=70.0, donor=7)
+        # The parent is pinned on the busier account: its child starts there,
+        # where the shared tools and system prompt are already cached.
+        picked, _ = pick_account([a, b], kind="grok", hint_id=252)
+        self.assertEqual(picked["id"], 252)
+        picked, _ = pick_account([a, b], kind="grok")
+        self.assertEqual(picked["id"], 251)
+        # Its own pin wins over the hint.
+        picked, _ = pick_account([a, b], kind="grok", prefer_id=251, hint_id=252)
+        self.assertEqual(picked["id"], 251)
+        # The hint never outranks health, ownership or the in-flight ceiling.
+        busy_b = _cred(252, pct=USAGE_BUSY, donor=9)
+        picked, _ = pick_account([a, busy_b], kind="grok", hint_id=252)
+        self.assertEqual(picked["id"], 251)
+        picked, _ = pick_account([a, b, mine], kind="grok", hint_id=252, owner_id=7)
+        self.assertEqual(picked["id"], 253)
+        picked, _ = pick_account([a, b], kind="grok", hint_id=252, exclude={252})
+        self.assertEqual(picked["id"], 251)
+        for _ in range(pool_pick.MAX_IN_FLIGHT):
+            pool_pick.reserve(252)
+        self.addCleanup(pool_pick.reset_health)
+        picked, _ = pick_account([a, b], kind="grok", hint_id=252)
+        self.assertEqual(picked["id"], 251)
+        pool_pick.reset_health()
+        # ChatGPT: the hint must also share the plan tier the model prefers.
+        free = _cred(261, pct=1.0, extra={"refresh_token": "r", "billing": {"plan_type": "free"}})
+        plus = _cred(262, pct=1.0, extra={"refresh_token": "r", "billing": {"plan_type": "plus"}})
+        picked, _ = pick_account([free, plus], kind="chatgpt", model="gpt-5.5", hint_id=262)
+        self.assertEqual(picked["id"], 261)
+        picked, _ = pick_account([free, plus], kind="chatgpt", model="gpt-6-sol", hint_id=262)
+        self.assertEqual(picked["id"], 262)
+
+    def test_related_session_id_matches_the_parents_own_session(self):
+        parent = session_id_from({}, {"prompt_cache_key": "thread:478"}, user_id=4, model="claude-opus-5-5")
+        self.assertEqual(
+            pool_session.related_session_id("thread:478", user_id=4, model="claude-opus-5-5"), parent
+        )
+        self.assertNotEqual(pool_session.related_session_id("thread:478", user_id=5, model="claude-opus-5-5"), parent)
+        self.assertNotEqual(pool_session.related_session_id("thread:478", user_id=4, model="claude-sonnet-5-5"), parent)
+        self.assertIsNone(pool_session.related_session_id("", user_id=4, model="m"))
+        self.assertIsNone(pool_session.related_session_id(None, user_id=4, model="m"))
 
     @patch("app.sources.pool_pick.accounts.cred_extra", side_effect=lambda c: c.get("_extra") or {})
     def test_off_site_hold_never_locks_out_the_owner(self, _extra):
@@ -939,3 +994,107 @@ class ChatGPTChatFailoverTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_invoke_chat_passes_the_parents_cache_key_to_pools_only(monkeypatch):
+    """A subagent run's server-side scope names its parent's cache key; pool
+    sources get it scoped like the parent's own session, nobody else gets it."""
+    import asyncio
+
+    from app import api
+    from app.sources.base import ChatResult
+
+    seen = []
+
+    class Src:
+        def __init__(self, type_id):
+            self.type_id, self.source_id = type_id, 1
+
+        async def chat(self, body, **kw):
+            seen.append((self.type_id, kw.get("affinity_id"), kw.get("session_id")))
+            return ChatResult(status=200, body={}, model=body["model"])
+
+    for name in ("grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude"):
+        monkeypatch.setattr(api, f"user_has_{name}", lambda _uid: True)
+    monkeypatch.setattr(api, "_safe_record_usage", lambda *a, **k: True)
+
+    class Req:
+        headers = {}
+
+        def __init__(self, scope):
+            self.scope = scope
+
+    def run(type_id, scope, key="run:child-1"):
+        seen.clear()
+        monkeypatch.setattr(api, "pick", lambda *a, **k: asyncio.sleep(0, (Src(type_id), "claude-opus-5-5")))
+        body = {"model": "m", "messages": [{"role": "user", "content": "hi"}], "prompt_cache_key": key}
+        asyncio.run(api._invoke_chat(Req(scope), {"id": 4}, body))
+        return seen[0]
+
+    parent = session_id_from({}, {"prompt_cache_key": "thread:478"}, user_id=4, model="claude-opus-5-5")
+    child = session_id_from({}, {"prompt_cache_key": "run:child-1"}, user_id=4, model="claude-opus-5-5")
+    assert run("claude", {"fuse_cache_parent": "thread:478"}) == ("claude", parent, child)
+    assert run("claude", {}) == ("claude", None, child)
+    # Not a pool: no affinity, and _run_chat keeps the old call shape.
+    assert run("openai", {"fuse_cache_parent": "thread:478"})[1] is None
+
+
+
+@pytest.mark.usefixtures("isolated_db")
+def test_runtime_names_the_parent_cache_key_for_subagents_only(monkeypatch):
+    """stream_dashboard_chat puts the parent's cache key in the run's scope:
+    the thread for a direct child, the parent run for a nested one, nothing
+    for a root turn (which also clears a key left by a reused scope)."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from app import api, artifacts, chat_runtime, chat_store, hosts
+    from app.sources.base import ChatResult
+
+    for name in ("grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude"):
+        monkeypatch.setattr(api, f"user_has_{name}", lambda uid: True)
+    monkeypatch.setattr(api, "_record_attempts", lambda *a, **k: None)
+    monkeypatch.setattr(api, "_safe_record_usage", lambda *a, **k: True)
+    monkeypatch.setattr(hosts, "settings_for", lambda uid: {})
+    monkeypatch.setattr(artifacts, "list_for_prompt", lambda *a: [])
+    for name in ("save_child_meter",):
+        monkeypatch.setattr(chat_store, name, lambda *a: None)
+    for name in ("take_child_results", "take_followups", "steer_display_deliveries", "followup_display_deliveries"):
+        monkeypatch.setattr(chat_store, name, lambda *a: [])
+    monkeypatch.setattr(chat_store, "save_turn_progress", lambda *a, **k: None)
+    monkeypatch.setattr("app.context_meter.should_auto_compact", lambda *a, **k: False)
+    seen = []
+
+    async def pick(*args, **kwargs):
+        return SimpleNamespace(type_id="claude", source_id=1), "claude-opus-5-5"
+
+    async def dispatch(src, body, user_id, **kwargs):
+        seen.append((kwargs.get("affinity_id"), body.get("prompt_cache_key")))
+        return ChatResult(status=400, body={"error": {"message": "test stop"}}, model=body["model"])
+
+    monkeypatch.setattr(api, "pick", pick)
+    monkeypatch.setattr(api, "_run_chat", dispatch)
+
+    def run(agent, scope):
+        request = SimpleNamespace(headers={}, scope=scope)
+        raw = {"model": "claude/claude-opus-5-5", "messages": [{"role": "user", "content": "hi"}], "tools": [],
+               "run_id": "child-2", "history_replay": True}
+        if agent:
+            raw["agent"] = agent
+
+        async def go():
+            response = await chat_runtime.stream_dashboard_chat(request, {"id": 4}, raw,
+                frozen_context={"instructions": "", "profile": ""})
+            async for _ in response.body_iterator:
+                pass
+
+        asyncio.run(go())
+        return scope.get("fuse_cache_parent"), seen[-1]
+
+    model = "claude-opus-5-5"
+    key, (affinity, cache_key) = run({"depth": 2, "resumed": True, "parent_run_id": "child-1"}, {})
+    assert key == "run:child-1"
+    assert cache_key == "run:child-2"
+    assert affinity == pool_session.related_session_id("run:child-1", user_id=4, model=model)
+    key, (affinity, _) = run(None, {"fuse_cache_parent": "run:stale"})
+    assert key is None and affinity is None

@@ -165,6 +165,15 @@ def _scope(user_id: int | None, model: str, raw: str) -> str:
     return "fx:" + hmac.new(secret, material, hashlib.sha256).hexdigest()[:40]
 
 
+def related_session_id(raw: str | None, *, user_id: int | None, model: str) -> str | None:
+    """The scoped id a related conversation (a subagent's parent) is pinned
+    under, from the cache key that conversation sends as prompt_cache_key.
+    Server-side only: a client never names another session to follow."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    return _scope(user_id, model, raw.strip()[:SESSION_ID_MAX])
+
+
 def session_id_from(
     headers: Mapping | None,
     body: dict,

@@ -58,7 +58,7 @@
         <legend>Your requests use</legend>
         <label class="share-option">
           <input type="radio" name="use" value="pool"{% if ui.saved_use == 'pool' and ui.saved_share != 'private' %} checked{% endif %}{% if ui.saved_share == 'private' %} disabled{% endif %} data-share-use-pool>
-          <span><b>Your accounts first, then the pool</b><small>Fuse spends your own plans first. When they are busy, at capacity or signed out, requests fall back to accounts shared with you, least used first.</small></span>
+          <span><b>Your accounts first, then the pool</b><small>New conversations start on your own plans. When they are busy, at capacity or signed out, Fuse falls back to accounts shared with you, least used first. A conversation then stays on its account so its prompt cache keeps hitting.</small></span>
         </label>
         <label class="share-option">
           <input type="radio" name="use" value="mine"{% if ui.saved_use == 'mine' or ui.saved_share == 'private' %} checked{% endif %}>
@@ -264,7 +264,7 @@
   </nav>
 
   <div data-tab-panel="pool" class="stack-y{% if openrouter_flash_msg or explabs_flash_msg %} hidden{% endif %}">
-    <p class="sources-note">Your requests use your own accounts first and fall back to accounts shared with you, least used first. <b>Sharing</b> on each pool sets who else may use yours. Z.AI also unlocks with a live x.ai or OpenAI account you share.</p>
+    <p class="sources-note">New conversations start on your own accounts and fall back to accounts shared with you, least used first; each conversation then stays on one account to keep its prompt cache. <b>Sharing</b> on each pool sets who else may use yours. Z.AI also unlocks with a live x.ai or OpenAI account you share.</p>
     {% if pool_flash_msg %}
     <p class="callout {% if pool_flash_kind == 'ok' %}ok{% else %}fault{% endif %}" role="alert">{{ pool_flash_msg }}</p>
     {% endif %}
