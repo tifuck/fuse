@@ -300,7 +300,8 @@ def _parse_edits(args: dict) -> list[tuple[str, str, bool]]:
         if single:
             first = raw[0] if isinstance(raw, list) and raw and isinstance(raw[0], dict) else {}
             same = (
-                len(raw) == 1
+                isinstance(raw, list)
+                and len(raw) == 1
                 and first.get("old_string") == args.get("old_string")
                 and first.get("new_string") == args.get("new_string")
             )

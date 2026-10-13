@@ -73,6 +73,16 @@ class AgentPairTest(unittest.TestCase):
         self.assertEqual(int(row["id"]), view["id"])
         self.assertIsNone(hosts.host_by_device_token("fa_nope"))
 
+    def test_undo_pairing_lets_the_same_code_pair_again(self):
+        # hello_ok (the only copy of the device token) could not be sent.
+        pairing = hosts.mint_pairing(1)
+        view, token = hosts.redeem_pairing(pairing["code"], {"hostname": "laptop.local"})
+        hosts.undo_pairing(1, view["id"], pairing["code"])
+        self.assertIsNone(hosts.host_by_device_token(token))
+        again, _ = hosts.redeem_pairing(pairing["code"], {"hostname": "laptop.local"})
+        self.assertEqual(len(hosts.list_bundle(1)["hosts"]), 1)
+        self.assertEqual(again["auth_type"], "agent")
+
     def test_redeem_stores_windows_os(self):
         pairing = hosts.mint_pairing(1)
         view, _token = hosts.redeem_pairing(

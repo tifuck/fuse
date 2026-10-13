@@ -668,7 +668,11 @@ async def execute(name: str, arguments: str, *, user_id: int, bound_host_id=None
         return exc.detail, _error_rec(name, exc.detail, host=alias, extra=extra)
     except VaultLocked:
         return "vault locked", _error_rec(name, "vault locked", host=alias, kind="vault_locked")
-    except Exception:
+    except Exception as exc:
+        failure = _host_failure(exc)
+        if failure:
+            detail, kind = failure
+            return detail, _error_rec(name, detail, host=alias, kind=kind)
         logger.exception("workspace %s failed", name)
         return "Tool failed.", _error_rec(
             name,
@@ -799,6 +803,19 @@ async def _agent_call(user_id, host_id, op: str, args: dict, seconds: int = 30, 
     except agent_hub.AgentError as exc:
         raise WorkspaceError(exc.detail) from exc
     return _enrich_agent_data(data, op=op)
+
+
+def _host_failure(exc: BaseException) -> tuple[str, str] | None:
+    """(detail, kind) for a failure reaching the host itself (vault, host
+    trust, SSH auth/key, network); None for anything else, which is a Fuse bug."""
+    import asyncssh
+
+    if isinstance(exc, HostError):  # SshError, _require_dek's vault-locked 401, ...
+        return exc.detail, "vault_locked" if exc.status_code == 401 else "upstream_error"
+    if isinstance(exc, (asyncssh.Error, OSError)):  # OSError: TimeoutError, refused/reset
+        reason = getattr(exc, "reason", "") or str(exc) or type(exc).__name__
+        return f"SSH connection failed: {reason}"[:400], "upstream_error"
+    return None
 
 
 def _shell_path_arg(path: str) -> str:
@@ -950,16 +967,32 @@ def _make_agent_runner(user_id, host_id, command: str, cwd: str, timeout_ms: int
     return runner
 
 
+async def _start_ssh_process(user_id, host_id, script: str):
+    """Connect and start `script`. A failure here means the command never
+    ran: report it as such, never as the command's own deadline (an SSH
+    connect timeout is a builtin TimeoutError, which the job supervisor reads
+    as its execution deadline)."""
+    from . import ssh_pool
+
+    try:
+        conn = await ssh_pool.connection(user_id, host_id)
+        return await conn.create_process("bash -lc " + shlex.quote(script))
+    except Exception as exc:
+        failure = _host_failure(exc)
+        if failure is None:
+            raise
+        raise WorkspaceError(f"command did not start: {failure[0]}") from exc
+
+
 def _make_ssh_runner(user_id, host_id, command: str, cwd: str, timeout_ms: int):
     """Streaming SSH exec: incremental sink, deadline kill, continued drain."""
 
     async def runner(sink) -> _ExecResult:
-        from . import command_jobs, ssh_pool
+        from . import command_jobs
 
         _rate_ok(user_id, host_id)
-        conn = await ssh_pool.connection(user_id, host_id)
         token = uuid4().hex
-        proc = await conn.create_process("bash -lc " + shlex.quote(_ssh_job_script(cwd, command, token)))
+        proc = await _start_ssh_process(user_id, host_id, _ssh_job_script(cwd, command, token))
         async def drain(reader):
             decoder = codecs.getincrementaldecoder("utf-8")("replace")
             while True:
@@ -1099,7 +1132,6 @@ async def _shell(user_id, host_id, alias, args, root, *, windows: bool = False, 
 def _make_ws_runner(url: str, timeout_ms: int):
     async def runner(sink):
         import websockets
-        from . import command_jobs
 
         async with asyncio.timeout(timeout_ms / 1000):
             try:
@@ -1124,9 +1156,12 @@ def _make_ws_runner(url: str, timeout_ms: int):
                     if not handed_off:
                         sock.close()
             except asyncio.CancelledError:
+                # The monitor's own deadline: asyncio.timeout turns this into
+                # TimeoutError outside this block.
                 raise
             except TimeoutError:
-                raise command_jobs.CommandTimedOut() from None
+                # Only the 15 s handshake (open_timeout) times out in here.
+                raise WorkspaceError("websocket monitor could not connect: no handshake within 15s") from None
             except Exception as exc:
                 raise WorkspaceError(f"websocket monitor failed: {exc}") from exc
         return _ExecResult(0, "")
@@ -1185,12 +1220,11 @@ def _make_monitor_ssh_runner(user_id, host_id, command: str, cwd: str, timeout_m
     """SSH exec that tees stdout to the event sink and stderr to rec.err only."""
 
     async def runner(sink) -> _ExecResult:
-        from . import command_jobs, ssh_pool
+        from . import command_jobs
 
         _rate_ok(user_id, host_id)
-        conn = await ssh_pool.connection(user_id, host_id)
         token = uuid4().hex
-        proc = await conn.create_process("bash -lc " + shlex.quote(_ssh_job_script(cwd, command, token)))
+        proc = await _start_ssh_process(user_id, host_id, _ssh_job_script(cwd, command, token))
         err_sink = getattr(sink, "err", None)
 
         async def drain(reader, dest):
@@ -1458,11 +1492,17 @@ async def browse(user_id: int, host_id: int, path: str = "") -> dict:
 
     try:
         conn = await ssh_pool.connection(user_id, host_id)
+        prefix = _shell_prefix(needle)
+        result = await conn.run(f"bash -lc {shlex.quote(prefix + ' && pwd && ls -1p')}", check=False, timeout=20)
     except VaultLocked as exc:
         raise WorkspaceError("vault locked") from exc
-    quoted = shlex.quote(needle)
-    prefix = _shell_prefix(needle)
-    result = await conn.run(f"bash -lc {shlex.quote(prefix + ' && pwd && ls -1p')}", check=False, timeout=20)
+    except WorkspaceError:
+        raise
+    except Exception as exc:
+        failure = _host_failure(exc)
+        if failure is None:
+            raise
+        raise WorkspaceError(failure[0]) from exc
     out = (result.stdout or "").strip()
     if result.exit_status not in (0, None) or not out:
         raise WorkspaceError("browse failed")
@@ -1494,6 +1534,9 @@ class _SftpLease:
         if exc is not None and _sftp_transport_error(exc):
             if _sftp_clients.get(self._conn) is self._client:
                 _sftp_clients.pop(self._conn, None)
+                from . import ssh_pool
+
+                ssh_pool.note_cached_channel(self._conn, -1)
             with contextlib.suppress(Exception):
                 self._client.exit()
         return False
@@ -1533,6 +1576,7 @@ async def _sftp(user_id, host_id):
         if client is None:
             client = await conn.start_sftp_client()
             _sftp_clients[conn] = client
+            ssh_pool.note_cached_channel(conn)
     return _SftpLease(conn, client)
 
 
@@ -1677,11 +1721,31 @@ async def _sftp_write_in_place(sftp, path: str, content: bytes, *, expected=None
     Only reached for an existing regular file; the version is re-checked first."""
     if expected is not None and _sftp_version(await sftp.lstat(path)) != expected:
         raise WorkspaceError("file changed during edit; read it again before retrying")
+    # Truncation happens at open: keep the old bytes to put back if the write
+    # then fails (ENOSPC, dropped connection). Unreadable file: no copy.
+    original = None
+    with contextlib.suppress(Exception):
+        async with sftp.open(path, "rb") as handle:
+            original = await handle.read()
+    truncated = False
     try:
         async with sftp.open(path, "wb") as handle:
+            truncated = True
             await handle.write(content)
     except Exception as exc:
-        raise _sftp_error(exc, path, "write") from exc
+        error = _sftp_error(exc, path, "write")
+        if not truncated:
+            raise error from exc
+        try:
+            if original is None:
+                raise error
+            async with sftp.open(path, "wb") as handle:
+                await handle.write(original)
+        except Exception:
+            raise WorkspaceError(
+                f"{error.detail}; {path} may now be truncated, so the outcome is unknown. Read it before retrying."
+            ) from exc
+        raise error from exc
 
 
 async def _sftp_read_window(handle, offset: int, limit: int) -> tuple[bytes, bool]:
@@ -2209,7 +2273,7 @@ async def _tool_exec(user_id, host_id, cmd: str, cwd: str, seconds: int) -> dict
         code = data.get("exit")
         try:
             code = int(code) if code not in (None, "") else None
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             code = None
         if code is None and data.get("ok"):
             code = 0

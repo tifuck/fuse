@@ -506,6 +506,63 @@ class LabelTest(unittest.TestCase):
         self.assertTrue(workspace._label("prod", "load 0.1").startswith("From host prod:"))
 
 
+class HostFailureMappingTest(unittest.IsolatedAsyncioTestCase):
+    async def test_ssh_and_vault_failures_are_reported_not_filed_as_bugs(self):
+        import asyncssh
+
+        from app.hosts import HostError
+
+        row = {"id": 4, "alias": "prod", "default_cwd": "/srv"}
+        cases = (
+            (HostError("vault locked", 401), "vault locked", "vault_locked"),
+            (asyncssh.PermissionDenied("auth failed"), "SSH connection failed: auth failed", "upstream_error"),
+            (TimeoutError(), "SSH connection failed: TimeoutError", "upstream_error"),
+        )
+        for exc, text, kind in cases:
+            with self.subTest(exc=type(exc).__name__), patch.object(workspace, "resolve_host_row", return_value=row), \
+                    patch.object(workspace.hosts, "settings_for", return_value={}), \
+                    patch.object(workspace.hosts, "effective_permission", return_value="project"), \
+                    patch.object(workspace, "_read", AsyncMock(side_effect=exc)):
+                got, rec = await workspace.execute("read_file", json.dumps({"host": "prod", "path": "x"}), user_id=1)
+            self.assertEqual(got, text)
+            self.assertEqual(rec["kind"], kind)
+
+    def test_non_list_edits_is_a_clear_error(self):
+        from app.workspace_ops.previews import _parse_edits
+
+        with self.assertRaises(workspace.WorkspaceError):
+            _parse_edits({"old_string": "a", "new_string": "b", "edits": 5})
+
+    async def test_failed_in_place_write_restores_the_original(self):
+        files = {"/srv/f": b"original bytes"}
+
+        class Handle:
+            def __init__(self, path, mode):
+                self.path, self.mode = path, mode
+
+            async def __aenter__(self):
+                if "w" in self.mode:
+                    files[self.path] = b""  # truncated at open
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def read(self):
+                return files[self.path]
+
+            async def write(self, data):
+                if data != b"original bytes":
+                    raise OSError(28, "No space left on device")
+                files[self.path] = data
+
+        sftp = type("Sftp", (), {"open": lambda self, path, mode: Handle(path, mode)})()
+        with self.assertRaises(workspace.WorkspaceError) as caught:
+            await workspace._sftp_write_in_place(sftp, "/srv/f", b"new bytes")
+        self.assertNotIn("truncated", caught.exception.detail)
+        self.assertEqual(files["/srv/f"], b"original bytes")
+
+
 class ReadOnlyTest(unittest.IsolatedAsyncioTestCase):
     async def test_blocks_writes(self):
         with patch("app.hosts.settings_for", return_value={"permission_mode": "read_only"}):

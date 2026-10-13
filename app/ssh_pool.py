@@ -7,6 +7,7 @@ import hashlib
 import ipaddress
 import socket
 import time
+import weakref
 
 from .config import settings
 from .hosts import HostError, secret_plain, set_host_status, set_pin
@@ -206,7 +207,9 @@ async def _connect_once(user_id: int, host_id: int, *, probe: bool):
         if result.exit_status not in (0, None) or "ok" not in out.lower():
             raise SshError("remote echo failed")
         return conn, algo, digest
-    except Exception:
+    except BaseException:
+        # Cancellation included: an authenticated connection nobody pooled
+        # would otherwise stay open on its keepalives.
         conn.close()
         try:
             await conn.wait_closed()
@@ -220,9 +223,11 @@ async def probe(user_id: int, host_id: int) -> dict:
         _conn, algo, digest = await _connect_once(user_id, host_id, probe=True)
     except VaultLocked as exc:
         raise SshError("vault locked", 401) from exc
-    except SshError as exc:
+    except HostError as exc:
+        if exc.status_code == 401:  # secret_plain's vault-locked HostError
+            raise SshError("vault locked", 401) from exc
         set_host_status(user_id, host_id, ok=False, error=exc.detail)
-        raise
+        raise SshError(exc.detail, exc.status_code) from exc
     except Exception as exc:
         set_host_status(user_id, host_id, ok=False, error="probe failed")
         raise SshError("probe failed") from exc
@@ -242,9 +247,11 @@ async def test(user_id: int, host_id: int) -> dict:
         conn, algo, digest = await _connect_once(user_id, host_id, probe=False)
     except VaultLocked as exc:
         raise SshError("vault locked", 401) from exc
-    except SshError as exc:
+    except HostError as exc:
+        if exc.status_code == 401:  # secret_plain's vault-locked HostError
+            raise SshError("vault locked", 401) from exc
         set_host_status(user_id, host_id, ok=False, error=exc.detail)
-        raise
+        raise SshError(exc.detail, exc.status_code) from exc
     except Exception as exc:
         set_host_status(user_id, host_id, ok=False, error="test failed")
         raise SshError("test failed") from exc
@@ -278,12 +285,12 @@ def evict(user_id: int, host_id: int) -> None:
 
 
 def _reusable(rec) -> bool:
-    return bool(
-        rec
-        and rec.get("conn")
-        and not rec["conn"].is_closed()
-        and time.monotonic() - float(rec.get("last") or 0) <= IDLE_CLOSE
-    )
+    if not (rec and rec.get("conn") and not rec["conn"].is_closed()):
+        return False
+    # Live channels (a background command, a monitor) mean the connection is
+    # in use however long ago it was checked out: reuse it, never close it
+    # under the job.
+    return time.monotonic() - float(rec.get("last") or 0) <= IDLE_CLOSE or _busy(rec["conn"])
 
 
 async def close_user(user_id: int) -> None:
@@ -335,11 +342,29 @@ async def connection(user_id: int, host_id: int):
         return conn
 
 
+# Channels a cache holds open on purpose (workspace's pooled SFTP client).
+# They do not make a connection busy, or it could never be reaped.
+_cached_channels: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def note_cached_channel(conn, delta: int = 1) -> None:
+    try:
+        _cached_channels[conn] = max(0, _cached_channels.get(conn, 0) + delta)
+    except TypeError:
+        pass  # not weak-referenceable
+
+
 def _busy(conn) -> bool:
     # Open channels mean a command may still be running on it. Unknown
     # (attribute missing) counts as busy: never close what may be in use.
     channels = getattr(conn, "_channels", None)
-    return channels is None or bool(channels)
+    if channels is None:
+        return True
+    try:
+        cached = _cached_channels.get(conn, 0)
+    except TypeError:
+        cached = 0
+    return len(channels) > cached
 
 
 async def reap_idle() -> None:

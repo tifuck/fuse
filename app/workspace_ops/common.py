@@ -101,7 +101,7 @@ def _exec_fail_detail(data: dict, fallback: str = "failed") -> str:
         body = fallback
     try:
         code = int(data.get("exit"))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         code = None
     if code is not None and f"exit {code}" not in body.lower():
         body = f"{body} (exit {code})"
@@ -156,7 +156,7 @@ def _pipe_ok_exit(code, detail: str = "", *, no_match_ok: bool = True) -> bool:
         return False
     try:
         val = int(code or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return False
     # 0 = matches, 1 = no matches (rg/grep) or a find write error,
     # 141 = SIGPIPE from head closing the pipe. ls exits 1 on real trouble,

@@ -38,6 +38,26 @@ def test_reaper_closes_idle_sessions_but_never_busy_ones():
     _reset()
 
 
+def test_busy_connection_is_reused_not_closed_after_idle_window():
+    # A background command keeps a channel open while the model polls with
+    # get_command_output (no checkout); the next SSH call must not close it.
+    _reset()
+    busy = _Conn(channels=["running-job"])
+    ssh_pool._pool[(1, 4)] = {"conn": busy, "last": time.monotonic() - ssh_pool.IDLE_CLOSE - 5}
+    assert asyncio.run(ssh_pool.connection(1, 4)) is busy and not busy.closed
+    _reset()
+
+
+def test_cached_sftp_channel_alone_does_not_block_reaping():
+    _reset()
+    idle = _Conn(channels=["sftp"])
+    ssh_pool.note_cached_channel(idle)
+    ssh_pool._pool[(1, 5)] = {"conn": idle, "last": time.monotonic() - ssh_pool.IDLE_CLOSE - 5}
+    asyncio.run(ssh_pool.reap_idle())
+    assert idle.closed and (1, 5) not in ssh_pool._pool
+    _reset()
+
+
 def test_trust_evicts_and_a_connect_racing_the_pin_change_is_discarded():
     _reset()
     pooled = _Conn()

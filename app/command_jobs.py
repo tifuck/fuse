@@ -134,7 +134,8 @@ def recover() -> None:
 def _prune() -> None:
     if len(_live) < JOB_CAP:
         return
-    done = [k for k, v in _live.items() if v.get("status") in TERMINAL]
+    # An unsaved terminal record is the only copy of the result: keep it.
+    done = [k for k, v in _live.items() if v.get("status") in TERMINAL and not v.get("unpersisted")]
     for key in done[: max(1, len(_live) - JOB_CAP + 1)]:
         _live.pop(key, None)
 
@@ -781,9 +782,33 @@ async def _persist_terminal(rec: dict, *, status: str, exit_code: int | None, er
         if await asyncio.to_thread(
             _persist_finish, rec, status=status, exit_code=exit_code, error=error,
             duration=int(rec.get("duration_ms") or 0),
-        ) or delay is None:
+        ):
+            rec.pop("unpersisted", None)
             return
+        if delay is None:
+            break
         await asyncio.sleep(delay)
+    # Still unsaved (DB outage): the in-memory record stays authoritative and
+    # is never pruned, and saving continues in the background so the row does
+    # not stay 'running' for join/kill/wake.
+    rec["unpersisted"] = True
+    task = asyncio.create_task(_persist_later(rec, status=status, exit_code=exit_code, error=error))
+    _persisting.add(task)
+    task.add_done_callback(_persisting.discard)
+
+
+_persisting: set[asyncio.Task] = set()
+
+
+async def _persist_later(rec: dict, *, status: str, exit_code: int | None, error: str) -> None:
+    while True:
+        await asyncio.sleep(PERSIST_RETRY_DELAYS[-1])
+        if await asyncio.to_thread(
+            _persist_finish, rec, status=status, exit_code=exit_code, error=error,
+            duration=int(rec.get("duration_ms") or 0),
+        ):
+            rec.pop("unpersisted", None)
+            return
 
 
 async def _finish(rec: dict, *, status: str, exit_code: int | None, error: str) -> None:

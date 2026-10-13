@@ -55,3 +55,26 @@ def test_terminal_write_is_retried_until_it_lands():
             patch.object(command_jobs, "PERSIST_RETRY_DELAYS", (0, 0, 0)):
         asyncio.run(command_jobs._persist_terminal({"id": "j"}, status="completed", exit_code=0, error=""))
     assert calls == ["completed"] * 3
+
+
+def test_unsaved_terminal_record_is_kept_and_saved_later():
+    results = iter([False, False, False, True])
+
+    def persist(rec, **kwargs):
+        return next(results)
+
+    async def run():
+        rec = {"id": "j", "status": "completed"}
+        with patch.object(command_jobs, "_persist_finish", side_effect=persist), \
+                patch.object(command_jobs, "PERSIST_RETRY_DELAYS", (0, 0)):
+            await command_jobs._persist_terminal(rec, status="completed", exit_code=0, error="")
+            assert rec.get("unpersisted"), "an unsaved result must be kept in memory"
+            command_jobs._live.update({f"done{i}": {"status": "completed"} for i in range(command_jobs.JOB_CAP)})
+            command_jobs._live["j"] = rec
+            command_jobs._prune()
+            assert "j" in command_jobs._live
+            await asyncio.gather(*command_jobs._persisting)
+        assert not rec.get("unpersisted")
+        command_jobs._live.clear()
+
+    asyncio.run(run())

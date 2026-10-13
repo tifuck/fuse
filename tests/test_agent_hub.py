@@ -320,3 +320,13 @@ class AgentHubTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+def test_malformed_exit_codes_are_unknown_not_a_crash():
+    from app import agent_hub
+
+    assert agent_hub._exit_code(3) == 3
+    assert agent_hub._exit_code(2.0) == 2
+    for bad in (float("inf"), float("nan"), "1", True, None):
+        assert agent_hub._exit_code(bad) is None

@@ -1187,6 +1187,16 @@ def _agent_username(raw) -> str:
     return text[:64]
 
 
+def undo_pairing(user_id: int, host_id: int, code: str) -> None:
+    """The device token never reached the connector (hello_ok send failed):
+    forget the new host and let the same install code be redeemed again."""
+    delete_host(user_id, host_id)
+    db.execute(
+        "UPDATE host_pairings SET used_at=NULL WHERE code_hash=? AND user_id=?",
+        (token_hash((code or "").strip()), int(user_id)),
+    )
+
+
 def redeem_pairing(code: str, meta: dict | None = None) -> tuple[dict, str]:
     """Burn a pairing code. Returns (public host, raw device token). No vault."""
     token = (code or "").strip()

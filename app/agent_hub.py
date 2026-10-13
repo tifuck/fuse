@@ -292,6 +292,18 @@ async def cancel(user_id: int, host_id: int, job_id: str) -> None:
         pass
 
 
+def _exit_code(value) -> int | None:
+    """The connector's exit status; anything that is not an integer (1e999,
+    a string) is unknown rather than a crash further down."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():  # inf and nan are not
+        return int(value)
+    return None
+
+
 def _clip(text) -> str:
     if not isinstance(text, str):
         text = "" if text is None else str(text)
@@ -309,7 +321,7 @@ async def handle_socket(ws, *, hello_timeout: float = HELLO_TIMEOUT) -> None:
         return
     try:
         msg = json.loads(raw)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
         await ws.close(code=4400)
         return
     if not isinstance(msg, dict) or msg.get("t") != "hello":
@@ -327,7 +339,17 @@ async def handle_socket(ws, *, hello_timeout: float = HELLO_TIMEOUT) -> None:
     hello_ok = {"v": 1, "t": "hello_ok", "host_id": host_id, "alias": alias}
     if minted:
         hello_ok["token"] = minted
-    await ws.send_json(hello_ok)
+    try:
+        await ws.send_json(hello_ok)
+    except Exception:
+        if minted:
+            # hello_ok carried the only copy of the device token: undo the
+            # pairing so the connector can retry with the same install code.
+            try:
+                await asyncio.to_thread(hosts.undo_pairing, user_id, host_id, str(msg.get("code") or ""))
+            except Exception:
+                logger.exception("Could not undo pairing for host %s", host_id)
+        raise
     key = (int(user_id), int(host_id))
     inst = str(msg.get("inst") or "")[:64]
     rec = {"ws": ws, "pending": {}, "user_id": int(user_id), "host_id": int(host_id), "inst": inst}
@@ -365,10 +387,13 @@ async def handle_socket(ws, *, hello_timeout: float = HELLO_TIMEOUT) -> None:
         except Exception:
             logger.exception("enable coding after agent hello failed")
         while True:
-            text = await ws.receive_text()
+            try:
+                text = await ws.receive_text()
+            except KeyError:
+                continue  # a binary frame: malformed, skipped like bad JSON
             try:
                 data = json.loads(text)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, RecursionError):
                 continue
             if not isinstance(data, dict):
                 continue
@@ -401,7 +426,7 @@ async def handle_socket(ws, *, hello_timeout: float = HELLO_TIMEOUT) -> None:
             fut.set_result(
                 {
                     "ok": bool(data.get("ok")),
-                    "exit": int(data["exit"]) if isinstance(data.get("exit"), int) else data.get("exit"),
+                    "exit": _exit_code(data.get("exit")),
                     "out": _clip(data.get("out")),
                     "err": _clip(data.get("err")),
                     "error": _clip(data.get("error")),
