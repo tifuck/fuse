@@ -5,6 +5,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -30,6 +31,7 @@ const (
 	wmLButtonUp      = 0x0202
 	wmCommand        = 0x0111
 	wmDestroy        = 0x0002
+	wmClose          = 0x0010
 	tpmRightAlign    = 0x0008
 	tpmBottomAlign   = 0x0020
 	tpmReturnCmd     = 0x0100
@@ -71,7 +73,7 @@ var (
 	procDestroyMenu   = user32.NewProc("DestroyMenu")
 	procGetCursor     = user32.NewProc("GetCursorPos")
 	procSetForeground = user32.NewProc("SetForegroundWindow")
-	procDestroyWin    = user32.NewProc("DestroyWindow")
+	procPostMessage   = user32.NewProc("PostMessageW")
 	procGetModule     = kernel32.NewProc("GetModuleHandleW")
 
 	trayMu     sync.Mutex
@@ -220,6 +222,10 @@ func openMachines() {
 }
 
 func runTray(cfg *agentConfig, stop chan struct{}, onQuit func(bool), onUpdate func()) {
+	// A window belongs to the OS thread that created it: its messages reach
+	// only that thread's GetMessage, and only that thread may destroy it.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	trayStop = stop
 	trayOnQuit = onQuit
 	trayOnUpd = onUpdate
@@ -261,7 +267,9 @@ func runTray(cfg *agentConfig, stop chan struct{}, onQuit func(bool), onUpdate f
 	go func() {
 		<-stop
 		procNotify.Call(nimDelete, uintptr(unsafe.Pointer(&nid)))
-		procDestroyWin.Call(hwnd)
+		// DestroyWindow from this goroutine's thread fails (access denied) and
+		// the loop below never ends; WM_CLOSE makes the owner thread do it.
+		procPostMessage.Call(hwnd, wmClose, 0, 0)
 	}()
 
 	var m msg
