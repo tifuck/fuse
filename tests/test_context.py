@@ -536,6 +536,47 @@ class LiveCompactTest(unittest.IsolatedAsyncioTestCase):
         apply_cp.assert_called_once()
         self.assertEqual(apply_cp.call_args.args[1], 42)
 
+    async def test_compact_current_retries_unpersisted_checkpoint_later(self):
+        import asyncio
+        from unittest.mock import patch
+
+        from starlette.requests import Request as StarletteRequest
+
+        from app import chat_runtime
+        from app.chat_runtime import _compact_current
+
+        async def fake_sum(head, instructions="", **_kwargs):
+            return "paid handoff"
+
+        request = StarletteRequest(
+            {"type": "http", "method": "POST", "path": "/", "headers": [], "client": ("127.0.0.1", 1)},
+            lambda: None,
+        )
+        calls = []
+
+        def flaky_apply(*args, **kwargs):
+            calls.append(args)
+            if len(calls) == 1:
+                raise RuntimeError("revision conflict")
+
+        with (
+            patch("app.chat_runtime.summarize_conversation", fake_sum),
+            patch("app.chat_store.apply_compaction_checkpoint", flaky_apply),
+            patch.object(chat_runtime, "CHECKPOINT_LATER_DELAYS", (0, 0)),
+        ):
+            await _compact_current(
+                self._live_transcript(), request=request, user={"id": 1}, model="offline",
+                type_id="openai", trigger="manual", thread_id=42,
+            )
+            for _ in range(20):
+                if len(calls) == 2:
+                    break
+                await asyncio.sleep(0.01)
+        # The paid summary is applied again after the first write failed.
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1], calls[0])
+        self.assertNotIn((1, 42), chat_runtime._PENDING_CHECKPOINTS)
+
     async def test_compact_current_honors_window_override(self):
         from unittest.mock import patch
 

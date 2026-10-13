@@ -329,6 +329,37 @@ def _compact_focus(instructions: str = "", *, is_child: bool = False, agent: dic
     return "\n\n".join(bits)
 
 
+_PENDING_CHECKPOINTS: dict = {}
+_CHECKPOINT_TASKS: set = set()
+CHECKPOINT_LATER_DELAYS = (2, 10, 30, 120)
+
+
+async def _persist_checkpoint_later(key, apply, **kwargs) -> None:
+    """Keep retrying a paid summary the run could not persist, so the next
+    turn reuses it instead of paying to re-summarize."""
+    from . import chat_store as store
+
+    # In-process only: a restart before it lands costs one re-summary.
+    for delay in CHECKPOINT_LATER_DELAYS:
+        await asyncio.sleep(delay)
+        if _PENDING_CHECKPOINTS.get(key) is not apply:
+            return
+        try:
+            await asyncio.to_thread(store.apply_compaction_checkpoint, *apply, **kwargs)
+        except Exception as exc:
+            if getattr(exc, "status_code", None) == 404:
+                _PENDING_CHECKPOINTS.pop(key, None)
+                return
+            logger.warning("Compaction checkpoint retry failed for thread %s", key[1], exc_info=True)
+        else:
+            if _PENDING_CHECKPOINTS.get(key) is apply:
+                _PENDING_CHECKPOINTS.pop(key, None)
+            return
+    if _PENDING_CHECKPOINTS.get(key) is apply:
+        _PENDING_CHECKPOINTS.pop(key, None)
+        logger.error("Compaction checkpoint for thread %s was never persisted; the next turn re-summarizes", key[1])
+
+
 async def _compact_current(
     current_messages: list[dict],
     *,
@@ -407,20 +438,26 @@ async def _compact_current(
         after["standing"] = True
         after["scope"] = "transcript"
         if persist_id:
+            key = (user["id"], persist_id)
+            # A newer summary supersedes one still waiting to be persisted.
+            _PENDING_CHECKPOINTS.pop(key, None)
+            apply = (
+                user["id"],
+                persist_id,
+                # A boot compact on a fresh turn summarizes exactly the
+                # durable rows; anchor the projection so later turns reuse
+                # this summary instead of re-summarizing every turn.
+                ctxmod.durable_checkpoint(durable_messages, checkpoint) or checkpoint,
+            )
             try:
-                await asyncio.to_thread(
-                    store.apply_compaction_checkpoint,
-                    user["id"],
-                    persist_id,
-                    # A boot compact on a fresh turn summarizes exactly the
-                    # durable rows; anchor the projection so later turns reuse
-                    # this summary instead of re-summarizing every turn.
-                    ctxmod.durable_checkpoint(durable_messages, checkpoint) or checkpoint,
-                    meter=after,
-                    run_id=run_id,
-                )
+                await asyncio.to_thread(store.apply_compaction_checkpoint, *apply, meter=after, run_id=run_id)
             except Exception:
-                logger.exception("Could not persist compaction checkpoint")
+                logger.warning("Could not persist compaction checkpoint for thread %s; retrying later",
+                               persist_id, exc_info=True)
+                _PENDING_CHECKPOINTS[key] = apply
+                task = asyncio.create_task(_persist_checkpoint_later(key, apply, meter=after, run_id=run_id))
+                _CHECKPOINT_TASKS.add(task)
+                task.add_done_callback(_CHECKPOINT_TASKS.discard)
         return rebuilt, after, checkpoint.get("strategy") or cfg.strategy
 
     # Not compactable. Never stub tool results that were already sent: that
