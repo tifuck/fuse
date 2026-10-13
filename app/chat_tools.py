@@ -857,17 +857,18 @@ async def execute_tool(
                 file=file_name,
             )
             preview = str(args.get("name") or "")[:80]
-            status = "error" if body == "Unknown skill." else "done"
+            from . import skills as skills_mod
+
+            file_error = body.startswith(skills_mod.FILE_ERROR)
+            status = "error" if body == "Unknown skill." or file_error else "done"
             rec = {"name": "load_skill", "status": status, "preview": preview}
             if file_name:
                 rec["path"] = file_name[:400]
             if status == "error":
-                rec["error"] = "Unknown skill."
-                rec["kind"] = "unknown_skill"
+                rec["error"] = body[:400] if file_error else "Unknown skill."
+                rec["kind"] = "unknown_skill_file" if file_error else "unknown_skill"
             elif not file_name:
                 # The row's line under the call says what the skill is for.
-                from . import skills as skills_mod
-
                 description = skills_mod.description_for(user_id, preview)
                 if description:
                     rec["summary"] = description

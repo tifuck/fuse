@@ -42,6 +42,18 @@ def _unquote(raw: str) -> str:
     return text
 
 
+_QUOTED = re.compile(r"""^(["'])(.*?)\1\s*(?:#.*)?$""", re.S)
+
+
+def _scalar(raw: str) -> str:
+    """An inline YAML scalar without its trailing ` # comment`."""
+    text = raw.strip()
+    quoted = _QUOTED.match(text)
+    if quoted:
+        return quoted.group(2)
+    return re.split(r"\s#", text, maxsplit=1)[0].rstrip()
+
+
 def _as_bool(raw: str) -> bool | None:
     key = raw.strip().lower()
     if key in _TRUE:
@@ -110,7 +122,7 @@ def _consume_nested(lines: list[str], start: int, base_indent: int, depth: int =
         body = line.strip()
         if body.startswith("- "):
             kind = "list"
-            sequence.append(_unquote(body[2:]))
+            sequence.append(_scalar(body[2:]))
             i += 1
             continue
         if ":" in body:
@@ -132,7 +144,7 @@ def _consume_nested(lines: list[str], start: int, base_indent: int, depth: int =
                 nested, i = _consume_nested(lines, i + 1, ind, depth + 1)
                 mapping[key] = nested if isinstance(nested, str) else str(nested)
             else:
-                mapping[key] = _unquote(rest)
+                mapping[key] = _scalar(rest)
                 i += 1
             continue
         i += 1
@@ -179,11 +191,12 @@ def _parse_yaml_subset(block: str) -> dict:
             nested, i = _consume_nested(lines, i + 1, 0)
             data[key] = nested
             continue
+        value = _scalar(rest)
         if key in _BOOL_KEYS:
-            flag = _as_bool(rest)
-            data[key] = _unquote(rest) if flag is None else flag
+            flag = _as_bool(value)
+            data[key] = value if flag is None else flag
         else:
-            data[key] = _unquote(rest)
+            data[key] = value
         i += 1
     return data
 
@@ -236,8 +249,9 @@ def parse_skill_md(text: str, *, slug: str | None = None) -> dict:
         user_inv = True if parsed is None else parsed
     disable = fields.get("disable-model-invocation", fields.get("disable_model_invocation", False))
     if isinstance(disable, str):
+        # An unrecognised value keeps the skill away from the model.
         parsed = _as_bool(disable)
-        disable = False if parsed is None else parsed
+        disable = True if parsed is None else parsed
     compat = str(fields.get("compatibility") or "")[:COMPAT_MAX]
     license_id = str(fields.get("license") or "")[:80]
     return {

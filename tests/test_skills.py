@@ -33,6 +33,7 @@ from app.skill_install import (
     extract_skill_files,
     files_from_zip,
     parse_upload,
+    skill_dir,
     valid_github_source,
 )
 from app.skill_parse import SkillError, parse_skill_md
@@ -69,6 +70,20 @@ class ParserTest(unittest.TestCase):
     def test_slug_wins_over_frontmatter_name(self):
         parsed = parse_skill_md(_md(name="demo"), slug="other")
         self.assertEqual(parsed["name"], "other")
+
+    def test_trailing_comments_do_not_flip_flags(self):
+        parsed = parse_skill_md(_md(
+            name="deploy # prod",
+            extra='disable-model-invocation: true  # manual only\nuser-invocable: false # hidden\nargument-hint: "a # b" # c\n',
+        ))
+        self.assertEqual(parsed["name"], "deploy")
+        self.assertTrue(parsed["disable_model_invocation"])
+        self.assertFalse(parsed["user_invocable"])
+        self.assertEqual(parsed["argument_hint"], "a # b")
+
+    def test_unknown_disable_value_keeps_skill_from_model(self):
+        parsed = parse_skill_md(_md(extra="disable-model-invocation: manual\n"))
+        self.assertTrue(parsed["disable_model_invocation"])
 
     def test_folded_description(self):
         text = (
@@ -141,6 +156,28 @@ class SkillsDbTest(unittest.TestCase):
 
     def test_web_research_unknown(self):
         self.assertEqual(agent_catalog.load_skill("web_research", user_id=1), "Unknown skill.")
+
+    def test_failed_row_write_restores_previous_tree(self):
+        self._install("demo", body="Old body.\n")
+        with patch.object(skills, "_upsert", side_effect=RuntimeError("db down")):
+            with self.assertRaises(RuntimeError):
+                self._install("demo", body="New body.\n")
+            with self.assertRaises(RuntimeError):
+                self._install("fresh")
+        self.assertIn("Old body.", skills.load(1, "demo"))
+        self.assertFalse(skill_dir(1, "fresh").exists())
+
+    def test_failed_row_delete_keeps_files(self):
+        self._install("demo")
+        with patch.object(db, "tx", side_effect=RuntimeError("db down")):
+            with self.assertRaises(RuntimeError):
+                skills.delete_skill(1, "demo")
+        self.assertTrue((skill_dir(1, "demo") / "SKILL.md").is_file())
+
+    def test_bad_skill_file_is_an_error(self):
+        self._install("demo")
+        body = skills.load(1, "demo", file="missing.md")
+        self.assertTrue(body.startswith(skills.FILE_ERROR))
 
     def test_index_omits_disabled_and_disable_model(self):
         self._install("alpha", extra="disable-model-invocation: true\n")
@@ -677,6 +714,15 @@ class CatalogMockTest(unittest.IsolatedAsyncioTestCase):
 
 
 class ZipUploadTest(unittest.TestCase):
+    def test_corrupt_member_is_a_skill_error(self):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("SKILL.md", b"---\nname: demo\n---\nbody\n")
+        data = bytearray(buf.getvalue())
+        data[data.index(b"body")] ^= 0xFF  # stored entry: payload no longer matches its CRC
+        with self.assertRaises(SkillError):
+            files_from_zip(bytes(data))
+
     def test_rejects_dotdot_member(self):
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:

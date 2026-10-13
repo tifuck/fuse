@@ -10,6 +10,7 @@ import secrets
 import shutil
 import time
 import zipfile
+import zlib
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
@@ -123,8 +124,11 @@ def validate_files(files: dict[str, bytes]) -> None:
         raise SkillError("skill too large")
 
 
-def persist_tree(user_id: int, slug: str, files: dict[str, bytes]) -> str:
-    """Atomic replace of data/skills/{uid}/{slug}/. Returns content_hash."""
+def persist_tree(user_id: int, slug: str, files: dict[str, bytes], *, commit=None) -> str:
+    """Atomic replace of data/skills/{uid}/{slug}/. Returns content_hash.
+
+    commit(digest), when given, runs after the swap; if it raises, the new
+    tree is removed and the previous version restored before re-raising."""
     if not NAME_RE.fullmatch(slug or ""):
         raise SkillError("invalid skill name")
     validate_files(files)
@@ -166,6 +170,14 @@ def persist_tree(user_id: int, slug: str, files: dict[str, bytes]) -> str:
             _restore_aside(old, dest)
         logger.warning("persist_tree failed slug=%s: %s", slug, type(exc).__name__)
         raise SkillError("could not store skill") from exc
+    if commit is not None:
+        try:
+            commit(digest)
+        except BaseException:
+            shutil.rmtree(dest, ignore_errors=True)
+            if moved_aside:
+                _restore_aside(old, dest)
+            raise
     # Only now is the swap complete: the previous version is expendable.
     shutil.rmtree(old, ignore_errors=True)
     return digest
@@ -213,10 +225,25 @@ def sweep_partial_swaps(base_dir=None) -> list[str]:
     return recovered
 
 
-def remove_tree(user_id: int, slug: str) -> None:
+def remove_tree(user_id: int, slug: str, *, commit=None) -> None:
+    """Delete a skill dir. commit(), when given, runs after the dir is moved
+    aside; if it raises, the dir is put back before re-raising."""
     path = skill_dir(user_id, slug)
+    # .tmp- so a crash leaves it for sweep_partial_swaps to clear, never restore.
+    trash = path.with_name(f".tmp-del-{slug}-{secrets.token_hex(8)}")
+    moved = False
     if path.exists():
-        shutil.rmtree(path, ignore_errors=True)
+        path.rename(trash)
+        moved = True
+    if commit is not None:
+        try:
+            commit()
+        except BaseException:
+            if moved:
+                _restore_aside(trash, path)
+            raise
+    if moved:
+        shutil.rmtree(trash, ignore_errors=True)
 
 
 def _zip_is_symlink(info: zipfile.ZipInfo) -> bool:
@@ -261,7 +288,11 @@ def files_from_zip(data: bytes, *, max_compressed: int = MAX_ZIP, loose: bool = 
                 raise SkillError("skill too large")
             if len(raw) >= MAX_LOOSE_FILES:
                 raise SkillError("too many files")
-        raw[rel] = zf.read(info)
+        try:
+            raw[rel] = zf.read(info)
+        except (zipfile.BadZipFile, RuntimeError, NotImplementedError, EOFError, OSError, zlib.error) as exc:
+            # Bad CRC, encrypted or unsupported entries: the archive is unusable.
+            raise SkillError("invalid zip") from exc
     if not raw:
         raise SkillError("zip is empty")
     return raw
@@ -499,6 +530,8 @@ async def catalog_search(query: str) -> dict:
         payload = resp.json()
     except Exception as exc:
         raise SkillError("Search is busy. Try again shortly.", 502) from exc
+    if not isinstance(payload, dict):
+        raise SkillError("Search is busy. Try again shortly.", 502)
     rows = payload.get("skills") or payload.get("data") or []
     skills = []
     if isinstance(rows, list):
@@ -519,7 +552,8 @@ async def _github_get(url: str, *, accept: str = "application/vnd.github+json", 
     token = (settings.github_token or "").strip()
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    resp = await _http_get(url, hosts=_GH_HOSTS, headers=headers, timeout=timeout)
+    resp = await _http_get(url, hosts=_GH_HOSTS, headers=headers, timeout=timeout,
+                           busy="Install failed. Try again shortly.")
     if resp.status_code in (403, 429):
         raise SkillError("Install rate limit reached. Try again shortly.", 429)
     return resp
@@ -561,7 +595,8 @@ async def _contents_file(owner: str, repo: str, path: str, branch: str) -> bytes
     if not download:
         return None
     _take_github()
-    raw = await _http_get(download, hosts=_GH_HOSTS, headers={"User-Agent": "Fuse/skills"}, timeout=12.0)
+    raw = await _http_get(download, hosts=_GH_HOSTS, headers={"User-Agent": "Fuse/skills"}, timeout=12.0,
+                          busy="Install failed. Try again shortly.")
     if raw.status_code != 200:
         return None
     if len(raw.content) > MAX_FILE:
@@ -599,6 +634,8 @@ async def fetch_github_skill(source: str, skill_id: str) -> dict[str, bytes]:
         body = meta.json()
     except Exception as exc:
         raise SkillError("Could not find SKILL.md") from exc
+    if not isinstance(body, dict):
+        raise SkillError("Could not find SKILL.md")
     branch = str(body.get("default_branch") or "main")
     zip_resp = await _github_get(
         f"https://api.github.com/repos/{quote(owner)}/{quote(repo)}/zipball/{quote(branch)}",
@@ -627,7 +664,7 @@ async def fetch_github_skill(source: str, skill_id: str) -> dict[str, bytes]:
         if tree.status_code == 200:
             try:
                 tbody = tree.json()
-                truncated = bool(tbody.get("truncated"))
+                truncated = not isinstance(tbody, dict) or bool(tbody.get("truncated"))
             except Exception:
                 truncated = True
         else:

@@ -313,6 +313,20 @@ class ReviewTest(PermSchemaTest):
         self.assertFalse(asyncio.run(run("spawn_subagent", {"cwd": "link"})).allowed)
         self.assertTrue(asyncio.run(run("write_file", {"path": "src/f.txt", "content": "x"})).allowed)
 
+    def test_failed_realpath_probe_fails_closed(self):
+        # A probe error or timeout resolves nothing (workspace._realpaths
+        # returns all None); the symlink check must not be skipped.
+        async def realpath(paths):
+            return [None] * len(paths)
+
+        async def run():
+            return await permissions.review(
+                tool="read_file", args={"path": "docs/etc/shadow"}, user_id=1, host_id=7, host_alias="prod",
+                root="/srv/app", windows=False, gate=_gate(unattended=True), realpath=realpath,
+            )
+
+        self.assertFalse(asyncio.run(run()).allowed)
+
     def test_spawn_cwd_symlink_out_of_root_is_judged_by_target(self):
         async def realpath(paths):
             return ["/outside" if p == "/srv/app/link" else p for p in paths]

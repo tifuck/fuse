@@ -1133,16 +1133,16 @@ async def review(*, tool: str, args: dict, user_id: int,
             reals = await realpath([resolved, *roots])
             real = reals[0] if reals else None
             real_roots = list(reals[1:])
-            # Compare only when every root resolved too: a root that is itself
-            # a symlink must be judged by its real location, not skipped.
-            # The roots resolving but the target not is fail-closed: an
-            # unresolvable target may sit behind a symlink out of the roots.
-            if real_roots and all(real_roots) and not real:
+            # Fail closed when the target or any root did not resolve (probe
+            # error or timeout included): an unresolved target may sit behind
+            # a symlink out of the roots, and a root that is itself a symlink
+            # must be judged by its real location.
+            if not real or not all(real_roots):
                 in_roots = False
                 out_of_root = True
                 reasons.append(f"cannot resolve where {resolved} points")
                 grant_kind, grant_value = "dir", _grant_dir_for(tool, resolved, windows)
-            elif real and real != resolved and real_roots and all(real_roots):
+            elif real != resolved:
                 if not _in_roots(real, real_roots, windows):
                     in_roots = False
                     out_of_root = True

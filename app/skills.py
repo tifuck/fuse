@@ -284,6 +284,9 @@ def _clip_body(text: str) -> str:
     return text[: SKILL_BODY_CHARS - len(marker)] + marker
 
 
+FILE_ERROR = "Skill file error: "
+
+
 def load(user_id: int, name: str, file: str | None = None) -> str:
     slug = (name or "").strip().lower()
     if not NAME_RE.fullmatch(slug):
@@ -314,7 +317,7 @@ def load(user_id: int, name: str, file: str | None = None) -> str:
         try:
             target = _safe_file(root, rel)
         except SkillError as exc:
-            return str(exc.detail)
+            return FILE_ERROR + str(exc.detail)
         ext = target.suffix.lower()
         shown = target.resolve().relative_to(root.resolve()).as_posix()
         if ext in BINARY_EXT:
@@ -325,6 +328,8 @@ def load(user_id: int, name: str, file: str | None = None) -> str:
             )
         try:
             text = target.read_text(encoding="utf-8")
+        except OSError:
+            return FILE_ERROR + "unreadable skill file"
         except UnicodeDecodeError:
             return (
                 f"Skill `{slug}` file `{shown}` (origin={origin}).\n"
@@ -465,10 +470,12 @@ def delete_skill(user_id: int, slug: str) -> None:
     row = get_row(user_id, slug)
     if row is None:
         raise SkillError("unknown skill", 404)
-    with db.tx() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        conn.execute("DELETE FROM user_skills WHERE user_id=? AND slug=?", (user_id, slug))
-    remove_tree(user_id, slug)
+    def _delete_row() -> None:
+        with db.tx() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("DELETE FROM user_skills WHERE user_id=? AND slug=?", (user_id, slug))
+
+    remove_tree(user_id, slug, commit=_delete_row)
     logger.info("removed skill user=%s slug=%s origin=%s", user_id, slug, row["origin"])
 
 
@@ -496,22 +503,28 @@ def install_files(
     if not replace:
         if get_row(user_id, got) or skill_dir(user_id, got).exists():
             raise SkillError("skill exists", 409)
-    digest = persist_tree(user_id, got, sliced)
+    saved: dict = {}
+
+    def _commit(digest: str) -> None:
+        # The row commits with the files: a failed write puts the old tree back.
+        saved["row"] = _upsert(
+            user_id,
+            slug=got,
+            description=parsed["description"],
+            origin=origin,
+            source=source,
+            source_id=source_id,
+            enabled=True if enabled is None else bool(enabled),
+            user_invocable=parsed["user_invocable"],
+            disable_model_invocation=parsed["disable_model_invocation"],
+            argument_hint=parsed["argument_hint"],
+            content_hash=digest,
+            display_name=parsed.get("display_name") or parsed["name"],
+        )
+
+    persist_tree(user_id, got, sliced, commit=_commit)
     logger.info("installed skill user=%s slug=%s origin=%s", user_id, got, origin)
-    return _upsert(
-        user_id,
-        slug=got,
-        description=parsed["description"],
-        origin=origin,
-        source=source,
-        source_id=source_id,
-        enabled=True if enabled is None else bool(enabled),
-        user_invocable=parsed["user_invocable"],
-        disable_model_invocation=parsed["disable_model_invocation"],
-        argument_hint=parsed["argument_hint"],
-        content_hash=digest,
-        display_name=parsed.get("display_name") or parsed["name"],
-    )
+    return saved["row"]
 
 
 def parse_invoke(user_id: int, raw, text: str, *, coding: bool, conn=None) -> dict | None:

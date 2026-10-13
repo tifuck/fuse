@@ -679,10 +679,11 @@ async def spawn(
         logger.exception("Subagent start failed for %s", child["id"])
         err = str(exc).strip()[:400] or "Subagent could not start"
         await durable_call(chat_store.abort_active, child["id"], "failed", err)
-        await durable_call(chat_store.refund_spawn, parent_run_id)
+        if not resume_from:  # a resume never counted against spawns_used
+            await durable_call(chat_store.refund_spawn, parent_run_id)
         return err, _spawn_rec(status="error", error=err, preview=err[:800])
     current = await asyncio.to_thread(chat_store.get_run, user["id"], child["id"]) if task is None else child
-    if task is None and current is not None and current.get("status") not in chat_store.ACTIVE:
+    if task is None and current is not None and current.get("status") not in chat_store.ACTIVE and not resume_from:
         await durable_call(chat_store.refund_spawn, parent_run_id)
     if background and current and current.get("status") in chat_store.ACTIVE:
         text = _envelope(child, fallback_id=child["id"], description=description, running=True)
