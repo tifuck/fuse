@@ -51,7 +51,7 @@ async def tasks_page(request: Request):
 
 
 def _fail(exc: schedules.ScheduleError):
-    if exc.status_code == 401 or "vault" in str(exc.detail).lower():
+    if exc.status_code == 401:
         return vault_locked_json()
     return JSONResponse(
         {"error": {"type": "schedule", "code": exc.status_code, "message": exc.detail}},

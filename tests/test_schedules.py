@@ -63,6 +63,14 @@ class ScheduleNormalizeTest(unittest.TestCase):
         })
         self.assertEqual(item["every_seconds"], 300)
 
+    def test_non_integer_interval_is_a_schedule_error(self):
+        for field, value in (("every_seconds", [300]), ("weekdays", {"mon": 1})):
+            raw = {"name": "x", "target": "chat", "prompt": "hi", "model": "m", "timezone": "UTC",
+                   "recur_kind": "every" if field == "every_seconds" else "cron", "every_seconds": 300,
+                   "at_local": "09:00", field: value}
+            with self.subTest(field=field), self.assertRaises(schedules.ScheduleError):
+                schedules._normalize(self.user["id"], raw)
+
     def test_five_min_coding_rejected(self):
         with self.assertRaises(schedules.ScheduleError):
             schedules._normalize(self.user["id"], {
@@ -304,6 +312,13 @@ class FinishFireConfigTest(unittest.TestCase):
         row = db.fetchone("SELECT next_fire_at, enabled FROM chat_schedules WHERE id=?", (item["id"],))
         self.assertNotEqual(row["next_fire_at"], slot)
         self.assertTrue(row["enabled"])
+
+    def test_catchup_skip_jumps_past_every_missed_slot(self):
+        item = self._schedule()
+        stale = iso_utc(utcnow() - timedelta(hours=24))
+        schedules._finish_fire(item, {"slot_key": stale}, "skipped_catchup", "missed fire window", None, None, consume=True)
+        row = db.fetchone("SELECT next_fire_at FROM chat_schedules WHERE id=?", (item["id"],))
+        self.assertGreater(row["next_fire_at"], iso_utc(utcnow()))
 
     def test_finish_fire_does_not_reenable_disabled_schedule(self):
         item = self._schedule()

@@ -255,6 +255,25 @@ class ChatSyncTest(unittest.TestCase):
         self.assertTrue(replay.json().get("compacted"))
         self.assertTrue(replay.json().get("idempotent"))
 
+    def test_manual_summary_failure_compacts_nothing(self):
+        thread = self.create("compact-summary-down")
+        messages = []
+        for i in range(8):
+            messages.append({"role": "user", "content": f"ask {i} " + "word " * 20})
+            messages.append({"role": "assistant", "content": f"ans {i} " + "word " * 20})
+        thread = self.client.patch(
+            f"/chat/threads/{thread['id']}",
+            json={"messages": messages, "expected_revision": thread["revision"], "command_id": "fill-summary-down"},
+        ).json()
+        with patch("app.chat_runtime.summarize_conversation", AsyncMock(return_value="")):
+            failed = self.client.post(
+                f"/chat/threads/{thread['id']}/compact",
+                json={"expected_revision": thread["revision"], "command_id": "summary-down", "strategy": "summarize"},
+            )
+        self.assertEqual(failed.status_code, 502, failed.text)
+        after = self.client.get(f"/chat/threads/{thread['id']}").json()
+        self.assertFalse(after["compaction"].get("checkpoints"))
+
     def test_context_conflicts_and_logout_closes_stream(self):
         with self.socket() as ws:
             self.assertEqual(ws.receive_json()["type"], "ready")

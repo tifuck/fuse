@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -34,6 +35,7 @@ from .deps import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 def _keys_response(
     request: Request,
@@ -208,6 +210,7 @@ async def sync_openrouter_pricing(request: Request):
     try:
         result = await pricing_mod.sync_openrouter_prices()
     except Exception:
+        logger.exception("OpenRouter price sync failed")
         return RedirectResponse("/admin/pricing?error=1", status_code=303)
     return RedirectResponse(f"/admin/pricing?synced={result['count']}", status_code=303)
 

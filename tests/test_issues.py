@@ -320,12 +320,12 @@ class TriagePipelineTest(unittest.IsolatedAsyncioTestCase):
     async def test_cancellation_releases_without_burning_an_attempt(self):
         record = issues.submit(summary="Report caught in a shutdown mid-triage")
 
-        async def cancelled(report):
+        async def cancelled(report, picked=None):
             raise asyncio.CancelledError()
 
         with patch.object(issues_pipeline.settings, "issues_pipeline_enabled", True), patch.object(
             issues_pipeline, "_triage_one", cancelled
-        ):
+        ), patch.object(issues_pipeline, "_pick_model", AsyncMock(return_value=(object(), "test-model"))):
             with self.assertRaises(asyncio.CancelledError):
                 await issues_pipeline.tick()
         row = issues.get(record["id"])
@@ -347,11 +347,13 @@ class TriagePipelineTest(unittest.IsolatedAsyncioTestCase):
         record = issues.submit(summary="No model is available for triage")
         with patch.object(issues_pipeline.settings, "issues_pipeline_enabled", True), patch(
             "app.sources.pick", AsyncMock(return_value=None)
-        ):
+        ), patch.object(issues, "claim") as claim, self.assertLogs("app.issues_pipeline", "WARNING") as logs:
             await issues_pipeline.tick()
         row = issues.get(record["id"])
         self.assertEqual(row["status"], "new")
         self.assertEqual(row["attempts"], 0)
+        claim.assert_not_called()  # no claim/release churn every cycle
+        self.assertIn("not available", logs.output[0])
 
 
 if __name__ == "__main__":

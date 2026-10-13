@@ -10,6 +10,7 @@ Settings via `app.context_meter.config`.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from typing import Awaitable, Callable, Protocol
@@ -27,6 +28,8 @@ from .context_meter import (
     estimate_text,
     estimate_tools,
 )
+
+logger = logging.getLogger(__name__)
 
 MAX_SUMMARY_CHARS = 96_000
 MAX_CHECKPOINTS = 24
@@ -586,8 +589,9 @@ class SummarizeStrategy:
                 text = (text or "").strip()
                 if text:
                     return text[:MAX_SUMMARY_CHARS], self.name
+                logger.warning("Compaction summary came back empty; using a truncated handoff")
             except Exception:
-                pass
+                logger.warning("Compaction summary failed; using a truncated handoff", exc_info=True)
         trunc = TruncateStrategy()
         summary, _ = await trunc.compact(
             messages, instructions=instructions, summarize=None, keep_tail=keep_tail, head=head
@@ -599,6 +603,14 @@ STRATEGIES: dict[str, CompactionStrategy] = {
     "truncate": TruncateStrategy(),
     "prune": PruneStrategy(),
 }
+
+SUMMARY_FALLBACK_NOTICE = "Context summary failed; continuing from a shorter truncated handoff."
+
+
+def summary_fell_back(requested: str | None, used: str | None) -> bool:
+    """True when summarize was asked for but only the truncate fallback ran."""
+    return used == "truncate" and strategy_named(requested).name == "summarize"
+
 
 def strategy_named(name: str | None) -> CompactionStrategy:
     key = (name or config().strategy or "summarize").strip().lower()

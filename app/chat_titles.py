@@ -64,7 +64,12 @@ def _backoff_cutoff() -> str:
 async def _generate(user_id: int, thread_id: int, model: str, prompt: str, placeholder: str) -> None:
     from . import accounts, chat_runtime, chat_runs
 
-    token = await asyncio.to_thread(claim, user_id, thread_id)
+    try:
+        token = await asyncio.to_thread(claim, user_id, thread_id)
+    except Exception:
+        # A failed claim must not leave the thread marked in flight forever.
+        logger.exception("Title claim failed for thread %s", thread_id)
+        token = None
     if not token:
         _inflight.discard(thread_id)
         return
@@ -88,8 +93,8 @@ async def _generate(user_id: int, thread_id: int, model: str, prompt: str, place
         logger.exception("Title sweep failed for thread %s", thread_id)
         failed = True
     finally:
-        await asyncio.to_thread(release, thread_id, token, failed=failed)
         _inflight.discard(thread_id)
+        await asyncio.to_thread(release, thread_id, token, failed=failed)
 
 
 async def sweep() -> None:
@@ -158,7 +163,11 @@ async def regenerate(user_id: int, thread_id: int) -> bool:
     if thread_id in _regen_inflight:
         return False
     _regen_inflight.add(thread_id)
-    token = await asyncio.to_thread(claim, user_id, thread_id, explicit=True)
+    try:
+        token = await asyncio.to_thread(claim, user_id, thread_id, explicit=True)
+    except Exception:
+        logger.exception("Title claim failed for thread %s", thread_id)
+        token = None
     if not token:
         _regen_inflight.discard(thread_id)
         return False
@@ -199,8 +208,8 @@ async def regenerate(user_id: int, thread_id: int) -> bool:
             logger.exception("Title regen failure event failed for thread %s", thread_id)
         return True
     finally:
-        await asyncio.to_thread(release, thread_id, token)
         _regen_inflight.discard(thread_id)
+        await asyncio.to_thread(release, thread_id, token)
 
 
 def spawn_regen(user_id: int, thread_id: int) -> asyncio.Task:

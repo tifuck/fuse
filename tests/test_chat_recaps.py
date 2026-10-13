@@ -311,6 +311,31 @@ class RecapTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(lines[0]["recaps"], lines[1]["recaps"])
 
 
+class RecapLoopTest(unittest.IsolatedAsyncioTestCase):
+    async def test_loop_survives_a_failed_sweep(self):
+        calls = []
+
+        async def sweep():
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("MariaDB connection pool exhausted")
+            raise asyncio.CancelledError
+
+        with patch.object(recaps, "sweep", sweep), patch.object(recaps, "drain", AsyncMock()), \
+                patch.object(recaps, "logger"):
+            recaps._wake = None
+            task = asyncio.create_task(recaps.loop())
+            for _ in range(100):
+                await asyncio.sleep(0.01)
+                if recaps._wake is not None:
+                    recaps._wake.set()
+                if task.done():
+                    break
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        self.assertEqual(len(calls), 2, "the loop must run another cycle after a failed one")
+
+
 class SubstantialTest(unittest.TestCase):
     def test_short_quick_exchange_is_not_recapped(self):
         msgs = [{"id": "u", "role": "user", "content": "test"},

@@ -114,6 +114,15 @@ def _parse_vars(raw) -> dict[str, str]:
     return out
 
 
+def _int_field(value, name: str) -> int:
+    if isinstance(value, bool):
+        raise ScheduleError(f"{name} must be an integer")
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ScheduleError(f"{name} must be an integer") from exc
+
+
 def _row(row) -> dict:
     keys = row.keys() if hasattr(row, "keys") else []
     return {
@@ -364,7 +373,7 @@ def _normalize(user_id: int, raw: dict, *, existing: dict | None = None) -> dict
         raise ScheduleError("monitor schedules are not supported")
     cron_expr = ""
     every_seconds = None
-    weekdays = int(raw.get("weekdays") if "weekdays" in raw else (existing or {}).get("weekdays") or 0)
+    weekdays = _int_field(raw.get("weekdays") if "weekdays" in raw else (existing or {}).get("weekdays") or 0, "weekdays")
     at_local = str(raw.get("at_local") if "at_local" in raw else (existing or {}).get("at_local") or "")
     once_at = raw.get("once_at") if "once_at" in raw else (existing or {}).get("once_at")
     if recur_kind == "cron":
@@ -379,7 +388,7 @@ def _normalize(user_id: int, raw: dict, *, existing: dict | None = None) -> dict
             cron_expr = str(raw.get("cron_expr") if "cron_expr" in raw else (existing or {}).get("cron_expr") or "")
         cron.parse_cron(cron_expr)
     elif recur_kind == "every":
-        every_seconds = int(raw.get("every_seconds") if "every_seconds" in raw else (existing or {}).get("every_seconds") or 0)
+        every_seconds = _int_field(raw.get("every_seconds") if "every_seconds" in raw else (existing or {}).get("every_seconds") or 0, "every_seconds")
         if every_seconds not in EVERY_ALLOWED:
             raise ScheduleError("unsupported interval")
     else:
@@ -1034,8 +1043,12 @@ def _finish_fire(schedule, fire, status, error, thread_id, run_id, *, consume: b
                 enabled = 0
                 next_at = None
             else:
-                slot_dt = parse_iso_utc(slot)
-                nxt = _next_after(schedule, slot_dt or utcnow())
+                base = parse_iso_utc(slot) or utcnow()
+                if status == "skipped_catchup":
+                    # Skip every missed slot at once: stepping one period per
+                    # tick wrote a junk fire row for each slot of the outage.
+                    base = max(base, utcnow())
+                nxt = _next_after(schedule, base)
                 next_at = iso_utc(nxt) if nxt else None
         conn.execute(
             """UPDATE chat_schedules SET last_fire_at=?, last_status=?, last_error=?, last_run_id=?,

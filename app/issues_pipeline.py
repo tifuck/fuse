@@ -178,10 +178,14 @@ def _clean_verdict(obj: dict, report: dict) -> dict:
     }
 
 
-async def _triage_one(report: dict) -> bool:
+async def _pick_model():
     from . import sources
 
-    picked = await sources.pick(_model_name(), allow_grok=False, allow_chatgpt=False, allow_zai=False, allow_devin=False, allow_kimi=False, allow_mimo=False, allow_claude=False)
+    return await sources.pick(_model_name(), allow_grok=False, allow_chatgpt=False, allow_zai=False, allow_devin=False, allow_kimi=False, allow_mimo=False, allow_claude=False)
+
+
+async def _triage_one(report: dict, picked=None) -> bool:
+    picked = picked or await _pick_model()
     if picked is None:
         issues.release(report["id"])
         return False
@@ -228,11 +232,19 @@ async def tick() -> None:
     if not settings.issues_pipeline_enabled:
         return
     batch = issues.pending(settings.issues_pipeline_batch, max_attempts=settings.issues_pipeline_max_attempts)
+    if not batch:
+        return
+    picked = await _pick_model()
+    if picked is None:
+        # A config problem, not a report problem: say so instead of claiming
+        # and releasing every report each cycle without trace.
+        logger.warning("Bug triage model %r is not available; %d report(s) stay queued", _model_name(), len(batch))
+        return
     for report in batch:
         if not issues.claim(report["id"]):
             continue
         try:
-            await _triage_one(report)
+            await _triage_one(report, picked)
         except asyncio.CancelledError:
             # wait_for timeout / shutdown: release the claim or the row is
             # wedged in 'triaging' (invisible to pending()) forever. No failed

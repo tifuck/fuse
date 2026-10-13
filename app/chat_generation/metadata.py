@@ -64,12 +64,14 @@ async def summarize_once(request: Request, user, model: str, head: list[dict], i
         return ""
     try:
         _user, src, upstream, requested, result = await api.invoke_chat(request, user, payload)
-    except HTTPException:
+    except HTTPException as exc:
+        logger.warning("Context compaction request refused (%s): %s", exc.status_code, exc.detail)
         return ""
     except Exception:
         logger.exception("Context compaction request failed")
         return ""
     if result.status != 200:
+        logger.warning("Context compaction request failed upstream (status %s)", result.status)
         api._safe_record_usage(
             _user["id"],
             src.source_id,

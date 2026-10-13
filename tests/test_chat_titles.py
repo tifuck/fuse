@@ -207,6 +207,17 @@ class TitleSweepTest(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(turn["thread"]["updated_at"], result["updated_at"])
 
 
+class TitleClaimFailureTest(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_claim_does_not_leave_thread_in_flight(self):
+        chat_titles._inflight.add(4242)
+        with patch.object(chat_titles, "claim", side_effect=RuntimeError("lock wait timeout")), \
+                patch.object(chat_titles, "logger"):
+            await chat_titles._generate(1, 4242, "m", "prompt", "New chat")
+            self.assertFalse(await chat_titles.regenerate(1, 4243))
+        self.assertNotIn(4242, chat_titles._inflight)
+        self.assertNotIn(4243, chat_titles._regen_inflight)
+
+
 class TitleTextTest(unittest.TestCase):
     def test_parser_keeps_the_model_wording(self):
         # Claude Code only trims the JSON title; Fuse also unwraps other models' prose.

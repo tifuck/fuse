@@ -872,6 +872,11 @@ async def chat_compact(request: Request, thread_id: str):
         keep_tail=(thread.get("compaction") or {}).get("keep_tail"),
         provider=True,
     )
+    if checkpoint and ctxmod.summary_fell_back(strategy, checkpoint.get("strategy")):
+        # A manual compact asked for a summary; silently keeping a clipped
+        # handoff instead would lose detail the user never agreed to drop.
+        raise HTTPException(502, "The model could not write a summary, so nothing was compacted. "
+                                 "Try again, or choose the truncate strategy.")
     if not checkpoint:
         chat_store.remember_compact(user["id"], _chat_command(raw), prepared["fingerprint"], thread, compacted=False)
         return JSONResponse(

@@ -956,6 +956,8 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             real = kind in ("summarize", "truncate")
             compacted_this_turn = real
             boot["standing"] = True
+            if ctxmod.summary_fell_back(context_meter.config().strategy, kind):
+                yield _sse({"fuse": {"event": "notice", "message": ctxmod.SUMMARY_FALLBACK_NOTICE}})
             if real:
                 refresh_prompt()
                 last_round_usage = {}
@@ -1068,6 +1070,8 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     type_id=src_type or src_type_guess, trigger="auto", thread_id=thread_id,
                     tools=current.get("tools"), override=preflight["limit"], is_child=is_child,
                     calibration=calibration, run_id=run_id, agent=agent)
+                if ctxmod.summary_fell_back(context_meter.config().strategy, kind):
+                    yield _sse({"fuse": {"event": "notice", "message": ctxmod.SUMMARY_FALLBACK_NOTICE}})
                 if kind in ("summarize", "truncate"):
                     refresh_prompt()
                     last_compact_used = preflight["used"] if preflight["used"] >= int(before_compact_used * 0.95) else None
@@ -1694,6 +1698,8 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     )
                     real = kind in ("summarize", "truncate")
                     compacted_this_turn = real
+                    if ctxmod.summary_fell_back(context_meter.config().strategy, kind):
+                        yield _sse({"fuse": {"event": "notice", "message": ctxmod.SUMMARY_FALLBACK_NOTICE}})
                     if real:
                         refresh_prompt()
                         last_round_usage = {}

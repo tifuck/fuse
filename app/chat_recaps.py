@@ -384,14 +384,18 @@ async def loop():
     try:
         while True:
             _wake.clear()
-            await sweep()
-            # Turning off recaps cancels active automatic requests, not just UI.
-            disabled = await asyncio.to_thread(db.fetchall, "SELECT id FROM chat_recaps WHERE state IN ('disabled','stale') AND id IN (" +
-                                              ",".join("?" for _ in _tasks) + ")", tuple(_tasks)) if _tasks else []
-            for row in disabled:
-                task = _tasks.get(row["id"])
-                if task:
-                    task.cancel()
+            # One DB error must not end recaps for every user until restart.
+            try:
+                await sweep()
+                # Turning off recaps cancels active automatic requests, not just UI.
+                disabled = await asyncio.to_thread(db.fetchall, "SELECT id FROM chat_recaps WHERE state IN ('disabled','stale') AND id IN (" +
+                                                  ",".join("?" for _ in _tasks) + ")", tuple(_tasks)) if _tasks else []
+                for row in disabled:
+                    task = _tasks.get(row["id"])
+                    if task:
+                        task.cancel()
+            except Exception:
+                logger.exception("Recap sweep cycle failed")
             try:
                 await asyncio.wait_for(_wake.wait(), timeout=2)
             except asyncio.TimeoutError:
