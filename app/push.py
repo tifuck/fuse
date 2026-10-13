@@ -283,7 +283,13 @@ async def notify_user(user_id: int, payload: dict) -> int:
     if not ready():
         return 0
     body = json.dumps(payload)
-    rows = [dict(row) for row in subscriptions_for(user_id)]
+    try:
+        rows = [dict(row) for row in await asyncio.to_thread(subscriptions_for, user_id)]
+    except Exception:
+        # Fired from a bare task: an escaping error would only be an
+        # unretrieved-exception warning, and the docstring promises none.
+        logger.exception("Push subscriptions lookup failed for user %s", user_id)
+        return 0
     results = await asyncio.gather(*(_send_bounded(row, body) for row in rows))
     return sum(1 for ok in results if ok)
 
@@ -291,7 +297,7 @@ async def notify_user(user_id: int, payload: dict) -> int:
 async def notify_run_done(user_id: int, thread_id, status: str, content: str = "", error: str = "") -> int:
     thread = None
     try:
-        thread = db.fetchone("SELECT title, public_id FROM chat_threads WHERE id=?", (thread_id,))
+        thread = await asyncio.to_thread(db.fetchone, "SELECT title, public_id FROM chat_threads WHERE id=?", (thread_id,))
     except Exception:
         thread = None
     if thread is None:
@@ -301,7 +307,7 @@ async def notify_run_done(user_id: int, thread_id, status: str, content: str = "
         try:
             from . import chats
 
-            public = chats.public_id_for(thread_id) or ""
+            public = await asyncio.to_thread(chats.public_id_for, thread_id) or ""
         except Exception:
             public = ""
     title = _redact_secrets((thread["title"] or "").strip())

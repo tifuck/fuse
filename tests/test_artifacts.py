@@ -355,6 +355,15 @@ class PushSafetyTest(unittest.TestCase):
             self.assertNotIn(secret, redacted)
         self.assertIn("[redacted]", redacted)
 
+    def test_notify_user_never_raises_on_a_storage_error(self):
+        import asyncio
+        from unittest.mock import patch
+
+        # It runs in a bare create_task after a turn finishes.
+        with patch.object(push, "ready", return_value=True), \
+                patch.object(push, "subscriptions_for", side_effect=RuntimeError("pool exhausted")):
+            self.assertEqual(asyncio.run(push.notify_user(self.owner, {"title": "t"})), 0)
+
 
 class ArtifactTracePersistTest(unittest.TestCase):
     def test_parse_keeps_artifact_traces(self):
