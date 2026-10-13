@@ -38,7 +38,7 @@ from .pool_pick import (
 )
 from . import pool_policy
 from .pool_session import bind, lookup
-from .token_store import expires_at, log_refresh_failures, persist_rotated
+from .token_store import expires_at, log_refresh_failures, persist_rotated, shield_refresh
 
 from .chatgpt_catalog import (
     CHATGPT_MODELS,
@@ -457,8 +457,11 @@ async def _refresh_one_unlocked(cred) -> bool:
 
 
 async def refresh_one(cred) -> bool:
-    async with _refresh_lock(int(cred["id"])):
-        return await _refresh_one_unlocked(cred)
+    async def run():
+        async with _refresh_lock(int(cred["id"])):
+            return await _refresh_one_unlocked(cred)
+
+    return await shield_refresh(run())
 
 
 async def refresh_due() -> None:

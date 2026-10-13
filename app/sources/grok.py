@@ -20,7 +20,7 @@ from .pool_pick import Failover, note_failure, pick_account, release, reserve
 from . import pool_policy
 from .grok_version import current_version
 from .pool_session import bind, drop_cache_routing_fields, lookup
-from .token_store import expires_at, log_refresh_failures, persist_rotated
+from .token_store import expires_at, log_refresh_failures, persist_rotated, shield_refresh
 
 logger = logging.getLogger(__name__)
 
@@ -805,8 +805,11 @@ async def _refresh_one_unlocked(cred) -> bool:
 
 
 async def refresh_one(cred) -> bool:
-    async with _refresh_lock(int(cred["id"])):
-        return await _refresh_one_unlocked(cred)
+    async def run():
+        async with _refresh_lock(int(cred["id"])):
+            return await _refresh_one_unlocked(cred)
+
+    return await shield_refresh(run())
 
 
 def _store_billing(cred_id: int, parsed: dict, *, error: str = "", profile: dict | None = None) -> dict:

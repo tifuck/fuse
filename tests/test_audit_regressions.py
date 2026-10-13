@@ -110,3 +110,34 @@ def test_rotation_contention_locks_final_merge():
 def test_rotation_does_not_overwrite_relink():
     with patch.object(token_store.db, "fetchone", return_value={"extra": "new", "disabled": 0}), patch.object(token_store.accounts, "cred_extra", side_effect=[{"refresh_token": "old"}, {"refresh_token": "relinked"}]):
         assert not token_store.persist_rotated(lambda *a: False, 1, "old", "secret", {}, {"refresh_token": "rotated"})
+
+
+@pytest.mark.parametrize("name", ["grok", "chatgpt", "kimi", "claude"])
+def test_cancelled_caller_does_not_abandon_a_refresh_mid_post(name):
+    import importlib
+
+    module = importlib.import_module(f"app.sources.{name}")
+
+    async def run():
+        posted = asyncio.Event()
+        reply = asyncio.Event()
+        persisted = []
+
+        async def refresh(cred):
+            posted.set()
+            await reply.wait()  # token POST in flight: the old refresh token may be spent
+            persisted.append(cred["id"])
+            return True
+
+        with patch.object(module, "_refresh_one_unlocked", refresh):
+            caller = asyncio.create_task(module.refresh_one({"id": 9}))
+            await posted.wait()
+            caller.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await caller
+            reply.set()
+            for _ in range(10):
+                await asyncio.sleep(0)
+        return persisted
+
+    assert asyncio.run(run()) == [9]

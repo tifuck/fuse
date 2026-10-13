@@ -8,6 +8,7 @@ donor re-links it.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import json
 import time
@@ -66,6 +67,28 @@ def log_refresh_failures(what: str, rows, results) -> None:
                 "%s failed for credential %s", what, row["id"],
                 exc_info=(type(result), result, result.__traceback__),
             )
+
+
+_refresh_tasks: set = set()
+
+
+def _log_orphan(task) -> None:
+    _refresh_tasks.discard(task)
+    # Retrieve the outcome so a caller that left does not leave it unobserved;
+    # a caller still waiting gets (and logs) the exception itself.
+    if not task.cancelled() and task.exception() is not None:
+        logger.debug("Token refresh failed", exc_info=task.exception())
+
+
+async def shield_refresh(coro):
+    """Run a refresh (lock, token POST, persist) to the end even when the
+    caller is cancelled: once the POST is sent the provider may already have
+    spent the old refresh token, so abandoning it before the persist loses
+    the account. The caller still sees its own cancellation."""
+    task = asyncio.ensure_future(coro)
+    _refresh_tasks.add(task)
+    task.add_done_callback(_log_orphan)
+    return await asyncio.shield(task)
 
 
 def persist_rotated(cas, cred_id: int, old_extra_raw, secret: str, extra: dict, rotated: dict, *, merge=None) -> bool:

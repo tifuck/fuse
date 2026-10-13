@@ -32,7 +32,7 @@ from .grok import apply_usage_guard, is_held as credential_is_held
 from .pool_pick import Failover, auth_failure_confirmed, note_failure, pick_account, release, reserve
 from . import pool_policy
 from .pool_session import bind, lookup
-from .token_store import log_refresh_failures, persist_rotated
+from .token_store import log_refresh_failures, persist_rotated, shield_refresh
 
 from .claude_catalog import (
     CLAUDE_MODELS,
@@ -607,8 +607,11 @@ async def _refresh_one_unlocked(cred) -> bool:
 
 
 async def refresh_one(cred) -> bool:
-    async with _refresh_lock(int(cred["id"])):
-        return await _refresh_one_unlocked(cred)
+    async def run():
+        async with _refresh_lock(int(cred["id"])):
+            return await _refresh_one_unlocked(cred)
+
+    return await shield_refresh(run())
 
 
 async def refresh_pool_quota(*, force: bool = False) -> None:
