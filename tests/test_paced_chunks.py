@@ -126,6 +126,64 @@ class PacedChunksTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([p for k, p in out if k == "chunk"][-1], b'data: {"ok":1}\n\n')
 
 
+    async def test_role_envelope_keeps_first_output_budget(self):
+        # Incident: Claude's message_start became a role-only chunk, which
+        # switched a 600s think to the 120s gap and killed it as dead.
+        role = b'data: {"choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}\n\n'
+        text = b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+        out = []
+        async for item in _paced_chunks(_stream([role, text], delays=[0.0, 0.3]), 30.0, 0.1, 30.0):
+            out.append(item)
+        self.assertEqual([p for k, p in out if k == "chunk"], [role, text])
+
+    async def test_role_envelope_still_bounded_by_first_budget(self):
+        role = b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n'
+        with self.assertRaises(TimeoutError):
+            async for _item in _paced_chunks(_stream([role, b"data: x\n\n"], delays=[0.0, 1.0]), 0.2, 0.05, 30.0):
+                pass
+
+    async def test_thinking_mark_keeps_patience_until_answer_output(self):
+        mark = b": fuse-thinking\n\n"
+        reason = b'data: {"choices":[{"delta":{"reasoning_content":"plan"}}]}\n\n'
+        text = b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+        late = b'data: {"choices":[{"delta":{"content":"!"}}]}\n\n'
+        out = []
+        with self.assertRaises(TimeoutError):
+            # Silence after the mark and after a summary chunk outlasts the
+            # gap budget but not the first one; after answer text it aborts.
+            async for item in _paced_chunks(
+                _stream([text, mark, reason, text, late], delays=[0.0, 0.0, 0.25, 0.25, 0.5]), 30.0, 0.15, 30.0
+            ):
+                out.append(item)
+        self.assertEqual([p for k, p in out if k == "chunk"], [text, mark, reason, text])
+
+    async def test_reasoning_without_mark_uses_gap_budget(self):
+        reason = b'data: {"choices":[{"delta":{"reasoning_content":"plan"}}]}\n\n'
+        with self.assertRaises(TimeoutError):
+            async for _item in _paced_chunks(_stream([reason, reason], delays=[0.0, 0.5]), 30.0, 0.15, 30.0):
+                pass
+
+    def test_sse_progress_kinds(self):
+        from app.chat_generation.stream import _sse_progress
+
+        carry = bytearray()
+        frames = (
+            b": ping\n\n"
+            b": fuse-thinking\n\n"
+            b'data: {"choices":[{"delta":{"role":"assistant","content":""}}]}\n'
+            b'data: {"choices":[],"usage":{"prompt_tokens":3}}\n'
+            b'data: {"choices":[{"delta":{"reasoning_content":"r"}}]}\n'
+            b'data: {"choices":[{"delta":{"content":"c"}}]}\n'
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n'
+            b'data: {"x":1}\n'
+            b"data: [DONE]\n"
+        )
+        self.assertEqual(
+            _sse_progress(carry, frames),
+            ["thinking", "envelope", "envelope", "reasoning", "output", "output", "output", "output"],
+        )
+        self.assertEqual(_sse_progress(bytearray(), b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n', classify=False), ["output"])
+
 class ConsumeRoundBeatTest(unittest.IsolatedAsyncioTestCase):
     async def test_beats_and_frames_flow_through_consume_round(self):
         from types import SimpleNamespace
@@ -156,6 +214,29 @@ class ConsumeRoundBeatTest(unittest.IsolatedAsyncioTestCase):
         done = events[-1][1]
         self.assertEqual(done["content"], "partial")
         self.assertIsNone(done["error"])
+
+    async def test_thinking_mark_becomes_a_thinking_activity(self):
+        from types import SimpleNamespace
+
+        from app import chat_runtime as rt
+
+        async def gen():
+            yield b'data: {"choices":[{"delta":{"role":"assistant","content":""}}]}\n\n'
+            yield b": fuse-thinking\n\n"
+            yield b'data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}\n\n'
+            yield b"data: [DONE]\n\n"
+
+        result = SimpleNamespace(
+            status=200, body={}, stream=gen(), usage={}, credential_id=None, attempts=[]
+        )
+        src = SimpleNamespace(source_id=1, type_id="claude")
+        with unittest.mock.patch.object(rt.api, "_safe_record_usage", lambda *a, **k: None), unittest.mock.patch.object(
+            rt.api, "_tap", side_effect=lambda s, *a, **k: s
+        ):
+            events = [item async for item in rt._consume_round(result, {"id": 1, "key_id": None}, src, "m", "m")]
+        fuse = [p["fuse"] for k, p in events if k == "out" and "fuse" in p]
+        self.assertEqual(fuse, [{"event": "activity", "phase": "model", "thinking": True}])
+        self.assertEqual(events[-1][1]["content"], "done")
 
 
 class IdleResumeCapTest(unittest.TestCase):

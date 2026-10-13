@@ -134,6 +134,10 @@ class AgentCapsTest(unittest.TestCase):
         self.assertEqual(store.agent_current_activity(thought, {"phase": "calling", "tool": "grep"}), "grep")
         self.assertEqual(store.agent_current_activity(thought, {"phase": "calling"}), "calling")
         self.assertEqual(store.agent_current_activity(thought, {"phase": "model"}), "thinking")
+        # A marked think that streams no text is thinking, not waiting.
+        ran = {"segments": [{"type": "tool", "id": "t"}]}
+        self.assertEqual(store.agent_current_activity(ran, {"phase": "model"}), "waiting")
+        self.assertEqual(store.agent_current_activity(ran, {"phase": "model", "thinking": True}), "thinking")
 
     def test_empty_completed_leg_does_not_reuse_old_report_or_tool_preamble(self):
         old = {"role": "assistant", "content": "Report from previous leg"}

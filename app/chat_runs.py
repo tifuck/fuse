@@ -355,7 +355,8 @@ class Output:
                         last["text"] = last["text"] + "\n" + text
                 elif len(segments) < chats.SEGMENT_MAX - 1:
                     segments.append({"type": "delivery", "text": text[: chat_schema.DELIVERY_TEXT_MAX]})
-            if kind == "activity" and event.get("phase") == "model":
+            if kind == "activity" and event.get("phase") == "model" and not event.get("thinking"):
+                # A round starts; the mid-round thinking marker is not one.
                 self._reset_stream_round()
             if kind == "tool":
                 tools = msg["tools"]

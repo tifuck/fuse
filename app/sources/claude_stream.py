@@ -13,6 +13,7 @@ import time
 
 import httpx
 
+from .base import THINKING_MARK
 from .claude_catalog import fuse_id
 
 
@@ -162,6 +163,10 @@ class _Translator:
             block = event.get("content_block") if isinstance(event.get("content_block"), dict) else {}
             kind = str(block.get("type") or "")
             self.blocks[index] = {"type": kind, "id": str(block.get("id") or ""), "name": str(block.get("name") or ""), "arguments": "", "thinking": "", "signature": "", "data": str(block.get("data") or "")}
+            if kind in ("thinking", "redacted_thinking"):
+                # Thinking may run for minutes with no delta; tell the pacer
+                # the silence is expected.
+                return THINKING_MARK + b"\n\n"
             if kind == "tool_use":
                 self.tool_order.append(index)
                 return self._chunk(

@@ -1192,6 +1192,8 @@ def agent_current_activity(message, activity=None, status="running"):
         return "thinking"
     if last.get("type") == "content":
         return "writing"
+    if activity.get("phase") == "model" and activity.get("thinking"):
+        return "thinking"
     return "waiting"
 
 

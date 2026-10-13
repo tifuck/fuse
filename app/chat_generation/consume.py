@@ -12,6 +12,7 @@ import logging
 
 from ..chat_prompts import _text_of
 from ..proxy import merge_usage, usage_from_obj
+from ..sources.base import THINKING_MARK
 
 from .parsing import (
     _finalize_assistant_payload,
@@ -162,6 +163,11 @@ async def consume_round(result, user, src, upstream: str, requested: str, *, cod
                 raise ValueError("provider stream frame limit exceeded")
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)
+                if line.strip() == THINKING_MARK:
+                    # A think that may stream no text (Claude's omitted
+                    # display): the status line says so instead of "waiting".
+                    yield ("out", {"fuse": {"event": "activity", "phase": "model", "thinking": True}})
+                    continue
                 parsed = _parse_sse_line(line.decode(errors="replace"))
                 if parsed == "[DONE]":
                     terminal = True

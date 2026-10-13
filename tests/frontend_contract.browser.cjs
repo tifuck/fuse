@@ -30,6 +30,9 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       await page.evaluate(() => fuseToolFixture.update('contract', {}, true));
       assert.match(await page.locator('[data-live-dock-label]').textContent(), /waiting/i, 'streamed activity events update the durable phase projection');
       assert.doesNotMatch(await page.locator('[data-live-dock-label]').textContent(), /command/, 'the durable model phase drops the tool label');
+      await page.evaluate(() => fuseToolFixture.progress(0, { events: [{ fuse: { event: 'activity', phase: 'model', thinking: true, run_id: 'fixture-run' } }] }));
+      await page.evaluate(() => fuseToolFixture.update('contract', {}, true));
+      assert.match(await page.locator('[data-live-dock-label]').textContent(), /thinking/i, 'a marked think that streams no text says thinking, not waiting');
 
       const execution = { ...base, name: 'run_terminal_command' };
       await page.evaluate(t => fuseToolFixture.mount([{ tools: [{ ...t, state: 'cancelling', execution_status: 'cancelling', termination_confirmed: false }] }]), execution);

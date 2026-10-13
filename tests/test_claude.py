@@ -303,6 +303,17 @@ class ClaudeParseTest(unittest.TestCase):
             )
         self.assertEqual(payload["thinking"], {"type": "enabled", "budget_tokens": 7999})
 
+    def test_adaptive_thinking_streams_summaries(self):
+        # Omitted display streams nothing until the think ends; a long one
+        # looked dead and was cut by the gap timeout.
+        with patch("app.sources.claude_payload._meta_for", return_value={"thinking_type": "adaptive"}):
+            payload = claude_mod.build_messages_payload(
+                {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 8000, "reasoning_effort": "xhigh"},
+                "claude-opus-5-5",
+            )
+        self.assertEqual(payload["thinking"], {"type": "adaptive", "display": "summarized"})
+        self.assertEqual(payload["output_config"], {"effort": "xhigh"})
+
     def test_required_tool_choice_never_ships_with_thinking(self):
         # tool_choice "any" plus thinking is rejected upstream.
         base = {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 8000, "tool_choice": "required",
@@ -443,6 +454,8 @@ class ClaudeStreamTest(unittest.IsolatedAsyncioTestCase):
             chunks.append(piece.decode())
         joined = "".join(chunks)
         self.assertIn('"reasoning_content":"plan"', joined)
+        # The thinking block opens with the pacer's marker, before its text.
+        self.assertLess(joined.index(": fuse-thinking\n\n"), joined.index('"reasoning_content":"plan"'))
         self.assertIn('"content":"Hello"', joined)
         self.assertIn('"name":"lookup"', joined)
         self.assertIn('{\\"q\\":', joined)
@@ -481,6 +494,8 @@ class ClaudeStreamTest(unittest.IsolatedAsyncioTestCase):
             [{"redacted_thinking": "enc-blob"}, {"thinking": "", "signature": "SIG2"}],
         )
         self.assertIn("redacted_thinking", joined)
+        # Each silent block marks the think so the pacer keeps its patience.
+        self.assertEqual(joined.count(": fuse-thinking\n\n"), 2)
         self.assertEqual(collected["stream_status"], "complete")
 
     async def test_empty_tool_arguments_become_object(self):

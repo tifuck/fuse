@@ -117,6 +117,10 @@ function currentActivity(msg, groups, live) {
       } else if (last && last.type === "content") {
         phase = "writing";
         label = ("writing");
+      } else if (activity?.phase === "model" && activity.thinking) {
+        // The provider marked a think that may stream no text.
+        phase = "thinking";
+        label = ("thinking");
       } else if (last && (last.type === "tool" || last.type === "delivery")) {
         // Delivered results, like a finished call, hand the turn back to the model.
         phase = activity?.phase === "model" ? "waiting" : "starting";

@@ -642,6 +642,9 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output._stream_out, 0)
         output.apply({"choices": [{"delta": {"content": "ijkl" * 2}}]})
         self.assertEqual(output._stream_out, 2)
+        # The mid-round thinking marker does not start a new round.
+        output.apply({"fuse": {"event": "activity", "phase": "model", "thinking": True}})
+        self.assertEqual(output._stream_out, 2)
         output.apply({"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"name": "read_file", "arguments": "x" * 20}}]}}]})
         self.assertGreaterEqual(output._stream_out, 7)
         output.apply({"fuse": {"event": "tool", "id": "t1", "name": "read_file", "status": "running", "path": "a"}})

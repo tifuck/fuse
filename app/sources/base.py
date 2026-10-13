@@ -4,6 +4,13 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Protocol
 
 
+# SSE comment a source writes when the model starts thinking and may stay
+# silent for minutes (Claude's omitted-display thinking sends no text until
+# the block ends). OpenAI-style clients ignore comments; the dashboard's
+# provider pacer and status line read it.
+THINKING_MARK = b": fuse-thinking"
+
+
 @dataclass
 class ChatResult:
     status: int

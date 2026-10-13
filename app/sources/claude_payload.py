@@ -350,7 +350,11 @@ def build_messages_payload(body: dict, model: str) -> dict:
     if effort:
         payload["output_config"] = {"effort": effort}
         if thinking_type == "adaptive":
-            payload["thinking"] = {"type": "adaptive"}
+            # Adaptive models default to omitted display: no thinking text
+            # until the block ends, so a long think looks like a dead
+            # stream. Summaries stream as it goes (Claude Code's
+            # showThinkingSummaries sends the same field).
+            payload["thinking"] = {"type": "adaptive", "display": "summarized"}
         elif thinking_type == "enabled":
             # Thinking must fit under max_tokens; below the 1024 floor there
             # is no room, and clamping the budget up would make Anthropic
