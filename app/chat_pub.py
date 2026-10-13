@@ -141,8 +141,24 @@ def _commit_publications(batch, attempts=3):
             logger.warning("Event publication batch hit lock contention; retrying (%d items)", len(batch))
             time.sleep(random.uniform(0.02, 0.1) * (4 - attempts))
             return _commit_publications(batch, attempts - 1)
+        if len(batch) > 1:
+            # One bad item (a payload that is not strict JSON, e.g. inf) must
+            # not fail every other user's events: the batch rolled back, so
+            # commit item by item, FIFO kept, failing only the bad ones.
+            logger.warning("Event publication batch failed; committing its %d items one by one", len(batch))
+            out = []
+            for item in batch:
+                try:
+                    out.extend(_commit_publications([item]))
+                except Exception:
+                    logger.exception("Event publication failed for %s", item[1])
+                    out.append(_FAILED)
+            return out
         raise
     return eids
+
+
+_FAILED = object()
 
 
 async def _pub_committer():
@@ -170,7 +186,7 @@ async def _pub_committer():
                 if future is None or future.done():
                     continue
                 try:
-                    if error is not None:
+                    if error is not None or (eids and eids[index] is _FAILED):
                         # Do not attach the active committer's traceback to an
                         # exception owned by another task; consumers may clear
                         # traceback frames while this coroutine is suspended.

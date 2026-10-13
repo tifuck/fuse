@@ -36,6 +36,25 @@ class PublisherTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(RuntimeError, "publication failed"):
                 await future
 
+    async def test_one_bad_payload_fails_only_its_own_waiter(self):
+        ids = iter(range(1, 100))
+
+        def event(conn, user_id, type, thread_id, payload):
+            chat_pub.chat_tx.dumps(payload)  # strict JSON: inf raises
+            return next(ids)
+
+        with patch.object(chat_pub.chat_tx, "transaction", side_effect=lambda: nullcontext(object())), \
+                patch.object(chat_pub.chat_tx, "event", side_effect=event):
+            store.start_publisher()
+            loop = asyncio.get_running_loop()
+            futures = [loop.create_future() for _ in range(3)]
+            for user, payload, future in zip((1, 2, 3), ({"n": 1}, {"n": float("inf")}, {"n": 3}), futures):
+                store.publish(user, "run.progress", payload=payload, future=future)
+            self.assertIsInstance(await futures[0], int)
+            with self.assertRaisesRegex(RuntimeError, "publication failed"):
+                await futures[1]
+            self.assertIsInstance(await futures[2], int)
+
     async def test_full_queue_explicitly_rejects_new_work(self):
         with patch.object(chat_pub, "_PUB_MAX_DEPTH", 1), patch.object(chat_pub, "_commit_publications", return_value=[1]):
             store.start_publisher()
