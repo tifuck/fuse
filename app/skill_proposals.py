@@ -338,22 +338,26 @@ def confirm_proposal(user_id: int, proposal_id: str, raw: dict) -> dict:
         # Install failed: put the proposal back so it is not lost.
         _release_claim(user_id, proposal_id)
         raise
-    now = db.now()
-    db.execute(
-        """UPDATE skill_proposals SET status='saved', slug=?, description=?, body=?, argument_hint=?,
-               files=?, enable=?, resolved_at=? WHERE id=? AND user_id=? AND status='resolving'""",
-        (
-            slug, description.strip()[:DESC_MAX], body, hint,
-            json.dumps(extra_files), 1 if enable else 0, now, proposal_id, user_id,
-        ),
-    )
-    _patch_permission(
-        user_id,
-        item["thread_id"],
-        proposal_id,
-        "saved",
-        {"slug": slug, "description": description.strip()[:DESC_MAX], "enable": bool(enable), "overwrite": False},
-    )
+    # The skill is installed: a bookkeeping failure must not turn that into a
+    # 500 the user reads as "not saved" (a retry then hits "skill exists").
+    try:
+        db.execute(
+            """UPDATE skill_proposals SET status='saved', slug=?, description=?, body=?, argument_hint=?,
+                   files=?, enable=?, resolved_at=? WHERE id=? AND user_id=? AND status='resolving'""",
+            (
+                slug, description.strip()[:DESC_MAX], body, hint,
+                json.dumps(extra_files), 1 if enable else 0, db.now(), proposal_id, user_id,
+            ),
+        )
+        _patch_permission(
+            user_id,
+            item["thread_id"],
+            proposal_id,
+            "saved",
+            {"slug": slug, "description": description.strip()[:DESC_MAX], "enable": bool(enable), "overwrite": False},
+        )
+    except Exception:
+        logger.exception("Skill %s saved but proposal %s could not be marked saved", slug, proposal_id)
     logger.info("confirmed skill proposal user=%s slug=%s", user_id, slug)
     return saved
 

@@ -129,6 +129,22 @@ class ProposeSkillGateTest(unittest.IsolatedAsyncioTestCase):
         row = skills.get_row(self.user["id"], "ship-notes")
         self.assertTrue(row["enabled"])
 
+    def test_confirm_reports_saved_when_only_the_bookkeeping_fails(self):
+        from unittest.mock import patch
+
+        item = skill_proposals.create(
+            self.user["id"],
+            thread_id=self.tid,
+            run_id="",
+            name="release-notes",
+            description="Use when writing release notes.",
+            body="Short.\n",
+        )
+        with patch.object(skill_proposals, "_patch_permission", side_effect=RuntimeError("db down")):
+            saved = skill_proposals.confirm_proposal(self.user["id"], item["id"], {"enable": True, "replace": True})
+        self.assertEqual(saved["slug"], "release-notes")
+        self.assertIsNotNone(skills.get_row(self.user["id"], "release-notes"))
+
     def test_reserved_slug_rejected(self):
         with self.assertRaises(SkillError):
             skill_proposals.create(
