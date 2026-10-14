@@ -121,6 +121,7 @@ window.fuseToolFixture = {
   run(patch) { S.activeRun = { ...S.activeRun, ...patch }; sync.setRunning(); },
   snapshot: () => structuredClone(S.messages),
   dock: () => S.liveDockLabel && S.liveDockLabel.textContent,
+  perm: (rec) => perms.upsertPermCard(rec),
   context: {
     accept: context.acceptMeter,
     fuse: sync.applyFuseEvent,

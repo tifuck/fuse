@@ -64,6 +64,15 @@ function fuseConfirm(message, opts) {
   return window.fuseConfirm(message, opts);
 }
 
+// Screen-reader announcements through the page's two standing live regions
+// (base.html). Clearing first lets a repeated message be read again.
+window.fuseAnnounce = function fuseAnnounce(text, assertive) {
+  const el = document.querySelector(assertive ? "[data-announce-alert]" : "[data-announce]");
+  if (!el) return;
+  el.textContent = "";
+  window.setTimeout(() => { el.textContent = text || ""; }, 50);
+};
+
 // Phone back gesture: every sheet, drawer, popover and dialog that should
 // close on "back" registers here. open() pushes one history entry per layer;
 // back pops the top layer only. A layer closed from its own UI steps history

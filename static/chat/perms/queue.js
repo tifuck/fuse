@@ -3,6 +3,18 @@ import { S } from '../state.js';
 
 let permTick = 0;
 
+// Cards already announced, and those already warned at 15 seconds left.
+const permSpoken = new Set();
+const permWarned = new Set();
+
+function speakPerm(rec) {
+  if (permSpoken.has(rec.id)) return;
+  permSpoken.add(rec.id);
+  const copy = permCardCopy(rec);
+  const who = rec.requester && rec.requester !== "Main agent" ? ` from ${rec.requester}` : "";
+  globalThis.fuseAnnounce?.(`Permission needed${who}: ${copy.action}${copy.path ? " " + copy.path : ""}. Allow or Deny.`, true);
+}
+
 const PERM_TOTAL_S = 60;
 
 function permToolLabel(tool) {
@@ -276,6 +288,7 @@ export function createQueue(ctx) {
       if (!el) {
         permQueueList.insertAdjacentHTML("beforeend", ui.permQueueCardHtml(rec));
         el = permQueueList.lastElementChild;
+        speakPerm(rec);
       } else if (el.getAttribute("data-perm-sig") !== sig) {
         const wrap = document.createElement("template");
         wrap.innerHTML = ui.permQueueCardHtml(rec);
@@ -286,7 +299,7 @@ export function createQueue(ctx) {
       if (el) {
         el.setAttribute("data-perm-sig", sig);
         el.classList.toggle("is-front", index === 0);
-        el.setAttribute("aria-hidden", index === 0 ? "false" : "true");
+        el.inert = index !== 0;
         el.style.setProperty("--perm-depth", String(depth));
       }
       if (el && permQueueList.children[index] !== el) permQueueList.insertBefore(el, permQueueList.children[index] || null);
@@ -342,6 +355,10 @@ export function createQueue(ctx) {
       card.style.setProperty("--perm-left", String(frac));
       card.style.setProperty("--perm-color", permUrgencyColor(card, frac));
       card.classList.toggle("is-low", left <= 15);
+      if (left <= 15 && !permWarned.has(rec.id)) {
+        permWarned.add(rec.id);
+        globalThis.fuseAnnounce?.(`${Math.ceil(left)} seconds left to answer the permission request.`, true);
+      }
     }
     if (dropped) renderPermQueue();
     else if (!anyPending) stopPermTick();

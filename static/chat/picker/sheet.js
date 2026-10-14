@@ -30,6 +30,10 @@ export function createSheet(ctx) {
     S.hint.classList.toggle("is-fault", Boolean(fault));
     S.hint.classList.remove("is-pinned");
     const show = Boolean(text);
+    // The toast is unhidden and filled in one tick, too late for a live
+    // region of its own; the page announcer reads it instead.
+    if (show && text !== S.hintSpoken) globalThis.fuseAnnounce?.(text, Boolean(fault));
+    S.hintSpoken = show ? text : "";
     if (!show && S.pinnedHint) {
       showPinned();
       return;

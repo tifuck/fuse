@@ -1,4 +1,25 @@
 // live-dock presentation. Dependencies are live getters supplied by index.js.
+
+// The dock's clock and token count tick several times a second, so it is not
+// a live region. Screen readers hear the phase when it changes and the end.
+const SPOKEN_PHASE = { thinking: "Thinking", writing: "Writing", stopping: "Stopping", queued: "Queued", searching: "Searching" };
+let spokenPhase = "";
+let spokenMsg = null;
+function speakPhase(phase, msg) {
+  const text = SPOKEN_PHASE[phase] || "Working";
+  spokenMsg = msg;
+  if (text === spokenPhase) return;
+  spokenPhase = text;
+  globalThis.fuseAnnounce?.(text);
+}
+function speakEnd() {
+  if (!spokenPhase) return;
+  const text = spokenMsg?.error ? "Response failed" : spokenPhase === "Stopping" || spokenMsg?.stopped ? "Stopped" : "Response finished";
+  spokenPhase = "";
+  spokenMsg = null;
+  globalThis.fuseAnnounce?.(text);
+}
+
 export function create(deps) {
 function setLiveLabelText(el, text, meta) {
     if (!el) return;
@@ -253,6 +274,7 @@ function syncLiveDock() {
       const groups = deps.groupTraces(Array.isArray(msg.tools) ? msg.tools : []);
       const status = currentActivity(msg, groups, true);
       setLivePhase(deps.liveDock, status.phase);
+      speakPhase(status.phase, msg);
       {
         const line = deps.formatConsoleLiveStatus(msg, groups);
         setLiveLabelText(deps.liveDockLabel, line.verb, line.meta);
@@ -272,6 +294,7 @@ function syncLiveDock() {
     }
     if (!deps.root.classList.contains("is-live-dock") && deps.liveDock.hidden) return;
     if (deps.liveDockHideTimer) return;
+    speakEnd();
     deps.root.classList.remove("is-live-dock");
     followLiveDockSlide();
     deps.liveDock.setAttribute("aria-hidden", "true");

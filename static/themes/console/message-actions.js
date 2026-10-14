@@ -25,6 +25,7 @@ function msgActions(index, role) {
         .then(() => {
           btn.innerHTML = deps.ACTION_ICONS.copied;
           btn.setAttribute("aria-label", "Copied");
+          globalThis.fuseAnnounce?.("Copied");
           setTimeout(() => {
             btn.innerHTML = deps.ACTION_ICONS.copy;
             btn.setAttribute("aria-label", "Copy");

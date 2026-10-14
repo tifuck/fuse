@@ -181,7 +181,10 @@ function snap() {
       const time = when.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
       const startOf = (date) => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
       const days = Math.round((startOf(new Date()) - startOf(when)) / 86400000);
-      return days > 0 && days < 7 ? `${when.toLocaleDateString([], { weekday: 'long' })} ${time}` : time;
+      // Mirrors ccDoneAt (call-progress.js), including its older-than-a-week form.
+      if (days === 0) return time;
+      if (days > 0 && days < 7) return `${when.toLocaleDateString([], { weekday: 'long' })} ${time}`;
+      return `${when.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })}, ${time}`;
     });
     check(s.foot === `✻ ${turnVerb('tt-turn-a')} for 2m 13s · done ${doneAt}`, `the closing line reports the persisted duration and end time: ${s.foot}`);
     check(s.dock.verb === verb, `the spinner's word holds for the whole turn: ${s.dock.verb} then ${verb}`);
@@ -311,7 +314,10 @@ function snap() {
       }, stopMsg);
       await page.waitForFunction(() => window.__tt.snap().dock.hidden, null, { timeout: 4000 });
       s = await snapNow();
-      check(s.rows.some((l) => /Interrupted/.test(l)), `a stopped turn settles its running call as interrupted: ${s.rows}`);
+      // Since f4b4635 the folded summary is only its summary; the call's own
+      // row (shown once the line opens) carries the interrupted state.
+      const stoppedState = await page.evaluate((id) => document.querySelector(`.chat-log > article:last-child [data-step="tool-${id}"]`)?.getAttribute('data-state'), cmd.id);
+      check(stoppedState === 'interrupted', `a stopped turn settles its running call as interrupted: ${stoppedState} ${s.rows}`);
       check(s.clocks.length === 0, `a stopped turn leaves no ticking clock: ${s.clocks}`);
       check(s.foot === `✻ Interrupted · ${turnVerb('tt-stop')} for 24s`, `a stopped close says Interrupted, never done: ${s.foot}`);
 

@@ -54,11 +54,11 @@ function permQueueCardHtml(rec) {
               <button type="button" data-perm-decide="allow_session">Allow this ${deps.escapeHtml(copy.noun)} in this chat</button>
               <button type="button" data-perm-decide="allow_host">Always allow this ${deps.escapeHtml(copy.noun)}</button>
             </div>`;
-    return `<li class="chat-perm-card is-pending${left != null && left <= 15 ? " is-low" : ""}" data-perm-card="${deps.escapeHtml(rec.id)}" data-perm-sig="${deps.escapeHtml(deps.permCardSignature(rec))}" role="alert" style="--perm-left:${frac}">
+    return `<li class="chat-perm-card is-pending${left != null && left <= 15 ? " is-low" : ""}" data-perm-card="${deps.escapeHtml(rec.id)}" data-perm-sig="${deps.escapeHtml(deps.permCardSignature(rec))}" style="--perm-left:${frac}">
       <div class="chat-perm-card-row">
         <span class="chat-perm-card-dot" aria-hidden="true"></span>
         ${who}${meta}
-        <span class="chat-perm-card-count mono" data-perm-count>${deps.escapeHtml(deps.fmtPermCountdown(expires))}</span>
+        <span class="chat-perm-card-count mono" data-perm-count aria-hidden="true">${deps.escapeHtml(deps.fmtPermCountdown(expires))}</span>
         <div class="chat-perm-card-actions">
           <button type="button" class="chat-perm-act" data-perm-decide="deny">Deny</button>
           <span class="chat-perm-always">

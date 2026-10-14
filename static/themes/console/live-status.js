@@ -144,10 +144,10 @@ function formatConsoleLiveStatus(msg, groups, opts) {
       if (n) tokenText = `↑ ${formatConsoleCount(n)} tokens`;
     }
     const thought = ccThinkingState(msg, status.phase === "thinking");
-    // A tool call being written or run replaces the "thought for Ns" flash at
-    // once: that is the newer activity.
+    // A tool call being written or run, a stop request or a requeue replaces
+    // the "thought for Ns" flash at once: that is the newer activity.
     const state = status.phase === "thinking" ? thought
-      : status.phase === "calling" || status.current ? ccSpinnerState(status) : thought || ccSpinnerState(status);
+      : ["calling", "stopping", "queued"].includes(status.phase) || status.current ? ccSpinnerState(status) : thought || ccSpinnerState(status);
     // Claude Code shows the clock once there is something else to show, or
     // after 16s.
     const clock = tokenText || state || seconds > 16 ? deps.ccDuration(seconds * 1000) : "";

@@ -13,6 +13,8 @@ const out = process.env.FRONTEND_LIFECYCLE_ARTIFACTS || '/tmp/opencode/frontend-
     await fs.mkdir(out, { recursive: true });
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
     page.on('pageerror', e => errors.push(e.message));
+    // Thinking is hidden by default since 0a37cc0; these checks need it shown.
+    await page.addInitScript(() => { try { localStorage.setItem('fuse.chat.thinking.v1', 'shown'); } catch (_) {} });
     await page.route('**/*', route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
     await page.goto(origin);
     await page.waitForFunction(() => Boolean(window.fuseToolFixture));
@@ -39,8 +41,13 @@ const out = process.env.FRONTEND_LIFECYCLE_ARTIFACTS || '/tmp/opencode/frontend-
       await page.waitForFunction(() => /stopping/.test(document.querySelector('[data-live-dock-label]').textContent), null, { timeout: 5000 });
       assert.equal(await page.evaluate(() => fuseToolFixture.activity({ id: 'independent-child', reasoning: 'Thinking independently', segments: [{ type: 'reasoning', text: 'Thinking independently' }] }, null, true).label), 'thinking', 'parent cancellation must not label an independent child as stopping');
       assert.equal(await page.locator('[data-live-dock]').getAttribute('aria-hidden'), 'false');
+      // The dock ticks constantly, so it is not a live region; the page
+      // announcer speaks phase changes and the end of the run instead.
+      assert.equal(await page.locator('[data-live-dock]').getAttribute('role'), null, 'the ticking dock is not a live region');
+      await page.waitForFunction(() => document.querySelector('[data-announce]').textContent === 'Stopping');
       await page.evaluate(() => fuseToolFixture.run({ status: 'cancelled' }));
       assert.equal(await page.locator('[data-live-dock]').getAttribute('aria-hidden'), 'true');
+      await page.waitForFunction(() => document.querySelector('[data-announce]').textContent === 'Stopped');
       await page.evaluate(() => fuseToolFixture.run({ status: 'running', cancel_requested: false }));
       await page.evaluate(() => fuseToolFixture.stream(0, {
         tools: [{ id: 'read', name: 'read_file', status: 'running', path: 'README.md' }],
@@ -88,6 +95,17 @@ const out = process.env.FRONTEND_LIFECYCLE_ARTIFACTS || '/tmp/opencode/frontend-
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
       console.log(`PASS status precedence, disclosure motion, streaming follow ${width}`);
     }
+
+    // Permission cards are announced once, assertively; the per-second
+    // countdown is hidden from screen readers and stacked cards are inert.
+    const expires = () => new Date(Date.now() + 60000).toISOString();
+    await page.evaluate(at => fuseToolFixture.perm({ id: 'perm-a', status: 'pending', tool: 'read_file', path: '/etc/hosts', expires_at: at }), expires());
+    await page.waitForFunction(() => document.querySelector('[data-announce-alert]').textContent === 'Permission needed: Read file /etc/hosts. Allow or Deny.');
+    const card = page.locator('[data-perm-card="perm-a"]');
+    assert.equal(await card.getAttribute('role'), null, 'the card is a plain list item, not a re-reading alert');
+    assert.equal(await card.locator('[data-perm-count]').getAttribute('aria-hidden'), 'true');
+    await page.evaluate(at => fuseToolFixture.perm({ id: 'perm-b', status: 'pending', tool: 'list_dir', path: '/srv', expires_at: at }), expires());
+    assert.deepEqual(await page.locator('[data-perm-card]').evaluateAll(els => els.map(el => el.inert)), [false, true], 'only the front card is operable');
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });
