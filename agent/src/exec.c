@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -12,11 +13,23 @@
 #include "jobs.h"
 #include "outq.h"
 
+#define EXEC_READ 32768
+
+/* Readable once the child exits (Linux 5.3+); -1 falls back to polling. */
+static int open_pidfd(pid_t pid) {
+#ifdef SYS_pidfd_open
+    return (int)syscall(SYS_pidfd_open, pid, 0);
+#else
+    (void)pid;
+    return -1;
+#endif
+}
+
 /* Stream one pipe read, holding back a UTF-8 sequence split across reads so
  * the character arrives whole with the next read (n == 0 flushes the rest). */
 static int send_utf8_chunk(const char *id, const char *stream, char *carry, size_t *carry_n,
                            const char *data, size_t n) {
-    char buf[2048 + 4];
+    char buf[EXEC_READ + 4];
     size_t total = *carry_n;
     memcpy(buf, carry, total);
     if (n) memcpy(buf + total, data, n);
@@ -51,6 +64,12 @@ int run_exec(const char *cwd, const char *cmd, int timeout_ms, char *out, size_t
          * survives fork+exec; children need the default back or `| head`
          * pipelines end in an EPIPE "write error" exit 2 instead of 141. */
         signal(SIGPIPE, SIG_DFL);
+        /* Never the agent's own stdin (a tty when run by hand). */
+        int devnull = open("/dev/null", O_RDONLY);
+        if (devnull > 0) {
+            dup2(devnull, 0);
+            close(devnull);
+        }
         int chdir_err = 0;
         if (cwd && cwd[0] && chdir(cwd) != 0) chdir_err = errno;
         dup2(outp[1], 1);
@@ -79,6 +98,11 @@ int run_exec(const char *cwd, const char *cmd, int timeout_ms, char *out, size_t
     close(errp[1]);
     fcntl(outp[0], F_SETFL, O_NONBLOCK);
     fcntl(errp[0], F_SETFL, O_NONBLOCK);
+    /* Child exit wakes the poll at once; pipes leave the set at EOF so a
+     * command that closes its own stdout/stderr cannot spin this loop, and
+     * a background grandchild holding them cannot delay the result. */
+    int pidfd = open_pidfd(pid);
+    int out_open = 1, err_open = 1;
     size_t o = 0, e = 0;
     if (ocap) out[0] = 0;
     if (ecap) errb[0] = 0;
@@ -115,6 +139,7 @@ int run_exec(const char *cwd, const char *cmd, int timeout_ms, char *out, size_t
             }
             close(outp[0]);
             close(errp[0]);
+            if (pidfd >= 0) close(pidfd);
             if (code) *code = -1; /* no reap: remote outcome remains unconfirmed */
             if (timed_out) *timed_out = by_timeout;
             if (clipped) *clipped = out_clipped || err_clipped;
@@ -122,39 +147,57 @@ int run_exec(const char *cwd, const char *cmd, int timeout_ms, char *out, size_t
             if (err_len) *err_len = e;
             return 0;
         }
+        /* Wake for the deadline, the unkillable cutoff, or (at most each
+         * second) a cancel flag; the session also SIGKILLs a cancelled job
+         * directly, which the pidfd reports at once. */
+        long wait_ms = 1000;
+        if (done) wait_ms = 0; /* reaped: take what is buffered, never wait on a grandchild */
+        else if (killed) wait_ms = 10000 - (elapsed - kill_ms);
+        else if (timeout_ms > 0 && timeout_ms - elapsed < wait_ms) wait_ms = timeout_ms - elapsed;
+        if (pidfd < 0 && wait_ms > 100) wait_ms = 100;
+        if (wait_ms < 0) wait_ms = 0;
         /* Streamed output waits for queue room instead of being dropped: the
          * child blocks on its full pipe until the session drains, while the
-         * timeout and cancel above still apply. Polling a readable pipe while
-         * held would spin, so sleep instead. */
+         * timeout and cancel above still apply. */
         int held = stream && !out_has_room();
         if (held) {
-            poll(NULL, 0, 20);
+            out_wait_room(wait_ms < 100 ? (int)wait_ms : 100);
+            held = !out_has_room();
         } else {
-            struct pollfd pfd[2] = {{outp[0], POLLIN, 0}, {errp[0], POLLIN, 0}};
-            poll(pfd, 2, 100);
+            struct pollfd pfd[3];
+            int nfd = 0;
+            if (out_open) pfd[nfd++] = (struct pollfd){outp[0], POLLIN, 0};
+            if (err_open) pfd[nfd++] = (struct pollfd){errp[0], POLLIN, 0};
+            if (!done && pidfd >= 0) pfd[nfd++] = (struct pollfd){pidfd, POLLIN, 0};
+            poll(pfd, (nfds_t)nfd, (int)wait_ms);
         }
-        char tmp[2048];
-        ssize_t k;
-        for (int reads = 0; !held && reads < 64 && (k = read(outp[0], tmp, sizeof(tmp))) > 0; reads++) {
-            if (stream && send_utf8_chunk(job_id, "out", out_carry, &out_carry_n, tmp, (size_t)k) != 0) out_clipped = 1;
+        char tmp[EXEC_READ];
+        ssize_t r = -1;
+        for (int reads = 0; !held && out_open && reads < 64 && (r = read(outp[0], tmp, sizeof(tmp))) > 0; reads++) {
+            size_t k = (size_t)r;
+            if (stream && send_utf8_chunk(job_id, "out", out_carry, &out_carry_n, tmp, k) != 0) out_clipped = 1;
             if (stream && !out_has_room()) held = 1;
-            if (o + (size_t)k >= ocap) { out_clipped = 1; k = (ssize_t)(ocap - 1 - o); }
-            if (k > 0 && !stream) {
-                memcpy(out + o, tmp, (size_t)k);
-                o += (size_t)k;
+            if (o + k >= ocap) { out_clipped = 1; k = ocap - 1 - o; }
+            if (k && !stream) {
+                memcpy(out + o, tmp, k);
+                o += k;
                 out[o] = 0;
             }
         }
-        for (int reads = 0; !held && reads < 64 && (k = read(errp[0], tmp, sizeof(tmp))) > 0; reads++) {
-            if (stream && send_utf8_chunk(job_id, "err", err_carry, &err_carry_n, tmp, (size_t)k) != 0) err_clipped = 1;
+        if (r == 0) out_open = 0;
+        r = -1;
+        for (int reads = 0; !held && err_open && reads < 64 && (r = read(errp[0], tmp, sizeof(tmp))) > 0; reads++) {
+            size_t k = (size_t)r;
+            if (stream && send_utf8_chunk(job_id, "err", err_carry, &err_carry_n, tmp, k) != 0) err_clipped = 1;
             if (stream && !out_has_room()) held = 1;
-            if (e + (size_t)k >= ecap) { err_clipped = 1; k = (ssize_t)(ecap - 1 - e); }
-            if (k > 0 && !stream) {
-                memcpy(errb + e, tmp, (size_t)k);
-                e += (size_t)k;
+            if (e + k >= ecap) { err_clipped = 1; k = ecap - 1 - e; }
+            if (k && !stream) {
+                memcpy(errb + e, tmp, k);
+                e += k;
                 errb[e] = 0;
             }
         }
+        if (r == 0) err_open = 0;
         if (done) {
             /* Final bounded drain after reap. Output held back for queue room
              * is waited for, up to 10 s, then flagged rather than lost. */
@@ -180,6 +223,7 @@ int run_exec(const char *cwd, const char *cmd, int timeout_ms, char *out, size_t
     }
     close(outp[0]);
     close(errp[0]);
+    if (pidfd >= 0) close(pidfd);
     if (!by_timeout && timeout_ms > 0 && !job_cancelled(job)) {
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);

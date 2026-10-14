@@ -249,6 +249,11 @@ int session_loop(void) {
                 }
             }
             if (SSL_pending(t.ssl) == 0 && t.pb_off >= t.pb_len) {
+                /* Frames left by the bounded flush: only peek at the socket,
+                 * so inbound jobs and cancels interleave with heavy output. */
+                pthread_mutex_lock(&g_out_mu);
+                int pending_out = g_out_n;
+                pthread_mutex_unlock(&g_out_mu);
                 struct pollfd p[3];
                 int n = 1;
                 int wake_i = -1, stop_i = -1;
@@ -269,7 +274,7 @@ int session_loop(void) {
                     p[n].revents = 0;
                     n++;
                 }
-                int pr = poll(p, n, conn_watch_wait_ms(&watch, now_mono_ms()));
+                int pr = poll(p, n, pending_out ? 0 : conn_watch_wait_ms(&watch, now_mono_ms()));
                 if (wake_i >= 0 && (p[wake_i].revents & POLLIN)) consume_wake();
                 if (stop_i >= 0 && (p[stop_i].revents & POLLIN)) record_main_stop();
                 if (pr < 0) {
@@ -283,10 +288,6 @@ int session_loop(void) {
                     drop_reason = "socket closed";
                     break;
                 }
-                pthread_mutex_lock(&g_out_mu);
-                int pending_out = g_out_n;
-                pthread_mutex_unlock(&g_out_mu);
-                if (pending_out) continue;
                 if (pr == 0 || !(p[0].revents & POLLIN)) continue;
             }
             int opcode = 0;

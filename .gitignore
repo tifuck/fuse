@@ -28,5 +28,6 @@ agent/tests/test_output_queue
 agent/tests/test_binary
 agent/tests/test_ws_frame
 agent/tests/test_exec_stream
+agent/tests/test_jobs_pool
 .claude/
 AGENTS.md

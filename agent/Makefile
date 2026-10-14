@@ -73,7 +73,10 @@ tests/test_ws_frame: tests/test_ws_frame.c $(LIB_SRC) $(HDRS)
 tests/test_exec_stream: tests/test_exec_stream.c $(LIB_SRC) $(HDRS)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ tests/test_exec_stream.c $(LIB_SRC) $(LIBS)
 
-test: tests/test_expand_home tests/test_reconnect tests/test_files tests/test_lifecycle tests/test_output_queue tests/test_binary tests/test_ws_frame tests/test_exec_stream
+tests/test_jobs_pool: tests/test_jobs_pool.c $(LIB_SRC) $(HDRS)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ tests/test_jobs_pool.c $(LIB_SRC) $(LIBS)
+
+test: tests/test_expand_home tests/test_reconnect tests/test_files tests/test_lifecycle tests/test_output_queue tests/test_binary tests/test_ws_frame tests/test_exec_stream tests/test_jobs_pool
 	tests/test_expand_home
 	tests/test_reconnect
 	tests/test_files
@@ -82,7 +85,8 @@ test: tests/test_expand_home tests/test_reconnect tests/test_files tests/test_li
 	tests/test_binary
 	tests/test_ws_frame
 	tests/test_exec_stream
+	tests/test_jobs_pool
 
 clean:
 	rm -f dist/fuse-agent-* tests/test_expand_home tests/test_reconnect tests/test_files tests/test_lifecycle \
-	  tests/test_output_queue tests/test_binary tests/test_ws_frame tests/test_exec_stream
+	  tests/test_output_queue tests/test_binary tests/test_ws_frame tests/test_exec_stream tests/test_jobs_pool

@@ -7,7 +7,20 @@
 #include <assert.h>
 #include <pthread.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <time.h>
+
+static double cpu_s(void) {
+    struct rusage r;
+    getrusage(RUSAGE_SELF, &r);
+    return r.ru_utime.tv_sec + r.ru_stime.tv_sec + (r.ru_utime.tv_usec + r.ru_stime.tv_usec) / 1e6;
+}
+
+static double mono_s(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec + t.tv_nsec / 1e9;
+}
 
 static volatile int g_stop = 0;
 static int g_saw_first = 0;
@@ -51,7 +64,8 @@ int main(void) {
     char out[EXEC_CAP], err[EXEC_CAP]; /* as jobs.c passes them */
     int code = -1, timed_out = 0, clipped = 0;
     size_t out_len = 0, err_len = 0;
-    assert(run_exec("/tmp", "seq 1 200000", 30000, out, sizeof(out), err, sizeof(err), &code, NULL,
+    /* Large enough that 32 KB reads still overflow the queue (backpressure). */
+    assert(run_exec("/tmp", "seq 1 2000000", 30000, out, sizeof(out), err, sizeof(err), &code, NULL,
                     &timed_out, 1, "job", &clipped, &out_len, &err_len) == 0);
     g_stop = 1;
     pthread_join(drain, NULL);
@@ -59,7 +73,7 @@ int main(void) {
     assert(!timed_out);
     assert(!clipped);
     assert(g_saw_first);
-    assert(g_bytes == 1288895); /* every byte of `seq 1 200000` arrived */
+    assert(g_bytes == 14888896); /* every byte of `seq 1 2000000` arrived */
     assert(g_frames > OUT_QMAX);
 
     /* A child killed by a signal reports 128+N and says so on stderr. */
@@ -70,5 +84,27 @@ int main(void) {
     assert(!timed_out);
     assert(!strcmp(err, "partial\n[killed by signal 9]\n"));
     assert(err_len == strlen(err));
+
+    /* A child that closes its own stdout/stderr must not spin the worker:
+     * EOF pipes left in the poll set burned a whole core until exit. */
+    double c0 = cpu_s();
+    assert(run_exec("/tmp", "exec >/dev/null 2>&1; sleep 1", 30000, out, sizeof(out), err, sizeof(err),
+                    &code, NULL, &timed_out, 0, NULL, &clipped, &out_len, &err_len) == 0);
+    assert(code == 0);
+    assert(cpu_s() - c0 < 0.2);
+
+    /* A background grandchild holding the pipes must not delay the result
+     * (two 100 ms poll ticks before). */
+    double w0 = mono_s();
+    assert(run_exec("/tmp", "echo hi; (sleep 2 &)", 30000, out, sizeof(out), err, sizeof(err),
+                    &code, NULL, &timed_out, 0, NULL, &clipped, &out_len, &err_len) == 0);
+    assert(code == 0);
+    assert(!strcmp(out, "hi\n"));
+    assert(mono_s() - w0 < 0.1);
+
+    /* Commands never read the agent's stdin. */
+    assert(run_exec("/tmp", "cat", 5000, out, sizeof(out), err, sizeof(err),
+                    &code, NULL, &timed_out, 0, NULL, &clipped, &out_len, &err_len) == 0);
+    assert(code == 0 && !timed_out && out_len == 0);
     return 0;
 }

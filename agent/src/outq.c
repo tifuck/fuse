@@ -1,5 +1,6 @@
 /* Fuse connector: outbound frame queue and result/chunk envelopes. */
 #include <pthread.h>
+#include <time.h>
 
 #include "agent.h"
 #include "lifecycle.h"
@@ -51,8 +52,9 @@ int out_enqueue(int opcode, const unsigned char *data, size_t n) {
 int out_flush(struct tls *t) {
     /* Peek, send, pop only on success: a frame whose send fails mid-stream
      * stays queued and is re-sent whole on the next connection. Partial
-     * bytes went to a dead socket, so the re-send cannot duplicate. */
-    for (;;) {
+     * bytes went to a dead socket, so the re-send cannot duplicate.
+     * Bounded per call so the session reads between batches. */
+    for (int sent = 0; sent < OUT_FLUSH_BATCH; sent++) {
         pthread_mutex_lock(&g_out_mu);
         if (g_out_n == 0) {
             pthread_mutex_unlock(&g_out_mu);
@@ -68,10 +70,11 @@ int out_flush(struct tls *t) {
         g_outq[g_out_head].data = NULL;
         g_out_head = (g_out_head + 1) % OUT_QMAX;
         g_out_n--;
-        pthread_cond_signal(&g_out_space);
+        pthread_cond_broadcast(&g_out_space); /* reliable producers and held streams */
         pthread_mutex_unlock(&g_out_mu);
         free(data);
     }
+    return 0;
 }
 
 int out_has_room(void) {
@@ -79,6 +82,22 @@ int out_has_room(void) {
     int room = g_out_n < OUT_QMAX - OUT_STREAM_RESERVE;
     pthread_mutex_unlock(&g_out_mu);
     return room;
+}
+
+void out_wait_room(int ms) {
+    struct timespec until;
+    clock_gettime(CLOCK_REALTIME, &until);
+    until.tv_sec += ms / 1000;
+    until.tv_nsec += (long)(ms % 1000) * 1000000L;
+    if (until.tv_nsec >= 1000000000L) {
+        until.tv_sec++;
+        until.tv_nsec -= 1000000000L;
+    }
+    pthread_mutex_lock(&g_out_mu);
+    while (g_out_n >= OUT_QMAX - OUT_STREAM_RESERVE &&
+           pthread_cond_timedwait(&g_out_space, &g_out_mu, &until) == 0) {
+    }
+    pthread_mutex_unlock(&g_out_mu);
 }
 
 int send_chunk(const char *id, const char *stream, const char *data, size_t n) {

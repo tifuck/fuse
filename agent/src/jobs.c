@@ -3,6 +3,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <sys/types.h>
 
 #include "agent.h"
@@ -24,7 +25,10 @@ static cJSON *g_queue[MAX_QUEUE];
 static int g_qhead = 0, g_qtail = 0;
 int g_qcount = 0;
 
-static int g_worker_started = 0;
+/* Workers start on demand up to MAX_JOBS: every command is an exec_stream,
+ * and a fixed pool let a few long background commands queue even a quick
+ * read behind them. Idle extras exit; WORKERS stay warm. */
+static int g_workers = 0, g_idle = 0;
 
 int g_busy = 0;
 
@@ -89,9 +93,22 @@ int job_cancelled(struct job *j) {
 
 static void *job_worker(void *arg) {
     (void)arg;
+    pthread_mutex_lock(&g_job_mu);
     for (;;) {
-        pthread_mutex_lock(&g_job_mu);
-        while (g_qcount == 0) pthread_cond_wait(&g_job_cv, &g_job_mu);
+        /* g_idle already counts this worker (its spawn, or its last job). */
+        while (g_qcount == 0) {
+            struct timespec until;
+            clock_gettime(CLOCK_REALTIME, &until);
+            until.tv_sec += 60;
+            if (pthread_cond_timedwait(&g_job_cv, &g_job_mu, &until) == ETIMEDOUT && g_qcount == 0 &&
+                g_workers > WORKERS) {
+                g_idle--;
+                g_workers--;
+                pthread_mutex_unlock(&g_job_mu);
+                return NULL;
+            }
+        }
+        g_idle--;
         cJSON *o = g_queue[g_qhead];
         g_queue[g_qhead] = NULL;
         g_qhead = (g_qhead + 1) % MAX_QUEUE;
@@ -104,25 +121,24 @@ static void *job_worker(void *arg) {
         }
         pthread_mutex_lock(&g_job_mu);
         g_busy--;
-        pthread_mutex_unlock(&g_job_mu);
+        g_idle++;
     }
     return NULL;
 }
 
-static void ensure_workers(void) {
-    if (g_worker_started) return;
-    for (int i = 0; i < WORKERS; i++) {
+/* Caller holds g_job_mu: one idle worker per queued job. */
+static void spawn_workers_locked(void) {
+    while (g_idle < g_qcount && g_workers < MAX_JOBS) {
         pthread_t th;
-        if (pthread_create(&th, NULL, job_worker, NULL) == 0) {
-            pthread_detach(th);
-            g_worker_started++;
-        }
+        if (pthread_create(&th, NULL, job_worker, NULL) != 0) break;
+        pthread_detach(th);
+        g_workers++;
+        g_idle++;
     }
 }
 
 /* Takes ownership of `owned` (a parsed job object); parses it exactly once. */
 void enqueue_job(struct tls *t, cJSON *owned) {
-    ensure_workers();
     pthread_mutex_lock(&g_job_mu);
     if (g_qcount >= MAX_QUEUE || g_qcount + g_busy >= MAX_JOBS) {
         pthread_mutex_unlock(&g_job_mu);
@@ -136,6 +152,7 @@ void enqueue_job(struct tls *t, cJSON *owned) {
     g_queue[g_qtail] = owned;
     g_qtail = (g_qtail + 1) % MAX_QUEUE;
     g_qcount++;
+    spawn_workers_locked();
     pthread_cond_signal(&g_job_cv);
     pthread_mutex_unlock(&g_job_mu);
 }

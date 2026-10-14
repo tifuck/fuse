@@ -7,6 +7,8 @@
 
 /* Slots streamed output leaves free for results and other jobs' frames. */
 #define OUT_STREAM_RESERVE 16
+/* Frames out_flush sends before the session checks the socket again. */
+#define OUT_FLUSH_BATCH 16
 
 #include <pthread.h>
 
@@ -28,6 +30,8 @@ extern pthread_cond_t g_out_space;
 int out_enqueue(int opcode, const unsigned char *data, size_t n);
 int out_flush(struct tls *t);
 int out_has_room(void);
+/* Wait up to ms for stream room (out_has_room) to open. */
+void out_wait_room(int ms);
 int send_chunk(const char *id, const char *stream, const char *data, size_t n);
 void send_res_tmo_len(struct tls *t, const char *id, int ok, int exit_code,
                       const char *out, size_t out_len, const char *err, size_t err_len,
