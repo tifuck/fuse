@@ -1,4 +1,6 @@
 // work-panels presentation. Dependencies are live getters supplied by index.js.
+const TREE_GLYPHS = { pipe: "│", tee: "├─", elbow: "└─" };
+
 export function create(deps) {
 // The work strip under the header prints agents the way Claude Code's agent
 // tree does: one thin line each, tree connectors (opts.tree: one of pipe,
@@ -42,7 +44,7 @@ function agentRowHtml(row, opts = {}) {
     return (
       `<div class="chat-agents-row is-${deps.escapeHtml(row.status || "unknown")}${row.wake_state === "dropped" ? " is-undelivered" : ""}${deps.agentIsStalled(row) ? " is-stalled" : ""}" role="listitem"${opts.selected ? ' aria-current="true"' : ""}>` +
       `<button type="button" class="chat-agents-pick" data-agent-id="${id}" title="${deps.escapeHtml(title)}">` +
-      (opts.tree && opts.tree.length ? `<span class="chat-agents-tree" aria-hidden="true">${opts.tree.map((kind) => `<i class="is-${deps.escapeHtml(kind)}"></i>`).join("")}</span>` : "") +
+      (opts.tree && opts.tree.length ? `<span class="chat-agents-tree" aria-hidden="true">${opts.tree.map((kind) => `<i class="is-${deps.escapeHtml(kind)}">${TREE_GLYPHS[kind] || ""}</i>`).join("")}</span>` : "") +
       '<span class="chat-agents-dot" aria-hidden="true"></span>' +
       `<span class="chat-agents-name">${deps.escapeHtml(row.description || "Subagent")}</span>` +
       `<span class="chat-agents-meta"><span class="chat-agents-state">${deps.escapeHtml(status)}</span>` +

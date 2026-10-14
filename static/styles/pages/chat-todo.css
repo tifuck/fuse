@@ -1,18 +1,14 @@
-/* —— Todo tab ——
-   todo_write never prints as a transcript row. Its list hangs off a small tab
-   on the right, sitting on the composer's top edge (a subagent's sits on its
-   status dock), so it stays put while the transcript scrolls behind it. The
-   tab is just "Todos done/total"; it slides the list up over the transcript,
-   five rows tall, scrolled so the item in progress is on top.
-   The section itself is a zero-height anchor line; the tab and the drawer
-   hang above it. */
+/* —— Todo list ——
+   todo_write never prints as a transcript row. Its list hangs off the
+   composer's top edge, so it stays put while the transcript scrolls behind
+   it. The header's todo button (its badge counts the open items) slides the
+   list up over the transcript, five rows tall, scrolled so the item in
+   progress is on top. The section itself is a zero-height anchor line; the
+   drawer hangs above it. */
 .chat-live-todos,
 .chat-agent-live-todos { display: none; }
 .chat :is(.chat-live-todos, .chat-agent-live-todos):not([hidden]) {
   --todo-row: calc(var(--console-row, 1.1rem) + 0.24rem);
-  --todo-tab-h: 1.7rem;
-  --todo-right: 0.6rem;
-  --todo-radius: 7px;
   --todo-edge: color-mix(in srgb, var(--mist) 16%, var(--line));
   --todo-surface: color-mix(in srgb, var(--ink) 88%, var(--panel));
   display: block;
@@ -33,15 +29,12 @@
 }
 .chat.is-agent-view .chat-dock > .chat-live-todos { display: none !important; }
 /* The composer's own popovers (model picker, permissions, context) open
-   upward over the tab, never under it. */
+   upward over the list, never under it. */
 .chat .chat-dock > .chat-box { z-index: 7; }
 /* What floats above the composer ("Jump to latest", the toast) rides above
-   the tray of the transcript on screen instead of hiding under its tab or
-   open page: --todo-lift is the tray's height, tab only when closed. */
-.chat:not(.is-agent-view):has(.chat-dock > .chat-live-todos:not([hidden])),
-.chat.is-agent-view:has(.chat-dock > .chat-agent-live-todos:not([hidden])) { --todo-lift: var(--todo-tab-room, 1.7rem); }
-.chat:not(.is-agent-view):has(.chat-dock > .chat-live-todos.is-open:not([hidden])) { --todo-lift: calc(var(--todo-tab-room, 1.7rem) + var(--todo-push, 0px)); }
-.chat.is-agent-view:has(.chat-dock > .chat-agent-live-todos.is-open:not([hidden])) { --todo-lift: calc(var(--todo-tab-room, 1.7rem) + var(--agent-todo-push, 0px)); }
+   the open list of the transcript on screen: --todo-lift is its height. */
+.chat:not(.is-agent-view):has(.chat-dock > .chat-live-todos.is-open:not([hidden])) { --todo-lift: var(--todo-push, 0px); }
+.chat.is-agent-view:has(.chat-dock > .chat-agent-live-todos.is-open:not([hidden])) { --todo-lift: var(--agent-todo-push, 0px); }
 .chat .chat-latest { bottom: calc(var(--dock-h, 6.5rem) + 0.3rem + var(--todo-lift, 0px)); }
 .chat .chat-dock > .chat-toast { bottom: calc(100% + 0.7rem + var(--todo-lift, 0px)); }
 /* A toast while "Jump to latest" shows stacks above the pill, not on it. */
@@ -49,12 +42,32 @@
 @media (max-width: 800px) {
   .chat .chat-latest { bottom: calc(var(--dock-h, 6rem) + 0.2rem + var(--todo-lift, 0px)); }
 }
-/* Collapsed, the tab only hovers over the last row. Open, the transcript
-   makes room for the drawer's page (todos.js measures it into --todo-push;
-   the tab is not counted, it stays on the last row), so the chat ends where
-   the list begins. The console theme sets the exact spacing. */
+/* Open, the transcript makes room for the drawer's page (todos.js measures
+   it into --todo-push), so the chat ends where the list begins. The console
+   theme sets the exact spacing. */
 
-/* The sheet: hangs from the anchor line, the tab on top, the page under it. */
+/* The header button: hidden while there is no list, a count of the open
+   items on the icon's corner. */
+.chat .chat-bar-btn[hidden] { display: none; }
+.chat .chat-todo-badge {
+  position: absolute;
+  top: calc(50% - 0.85rem);
+  left: calc(50% + 0.2rem);
+  box-sizing: border-box;
+  min-width: 0.95rem;
+  height: 0.95rem;
+  padding: 0 0.2rem;
+  border-radius: 999px;
+  background: var(--brass);
+  box-shadow: 0 0 0 2px var(--ink);
+  color: var(--ink);
+  font: 600 0.6rem/0.95rem var(--mono);
+  text-align: center;
+  pointer-events: none;
+}
+.chat .chat-todo-badge:empty { display: none; }
+
+/* The sheet: hangs from the anchor line. */
 .chat .chat-todo-sheet {
   position: absolute;
   left: 0;
@@ -66,33 +79,22 @@
 }
 .chat .chat-todo-sheet > * { pointer-events: auto; }
 
-/* The tab. */
+/* The head line on top of the page: "Todos done/total" and the dismiss. */
 .chat .chat-todo-bar {
   --todo-done: 0%;
   position: relative;
-  z-index: 1;
-  align-self: flex-end;
-  margin: 0 var(--todo-right) -1px 0;
   display: flex;
   align-items: center;
-  height: var(--todo-tab-h);
-  overflow: hidden;
-  border: 1px solid var(--todo-edge);
-  border-bottom: 0;
-  border-radius: var(--todo-radius) var(--todo-radius) 0 0;
-  background: var(--todo-surface);
-  animation: chat-todo-in var(--dur-2) ease-out both;
+  justify-content: space-between;
+  height: var(--todo-row);
+  padding-left: 0.5rem;
 }
-@keyframes chat-todo-in {
-  from { opacity: 0; transform: translateY(3px); }
-  to { opacity: 1; transform: none; }
-}
-/* Progress: a hairline along the tab's top edge, as wide as the finished share. */
+/* Progress: a hairline on the page's top rule, as wide as the finished share. */
 .chat .chat-todo-bar::after {
   content: "";
   position: absolute;
   left: 0;
-  top: 0;
+  top: -1px;
   width: var(--todo-done);
   height: 2px;
   background: var(--brass);
@@ -109,35 +111,20 @@
   display: flex;
   align-items: center;
   gap: 0.45rem;
-  height: 100%;
-  margin: 0;
-  padding: 0 0.55rem 0 0.65rem;
-  border: 0;
-  background: none;
-  color: inherit;
-  font: inherit;
   white-space: nowrap;
-  cursor: pointer;
 }
-.chat .chat-todo-head:focus-visible { outline: 2px solid var(--brass); outline-offset: -2px; border-radius: var(--todo-radius) var(--todo-radius) 0 0; }
 .chat .chat-todo-title { font-weight: 600; }
 .chat .chat-todo-count {
   display: inline-block;
   color: var(--brass);
   font-variant-numeric: tabular-nums;
 }
-.chat .chat-todo-chevron {
-  color: var(--mute);
-  transition: transform var(--dur-2) ease, color var(--dur-1) ease;
-}
-.chat .chat-todo-head:hover .chat-todo-chevron { color: var(--mist); }
-.chat :is(.chat-live-todos, .chat-agent-live-todos).is-open .chat-todo-chevron { transform: rotate(180deg); }
 .chat .chat-todo-dismiss {
   display: grid;
   place-items: center;
   width: 1.4rem;
   height: 1.4rem;
-  margin: 0 0.2rem 0 -0.25rem;
+  margin: 0;
   padding: 0;
   border: 0;
   border-radius: 4px;
@@ -149,11 +136,10 @@
 .chat .chat-todo-dismiss:hover { color: var(--mist); background: color-mix(in srgb, var(--mist) 8%, transparent); }
 .chat .chat-todo-dismiss:focus-visible { outline: 2px solid var(--brass); outline-offset: -2px; }
 
-/* The page: full width, it opens up out of the composer and carries the tab
-   on its top edge. The transcript makes room for it in the same frame, so
-   the page does not slide (a sliding page fought the transcript's jump); its
-   rows fade up into place instead. Closed, it is zero tall and only the tab
-   shows. */
+/* The page: full width, it opens up out of the composer. The transcript
+   makes room for it in the same frame, so the page does not slide (a sliding
+   page fought the transcript's jump); its rows fade up into place instead.
+   Closed, it is zero tall. */
 .chat .chat-todo-drawer {
   display: grid;
   grid-template-rows: 0fr;
@@ -166,7 +152,7 @@
 }
 .chat .chat-todo-clip { min-height: 0; overflow: hidden; }
 .chat .chat-todo-page {
-  padding: 0.25rem 0.35rem;
+  padding: 0 0.35rem 0.25rem;
   border-top: 1px solid var(--todo-edge);
   background: var(--todo-surface);
 }
@@ -223,16 +209,14 @@
 .chat .chat-todo-row.is-cancelled .chat-todo-box::before { opacity: 0.45; }
 
 @media (max-width: 800px) {
-  .chat :is(.chat-live-todos, .chat-agent-live-todos):not([hidden]) { --todo-tab-h: 2.2rem; --todo-row: 1.75rem; }
+  .chat :is(.chat-live-todos, .chat-agent-live-todos):not([hidden]) { --todo-row: 1.75rem; }
   .chat .chat-todo-row { padding-block: 0.18rem; }
   .chat .chat-todo-dismiss { width: 2rem; height: 2rem; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .chat .chat-todo-bar,
   .chat .chat-todo-bar.is-updated .chat-todo-count,
   .chat :is(.chat-live-todos, .chat-agent-live-todos).is-open .chat-todo-rows { animation: none; }
-  .chat .chat-todo-bar::after,
-  .chat .chat-todo-chevron { transition: none; }
+  .chat .chat-todo-bar::after { transition: none; }
 }
 
 /* The one line left in the transcript when a list finishes. */

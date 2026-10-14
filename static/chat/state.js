@@ -383,6 +383,7 @@ function initState() {
     main: { el: S.root.querySelector("[data-live-todos]"), sig: "", items: "", expanded: false, shownKey: "", lingerUntil: 0, timer: 0, key: "" },
     agent: { el: S.root.querySelector("[data-agent-live-todos]"), sig: "", items: "", expanded: false, shownKey: "", lingerUntil: 0, timer: 0, key: "" },
   };
+  S.todoButton = S.root.querySelector("[data-todo-header]");
   S.toolGestureOwner = null;
   S.pendingFullPaint = false;
   S.pendingAgentPaint = false;

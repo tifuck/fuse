@@ -1,4 +1,4 @@
-/* Bottom stack (todo tab, queue, composer) and top chrome (header line,
+/* Bottom stack (todo list, queue, composer) and top chrome (header line,
    background commands). Loaded last: these settle earlier layers. */
 
 /* Header line: a transparent scroll-gutter border mitred the bottom rule's
@@ -26,48 +26,32 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-sen
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box::before { margin-right: 0.2rem; }
 }
 
-/* Todo tab: a thin tab out of the way. Open, its page has a rule on top
-   that the tab breaks into, like a folder tab. */
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos):not([hidden]) {
-  --todo-tab-h: 1.3rem;
-}
+/* Todo list: the header's todo button opens it; its page starts with a thin
+   head line (title, count, dismiss). */
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-todo-head {
   gap: 0.4rem;
-  padding: 0 0.45rem 0 0.55rem;
   font-size: calc(var(--console-type) * 0.92);
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-todo-title { font-weight: 500; }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-todo-chevron { width: 10px; height: 10px; }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-todo-dismiss {
   width: 1.2rem;
   height: 100%;
-  margin: 0 0.1rem 0 -0.3rem;
   font-size: 0.85rem;
 }
-/* The transcript on screen ends above the tab too, open or closed, so the
-   tab never sits on the status line; open, it also makes room for the page. */
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] { --todo-tab-room: 1.3rem; }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"]:not(.is-empty):not(.is-agent-view):has(.chat-dock > .chat-live-todos:not([hidden])) [data-chat-thread] > .chat-live-dock:not([hidden]),
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"]:not(.is-empty):not(.is-agent-view):has(.chat-dock > .chat-live-todos:not([hidden])) [data-chat-thread]:not(:has(> .chat-live-dock:not([hidden]))) > .chat-log,
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"].is-agent-view:has(.chat-dock > .chat-agent-live-todos:not([hidden])) [data-agent-view] > .chat-live-dock:not([hidden]),
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"].is-agent-view:has(.chat-dock > .chat-agent-live-todos:not([hidden])) [data-agent-view]:not(:has(> .chat-live-dock:not([hidden]))) > .chat-log {
-  padding-bottom: calc(0.6rem + var(--todo-tab-room));
-}
+/* Open, the transcript on screen makes room for the page. */
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"]:not(.is-empty):not(.is-agent-view):has(.chat-dock > .chat-live-todos.is-open:not([hidden])) [data-chat-thread] > .chat-live-dock:not([hidden]),
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"]:not(.is-empty):not(.is-agent-view):has(.chat-dock > .chat-live-todos.is-open:not([hidden])) [data-chat-thread]:not(:has(> .chat-live-dock:not([hidden]))) > .chat-log {
-  padding-bottom: calc(0.6rem + var(--todo-tab-room) + var(--todo-push, 0px));
+  padding-bottom: calc(0.6rem + var(--todo-push, 0px));
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"].is-agent-view:has(.chat-dock > .chat-agent-live-todos.is-open:not([hidden])) [data-agent-view] > .chat-live-dock:not([hidden]),
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"].is-agent-view:has(.chat-dock > .chat-agent-live-todos.is-open:not([hidden])) [data-agent-view]:not(:has(> .chat-live-dock:not([hidden]))) > .chat-log {
-  padding-bottom: calc(0.6rem + var(--todo-tab-room) + var(--agent-todo-push, 0px));
+  padding-bottom: calc(0.6rem + var(--agent-todo-push, 0px));
 }
 /* An open list over a queue: a clear rule between the two. */
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-dock:has(> :is(.chat-live-todos, .chat-agent-live-todos).is-open:not([hidden])) > .chat-queue:not([hidden]) {
   border-top-color: var(--todo-edge, var(--line));
 }
 @media (max-width: 800px) {
-  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] { --todo-tab-room: 1.6rem; }
-  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-live-todos, .chat-agent-live-todos):not([hidden]) { --todo-tab-h: 1.6rem; }
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-todo-dismiss { width: 1.7rem; height: 100%; }
 }
 

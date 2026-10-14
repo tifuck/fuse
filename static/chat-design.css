@@ -645,8 +645,10 @@ html[data-chat-theme="ivory"] .chat .chat-code { border-color: var(--line); }
     max-width: min(9.5rem, 34%);
   }
   .chat .chat-bar { gap: 0 0.25rem; padding-inline: 0.5rem; align-content: center; }
+  /* A zero basis keeps a long title on the project chip's row, ellipsized,
+     instead of wrapping to a row of its own. */
   .chat:not(.is-untitled) .chat-bar-title {
-    flex: 1 1 auto;
+    flex: 1 1 0;
     height: auto;
     line-height: 1.15;
   }

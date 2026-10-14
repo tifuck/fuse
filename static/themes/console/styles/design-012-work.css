@@ -4,7 +4,7 @@
    no headings, the main row and the `$` prompt say what each group is. */
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-work {
   --work-row: 1.3rem;
-  padding: 0.15rem 0;
+  padding: 0;
   background: color-mix(in srgb, var(--ink) 92%, var(--panel));
   font: calc(var(--console-type) * 0.92)/var(--work-row) var(--mono);
   color: var(--mist);
@@ -63,7 +63,6 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat
 @media (max-width: 800px) {
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-work {
     --work-row: 1.6rem;
-    padding: 0.1rem 0;
   }
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-work-agents { max-height: calc(6 * var(--work-row)); }
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-work-jobs { max-height: calc(3 * var(--work-row)); }

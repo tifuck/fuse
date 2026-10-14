@@ -53,48 +53,29 @@
 .chat-jobs-output-link:focus-visible,
 .chat-agents-fold:focus-visible,
 :is(.chat-agents-act, .chat-jobs-kill):focus-visible { outline: 1px solid var(--brass); outline-offset: -1px; }
-/* Tree connectors are drawn, not typed: box-drawing glyphs leave gaps
-   between rows, so the levels read as loose T's. Each level is a cell the
-   row's full height; its vertical line drops from the parent's dot (the
-   negative margin cancels the pick's gap, so level k's line sits under the
-   dot of a row k levels deep), and the horizontal runs right up to this
-   row's square, which sits at the end of the arm, not on the junction.
-   An elbow (the last child) stops its vertical halfway: an L. */
-.chat-agents-row { --tree-cell: 1.6rem; --tree-gap: 0.5rem; --tree-line: color-mix(in srgb, var(--mist) 26%, var(--ink)); }
+/* Tree connectors are typed, like the transcript's agent tree: box-drawing
+   glyphs (├─ └─ │) with the terminal's gaps between rows, and a space
+   before each row's square. Each level is a cell two glyphs plus a gap wide;
+   the negative margin cancels the pick's gap, so level k's glyph starts under
+   the square of a row k levels deep. */
+.chat-agents-row { --tree-gap: 0.5rem; --tree-line: color-mix(in srgb, var(--mist) 40%, var(--ink)); }
 .chat-agents-pick { gap: var(--tree-gap); }
 .chat-agents-tree {
   display: flex;
   flex: 0 0 auto;
-  align-self: stretch;
   margin-left: calc(-1 * var(--tree-gap));
+  color: var(--tree-line);
 }
 /* An explicit width, not only a flex-basis: Firefox sizes the tree from its
-   cells' widths and would collapse it to nothing, leaving every square on
-   the junction of its lines. */
+   cells' widths and would collapse it to nothing. */
 .chat-agents-tree > i {
-  position: relative;
-  flex: 0 0 var(--tree-cell);
-  width: var(--tree-cell);
-  --tree-x: calc(var(--tree-gap) + var(--console-dot, 0.4rem) / 2 - 0.5px);
-}
-.chat-agents-tree > :is(.is-pipe, .is-tee, .is-elbow)::before {
-  content: "";
-  position: absolute;
-  left: var(--tree-x);
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background: var(--tree-line);
-}
-.chat-agents-tree > .is-elbow::before { bottom: 50%; }
-.chat-agents-tree > :is(.is-tee, .is-elbow)::after {
-  content: "";
-  position: absolute;
-  left: var(--tree-x);
-  right: calc(-1 * var(--tree-gap));
-  top: 50%;
-  height: 1px;
-  background: var(--tree-line);
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  width: calc(2ch + var(--tree-gap));
+  padding-left: var(--tree-gap);
+  font-style: normal;
+  white-space: pre;
+  user-select: none;
 }
 .chat-agents-name,
 .chat-jobs-cmd {

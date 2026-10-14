@@ -553,6 +553,7 @@ import { createBoot } from './chat/boot.js';
   };
 
     Object.values(S.todoSections).forEach((sec) => sec.el && sec.el.addEventListener("click", transcript.onTodoClick));
+    if (S.todoButton) S.todoButton.addEventListener("click", transcript.onTodoButton);
 
     S.root.addEventListener("error", (event) => {
     const image = event.target;

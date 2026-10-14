@@ -136,8 +136,7 @@ export function createTodos(ctx) {
   }
 
     // Open, the drawer page pushes its transcript (the main one, or the
-  // subagent's on screen) up by its own height; the tab is left out so it
-  // sits on the last transcript row.
+  // subagent's on screen) up by its own height.
   function syncTodoPush(sec, el, expanded) {
     const page = el.querySelector(".chat-todo-page");
     const name = sec === S.todoSections.main ? "--todo-push" : "--agent-todo-push";
@@ -156,6 +155,7 @@ export function createTodos(ctx) {
         sec.sig = "";
         sec.key = "";
         sec.items = "";
+        sec.left = 0;
         syncTodoPush(sec, el, false);
         afterResize();
       }
@@ -168,12 +168,11 @@ export function createTodos(ctx) {
     const changed = Boolean(sec.items) && sec.items !== items;
     sec.sig = sig;
     sec.items = items;
+    sec.left = state.items.filter((item) => !todoClosed(item)).length;
     const listId = `chat-todo-list-${el === S.todoSections.main.el ? "main" : "agent"}`;
     if (!el.querySelector("[data-todo-bar]")) el.innerHTML = ui.todoTrayHtml(listId);
     const bar = el.querySelector("[data-todo-bar]");
-    const refocus = bar.contains(document.activeElement) && document.activeElement.matches("[data-todo-toggle]");
-    bar.innerHTML = ui.todoBarHtml(state, { active, expanded: sec.expanded, listId });
-    if (refocus) bar.querySelector("[data-todo-toggle]").focus({ preventScroll: true });
+    bar.innerHTML = ui.todoBarHtml(state, { active });
     bar.style.setProperty("--todo-done", `${Math.round((state.items.filter(todoClosed).length / state.items.length) * 100)}%`);
     el.querySelector("[data-todo-list]").innerHTML = ui.todoRowsHtml(state.items);
     el.classList.toggle("is-open", sec.expanded);
@@ -214,6 +213,28 @@ export function createTodos(ctx) {
     paintTodoSection(S.todoSections.agent, child && { state: child, latest: true }, Boolean(S.agentRun && agents.agentLive(S.agentRun.status)), () => {
       if (S.agentStick && S.agentLogEl) agents.restoreAgentScroll(true, 0);
     });
+    paintTodoButton();
+  }
+
+  const onScreenTodos = () => S.todoSections[S.root.classList.contains("is-agent-view") ? "agent" : "main"];
+
+  // The header button stands for the list of the transcript on screen: it
+  // shows while that list does, counts its open items, and opens the drawer.
+  function paintTodoButton() {
+    const btn = S.todoButton;
+    if (!btn) return;
+    const sec = onScreenTodos();
+    const shown = Boolean(sec.el && !sec.el.hidden);
+    btn.hidden = !shown;
+    btn.setAttribute("aria-expanded", shown && sec.expanded ? "true" : "false");
+    btn.title = sec.expanded ? "Hide todos" : "Show todos";
+    btn.querySelector("[data-todo-badge]").textContent = shown && sec.left ? String(sec.left) : "";
+  }
+
+  function onTodoButton() {
+    const sec = onScreenTodos();
+    sec.expanded = !sec.expanded;
+    syncTodoSections();
   }
 
     function scheduleTodoSync() {
@@ -233,13 +254,11 @@ export function createTodos(ctx) {
       dismissTodos(sec.key);
       sec.sig = "";
       scheduleTodoSync();
-    } else if (event.target.closest("[data-todo-toggle]")) {
-      sec.expanded = !sec.expanded;
-      syncTodoSections();
     }
   }
 
   return {
+    onTodoButton,
     onTodoClick,
     scheduleTodoSync,
     syncTodoSections,

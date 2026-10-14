@@ -5,23 +5,18 @@ function todoLineHtml(text) {
   }
 
 // The tray's frame is built once so the sheet can slide open and shut and the
-// tab can pulse; only the tab's contents and the rows are repainted. The tab
-// rides on the sheet's top edge, like the tab of a page.
+// head line can pulse; only the head's contents and the rows are repainted.
+// The header's todo button opens it.
 function todoTrayHtml(listId) {
-    return '<div class="chat-todo-sheet"><div class="chat-todo-bar" data-todo-bar></div>' +
-      `<div class="chat-todo-drawer"><div class="chat-todo-clip"><div class="chat-todo-page"><ol class="chat-todo-rows" id="${listId}" data-todo-list></ol></div></div></div></div>`;
+    return '<div class="chat-todo-sheet"><div class="chat-todo-drawer"><div class="chat-todo-clip"><div class="chat-todo-page">' +
+      `<div class="chat-todo-bar" data-todo-bar></div><ol class="chat-todo-rows" id="${listId}" data-todo-list></ol></div></div></div></div>`;
   }
 
-function todoBarHtml(state, { active, expanded, listId }) {
+function todoBarHtml(state, { active }) {
     const items = state.items;
     const done = items.filter(deps.todoClosed).length;
     const dismiss = active ? "" : '<button type="button" class="chat-todo-dismiss" data-todo-dismiss aria-label="Dismiss todo list" title="Dismiss">×</button>';
-    return (
-      `<button type="button" class="chat-todo-head" data-todo-toggle aria-expanded="${expanded ? "true" : "false"}" aria-controls="${listId}" title="${expanded ? "Hide todos" : "Show todos"}">` +
-      `<span class="chat-todo-title">Todos</span><span class="chat-todo-count" data-todo-count>${done}/${items.length}</span>` +
-      '<svg class="chat-todo-chevron" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M4 10l4-4 4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
-      `</button>${dismiss}`
-    );
+    return `<span class="chat-todo-head"><span class="chat-todo-title">Todos</span><span class="chat-todo-count" data-todo-count>${done}/${items.length}</span></span>${dismiss}`;
   }
 
 function todoRowsHtml(items) {
