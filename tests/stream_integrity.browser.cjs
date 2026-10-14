@@ -80,7 +80,7 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
         const order = dock.compareDocumentPosition(log);
         const dockAfterLog = Boolean(order & Node.DOCUMENT_POSITION_PRECEDING);
         // The dock is the thread's last flex child, so it ends the scroll range.
-        const dockEnds = Math.abs(thread.scrollHeight - dock.offsetTop - dock.offsetHeight) <= 2;
+        const dockEnds = Math.abs(thread.scrollHeight - (dock.offsetTop - thread.offsetTop) - dock.offsetHeight) <= 2;
 
         // A small nudge is still the end: no pill.
         thread.scrollTop -= 40;
