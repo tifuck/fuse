@@ -152,6 +152,7 @@ body.is-artifact-page main > .panel { margin: 1.25rem auto; max-width: 28rem; }
 }
 .chat.is-empty .chat-thread {
   flex-grow: 0;
+  margin-top: 0;
   padding-top: 0;
   overflow: hidden;
   visibility: hidden;
@@ -239,12 +240,15 @@ body.is-chat.is-keyboard .chat-dock {
 }
 .chat-edge-top {
   top: 0;
+  right: var(--chat-scroll-gutter, 0px);
   height: calc(var(--chat-bar-h) + 1.35rem);
   background: linear-gradient(180deg, var(--ink) 0%, var(--ink) calc(100% - 1.35rem), transparent 100%);
 }
 .chat.is-empty .chat-edge { opacity: 0; }
+/* The scroll box starts under the bar, so its scrollbar never runs beneath it. */
 .chat-thread {
-  padding-top: calc(var(--chat-bar-h) + 0.45rem);
+  margin-top: var(--chat-bar-h);
+  padding-top: 0.45rem;
   scroll-padding-top: 0.4rem;
 }
 .chat-log,

@@ -164,7 +164,8 @@ html[data-chat-console="true"] .chat[data-view="console"].is-empty .chat-thread 
   visibility: visible;
   overflow-y: auto;
   pointer-events: auto;
-  padding-top: calc(var(--chat-bar-h) + 0.45rem);
+  margin-top: var(--chat-bar-h);
+  padding-top: 0.45rem;
 }
 
 html[data-chat-console="true"] .chat[data-view="console"] .chat-dock,

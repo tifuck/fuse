@@ -2075,7 +2075,23 @@ import { createBoot } from './chat/boot.js';
     }
     const chatBar = S.root.querySelector(".chat-bar");
     if (chatBar) new ResizeObserver(() => composer.scheduleFitChatBar()).observe(chatBar);
-    if (S.agentBodyEl) new ResizeObserver(() => { if (S.agentStick) agents.pinAgentLog(); }).observe(S.agentBodyEl);
+    if (S.agentBodyEl) {
+      const agentResizeObserver = new ResizeObserver(() => { if (S.agentStick) agents.pinAgentLog(); });
+      [S.agentBodyEl, S.agentLogEl].forEach((el) => el && agentResizeObserver.observe(el));
+    }
+    // The work strip sits above the transcript on screen: when it appears,
+    // grows or goes away, a reader not following the bottom keeps the same
+    // lines in view and only the scrollbar moves.
+    if (S.workStripEl) {
+      let stripH = S.workStripEl.offsetHeight;
+      new ResizeObserver(() => {
+        const h = S.workStripEl.offsetHeight;
+        const agentView = S.root.classList.contains("is-agent-view");
+        const view = agentView ? S.agentLogEl : S.thread;
+        if (view && !(agentView ? S.agentStick : S.stickToBottom)) view.scrollTop += h - stripH;
+        stripH = h;
+      }).observe(S.workStripEl);
+    }
   }
 
     if (document.fonts && document.fonts.ready) {

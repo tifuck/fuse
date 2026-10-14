@@ -203,7 +203,7 @@
     min-height: 0;
   }
   body.is-keyboard .chat-bar { height: var(--chat-bar-h); }
-  body.is-keyboard .chat-thread { padding-top: var(--chat-bar-h); }
+  body.is-keyboard .chat-thread { padding-top: 0; }
   body.is-keyboard .chat-dock { padding-top: 0.1rem; padding-bottom: 0.35rem; }
   body.is-keyboard .chat-box { padding: 0.35rem 0.5rem 0.3rem; }
   body.is-keyboard .chat-compose textarea {

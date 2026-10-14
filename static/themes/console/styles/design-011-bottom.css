@@ -38,14 +38,21 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-tod
   height: 100%;
   font-size: 0.85rem;
 }
-/* Open, the transcript on screen makes room for the page. */
+/* Open, the transcript on screen ends where the page begins: its scroll box
+   shrinks, so the scrollbar ends there too, not behind the page. */
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"]:not(.is-empty):not(.is-agent-view):has(.chat-dock > .chat-live-todos.is-open:not([hidden])) [data-chat-thread] > .chat-live-dock:not([hidden]),
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"]:not(.is-empty):not(.is-agent-view):has(.chat-dock > .chat-live-todos.is-open:not([hidden])) [data-chat-thread]:not(:has(> .chat-live-dock:not([hidden]))) > .chat-log {
-  padding-bottom: calc(0.6rem + var(--todo-push, 0px));
+  padding-bottom: 0.6rem;
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"]:not(.is-empty):not(.is-agent-view):has(.chat-dock > .chat-live-todos.is-open:not([hidden])) [data-chat-thread] {
+  margin-bottom: var(--todo-push, 0px);
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"].is-agent-view:has(.chat-dock > .chat-agent-live-todos.is-open:not([hidden])) [data-agent-view] > .chat-live-dock:not([hidden]),
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"].is-agent-view:has(.chat-dock > .chat-agent-live-todos.is-open:not([hidden])) [data-agent-view]:not(:has(> .chat-live-dock:not([hidden]))) > .chat-log {
-  padding-bottom: calc(0.6rem + var(--agent-todo-push, 0px));
+  padding-bottom: 0.6rem;
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"].is-agent-view:has(.chat-dock > .chat-agent-live-todos.is-open:not([hidden])) [data-agent-view] {
+  margin-bottom: var(--agent-todo-push, 0px);
 }
 /* An open list over a queue: a clear rule between the two. */
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-dock:has(> :is(.chat-live-todos, .chat-agent-live-todos).is-open:not([hidden])) > .chat-queue:not([hidden]) {

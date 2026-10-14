@@ -16,7 +16,7 @@
   background: var(--ink);
 }
 .chat-stage > .chat-work { margin-top: var(--chat-bar-h); }
-.chat-stage:has(> .chat-work:not([hidden])) > .chat-thread { padding-top: 0.35rem; }
+.chat-stage:has(> .chat-work:not([hidden])) > .chat-thread { margin-top: 0; padding-top: 0.35rem; }
 .chat-work-agents,
 .chat-work-jobs {
   overflow-y: auto;
