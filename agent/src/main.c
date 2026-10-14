@@ -266,9 +266,9 @@ int main(int argc, char **argv) {
     if (g_config[0]) load_config(g_config);
     if (strcmp(cmd, "update") == 0) {
         g_auto_update = 1;
-        /* allow_exec=0: a manual update stages the verified binary and never
-         * execs a second daemon or disturbs the running one. */
-        return maybe_update(0);
+        /* A manual update stages the verified binary and never execs a
+         * second daemon or disturbs the running one. */
+        return maybe_update(UPDATE_MANUAL);
     }
     if (strcmp(cmd, "run") != 0) {
         usage();

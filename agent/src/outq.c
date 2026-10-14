@@ -23,10 +23,8 @@ static void out_wake(void) {
     }
 }
 
-static int out_enqueue_mode(int opcode, const unsigned char *data, size_t n, int reliable) {
-    unsigned char *copy = malloc(n ? n : 1);
-    if (!copy) return -1;
-    if (n) memcpy(copy, data, n);
+/* Takes ownership of copy (freed on failure). */
+static int out_push(int opcode, unsigned char *copy, size_t n, int reliable) {
     pthread_mutex_lock(&g_out_mu);
     while (reliable && g_out_n >= OUT_QMAX)
         pthread_cond_wait(&g_out_space, &g_out_mu);
@@ -46,7 +44,10 @@ static int out_enqueue_mode(int opcode, const unsigned char *data, size_t n, int
 }
 
 int out_enqueue(int opcode, const unsigned char *data, size_t n) {
-    return out_enqueue_mode(opcode, data, n, 0);
+    unsigned char *copy = malloc(n ? n : 1);
+    if (!copy) return -1;
+    if (n) memcpy(copy, data, n);
+    return out_push(opcode, copy, n, 0);
 }
 
 int out_flush(struct tls *t) {
@@ -100,23 +101,24 @@ void out_wait_room(int ms) {
     pthread_mutex_unlock(&g_out_mu);
 }
 
+/* Written straight into the queued buffer: the cJSON tree, its print and
+ * the queue copy cost three passes over every output chunk. Output is
+ * arbitrary bytes, so the escaper also covers NUL and invalid UTF-8. */
 int send_chunk(const char *id, const char *stream, const char *data, size_t n) {
     if (!data || !n) return 0;
-    cJSON *o = cJSON_CreateObject();
-    cJSON_AddNumberToObject(o, "v", 1);
-    cJSON_AddStringToObject(o, "t", "chunk");
-    cJSON_AddStringToObject(o, "id", id ? id : "");
-    cJSON_AddStringToObject(o, "stream", stream ? stream : "out");
-    /* Output is arbitrary bytes: NUL would truncate a plain JSON string. */
-    cJSON_AddItemToObject(o, "data", json_string_bytes(data, n));
-    char *s = cJSON_PrintUnformatted(o);
-    cJSON_Delete(o);
-    int rc = -1;
-    if (s) {
-        rc = out_enqueue(1, (const unsigned char *)s, strlen(s));
-        free(s);
-    }
-    return rc;
+    if (!id) id = "";
+    if (!stream) stream = "out";
+    size_t idn = strlen(id), sn = strlen(stream);
+    char *buf = malloc(64 + (idn + sn + n) * 6);
+    if (!buf) return -1;
+    char *w = stpcpy(buf, "{\"v\":1,\"t\":\"chunk\",\"id\":\"");
+    w = json_escape_into(w, id, idn);
+    w = stpcpy(w, "\",\"stream\":\"");
+    w = json_escape_into(w, stream, sn);
+    w = stpcpy(w, "\",\"data\":\"");
+    w = json_escape_into(w, data, n);
+    w = stpcpy(w, "\"}");
+    return out_push(1, (unsigned char *)buf, (size_t)(w - buf), 0);
 }
 
 void send_res_tmo_len(struct tls *t, const char *id, int ok, int exit_code,
@@ -144,10 +146,9 @@ void send_res_tmo_len(struct tls *t, const char *id, int ok, int exit_code,
           * their slot until their terminal result has bounded queue space. */
          /* A refusal lost to a dead socket is queued (never waiting) for the
           * next session; dropped, the server would wait on a job that never ran. */
-         if (t) {
-             if (ws_send_text(t, s) != 0) out_enqueue_mode(1, (const unsigned char *)s, strlen(s), 0);
-         } else out_enqueue_mode(1, (const unsigned char *)s, strlen(s), 1);
-         free(s);
+         if (!t) out_push(1, (unsigned char *)s, strlen(s), 1);
+         else if (ws_send_text(t, s) != 0) out_push(1, (unsigned char *)s, strlen(s), 0);
+         else free(s);
      }
 }
 

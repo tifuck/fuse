@@ -87,6 +87,7 @@ int session_loop(void) {
      * manifest periodically while connected (only while idle). First check
      * soon after connecting so restarts pick up releases quickly. */
     int64_t next_update_ms = now_mono_ms() + UPDATE_SOON_MS;
+    int64_t next_exec_ms = 0;
     /* Names this process to the server: jobs parked by a session of another
      * process can never be answered, so the server fails them at once. */
     char inst[17];
@@ -108,8 +109,10 @@ int session_loop(void) {
         attempts++;
         consume_wake();
         int wake = wake_take(); /* consume then take: no lost reset */
-        /* Don't stall a resume/network reconnect on the auto-update HTTP fetch. */
-        if (fail_index == 0 && wake == 0 && agent_idle()) maybe_update(1);
+        /* No update fetch here: it cost a whole extra TLS connection before
+         * every reconnect. update_check_after_connect checks soon instead.
+         * Committing an already staged build needs no network. */
+        if (update_exec_pending() && agent_idle()) maybe_update(UPDATE_EXEC);
         if (wake == WAKE_RESUME) fprintf(stderr, "fuse-agent: resume detected\n");
         else if (wake == WAKE_NETWORK) fprintf(stderr, "fuse-agent: network up\n");
         if (ever_connected || attempts > 1)
@@ -237,16 +240,15 @@ int session_loop(void) {
                 drop_reason = "io error";
                 break;
             }
+            /* Fetch and stage on a background thread, so jobs never wait on
+             * a download; this thread only execs into a staged build, idle. */
             if (g_auto_update && now_mono_ms() >= next_update_ms) {
-                if (agent_idle()) {
-                    maybe_update(1); /* execv on success; returns on failure */
-                    /* A restart deferred by work that arrived mid-download
-                     * is retried soon, not at the next full interval. */
-                    next_update_ms = now_mono_ms() + (update_exec_pending() ? 60000 : UPDATE_EVERY_MS);
-                } else {
-                    /* Jobs in flight: retry soon rather than starve updates. */
-                    next_update_ms = now_mono_ms() + 60000;
-                }
+                update_start_background();
+                next_update_ms = now_mono_ms() + UPDATE_EVERY_MS;
+            }
+            if (update_exec_pending() && now_mono_ms() >= next_exec_ms) {
+                next_exec_ms = now_mono_ms() + 5000;
+                if (agent_idle()) maybe_update(UPDATE_EXEC); /* execv; returns if work waits */
             }
             if (SSL_pending(t.ssl) == 0 && t.pb_off >= t.pb_len) {
                 /* Frames left by the bounded flush: only peek at the socket,

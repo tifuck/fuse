@@ -12,8 +12,8 @@ struct url {
 };
 struct tls {
     int fd;
-    SSL_CTX *ctx;
     SSL *ssl;
+    char sess_key[272]; /* host:port, for TLS session resumption */
     /* Bytes read past the end of the HTTP handshake header, stashed so the
      * first WebSocket frame is not lost if the server pipelined them. */
     unsigned char pb[512];

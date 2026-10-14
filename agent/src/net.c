@@ -4,6 +4,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#include <pthread.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 
@@ -152,9 +153,31 @@ static int connect_timeout(int fd, const struct sockaddr *sa, socklen_t len, int
     return 0;
 }
 
+/* One client context per process: building it parsed the CA bundle
+ * (~12 ms) on every reconnect. Thread-safe once set up. */
+static SSL_CTX *s_ctx;
+static pthread_once_t s_ctx_once = PTHREAD_ONCE_INIT;
+
+static void ctx_init(void) {
+    s_ctx = SSL_CTX_new(TLS_client_method());
+    if (!s_ctx) return;
+    SSL_CTX_set_verify(s_ctx, SSL_VERIFY_PEER, NULL);
+    SSL_CTX_set_default_verify_paths(s_ctx);
+    SSL_CTX_set_min_proto_version(s_ctx, TLS1_2_VERSION);
+}
+
+/* The last resumable session, keyed by host:port, so a reconnect resumes
+ * instead of repeating the full handshake and certificate check. */
+static pthread_mutex_t s_sess_mu = PTHREAD_MUTEX_INITIALIZER;
+static SSL_SESSION *s_sess;
+static char s_sess_key[sizeof(((struct tls *)0)->sess_key)];
+
 int tls_connect(struct tls *t, const struct url *u) {
     memset(t, 0, sizeof(*t));
     t->fd = -1;
+    pthread_once(&s_ctx_once, ctx_init);
+    if (!s_ctx) return -1;
+    snprintf(t->sess_key, sizeof(t->sess_key), "%s:%d", u->host, u->port);
     struct addrinfo hints, *res = NULL, *rp;
     char port[8];
     snprintf(port, sizeof(port), "%d", u->port);
@@ -175,24 +198,18 @@ int tls_connect(struct tls *t, const struct url *u) {
     }
     freeaddrinfo(res);
     if (fd < 0) return -1;
-    SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
-    if (!ctx) {
-        close(fd);
-        return -1;
-    }
-    SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
-    SSL_CTX_set_default_verify_paths(ctx);
-    SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
-    SSL *ssl = SSL_new(ctx);
+    SSL *ssl = SSL_new(s_ctx);
     /* SSL_set1_host failing would leave the peer's hostname unchecked:
      * refuse the connection rather than accept any trusted certificate. */
     if (!ssl || SSL_set_fd(ssl, fd) != 1 || SSL_set_tlsext_host_name(ssl, u->host) != 1 ||
         SSL_set1_host(ssl, u->host) != 1) {
         if (ssl) SSL_free(ssl);
-        SSL_CTX_free(ctx);
         close(fd);
         return -1;
     }
+    pthread_mutex_lock(&s_sess_mu);
+    if (s_sess && strcmp(s_sess_key, t->sess_key) == 0) SSL_set_session(ssl, s_sess);
+    pthread_mutex_unlock(&s_sess_mu);
     int64_t deadline = now_mono_ms() + CONNECT_TIMEOUT_MS;
     for (;;) {
         int rc = SSL_connect(ssl);
@@ -200,7 +217,6 @@ int tls_connect(struct tls *t, const struct url *u) {
         int err = SSL_get_error(ssl, rc);
         if (err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE) {
             SSL_free(ssl);
-            SSL_CTX_free(ctx);
             close(fd);
             return -1;
         }
@@ -208,13 +224,11 @@ int tls_connect(struct tls *t, const struct url *u) {
         int events = (err == SSL_ERROR_WANT_WRITE) ? POLLOUT : POLLIN;
         if (left <= 0 || wait_fd(fd, events, (int)left) <= 0) {
             SSL_free(ssl);
-            SSL_CTX_free(ctx);
             close(fd);
             return -1;
         }
     }
     t->fd = fd;
-    t->ctx = ctx;
     t->ssl = ssl;
     return 0;
 }
@@ -226,11 +240,21 @@ void tls_close(struct tls *t) {
         pthread_mutex_unlock(&g_conn_mu);
     }
     if (t->ssl) {
+        /* TLS 1.3 tickets arrive after the handshake: take the session now. */
+        SSL_SESSION *sess = SSL_get1_session(t->ssl);
+        if (sess && SSL_SESSION_is_resumable(sess)) {
+            pthread_mutex_lock(&s_sess_mu);
+            if (s_sess) SSL_SESSION_free(s_sess);
+            s_sess = sess;
+            memcpy(s_sess_key, t->sess_key, sizeof(s_sess_key));
+            pthread_mutex_unlock(&s_sess_mu);
+        } else if (sess) {
+            SSL_SESSION_free(sess);
+        }
         SSL_set_quiet_shutdown(t->ssl, 1);
         SSL_shutdown(t->ssl);
         SSL_free(t->ssl);
     }
-    if (t->ctx) SSL_CTX_free(t->ctx);
     if (t->fd >= 0) close(t->fd);
     memset(t, 0, sizeof(*t));
     t->fd = -1;
@@ -362,22 +386,19 @@ size_t ws_header(int opcode, const unsigned char *mask, size_t n, unsigned char 
     return hlen + 4;
 }
 
+/* Header and masked payload in one buffer and one SSL_write: separate
+ * writes made a TLS record (and, with TCP_NODELAY, a packet) per piece. */
 int ws_send(struct tls *t, int opcode, const unsigned char *data, size_t n) {
-    unsigned char hdr[14];
     unsigned char mask[4];
     if (RAND_bytes(mask, 4) != 1) return -1;
-    size_t hlen = ws_header(opcode, mask, n, hdr);
-    if (tls_write_all(t, hdr, hlen) != 0) return -1;
-    unsigned char tmp[4096];
-    size_t off = 0;
-    while (off < n) {
-        size_t chunk = n - off;
-        if (chunk > sizeof(tmp)) chunk = sizeof(tmp);
-        for (size_t i = 0; i < chunk; i++) tmp[i] = data[off + i] ^ mask[(off + i) & 3];
-        if (tls_write_all(t, tmp, chunk) != 0) return -1;
-        off += chunk;
-    }
-    return 0;
+    unsigned char small[4096];
+    unsigned char *buf = n + 14 <= sizeof(small) ? small : malloc(n + 14);
+    if (!buf) return -1;
+    size_t hlen = ws_header(opcode, mask, n, buf);
+    for (size_t i = 0; i < n; i++) buf[hlen + i] = data[i] ^ mask[i & 3];
+    int rc = tls_write_all(t, buf, hlen + n);
+    if (buf != small) free(buf);
+    return rc;
 }
 
 int ws_send_text(struct tls *t, const char *s) {

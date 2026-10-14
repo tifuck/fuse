@@ -87,11 +87,9 @@ static inline size_t utf8_incomplete_tail(const char *s, size_t n) {
     }
     return 0;
 }
-static inline cJSON *json_string_bytes(const char *s, size_t n) {
-    char *buf = malloc(n * 6 + 3);
-    if (!buf) return NULL;
-    char *w = buf;
-    *w++ = '"';
+/* Escape s[0..n) into w (room for n * 6 bytes) without quotes; returns the
+ * end. Shared by json_string_bytes and the hand-built chunk frames. */
+static inline char *json_escape_into(char *w, const char *s, size_t n) {
     for (size_t i = 0; i < n; i++) {
         unsigned char c = (unsigned char)s[i];
         if (c == '"' || c == '\\') {
@@ -120,6 +118,14 @@ static inline cJSON *json_string_bytes(const char *s, size_t n) {
             }
         }
     }
+    return w;
+}
+static inline cJSON *json_string_bytes(const char *s, size_t n) {
+    char *buf = malloc(n * 6 + 3);
+    if (!buf) return NULL;
+    char *w = buf;
+    *w++ = '"';
+    w = json_escape_into(w, s, n);
     *w++ = '"';
     *w = 0;
     cJSON *o = cJSON_CreateRaw(buf);

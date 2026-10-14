@@ -1,5 +1,6 @@
 /* Fuse connector: self-update (manifest fetch, sha256 verify, flock, staging). */
 #include <fcntl.h>
+#include <pthread.h>
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -181,12 +182,14 @@ int format_update_staging(char *dst, size_t cap, const char *self) {
     return 0;
 }
 
-/* allow_exec: only the connected daemon may execv() into the new build - it
- * replaces itself (same PID, single daemon) and only from the idle-gated
- * call sites. A manual `fuse-agent update` runs in its own process and must
- * never become a second live daemon (two instances on one token replace each
- * other forever), so it stages the verified binary and leaves restart
- * ownership to the operator or systemd. */
+/* mode: UPDATE_STAGE (daemon, background thread) fetches, verifies and
+ * installs the new build, then marks it pending; UPDATE_EXEC (session
+ * thread, idle-gated) only execv()s into a pending build - same PID, single
+ * daemon - and never touches the network, so the session never stalls on a
+ * download. A manual `fuse-agent update` (UPDATE_MANUAL) runs in its own
+ * process and must never become a second live daemon (two instances on one
+ * token replace each other forever), so it stages the verified binary and
+ * leaves restart ownership to the operator or systemd. */
 /* A failed update says why and returns non-zero ("already current" is 0):
  * a manual `fuse-agent update` exited 0 silently on every failure. */
 #define UPDATE_FAIL(msg)                                              \
@@ -201,21 +204,40 @@ int format_update_staging(char *dst, size_t cap, const char *self) {
 #define FUSE_ARCH_LABEL "linux-amd64"
 #endif
 
-/* Set by the session: non-zero when work arrived while the update was
- * downloading (frames unread on the socket, jobs queued). execv would drop
- * that work, so the restart waits for the next idle check instead. */
+/* Set by the session: non-zero when work is waiting (frames unread on the
+ * socket, jobs queued). execv would drop that work, so the restart waits
+ * for the next idle check instead. */
 int (*update_exec_veto)(void) = NULL;
+/* A verified binary is installed over self (by the background stager). */
 static int s_exec_pending = 0;
+static int s_bg_running = 0;
+/* Path the build was installed to: once renamed over, /proc/self/exe
+ * reads "... (deleted)" and cannot be exec'd. */
+static char s_staged_self[PATH_MAX];
 
-int update_exec_pending(void) { return s_exec_pending; }
+int update_exec_pending(void) { return __atomic_load_n(&s_exec_pending, __ATOMIC_ACQUIRE); }
 
 static void exec_self(const char *self) {
     char *argv[] = {(char *)self, "run", "--config", g_config, NULL};
     execv(self, argv); /* O_CLOEXEC fds (incl. the lock) close here */
 }
 
-int maybe_update(int allow_exec) {
+int maybe_update(int mode) {
     if (!g_auto_update) return 0;
+    char lockpath[PATH_MAX];
+    if (mode == UPDATE_EXEC) {
+        /* No network here: the session thread only commits a staged binary. */
+        if (!update_exec_pending()) return 0;
+        int lockfd = update_lock_acquire(s_staged_self, lockpath, sizeof(lockpath));
+        if (lockfd < 0) return 1;
+        if (!(update_exec_veto && update_exec_veto())) {
+            fprintf(stderr, "fuse-agent: restarting into the staged update\n");
+            exec_self(s_staged_self);
+            _exit(0);
+        }
+        close(lockfd);
+        return 0;
+    }
     if (!g_url[0]) {
         fprintf(stderr, "fuse-agent: update failed: no server url configured\n");
         return 1;
@@ -227,18 +249,12 @@ int maybe_update(int allow_exec) {
         return 1;
     }
     self[k] = 0;
-    char lockpath[PATH_MAX];
     int lockfd = update_lock_acquire(self, lockpath, sizeof(lockpath));
     if (lockfd < 0) {
         fprintf(stderr, "fuse-agent: update skipped; another updater is active\n");
         return 1;
     }
-    if (allow_exec && s_exec_pending && !(update_exec_veto && update_exec_veto())) {
-        fprintf(stderr, "fuse-agent: restarting into the staged update\n");
-        exec_self(self);
-        _exit(0);
-    }
-    int rc = 0;
+    int rc = 0, staged = 0;
     char tmp[PATH_MAX] = {0}, neu[PATH_MAX] = {0};
     cJSON *root = NULL;
     char *body = NULL;
@@ -282,7 +298,7 @@ int maybe_update(int allow_exec) {
     const char *ver = json_cstr(root, "version", "");
     if (!ver[0]) UPDATE_FAIL("manifest has no version");
     if (!ver_newer(ver, FUSE_AGENT_VERSION)) {
-        if (!allow_exec) fprintf(stderr, "fuse-agent: already up to date (%s)\n", FUSE_AGENT_VERSION);
+        if (mode == UPDATE_MANUAL) fprintf(stderr, "fuse-agent: already up to date (%s)\n", FUSE_AGENT_VERSION);
         goto out;
     }
     cJSON *bins = cJSON_GetObjectItemCaseSensitive(root, "binaries");
@@ -312,26 +328,37 @@ int maybe_update(int allow_exec) {
         unlink(neu);
         UPDATE_FAIL("could not replace the installed binary");
     }
-    if (!allow_exec) {
+    if (mode == UPDATE_MANUAL) {
         fprintf(stderr, "fuse-agent: updated to %s\n", ver);
         fprintf(stderr,
                 "fuse-agent: restart the connector to activate "
                 "(systemctl restart fuse-agent, or rerun it)\n");
         goto out;
     }
-    if (update_exec_veto && update_exec_veto()) {
-        s_exec_pending = 1;
-        fprintf(stderr, "fuse-agent: updated to %s; restart deferred until pending work is done\n", ver);
-        goto out;
-    }
-    fprintf(stderr, "fuse-agent: updated to %s, restarting\n", ver);
-    exec_self(self);
-    _exit(0);
+    fprintf(stderr, "fuse-agent: updated to %s; restarting when idle\n", ver);
+    memcpy(s_staged_self, self, sizeof(s_staged_self));
+    staged = 1;
 out:
     if (mfd >= 0) close(mfd);
     if (root) cJSON_Delete(root);
     free(body);
     if (tmp[0]) unlink(tmp);
     close(lockfd);
+    /* After the lock is released, so the committing session can take it. */
+    if (staged) __atomic_store_n(&s_exec_pending, 1, __ATOMIC_RELEASE);
     return rc;
+}
+
+static void *update_thread(void *arg) {
+    (void)arg;
+    maybe_update(UPDATE_STAGE);
+    __atomic_store_n(&s_bg_running, 0, __ATOMIC_RELEASE);
+    return NULL;
+}
+
+void update_start_background(void) {
+    if (!g_auto_update || update_exec_pending() || __atomic_exchange_n(&s_bg_running, 1, __ATOMIC_ACQ_REL)) return;
+    pthread_t th;
+    if (pthread_create(&th, NULL, update_thread, NULL) == 0) pthread_detach(th);
+    else __atomic_store_n(&s_bg_running, 0, __ATOMIC_RELEASE);
 }
