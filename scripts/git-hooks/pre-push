@@ -12,7 +12,10 @@ zero=0000000000000000000000000000000000000000
 while read -r local_ref local_sha remote_ref remote_sha; do
   [ "$remote_ref" = "refs/heads/main" ] || { echo "pre-push: only main is published, refusing $remote_ref" >&2; exit 1; }
   [ "$local_sha" != "$zero" ] || { echo "pre-push: refusing to delete main" >&2; exit 1; }
-  if [ "$remote_sha" = "$zero" ]; then range="$local_sha"; else range="$remote_sha..$local_sha"; fi
+  # Everything not already on a fetched ref of this remote. Never "$remote_sha..": a
+  # remote commit this clone lacks makes that range invalid and gitleaks then
+  # scans nothing and still exits 0.
+  range="$local_sha --not --remotes=$1"
   gitleaks git . --config "$config" --log-opts="$range" --redact --no-banner \
     || { echo "pre-push: gitleaks flagged $range; push refused" >&2; exit 1; }
 done
