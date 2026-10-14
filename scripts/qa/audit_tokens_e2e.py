@@ -13,8 +13,8 @@ percentages and the Fuse-side per-credential token counters; it does not
 expect the billed % to move in lockstep with a handful of test requests.
 
 Usage:
-  /root/fuse/venv/bin/python tests/audit_tokens_e2e.py
-  /root/fuse/venv/bin/python tests/audit_tokens_e2e.py --skip-chatgpt --skip-grok
+  /root/fuse/venv/bin/python scripts/qa/audit_tokens_e2e.py
+  /root/fuse/venv/bin/python scripts/qa/audit_tokens_e2e.py --skip-chatgpt --skip-grok
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from pathlib import Path
 
 import httpx
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from app import accounts, db, stats  # noqa: e402

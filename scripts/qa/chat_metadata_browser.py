@@ -1,6 +1,6 @@
 """Read-only QA-browser regression for recap rendering and controls on fuse-dev.
 
-Run with /root/fuse/venv/bin/python tests/chat_metadata_browser.py.
+Run with /root/fuse/venv/bin/python scripts/qa/chat_metadata_browser.py.
 Snapshot metadata and writes are intercepted in the browser; no model is called.
 """
 import asyncio
@@ -12,7 +12,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from playwright.async_api import async_playwright
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 BASE = "https://127.0.0.1:8089"
 TEXT = "Fixed token validation; tests passed. <img src=x onerror=alert(1)> remains plain text."
 

@@ -3,7 +3,7 @@
 Run against the isolated fixture (tests/chat_browser_fixture.py, port 8099):
 
     FUSE_CHAT_TEST_MODE=1 ./venv/bin/python tests/chat_browser_fixture.py &
-    /root/fuse/venv/bin/python tests/chat_steer_ui_browser.py
+    /root/fuse/venv/bin/python scripts/qa/chat_steer_ui_browser.py
 
 Send now interrupts the running reply (it no longer steers), but the /steer API
 still splits a live reply, and the UI must render that split cleanly. Covers the
