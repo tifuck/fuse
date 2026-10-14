@@ -412,6 +412,35 @@ class AgentPathTest(unittest.TestCase):
             )
         self.assertIn("src/x.py:7:hi", text)
 
+    def test_windows_grep_sends_its_budget_and_reports_a_partial_walk(self):
+        # The Windows connector's native walk used to outlive Fuse's wait, so
+        # the model got "agent timed out" and nothing instead of partial hits.
+        partial = {"ok": True, "exit": 0, "out": "C:\\p\\a.js:3:hit", "err": "", "error": "", "timeout": True}
+        fake = FakeAgent([("grep", partial)])
+        with patch.object(workspace, "_is_agent", return_value=True), patch.object(
+            workspace, "_agent_call", fake
+        ):
+            text, rec = self._run(
+                workspace._grep(1, 2, "box", {"pattern": "hit", "path": "."}, "C:\\p", windows=True)
+            )
+        self.assertEqual(fake.calls[0][1]["timeout_s"], workspace._GREP_TIMEOUT)
+        self.assertIn("a.js:3:hit", text)
+        self.assertIn("timed out after", text)
+        self.assertIn("results are partial", text)
+
+    def test_windows_glob_sends_its_budget_and_reports_a_partial_walk(self):
+        partial = {"ok": True, "exit": 0, "out": "C:\\p\\a.js", "err": "", "error": "", "timeout": True}
+        fake = FakeAgent([("glob", partial)])
+        with patch.object(workspace, "_is_agent", return_value=True), patch.object(
+            workspace, "_agent_call", fake
+        ):
+            text, rec = self._run(
+                workspace._glob(1, 2, "box", {"pattern": "*.js", "path": "."}, "C:\\p", windows=True)
+            )
+        self.assertEqual(fake.calls[0][1]["timeout_s"], workspace._GLOB_AGENT_TIMEOUT - 2)
+        self.assertIn("a.js", text)
+        self.assertIn("results are partial", text)
+
     def test_pattern_over_cap_names_the_limit(self):
         with self.assertRaises(WorkspaceError) as ctx:
             self._run(workspace._grep(1, 2, "box", {"pattern": "a|" * 2001}, "/tmp"))

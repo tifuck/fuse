@@ -2272,9 +2272,14 @@ async def _grep(user_id, host_id, alias, args, root, *, windows: bool = False):
             if not _connector_supports(user_id, host_id, "grep_modes"):
                 raise _outdated_connector(user_id, host_id, "grep output_mode/context")
             req.update(mode={"files_with_matches": "files", "count": "count"}.get(mode, "content"), context=context)
+        # timeout_s: connectors that know it stop the walk there and send what
+        # they found, flagged timeout, instead of outliving Fuse's wait.
+        req["timeout_s"] = _GREP_TIMEOUT
         data = await _agent_call(user_id, host_id, "grep", req, _GREP_TIMEOUT + 2)
         if not data.get("ok"):
             raise _agent_error(data, "grep failed")
+        if data.get("timeout"):
+            notes.extend(_search_status({"timed_out": True}, "grep"))
         out, clipped = _strip_connector_clip(str(data.get("out") or ""), bool(data.get("truncated")))
         out = _render_grep_output(out)
         if clipped:
@@ -2327,6 +2332,11 @@ async def _grep(user_id, host_id, alias, args, root, *, windows: bool = False):
     }
 
 
+# The Windows connector's native glob: Fuse's wait, and the walk's own
+# deadline 2s inside it so partial results arrive before Fuse gives up.
+_GLOB_AGENT_TIMEOUT = 14
+
+
 async def _glob(user_id, host_id, alias, args, root, *, windows: bool = False):
     pattern = _confine_glob(str(args.get("pattern") or ""), root, windows=windows)
     path = _confine(str(args.get("path") or "."), root, windows=windows)
@@ -2342,9 +2352,14 @@ async def _glob(user_id, host_id, alias, args, root, *, windows: bool = False):
                 req["sort"] = native_order = "modified"
             else:
                 notes.append("(sorted by path: this connector version cannot sort by modification time yet)")
-        data = await _agent_call(user_id, host_id, "glob", req, 14)
+        req["timeout_s"] = _GLOB_AGENT_TIMEOUT - 2
+        data = await _agent_call(user_id, host_id, "glob", req, _GLOB_AGENT_TIMEOUT)
         if not data.get("ok"):
             raise _agent_error(data, "glob failed")
+        if data.get("timeout"):
+            notes.append(
+                f"(glob timed out after {_GLOB_AGENT_TIMEOUT - 2}s; results are partial. Narrow path or pattern.)"
+            )
         out, clipped = _strip_connector_clip(str(data.get("out") or ""), bool(data.get("truncated")))
         if clipped:
             notes.append(_clip_note("glob"))

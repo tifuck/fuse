@@ -2,6 +2,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,8 +11,41 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
+
+// searchLimit bounds a native directory walk by Fuse's time budget for the
+// search and by the job's cancel channel. A walk that reaches either stops
+// and returns what it found, flagged partial. Without it a walk over a big
+// tree (a media server's wwwroot) outlived Fuse's wait: the model got
+// "agent timed out" and nothing, while the walk kept running here.
+type searchLimit struct {
+	deadline time.Time
+	cancel   <-chan struct{}
+}
+
+var errSearchStopped = errors.New("search stopped")
+
+func (l searchLimit) reached() bool {
+	if l.cancel != nil {
+		select {
+		case <-l.cancel:
+			return true
+		default:
+		}
+	}
+	return !l.deadline.IsZero() && !time.Now().Before(l.deadline)
+}
+
+// searchBudget: Fuse sends timeout_s (seconds); older servers do not, and
+// still get a walk that ends before their own 22 s wait.
+func searchBudget(timeoutS int, cancel <-chan struct{}) searchLimit {
+	if timeoutS <= 0 || timeoutS > 300 {
+		timeoutS = 20
+	}
+	return searchLimit{deadline: time.Now().Add(time.Duration(timeoutS) * time.Second), cancel: cancel}
+}
 
 func globOK(s string) bool {
 	n := len(s)
@@ -152,9 +186,16 @@ func walkError(root, p string, err error) error {
 // globDirSorted collects up to globScanMax matches, sorts them ("path", or
 // "modified" = newest first), and returns the first 400.
 func globDirSorted(root, pattern, order string) (string, error) {
+	out, _, err := globDirSearch(root, pattern, order, searchLimit{})
+	return out, err
+}
+
+// globDirSearch is globDirSorted under a limit; partial reports a walk that
+// stopped at it.
+func globDirSearch(root, pattern, order string, limit searchLimit) (out string, partial bool, err error) {
 	root = expandHome(root)
 	if !globOK(pattern) {
-		return "", fmt.Errorf("invalid pattern")
+		return "", false, fmt.Errorf("invalid pattern")
 	}
 	type hit struct {
 		path string
@@ -162,7 +203,10 @@ func globDirSorted(root, pattern, order string) (string, error) {
 	}
 	var matches []hit
 	pat := filepath.ToSlash(pattern)
-	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if limit.reached() {
+			return errSearchStopped
+		}
 		if err != nil {
 			return walkError(root, p, err)
 		}
@@ -198,8 +242,9 @@ func globDirSorted(root, pattern, order string) (string, error) {
 		}
 		return nil
 	})
-	if err != nil && err != io.EOF {
-		return "", err
+	partial = err == errSearchStopped
+	if err != nil && err != io.EOF && !partial {
+		return "", false, err
 	}
 	sort.SliceStable(matches, func(i, j int) bool {
 		if order == "modified" && matches[i].mod != matches[j].mod {
@@ -214,7 +259,7 @@ func globDirSorted(root, pattern, order string) (string, error) {
 	for i, m := range matches {
 		names[i] = m.path
 	}
-	return strings.Join(names, "\n") + newlineIf(len(names) > 0), nil
+	return strings.Join(names, "\n") + newlineIf(len(names) > 0), partial, nil
 }
 
 func pathMatch(pattern, rel string) (bool, error) {
@@ -273,9 +318,25 @@ type grepOpts struct {
 	ignoreCase bool
 	context    int
 	mode       string // "content" (default), "files", "count"
+	limit      searchLimit
 }
 
 func grepDirMode(root, pattern, include string, maxMatches int, opt grepOpts) (string, error) {
+	out, _, err := grepDirSearch(root, pattern, include, maxMatches, opt)
+	return out, err
+}
+
+// grepDirSearch is grepDirMode reporting whether the walk stopped at
+// opt.limit (partial results).
+func grepDirSearch(root, pattern, include string, maxMatches int, opt grepOpts) (out string, partial bool, err error) {
+	out, err = grepDirWalk(root, pattern, include, maxMatches, opt)
+	if err == errSearchStopped {
+		return out, true, nil
+	}
+	return out, false, err
+}
+
+func grepDirWalk(root, pattern, include string, maxMatches int, opt grepOpts) (string, error) {
 	if pattern == "" || len(pattern) > 2000 {
 		return "", fmt.Errorf("invalid pattern or path")
 	}
@@ -319,6 +380,9 @@ func grepDirMode(root, pattern, include string, maxMatches int, opt grepOpts) (s
 	var b strings.Builder
 	n := 0
 	walkErr := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if opt.limit.reached() {
+			return errSearchStopped
+		}
 		if err != nil {
 			return walkError(root, p, err)
 		}
@@ -434,6 +498,9 @@ func grepDirMode(root, pattern, include string, maxMatches int, opt grepOpts) (s
 		}
 		return nil
 	})
+	if walkErr == errSearchStopped {
+		return b.String(), errSearchStopped
+	}
 	if walkErr != nil && walkErr != io.EOF {
 		return "", walkErr
 	}

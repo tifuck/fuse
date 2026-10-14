@@ -103,6 +103,14 @@ func (h *jobHub) worker(s *session) {
 	}
 }
 
+// jobCancel is the job's cancel channel, or nil for an untracked job.
+func jobCancel(job *liveJob) <-chan struct{} {
+	if job == nil {
+		return nil
+	}
+	return job.cancel
+}
+
 func (h *jobHub) liveOf(id string) *liveJob {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -341,10 +349,11 @@ func (h *jobHub) run(s *session, msg map[string]any) {
 	case "grep":
 		path := jsonStr(msg, "path", ".")
 		pattern := jsonStr(msg, "pattern", "")
-		out, err := grepDirMode(path, pattern, jsonStr(msg, "include", ""), jsonInt(msg, "max_matches", 200), grepOpts{
+		out, partial, err := grepDirSearch(path, pattern, jsonStr(msg, "include", ""), jsonInt(msg, "max_matches", 200), grepOpts{
 			ignoreCase: jsonFlag(msg, "ignore_case"),
 			context:    jsonInt(msg, "context", 0),
 			mode:       jsonStr(msg, "mode", "content"),
+			limit:      searchBudget(jsonInt(msg, "timeout_s", 0), jobCancel(job)),
 		})
 		if err != nil {
 			msg := err.Error()
@@ -354,9 +363,11 @@ func (h *jobHub) run(s *session, msg map[string]any) {
 			s.sendRes(id, false, 1, "", "", msg)
 			return
 		}
-		s.sendRes(id, true, 0, out, "", "")
+		// timeout: partial results, the walk stopped at its budget.
+		s.sendResFull(id, true, 0, out, "", "", partial, true)
 	case "glob":
-		out, err := globDirSorted(jsonStr(msg, "path", "."), jsonStr(msg, "pattern", ""), jsonStr(msg, "sort", "path"))
+		out, partial, err := globDirSearch(jsonStr(msg, "path", "."), jsonStr(msg, "pattern", ""), jsonStr(msg, "sort", "path"),
+			searchBudget(jsonInt(msg, "timeout_s", 12), jobCancel(job)))
 		if err != nil {
 			msg := err.Error()
 			if msg == "" {
@@ -365,7 +376,7 @@ func (h *jobHub) run(s *session, msg map[string]any) {
 			s.sendRes(id, false, 1, "", msg, "glob failed")
 			return
 		}
-		s.sendRes(id, true, 0, out, "", "")
+		s.sendResFull(id, true, 0, out, "", "", partial, true)
 	case "replace":
 		var msgOut string
 		var err error
