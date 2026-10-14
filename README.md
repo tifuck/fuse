@@ -29,16 +29,18 @@ One Fuse instance serves many users. The first account registered becomes the ad
 
 Fuse needs **MariaDB 10.11+** (MySQL is not supported) and **Python 3.11+** (Debian 12, Ubuntu 24.04 or newer), and serves HTTPS itself. Both installers below create the database tables for you.
 
+**Your domain.** Both installers ask for an optional domain (or take `--domain fuse.example.com`). It becomes `PUBLIC_BASE_URL`, the address in invite links and in the connector install line on the Machines page. Machines verify Fuse's certificate, so connectors need that domain to have a trusted one. By default the installer gets a free Let's Encrypt certificate with [Caddy](https://caddyserver.com). This needs the domain's DNS pointing at the server and ports 80 and 443 open. Already running nginx or another proxy? Pass `--no-caddy` and point it at `https://127.0.0.1:8088`. Without a domain, the dashboard works by IP with a self-signed certificate, but machines can't install the connector.
+
 ### Option 1: Docker (simplest)
 
 Requires Docker with the Compose plugin.
 
 ```bash
 git clone https://github.com/tifuck/fuse.git && cd fuse
-./install.sh --docker
+./install.sh --docker            # or: ./install.sh --docker --domain fuse.example.com
 ```
 
-This writes `.env` with a random `APP_SECRET` and database password, builds the image (including the connector binaries), and starts Fuse and a bundled MariaDB. Open `https://localhost:8088` and register the admin account.
+This writes `.env` with a random `APP_SECRET` and database password, asks for your domain, builds the image (including the connector binaries), and starts Fuse, a bundled MariaDB, and Caddy if you chose a domain (`docker-compose.caddy.yml`, enabled through `COMPOSE_FILE` in `.env`). Open `https://your-domain` (or `https://localhost:8088`) and register the admin account.
 
 - Logs: `docker compose logs -f fuse`
 - Update: `git pull && docker compose up -d --build`
@@ -52,20 +54,21 @@ On Debian or Ubuntu, as root:
 
 ```bash
 git clone https://github.com/tifuck/fuse.git && cd fuse
-./install.sh
+./install.sh                     # or: ./install.sh -y --domain fuse.example.com
 ```
 
-The installer runs seven steps:
+It asks its questions first, then runs eight steps:
 
-1. Creates a Python virtual environment in `venv/`.
-2. Installs the Python dependencies.
-3. Writes `.env` with a random `APP_SECRET`. An existing `.env` is kept.
+1. Writes `.env` with a random `APP_SECRET` and asks for your domain. An existing `.env` is kept.
+2. Creates a Python virtual environment in `venv/`.
+3. Installs the Python dependencies.
 4. Sets up the database: installs `mariadb-server` if missing, creates a `fuse` database and user with a random password, and creates Fuse's tables (`scripts/init_db.py`).
-5. Generates a self-signed TLS certificate in `certs/`.
+5. Generates a self-signed TLS certificate in `certs/` for direct access on port 8088.
 6. Builds the `fuse-agent` connector binaries. This needs `gcc` and `libssl-dev`, plus Go 1.25+ for the Windows connector.
 7. Installs and starts a `fuse.service` systemd unit.
+8. With a domain, installs Caddy and serves `https://your-domain`. An existing Caddy config is never touched: the installer prints the site block to add instead.
 
-Flags: `-y` (no prompts), `--no-service`, `--database-url URL`, `--help`. Re-running it is safe: existing config, certs and tables are kept.
+Flags: `-y` (no prompts), `--domain NAME`, `--no-caddy`, `--no-service`, `--database-url URL`, `--help`. Re-running it is safe: existing config, certs and tables are kept. To add a domain later, re-run it with `--domain`.
 
 **Bring your own database:** create an empty MariaDB database and a user with full rights on it, then:
 
@@ -79,8 +82,8 @@ Without root, this is the only way to set up the database. The service is then i
 
 - **The first account to register becomes the admin.** After that, registration is invite-only unless `ALLOW_REGISTER=true`.
 - Add a model source under **Admin › Sources** (for example a llama.cpp or OpenAI-compatible URL and key), or link a subscription under **Sources**.
-- To connect machines with `fuse-agent`, set `PUBLIC_BASE_URL` in `.env` to the HTTPS address the machines can reach.
-- For a public site, put Fuse behind a reverse proxy with a real certificate, and set `TRUSTED_HOSTS` and `FORWARDED_ALLOW_IPS`.
+- Connect machines from **Machines**: the install line there uses your domain (`PUBLIC_BASE_URL`). If you skipped the domain, re-run the installer with `--domain`.
+- Behind your own reverse proxy, have it reach Fuse from `127.0.0.1` or set `FORWARDED_ALLOW_IPS` to its address. Otherwise every user shares the proxy's IP for rate limits. Optionally set `TRUSTED_HOSTS` to your domain.
 
 ## Configuration
 
@@ -90,7 +93,7 @@ Settings come from `.env` (or the environment). The full list, with defaults, is
 | --- | --- |
 | `APP_SECRET` | Required. Signs sessions and encrypts stored provider credentials. Changing it invalidates both. |
 | `DATABASE_URL` | `mysql://user:password@host:3306/database` |
-| `PUBLIC_BASE_URL` | Public HTTPS URL, used for connector installs and desktop updates |
+| `PUBLIC_BASE_URL` | Public HTTPS URL (`https://your-domain`), used in connector install lines, invite links and desktop updates. Needs a trusted certificate. |
 | `ALLOW_REGISTER` | Open registration (default: invite-only after the first user) |
 | `LLAMA_BASE_URL`, `LLAMA_API_KEY` | Optional site-wide llama.cpp backend |
 | `BRAVE_SEARCH_API_KEY` | Optional extra web search source |

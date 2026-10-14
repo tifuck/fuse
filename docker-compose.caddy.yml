@@ -1,0 +1,25 @@
+# Automatic HTTPS for FUSE_DOMAIN (Let's Encrypt via Caddy). ./install.sh
+# --docker --domain NAME turns it on by adding to .env:
+#   FUSE_DOMAIN=NAME
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.caddy.yml
+# Caddy shares the fuse container's network, so Fuse sees it as 127.0.0.1 and
+# trusts its X-Forwarded-For (rate limits stay per client).
+services:
+  fuse:
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    network_mode: service:fuse
+    depends_on:
+      - fuse
+    command: caddy reverse-proxy --from ${FUSE_DOMAIN:?set FUSE_DOMAIN in .env} --to https://127.0.0.1:8088 --insecure
+    volumes:
+      - caddy:/data
+
+volumes:
+  caddy:

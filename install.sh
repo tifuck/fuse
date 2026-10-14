@@ -12,6 +12,8 @@ PRINT_UNIT=""
 FORCE_UNIT=0
 SERVICE_INSTALLED=0
 SERVICE_MODE=""
+DOMAIN=""
+USE_CADDY=1
 
 say()  { printf '\n=== %s\n' "$*"; }
 warn() { printf 'WARNING: %s\n' "$*" >&2; }
@@ -32,9 +34,15 @@ Sets up Fuse end to end in this directory:
   - fuse-agent connector binaries in agent/dist/ (needs gcc + libssl-dev; Go for Windows)
   - Optional systemd service (asks; root gets a system unit,
     non-root gets a user unit with lingering enabled)
+  - Optional domain (asks): sets PUBLIC_BASE_URL, which the Machines page uses
+    in the connector install line, and gets it a Let's Encrypt certificate
+    through Caddy
 
 Options:
   -y, --yes          Non-interactive: accept all defaults (installs the service)
+  --domain NAME      Serve Fuse at https://NAME (DNS must point at this server)
+  --no-caddy         With --domain: you run the reverse proxy and certificate
+                     yourself; point it at https://127.0.0.1:8088
   --database-url URL Use this existing, empty MariaDB database
                      (mysql://user:password@host:3306/database) instead of a local one
   --docker           Run Fuse and MariaDB with Docker Compose instead
@@ -120,6 +128,70 @@ apt_install() {
 }
 
 env_db_url() { grep -E '^DATABASE_URL=mysql://' .env | tail -1 | cut -d= -f2- || true; }
+env_get() { grep -E "^$1=" .env | tail -1 | cut -d= -f2- || true; }
+port_busy() { ss -Hltn "sport = :$1" 2>/dev/null | grep -q .; }
+
+# Connectors download from PUBLIC_BASE_URL and verify its certificate, so the
+# Machines page can only offer an install line once Fuse has a domain with a
+# trusted certificate.
+choose_domain() {
+  if [ -n "$(env_get PUBLIC_BASE_URL)" ]; then
+    echo "public URL: $(env_get PUBLIC_BASE_URL)"
+    DOMAIN=""
+    return 0
+  fi
+  if [ -z "$DOMAIN" ] && [ "$ASSUME_YES" -eq 0 ] && [ -t 0 ]; then
+    printf '\nMachines connect to Fuse through a domain with a trusted HTTPS certificate.\n'
+    printf 'Point its DNS at this server first. Leave blank to skip (re-run with --domain later).\n'
+    read -r -p "Domain (e.g. fuse.example.com): " DOMAIN || true
+    DOMAIN="${DOMAIN#http://}"; DOMAIN="${DOMAIN#https://}"; DOMAIN="${DOMAIN%%/*}"
+    if [ -n "$DOMAIN" ] && ! ask "Get a free Let's Encrypt certificate for it with Caddy (needs ports 80 and 443)? [Y/n] "; then
+      USE_CADDY=0
+    fi
+  fi
+  if [ -z "$DOMAIN" ]; then
+    echo "no domain: the dashboard works by IP, but machines cannot install the connector until PUBLIC_BASE_URL is set"
+    return 0
+  fi
+  [[ "$DOMAIN" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]+)?$ ]] || die "invalid domain: $DOMAIN"
+  getent hosts "${DOMAIN%%:*}" >/dev/null 2>&1 || warn "$DOMAIN does not resolve yet; point its DNS at this server"
+  printf '\nPUBLIC_BASE_URL=https://%s\n' "$DOMAIN" >> .env
+  echo "set PUBLIC_BASE_URL=https://$DOMAIN (used in the connector install line)"
+}
+
+caddy_site() {
+  cat <<EOF
+$DOMAIN {
+	reverse_proxy https://127.0.0.1:$1 {
+		transport http {
+			tls_insecure_skip_verify
+		}
+	}
+}
+EOF
+}
+
+# Caddy proxies from 127.0.0.1, which the unit already trusts for
+# X-Forwarded-For, so rate limits still see each client's own address.
+setup_caddy() {
+  local port="$1"
+  if command -v caddy >/dev/null 2>&1; then
+    warn "Caddy is already installed, so its config is left alone. Add this site to /etc/caddy/Caddyfile and reload Caddy:"
+    caddy_site "$port"
+    return 0
+  fi
+  if port_busy 80 || port_busy 443; then
+    warn "ports 80/443 are already in use; point your web server for $DOMAIN at https://127.0.0.1:$port"
+    return 0
+  fi
+  if ! apt_install caddy; then
+    warn "could not install Caddy (needs root and apt); proxy $DOMAIN to https://127.0.0.1:$port with a trusted certificate"
+    return 0
+  fi
+  caddy_site "$port" > /etc/caddy/Caddyfile
+  systemctl reload-or-restart caddy
+  echo "Caddy serves https://$DOMAIN (the certificate is issued on the first request)"
+}
 
 set_env_db_url() {
   printf '\nDATABASE_MARIADB_ENABLED=true\nDATABASE_URL=%s\n' "$1" >> .env
@@ -173,14 +245,27 @@ EOF
     umask "$old_umask"
     echo "generated .env with a fresh APP_SECRET and DB_PASSWORD (chmod 600)"
   else
-    echo "existing .env kept untouched"
+    echo "existing .env kept"
   fi
   grep -qE '^DB_PASSWORD=[0-9a-fA-F]+$' .env \
     || die ".env needs DB_PASSWORD=<hex> for the bundled MariaDB (e.g. python3 -c 'import secrets; print(secrets.token_hex(24))')"
+  PORT_VALUE="$(env_get PORT)"
+  choose_domain
+  if [ -n "$DOMAIN" ] && [ "$USE_CADDY" -eq 1 ]; then
+    if port_busy 80 || port_busy 443; then
+      warn "ports 80/443 are in use, so the bundled Caddy stays off; point your web server for $DOMAIN at https://127.0.0.1:${PORT_VALUE:-8088}"
+    else
+      # docker compose reads COMPOSE_FILE from .env, so plain
+      # `docker compose ...` commands keep including Caddy.
+      printf 'FUSE_DOMAIN=%s\nCOMPOSE_FILE=docker-compose.yml:docker-compose.caddy.yml\n' "${DOMAIN%%:*}" >> .env
+    fi
+  elif [ -n "$DOMAIN" ]; then
+    echo "point your reverse proxy for $DOMAIN at https://127.0.0.1:${PORT_VALUE:-8088} and set FORWARDED_ALLOW_IPS in .env to the address Fuse sees it from"
+  fi
   docker compose up -d --build
-  PORT_VALUE="$(grep -E '^PORT=' .env | tail -1 | cut -d= -f2- || true)"
   printf '\nFuse is starting in Docker.\n'
-  printf '  URL:     https://localhost:%s  (self-signed cert: expect a browser warning)\n' "${PORT_VALUE:-8088}"
+  [ -z "$(env_get PUBLIC_BASE_URL)" ] || printf '  URL:     %s\n' "$(env_get PUBLIC_BASE_URL)"
+  printf '  Local:   https://localhost:%s  (self-signed cert: expect a browser warning)\n' "${PORT_VALUE:-8088}"
   printf '  Logs:    docker compose logs -f fuse\n'
   printf '  Update:  git pull && docker compose up -d --build\n'
   printf '\nThe first account registered becomes the admin.\n'
@@ -232,6 +317,13 @@ while [ $# -gt 0 ]; do
       PRINT_UNIT="${1:-}"
       case "$PRINT_UNIT" in system|user) ;; *) die "--print-unit requires system|user" ;; esac
       ;;
+    --domain)
+      shift
+      DOMAIN="${1:-}"
+      DOMAIN="${DOMAIN#http://}"; DOMAIN="${DOMAIN#https://}"; DOMAIN="${DOMAIN%%/*}"
+      [ -n "$DOMAIN" ] || die "--domain requires a name, e.g. --domain fuse.example.com"
+      ;;
+    --no-caddy) USE_CADDY=0 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option: $1 (see --help)" ;;
   esac
@@ -252,29 +344,11 @@ if [ "$DOCKER" -eq 1 ]; then
   exit 0
 fi
 
-say "Step 1/7: Python virtual environment"
 command -v python3 >/dev/null 2>&1 || die "python3 is required"
 python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' \
   || die "python3 >= 3.11 required (found $(python3 -V 2>&1))"
-if [ ! -x venv/bin/python ]; then
-  if ! python3 -m venv venv; then
-    warn "python3 -m venv failed (python3-venv package missing?)"
-    if apt_install python3-venv; then
-      python3 -m venv venv
-    else
-      die "install python3-venv (e.g. sudo apt-get install python3-venv) and re-run"
-    fi
-  fi
-  echo "created venv/"
-else
-  echo "venv/ already exists, reusing"
-fi
 
-say "Step 2/7: Python dependencies"
-venv/bin/pip install --disable-pip-version-check --upgrade pip
-venv/bin/pip install --disable-pip-version-check -r requirements.txt
-
-say "Step 3/7: Configuration"
+say "Step 1/8: Configuration"
 if [ ! -f .env ]; then
   APP_SECRET_VALUE="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
   old_umask="$(umask)"
@@ -294,10 +368,30 @@ EOF
   umask "$old_umask"
   echo "generated .env with a fresh random APP_SECRET (chmod 600)"
 else
-  echo "existing .env kept untouched"
+  echo "existing .env kept"
+fi
+choose_domain
+
+say "Step 2/8: Python virtual environment"
+if [ ! -x venv/bin/python ]; then
+  if ! python3 -m venv venv; then
+    warn "python3 -m venv failed (python3-venv package missing?)"
+    if apt_install python3-venv; then
+      python3 -m venv venv
+    else
+      die "install python3-venv (e.g. sudo apt-get install python3-venv) and re-run"
+    fi
+  fi
+  echo "created venv/"
+else
+  echo "venv/ already exists, reusing"
 fi
 
-say "Step 4/7: Database"
+say "Step 3/8: Python dependencies"
+venv/bin/pip install --disable-pip-version-check --upgrade pip
+venv/bin/pip install --disable-pip-version-check -r requirements.txt
+
+say "Step 4/8: Database"
 if [ -n "$DB_URL_ARG" ]; then
   current="$(env_db_url)"
   if [ -z "$current" ]; then
@@ -310,7 +404,7 @@ elif [ -z "$(env_db_url)" ]; then
 fi
 venv/bin/python -m scripts.init_db
 
-say "Step 5/7: TLS certificate"
+say "Step 5/8: TLS certificate"
 if [ -f certs/server.crt ] && [ -f certs/server.key ]; then
   echo "existing certs kept"
 else
@@ -329,7 +423,7 @@ else
 fi
 mkdir -p data/desktop-releases
 
-say "Step 6/7: Connector binaries"
+say "Step 6/8: Connector binaries"
 # Machines connect through fuse-agent; the dashboard serves it from agent/dist.
 if ! { command -v make && command -v gcc && [ -f /usr/include/openssl/ssl.h ]; } >/dev/null 2>&1; then
   ask "Building the Linux connector needs make, gcc and libssl-dev. Install them with apt? [Y/n] " \
@@ -346,7 +440,7 @@ else
   echo "Go 1.25+ not found: skipping the Windows connector (make -C agent windows)"
 fi
 
-say "Step 7/7: Service"
+say "Step 7/8: Service"
 if [ "$WANT_SERVICE" -eq 1 ]; then
   if ask "Install Fuse as a systemd service for user '$(id -un)'? [Y/n] "; then
     if [ "$(id -u)" -eq 0 ]; then
@@ -359,8 +453,18 @@ if [ "$WANT_SERVICE" -eq 1 ]; then
   fi
 fi
 
-PORT_VALUE="$(grep -E '^PORT=' .env | tail -1 | cut -d= -f2- || true)"
+PORT_VALUE="$(env_get PORT)"
 PORT_VALUE="${PORT_VALUE:-8088}"
+
+say "Step 8/8: Domain and HTTPS"
+if [ -z "$DOMAIN" ]; then
+  echo "no new domain to set up"
+elif [ "$USE_CADDY" -eq 1 ]; then
+  setup_caddy "$PORT_VALUE"
+else
+  echo "point your reverse proxy for $DOMAIN at https://127.0.0.1:$PORT_VALUE (it needs a trusted certificate)"
+fi
+
 ADDR="$(hostname -I 2>/dev/null | awk '{print $1}')"
 [ -n "$ADDR" ] || ADDR="$(hostname 2>/dev/null || echo localhost)"
 
@@ -397,7 +501,8 @@ else
   printf '  Start it manually with:\n'
   printf '    ./start.sh\n'
 fi
-printf '  URL:       https://%s:%s  (self-signed cert: expect a browser warning)\n' "$ADDR" "$PORT_VALUE"
+[ -z "$(env_get PUBLIC_BASE_URL)" ] || printf '  URL:       %s\n' "$(env_get PUBLIC_BASE_URL)"
+printf '  Direct:    https://%s:%s  (self-signed cert: expect a browser warning)\n' "$ADDR" "$PORT_VALUE"
 printf '  Config:    %s/.env\n' "$FUSE_HOME"
 printf '  Data:      %s/data\n' "$FUSE_HOME"
 printf '\n'

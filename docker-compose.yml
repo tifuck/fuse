@@ -1,5 +1,6 @@
 # Fuse + MariaDB. Set up with ./install.sh --docker, or create .env with
 # APP_SECRET (48+ random chars) and DB_PASSWORD (hex) and run: docker compose up -d --build
+# docker-compose.caddy.yml adds automatic HTTPS for a domain.
 services:
   db:
     image: mariadb:11.4
