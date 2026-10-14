@@ -33,3 +33,4 @@ agent/tests/test_ws_tls
 agent/tests/test_http
 .claude/
 AGENTS.md
+docs/
