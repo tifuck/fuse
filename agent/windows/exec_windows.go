@@ -4,15 +4,15 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
-	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -33,27 +33,142 @@ func powershellPath() string {
 	return filepath.Join(sys, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
 }
 
-type streamWriter struct {
-	on  func([]byte)
-	buf *bytes.Buffer
-	n   int
-	cap int
+// swapWriter lets a pre-started PowerShell be handed to a job after Start:
+// output goes to whichever job writer is set (nothing is printed before the
+// command arrives on stdin).
+type swapWriter struct {
+	mu sync.Mutex
+	w  io.Writer
 }
 
-func (w *streamWriter) Write(p []byte) (int, error) {
-	if w.on != nil && len(p) > 0 {
-		w.on(p)
+func (s *swapWriter) set(w io.Writer) {
+	s.mu.Lock()
+	s.w = w
+	s.mu.Unlock()
+}
+
+func (s *swapWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	w := s.w
+	s.mu.Unlock()
+	if w == nil {
+		return len(p), nil
 	}
-	if w.buf != nil && w.n < w.cap {
-		left := w.cap - w.n
-		if len(p) > left {
-			w.buf.Write(p[:left])
-		} else {
-			w.buf.Write(p)
+	return w.Write(p)
+}
+
+// psProc is a started powershell waiting for its script on stdin, already in
+// its own Job Object (so the whole tree can be terminated on timeout/cancel).
+type psProc struct {
+	cmd      *exec.Cmd
+	stdin    io.WriteCloser
+	out, err *swapWriter
+	job      windows.Handle
+}
+
+func spawnPS(dir string) (*psProc, error) {
+	ps := exec.Command(powershellPath(),
+		"-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
+		"-ExecutionPolicy", "Bypass",
+		"-Command", "-")
+	ps.Dir = dir
+	// A background process (Start-Process, start /b) may keep the inherited
+	// output pipes open: report the shell's result shortly after it exits.
+	ps.WaitDelay = 250 * time.Millisecond
+	ps.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: createNoWindow | createNewProcessGroup,
+	}
+	stdin, err := ps.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	p := &psProc{cmd: ps, stdin: stdin, out: &swapWriter{}, err: &swapWriter{}}
+	ps.Stdout, ps.Stderr = p.out, p.err
+	// No KILL_ON_JOB_CLOSE: processes a command leaves running (a dev server
+	// via Start-Process) keep running after it finishes, as on Linux. The job
+	// only scopes TerminateJobObject on timeout and cancel.
+	job, err := windows.CreateJobObject(nil, nil)
+	if err != nil {
+		job = 0
+	}
+	if err := ps.Start(); err != nil {
+		if job != 0 {
+			windows.CloseHandle(job)
+		}
+		return nil, err
+	}
+	// Assigned before any script is written to stdin, so no descendant can
+	// escape the job.
+	if job != 0 {
+		assigned := false
+		if h, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(ps.Process.Pid)); err == nil {
+			assigned = windows.AssignProcessToJobObject(job, h) == nil
+			windows.CloseHandle(h)
+		}
+		if !assigned {
+			windows.CloseHandle(job)
+			job = 0
 		}
 	}
-	w.n += len(p)
-	return len(p), nil
+	p.job = job
+	return p, nil
+}
+
+func (p *psProc) alive() bool {
+	h, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(p.cmd.Process.Pid))
+	if err != nil {
+		return false
+	}
+	defer windows.CloseHandle(h)
+	ev, _ := windows.WaitForSingleObject(h, 0)
+	return ev == uint32(windows.WAIT_TIMEOUT)
+}
+
+func (p *psProc) discard() {
+	_ = p.cmd.Process.Kill()
+	go func() {
+		_ = p.cmd.Wait()
+		if p.job != 0 {
+			windows.CloseHandle(p.job)
+		}
+	}()
+}
+
+// One powershell is kept started: its cold start (loading .NET) dominated
+// every command's latency. Taking it starts the next in the background.
+var warm struct {
+	sync.Mutex
+	p       *psProc
+	filling bool
+}
+
+func takeWarmPS() *psProc {
+	warm.Lock()
+	p := warm.p
+	warm.p = nil
+	fill := !warm.filling
+	warm.filling = true
+	warm.Unlock()
+	if fill {
+		go func() {
+			q, err := spawnPS(userHome())
+			warm.Lock()
+			warm.filling = false
+			if err == nil && warm.p == nil {
+				warm.p, q = q, nil
+			}
+			warm.Unlock()
+			if q != nil {
+				q.discard()
+			}
+		}()
+	}
+	if p != nil && !p.alive() {
+		p.discard()
+		return nil
+	}
+	return p
 }
 
 func runExec(cwd, cmd string, timeoutMS int, cancel <-chan struct{}, setKill func(func()), onOut, onErr func([]byte)) (string, string, int, error, bool, bool) {
@@ -63,23 +178,12 @@ func runExec(cwd, cmd string, timeoutMS int, cancel <-chan struct{}, setKill fun
 	if _, err := os.Stat(cwd); err != nil {
 		return "", fmt.Sprintf("fuse-agent: chdir %s: %v\n", cwd, err), 127, nil, false, true
 	}
-	ctx, cancelFn := context.WithTimeout(context.Background(), time.Duration(timeoutMS)*time.Millisecond)
-	defer cancelFn()
-
-	ps := exec.CommandContext(ctx, powershellPath(),
-		"-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
-		"-ExecutionPolicy", "Bypass",
-		"-Command", "-")
-	ps.Dir = cwd
-	ps.WaitDelay = 5 * time.Second // descendants must not hold inherited output pipes forever
-	ps.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow:    true,
-		CreationFlags: createNoWindow | createNewProcessGroup,
-	}
-	preamble := "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; $OutputEncoding = [Console]::OutputEncoding; $ErrorActionPreference = 'Continue'\n"
-	stdin, err := ps.StdinPipe()
-	if err != nil {
-		return "", "", 1, err, false, true
+	p := takeWarmPS()
+	if p == nil {
+		var err error
+		if p, err = spawnPS(cwd); err != nil {
+			return "", "", 1, err, false, true
+		}
 	}
 	var stdout, stderr bytes.Buffer
 	outW := &streamWriter{on: onOut, cap: outCap}
@@ -90,81 +194,46 @@ func runExec(cwd, cmd string, timeoutMS int, cancel <-chan struct{}, setKill fun
 	if onErr == nil {
 		errW.buf = &stderr
 	}
-	ps.Stdout = outW
-	ps.Stderr = errW
-
-	job, err := windows.CreateJobObject(nil, nil)
-	if err == nil {
-		var info windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION
-		info.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-		_, setupErr := windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation,
-			uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)))
-		if setupErr != nil {
-			windows.CloseHandle(job)
-			job = 0
+	p.out.set(outW)
+	p.err.set(errW)
+	ps := p.cmd
+	// true when the whole tree is known dead (job terminated); a fallback
+	// kill only reaches powershell, so its descendants may survive.
+	kill := func() bool {
+		if p.job != 0 && windows.TerminateJobObject(p.job, 1) == nil {
+			return true
 		}
-	}
-
-	if err := ps.Start(); err != nil {
-		if job != 0 {
-			windows.CloseHandle(job)
-		}
-		return "", "", 1, err, false, true
-	}
-	if job != 0 && ps.Process != nil {
-		assigned := false
-		if h, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE|windows.PROCESS_SUSPEND_RESUME, false, uint32(ps.Process.Pid)); err == nil {
-			assigned = windows.AssignProcessToJobObject(job, h) == nil
-			windows.CloseHandle(h)
-		}
-		if !assigned {
-			windows.CloseHandle(job)
-			job = 0
-		}
-	}
-	kill := func() {
-		if job != 0 {
-			if windows.TerminateJobObject(job, 1) == nil {
-				return
-			}
-		}
-		if ps.Process != nil {
-			_ = ps.Process.Kill()
-		}
+		_ = ps.Process.Kill()
+		return false
 	}
 	if setKill != nil {
-		setKill(kill)
+		setKill(func() { kill() })
 	}
 	go func() {
-		_, _ = stdin.Write([]byte(preamble + cmd + "\n"))
-		_ = stdin.Close()
+		_, _ = io.WriteString(p.stdin, psBootstrap(cwd, cmd))
+		_ = p.stdin.Close()
 	}()
 
 	done := make(chan error, 1)
 	go func() { done <- ps.Wait() }()
+	timer := time.NewTimer(time.Duration(timeoutMS) * time.Millisecond)
+	defer timer.Stop()
 	var waitErr error
-	timedOut := false
-	cancelled := false
-	killed := false
+	timedOut, killed, treeKilled := false, false, false
 	select {
 	case <-cancel:
-		kill()
-		killed = true
+		treeKilled, killed = kill(), true
 		waitErr = <-done
-		cancelled = true
-	case <-ctx.Done():
-		kill()
-		killed = true
+	case <-timer.C:
+		treeKilled, killed, timedOut = kill(), true, true
 		waitErr = <-done
-		timedOut = ctx.Err() == context.DeadlineExceeded
 	case waitErr = <-done:
 	}
-	if !cancelled && ctx.Err() == context.DeadlineExceeded {
-		timedOut = true
+	if p.job != 0 {
+		windows.CloseHandle(p.job)
 	}
-	if job != 0 {
-		windows.CloseHandle(job)
-	}
+	outW.flush()
+	errW.flush()
 	code := 0
 	if waitErr != nil {
 		if ee, ok := waitErr.(*exec.ExitError); ok {
@@ -186,10 +255,6 @@ func runExec(cwd, cmd string, timeoutMS int, cancel <-chan struct{}, setKill fun
 	if errW.n > outCap {
 		stderr.WriteString("\n[fuse-agent: output truncated]\n")
 	}
-	// Termination is confirmed when no kill ran (the shell exited on its own),
-	// or when the job object covered the tree: closing its handle above reaped
-	// every descendant. A kill that fell back to Process.Kill only reached
-	// powershell, so its descendants may still be running.
-	confirmed := !killed || job != 0
+	confirmed := !killed || treeKilled
 	return stdout.String(), stderr.String(), code, nil, timedOut, confirmed
 }

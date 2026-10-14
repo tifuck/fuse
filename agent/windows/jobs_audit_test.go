@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,6 +56,8 @@ func TestResultsSurviveOfflineAndFailedFlush(t *testing.T) {
 	if len(s.results) != 2 {
 		t.Fatal("offline results lost")
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	err := s.drainResults(func(jobRes) error { return errors.New("disconnected") })
 	if err == nil || len(s.results) != 2 {
 		t.Fatal("failed flush consumed result")
@@ -66,29 +69,57 @@ func TestResultsSurviveOfflineAndFailedFlush(t *testing.T) {
 	}
 }
 
-func TestTerminalResultWaitsForSpace(t *testing.T) {
+// Streamed output waits for room (as the C connector) instead of being
+// dropped, and leaves streamReserve slots so terminal results still fit.
+func TestChunksWaitForSpaceAndLeaveRoomForResults(t *testing.T) {
 	s := &session{}
-	for i := 0; i < maxJobs; i++ {
-		s.sendChunk("job", "out", "x")
+	forever := time.Now().Add(time.Hour)
+	for i := 0; i < maxJobs-streamReserve; i++ {
+		s.sendChunk("job", "out", "x", nil, forever)
 	}
-	s.sendChunk("job", "out", "lost")
-	done := make(chan struct{})
-	go func() { s.sendRes("job", true, 0, "", "", ""); close(done) }()
+	chunked := make(chan struct{})
+	go func() { s.sendChunk("job", "out", "held", nil, forever); close(chunked) }()
 	select {
-	case <-done:
-		t.Fatal("terminal result discarded instead of waiting")
-	case <-time.After(20 * time.Millisecond):
+	case <-chunked:
+		t.Fatal("chunk queued past the stream limit")
+	case <-time.After(50 * time.Millisecond):
 	}
+	s.sendRes("other", true, 0, "", "", "") // reserve: must not block
+	var sent []jobRes
+	collect := func(res jobRes) error { sent = append(sent, res); return nil }
 	s.mu.Lock()
-	_ = s.drainResults(func(jobRes) error { return nil })
+	_ = s.drainResults(collect)
 	s.mu.Unlock()
 	select {
-	case <-done:
+	case <-chunked:
 	case <-time.After(time.Second):
-		t.Fatal("producer did not wake")
+		t.Fatal("held chunk did not resume")
 	}
-	if len(s.results) != 1 || s.results[0].T != "res" || !s.results[0].Truncated {
-		t.Fatalf("missing terminal or loss marker: %+v", s.results)
+	s.mu.Lock()
+	_ = s.drainResults(collect)
+	s.mu.Unlock()
+	last := sent[len(sent)-1]
+	if len(sent) != maxJobs-streamReserve+2 || last.Data != "held" || sent[len(sent)-2].ID != "other" {
+		t.Fatalf("held chunk lost or reordered: %d sent, last %+v", len(sent), last)
+	}
+}
+
+// A chunk held past its deadline (or cancel) gives up and the job's result
+// says so, rather than holding the job forever on a dead link.
+func TestHeldChunkGivesUpAndMarksResult(t *testing.T) {
+	s := &session{}
+	forever := time.Now().Add(time.Hour)
+	for i := 0; i < maxJobs-streamReserve; i++ {
+		s.sendChunk("other", "out", "x", nil, forever)
+	}
+	s.sendChunk("job", "out", "late", nil, time.Now().Add(20*time.Millisecond))
+	stop := make(chan struct{})
+	close(stop)
+	s.sendChunk("job", "out", "cancelled", stop, forever)
+	s.sendRes("job", true, 0, "", "", "")
+	last := s.results[len(s.results)-1]
+	if last.T != "res" || !last.Truncated {
+		t.Fatalf("missing loss marker: %+v", last)
 	}
 }
 
@@ -124,15 +155,56 @@ func TestConcurrentCancellationIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestRejectedQueueEntryDoesNotLeakLiveSlot(t *testing.T) {
+func TestRefusedJobDoesNotLeakLiveSlot(t *testing.T) {
 	h := newJobHub()
-	h.started = true // no workers: deterministically fill the queue
-	for i := 0; i < maxQueue; i++ {
-		h.queue <- map[string]any{}
+	for i := 0; i < maxJobs; i++ {
+		h.live[fmt.Sprint(i)] = &liveJob{cancel: make(chan struct{})}
 	}
-	h.handle(&session{}, map[string]any{"id": "new", "op": "exec"})
-	if len(h.live) != 0 {
-		t.Fatal("leaked live slot")
+	s := &session{}
+	h.handle(s, map[string]any{"id": "new", "op": "exec"})
+	if len(h.live) != maxJobs || h.live["new"] != nil || len(s.results) != 1 || s.results[0].Error == "" {
+		t.Fatalf("over-limit job not refused cleanly: live=%d results=%+v", len(h.live), s.results)
+	}
+}
+
+// Each admitted job runs at once: a fixed pool of 16 workers queued a quick
+// read behind long commands.
+func TestJobsRunConcurrentlyBeyondOldPool(t *testing.T) {
+	h := newJobHub()
+	s := &session{}
+	p := filepath.Join(t.TempDir(), "f")
+	if err := os.WriteFile(p, []byte("hi\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Hold 20 jobs in mutationMu (writes serialize on it) while a read runs.
+	mutationMu.Lock()
+	for i := 0; i < 20; i++ {
+		h.handle(s, map[string]any{"id": fmt.Sprint("w", i), "op": "write", "path": p, "content": "x"})
+	}
+	h.handle(s, map[string]any{"id": "r", "op": "read", "path": p})
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		s.mu.Lock()
+		got := len(s.results) > 0 && s.results[0].ID == "r" && s.results[0].OK
+		s.mu.Unlock()
+		if got {
+			break
+		}
+		if time.Now().After(deadline) {
+			mutationMu.Unlock()
+			t.Fatal("read waited behind blocked jobs")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	mutationMu.Unlock()
+	for { // the writes finish before TempDir cleanup
+		h.mu.Lock()
+		n := len(h.live)
+		h.mu.Unlock()
+		if n == 0 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

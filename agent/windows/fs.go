@@ -154,6 +154,12 @@ func readFileSlice(path string, offset, limit int) (string, error) {
 	if limit > 2000 {
 		limit = 2000
 	}
+	// Devices (CON) and pipes would block a job on read.
+	if st, err := os.Stat(path); err != nil {
+		return "", err
+	} else if !st.Mode().IsRegular() {
+		return "", fmt.Errorf("read target must be a regular file")
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err

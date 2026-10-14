@@ -39,6 +39,7 @@ var activeSession atomic.Pointer[session]
 type session struct {
 	cfg           *agentConfig
 	mu            sync.Mutex
+	writeMu       sync.Mutex // one websocket writer at a time (gorilla)
 	conn          *websocket.Conn
 	stop          chan struct{}
 	wake          chan int
@@ -46,9 +47,15 @@ type session struct {
 	status        string
 	ready         bool
 	results       []jobRes
+	resultSeq     uint64
 	resultSpace   *sync.Cond
+	resultReady   *sync.Cond
 	droppedChunks map[string]bool
+	nextUpdate    time.Time
 }
+
+// Chunks leave this many result slots free for terminal results.
+const streamReserve = 16
 
 // reserveUpdateAdmission pauses job intake and verifies nothing is in flight.
 // The hold must span swapAndRelaunch plus process exit: intake refusal makes
@@ -62,7 +69,7 @@ func (s *session) reserveUpdateAdmission() (hold func(), ok bool) {
 	}
 	s.jobs.mu.Lock()
 	defer s.jobs.mu.Unlock()
-	if len(s.jobs.live) != 0 || len(s.jobs.queue) != 0 {
+	if len(s.jobs.live) != 0 {
 		return nil, false
 	}
 	s.jobs.paused = true
@@ -140,31 +147,45 @@ func dialAgent(raw string) (*websocket.Conn, error) {
 	return conn, nil
 }
 
+func (s *session) write(conn *websocket.Conn, v any) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	conn.SetWriteDeadline(time.Now().Add(ioTimeoutMS * time.Millisecond))
+	return conn.WriteJSON(v)
+}
+
 func (s *session) sendJSON(v any) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.conn == nil {
+	c := s.conn
+	s.mu.Unlock()
+	if c == nil {
 		return io.ErrClosedPipe
 	}
-	s.conn.SetWriteDeadline(time.Now().Add(ioTimeoutMS * time.Millisecond))
-	return s.conn.WriteJSON(v)
+	return s.write(c, v)
+}
+
+// condsLocked creates the queue conditions on first use (s.mu held).
+func (s *session) condsLocked() {
+	if s.resultSpace == nil {
+		s.resultSpace = sync.NewCond(&s.mu)
+		s.resultReady = sync.NewCond(&s.mu)
+	}
+}
+
+func (s *session) enqueueLocked(res jobRes) {
+	s.resultSeq++
+	res.seq = s.resultSeq
+	s.results = append(s.results, res)
+	s.resultReady.Signal()
 }
 
 // Job results survive a connection flap and must never precede hello_ok.
-// The hub's in-flight limit bounds this queue during disconnection.
+// The hub's in-flight limit bounds this queue during disconnection. Only
+// the connection's writer goroutine touches the network.
 func (s *session) sendResult(res jobRes) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.resultSpace == nil {
-		s.resultSpace = sync.NewCond(&s.mu)
-	}
-	if res.T == "chunk" && len(s.results) >= maxJobs {
-		if s.droppedChunks == nil {
-			s.droppedChunks = make(map[string]bool)
-		}
-		s.droppedChunks[res.ID] = true
-		return
-	}
+	s.condsLocked()
 	for len(s.results) >= maxJobs {
 		s.resultSpace.Wait()
 	}
@@ -172,8 +193,35 @@ func (s *session) sendResult(res jobRes) {
 		res.Truncated = true
 		delete(s.droppedChunks, res.ID)
 	}
-	s.results = append(s.results, res)
-	_ = s.flushResultsLocked()
+	s.enqueueLocked(res)
+}
+
+// sendChunk waits for room like the C connector (the command blocks on its
+// pipe meanwhile), leaving streamReserve slots for terminal results. It
+// gives up - flagging the job's result truncated - once stop closes or
+// until passes, so a dead link cannot hold the job past its deadline.
+func (s *session) sendChunk(id, stream, data string, stop <-chan struct{}, until time.Time) {
+	if data == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.condsLocked()
+	// ponytail: polls every 10 ms only while the queue is full (slow or lost
+	// link); a cond with a deadline would avoid it.
+	for len(s.results) >= maxJobs-streamReserve {
+		if isStopped(stop) || time.Now().After(until) {
+			if s.droppedChunks == nil {
+				s.droppedChunks = make(map[string]bool)
+			}
+			s.droppedChunks[id] = true
+			return
+		}
+		s.mu.Unlock()
+		time.Sleep(10 * time.Millisecond)
+		s.mu.Lock()
+	}
+	s.enqueueLocked(jobRes{V: 1, T: "chunk", ID: id, Stream: stream, Data: data})
 }
 
 // Refusals run on the reader goroutine, which must never wait for queue
@@ -181,23 +229,37 @@ func (s *session) sendResult(res jobRes) {
 func (s *session) sendRefusal(id, reason string) {
 	res := jobRes{V: 1, T: "res", ID: id, Exit: 1, Error: reason, TerminationConfirmed: true}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.condsLocked()
 	if len(s.results) < maxJobs {
-		s.results = append(s.results, res)
-		_ = s.flushResultsLocked()
-	} else if s.ready && s.conn != nil {
-		s.conn.SetWriteDeadline(time.Now().Add(ioTimeoutMS * time.Millisecond))
-		_ = s.conn.WriteJSON(res)
+		s.enqueueLocked(res)
+		s.mu.Unlock()
+		return
+	}
+	c := s.conn
+	ready := s.ready
+	s.mu.Unlock()
+	if ready && c != nil {
+		_ = s.write(c, res)
 	}
 }
 
+// drainResults sends queued results in order, popping each only after its
+// send succeeded. Called with s.mu held; send runs without it, so producers
+// and pings never wait on the network. A result popped meanwhile (the link
+// was replaced) is not popped twice.
 func (s *session) drainResults(send func(jobRes) error) error {
 	for len(s.results) > 0 {
-		if err := send(s.results[0]); err != nil {
+		res := s.results[0]
+		s.mu.Unlock()
+		err := send(res)
+		s.mu.Lock()
+		if err != nil {
 			return err
 		}
-		s.results[0] = jobRes{}
-		s.results = s.results[1:]
+		if len(s.results) > 0 && s.results[0].seq == res.seq {
+			s.results[0] = jobRes{}
+			s.results = s.results[1:]
+		}
 		if s.resultSpace != nil {
 			s.resultSpace.Broadcast()
 		}
@@ -205,14 +267,25 @@ func (s *session) drainResults(send func(jobRes) error) error {
 	return nil
 }
 
-func (s *session) flushResultsLocked() error {
-	if !s.ready || s.conn == nil {
-		return nil
+// writer delivers queued results on conn until it is replaced or closed. A
+// failed write closes conn, so the reader errors and the session reconnects
+// at once instead of waiting for a ping timeout.
+func (s *session) writer(conn *websocket.Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.condsLocked()
+	for s.conn == conn {
+		if len(s.results) == 0 {
+			s.resultReady.Wait()
+			continue
+		}
+		if err := s.drainResults(func(res jobRes) error { return s.write(conn, res) }); err != nil {
+			s.mu.Unlock()
+			_ = conn.Close()
+			s.mu.Lock()
+			return
+		}
 	}
-	return s.drainResults(func(res jobRes) error {
-		s.conn.SetWriteDeadline(time.Now().Add(ioTimeoutMS * time.Millisecond))
-		return s.conn.WriteJSON(res)
-	})
 }
 
 func (s *session) idleForUpdate() bool {
@@ -223,7 +296,7 @@ func (s *session) idleForUpdate() bool {
 	}
 	s.jobs.mu.Lock()
 	defer s.jobs.mu.Unlock()
-	return len(s.jobs.live) == 0 && len(s.jobs.queue) == 0
+	return len(s.jobs.live) == 0
 }
 
 func (s *session) setStatus(st string) {
@@ -247,6 +320,9 @@ func (s *session) closeConn() {
 	c := s.conn
 	s.conn = nil
 	s.ready = false
+	if s.resultReady != nil {
+		s.resultReady.Broadcast() // the writer exits
+	}
 	s.mu.Unlock()
 	if c != nil {
 		_ = c.Close()
@@ -339,9 +415,8 @@ func runSession(cfg *agentConfig, stop chan struct{}) {
 		case wake = <-s.wake:
 		default:
 		}
-		if failIndex == 0 && wake == 0 && s.idleForUpdate() {
-			logUpdate(maybeUpdate(cfg, false, s.reserveUpdateAdmission))
-		}
+		// No update fetch before connecting (an extra HTTPS round trip on
+		// every reconnect): the pump checks soon after hello_ok instead.
 		if wake == wakeResume {
 			log.Printf("fuse-agent: resume detected")
 		} else if wake == wakeNetwork {
@@ -436,7 +511,9 @@ func runSession(cfg *agentConfig, stop chan struct{}) {
 		if tok, _ := reply["token"].(string); tok != "" {
 			cfg.Token = tok
 			cfg.Code = ""
-			_ = saveConfig(cfg)
+			if err := saveConfig(cfg); err != nil {
+				log.Printf("fuse-agent: could not save the device token to %s: %v; this connector will need a new install code after it restarts", cfg.Path, err)
+			}
 		}
 		alias, _ := reply["alias"].(string)
 		if alias == "" {
@@ -449,8 +526,12 @@ func runSession(cfg *agentConfig, stop chan struct{}) {
 		s.setStatus("online")
 		s.mu.Lock()
 		s.ready = true
-		_ = s.flushResultsLocked()
+		// A server restart drops every session: check for an update soon.
+		if soon := time.Now().Add(time.Minute); s.nextUpdate.IsZero() || s.nextUpdate.After(soon) {
+			s.nextUpdate = soon
+		}
 		s.mu.Unlock()
+		go s.writer(conn)
 		sessionStart := nowMonoMS()
 		replaced, drop, gotFrame := s.pump(conn, stop, cfg)
 		s.closeConn()
@@ -494,7 +575,6 @@ func (s *session) pump(conn *websocket.Conn, stop chan struct{}, cfg *agentConfi
 	var watch connWatch
 	connWatchInit(&watch, nowMonoMS(), nowBootMS())
 	connWatchGotRx(&watch, nowMonoMS())
-	nextUpdate := time.Now().Add(updateEvery)
 	conn.SetReadDeadline(time.Time{})
 	incoming := make(chan []byte, 8)
 	readErr := make(chan error, 1)
@@ -514,8 +594,10 @@ func (s *session) pump(conn *websocket.Conn, stop chan struct{}, cfg *agentConfi
 			}
 		}
 	}()
-	ticker := time.NewTicker(50 * time.Millisecond)
-	defer ticker.Stop()
+	// Fires at the next ping/pong deadline (at most 1 s): a fixed 50 ms
+	// ticker woke an idle connector 20 times a second.
+	timer := time.NewTimer(time.Duration(connWatchWaitMS(&watch, nowMonoMS())) * time.Millisecond)
+	defer timer.Stop()
 	for {
 		select {
 		case <-stop:
@@ -550,26 +632,36 @@ func (s *session) pump(conn *websocket.Conn, stop chan struct{}, cfg *agentConfi
 				_ = s.sendJSON(map[string]any{"v": 1, "t": "pong"})
 			case "pong":
 			}
-		case <-ticker.C:
+		case <-timer.C:
 			d, send := connWatchTick(&watch, nowMonoMS(), nowBootMS(), wakeNone)
 			if d != "" {
 				return false, d, gotFrame
 			}
-			if !time.Now().Before(nextUpdate) && s.idleForUpdate() {
-				nextUpdate = time.Now().Add(updateEvery)
-				err := maybeUpdate(cfg, false, func() (func(), bool) {
-					// The download ran on this goroutine: frames that arrived
-					// meanwhile wait unread in incoming, and exiting now would
-					// drop those jobs.
-					if len(incoming) != 0 {
-						return nil, false
+			s.mu.Lock()
+			due := !time.Now().Before(s.nextUpdate)
+			s.mu.Unlock()
+			if due && s.idleForUpdate() {
+				s.mu.Lock()
+				s.nextUpdate = time.Now().Add(updateEvery)
+				s.mu.Unlock()
+				// Off the pump: jobs, cancels and pings keep flowing while the
+				// manifest and binary download.
+				go func() {
+					err := maybeUpdate(cfg, false, func() (func(), bool) {
+						// Frames waiting unread in incoming would be dropped
+						// by the exit.
+						if len(incoming) != 0 {
+							return nil, false
+						}
+						return s.reserveUpdateAdmission()
+					})
+					if errors.Is(err, errUpdateDeferred) {
+						s.mu.Lock()
+						s.nextUpdate = time.Now().Add(time.Minute)
+						s.mu.Unlock()
 					}
-					return s.reserveUpdateAdmission()
-				})
-				if errors.Is(err, errUpdateDeferred) {
-					nextUpdate = time.Now().Add(time.Minute)
-				}
-				logUpdate(err)
+					logUpdate(err)
+				}()
 			}
 			if send {
 				if err := s.sendJSON(map[string]any{"v": 1, "t": "ping"}); err != nil {
@@ -577,6 +669,7 @@ func (s *session) pump(conn *websocket.Conn, stop chan struct{}, cfg *agentConfi
 				}
 				connWatchSentPing(&watch, nowMonoMS())
 			}
+			timer.Reset(time.Duration(connWatchWaitMS(&watch, nowMonoMS())) * time.Millisecond)
 		}
 	}
 }
@@ -602,7 +695,7 @@ func sleepStop(stop chan struct{}, wake chan int, d time.Duration) bool {
 	}
 }
 
-func isStopped(stop chan struct{}) bool {
+func isStopped(stop <-chan struct{}) bool {
 	select {
 	case <-stop:
 		return true

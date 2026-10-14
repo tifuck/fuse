@@ -75,6 +75,12 @@ func saveConfig(cfg *agentConfig) error {
 		os.Remove(tmp)
 		return err
 	}
+	// The only copy of the device token: durable before it replaces the old.
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
 	if err := f.Close(); err != nil {
 		os.Remove(tmp)
 		return err

@@ -6,13 +6,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 )
 
 const (
-	outCap   = 65536
-	maxJobs  = 128
-	maxQueue = 128
+	outCap  = 65536
+	maxJobs = 128
 )
 
 type jobRes struct {
@@ -29,6 +29,7 @@ type jobRes struct {
 	TerminationConfirmed bool   `json:"termination_confirmed,omitempty"`
 	Stream               string `json:"stream,omitempty"`
 	Data                 string `json:"data,omitempty"`
+	seq                  uint64 // queue identity, never sent
 }
 
 type liveJob struct {
@@ -37,30 +38,18 @@ type liveJob struct {
 }
 
 type jobHub struct {
-	mu      sync.Mutex
-	live    map[string]*liveJob
-	queue   chan map[string]any
-	started bool
-	paused  bool // update admission: refuse intake while an exit-commit is held
+	mu     sync.Mutex
+	live   map[string]*liveJob
+	paused bool // update admission: refuse intake while an exit-commit is held
 }
 
 func newJobHub() *jobHub {
-	h := &jobHub{
-		live:  make(map[string]*liveJob),
-		queue: make(chan map[string]any, maxQueue),
-	}
-	return h
+	return &jobHub{live: make(map[string]*liveJob)}
 }
 
+// handle admits a job and runs it on its own goroutine (maxJobs live jobs):
+// a fixed pool of 16 workers queued even a quick read behind long commands.
 func (h *jobHub) handle(s *session, msg map[string]any) {
-	h.mu.Lock()
-	if !h.started {
-		h.started = true
-		for i := 0; i < 16; i++ {
-			go h.worker(s)
-		}
-	}
-	h.mu.Unlock()
 	id := fmt.Sprint(msg["id"])
 	h.mu.Lock()
 	if id == "" || id == "<nil>" || h.paused || len(h.live) >= maxJobs || h.live[id] != nil {
@@ -75,12 +64,7 @@ func (h *jobHub) handle(s *session, msg map[string]any) {
 	}
 	h.live[id] = &liveJob{id: id, cancel: make(chan struct{})}
 	h.mu.Unlock()
-	select {
-	case h.queue <- msg:
-	default:
-		h.clear(id)
-		s.sendRefusal(id, "agent is busy")
-	}
+	go h.run(s, msg)
 }
 
 func (h *jobHub) cancel(id string) {
@@ -94,12 +78,6 @@ func (h *jobHub) cancel(id string) {
 	case <-j.cancel:
 	default:
 		close(j.cancel)
-	}
-}
-
-func (h *jobHub) worker(s *session) {
-	for msg := range h.queue {
-		h.run(s, msg)
 	}
 }
 
@@ -223,13 +201,6 @@ func (s *session) sendResFull(id string, ok bool, exit int, out, err, errorText 
 	s.sendResult(res)
 }
 
-func (s *session) sendChunk(id, stream, data string) {
-	if data == "" {
-		return
-	}
-	s.sendResult(jobRes{V: 1, T: "chunk", ID: id, Stream: stream, Data: data})
-}
-
 var mutationMu sync.Mutex
 
 func (h *jobHub) run(s *session, msg map[string]any) {
@@ -272,8 +243,11 @@ func (h *jobHub) run(s *session, msg map[string]any) {
 		}
 		var onOut, onErr func([]byte)
 		if stream {
-			onOut = func(p []byte) { s.sendChunk(id, "out", string(p)) }
-			onErr = func(p []byte) { s.sendChunk(id, "err", string(p)) }
+			// Held output gives up 10 s past the job deadline (as the C
+			// connector's post-reap drain) or on cancel.
+			until := time.Now().Add(time.Duration(timeout)*time.Millisecond + 10*time.Second)
+			onOut = func(p []byte) { s.sendChunk(id, "out", string(p), cancel, until) }
+			onErr = func(p []byte) { s.sendChunk(id, "err", string(p), cancel, until) }
 		}
 		out, errb, code, runErr, timedOut, confirmed := runExec(expandHome(cwd), cmd, timeout, cancel, nil, onOut, onErr)
 		if runErr != nil {
