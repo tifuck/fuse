@@ -34,19 +34,27 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-con
    scroll instead of stopping at the edge of the view. */
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-lines.is-diff {
   grid-template-columns: minmax(max-content, 1fr);
+}
+
+/* Tool output that scrolls sideways (diffs, command output, matches, file
+   bodies) shows its scrollbar only while the pointer is over it. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-lines,
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] pre.chat-console-out.is-code {
   scrollbar-color: transparent transparent;
 }
 
-/* The scrollbar shows only while the pointer is over the diff. */
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-lines.is-diff:hover {
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-lines:hover,
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] pre.chat-console-out.is-code:hover {
   scrollbar-color: var(--scroll-thumb) transparent;
 }
 
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-lines.is-diff::-webkit-scrollbar-thumb {
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-lines::-webkit-scrollbar-thumb,
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] pre.chat-console-out.is-code::-webkit-scrollbar-thumb {
   background: transparent;
 }
 
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-lines.is-diff:hover::-webkit-scrollbar-thumb {
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-console-lines:hover::-webkit-scrollbar-thumb,
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] pre.chat-console-out.is-code:hover::-webkit-scrollbar-thumb {
   background: var(--scroll-thumb);
 }
 
