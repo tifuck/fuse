@@ -14,6 +14,10 @@ logger = logging.getLogger(__name__)
 
 _conns: dict[tuple[int, int], dict] = {}
 _held: dict[tuple[int, int], dict] = {}
+# Waiters for a host's socket, woken when it comes up (calls polled every
+# 250 ms). One event per waiter: an event never outlives its loop.
+_online: dict[tuple[int, int], set[asyncio.Event]] = {}
+_background: set[asyncio.Task] = set()
 _cancel_replay: dict[tuple[int, int], dict[str, float]] = {}
 CANCEL_REPLAY_SECONDS = 3_660.0  # max exec deadline + reconnect slack
 CANCEL_REPLAY_CAP = 4096
@@ -60,17 +64,42 @@ def _reconnect_wait(key: tuple[int, int], timeout: float) -> float:
 
 async def _await_socket(key: tuple[int, int], seconds: float) -> dict | None:
     deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        await asyncio.sleep(0.25)
-        rec = _conns.get(key)
-        if rec is not None and not rec.get("closed"):
-            return rec
-    return None
+    event = asyncio.Event()
+    waiters = _online.setdefault(key, set())
+    waiters.add(event)
+    try:
+        while True:
+            event.clear()  # before the check: a socket that registers after it still wakes us
+            rec = _conns.get(key)
+            if rec is not None and not rec.get("closed"):
+                return rec
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return None
+            try:
+                await asyncio.wait_for(event.wait(), left)
+            except asyncio.TimeoutError:
+                return None
+    finally:
+        waiters.discard(event)
+        if not waiters and _online.get(key) is waiters:
+            _online.pop(key, None)
+
+
+def _mark_online(key: tuple[int, int]) -> None:
+    for event in _online.get(key, ()):
+        event.set()
 
 
 def is_online(user_id: int, host_id: int) -> bool:
     rec = _conns.get((int(user_id), int(host_id)))
     return bool(rec and rec.get("ws") is not None)
+
+
+def connector_version(user_id: int, host_id: int) -> str:
+    """The live socket's hello version (no DB read); "" when offline."""
+    rec = _conns.get((int(user_id), int(host_id)))
+    return str((rec or {}).get("ver") or "")
 
 
 async def disconnect(user_id: int, host_id: int, reason: str = "disabled") -> None:
@@ -365,8 +394,13 @@ async def handle_socket(ws, *, hello_timeout: float = HELLO_TIMEOUT) -> None:
     try:
         user_id, host_id, alias, minted = await _hello(msg)
     except HostError as exc:
+        err = {"v": 1, "t": "hello_err", "error": exc.detail}
+        if exc.status_code == 401:
+            # Connectors back off slowly on auth failures; the code spares
+            # them guessing from the wording.
+            err["code"] = "auth"
         try:
-            await ws.send_json({"v": 1, "t": "hello_err", "error": exc.detail})
+            await ws.send_json(err)
         except Exception:
             pass
         await ws.close(code=4401 if exc.status_code == 401 else 4400)
@@ -387,7 +421,8 @@ async def handle_socket(ws, *, hello_timeout: float = HELLO_TIMEOUT) -> None:
         raise
     key = (int(user_id), int(host_id))
     inst = str(msg.get("inst") or "")[:64]
-    rec = {"ws": ws, "pending": {}, "user_id": int(user_id), "host_id": int(host_id), "inst": inst}
+    version = str(msg.get("ver") or msg.get("version") or "")
+    rec = {"ws": ws, "pending": {}, "user_id": int(user_id), "host_id": int(host_id), "inst": inst, "ver": version[:32]}
     orphaned: dict = {}
     async with _lock:
         old = _conns.pop(key, None)
@@ -397,31 +432,21 @@ async def handle_socket(ws, *, hello_timeout: float = HELLO_TIMEOUT) -> None:
         (rec["pending"] if _same_process(held, inst) else orphaned).update(_take_held(key))
         _conns[key] = rec
         _dropped_at.pop(key, None)
+    _mark_online(key)
     if old is not None:
         (rec["pending"] if _same_process(old, inst) else orphaned).update(old.get("pending") or {})
         rec.setdefault("chunks", {}).update(old.get("chunks") or {})
         old.get("pending", {}).clear()
         await _close_ws(old.get("ws"), "replaced")
     _fail_pending(orphaned, _RESTARTED)
+    # Bookkeeping DB writes run beside the receive loop: results for jobs
+    # sent the moment the socket is registered must not wait on them.
+    task = asyncio.create_task(_after_hello(user_id, host_id, msg))
+    _background.add(task)
+    task.add_done_callback(_background.discard)
     try:
         replay = _cancel_replay.get(key, {})
         await _cancel_pending(ws, {i: None for i, deadline in replay.items() if deadline > time.monotonic()})
-        await asyncio.to_thread(
-            hosts.touch_agent,
-            user_id,
-            host_id,
-            version=str(msg.get("ver") or msg.get("version") or ""),
-            hostname=str(msg.get("hostname") or ""),
-            username=str(msg.get("user") or msg.get("username") or ""),
-            os_name=str(msg.get("os") or ""),
-            arch=str(msg.get("arch") or ""),
-        )
-        try:
-            from . import hosts as hosts_mod
-
-            await asyncio.to_thread(hosts_mod.enable_coding_if_off, user_id)
-        except Exception:
-            logger.exception("enable coding after agent hello failed")
         while True:
             try:
                 text = await ws.receive_text()
@@ -503,9 +528,33 @@ async def handle_socket(ws, *, hello_timeout: float = HELLO_TIMEOUT) -> None:
                 await _hold_pending(key, leftover, rec.get("chunks"), inst)
             else:
                 try:
+                    # The hello bookkeeping marks the host online: let it land
+                    # first, or a quick drop would leave it "online".
+                    if not task.done():
+                        await asyncio.wait([task])
                     await asyncio.to_thread(hosts.mark_agent_offline, user_id, host_id)
                 except Exception:
                     logger.exception("mark agent offline failed")
+
+
+async def _after_hello(user_id: int, host_id: int, msg: dict) -> None:
+    try:
+        await asyncio.to_thread(
+            hosts.touch_agent,
+            user_id,
+            host_id,
+            version=str(msg.get("ver") or msg.get("version") or ""),
+            hostname=str(msg.get("hostname") or ""),
+            username=str(msg.get("user") or msg.get("username") or ""),
+            os_name=str(msg.get("os") or ""),
+            arch=str(msg.get("arch") or ""),
+        )
+    except Exception:
+        logger.exception("record agent hello failed")
+    try:
+        await asyncio.to_thread(hosts.enable_coding_if_off, user_id)
+    except Exception:
+        logger.exception("enable coding after agent hello failed")
 
 
 async def _hello(msg: dict) -> tuple[int, int, str, str]:

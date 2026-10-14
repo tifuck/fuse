@@ -1849,6 +1849,17 @@ def _image_arguments(args, magic):
         raise WorkspaceError("frame applies only to supported image files, not text")
 
 
+# read_binary chunk: 1.8.0 connectors read only the requested range, so a
+# larger chunk (base64 + envelope under agent_hub.RESULT_CHARS) cuts round
+# trips 5x. Older ones re-hash the whole file per call and accept 32 KiB.
+_BINARY_CHUNK = 184320
+_BINARY_CHUNK_VERSION = (1, 8, 0)
+
+
+def _binary_chunk(version: str) -> int:
+    return _BINARY_CHUNK if _parse_version(version) >= _BINARY_CHUNK_VERSION else 32768
+
+
 async def _image_read(user_id, host_id, alias, path, args, *, probe=False):
     try:
         async with asyncio.timeout(120):
@@ -1862,11 +1873,14 @@ async def _image_read_bounded(user_id, host_id, alias, path, args, *, probe=Fals
 
     payload = bytearray()
     if _is_agent(user_id, host_id):
+        from . import agent_hub
+
         identity = None
         size = None
+        chunk_max = _binary_chunk(agent_hub.connector_version(user_id, host_id))
         while True:
             data = await _agent_call(user_id, host_id, "read_binary", {
-                "path": path, "offset": len(payload), "limit": 32768,
+                "path": path, "offset": len(payload), "limit": chunk_max,
             }, 30)
             if not data.get("ok"):
                 raise _image_read_error(data)
@@ -1877,14 +1891,14 @@ async def _image_read_bounded(user_id, host_id, alias, path, args, *, probe=Fals
                     raise ValueError
                 if not data.get("ok"):
                     raise _image_read_error(data)
-                if not isinstance(data["data"], str) or len(data["data"]) > 43692:
+                if not isinstance(data["data"], str) or len(data["data"]) > 4 * ((chunk_max + 2) // 3):
                     raise ValueError
                 chunk = base64.b64decode(data["data"], validate=True)
                 current_size = data["size"]
                 current_identity = data["identity"]
                 eof = data["eof"]
                 if (type(current_size) is not int or current_size < 0 or not current_identity
-                        or type(eof) is not bool or len(chunk) > 32768):
+                        or type(eof) is not bool or len(chunk) > chunk_max):
                     raise ValueError
             except (KeyError, TypeError, ValueError, binascii.Error):
                 raise WorkspaceError("invalid connector binary response") from None

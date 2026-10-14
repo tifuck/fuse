@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from PIL import Image
-from app import file_images, workspace
+from app import agent_hub, file_images, workspace
 
 
 def raster(fmt="PNG", size=(30, 20), **kwargs):
@@ -76,6 +76,21 @@ def test_connector_read():
     assert rec["image"]["format"] == "PNG"
     assert rec["image"]["data"] not in text and rec["image"]["data"] not in rec["preview"]
     assert call.call_args.args[2] == "read_binary"
+
+
+@pytest.mark.parametrize("version,limit", [("1.7.3", 32768), ("", 32768), ("1.8.0", 184320)])
+def test_connector_chunk_follows_live_version(version, limit):
+    data = bytes(range(256)) * 1000  # 256000 bytes: more than one chunk either way
+    replies = [response(data[i:i + limit], size=len(data), eof=i + limit >= len(data))
+               for i in range(0, len(data), limit)]
+    call = AsyncMock(side_effect=[{"ok": True, "out": json.dumps(r)} for r in replies])
+    with patch.object(workspace, "_is_agent", return_value=True), patch.object(workspace, "_agent_call", call), \
+            patch.object(agent_hub, "connector_version", return_value=version):
+        with pytest.raises(workspace.WorkspaceError, match="not a supported image"):  # read whole, then judged
+            asyncio.run(workspace._image_read(1, 2, "box", "/work/a", {}))
+    assert [c.args[3]["limit"] for c in call.call_args_list] == [limit] * len(replies)
+    # A full chunk plus the envelope stays under the hub's clip.
+    assert len(json.dumps(response(data[:184320], identity="stat:" + "f" * 80))) < agent_hub.RESULT_CHARS
 
 
 @pytest.mark.parametrize("replies,match", [

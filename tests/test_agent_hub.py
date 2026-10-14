@@ -117,13 +117,20 @@ class AgentHubTest(unittest.TestCase):
             async def reconnect():
                 await asyncio.sleep(0.5)
                 agent_hub._conns[key] = {"ws": FakeWS(self.hid), "pending": {}, "user_id": 1, "host_id": self.hid}
+                agent_hub._mark_online(key)  # as handle_socket does on registration
 
             back = asyncio.create_task(reconnect())
+            started = time.monotonic()
             data = await agent_hub.call(1, self.hid, "exec", {"cmd": "true"}, 5)
+            waited = time.monotonic() - started
             await back
-            return data
+            return data, waited
 
-        self.assertTrue(asyncio.run(go())["ok"])
+        data, waited = asyncio.run(go())
+        self.assertTrue(data["ok"])
+        # Woken by the reconnect itself, not a 250 ms poll tick.
+        self.assertLess(waited, 0.65)
+        self.assertNotIn((1, self.hid), agent_hub._online)
 
     def test_call_waits_after_boot_only_within_the_window(self):
         long_ago = time.monotonic() - agent_hub.RECONNECT_WINDOW - 1
@@ -152,6 +159,8 @@ class AgentHubTest(unittest.TestCase):
             ws.send_json({"v": 1, "t": "hello", "token": self.token, "hostname": "hub", "ver": "1.7.3"})
             self.assertEqual(ws.receive_json()["t"], "hello_ok")
             self.assertNotIn(key, agent_hub._dropped_at)
+            # The live version comes from hello, without a DB read.
+            self.assertEqual(agent_hub.connector_version(1, self.hid), "1.7.3")
         deadline = time.monotonic() + 2
         while key not in agent_hub._dropped_at and time.monotonic() < deadline:
             time.sleep(0.05)
@@ -159,6 +168,19 @@ class AgentHubTest(unittest.TestCase):
         # A host the user disabled is not coming back: calls fail at once.
         asyncio.run(agent_hub.disconnect(1, self.hid))
         self.assertNotIn(key, agent_hub._dropped_at)
+
+    def test_auth_failure_says_so_with_a_code(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from app.agent_http import router as agent_router
+
+        app = FastAPI()
+        app.include_router(agent_router)
+        with TestClient(app).websocket_connect("/agent/v1/connect") as ws:
+            ws.send_json({"v": 1, "t": "hello", "token": "fa_not_a_real_token", "hostname": "hub"})
+            reply = ws.receive_json()
+        self.assertEqual((reply["t"], reply.get("code")), ("hello_err", "auth"))
 
     def test_reconnect_preserves_stream_callback(self):
         async def go():
