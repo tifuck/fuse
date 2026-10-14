@@ -268,9 +268,9 @@ body.is-pin-dragging .chat-history-item:hover { background: none; }
     border-radius: 0;
     box-shadow: none;
   }
-  .chat.is-history .user-dock-who { min-height: calc(3.5rem + env(safe-area-inset-top)); padding: max(0.75rem, env(safe-area-inset-top)) 0.85rem 0.75rem; }
+  .chat.is-history .user-dock-who { min-height: calc(3.5rem + var(--safe-top)); padding: max(0.75rem, var(--safe-top)) 0.85rem 0.75rem; }
   .chat.is-history .user-dock-nav { padding: 0.5rem 0.85rem 1.25rem; }
-  .chat.is-history .user-dock-out { padding-bottom: max(0.85rem, env(safe-area-inset-bottom)); }
+  .chat.is-history .user-dock-out { padding-bottom: max(0.85rem, var(--safe-bottom)); }
   .chat-history-top { padding-top: 0.375rem; }
   .chat-history-bar :is(.chat-new, .chat-history-iconbtn) { width: 2.75rem; height: 2.75rem; }
   .chat-history-tabs { height: 2.75rem; }

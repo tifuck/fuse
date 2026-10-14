@@ -592,10 +592,17 @@ body.is-chat .chat-history-head {
 @media (max-width: 800px) {
   body.is-chat .chat { --chat-bar-h: 3.6rem; --chat-bar-min-h: 3.6rem; }
   body.is-chat .chat.is-untitled { --chat-bar-h: 2rem; --chat-bar-min-h: 2rem; }
+  /* Edge to edge on iOS (viewport-fit=cover, black-translucent): the bar and
+     the drawer head start under the status bar, so they pad past it. */
   body.is-chat .chat .chat-bar {
-    padding-top: 0;
+    padding-top: var(--safe-top);
     padding-bottom: 0;
     row-gap: 0;
+  }
+  body.is-chat .chat-history-head {
+    height: calc(2.8rem + var(--safe-top));
+    min-height: calc(2.8rem + var(--safe-top));
+    padding-top: var(--safe-top);
   }
   body.is-chat .chat { --chat-bar-btn: 2rem; }
   body.is-chat .chat .chat-history-collapse,
@@ -654,7 +661,7 @@ html[data-chat-theme="ivory"] .chat .chat-code { border-color: var(--line); }
   }
   /* Controls retain their touch targets; extra rows grow the bar. The runtime
      measures its height for transcript clearance rather than guessing rows. */
-  .chat.chat .chat-bar { height: auto; min-height: var(--chat-bar-min-h); }
+  .chat.chat .chat-bar { height: auto; min-height: calc(var(--chat-bar-min-h) + var(--safe-top)); }
   .chat .chat-bar-actions { gap: 0; flex: 1 1 0; flex-wrap: wrap; justify-content: flex-end; }
   .chat .chat-history-bar :is(.chat-new, .chat-history-iconbtn),
   .chat :is(.chat-history-collapse, .chat-send, .chat-attach-btn, .chat-search-btn, .chat-context),
@@ -704,7 +711,7 @@ html[data-chat-theme="ivory"] .chat .chat-code { border-color: var(--line); }
     max-height: none;
     height: var(--vv-height, 100dvh);
     padding: 0;
-    padding-bottom: env(safe-area-inset-bottom);
+    padding-bottom: var(--safe-bottom);
     border: 0;
     border-bottom: 0;
     border-radius: 0 !important;
@@ -714,8 +721,8 @@ html[data-chat-theme="ivory"] .chat .chat-code { border-color: var(--line); }
   }
   .chat-view-menu.is-dragging { transition: none; animation: none; }
   .chat-view-sheet-head {
-    min-height: calc(3.5rem + env(safe-area-inset-top));
-    padding: max(0.55rem, env(safe-area-inset-top)) 0.85rem 0.55rem;
+    min-height: calc(3.5rem + var(--safe-top));
+    padding: max(0.55rem, var(--safe-top)) 0.85rem 0.55rem;
   }
   .chat-view-grip { display: none; }
   .chat-view-sheet-title { grid-column: 1; font-size: 1rem; }

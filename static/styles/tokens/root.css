@@ -16,6 +16,12 @@
   --status-done: #34D399;
   --status-fail: #F87171;
   --reason: #94A3B8;
+  /* Notch, status bar and home bar insets. Styles read these, never env()
+     directly, so a browser test can fake an iPhone's insets. */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
   --topbar: 2.75rem;
   --rail: 16.75rem;
   --radius: 12px;

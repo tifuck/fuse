@@ -190,9 +190,9 @@
   }
   .chat-artifact-head {
     height: auto;
-    min-height: calc(3.5rem + env(safe-area-inset-top, 0px));
+    min-height: calc(3.5rem + var(--safe-top));
     flex-wrap: wrap;
-    padding: max(0.55rem, env(safe-area-inset-top, 0px)) max(1rem, env(safe-area-inset-right, 0px)) 0.55rem max(0.75rem, env(safe-area-inset-left, 0px));
+    padding: max(0.55rem, var(--safe-top)) max(1rem, var(--safe-right)) 0.55rem max(0.75rem, var(--safe-left));
     gap: 0.35rem 0.5rem;
   }
   .chat-artifact-copy { width: 100%; }
@@ -200,7 +200,7 @@
   .chat-artifact-tools { width: 100%; justify-content: flex-start; }
   .chat-artifact-tool { width: auto; min-width: 2.25rem; min-height: 2.5rem; padding: 0 0.55rem; font-size: 0.78rem; }
   .chat-artifact-head .chat-menu-close { margin-left: auto; width: 2.5rem; height: 2.5rem; min-width: 2.5rem; min-height: 2.5rem; }
-  .chat-artifact-note { padding-bottom: max(0.65rem, env(safe-area-inset-bottom)); }
+  .chat-artifact-note { padding-bottom: max(0.65rem, var(--safe-bottom)); }
 }
 
 @media (max-width: 520px) {

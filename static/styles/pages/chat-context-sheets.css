@@ -231,11 +231,11 @@
     box-shadow: none;
   }
   .settings-shell.is-history .user-dock-who {
-    min-height: calc(3.5rem + env(safe-area-inset-top));
-    padding: max(0.75rem, env(safe-area-inset-top)) 0.85rem 0.75rem;
+    min-height: calc(3.5rem + var(--safe-top));
+    padding: max(0.75rem, var(--safe-top)) 0.85rem 0.75rem;
   }
   .settings-shell.is-history .user-dock-nav { padding: 0.5rem 0.85rem 1.25rem; }
-  .settings-shell.is-history .user-dock-out { padding-bottom: max(0.85rem, env(safe-area-inset-bottom)); }
+  .settings-shell.is-history .user-dock-out { padding-bottom: max(0.85rem, var(--safe-bottom)); }
   .settings-shell .app-rail-nav a,
   .settings-shell .user-dock-nav a,
   .settings-shell .user-dock-out button { min-height: 44px; }
@@ -258,8 +258,8 @@
   .chat-sheet-head {
     align-items: center;
     gap: 0.5rem;
-    min-height: calc(3.5rem + env(safe-area-inset-top));
-    padding: max(0.75rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right, 0px)) 0.65rem max(0.85rem, env(safe-area-inset-left, 0px));
+    min-height: calc(3.5rem + var(--safe-top));
+    padding: max(0.75rem, var(--safe-top)) max(1rem, var(--safe-right)) 0.65rem max(0.85rem, var(--safe-left));
   }
   .chat-sheet-head p { font-size: 1rem; }
   .chat-sheet-head span {
@@ -277,14 +277,14 @@
   .chat-sheet-body {
     display: block;
     padding: 0.85rem 1rem 1.25rem;
-    padding-bottom: calc(1.25rem + env(safe-area-inset-bottom));
+    padding-bottom: calc(1.25rem + var(--safe-bottom));
   }
   .chat-sheet-body > * + * { margin-top: 0.9rem; }
   .chat-sheet.chat-skills .chat-sheet-body {
     display: flex;
     flex-direction: column;
     padding: 0;
-    padding-bottom: env(safe-area-inset-bottom);
+    padding-bottom: var(--safe-bottom);
   }
   .chat-skills-body > * + * { margin-top: 0; }
   .chat-sheet .chat-memory-field {

@@ -137,7 +137,7 @@ html[data-chat-console="true"] .chat[data-view="console"].is-empty .chat-dock {
     margin: 0;
     left: 0;
     transform: none;
-    padding-bottom: env(safe-area-inset-bottom, 0px);
+    padding-bottom: var(--safe-bottom);
   }
 }
 

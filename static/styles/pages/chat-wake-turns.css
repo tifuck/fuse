@@ -171,7 +171,7 @@
   .chat-log { gap: 1rem; padding: 0.35rem 0 0.6rem; }
   .chat-dock {
     padding-top: 0.05rem;
-    padding-bottom: max(0.35rem, env(safe-area-inset-bottom));
+    padding-bottom: max(0.35rem, var(--safe-bottom));
   }
   .chat-sync { padding: 0 0.1rem 0.1rem 0.55rem; font-size: 0.56rem; }
   .chat-edge-top {

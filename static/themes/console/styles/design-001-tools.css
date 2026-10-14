@@ -175,7 +175,7 @@ html[data-chat-console="true"] .chat[data-view="console"].is-empty .chat-dock {
   margin: 0;
   left: 0;
   transform: none;
-  padding: 0 0 env(safe-area-inset-bottom, 0px);
+  padding: 0 0 var(--safe-bottom);
 }
 
 html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty) .chat-dock {

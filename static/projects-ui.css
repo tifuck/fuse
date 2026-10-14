@@ -265,9 +265,9 @@ html[data-chat-view="console"] body.is-chat .fp-dialog { --fp-font: var(--mono);
     box-shadow: none;
   }
   .fp-dialog[open] { animation: fp-up var(--dur-2, 200ms) var(--ease-snap, ease-out); }
-  .fp-head { min-height: calc(3.5rem + env(safe-area-inset-top)); padding: max(0.55rem, env(safe-area-inset-top)) 0.75rem 0.55rem; }
+  .fp-head { min-height: calc(3.5rem + var(--safe-top)); padding: max(0.55rem, var(--safe-top)) 0.75rem 0.55rem; }
   .fp-form-body { grid-template-columns: minmax(0, 1fr); }
-  .fp-foot { padding-bottom: max(0.7rem, env(safe-area-inset-bottom)); }
+  .fp-foot { padding-bottom: max(0.7rem, var(--safe-bottom)); }
   .fp-actions .btn { flex: 1 1 0; height: 2.6rem; }
   .fp-row { min-height: 3.5rem; }
   .fp-toolbar .btn { height: 2.25rem; }

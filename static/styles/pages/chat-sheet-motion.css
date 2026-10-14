@@ -45,7 +45,7 @@
 }
 @media (max-width: 800px) {
   :is(.chat-picker-menu, .chat-perms-menu).is-sheet .chat-picker-head {
-    padding: calc(0.6rem + env(safe-area-inset-top)) 1rem 0.6rem;
+    padding: calc(0.6rem + var(--safe-top)) 1rem 0.6rem;
     border-bottom: 1px solid var(--line);
   }
   :is(.chat-picker-menu, .chat-perms-menu).is-sheet .chat-picker-head p {
@@ -57,13 +57,13 @@
     color: var(--mist);
   }
   :is(.chat-picker-menu, .chat-perms-menu).is-sheet .chat-picker-head {
-    min-height: calc(3.5rem + env(safe-area-inset-top));
+    min-height: calc(3.5rem + var(--safe-top));
   }
   :is(.chat-picker-menu, .chat-perms-menu).is-sheet .chat-picker-searchrow { height: 3rem; padding: 0 1rem; }
   :is(.chat-picker-menu, .chat-perms-menu).is-sheet .chat-picker-search { font-size: 16px; }
   :is(.chat-picker-menu, .chat-perms-menu).is-sheet .chat-picker-kbd { display: none; }
   .chat-picker-menu.is-sheet .chat-picker-list {
-    padding: 0.2rem 0.5rem calc(0.8rem + env(safe-area-inset-bottom));
+    padding: 0.2rem 0.5rem calc(0.8rem + var(--safe-bottom));
   }
   .chat-picker-menu.is-sheet .chat-picker-group > p { padding: 0.75rem 0.55rem 0.3rem; }
   .chat-picker-menu.is-sheet .chat-picker-row > button {
@@ -74,7 +74,7 @@
   }
   .chat-picker-menu.is-sheet .chat-picker-meta { font-size: 0.72rem; }
   .chat-picker-menu.is-sheet .chat-picker-thinking-host {
-    padding-bottom: env(safe-area-inset-bottom);
+    padding-bottom: var(--safe-bottom);
   }
   .chat-picker-menu.is-sheet .chat-picker-thinking { min-height: 3.25rem; padding: 0 1rem; }
   .chat-picker-menu.is-sheet .chat-picker-efforts { --effort-thumb: 1.15rem; --effort-track: 0.22rem; }

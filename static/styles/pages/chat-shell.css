@@ -7,8 +7,10 @@ body.is-chat.is-app {
   width: 100%;
   max-width: 100%;
   min-height: 0;
-  height: var(--vv-height, 100dvh);
-  max-height: var(--vv-height, 100dvh);
+  /* At rest --vv-height is unset; the mobile body sits --vv-offset down
+     (chat-layout-a11y.css), so it ends at the screen's bottom edge. */
+  height: var(--vv-height, calc(100dvh - var(--vv-offset, 0px)));
+  max-height: var(--vv-height, calc(100dvh - var(--vv-offset, 0px)));
   overflow: hidden;
   scrollbar-gutter: auto;
 }

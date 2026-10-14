@@ -95,7 +95,7 @@ html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty) .chat-d
   flex: 0 0 auto;
   width: 100%;
   background: transparent;
-  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-bottom: var(--safe-bottom);
 }
 
 html[data-chat-console="true"] .chat[data-view="console"]:not(.is-empty) .chat-thread { min-height: 0; }

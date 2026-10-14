@@ -39,7 +39,7 @@
 }
 .chat-empty p { font-size: 0.9rem; line-height: 1.6; margin-top: 0.7rem; }
 .chat-empty p.chat-empty-eyebrow { font-size: 0.64rem; margin-bottom: 0.7rem; }
-.chat-dock { padding-top: 0.35rem; padding-bottom: max(0.85rem, env(safe-area-inset-bottom)); }
+.chat-dock { padding-top: 0.35rem; padding-bottom: max(0.85rem, var(--safe-bottom)); }
 .chat-box {
   display: flex;
   flex-direction: column;
@@ -160,7 +160,7 @@
   .chat-empty h2 { font-size: 1.4rem; }
   .chat-empty p { font-size: 0.84rem; }
   .chat-empty-glyph { width: 2.7rem; height: 2.7rem; margin-bottom: 0.8rem; }
-  .chat-dock { padding-top: 0.2rem; padding-bottom: max(0.55rem, env(safe-area-inset-bottom)); }
+  .chat-dock { padding-top: 0.2rem; padding-bottom: max(0.55rem, var(--safe-bottom)); }
   .chat-box { padding: 0.45rem 0.55rem 0.4rem; border-radius: 1.05rem; }
   .chat-compose textarea {
     min-height: 2.35rem;
@@ -177,7 +177,7 @@
   .chat-context { width: var(--composer-ctl); height: var(--composer-ctl); }
   .chat-context svg { width: 1.3rem; height: 1.3rem; }
   .chat-memory {
-    inset: auto 0.65rem max(0.65rem, env(safe-area-inset-bottom));
+    inset: auto 0.65rem max(0.65rem, var(--safe-bottom));
     left: 0.65rem;
     right: 0.65rem;
     transform: none;

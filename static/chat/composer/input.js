@@ -9,6 +9,15 @@ let viewportWidth = window.innerWidth;
 
 let viewportBaseline = window.innerHeight;
 
+let viewportHeight = NaN;
+
+let viewportOffset = NaN;
+
+let viewportBlurredAt = 0;
+
+// How long blur keeps the keyboard layout while the keyboard animates away.
+const KEYBOARD_CLOSE_MS = 500;
+
 let chatBarFitRaf = 0;
 
 export function createInput(ctx) {
@@ -145,10 +154,13 @@ export function createInput(ctx) {
       viewportFrame = 0;
       const vv = window.visualViewport;
       // Zoom is browser magnification, not a smaller application viewport.
-      if (vv && Math.abs(vv.scale - 1) > 0.01) return;
+      // Measure the layout viewport instead of skipping the update: iOS stays
+      // zoomed after a small field's focus zoom, and skipping froze the app
+      // at its keyboard height.
+      const zoomed = Boolean(vv && Math.abs(vv.scale - 1) > 0.01);
       const inner = window.innerHeight;
-      const vvHeight = vv ? vv.height : inner;
-      const vvOffset = vv ? Math.max(0, vv.offsetTop) : 0;
+      const vvHeight = vv && !zoomed ? vv.height : inner;
+      const vvOffset = vv && !zoomed ? Math.max(0, vv.offsetTop) : 0;
       const composerFocus = S.form.contains(document.activeElement) &&
         document.activeElement.matches("textarea, input, [contenteditable='true']");
       const mobile = window.innerWidth <= 800;
@@ -162,7 +174,14 @@ export function createInput(ctx) {
       // Android can resize both viewports; preserve the pre-keyboard height.
       viewportBaseline = Math.max(viewportBaseline, inner, Math.round(vvHeight + vvOffset));
       const occluded = viewportBaseline - vvHeight > 80;
-      const keyboard = mobile && occluded && (editing || document.body.classList.contains("is-keyboard"));
+      if (editing) viewportBlurredAt = 0;
+      else if (!viewportBlurredAt) viewportBlurredAt = performance.now();
+      // Blur keeps the keyboard layout only while the keyboard animates away
+      // (the focusout re-pins at 700ms settle it). A viewport still occluded
+      // after that is a stale WebKit report, not a keyboard.
+      const closing = document.body.classList.contains("is-keyboard") &&
+        performance.now() - viewportBlurredAt < KEYBOARD_CLOSE_MS;
+      const keyboard = mobile && occluded && (editing || closing);
       if (!keyboard && !editing) viewportBaseline = inner;
       // Keyboard open: do not apply offsetTop. Android Chrome/Brave with
       // interactive-widget=resizes-content already shrinks the layout; a
@@ -182,14 +201,18 @@ export function createInput(ctx) {
       const wasAtBottom = S.stickToBottom;
       const savedTop = S.thread ? S.thread.scrollTop : 0;
       const rootStyle = document.documentElement.style;
-      const prevHeight = parseFloat(rootStyle.getPropertyValue("--vv-height"));
-      const prevOffset = parseFloat(rootStyle.getPropertyValue("--vv-offset"));
-      const heightStable = Number.isFinite(prevHeight) && Math.abs(prevHeight - height) <= 1;
-      const offsetStable = Number.isFinite(prevOffset) && Math.abs(prevOffset - offset) <= 1;
+      const heightStable = Math.abs(viewportHeight - height) <= 1;
+      const offsetStable = Math.abs(viewportOffset - offset) <= 1;
       const keyboardChanged = document.body.classList.contains("is-keyboard") !== keyboard;
       const layoutChanged = keyboardChanged || !heightStable || !offsetStable;
       if (!layoutChanged && !composerFocus && !keyboard) return;
-      rootStyle.setProperty("--vv-height", height + "px");
+      viewportHeight = height;
+      viewportOffset = offset;
+      // At rest the app is plain CSS 100dvh; only an open keyboard pins the
+      // measured height. A pinned rest height inherits every bad WebKit
+      // report and shows as a dead band under the composer.
+      if (keyboard) rootStyle.setProperty("--vv-height", height + "px");
+      else rootStyle.removeProperty("--vv-height");
       rootStyle.setProperty("--vv-offset", offset + "px");
       document.body.classList.toggle("is-keyboard", keyboard);
       if (keyboard && sheetFocus && document.activeElement instanceof Element) {

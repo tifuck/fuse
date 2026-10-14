@@ -6,7 +6,7 @@
   flex-direction: column;
   width: min(var(--chat-col), calc(100% - 2.5rem));
   max-width: 100%;
-  padding: 0.35rem 0 max(1rem, env(safe-area-inset-bottom));
+  padding: 0.35rem 0 max(1rem, var(--safe-bottom));
 }
 .chat:not(.is-empty) .chat-empty { display: none; }
 .chat-empty {

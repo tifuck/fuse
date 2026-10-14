@@ -1,6 +1,8 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; min-height: 100%; max-width: 100%; }
-html { color-scheme: dark; }
+/* iOS inflates small text in blocks it judges too dense (diffs, command
+   output), so one tool call renders larger than the next. */
+html { color-scheme: dark; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 /* Scrollbars pick up whichever theme owns --mist, so they read as a quiet
    shape of the current ink (barely-there on both dark and light themes). */
 :root {

@@ -260,7 +260,7 @@ body.is-chat.is-keyboard .chat-dock {
 .chat-dock {
   z-index: 6;
   padding-top: 0.1rem;
-  padding-bottom: max(0.55rem, env(safe-area-inset-bottom));
+  padding-bottom: max(0.55rem, var(--safe-bottom));
 }
 .chat-sync {
   padding: 0.02rem 0.15rem 0.12rem 0.55rem;
