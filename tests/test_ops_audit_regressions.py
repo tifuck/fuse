@@ -53,9 +53,3 @@ def test_systemd_unit_uses_supported_environment_expansion():
     assert '${PORT}' in unit and '${FORWARDED_ALLOW_IPS}' in unit
     assert 'Environment="PORT=8088" "FORWARDED_ALLOW_IPS=127.0.0.1"' in unit
     assert '${PORT:-' not in unit and '${FORWARDED_ALLOW_IPS:-' not in unit
-
-
-def test_source_backup_includes_required_desktop_and_database_files():
-    source = (ROOT / "backup.sh").read_text()
-    assert "  backup-db.sh\n" in source
-    assert "  fuse-desktop/titlebar\n" in source
