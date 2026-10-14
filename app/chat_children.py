@@ -3,11 +3,14 @@ from __future__ import annotations
 
 import logging
 import json
+import random
 import re
+import time
 from uuid import uuid4
 import threading
 
 from . import db, chat_tx, chat_views, chat_run_state, run_inbox
+from .database_errors import is_lock_conflict
 
 logger = logging.getLogger(__name__)
 
@@ -1100,6 +1103,7 @@ def resolve_child_run(user_id, token: str, *, thread_id=None, parent_run_id: str
 
 
 _child_admission_lock = threading.Lock()
+ADMISSION_ATTEMPTS = 3
 
 
 def _same_host_id(a, b) -> bool:
@@ -1137,7 +1141,18 @@ def start_child_run(**kwargs):
     # that serialization when callers move the transaction to worker threads:
     # different parents must not both pass the tree/user/process count checks.
     with _child_admission_lock:
-        return _start_child_run(**kwargs)
+        for attempt in range(1, ADMISSION_ATTEMPTS + 1):
+            try:
+                return _start_child_run(**kwargs)
+            except Exception as exc:
+                # The parent's row lock and the new run's insert can lose a
+                # deadlock to a concurrent run write (1213) or time out a lock
+                # wait (1205). The whole admission rolled back, so run it
+                # again rather than failing the spawn as "Tool failed."
+                if attempt == ADMISSION_ATTEMPTS or not is_lock_conflict(exc):
+                    raise
+                logger.warning("Subagent admission hit lock contention; retrying (attempt %d)", attempt)
+                time.sleep(random.uniform(0.02, 0.1) * attempt)
 
 
 def _start_child_run(

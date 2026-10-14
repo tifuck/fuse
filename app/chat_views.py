@@ -1015,8 +1015,12 @@ def historical_command_jobs(user_id, thread_id):
     settled state is already final in every snapshot the client can hold, so
     only unsettled traces need their job row. ``output`` carries the same
     retained tail the old ``out`` alias did; the client prefers ``output``.
+
+    A plain snapshot read, never BEGIN IMMEDIATE: in a write transaction the
+    live-run SELECT becomes FOR UPDATE, and its gap locks on the user's runs
+    deadlocked spawns and new turns inserting a run row.
     """
-    with chat_tx.transaction() as conn:
+    with chat_tx.transaction(immediate=False) as conn:
         row = conn.execute("SELECT messages FROM chat_threads WHERE user_id=? AND id=?", (user_id, thread_id)).fetchone()
         if row is None:
             return []
