@@ -6,6 +6,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -89,14 +90,75 @@ class AgentHubTest(unittest.TestCase):
         self.hid = self.host["id"]
         agent_hub._conns.clear()
         agent_hub._held.clear()
+        started_patch = patch.object(agent_hub, "_started_at", None)
+        started_patch.start()
+        self.addCleanup(started_patch.stop)
+        dropped_patch = patch.dict(agent_hub._dropped_at, clear=True)
+        dropped_patch.start()
+        self.addCleanup(dropped_patch.stop)
 
     def tearDown(self):
         agent_hub._conns.clear()
         agent_hub._held.clear()
 
     def test_offline_call(self):
+        started = time.monotonic()
         with self.assertRaises(agent_hub.AgentError):
             asyncio.run(agent_hub.call(1, self.hid, "exec", {"cmd": "true"}, 1))
+        # Not recently dropped and not just booted: no reconnect to wait for.
+        self.assertLess(time.monotonic() - started, 0.5)
+
+    def test_call_waits_for_a_connector_reconnecting_after_a_drop(self):
+        key = (1, self.hid)
+
+        async def go():
+            agent_hub._dropped_at[key] = time.monotonic()
+
+            async def reconnect():
+                await asyncio.sleep(0.5)
+                agent_hub._conns[key] = {"ws": FakeWS(self.hid), "pending": {}, "user_id": 1, "host_id": self.hid}
+
+            back = asyncio.create_task(reconnect())
+            data = await agent_hub.call(1, self.hid, "exec", {"cmd": "true"}, 5)
+            await back
+            return data
+
+        self.assertTrue(asyncio.run(go())["ok"])
+
+    def test_call_waits_after_boot_only_within_the_window(self):
+        long_ago = time.monotonic() - agent_hub.RECONNECT_WINDOW - 1
+        with patch.object(agent_hub, "_started_at", long_ago):
+            agent_hub._dropped_at[(1, self.hid)] = long_ago
+            started = time.monotonic()
+            with self.assertRaises(agent_hub.AgentError):
+                asyncio.run(agent_hub.call(1, self.hid, "exec", {"cmd": "true"}, 5))
+            self.assertLess(time.monotonic() - started, 0.5)
+        with patch.object(agent_hub, "_started_at", time.monotonic()), patch.object(agent_hub, "RECONNECT_WAIT", 0.75):
+            started = time.monotonic()
+            with self.assertRaises(agent_hub.AgentError):
+                asyncio.run(agent_hub.call(1, self.hid, "exec", {"cmd": "true"}, 5))
+            self.assertGreaterEqual(time.monotonic() - started, 0.7)
+
+    def test_dropped_socket_is_remembered_and_disconnect_forgets_it(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from app.agent_http import router as agent_router
+
+        app = FastAPI()
+        app.include_router(agent_router)
+        key = (1, self.hid)
+        with TestClient(app).websocket_connect("/agent/v1/connect") as ws:
+            ws.send_json({"v": 1, "t": "hello", "token": self.token, "hostname": "hub", "ver": "1.7.3"})
+            self.assertEqual(ws.receive_json()["t"], "hello_ok")
+            self.assertNotIn(key, agent_hub._dropped_at)
+        deadline = time.monotonic() + 2
+        while key not in agent_hub._dropped_at and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertIn(key, agent_hub._dropped_at)
+        # A host the user disabled is not coming back: calls fail at once.
+        asyncio.run(agent_hub.disconnect(1, self.hid))
+        self.assertNotIn(key, agent_hub._dropped_at)
 
     def test_reconnect_preserves_stream_callback(self):
         async def go():

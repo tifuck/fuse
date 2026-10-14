@@ -21,6 +21,15 @@ _lock = asyncio.Lock()
 MAX_INFLIGHT = 128
 HELLO_TIMEOUT = 15.0
 HOLD_SECONDS = 8.0
+# A connector reconnects by itself after its socket drops or Fuse restarts,
+# usually within seconds (backoff plus TLS). A call in that gap waits for it
+# rather than failing "agent is offline" on a host that is back moments
+# later: resumed runs make their first tool call right after boot, before
+# any connector is back. Only that window waits; a host gone longer fails fast.
+RECONNECT_WINDOW = 60.0
+RECONNECT_WAIT = 12.0
+_started_at: float | None = None
+_dropped_at: dict[tuple[int, int], float] = {}
 RESULT_CHARS = 262_144  # transport budget, not the model's display budget
 # Connector frame limit is 1 MiB. Measure encoded JSON bytes before sending.
 MAX_PAYLOAD_CHARS = 900_000
@@ -28,6 +37,35 @@ MAX_PAYLOAD_CHARS = 900_000
 
 class AgentError(HostError):
     pass
+
+
+def mark_started() -> None:
+    """App startup: every connector is reconnecting for the next minute."""
+    global _started_at
+    _started_at = time.monotonic()
+
+
+def _reconnect_wait(key: tuple[int, int], timeout: float) -> float:
+    """How long a call may wait for this host's socket to come back: the
+    hold for parked jobs, else the reconnect window's wait, never longer
+    than the call's own timeout."""
+    if key in _held:
+        return HOLD_SECONDS
+    now = time.monotonic()
+    for since in (_dropped_at.get(key), _started_at):
+        if since is not None and 0 <= now - since < RECONNECT_WINDOW:
+            return min(RECONNECT_WAIT, max(1.0, float(timeout)))
+    return 0.0
+
+
+async def _await_socket(key: tuple[int, int], seconds: float) -> dict | None:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        await asyncio.sleep(0.25)
+        rec = _conns.get(key)
+        if rec is not None and not rec.get("closed"):
+            return rec
+    return None
 
 
 def is_online(user_id: int, host_id: int) -> bool:
@@ -40,6 +78,7 @@ async def disconnect(user_id: int, host_id: int, reason: str = "disabled") -> No
     async with _lock:
         rec = _conns.pop(key, None)
         held = _held.pop(key, None)
+        _dropped_at.pop(key, None)
     if rec is not None:
         await _finish_rec(rec, reason)
     if held is not None:
@@ -58,6 +97,8 @@ async def close_user(user_id: int) -> None:
         recs = [_conns.pop(k) for k in keys]
         held_keys = [k for k in _held if k[0] == uid]
         held = [_held.pop(k) for k in held_keys]
+        for k in [k for k in _dropped_at if k[0] == uid]:
+            _dropped_at.pop(k, None)
     for rec in recs:
         await _finish_rec(rec, "logout")
     for rec in held:
@@ -204,14 +245,8 @@ async def call(user_id: int, host_id: int, op: str, args: dict | None = None, ti
     key = (int(user_id), int(host_id))
     rec = _conns.get(key)
     if rec is None or rec.get("closed"):
-        rec = None
-        if key in _held:
-            for _ in range(32):
-                await asyncio.sleep(0.25)
-                rec = _conns.get(key)
-                if rec is not None and not rec.get("closed"):
-                    break
-                rec = None
+        wait = _reconnect_wait(key, timeout)
+        rec = await _await_socket(key, wait) if wait > 0 else None
         if rec is None:
             raise AgentError("agent is offline")
     pending = rec.setdefault("pending", {})
@@ -361,6 +396,7 @@ async def handle_socket(ws, *, hello_timeout: float = HELLO_TIMEOUT) -> None:
             rec.setdefault("chunks", {}).update(held.get("chunks") or {})
         (rec["pending"] if _same_process(held, inst) else orphaned).update(_take_held(key))
         _conns[key] = rec
+        _dropped_at.pop(key, None)
     if old is not None:
         (rec["pending"] if _same_process(old, inst) else orphaned).update(old.get("pending") or {})
         rec.setdefault("chunks", {}).update(old.get("chunks") or {})
@@ -459,6 +495,7 @@ async def handle_socket(ws, *, hello_timeout: float = HELLO_TIMEOUT) -> None:
         current = _conns.get(key)
         if current is rec:
             _conns.pop(key, None)
+            _dropped_at[key] = time.monotonic()
             leftover = rec.get("pending") or {}
             rec["pending"] = {}
             if leftover:

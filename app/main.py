@@ -223,6 +223,11 @@ async def lifespan(app: FastAPI):
         chat_store.start_publisher()
         await bootstrap()
         start_pools()
+        from . import agent_hub
+
+        # Before resuming runs: their first tool call lands before any
+        # connector has reconnected, and should wait for it, not fail.
+        agent_hub.mark_started()
         await chat_runs.resume_queued()
         await asyncio.to_thread(chat_runs.sweep_wakes)
         from . import schedules as schedules_mod
