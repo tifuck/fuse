@@ -3,7 +3,7 @@
 {% set initial = (email[:1] or '?')|upper %}
 {% set local = email.split('@')[0] %}
 <div class="user-dock" data-account>
-  <div class="user-dock-menu" data-account-menu hidden role="menu" aria-label="Account">
+  <div class="user-dock-menu" id="account-menu" data-account-menu hidden role="group" aria-label="Account">
     <div class="user-dock-who">
       <span class="user-dock-avatar" aria-hidden="true">{{ initial }}</span>
       <span class="user-dock-copy">
@@ -16,14 +16,14 @@
       </button>
     </div>
     <nav class="user-dock-nav">
-      {{ nav.nav_links(path, user, "user-dock-label", ' role="menuitem"') }}
+      {{ nav.nav_links(path, user, "user-dock-label") }}
     </nav>
     <form method="post" action="/logout" class="user-dock-out">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <button type="submit" role="menuitem">Sign out</button>
+      <button type="submit">Sign out</button>
     </form>
   </div>
-  <button type="button" class="user-dock-btn" data-account-toggle aria-expanded="false" aria-haspopup="menu" title="{{ email }}">
+  <button type="button" class="user-dock-btn" data-account-toggle aria-expanded="false" aria-controls="account-menu" title="{{ email }}">
     <span class="user-dock-avatar" aria-hidden="true">{{ initial }}</span>
     <span class="user-dock-copy">
       <strong>{{ local }}</strong>

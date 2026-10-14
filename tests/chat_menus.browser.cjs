@@ -239,6 +239,25 @@ const FAMILIES = [
       await input.fill('');
     }
 
+    // Account: a disclosure (not an ARIA menu) that takes focus on open and
+    // gives it back to its button on Escape.
+    {
+      const toggle = page.locator('.chat-history [data-account-toggle]');
+      const collapsed = await page.evaluate(() => document.querySelector('[data-chat]').classList.contains('history-collapsed'));
+      if (collapsed) await page.locator('.chat-bar [data-history-toggle]').click();
+      await toggle.click();
+      const state = () => page.evaluate(() => ({
+        role: document.querySelector('.chat-history [data-account-menu]').getAttribute('role'),
+        items: document.querySelectorAll('.chat-history [data-account-menu] [role="menuitem"]').length,
+        inside: document.querySelector('.chat-history [data-account-menu]').contains(document.activeElement),
+        expanded: document.querySelector('.chat-history [data-account-toggle]').getAttribute('aria-expanded'),
+      }));
+      assert.deepEqual(await state(), { role: 'group', items: 0, inside: true, expanded: 'true' });
+      await page.keyboard.press('Escape');
+      assert.equal(await toggle.evaluate(el => document.activeElement === el && el.getAttribute('aria-expanded')), 'false', 'Escape returns focus to the account button');
+      if (collapsed) await page.locator('[data-history-toggle]:visible').first().click();
+    }
+
     // Modal sheets: focus goes in, the page behind is inert, and Escape hands
     // focus back to the opener with the page live again.
     {

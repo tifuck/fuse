@@ -350,6 +350,7 @@ export function createThreads(ctx) {
     S.renaming = true;
     const inputEl = document.createElement("input");
     inputEl.className = "rename";
+    inputEl.setAttribute("aria-label", "Rename chat");
     inputEl.value = thread.title || "";
     inputEl.maxLength = 80;
     row.innerHTML = "";

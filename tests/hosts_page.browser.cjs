@@ -148,6 +148,32 @@ const BUNDLE = { uid: 1, hosts: HOSTS, pending: [], base: origin, settings: { ag
     assert.equal(await empty.isVisible(), true, `empty panel after the failed code: hidden=${await empty.isHidden()}`);
     console.log('PASS pairing 500');
 
+    // Wizard step 1 with empty fields: the error is an alert, each empty
+    // required field is invalid and points at it, and focus lands on the first.
+    // (The fixture vault is locked, so the step-1 form is shown directly.)
+    const vault = await page.evaluate(() => {
+      const root = document.querySelector('[data-vault]');
+      const was = root.getAttribute('data-vault');
+      root.setAttribute('data-vault', 'unlocked');
+      document.querySelector('[data-wizard]').hidden = false;
+      return was;
+    });
+    await page.locator('[data-wizard-next]').click();
+    const flagged = await page.evaluate(() => ({
+      error: [document.querySelector('[data-wizard-error]').getAttribute('role'), document.querySelector('[data-wizard-error]').textContent],
+      invalid: ['alias', 'hostname', 'username'].map(f => [document.querySelector(`[data-w-${f}]`).getAttribute('aria-invalid'), document.querySelector(`[data-w-${f}]`).getAttribute('aria-describedby'), document.querySelector(`[data-w-${f}]`).required]),
+      focus: document.activeElement.hasAttribute('data-w-alias'),
+      secretLabel: ['[data-w-secret]', '[data-w-password]'].map(s => document.getElementById(document.querySelector(s).getAttribute('aria-labelledby'))?.textContent),
+    }));
+    assert.deepEqual(flagged, {
+      error: ['alert', 'Nickname, hostname, and username are required.'],
+      invalid: [['true', 'w-error', true], ['true', 'w-error', true], ['true', 'w-error', true]],
+      focus: true,
+      secretLabel: ['Private key (PEM)', 'Private key (PEM)'],
+    }, `wizard validation: ${JSON.stringify(flagged)}`);
+    await page.evaluate(was => { document.querySelector('[data-wizard]').hidden = true; document.querySelector('[data-vault]').setAttribute('data-vault', was); }, vault);
+    console.log('PASS wizard validation is announced and tied to its fields');
+
     bundle = BUNDLE;
     // The page paints #hosts-config and the fixture cannot insert host rows, so
     // the document response is rewritten with the bundle. Later reloads and the

@@ -8,7 +8,7 @@
 {% block body %}
 <div class="stack-y hosts-page" data-hosts data-vault="{{ hosts_bundle.vault }}">
   <div class="hosts-workspace" data-workspace>
-    <p class="callout fault" data-page-error hidden></p>
+    <p class="callout fault" data-page-error role="alert" hidden></p>
 
     <section class="hosts-empty" data-empty hidden>
       <ol class="hosts-empty-steps">
@@ -26,7 +26,7 @@
     <section class="panel hosts-connector" data-connector hidden>
       <div class="section-heading"><h2>Run this on the machine</h2></div>
       <p class="usage-sub">Paste the matching line on that computer. It installs the connector, signs in with a one-time code, and this page updates as soon as it is online.</p>
-      <p class="callout fault" data-connector-error hidden></p>
+      <p class="callout fault" data-connector-error role="alert" hidden></p>
       <div class="hosts-os-install">
         <div>
           <p class="hosts-os-label">Linux</p>
@@ -53,25 +53,25 @@
     </section>
 
     <section class="panel hosts-wizard hosts-ssh-only" data-wizard hidden>
-      <p class="hosts-steps" data-wizard-steps aria-hidden="true">
-        <span data-step-dot="1">1. Machine</span>
-        <span data-step-dot="2">2. Sign-in</span>
-        <span data-step-dot="3">3. Trust</span>
-        <span data-step-dot="4">4. Project</span>
-      </p>
-      <p class="callout fault" data-wizard-error hidden></p>
+      <ol class="hosts-steps" data-wizard-steps aria-label="Steps">
+        <li data-step-dot="1">1. Machine</li>
+        <li data-step-dot="2">2. Sign-in</li>
+        <li data-step-dot="3">3. Trust</li>
+        <li data-step-dot="4">4. Project</li>
+      </ol>
+      <p class="callout fault" id="w-error" data-wizard-error role="alert" hidden></p>
 
       <div data-step="1">
-        <div class="section-heading"><h2>Where is this machine?</h2></div>
+        <div class="section-heading"><h2 tabindex="-1">Where is this machine?</h2></div>
         <p class="usage-sub">A short nickname is what chats will use. Hostname is the SSH address.</p>
         <div class="hosts-grid">
           <label class="hosts-field">
             <span>Nickname</span>
-            <input name="alias" maxlength="40" placeholder="prod-box" autocomplete="off" data-w-alias>
+            <input name="alias" maxlength="40" placeholder="prod-box" autocomplete="off" required data-w-alias>
           </label>
           <label class="hosts-field">
             <span>Hostname</span>
-            <input name="hostname" maxlength="253" placeholder="box.example.com" autocomplete="off" data-w-hostname>
+            <input name="hostname" maxlength="253" placeholder="box.example.com" autocomplete="off" required data-w-hostname>
           </label>
           <label class="hosts-field">
             <span>Port</span>
@@ -79,13 +79,13 @@
           </label>
           <label class="hosts-field">
             <span>Username</span>
-            <input name="username" maxlength="64" placeholder="deploy" autocomplete="off" data-w-username>
+            <input name="username" maxlength="64" placeholder="deploy" autocomplete="off" required data-w-username>
           </label>
         </div>
       </div>
 
       <div data-step="2" hidden>
-        <div class="section-heading"><h2>How should Fuse sign in?</h2></div>
+        <div class="section-heading"><h2 tabindex="-1">How should Fuse sign in?</h2></div>
         <p class="usage-sub">SSH key is the default. A password works too. This is stored wrapped with your account password — not the site secret.</p>
         <div class="hosts-grid">
           <label class="hosts-field">
@@ -96,9 +96,9 @@
             </select>
           </label>
           <label class="hosts-field hosts-field-wide" data-w-secret-wrap>
-            <span data-w-secret-label>Private key (PEM)</span>
-            <textarea data-w-secret rows="5" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
-            <input type="password" data-w-password maxlength="1024" autocomplete="new-password" hidden>
+            <span id="w-secret-label" data-w-secret-label>Private key (PEM)</span>
+            <textarea data-w-secret rows="5" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" aria-labelledby="w-secret-label"></textarea>
+            <input type="password" data-w-password maxlength="1024" autocomplete="new-password" aria-labelledby="w-secret-label" hidden>
           </label>
           <label class="hosts-field" data-w-pass-wrap>
             <span>Key passphrase (optional)</span>
@@ -112,14 +112,14 @@
       </div>
 
       <div data-step="3" hidden>
-        <div class="section-heading"><h2>Trust this machine</h2></div>
+        <div class="section-heading"><h2 tabindex="-1">Trust this machine</h2></div>
         <p class="usage-sub">Fuse looks up the SSH host key and shows the fingerprint. Compare it with the machine before you trust it. Agents will not connect until it is pinned.</p>
         <p class="hosts-fingerprint mono" data-w-fingerprint hidden></p>
-        <p class="usage-sub" data-w-trust-status>Not probed yet.</p>
+        <p class="usage-sub" data-w-trust-status role="status">Not probed yet.</p>
       </div>
 
       <div data-step="4" hidden>
-        <div class="section-heading"><h2>First project</h2></div>
+        <div class="section-heading"><h2 tabindex="-1">First project</h2></div>
         <p class="usage-sub">Name it, pick a folder on the machine, and optionally make it read-only. You can skip and add projects later.</p>
         <div class="hosts-grid">
           <label class="hosts-field">
@@ -161,7 +161,7 @@
         </div>
         <button type="button" class="btn ghost sm" data-dialog-close aria-label="Close machine editor">Close</button>
       </header>
-      <p class="callout fault" data-edit-host-error hidden></p>
+      <p class="callout fault" data-edit-host-error role="alert" hidden></p>
       <form class="hosts-grid" data-edit-host-form>
         <label class="hosts-field"><span>Nickname</span><input name="alias" required maxlength="40" autocomplete="off"></label>
         <label class="hosts-field"><span>Hostname</span><input name="hostname" required maxlength="253" autocomplete="off"></label>

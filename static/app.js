@@ -570,11 +570,16 @@ window.FuseBack = (function fuseBack() {
     function setOpen(open) {
       const next = Boolean(open);
       const was = !menu.hidden;
+      const focusInside = menu.contains(document.activeElement);
       root.classList.toggle("is-open", next);
       menu.hidden = !next;
       toggle.setAttribute("aria-expanded", next ? "true" : "false");
       if (next && !was) FuseBack.open(backId, () => setOpen(false));
       else if (!next && was) FuseBack.drop(backId);
+      // The menu sits above its button in the DOM: move focus in on open, and
+      // back to the button when it closes around the focus.
+      if (next && !was) menu.querySelector("nav a, form button")?.focus();
+      else if (!next && was && focusInside) toggle.focus();
     }
 
     toggle.addEventListener("click", (event) => {

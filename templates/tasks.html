@@ -7,7 +7,7 @@
 {% endblock %}
 {% block body %}
 <div class="stack-y hosts-page sched-page" data-sched>
-  <p class="callout fault" data-page-error hidden></p>
+  <p class="callout fault" data-page-error role="alert" hidden></p>
   <section class="panel sched-table-wrap">
     <div class="sched-table-scroll">
       <table class="sched-table" data-sched-table>
@@ -53,7 +53,7 @@
         <button type="button" class="btn ghost sm" data-sched-close aria-label="Close">Close</button>
       </header>
       <form class="stack-y" data-sched-form>
-        <p class="callout fault" data-sched-error hidden></p>
+        <p class="callout fault" data-sched-error role="alert" hidden></p>
         <div class="hosts-grid">
           <label class="hosts-field">
             <span>Name</span>

@@ -4,7 +4,7 @@
 {% block page_lead %}<p>Procedures Fuse follows in coding chats. Run one with <span class="mono">/name</span>.</p>{% endblock %}
 {% block body %}
 <div class="skills-page" data-skills>
-  <p class="callout fault" data-page-error hidden></p>
+  <p class="callout fault" data-page-error role="alert" hidden></p>
   <div class="skills-layout">
     <section class="skills-main" aria-labelledby="skills-installed-title">
       <header class="skills-bar">
@@ -39,7 +39,7 @@
           </label>
           <button type="submit" class="btn sm">Search</button>
         </form>
-        <p class="callout fault" data-search-error hidden></p>
+        <p class="callout fault" data-search-error role="alert" hidden></p>
         <div class="skills-hits" data-search-results></div>
       </section>
 
@@ -53,7 +53,7 @@
           </label>
           <button type="submit" class="btn sm ghost">Install</button>
         </form>
-        <p class="callout fault" data-upload-error hidden></p>
+        <p class="callout fault" data-upload-error role="alert" hidden></p>
       </section>
     </aside>
   </div>

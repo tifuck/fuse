@@ -132,6 +132,7 @@ body:has(.hosts-connector:not([hidden])) .page-actions { display: none; }
   gap: 0.35rem 1.15rem;
   margin: 0;
   padding: 0 0 0.9rem;
+  list-style: none;
   border-bottom: 1px solid var(--line);
   font-family: var(--mono);
   font-size: 0.72rem;

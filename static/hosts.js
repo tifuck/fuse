@@ -494,13 +494,19 @@
   }
 
   function setStep(n) {
+    const moved = wizardStep !== n || wizard.hidden;
     wizardStep = n;
     wizard.querySelectorAll("[data-step]").forEach((el) => {
       el.hidden = Number(el.getAttribute("data-step")) !== n;
     });
     wizard.querySelectorAll("[data-step-dot]").forEach((el) => {
-      el.classList.toggle("is-on", Number(el.getAttribute("data-step-dot")) === n);
+      const on = Number(el.getAttribute("data-step-dot")) === n;
+      el.classList.toggle("is-on", on);
+      if (on) el.setAttribute("aria-current", "step");
+      else el.removeAttribute("aria-current");
     });
+    // A new step is announced by moving focus to its heading.
+    if (moved) wizard.querySelector(`[data-step="${n}"] h2`)?.focus();
     const back = wizard.querySelector("[data-wizard-back]");
     const next = wizard.querySelector("[data-wizard-next]");
     back.hidden = n === 1;
@@ -536,6 +542,7 @@
     wizard.querySelector("[data-w-fingerprint]").hidden = true;
     wizard.querySelector("[data-w-trust-status]").textContent = "Not probed yet.";
     syncWizardAuth();
+    wizardStep = 0;
     setStep(1);
     paint();
   }
@@ -564,9 +571,25 @@
     wizard.setAttribute("aria-busy", busy ? "true" : "false");
   }
 
+  // Empty required fields are flagged and tied to the wizard error; the first
+  // one takes focus so the message is heard where it applies.
+  function flagFields(selectors) {
+    wizard.querySelectorAll("[aria-invalid]").forEach((el) => {
+      el.removeAttribute("aria-invalid");
+      el.removeAttribute("aria-describedby");
+    });
+    const bad = selectors.map((sel) => wizard.querySelector(sel)).filter((el) => el && !el.hidden && !el.value.trim());
+    bad.forEach((el) => {
+      el.setAttribute("aria-invalid", "true");
+      el.setAttribute("aria-describedby", "w-error");
+    });
+    bad[0]?.focus();
+  }
+
   async function wizardNext() {
     if (busy) return;
     showErr(wizardError, "");
+    flagFields([]);
     try {
       if (wizardStep === 1) {
         const alias = wizard.querySelector("[data-w-alias]").value.trim();
@@ -574,6 +597,7 @@
         const username = wizard.querySelector("[data-w-username]").value.trim();
         if (!alias || !hostname || !username) {
           showErr(wizardError, "Nickname, hostname, and username are required.");
+          flagFields(["[data-w-alias]", "[data-w-hostname]", "[data-w-username]"]);
           return;
         }
         setStep(2);
@@ -610,6 +634,7 @@
         }
         if (!secret || !secret.trim()) {
           showErr(wizardError, auth === "key" ? "Paste a private key." : "Enter the SSH password.");
+          flagFields(["[data-w-secret]", "[data-w-password]"]);
           return;
         }
         setBusy(true);
@@ -674,6 +699,7 @@
         }
         if (!name || !path) {
           showErr(wizardError, "Project name and working directory are required, or leave both blank to skip.");
+          flagFields(["[data-w-proj-name]", "[data-w-proj-path]"]);
           return;
         }
         setBusy(true);
