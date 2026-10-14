@@ -29,3 +29,4 @@ agent/tests/test_binary
 agent/tests/test_ws_frame
 agent/tests/test_exec_stream
 .claude/
+AGENTS.md
