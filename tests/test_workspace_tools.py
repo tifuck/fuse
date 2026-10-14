@@ -336,6 +336,23 @@ class ApplyReplaceTest(unittest.TestCase):
         self.assertIn("CRLF", ctx.exception.detail)
 
 
+class RelaxPathsTest(unittest.TestCase):
+    def test_windows_temp_stays_absolute_after_the_gate_allows_it(self):
+        # %TEMP% is always outside the working root, so an allowed temp path is
+        # relaxed; it used to be joined onto the project as
+        # <project>\\%TEMP%\\..., which nothing expands (fuse_live #3944).
+        project = "C:\\Users\\A\\Documents\\SwiftStream"
+        for raw in ("%TEMP%\\fuse\\audit\\proof", "%temp%/fuse/audit/proof"):
+            args = {"path": raw}
+            workspace._relax_paths(args, project, True, "list_dir")
+            self.assertEqual(args["path"], raw)
+            self.assertEqual(workspace._confine(args["path"], "", windows=True),
+                             "~\\AppData\\Local\\Temp\\fuse\\audit\\proof")
+        args = {"path": "proof"}
+        workspace._relax_paths(args, project, True, "list_dir")
+        self.assertEqual(args["path"], project + "\\proof")
+
+
 class FakeAgent:
     """Scripted _agent_call stand-in for connector-path tests."""
 

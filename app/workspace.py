@@ -508,7 +508,9 @@ def _relax_paths(args: dict, base: str, windows: bool, name: str = "") -> None:
             continue
         if windows:
             raw2 = raw.replace("/", "\\")
-            if re.match(r"^[A-Za-z]:", raw2) or raw2.startswith("\\\\"):
+            # %TEMP% is absolute too (_confine_win expands it). Joined onto the
+            # base it became <project>\%TEMP%\..., which nothing expands.
+            if re.match(r"^[A-Za-z]:", raw2) or raw2.startswith("\\\\") or raw2[:6].lower() == "%temp%":
                 continue
             b = (base or "~").replace("/", "\\")
             if b in ("~", "$HOME", "%USERPROFILE%", ""):
