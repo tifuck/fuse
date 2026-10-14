@@ -994,6 +994,59 @@ class AgentPathTest(unittest.TestCase):
         self.assertIn("not found", ctx.exception.detail)
         self.assertIn("CRLF", ctx.exception.detail)
 
+    def test_connector_not_found_shows_closest_lines(self):
+        # Mixed indentation: the model typed tabs where the file has spaces
+        # and, told only "not found", resent the same edit (fuse_live #3881).
+        source = "\tAssertFalse(a);\n        AssertTrue(rewritten.Contains(x));\n\t}\n"
+        fake = FakeAgent([
+            ("replace", {"ok": False, "exit": 1, "out": "", "err": "", "error": "old_string not found"}),
+            ("read", {"ok": True, "exit": 0, "out": source, "err": "", "error": ""}),
+        ])
+        with patch.object(workspace, "_is_agent", return_value=True), patch.object(workspace, "_agent_call", fake):
+            with self.assertRaises(WorkspaceError) as ctx:
+                self._run(workspace._replace(1, 2, "box", {
+                    "path": "C:\\p\\Program.cs",
+                    "old_string": "\t\tAssertTrue(rewritten.Contains(x));",
+                    "new_string": "\t\tAssertFalse(rewritten.Contains(x));",
+                }, "C:\\p", windows=True))
+        self.assertIn("old_string not found", ctx.exception.detail)
+        self.assertIn("Closest text in the file (lines 2-2", ctx.exception.detail)
+        self.assertIn("2:         AssertTrue(rewritten.Contains(x));", ctx.exception.detail)
+
+    def test_connector_multi_edit_miss_is_matched_after_the_earlier_edits(self):
+        # Edit 2 targets text edit 1 produced: the hint replays edit 1 first.
+        source = "def run():\n    return 1\n"
+        fake = FakeAgent([
+            ("replace", {"ok": False, "exit": 1, "out": "", "err": "",
+                         "error": "edit 2 of 2: old_string not found; no edits were applied"}),
+            ("read", {"ok": True, "exit": 0, "out": source, "err": "", "error": ""}),
+        ])
+        edits = [
+            {"old_string": "    return 1\n", "new_string": "    value = compute()\n    return value\n"},
+            {"old_string": "  value = compute()\n", "new_string": "    value = compute(2)\n"},
+        ]
+        with patch.object(workspace, "_is_agent", return_value=True), patch.object(
+            workspace, "_connector_supports", return_value=True
+        ), patch.object(workspace, "_agent_call", fake):
+            with self.assertRaises(WorkspaceError) as ctx:
+                self._run(workspace._replace(1, 2, "box", {"path": "/tmp/x.py", "edits": edits}, "/tmp"))
+        self.assertIn("edit 2 of 2", ctx.exception.detail)
+        self.assertIn("2:     value = compute()", ctx.exception.detail)
+
+    def test_connector_read_back_stops_at_a_short_page(self):
+        pages = []
+
+        def read_op(args):
+            pages.append(args["offset"])
+            body = "".join(f"line{i}\n" for i in range(workspace._READ_MAX_LINES)) if len(pages) == 1 else "tail\n"
+            return {"ok": True, "exit": 0, "out": body, "err": "", "error": ""}
+
+        fake = FakeAgent([("read", read_op)])
+        with patch.object(workspace, "_agent_call", fake):
+            text = self._run(workspace._agent_read_text(1, 2, "/tmp/x.py"))
+        self.assertEqual(pages, [1, workspace._READ_MAX_LINES + 1])
+        self.assertTrue(text.endswith("line1999\ntail\n"))
+
     def test_replace_payload_too_large_hint(self):
         async def call(_uid, _hid, op, args, seconds=30):
             raise WorkspaceError("payload too large")

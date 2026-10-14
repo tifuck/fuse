@@ -265,6 +265,56 @@ async def _agent_read_sample(user_id, host_id, path: str) -> str:
     return str(data.get("out") or "")
 
 
+# Pages a failed connector edit reads back for its closest-match hint (10k
+# lines); a longer file goes without the hint rather than paying for it.
+_CLOSEST_READ_PAGES = 5
+_EDIT_INDEX = re.compile(r"\bedit (\d+) of \d+\b")
+
+
+async def _agent_read_text(user_id, host_id, path: str, pages: int = _CLOSEST_READ_PAGES) -> str:
+    """Raw file text via the connector read op, page by page, carriage
+    returns intact. Stops at the first short, clipped or failed page."""
+    parts: list[str] = []
+    for page in range(pages):
+        try:
+            data = await _agent_call(
+                user_id, host_id, "read",
+                {"path": path, "offset": 1 + page * _READ_MAX_LINES, "limit": _READ_MAX_LINES}, 20,
+            )
+        except WorkspaceError:
+            break
+        if not data.get("ok"):
+            break
+        out, clipped = _strip_connector_clip(str(data.get("out") or ""), bool(data.get("truncated")))
+        parts.append(out)
+        if clipped or out.count("\n") < _READ_MAX_LINES:
+            break
+    return "".join(parts)
+
+
+async def _connector_closest_match(user_id, host_id, path: str, edits, error: str) -> str:
+    """The SSH path's closest-text hint for a connector edit that missed.
+
+    Connectors only say "not found", so a model that mistyped indentation
+    (tabs for spaces) could not see why and resent the same edit. Read the
+    file back, on this failure path only, replay the edits before the one
+    that missed (they were applied in memory, then dropped), and point at
+    the text it most resembles."""
+    match = _EDIT_INDEX.search(error)
+    index = int(match.group(1)) - 1 if match else 0
+    if not 0 <= index < len(edits):
+        return ""
+    text = await _agent_read_text(user_id, host_id, path)
+    if not text:
+        return ""
+    for old, new, replace_all in edits[:index]:
+        try:
+            text, _count = _apply_replace(text, old, new, replace_all)
+        except WorkspaceError:
+            break
+    return _closest_match(text, edits[index][0])
+
+
 async def _refine_mutation_error(data: dict, exc: WorkspaceError, user_id, host_id, path: str, *, windows: bool, write: bool) -> WorkspaceError:
     """Explain a connector's generic write/replace failure with a read-only probe.
 
@@ -2639,6 +2689,10 @@ async def _replace(user_id, host_id, alias, args, root, *, windows: bool = False
                 _NOT_FOUND_HINT + " This file may use CRLF line endings that read_file hides.",
                 extra=dict(getattr(base, "extra", None) or {}),
             )
+        if "not found" in error:
+            hint = await _connector_closest_match(user_id, host_id, path, edits, error)
+            if hint:
+                base = WorkspaceError(base.detail + hint, extra=dict(getattr(base, "extra", None) or {}))
         raise await _refine_mutation_error(data, base, user_id, host_id, path, windows=windows, write=False)
     lease = await _sftp(user_id, host_id)
     async with lease as sftp:
