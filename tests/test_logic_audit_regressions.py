@@ -24,7 +24,6 @@ from app.context_meter import estimate_messages
 from app.search import engine, extract, ssrf
 from app.sources import devin_payload, ollama, pool_session
 from app.sources.key_pool import KeyPool, NoAvailableKeyError
-from app.workspace_ops import file_ledger
 from app.workspace_ops.common import WorkspaceError
 from app.workspace_ops.previews import _apply_replace
 
@@ -239,7 +238,7 @@ def test_cancel_during_insert_closes_the_job_row():
     assert asyncio.run(run()) == 1
 
 
-def test_failed_out_of_range_sftp_read_does_not_count_as_read():
+def test_out_of_range_sftp_read_is_an_error():
     handle = MagicMock()
     handle.__aenter__.return_value = handle
     del handle.stat
@@ -251,13 +250,11 @@ def test_failed_out_of_range_sftp_read_does_not_count_as_read():
         with patch.object(workspace, "_is_agent", return_value=False), \
                 patch.object(workspace, "_sftp", AsyncMock(return_value=sftp)), \
                 patch.object(workspace, "_sftp_expand_home", AsyncMock(return_value="/srv/app/f.txt")), \
-                patch.object(workspace, "_sftp_read_window", AsyncMock(return_value=(b"", False))), \
-                patch.object(file_ledger, "note_read") as noted:
+                patch.object(workspace, "_sftp_read_window", AsyncMock(return_value=(b"", False))):
             with pytest.raises(WorkspaceError, match="beyond the end"):
                 await workspace._read(1, 1, "box", {"path": "/srv/app/f.txt", "offset": 99}, "/srv/app")
-            return noted.call_count
 
-    assert asyncio.run(run()) == 0
+    asyncio.run(run())
 
 
 # -- context ------------------------------------------------------------------

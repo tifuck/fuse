@@ -1079,11 +1079,6 @@ async def execute_tool(
             return msg, {"name": name, "status": "error", "kind": "denied", "error": msg}
         from . import chats, workspace
 
-        # Reads gate edits per agent: each subagent run has its own book; the
-        # main agent keeps one per thread, across its turns.
-        run_key = str((session or {}).get("run_id") or "")
-        is_sub = ((session or {}).get("requester") or {}).get("role") == "subagent"
-        reader = f"run:{run_key}" if is_sub or not thread_id else f"thread:{thread_id}"
         text, rec = await workspace.execute(
             name,
             arguments,
@@ -1094,7 +1089,6 @@ async def execute_tool(
             thread_id=thread_id,
             on_started=on_started,
             gate=gate,
-            reader=reader if run_key or thread_id else "",
         )
         hid = rec.pop("host_id", None)
         promote_path = rec.pop("promote_path", "")

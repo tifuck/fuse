@@ -99,11 +99,9 @@ class ExecutionAudit(unittest.IsolatedAsyncioTestCase):
             SimpleNamespace(permissions=0o100644, size=3, mtime=1),
             SimpleNamespace(permissions=0o100644, size=3, mtime=2),
         ])
-        ws.file_ledger.clear()
-        ws.file_ledger.note_read("r", 2, "/repo/a", gen=0)
         with patch.object(ws, "_is_agent", return_value=False), patch.object(ws, "_sftp", AsyncMock(return_value=sftp)):
-            with self.assertRaisesRegex(ws.WorkspaceError, "changed since you last read it"):
-                await ws._replace(1, 2, "host", {"path": "a", "old_string": "old", "new_string": "new"}, "/repo", run_id="r")
+            with self.assertRaisesRegex(ws.WorkspaceError, "changed on disk while this edit was being written, so nothing was written"):
+                await ws._replace(1, 2, "host", {"path": "a", "old_string": "old", "new_string": "new"}, "/repo")
         self.assertEqual(sftp.original, b"old")
         self.assertTrue(sftp.removed)
 

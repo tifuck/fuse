@@ -214,79 +214,49 @@ class ConnectorReadTest(unittest.IsolatedAsyncioTestCase):
 
 
 
-def assume_read(case):
-    """Edits in this class are not about read-before-edit: every file counts as
-    read and unchanged (tests/test_file_ledger.py covers the ledger itself)."""
-    for name in ("lookup", "require_read"):
-        patcher = patch.object(ws.file_ledger, name, return_value=ws.file_ledger.Seen(0))
-        patcher.start()
-        case.addCleanup(patcher.stop)
-
-
 # --- write_file / search_replace ----------------------------------------------
 
 class WriteTest(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
-        ws.file_ledger.clear()
-
     async def test_new_file_uses_umask_mode_and_reports_created(self):
         sftp = FakeSFTP()
         with patch.object(ws, "_is_agent", return_value=False), sftp_patch(sftp):
-            text, _ = await ws._write(1, 2, "h", {"path": "new.py", "content": "x"}, "/repo", run_id="r")
+            text, _ = await ws._write(1, 2, "h", {"path": "new.py", "content": "x"}, "/repo")
         self.assertIn("created /repo/new.py (1 bytes)", text)
         self.assertEqual(max(sftp.created_modes.values()), 0o666)
 
     async def test_missing_parent_is_created(self):
         sftp = FakeSFTP()
         with patch.object(ws, "_is_agent", return_value=False), sftp_patch(sftp):
-            await ws._write(1, 2, "h", {"path": "a/b/c.py", "content": "x"}, "/repo", run_id="r")
+            await ws._write(1, 2, "h", {"path": "a/b/c.py", "content": "x"}, "/repo")
         self.assertEqual(sftp.files["/repo/a/b/c.py"], b"x")
 
-    async def test_unread_existing_file_is_not_overwritten(self):
+    async def test_unread_existing_file_is_overwritten_and_says_so(self):
+        # No read gate: the receipt names the overwrite and the replaced size.
         sftp = FakeSFTP({"/repo/keep.py": b"precious"})
         with patch.object(ws, "_is_agent", return_value=False), sftp_patch(sftp):
-            with self.assertRaisesRegex(ws.WorkspaceError, "has not been read"):
-                await ws._write(1, 2, "h", {"path": "keep.py", "content": "x"}, "/repo", run_id="r")
-        self.assertEqual(sftp.files["/repo/keep.py"], b"precious")
+            text, _ = await ws._write(1, 2, "h", {"path": "keep.py", "content": "x"}, "/repo")
+        self.assertIn("overwrote /repo/keep.py (1 bytes; was 8 bytes)", text)
+        self.assertEqual(sftp.files["/repo/keep.py"], b"x")
 
-    async def test_read_then_write_succeeds_and_consecutive_writes_chain(self):
+    async def test_consecutive_writes_chain(self):
         sftp = FakeSFTP({"/repo/a.py": b"old\n"})
         with patch.object(ws, "_is_agent", return_value=False), sftp_patch(sftp):
-            await ws._read(1, 2, "h", {"path": "a.py"}, "/repo", run_id="r")
-            await ws._write(1, 2, "h", {"path": "a.py", "content": "v1\n"}, "/repo", run_id="r")
-            await ws._write(1, 2, "h", {"path": "a.py", "content": "v2\n"}, "/repo", run_id="r")
+            await ws._write(1, 2, "h", {"path": "a.py", "content": "v1\n"}, "/repo")
+            await ws._write(1, 2, "h", {"path": "a.py", "content": "v2\n"}, "/repo")
         self.assertEqual(sftp.files["/repo/a.py"], b"v2\n")
 
-    async def test_file_changed_since_read_is_refused(self):
-        sftp = FakeSFTP({"/repo/a.py": b"old\n"})
-        with patch.object(ws, "_is_agent", return_value=False), sftp_patch(sftp):
-            await ws._read(1, 2, "h", {"path": "a.py"}, "/repo", run_id="r")
-            sftp.files["/repo/a.py"] = b"someone else\n"
-            sftp.mtimes["/repo/a.py"] = 99
-            with self.assertRaisesRegex(ws.WorkspaceError, "changed since you last read"):
-                await ws._write(1, 2, "h", {"path": "a.py", "content": "mine\n"}, "/repo", run_id="r")
-        self.assertEqual(sftp.files["/repo/a.py"], b"someone else\n")
-
-    async def test_other_run_must_read_first(self):
-        sftp = FakeSFTP({"/repo/a.py": b"old\n"})
-        with patch.object(ws, "_is_agent", return_value=False), sftp_patch(sftp):
-            await ws._read(1, 2, "h", {"path": "a.py"}, "/repo", run_id="parent")
-            with self.assertRaisesRegex(ws.WorkspaceError, "has not been read"):
-                await ws._write(1, 2, "h", {"path": "a.py", "content": "x"}, "/repo", run_id="child")
-
-    async def test_home_and_absolute_paths_share_a_ledger_entry(self):
+    async def test_home_path_write(self):
         sftp = FakeSFTP({"/home/u/a.py": b"old\n"}, dirs={"/home/u"})
         with patch.object(ws, "_is_agent", return_value=False), sftp_patch(sftp):
-            await ws._read(1, 7, "h", {"path": "~/a.py"}, "", run_id="r")
-            await ws._write(1, 7, "h", {"path": "/home/u/a.py", "content": "new\n"}, "", run_id="r")
+            await ws._write(1, 7, "h", {"path": "~/a.py", "content": "new\n"}, "")
         self.assertEqual(sftp.files["/home/u/a.py"], b"new\n")
 
     async def test_unwritable_directory_falls_back_to_in_place_write(self):
         sftp = FakeSFTP({"/etc/app.conf": b"a=1\n"}, dirs={"/etc"}, deny_create_in={"/etc"})
         sftp.modes["/etc/app.conf"] = 0o664
         with patch.object(ws, "_is_agent", return_value=False), sftp_patch(sftp):
-            await ws._read(1, 2, "h", {"path": "/etc/app.conf"}, "", run_id="r")
-            await ws._write(1, 2, "h", {"path": "/etc/app.conf", "content": "a=2\n"}, "", run_id="r")
+            await ws._read(1, 2, "h", {"path": "/etc/app.conf"}, "")
+            await ws._write(1, 2, "h", {"path": "/etc/app.conf", "content": "a=2\n"}, "")
         self.assertEqual(sftp.files["/etc/app.conf"], b"a=2\n")
         self.assertEqual(sftp.modes["/etc/app.conf"], 0o664)
 
@@ -294,8 +264,8 @@ class WriteTest(unittest.IsolatedAsyncioTestCase):
         sftp = FakeSFTP({"/repo/run.sh": b"#!/bin/sh\n"})
         sftp.modes["/repo/run.sh"] = 0o775
         with patch.object(ws, "_is_agent", return_value=False), sftp_patch(sftp):
-            await ws._read(1, 2, "h", {"path": "run.sh"}, "/repo", run_id="r")
-            await ws._write(1, 2, "h", {"path": "run.sh", "content": "#!/bin/sh\necho\n"}, "/repo", run_id="r")
+            await ws._read(1, 2, "h", {"path": "run.sh"}, "/repo")
+            await ws._write(1, 2, "h", {"path": "run.sh", "content": "#!/bin/sh\necho\n"}, "/repo")
         self.assertEqual(sftp.modes["/repo/run.sh"], 0o775)
         self.assertTrue(sftp.chowned and sftp.chowned[0][1:] == (1000, 1000))
 
@@ -309,26 +279,36 @@ class WriteTest(unittest.IsolatedAsyncioTestCase):
             return {"ok": True, "exit": 0, "out": ""}
 
         with patch.object(ws, "_is_agent", return_value=True), patch.object(ws, "_agent_call", call):
-            text, _ = await ws._write(1, 2, "h", {"path": "/tmp/new/x.py", "content": "hi"}, "/tmp", run_id="r")
+            text, _ = await ws._write(1, 2, "h", {"path": "/tmp/new/x.py", "content": "hi"}, "/tmp")
         self.assertEqual(calls, ["probe", "mkdir", "write"])
         self.assertIn("created", text)
 
-    async def test_connector_refuses_unread_existing_file(self):
+    async def test_connector_overwrites_unread_existing_file_and_says_so(self):
+        calls = []
+
         async def call(_u, _h, op, args, seconds=30):
+            calls.append(op)
             if op == "exec":
                 return {"ok": True, "exit": 0, "out": "12\nw\ndw\n"}
+            return {"ok": True, "out": "wrote"}
+
+        with patch.object(ws, "_is_agent", return_value=True), patch.object(ws, "_agent_call", call):
+            text, _ = await ws._write(1, 2, "h", {"path": "/tmp/x.py", "content": "hi"}, "/tmp")
+        self.assertEqual(calls, ["exec", "write"])
+        self.assertIn("overwrote /tmp/x.py (2 bytes; was 12 bytes)", text)
+
+    async def test_connector_write_refuses_a_directory(self):
+        async def call(_u, _h, op, args, seconds=30):
+            if op == "exec":
+                return {"ok": True, "exit": 0, "out": "dir\ndw\n"}
             raise AssertionError("must not write")
 
         with patch.object(ws, "_is_agent", return_value=True), patch.object(ws, "_agent_call", call):
-            with self.assertRaisesRegex(ws.WorkspaceError, "has not been read"):
-                await ws._write(1, 2, "h", {"path": "/tmp/x.py", "content": "hi"}, "/tmp", run_id="r")
+            with self.assertRaisesRegex(ws.WorkspaceError, "is a directory, not a file"):
+                await ws._write(1, 2, "h", {"path": "/tmp/d", "content": "hi"}, "/tmp")
 
 
 class ReplaceTest(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
-        ws.file_ledger.clear()
-        assume_read(self)
-
     async def test_identical_strings_refused_before_transport(self):
         with patch.object(ws, "_agent_call", new_callable=AsyncMock) as call:
             with self.assertRaisesRegex(ws.WorkspaceError, "identical"):
@@ -809,10 +789,6 @@ if __name__ == "__main__":
 # --- follow-up: multi-edit, grep modes, glob sort, list depth, budgets -------------
 
 class MultiEditTest(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
-        ws.file_ledger.clear()
-        assume_read(self)
-
     async def test_edits_apply_in_order_and_publish_once(self):
         sftp = FakeSFTP({"/repo/a.py": b"alpha\nbeta\ngamma\n"})
         with patch.object(ws, "_is_agent", return_value=False), sftp_patch(sftp):

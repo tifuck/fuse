@@ -494,9 +494,10 @@ SCHEMAS = {
             "name": "write_file",
             "description": (
                 "Create or overwrite a UTF-8 text file (maximum 400000 UTF-8 bytes, no NUL) on a named or bound "
-                "host. Missing parent directories are created. An existing file must have been read with read_file "
-                "by you (another agent's read does not count) and be unchanged since, or the write is refused; preserve unrelated work, and "
-                "prefer search_replace for targeted changes. Symlink/directory targets are refused. New files "
+                "host. Missing parent directories are created. Overwriting replaces the whole file without a check, "
+                "so know its current content first (by any means) and preserve unrelated work; the result says "
+                "when a file was overwritten and its old size. Prefer search_replace for targeted changes. "
+                "Symlink/directory targets are refused. New files "
                 "follow the host umask; existing files keep their mode. Not a binary-copy tool."
             ),
             "parameters": {
@@ -512,9 +513,9 @@ SCHEMAS = {
         "function": {
             "name": "search_replace",
             "description": (
-                "Replace exact, nonempty text in a host file. You must have read the file with read_file, and it "
-                "must be unchanged since (by a command, the user, or another agent), or the edit is refused: read it "
-                "again, then redo the edit. old_string must match "
+                "Replace exact, nonempty text in a host file. No prior read_file call is required: old_string is "
+                "matched against the file's current content, so take it from a recent look at the file (read_file, "
+                "grep, or a command). old_string must match "
                 "uniquely unless replace_all=true, which replaces all matches. No fuzzy whitespace matching. Not a regex. "
                 "Include enough surrounding lines in old_string to make it unique, and copy indentation exactly. "
                 "For several changes to one file, pass edits (a list of {old_string, new_string, replace_all}) "
