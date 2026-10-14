@@ -155,6 +155,66 @@ class ScopeTest(PermSchemaTest):
         paths = permissions.extract_shell_paths("bash scripts/run.sh", "/srv/app", False)
         self.assertIn("/srv/app/scripts/run.sh", [p for p, _ in paths])
 
+    def test_separators_never_stick_to_a_path(self):
+        # shlex kept `;` on the word before it: `2>/dev/null;` asked about
+        # "/dev/null;" and `ls /x; git log` about "/x;".
+        paths = permissions.extract_shell_paths(
+            "ls /usr/local/lib/node_modules; git log --all | grep -m5 NODE_PATH", "/srv/app", False)
+        self.assertEqual(paths, [("/usr/local/lib/node_modules", False)])
+        paths = permissions.extract_shell_paths("cat /etc/hosts&&ls /var/www||true", "/srv/app", False)
+        self.assertEqual([p for p, _ in paths], ["/etc/hosts", "/var/www"])
+        # A quoted separator is part of its word.
+        paths = permissions.extract_shell_paths("echo 'a;/b' > out.txt", "/srv/app", False)
+        self.assertEqual([p for p, _ in paths], ["/srv/app/a;/b", "/srv/app/out.txt"])
+
+    def test_device_sinks_and_descriptor_dups_are_not_paths(self):
+        command = ("nvidia-smi; until curl -skf https://localhost:11435/health >/dev/null 2>&1; do sleep 2; done; "
+                   "ls /tmp 2>/dev/null; cat /dev/urandom | head -c 4 >&2; make &>/dev/null")
+        self.assertEqual(permissions.extract_shell_paths(command, "/srv/app", False), [("/tmp", False)])
+        # A real device is still a target.
+        self.assertIn(("/dev/sda", False), permissions.extract_shell_paths("echo x > /dev/sda", "/srv/app", False))
+        self.assertIn(("/dev/null.bak", False), permissions.extract_shell_paths("cp a /dev/null.bak", "/srv/app", False))
+
+    def test_heredoc_delimiter_is_not_a_path(self):
+        paths = permissions.extract_shell_paths("cat > notes.txt <<'EOF'\nhello\nEOF", "/srv/app", False)
+        self.assertEqual(paths, [("/srv/app/notes.txt", False)])
+
+    def test_glob_means_what_the_shell_expands(self):
+        not_globs = (
+            # Patterns the program applies, not the shell.
+            "grep -E '^(GGML_CUDA[A-Z_]*|CMAKE_BUILD_TYPE)' build/CMakeCache.txt",
+            "find app -name '*.py' -not -path '*/__pycache__/*' | xargs wc -l",
+            "ps -eo pid,args | grep -E '[l]lama-(server|cli)'",
+            'echo "*"',
+            "echo \\*",
+            # The test command.
+            "if [ -s out.log ]; then cat out.log; fi",
+            "[[ -d build ]] && ls build",
+            # Heredoc bodies for programs that are not shells are data.
+            ".venv/bin/python - <<'PY'\npaths=['app/a.html','app/b.py']\nprint(paths[0])\nPY",
+            "cat > notes.md <<EOF\n- [x] done *now*\nEOF",
+        )
+        for command in not_globs:
+            self.assertFalse(permissions._has_shell_glob(command, False), command)
+        globs = (
+            "ls *.py",
+            "cat src/[ab].c",
+            "rm -f build/?.o",
+            "cat \"my file\"*",
+            # Another shell runs the quoted string or the heredoc.
+            "watch 'cat /etc/*'",
+            "ssh box 'ls *'",
+            "bash <<'EOF'\nls /etc/*\nEOF",
+            "sudo sh <<EOF\ncat /root/*\nEOF",
+            "cat <<'EOF' | ssh box\nls /srv/*\nEOF",
+            # A here-string is not a heredoc: the lines after it are commands.
+            "cat <<<'x'\nls *.log",
+            # Unbalanced quotes: judged as written.
+            "echo 'unterminated *",
+        )
+        for command in globs:
+            self.assertTrue(permissions._has_shell_glob(command, False), command)
+
 
 class ReviewTest(PermSchemaTest):
     def _cleanup(self):
@@ -303,6 +363,50 @@ class ReviewTest(PermSchemaTest):
         self.assertFalse(res.allowed)
         self.assertIn("timed out", res.detail)
         self.assertIn("/etc/shadow", res.detail)
+
+    def test_discarding_output_never_asks(self):
+        # `2>/dev/null` used to name /dev/null as an out-of-root location.
+        res = asyncio.run(self._review(
+            _gate(), tool="run_terminal_command",
+            args={"command": "ls src 2>/dev/null; grep -c x src/main.py >/dev/null 2>&1", "cwd": ""},
+        ))
+        self.assertTrue(res.allowed)
+
+    def test_quoted_patterns_never_ask(self):
+        res = asyncio.run(self._review(
+            _gate(), tool="run_terminal_command",
+            args={"command": "grep -nE '^(def|class)[[:space:]]+[A-Z_]+' src/main.py; find src -name '*.py'", "cwd": ""},
+        ))
+        self.assertTrue(res.allowed)
+
+    def test_command_refusal_names_the_reason_not_the_project(self):
+        # Asked about for a construct (here a glob), not a location: the model
+        # was told "Do not access /srv/app", its own project root.
+        res, events = asyncio.run(self._ask_flow(
+            "timeout", {"command": "cat src/*.py | wc -l", "cwd": ""}, tool="run_terminal_command"))[:2]
+        self.assertFalse(res.allowed)
+        self.assertTrue(res.detail.startswith("Permission request timed out"), res.detail)
+        self.assertIn("this command did not run", res.detail)
+        self.assertIn("glob", res.detail)
+        self.assertNotIn("Do not access", res.detail)
+        self.assertNotIn("/srv/app", res.detail)
+        res = asyncio.run(self._review(
+            _gate(unattended=True), tool="run_terminal_command",
+            args={"command": "for f in src/*; do echo $f; done", "cwd": ""},
+        ))
+        self.assertFalse(res.allowed)
+        self.assertIn("permission cannot be requested", res.detail)
+        self.assertIn("$-expansion", res.detail)
+        self.assertNotIn("/srv/app", res.detail)
+
+    def test_location_refusal_still_names_the_location(self):
+        res, events = asyncio.run(self._ask_flow(
+            "timeout", {"command": "ls /var/www/*", "cwd": ""}, tool="run_terminal_command"))[:2]
+        self.assertIn("Do not access /var/www/*", res.detail)
+        res, events, payload = asyncio.run(self._ask_flow(
+            "deny", {"command": "cat .env", "cwd": "/srv/other"}, tool="run_terminal_command"))
+        self.assertIn("Permission denied by user", res.detail)
+        self.assertIn("/srv/other", res.detail)
 
     def test_secret_file_inside_root_is_silent(self):
         # A secret-named file inside an approved dir never asks.

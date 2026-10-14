@@ -74,8 +74,29 @@ _GLOB_SHELL = re.compile(r"[*?\[\]]")
 # command is never covered by a dir grant - but it still runs silently in scope.
 _COMPOUND_SHELL = re.compile(r"[;&|\n]")
 # Redirection is often glued to its operand (echo hi>/etc/x, cmd 2>err.log),
-# so shlex tokens are split on redirect operators before scanning.
-_REDIR_TOKENS = re.compile(r"([0-9&]*>>?|<)")
+# so shlex tokens are split on redirect operators before scanning. << and <<<
+# introduce a heredoc delimiter or a here-string, never a path.
+_REDIR_TOKENS = re.compile(r"([0-9&]*>>?|<<<?|<)")
+# Unquoted command separators split tokens even when glued to a word
+# (`ls x;`, `a&&b`); otherwise `2>/dev/null;` yields the path "/dev/null;".
+_SHELL_SEPARATORS = ";&|"
+# File descriptor duplication (2>&1, >&2, <&0) names a descriptor, not a file.
+_FD_DUP = re.compile(r"\d*[<>]&(?:\d+|-)(?![\w./])")
+# Device files a command can only discard to or read noise from. They never
+# reach outside the project, so `2>/dev/null` is not a location to approve.
+_HARMLESS_DEVICES = frozenset({
+    "/dev/null", "/dev/zero", "/dev/full", "/dev/random", "/dev/urandom",
+    "/dev/stdin", "/dev/stdout", "/dev/stderr", "/dev/tty",
+})
+_DEV_FD = re.compile(r"^/dev/fd/\d+$")
+# A heredoc fed to one of these is a script for another shell, so its body
+# is globbed and expanded like the command line itself.
+_HEREDOC_SHELLS = frozenset({
+    "sh", "bash", "zsh", "dash", "ksh", "ash", "csh", "tcsh", "fish", "mksh",
+    "pwsh", "powershell", "cmd", "ssh", "su", "busybox",
+})
+_HEREDOC = re.compile(r"(?<!<)<<(?!<)(-?)[ \t]*(['\"]?)([A-Za-z_][\w.-]*)\2")
+_TEST_BRACKETS = re.compile(r"(?<!\S)(?:\[\[|\]\]|\[|\])(?=[\s;&|)]|$)")
 # A flag joined to its path argument (tar -C/etc, gcc -I~/inc) leaves the path
 # unlisted as an operand; treat the whole command as opaque instead.
 _ATTACHED_FLAG_PATH = re.compile(r"^-[A-Za-z0-9]*[~/\\%.]")
@@ -322,15 +343,106 @@ def _looks_like_path(token: str, windows: bool) -> bool:
     return "/" in token
 
 
+def _shell_tokens(text: str, windows: bool) -> list[str]:
+    """shlex words with unquoted ; & | split off as their own tokens."""
+    lexer = shlex.shlex(_FD_DUP.sub(" ", text), posix=not windows, punctuation_chars=_SHELL_SEPARATORS)
+    lexer.whitespace_split = True
+    return list(lexer)
+
+
+def _harmless_device(path: str, windows: bool) -> bool:
+    if windows:
+        return False
+    norm = posixpath.normpath(path)
+    return norm in _HARMLESS_DEVICES or bool(_DEV_FD.match(norm))
+
+
+def _heredoc_feeds_shell(line: str, start: int) -> bool:
+    """Whether the pipeline holding the << at `start` runs a shell, before or
+    after the heredoc (`bash <<EOF`, `cat <<EOF | ssh host`)."""
+    pipeline = re.split(r"[;&]", line[:start])[-1] + " " + re.split(r"[;&]", line[start:])[0]
+    for word in re.split(r"[\s|()]+", pipeline):
+        name = re.split(r"[\\/]", word.strip("'\""))[-1].lower()
+        if name.endswith(".exe"):
+            name = name[:-4]
+        if name in _HEREDOC_SHELLS:
+            return True
+    return False
+
+
+def _without_data_heredocs(text: str) -> str:
+    """Blank heredoc bodies the shell never globs (data or code for python,
+    cat, psql, ...). A body fed to another shell stays."""
+    lines = text.split("\n")
+    out: list[str] = []
+    pending: list[tuple[str, bool, bool]] = []  # (delimiter, strip tabs, keep body)
+    for line in lines:
+        if pending:
+            delim, tabs, keep = pending[0]
+            if (line.lstrip("\t") if tabs else line) == delim:
+                pending.pop(0)
+                out.append("")
+            else:
+                out.append(line if keep else "")
+            continue
+        out.append(line)
+        for match in _HEREDOC.finditer(line):
+            pending.append((match.group(3), match.group(1) == "-", _heredoc_feeds_shell(line, match.start())))
+    return "\n".join(out)
+
+
+def _has_shell_glob(command: str, windows: bool) -> bool:
+    """Whether the shell itself would glob-expand part of the command.
+
+    A quoted single word ('*.py', '[A-Z_]+', '*/cache/*') is a pattern the
+    program applies (find, grep), heredoc bodies for non-shells are data, and
+    a bare [ ] [[ ]] is the test command: none of those expand on the host. A
+    quoted string with whitespace still counts, because it may be a script
+    another shell runs (watch '...', ssh host '...', su -c '...')."""
+    text = _without_data_heredocs(str(command or ""))
+    out: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "\\" and not windows and i + 1 < n:
+            out.append("  ")  # an escaped character is literal
+            i += 2
+            continue
+        if ch in ("'", '"'):
+            end = i + 1
+            while end < n and text[end] != ch:
+                end += 2 if (ch == '"' and text[end] == "\\" and not windows) else 1
+            if end >= n:
+                out.append(text[i:])  # unbalanced: judge the rest as written
+                break
+            inner = text[i + 1:end]
+            out.append(" " * (len(inner) + 2) if not re.search(r"\s", inner) else inner)
+            i = end + 1
+            continue
+        out.append(ch)
+        i += 1
+    return bool(_GLOB_SHELL.search(_TEST_BRACKETS.sub(" ", "".join(out))))
+
+
+def _opaque_reason(command: str) -> str:
+    text = str(command or "")
+    if _INTERPRETER_SHELL.search(text):
+        return "it hands a script to another shell or interpreter (sh -c, eval, ...), so its targets cannot be checked"
+    if _OPAQUE_SHELL.search(text):
+        return "it uses $-expansion or backticks, so its targets cannot be checked"
+    return "its arguments could not be parsed (unbalanced quotes, or a path glued to a flag like -C/dir)"
+
+
 def extract_shell_paths(command: str, cwd: str, windows: bool) -> list[tuple[str, bool]] | None:
     """Path-looking tokens as (path, is_dir). None = opaque command.
     is_dir marks cd/pushd targets (a directory by construction); everything
-    else is treated as a file-ish target."""
+    else is treated as a file-ish target. Device sinks such as /dev/null are
+    left out: discarding output reaches nothing outside the project."""
     text = str(command or "").strip()
     if not text or _OPAQUE_SHELL.search(text) or _INTERPRETER_SHELL.search(text):
         return None
     try:
-        tokens = shlex.split(text, posix=not windows)
+        tokens = _shell_tokens(text, windows)
     except ValueError:
         return None
     out: list[tuple[str, bool]] = []
@@ -374,6 +486,8 @@ def extract_shell_paths(command: str, cwd: str, windows: bool) -> list[tuple[str
                 or _WIN_DRIVE.match(cand) or cand.startswith("\\\\")):
             base = cwd or "~"
             cand = (ntpath.join(base, cand) if windows else posixpath.join(base, cand)) if not _is_home_marker(base) else "~/{}".format(cand)
+        if _harmless_device(cand, windows):
+            continue
         if cand and cand not in seen:
             seen.append(cand)
             resolved.append((cand, is_dir))
@@ -980,7 +1094,23 @@ def _finish_ask(ask_id: str, status: str) -> None:
         pass
 
 
-def _deny_detail(target: str, action: str) -> str:
+def _deny_detail(target: str, action: str, why: str = "") -> str:
+    """The model-facing refusal. A shell command asked about for what it does
+    (why: a glob, $-expansion, a destructive form) rather than where it
+    reaches is refused as a command: naming its working directory instead told
+    the model to stay out of its own project."""
+    if why and action != "deny_busy":
+        what = f"this command did not run: it needs approval because {why}"
+        if action == "timeout":
+            return (f"Permission request timed out (no user response); {what}. "
+                    "Continue without it, or rewrite it without that construct.")
+        if action == "unattended":
+            return (f"Unattended run — permission cannot be requested, so {what}. "
+                    "Continue without it; ask the owner to grant access or enable bypass.")
+        if action == "jev_denied":
+            return (f"Permission denied by Jev (Auto mode automation), not by the user; {what}. "
+                    "Do not retry it unchanged; continue without it.")
+        return f"Permission denied by user; {what}. Do not retry it unchanged; continue without it."
     label = (target or "that location").strip()
     if action == "timeout":
         return f"Permission request timed out (no user response). Do not access {label}; continue without it."
@@ -1084,6 +1214,9 @@ async def review(*, tool: str, args: dict, user_id: int,
     # workspace confinement must be relaxed or it rejects what the gate
     # just allowed.
     outside_work = False
+    # Why a shell command needs approval regardless of the paths it names.
+    restricted_why: list[str] = []
+    secret_target = ""
 
     if tool == "spawn_subagent" and not target:
         return ReviewResult(allowed=True)
@@ -1108,13 +1241,17 @@ async def review(*, tool: str, args: dict, user_id: int,
         # paths all sit inside the allowed roots runs silently. The wall is
         # what asks: unknowable targets (opaque constructs, globs), destructive
         # forms, fetch-and-execute, denylist hits, secrets, out-of-root paths.
-        restricted_shell = (
-            paths is None
-            or _GLOB_SHELL.search(command)
-            or _destructive_command(command)
-            or _FETCH_EXEC_SHELL.search(command)
-            or bool(deny_reason)
-        )
+        if paths is None:
+            restricted_why.append(_opaque_reason(command))
+        if _has_shell_glob(command, windows):
+            restricted_why.append("it uses unquoted glob patterns (*, ?, [...]) that expand on the host")
+        if _destructive_command(command):
+            restricted_why.append("it matches a destructive command pattern")
+        if _FETCH_EXEC_SHELL.search(command):
+            restricted_why.append("it pipes a download into a shell")
+        if deny_reason:
+            restricted_why.append(deny_reason)
+        restricted_shell = bool(restricted_why)
         compound = _COMPOUND_SHELL.search(command) is not None
         if restricted_shell:
             reasons.append(_SHELL_APPROVAL)
@@ -1130,11 +1267,13 @@ async def review(*, tool: str, args: dict, user_id: int,
                 # to a directory grant of its parent.
                 if is_secret_path(resolved_cand) and (secret_dir_in_path(resolved_cand) or not ok):
                     secret = True
+                    secret_target = secret_target or resolved_cand
                     reasons.append("secret-named file")
                 elif not ok and is_secret_dir(resolved_cand):
                     # `grep -r . ~/.ssh` reads every key in it: never a
                     # reusable directory grant.
                     secret = True
+                    secret_target = secret_target or resolved_cand
                     reasons.append("credential directory")
                 if ok:
                     continue
@@ -1151,7 +1290,7 @@ async def review(*, tool: str, args: dict, user_id: int,
                     if not grant_value:
                         grant_kind, grant_value = need
         offending = [r.split(" is outside")[0] for r in reasons if "outside" in r]
-        display = offending[0] if offending else cwd
+        display = offending[0] if offending else (secret_target or cwd)
     else:
         in_roots, resolved = scope_allows(target, root, roots, windows)
         display = resolved or target
@@ -1219,6 +1358,8 @@ async def review(*, tool: str, args: dict, user_id: int,
         return ReviewResult(allowed=True, root_override=relax, resolved=resolved)
 
     label = display if perm_kind == "shell" else (display or cwd or command)
+    # Refused for what the command does, not a location: say so (see _deny_detail).
+    why = "; ".join(restricted_why) if perm_kind == "shell" and not out_of_root and not secret else ""
     if perm_kind == "shell" and (restricted_shell or secret or compound):
         # No grant can ever cover this command (see `covered`), so the card
         # must not offer Allow-always.
@@ -1273,15 +1414,15 @@ async def review(*, tool: str, args: dict, user_id: int,
         if verdict:
             return ReviewResult(allowed=True, root_override=relax, resolved=resolved)
         if verdict is False:
-            return ReviewResult(allowed=False, detail=_deny_detail(label, "jev_denied"), kind="permission_denied")
+            return ReviewResult(allowed=False, detail=_deny_detail(label, "jev_denied", why), kind="permission_denied")
         auto_judge = None  # no verdict; the card is the user's call
     # auto_judge stays live when Auto is off: _ask_and_wait re-reads the flag
     # every poll, so flipping Auto on mid-wait sends the ask to Jev once.
     if gate.unattended:
-        return ReviewResult(allowed=False, detail=_deny_detail(label, "unattended"), kind="permission_denied")
+        return ReviewResult(allowed=False, detail=_deny_detail(label, "unattended", why), kind="permission_denied")
     action = await _ask_and_wait(gate, payload, auto_judge)
     if action in ("allow", "allow_session", "allow_host"):
         return ReviewResult(allowed=True, root_override=relax, resolved=resolved, ask_id="")
     if action == "cancelled":
         return ReviewResult(allowed=False, detail="Tool interrupted.", kind="interrupted")
-    return ReviewResult(allowed=False, detail=_deny_detail(label, action), kind="permission_denied")
+    return ReviewResult(allowed=False, detail=_deny_detail(label, action, why), kind="permission_denied")
