@@ -1,3 +1,6 @@
+<img width="1262" height="1390" alt="image" src="https://github.com/user-attachments/assets/1f34a969-2417-4c3e-aaae-032f3e5dbec4" />
+
+
 # Fuse
 
 Fuse is a self-hosted LLM router and workspace. It gives every user an OpenAI-compatible API (`/v1/chat/completions`, `/v1/models`) that routes to whichever model backends the site has configured, plus a web dashboard with a chat client that can use tools, search the web, and run as a coding agent on your own machines.
