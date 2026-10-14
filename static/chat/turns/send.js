@@ -10,11 +10,13 @@ export function createSend(ctx) {
   const { composer, context, net, overlays, panels, picker, queue, sidebar, sync, traces, transcript, ui } = ctx;
     function closeRewind() {
     const wasOpen = S.rewindPanel && !S.rewindPanel.hidden;
+    const hadFocus = wasOpen && S.rewindPanel.contains(document.activeElement);
     if (S.rewindPanel) S.rewindPanel.hidden = true;
     if (S.rewindList) S.rewindList.innerHTML = "";
     if (wasOpen) {
       overlays.armOverlayGhost(S.rewindClose);
       overlays.overlayDrop("rewind");
+      if (hadFocus) S.input.focus({ preventScroll: true });
     }
   }
 
@@ -48,6 +50,7 @@ export function createSend(ctx) {
       btn.addEventListener("click", () => sidebar.rewindTo(item.index));
       S.rewindList.appendChild(btn);
     });
+    S.rewindList.querySelector("button")?.focus({ preventScroll: true });
   }
 
     function retryAssistant(index) {

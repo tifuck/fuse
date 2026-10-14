@@ -166,7 +166,7 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
         if (!(await row.isVisible())) await p.locator('.chat-bar [data-history-toggle]').click();
         await row.hover();
         await row.locator('button.more').click();
-        await p.getByRole('button', { name: 'Delete', exact: true }).click();
+        await p.getByRole('menuitem', { name: 'Delete', exact: true }).click();
         await p.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
         await p.waitForFunction(gone => !document.querySelector(`[data-thread="${gone}"]`), id);
         const order = await p.evaluate(async () => {

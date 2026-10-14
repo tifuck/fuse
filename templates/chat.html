@@ -164,9 +164,9 @@
       <div class="chat-slash-list" id="chat-slash-list" data-chat-slash-list role="listbox" aria-label="Slash commands"></div>
     </div>
     <div class="chat-spell-pop" id="chat-spell-pop" data-chat-spell-pop hidden role="menu" aria-label="Spelling"></div>
-    <div class="chat-rewind" data-chat-rewind hidden role="dialog" aria-label="Rewind conversation">
+    <div class="chat-rewind" data-chat-rewind hidden role="dialog" aria-labelledby="chat-rewind-title">
       <div class="chat-rewind-head">
-        <p>Rewind to a message</p>
+        <p id="chat-rewind-title">Rewind to a message</p>
         <button type="button" class="chat-menu-close chat-rewind-close" data-rewind-close aria-label="Close">
           <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
         </button>
@@ -242,10 +242,10 @@
   </form>
   </div>
   <button type="button" class="chat-artifact-backdrop" data-artifact-backdrop aria-label="Close artifact" tabindex="-1" hidden></button>
-  <aside class="chat-artifact" id="chat-artifact" data-chat-artifact hidden role="dialog" aria-label="Artifact">
+  <aside class="chat-artifact" id="chat-artifact" data-chat-artifact hidden role="dialog" aria-labelledby="chat-artifact-title" tabindex="-1">
     <div class="chat-artifact-head">
       <div class="chat-artifact-copy">
-        <p data-artifact-title>Artifact</p>
+        <p id="chat-artifact-title" data-artifact-title>Artifact</p>
         <span class="badge" data-artifact-visibility hidden></span>
         <span class="chat-artifact-building-label" data-artifact-status hidden>Building…</span>
       </div>

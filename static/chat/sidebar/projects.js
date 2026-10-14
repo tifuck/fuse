@@ -78,7 +78,7 @@ export function createProjects(ctx) {
     const busy = running ? ' aria-busy="true"' : "";
     const working = running ? '<span class="visually-hidden">Working</span>' : "";
     const twoLine = Boolean(item.remote_path);
-    return `<div class="chat-history-item is-project${on}${twoLine ? " has-snip" : ""}${runningClass}" data-project="${item.host_id}:${item.id}"${threadAttr}${busy}><button type="button" class="open" title="${escapeHtml(name)}">${working}<span class="chat-history-title">${lead}<span class="chat-history-copy"><span class="chat-history-name">${escapeHtml(name)}</span>${path}</span></span>${chip}</button><button type="button" class="more" aria-label="Project actions">⋯</button></div>`;
+    return `<div class="chat-history-item is-project${on}${twoLine ? " has-snip" : ""}${runningClass}" data-project="${item.host_id}:${item.id}"${threadAttr}${busy}><button type="button" class="open" title="${escapeHtml(name)}"${on ? ' aria-current="true"' : ""}>${working}<span class="chat-history-title">${lead}<span class="chat-history-copy"><span class="chat-history-name">${escapeHtml(name)}</span>${path}</span></span>${chip}</button><button type="button" class="more" aria-label="Actions for project ${escapeHtml(name)}" aria-haspopup="menu" aria-expanded="false">⋯</button></div>`;
   }
 
     function fillProjectFilterOptions() {

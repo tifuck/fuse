@@ -159,7 +159,7 @@ const PREVIEW = 'Name this sidebar fixture chat from…';
     await openHistory();
     await row(id).hover();
     await row(id).locator('button.more').click();
-    await page.getByRole('button', { name: 'Archive', exact: true }).click();
+    await page.getByRole('menuitem', { name: 'Archive', exact: true }).click();
     await page.waitForFunction(() => !new URL(location.href).searchParams.get('t'));
     truth = await threads();
     assert.ok(truth.archived.some(item => item.id === id));
@@ -336,7 +336,7 @@ const PREVIEW = 'Name this sidebar fixture chat from…';
 
     await row(secondPin).hover();
     await row(secondPin).locator('button.more').click();
-    await page.getByRole('button', { name: 'Pin to top', exact: true }).click();
+    await page.getByRole('menuitem', { name: 'Pin to top', exact: true }).click();
     await page.waitForFunction(thread => document.querySelector(`[data-thread="${thread}"]`)?.classList.contains('is-pinned'), secondPin, { timeout: 10000 });
     assert.equal(await page.locator('[data-history-list] .chat-history-kicker', { hasText: 'Pinned' }).count(), 1, 'a Pinned section exists');
     truth = await threads();
@@ -345,7 +345,7 @@ const PREVIEW = 'Name this sidebar fixture chat from…';
     // A later pin takes the top of the section.
     await row(firstPin).hover();
     await row(firstPin).locator('button.more').click();
-    await page.getByRole('button', { name: 'Pin to top', exact: true }).click();
+    await page.getByRole('menuitem', { name: 'Pin to top', exact: true }).click();
     await page.waitForFunction(
       thread => document.querySelector('[data-history-list] .chat-history-item')?.getAttribute('data-thread') === thread,
       firstPin,

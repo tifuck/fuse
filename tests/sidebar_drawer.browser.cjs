@@ -318,8 +318,28 @@ const NOW = '2026-10-05T00:00:00Z';
       assert.equal(await page.locator('.chat-pop').count(), 0, 'escape closes the row menu');
       assert.equal(await page.locator('.chat-history-item.is-menu').count(), 0, 'closing the menu clears the row flag');
 
+      // Keyboard: Enter on ⋯ opens a menu with focus on its first item, arrows
+      // walk it, and Escape hands focus back to the ⋯ button.
+      const moreBtn = page.locator(`[data-thread="${a.id}"] button.more`);
+      await moreBtn.focus();
+      await page.keyboard.press('Enter');
+      await page.locator('.chat-pop[role="menu"]').waitFor();
+      const focused = () => page.evaluate(() => ({ role: document.activeElement.getAttribute('role'), text: document.activeElement.textContent, label: document.activeElement.getAttribute('aria-label'), expanded: document.activeElement.getAttribute('aria-expanded') }));
+      assert.deepEqual(await focused().then(f => [f.role, f.text]), ['menuitem', 'Pin to top'], 'the menu opens with focus on its first item');
+      assert.equal(await moreBtn.getAttribute('aria-expanded'), 'true', 'the trigger reports the open menu');
+      await page.keyboard.press('ArrowDown');
+      assert.equal((await focused()).text, 'Rename', 'ArrowDown moves to the next item');
+      await page.keyboard.press('ArrowUp');
+      await page.keyboard.press('ArrowUp');
+      assert.equal((await focused()).text, 'Delete', 'ArrowUp wraps to the last item');
+      await page.keyboard.press('Escape');
+      await page.locator('.chat-pop').waitFor({ state: 'detached' });
+      const back = await focused();
+      assert.equal(back.label, 'Actions for Rename target thread', 'Escape returns focus to the row trigger, named for its chat');
+      assert.equal(back.expanded, 'false');
+
       await rowMenu(page, a.id);
-      await page.getByRole('button', { name: 'Rename', exact: true }).click();
+      await page.getByRole('menuitem', { name: 'Rename', exact: true }).click();
       const rename = page.locator(`[data-thread="${a.id}"] input.rename`);
       await rename.waitFor();
       assert.equal(await rename.inputValue(), 'Rename target thread', 'the rename box opens on the current title');
@@ -338,7 +358,7 @@ const NOW = '2026-10-05T00:00:00Z';
       assert.equal(await page.locator(`[data-thread="${b.id}"] .chat-history-name`).innerText(), 'Delete target thread, retitled', 'the parked update lands once the rename ends');
 
       await rowMenu(page, a.id);
-      await page.getByRole('button', { name: 'Rename', exact: true }).click();
+      await page.getByRole('menuitem', { name: 'Rename', exact: true }).click();
       await rename.fill('');
       await rename.press('Enter');
       await page.waitForFunction(id => !document.querySelector(`[data-thread="${id}"] input.rename`), a.id);
@@ -346,14 +366,14 @@ const NOW = '2026-10-05T00:00:00Z';
       assert.equal((await api(page, '/chat/threads/' + a.id)).title, 'Rename target thread', 'the server keeps the old title');
 
       await rowMenu(page, a.id);
-      await page.getByRole('button', { name: 'Rename', exact: true }).click();
+      await page.getByRole('menuitem', { name: 'Rename', exact: true }).click();
       await rename.fill('Renamed from the row menu');
       await rename.press('Enter');
       await page.waitForFunction(() => document.querySelector('[data-thread] input.rename') === null && [...document.querySelectorAll('[data-thread] .chat-history-name')].some(el => el.textContent === 'Renamed from the row menu'));
       assert.equal((await api(page, '/chat/threads/' + a.id)).title, 'Renamed from the row menu', 'a saved rename reaches the server');
 
       await rowMenu(page, b.id);
-      await page.getByRole('button', { name: 'Delete', exact: true }).click();
+      await page.getByRole('menuitem', { name: 'Delete', exact: true }).click();
       const dialog = page.locator('dialog.modal[data-confirm]');
       await dialog.waitFor();
       assert.equal(await dialog.evaluate(el => el.open), true, 'delete asks in a modal dialog');

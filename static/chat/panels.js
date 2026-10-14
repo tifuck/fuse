@@ -1,6 +1,7 @@
 // Memory, skills, view menus, context tabs, lightbox.
 import { S } from './state.js';
 import { newSession } from './state.js';
+import { modalInert, returnFocus } from './overlays.js';
 
 let viewMenuState = false;
 
@@ -189,6 +190,7 @@ export function createPanels(ctx) {
     document.body.appendChild(overlay);
     document.addEventListener("keydown", onKey);
     S.lightbox = { el: overlay, onKey, prevFocus: document.activeElement };
+    modalInert(overlay, true);
     overlays.overlayPush("lightbox");
     requestAnimationFrame(() => {
       overlay.classList.add("is-open");
@@ -203,6 +205,7 @@ export function createPanels(ctx) {
     overlays.overlayDrop("lightbox");
     document.removeEventListener("keydown", entry.onKey);
     entry.el.remove();
+    modalInert(entry.el, false);
     if (entry.prevFocus && typeof entry.prevFocus.focus === "function") {
       try { entry.prevFocus.focus(); } catch (_) {}
     }
@@ -239,6 +242,9 @@ export function createPanels(ctx) {
       overlays.overlayDrop("skills");
     }
     syncSkillsUi();
+    modalInert(S.skillsPanel, S.skillsOpen);
+    if (S.skillsOpen) S.skillsClose?.focus({ preventScroll: true });
+    else returnFocus(S.skillsPanel, S.skillsToggle);
   }
 
     function setShowThinking(on) {
@@ -259,7 +265,11 @@ export function createPanels(ctx) {
     S.viewMenu.classList.remove("is-dragging");
     S.viewMenu.style.transform = "";
     viewMenuState = false;
-    if (wasOpen) overlays.armOverlayGhost(S.viewMenu.querySelector("[data-view-close]"));
+    if (wasOpen) {
+      overlays.armOverlayGhost(S.viewMenu.querySelector("[data-view-close]"));
+      modalInert(S.viewMenu, false);
+      returnFocus(S.viewMenu, S.viewToggle);
+    }
   }
 
     function setViewMenuOpen(open) {
@@ -272,12 +282,12 @@ export function createPanels(ctx) {
     if (S.viewBackdrop) S.viewBackdrop.hidden = !open;
     S.viewToggle.setAttribute("aria-expanded", open ? "true" : "false");
     S.root.classList.toggle("view-sheet-open", open);
+    modalInert(S.viewMenu, open);
     if (open) {
       overlays.overlayPush("view");
       viewMenuState = mobile;
-      if (!mobile) {
-        (S.viewMenu.querySelector("button.is-on") || S.viewMenu.querySelector("[data-view]") || S.viewMenu).focus();
-      }
+      // A phone gets the sheet itself (tabindex=-1) so no keyboard pops.
+      (mobile ? S.viewMenu : S.viewMenu.querySelector("button.is-on") || S.viewMenu.querySelector("[data-view]") || S.viewMenu).focus();
       window.FuseChatAppearance?.syncUi();
       return;
     }
@@ -286,7 +296,7 @@ export function createPanels(ctx) {
     viewMenuState = false;
     S.viewMenu.classList.remove("is-dragging");
     S.viewMenu.style.transform = "";
-    if (!mobile) S.viewToggle.focus();
+    returnFocus(S.viewMenu, S.viewToggle);
   }
 
     function setMemoryOpen(open) {
@@ -309,11 +319,13 @@ export function createPanels(ctx) {
       overlays.overlayDrop("memory");
     }
     syncMemoryUi();
+    modalInert(S.memoryPanel, open);
     if (open) {
       const panel = S.root.querySelector('[data-context-panel="' + S.contextTab + '"]');
       const area = (panel && panel.querySelector("textarea")) || S.memoryInstructions;
       if (area) area.focus({ preventScroll: true });
     } else {
+      returnFocus(S.memoryPanel, S.memoryToggle);
       composer.pinVisualViewport();
     }
   }

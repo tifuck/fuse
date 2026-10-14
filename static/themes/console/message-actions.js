@@ -17,6 +17,7 @@ function msgActions(index, role) {
         act(btn);
       });
       bar.appendChild(btn);
+      return btn;
     };
     add("Copy", deps.ACTION_ICONS.copy, (btn) => {
       const msg = deps.messages[index];
@@ -34,7 +35,7 @@ function msgActions(index, role) {
     if (role === "user") add("Edit", deps.ACTION_ICONS.edit, () => deps.beginEdit(index));
     if (role === "user") add("Rewind", deps.ACTION_ICONS.rewind, () => deps.rewindTo(index));
     if (role === "assistant" && index === deps.messages.length - 1) add("Retry", deps.ACTION_ICONS.retry, () => deps.retryAssistant(index));
-    add("More", deps.ACTION_ICONS.more, (btn) => {
+    const more = add("More", deps.ACTION_ICONS.more, (btn) => {
       const items = [
         { label: "Delete", danger: true, run: () => deps.confirmDeleteAt(index, "one") },
         { label: "Delete from here", danger: true, run: () => deps.confirmDeleteAt(index, "from") },
@@ -45,6 +46,8 @@ function msgActions(index, role) {
       if (deps.redoStack.length) items.push({ label: "Redo", run: () => deps.redoConversation() });
       deps.showPop(btn, items);
     });
+    more.setAttribute("aria-haspopup", "menu");
+    more.setAttribute("aria-expanded", "false");
     return bar;
   }
 

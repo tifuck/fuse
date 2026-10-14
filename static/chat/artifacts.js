@@ -1,6 +1,7 @@
 // Artifact pane: open, versions, source view.
 import { S } from './state.js';
 import { escapeHtml } from './core.js';
+import { returnFocus } from './overlays.js';
 
 function artifactContentUrl(id, version) {
   const path = "/a/" + encodeURIComponent(id) + "/content";
@@ -138,6 +139,9 @@ export function createArtifacts(ctx) {
       overlays.overlayDrop("artifact");
     }
     syncArtifactUi();
+    // Only a click moves focus in; a stream opening the pane must not take it.
+    if (S.artifactOpen) { if (document.activeElement?.matches("button")) S.artifactPanel?.focus({ preventScroll: true }); }
+    else returnFocus(S.artifactPanel, S.artifactToggle.disabled ? S.input : S.artifactToggle);
     composer.scheduleFitChatBar();
   }
 

@@ -57,6 +57,30 @@ function dropDrawerLayers() {
   for (const kind of ["pop", "search", "history"]) overlayDrop(kind);
 }
 
+// A modal sheet makes everything else on the chat root inert (its backdrop
+// stays clickable) and puts back whatever inert state the drawer had set.
+const inertSaved = new Map();
+function modalInert(dialog, on) {
+  if (!on) {
+    inertSaved.forEach((was, el) => { el.inert = was; });
+    inertSaved.clear();
+    return;
+  }
+  [...S.root.children, document.querySelector("[data-fuse-dial]")].forEach((el) => {
+    if (!el || el === dialog || el.contains(dialog) || /backdrop/.test(el.className)) return;
+    if (!inertSaved.has(el)) inertSaved.set(el, el.inert);
+    el.inert = true;
+  });
+}
+
+// After a sheet closes, focus goes back to the control that opened it when
+// focus was inside the sheet (now hidden) or nowhere.
+function returnFocus(sheet, toggle) {
+  const active = document.activeElement;
+  if (active && active !== document.body && !sheet?.contains(active)) return;
+  if (toggle && toggle.getClientRects().length && !toggle.disabled) toggle.focus({ preventScroll: true });
+}
+
 export function createOverlays(ctx) {
   const { agents, artifacts, context, panels, perms, picker, sidebar, sync, turns } = ctx;
     function overlayIsMobile() {
@@ -114,12 +138,21 @@ export function createOverlays(ctx) {
     new MutationObserver(sync).observe(el, { attributes: true, attributeFilter: ["hidden"] });
   }
 
-    function closePop() {
+    function closePop(restoreFocus) {
     if (S.pop) {
+      const hadFocus = S.pop.contains(document.activeElement);
       S.pop.remove();
       overlayDrop("pop");
+      S.popAnchor?.setAttribute("aria-expanded", "false");
+      // A list repaint replaces the row: fall back to its new ⋯ button.
+      const row = S.popRowKey && S.historyList?.querySelector(`[${S.popRowKey[0]}="${CSS.escape(S.popRowKey[1])}"] button.more`);
+      row?.setAttribute("aria-expanded", "false");
+      const back = [S.popAnchor, row, S.popReturn].find((el) => el?.isConnected);
+      if (restoreFocus || hadFocus) back?.focus({ preventScroll: true });
     }
     S.pop = null;
+    S.popAnchor = null;
+    S.popReturn = null;
     S.popRowKey = null;
     S.historyList && S.historyList.querySelectorAll(".is-menu").forEach((el) => el.classList.remove("is-menu"));
   }
@@ -137,26 +170,48 @@ export function createOverlays(ctx) {
     }
     S.pop = document.createElement("div");
     S.pop.className = "chat-pop";
+    S.pop.setAttribute("role", "menu");
     items.forEach((item) => {
       if (item.sep) {
         const rule = document.createElement("div");
         rule.className = "chat-pop-sep";
-        rule.setAttribute("aria-hidden", "true");
+        rule.setAttribute("role", "separator");
         S.pop.appendChild(rule);
         return;
       }
       const btn = document.createElement("button");
       btn.type = "button";
+      btn.setAttribute("role", "menuitem");
+      btn.tabIndex = -1;
       btn.textContent = item.label;
       if (item.danger) btn.className = "danger";
       btn.addEventListener("click", (event) => {
         event.preventDefault();
-        closePop();
+        // A command that opens its own UI (Rename, a dialog) takes focus itself.
+        closePop(true);
         Promise.resolve(item.run()).catch((error) => sync.showFailure(`${item.label} failed`, error));
       });
       S.pop.appendChild(btn);
     });
+    // Arrow keys walk the items; Tab or Escape leaves and returns to the trigger.
+    S.pop.addEventListener("keydown", (event) => {
+      const list = [...S.pop.querySelectorAll('[role="menuitem"]')];
+      const i = list.indexOf(document.activeElement);
+      const to = { ArrowDown: i + 1, ArrowUp: i - 1, Home: 0, End: list.length - 1 }[event.key];
+      if (to !== undefined) {
+        event.preventDefault();
+        list[(to + list.length) % list.length]?.focus();
+      } else if (event.key === "Escape" || event.key === "Tab") {
+        event.preventDefault();
+        event.stopPropagation();
+        closePop(true);
+      }
+    });
     document.body.appendChild(S.pop);
+    S.popReturn = document.activeElement;
+    S.popAnchor = anchor && anchor.matches?.("button") ? anchor : null;
+    S.popAnchor?.setAttribute("aria-haspopup", "menu");
+    S.popAnchor?.setAttribute("aria-expanded", "true");
     overlayPush("pop");
     const rect = anchor ? anchor.getBoundingClientRect() : null;
     const width = S.pop.offsetWidth;
@@ -168,6 +223,7 @@ export function createOverlays(ctx) {
     if (top + height > window.innerHeight - 8) top = Math.max(8, rect.top - height - 4);
     S.pop.style.left = left + "px";
     S.pop.style.top = top + "px";
+    S.pop.querySelector('[role="menuitem"]')?.focus({ preventScroll: true });
   }
 
   return {
@@ -183,4 +239,4 @@ export function createOverlays(ctx) {
   };
 }
 
-export { attachSheetSwipe, dropDrawerLayers, overlayDrop };
+export { attachSheetSwipe, dropDrawerLayers, modalInert, overlayDrop, returnFocus };

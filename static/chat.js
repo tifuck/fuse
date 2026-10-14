@@ -1972,7 +1972,7 @@ import { createBoot } from './chat/boot.js';
 
     document.addEventListener("keydown", (event) => {
     if (event.key === "Tab" && S.historyMobile.matches && S.root.classList.contains("is-history")) {
-      const controls = [...sidebar.historyPanel.querySelectorAll("button, input, [tabindex]"), ...(S.pop ? S.pop.querySelectorAll("button") : [])]
+      const controls = [...sidebar.historyPanel.querySelectorAll("button, input, [tabindex]")]
         .filter((element) => element && !element.disabled && element.tabIndex >= 0 && element.getClientRects().length);
       const index = controls.indexOf(document.activeElement);
       event.preventDefault();

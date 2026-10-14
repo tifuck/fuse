@@ -107,7 +107,7 @@ const FAMILIES = [
       await pickerBtn().click();
       await picker().waitFor();
       assert.deepEqual(await optionIds(), ['grok-long', 'grok-short', 'offline'], 'reopening pins the model selected last time');
-      await page.locator('.chat-thread').click({ position: { x: 8, y: 8 } });
+      await page.locator('[data-chat-thread]').click({ position: { x: 8, y: 8 } });
       await picker().waitFor({ state: 'hidden' });
     }
 
@@ -153,7 +153,7 @@ const FAMILIES = [
       await menu.locator('[data-perms-mode="bypass"]').click();
       await page.waitForFunction(() => document.querySelector('[data-perm-chip]').getAttribute('aria-pressed') === 'true');
       assert.equal(await menu.locator('[data-perms-mode="bypass"]').getAttribute('aria-checked'), 'true');
-      await page.locator('.chat-thread').click({ position: { x: 8, y: 8 } });
+      await page.locator('[data-chat-thread]').click({ position: { x: 8, y: 8 } });
       await menu.waitFor({ state: 'hidden' });
 
       const second = await page.evaluate(async () => (await fuseToolFixture.api('/chat/threads', {
@@ -178,6 +178,28 @@ const FAMILIES = [
       await live();
       await page.waitForFunction(() => document.querySelector('[data-perm-chip-label]').textContent === 'Bypass');
       assert.notEqual(second, first);
+    }
+
+    // Modal sheets: focus goes in, the page behind is inert, and Escape hands
+    // focus back to the opener with the page live again.
+    {
+      const activeIs = sel => page.evaluate(s => document.activeElement === document.querySelector(s), sel);
+      const stageInert = () => page.evaluate(() => document.querySelector('.chat-stage').inert);
+      for (const [toggle, sheet, inside] of [
+        ['[data-skills-toggle]', '[data-chat-skills]', '[data-skills-close]'],
+        ['[data-memory-toggle]', '[data-chat-memory]', '[data-memory-instructions]'],
+        ['[data-view-toggle]', '[data-view-menu]', null],
+      ]) {
+        await page.locator(toggle).click();
+        await page.locator(sheet).waitFor();
+        if (inside) assert.equal(await activeIs(inside), true, `${sheet} takes focus`);
+        else assert.equal(await page.evaluate(s => document.querySelector(s).contains(document.activeElement), sheet), true, `${sheet} takes focus`);
+        assert.equal(await stageInert(), true, `${sheet} makes the page behind inert`);
+        await page.keyboard.press('Escape');
+        await page.locator(sheet).waitFor({ state: 'hidden' });
+        assert.equal(await stageInert(), false, `closing ${sheet} restores the page`);
+        assert.equal(await activeIs(toggle), true, `closing ${sheet} returns focus to its toggle`);
+      }
     }
 
     assert.deepEqual(errors, []);
@@ -244,6 +266,7 @@ const FAMILIES = [
       await p.locator('.chat-picker-menu').waitFor();
       const sheet = await phoneBox('.chat-picker-menu');
       assert.equal(sheet.sheet, true, 'a phone picker is a sheet');
+      assert.equal(await p.evaluate(() => document.activeElement === document.querySelector('.chat-picker-menu')), true, 'the phone sheet itself takes focus, no keyboard');
       phoneInside(sheet, 'phone model sheet');
       await p.locator('[data-picker-close]').click();
       await p.locator('.chat-picker-menu').waitFor({ state: 'hidden' });

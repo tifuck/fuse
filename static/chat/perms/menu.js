@@ -1,6 +1,7 @@
 // Grants menu: hosts, modes, revoke, refresh.
 import { S } from '../state.js';
 import { escapeHtml } from '../core.js';
+import { returnFocus } from '../overlays.js';
 
 let permsMenuEl = null;
 
@@ -131,6 +132,7 @@ export function createMenu(ctx) {
     menu.className = "chat-perms-menu" + (S.pickerSheetQuery.matches ? " is-sheet" : "");
     menu.setAttribute("role", "dialog");
     menu.setAttribute("aria-label", "Permissions");
+    menu.tabIndex = -1;
     menu.hidden = true;
     menu.innerHTML =
       '<div class="chat-picker-head"><p>Permissions</p><button type="button" class="chat-menu-close" data-perms-close aria-label="Close"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div>' +
@@ -174,11 +176,13 @@ export function createMenu(ctx) {
       placePermsMenu();
       // Same rule as the model picker: focus would pop the phone keyboard.
       if (search && !S.pickerSheetQuery.matches) search.focus({ preventScroll: true });
+      else permsMenuEl?.focus({ preventScroll: true });
       refreshPerms();
     } else {
       overlays.armOverlayGhost(permsMenuEl?.querySelector("[data-perms-close]"));
       overlays.overlayDrop("perms");
       if (permsMenuEl) permsMenuEl.hidden = true;
+      returnFocus(permsMenuEl, S.permChip);
     }
     queue.syncPermChip();
   }

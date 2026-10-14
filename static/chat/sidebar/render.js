@@ -161,7 +161,7 @@ export function createRender(ctx) {
     const scheduledClass = item.schedule_id ? " is-task" : "";
     const pinClass = item.pinned ? " is-pinned" : "";
     const unreadClass = unread ? " is-unread" : "";
-    return `<div class="chat-history-item${on}${twoLine ? " has-snip" : ""}${project ? " is-project" : ""}${groupedClass}${runningClass}${scheduledClass}${pinClass}${unreadClass}" data-thread="${escapeHtml(String(item.id))}"${busy}><button type="button" class="open" title="${title}">${working}<span class="chat-history-title">${lead}<span class="chat-history-copy"><span class="chat-history-name">${title}</span>${meta}${snip}</span></span>${chip}</button><button type="button" class="more" aria-label="Chat actions">⋯</button></div>`;
+    return `<div class="chat-history-item${on}${twoLine ? " has-snip" : ""}${project ? " is-project" : ""}${groupedClass}${runningClass}${scheduledClass}${pinClass}${unreadClass}" data-thread="${escapeHtml(String(item.id))}"${busy}><button type="button" class="open" title="${title}"${on ? ' aria-current="true"' : ""}>${working}<span class="chat-history-title">${lead}<span class="chat-history-copy"><span class="chat-history-name">${title}</span>${meta}${snip}</span></span>${chip}</button><button type="button" class="more" aria-label="Actions for ${title}" aria-haspopup="menu" aria-expanded="false">⋯</button></div>`;
   }
 
     function searchingChip(item) {
@@ -178,7 +178,11 @@ export function createRender(ctx) {
     if (S.popRowKey && S.historyList) {
       const [attr, key] = S.popRowKey;
       for (const el of S.historyList.querySelectorAll(".chat-history-item")) {
-        if (el.getAttribute(attr) === key) { el.classList.add("is-menu"); break; }
+        if (el.getAttribute(attr) === key) {
+          el.classList.add("is-menu");
+          el.querySelector("button.more")?.setAttribute("aria-expanded", "true");
+          break;
+        }
       }
     }
     const footer = S.root.querySelector(".chat-history-footer");
