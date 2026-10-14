@@ -69,4 +69,9 @@ systemctl restart fuse
 sleep 2
 systemctl is-active --quiet fuse || die "fuse.service did not come back; roll back with: git -C $PROD reset --hard $BEFORE && systemctl restart fuse"
 
+# Publish what production now runs. A GitHub failure must not undo a live deploy.
+if git remote get-url origin >/dev/null 2>&1; then
+  git push origin "$PROD_BRANCH" || printf 'WARNING: GitHub push failed; production is live. Retry with: git -C %s push origin %s\n' "$PROD" "$PROD_BRANCH" >&2
+fi
+
 printf 'Promoted %s -> %s (%s..%s). fuse.service is active.\n' "$DEV_BRANCH" "$PROD_BRANCH" "$BEFORE" "$AFTER"

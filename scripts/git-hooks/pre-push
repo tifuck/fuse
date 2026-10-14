@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Guard pushes to the public GitHub repo: only main may leave this box, and
+# every outgoing commit must pass gitleaks. Install with:
+#   install -m 755 scripts/git-hooks/pre-push "$(git rev-parse --git-common-dir)/hooks/pre-push"
+set -euo pipefail
+
+command -v gitleaks >/dev/null || { echo "pre-push: gitleaks not installed; refusing to push" >&2; exit 1; }
+config="$(git rev-parse --show-toplevel)/.gitleaks.toml"
+[ -f "$config" ] || { echo "pre-push: $config missing; refusing to push" >&2; exit 1; }
+
+zero=0000000000000000000000000000000000000000
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$remote_ref" = "refs/heads/main" ] || { echo "pre-push: only main is published, refusing $remote_ref" >&2; exit 1; }
+  [ "$local_sha" != "$zero" ] || { echo "pre-push: refusing to delete main" >&2; exit 1; }
+  if [ "$remote_sha" = "$zero" ]; then range="$local_sha"; else range="$remote_sha..$local_sha"; fi
+  gitleaks git . --config "$config" --log-opts="$range" --redact --no-banner \
+    || { echo "pre-push: gitleaks flagged $range; push refused" >&2; exit 1; }
+done

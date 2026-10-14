@@ -1,0 +1,16 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Saved third-party pages used as fetch fixtures"
+paths = ['''^tests/fixtures/sites/''']
+
+[[allowlists]]
+description = "Fake tokens in redaction tests and the public anthropic-beta header"
+regexTarget = "line"
+regexes = [
+  '''eyJhbGciOiJIUzI1NiJ9''',
+  '''ghp_0123456789abcdef0123456789abcdef0123''',
+  '''sk-abcdef0123456789''',
+  '''oauth-2025-04-20''',
+]
