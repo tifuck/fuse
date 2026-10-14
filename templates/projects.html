@@ -14,8 +14,8 @@
       <input type="search" data-proj-search placeholder="Search by name, folder or machine" autocomplete="off">
     </label>
     <div class="proj-tabs" role="tablist" aria-label="Show">
-      <button type="button" role="tab" class="proj-tab" data-proj-tab="active" aria-selected="true">Active <span data-proj-count="active"></span></button>
-      <button type="button" role="tab" class="proj-tab" data-proj-tab="archived" aria-selected="false">Archived <span data-proj-count="archived"></span></button>
+      <button type="button" role="tab" aria-controls="proj-panel" class="proj-tab" data-proj-tab="active" aria-selected="true">Active <span data-proj-count="active"></span></button>
+      <button type="button" role="tab" aria-controls="proj-panel" class="proj-tab" data-proj-tab="archived" aria-selected="false">Archived <span data-proj-count="archived"></span></button>
     </div>
     <label class="proj-machine">
       <span class="visually-hidden">Machine</span>
@@ -23,7 +23,9 @@
     </label>
   </div>
   <p class="callout fault" data-proj-error role="alert" hidden></p>
-  <ul class="proj-list" data-proj-grid aria-live="polite" aria-label="Projects"></ul>
+  <div id="proj-panel">
+    <ul class="proj-list" data-proj-grid aria-live="polite" aria-label="Projects"></ul>
+  </div>
 </div>
 <script type="application/json" id="projects-config">{{ projects_bundle | tojson }}</script>
 {% endblock %}

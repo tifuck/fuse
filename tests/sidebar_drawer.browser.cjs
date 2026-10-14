@@ -118,6 +118,19 @@ const NOW = '2026-10-05T00:00:00Z';
       assert.equal(await page.locator('[data-chat-new-label]').textContent(), 'New chat');
       assert.equal(await page.locator('[data-chat-new]').getAttribute('aria-label'), 'New chat');
       assert.equal(await page.locator('[data-project-filters]').isHidden(), true, 'project filters leave with the tab');
+      // Tab keys: one tab stop, arrows select, and the list is the tab's panel.
+      const keyState = () => page.evaluate(() => ({
+        stops: [...document.querySelectorAll('[data-history-tab]')].map(el => el.tabIndex),
+        focus: document.activeElement.getAttribute('data-history-tab'),
+        panel: [document.querySelector('[data-history-list]').getAttribute('role'), document.getElementById(document.querySelector('[data-history-list]').getAttribute('aria-labelledby'))?.getAttribute('data-history-tab')],
+      }));
+      await page.locator('[data-history-tab="chats"]').focus();
+      assert.deepEqual(await keyState(), { stops: [0, -1], focus: 'chats', panel: ['tabpanel', 'chats'] });
+      await page.keyboard.press('ArrowRight');
+      assert.deepEqual(await keyState(), { stops: [-1, 0], focus: 'projects', panel: ['tabpanel', 'projects'] }, 'ArrowRight selects Projects');
+      await page.keyboard.press('Home');
+      assert.deepEqual((await keyState()).focus, 'chats', 'Home returns to the first tab');
+      assert.deepEqual((await tabState())[0].selected, 'true');
 
       const chatRow = { id: 'tab-chat', kind: 'chat', title: 'Plain chat for tabs', revision: 1, archived: false, running: false, created_at: NOW, updated_at: NOW };
       const projectRow = { id: 'tab-project', kind: 'project', title: 'Project session for tabs', project_name: 'Tab project', host_alias: 'box', host_id: 7, project_id: 9, project_color: '#12A594', project_logo_url: '', revision: 1, archived: false, running: false, created_at: NOW, updated_at: NOW };

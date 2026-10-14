@@ -840,6 +840,11 @@ document.querySelectorAll("nav.settings-jump").forEach((nav) => {
 document.querySelectorAll("[data-page-tabs]").forEach((nav) => {
   const root = nav.closest("[data-tab-root]") || document;
   nav.querySelectorAll("[data-tab]").forEach((button) => {
+    const panel = root.querySelector(`[data-tab-panel="${CSS.escape(button.dataset.tab)}"]`);
+    if (panel) {
+      panel.id ||= "tabpanel-" + button.dataset.tab;
+      button.setAttribute("aria-controls", panel.id);
+    }
     button.addEventListener("click", () => {
       const tab = button.dataset.tab;
       nav.querySelectorAll("[data-tab]").forEach((item) => {
@@ -851,6 +856,40 @@ document.querySelectorAll("[data-page-tabs]").forEach((nav) => {
         panel.classList.toggle("hidden", panel.getAttribute("data-tab-panel") !== tab);
       });
     });
+  });
+});
+
+// Every other tablist (settings sections have their own above): one tab stop
+// on the selected tab, arrow/Home/End keys select a neighbour by clicking it so
+// each page's own handler runs, and the tab's panel (aria-controls) is a
+// tabpanel labelled by the tab that is showing it.
+document.querySelectorAll('[role="tablist"]:not(.settings-jump)').forEach((list, n) => {
+  const tabs = Array.from(list.querySelectorAll('[role="tab"]'));
+  if (!tabs.length) return;
+  tabs.forEach((tab, i) => { tab.id ||= `tab-${n}-${i}`; });
+  const sync = () => {
+    const current = tabs.find((tab) => tab.getAttribute("aria-selected") === "true") || tabs[0];
+    tabs.forEach((tab) => {
+      tab.tabIndex = tab === current ? 0 : -1;
+      const panel = document.getElementById(tab.getAttribute("aria-controls") || "");
+      if (panel && tab === current) {
+        panel.setAttribute("role", "tabpanel");
+        panel.setAttribute("aria-labelledby", tab.id);
+      }
+    });
+  };
+  sync();
+  new MutationObserver(sync).observe(list, { subtree: true, attributeFilter: ["aria-selected"] });
+  list.addEventListener("keydown", (event) => {
+    const live = tabs.filter((tab) => !tab.disabled && tab.getClientRects().length);
+    const i = live.indexOf(document.activeElement);
+    if (i < 0) return;
+    const to = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: live.length - 1 }[event.key];
+    if (to === undefined) return;
+    event.preventDefault();
+    const next = live[(to + live.length) % live.length];
+    next.focus();
+    next.click();
   });
 });
 

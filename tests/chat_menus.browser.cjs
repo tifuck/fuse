@@ -153,6 +153,16 @@ const FAMILIES = [
       await menu.locator('[data-perms-mode="bypass"]').click();
       await page.waitForFunction(() => document.querySelector('[data-perm-chip]').getAttribute('aria-pressed') === 'true');
       assert.equal(await menu.locator('[data-perms-mode="bypass"]').getAttribute('aria-checked'), 'true');
+      // Radio keys: only the checked mode is a tab stop; arrows skip the
+      // disabled Auto and pick the next mode.
+      const radios = () => menu.locator('[data-perms-mode]').evaluateAll(els => els.map(el => [el.dataset.permsMode, el.tabIndex, el.getAttribute('aria-checked')]));
+      assert.deepEqual((await radios()).map(r => r[1]), [-1, -1, 0]);
+      await menu.locator('[data-perms-mode="bypass"]').focus();
+      await page.keyboard.press('ArrowLeft');
+      await page.waitForFunction(() => document.querySelector('[data-perms-mode="ask"]').getAttribute('aria-checked') === 'true');
+      assert.equal(await page.evaluate(() => document.activeElement.dataset.permsMode), 'ask', 'ArrowLeft moves to Ask, past disabled Auto');
+      await page.keyboard.press('ArrowRight');
+      await page.waitForFunction(() => document.querySelector('[data-perms-mode="bypass"]').getAttribute('aria-checked') === 'true');
       await page.locator('[data-chat-thread]').click({ position: { x: 8, y: 8 } });
       await menu.waitFor({ state: 'hidden' });
 

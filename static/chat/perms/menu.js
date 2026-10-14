@@ -115,9 +115,20 @@ export function createMenu(ctx) {
       setPermsOpen(false);
       if (S.permChip) S.permChip.focus();
     });
-    menu.querySelector("[data-perms-modes]").addEventListener("click", (event) => {
+    const modes = menu.querySelector("[data-perms-modes]");
+    modes.addEventListener("click", (event) => {
       const btn = event.target.closest("[data-perms-mode]");
       if (btn && !btn.disabled) setPermMode(btn.getAttribute("data-perms-mode"));
+    });
+    // Radio pattern: arrows move to and pick the next enabled mode.
+    modes.addEventListener("keydown", (event) => {
+      const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
+      if (!step) return;
+      event.preventDefault();
+      const live = [...modes.querySelectorAll("[data-perms-mode]")].filter((btn) => !btn.disabled);
+      const next = live[(live.indexOf(document.activeElement) + step + live.length) % live.length];
+      next.focus();
+      next.click();
     });
     menu.querySelector("[data-perms-list]").addEventListener("click", (event) => {
       const btn = event.target.closest("[data-perm-revoke]");
@@ -138,9 +149,9 @@ export function createMenu(ctx) {
       '<div class="chat-picker-head"><p>Permissions</p><button type="button" class="chat-menu-close" data-perms-close aria-label="Close"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div>' +
       '<div class="chat-picker-searchrow"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10.4 10.4L13.8 13.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><input type="search" class="chat-picker-search" data-perms-search placeholder="Filter machines and directories" aria-label="Filter machines and directories" autocomplete="off" spellcheck="false"><kbd class="chat-picker-kbd" aria-hidden="true">esc</kbd></div>' +
       '<div class="chat-perms-list" data-perms-list></div>' +
-      '<div class="chat-perms-foot"><div class="chat-perms-mode"><p class="chat-perms-mode-label" aria-hidden="true">Mode</p><div class="chat-perms-modes" data-perms-modes role="radiogroup" aria-label="Permission mode">' +
+      '<div class="chat-perms-foot"><div class="chat-perms-mode"><p class="chat-perms-mode-label" aria-hidden="true">Mode</p><div class="chat-perms-modes" data-perms-modes role="radiogroup" aria-label="Permission mode" aria-describedby="chat-perms-hint">' +
       PERMS_MODES.map((m) => `<button type="button" role="radio" aria-checked="false" data-perms-mode="${m.id}">${m.label}</button>`).join("") +
-      '</div></div><p class="chat-perms-hint" data-perms-hint></p></div>';
+      '</div></div><p class="chat-perms-hint" id="chat-perms-hint" data-perms-hint></p></div>';
     bindPermsMenu(menu);
     // Phones get the model picker's full-screen sheet, portaled to the chat
     // root for the same reason (composer ancestors would contain it).
@@ -200,6 +211,7 @@ export function createMenu(ctx) {
       const on = id === mode;
       btn.classList.toggle("is-on", on);
       btn.setAttribute("aria-checked", on ? "true" : "false");
+      btn.tabIndex = on ? 0 : -1;
       btn.disabled = id === "auto" && !autoAvailable && !on;
       btn.title = btn.disabled ? "Add an OpenRouter key on Sources to enable auto-approve." : "";
     });
