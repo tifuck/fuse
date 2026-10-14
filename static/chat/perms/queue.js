@@ -149,14 +149,16 @@ export function createQueue(ctx) {
     const mode = S.threadBypass ? "bypass" : (S.threadAuto ? "auto" : "ask");
     S.permChip.classList.toggle("is-on", mode !== "ask");
     S.permChip.classList.toggle("is-auto", mode === "auto");
-    S.permChip.setAttribute("aria-pressed", mode !== "ask" ? "true" : "false");
     S.permChip.setAttribute("aria-expanded", S.permsOpen ? "true" : "false");
     const title = mode === "bypass"
       ? "Bypass on — no permission prompts"
       : (mode === "auto" ? "Auto-approve on — Jev allows ordinary calls" : "Permission prompts on");
     S.permChip.setAttribute("title", title);
-    S.permChip.setAttribute("aria-label", title);
-    if (permChipLabel) permChipLabel.textContent = mode === "bypass" ? "Bypass on" : (mode === "auto" ? "Auto" : "Bypass");
+    const label = mode === "bypass" ? "Bypass on" : (mode === "auto" ? "Auto" : "Bypass");
+    if (permChipLabel) permChipLabel.textContent = label;
+    // The spoken name starts with the visible word so voice control can say it;
+    // the button opens the menu, so it carries no pressed state.
+    S.permChip.setAttribute("aria-label", `${label}, permissions: ${mode === "bypass" ? "no prompts" : mode === "auto" ? "auto-approve" : "prompts on"}`);
     menu.paintPermsMode();
   }
 
@@ -364,6 +366,25 @@ export function createQueue(ctx) {
     else if (!anyPending) stopPermTick();
   }
 
+    // "More time" restarts the card's minute (the server caps how long one
+  // request may be held).
+  async function extendPermCard(id) {
+    if (!S.currentId) return;
+    const before = S.permCards.get(id)?.expires_at;
+    try {
+      const data = await net.api(`/chat/threads/${encodeURIComponent(S.currentId)}/permissions/${encodeURIComponent(id)}`, {
+        method: "POST",
+        body: JSON.stringify({ action: "extend" }),
+      });
+      if (data.status !== "pending") return;
+      permWarned.delete(id);
+      upsertPermCard(data);
+      globalThis.fuseAnnounce?.(data.expires_at === before ? "This request cannot be extended further." : "One more minute to answer.");
+    } catch (error) {
+      sync.showFailure("Could not extend the request", error);
+    }
+  }
+
     async function postPermDecision(id, action) {
     if (!S.currentId) return;
     try {
@@ -400,6 +421,7 @@ export function createQueue(ctx) {
     syncPermChip,
     syncPermQueueFromMessage,
     upsertPermCard,
+    extendPermCard,
     PERM_TOTAL_S,
     fmtPermCountdown,
     permCardCopy,

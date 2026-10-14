@@ -641,6 +641,12 @@ import { createBoot } from './chat/boot.js';
         }
         return;
       }
+      const more = event.target.closest("[data-perm-extend]");
+      if (more) {
+        const card = more.closest("[data-perm-card]");
+        if (card) perms.extendPermCard(card.getAttribute("data-perm-card"));
+        return;
+      }
       const btn = event.target.closest("[data-perm-decide]");
       if (!btn) return;
       const card = btn.closest("[data-perm-card]");
@@ -1704,10 +1710,12 @@ import { createBoot } from './chat/boot.js';
       resizeHandle.addEventListener("pointercancel", onUp);
     });
     resizeHandle.addEventListener("keydown", (event) => {
-      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-      event.preventDefault();
       const step = event.shiftKey ? 32 : 16;
-      sidebar.applyHistoryWidth(sidebar.clampHistoryWidth(sidebar.currentHistoryWidth() + (event.key === "ArrowRight" ? step : -step)), true);
+      const now = sidebar.currentHistoryWidth();
+      const to = { ArrowRight: now + step, ArrowLeft: now - step, Home: S.HISTORY_WIDTH.min, End: S.HISTORY_WIDTH.max, Enter: S.HISTORY_WIDTH.default }[event.key];
+      if (to === undefined) return;
+      event.preventDefault();
+      sidebar.applyHistoryWidth(sidebar.clampHistoryWidth(to), true);
     });
     resizeHandle.addEventListener("dblclick", () => sidebar.applyHistoryWidth(S.HISTORY_WIDTH.default, true));
   }
@@ -1819,24 +1827,7 @@ import { createBoot } from './chat/boot.js';
         sidebar.renderHistory();
         return;
       }
-      const ids = pinnedRowEls().map((el) => el.getAttribute("data-thread")).filter(Boolean);
-      ids.forEach((id, index) => {
-        const item = sidebar.threadById(id);
-        if (item) item.pin_order = index;
-      });
-      sidebar.renderHistory();
-      net.api("/chat/threads/pin-order", {
-        method: "POST",
-        body: JSON.stringify({ ids, command_id: newSession() }),
-      })
-        .then((data) => {
-          (data.threads || []).forEach(sidebar.upsertLocal);
-          sidebar.renderHistory();
-        })
-        .catch((error) => {
-          sync.showFailure("Could not save pinned order", error);
-          sidebar.refreshThreads().catch(() => {});
-        });
+      sidebar.savePinOrder(pinnedRowEls().map((el) => el.getAttribute("data-thread")).filter(Boolean));
     }
 
     function cancelPinDrag() {

@@ -653,7 +653,10 @@ async def chat_permission_decide(request: Request, thread_id: str, ask_id: str):
     if pk is None:
         raise HTTPException(404, "Chat not found")
     try:
-        payload = permissions_mod.resolve(user["id"], pk, ask_id, action)
+        if action == "extend":
+            payload = permissions_mod.extend(user["id"], pk, ask_id)
+        else:
+            payload = permissions_mod.resolve(user["id"], pk, ask_id, action)
     except ValueError:
         raise HTTPException(422, "Invalid action") from None
     except LookupError:

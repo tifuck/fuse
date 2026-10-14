@@ -75,6 +75,7 @@ export function createDrawer(ctx) {
 
     function applyHistoryWidth(px, persist) {
     S.root.style.setProperty("--chat-history", px + "px");
+    S.root.querySelector("[data-history-resize]")?.setAttribute("aria-valuenow", String(px));
     if (persist) {
       try { localStorage.setItem(S.STORE_HISTORY_WIDTH, String(px)); } catch (_) {}
     }

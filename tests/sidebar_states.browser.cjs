@@ -370,7 +370,25 @@ const PREVIEW = 'Name this sidebar fixture chat from…';
       await page.waitForTimeout(250);
       if (i === 39) assert.fail('server: the drag order never landed');
     }
-    console.log('PASS right-click menu, pin section and drag reorder');
+    // The keyboard alternative: Move down on the top pin swaps them back, and
+    // the top/bottom pins only offer the move that exists.
+    await page.waitForTimeout(500);
+    await row(secondPin).locator('button.more').focus();
+    await page.keyboard.press('Enter');
+    pop = page.locator('.chat-pop');
+    await pop.waitFor();
+    actions = await pop.locator('[role="menuitem"]').allTextContents();
+    assert.ok(actions.includes('Move down') && !actions.includes('Move up'), `the top pin can only move down: ${actions}`);
+    await page.getByRole('menuitem', { name: 'Move down', exact: true }).click();
+    for (let i = 0; i < 40; i++) {
+      truth = await threads();
+      const orders = chatIds.map(tid => truth.threads.find(entry => entry.id === tid));
+      if (orders[0].pin_order < orders[1].pin_order) break;
+      await page.waitForTimeout(250);
+      if (i === 39) assert.fail('server: the Move down order never landed');
+    }
+    assert.equal(await page.locator('[data-history-list] .chat-history-item.is-pinned').first().getAttribute('data-thread'), firstPin, 'Move down reorders the section');
+    console.log('PASS right-click menu, pin section, drag and keyboard reorder');
 
     // A turn that finishes on an unopened chat badges its row and the tab.
     // The drag's 400ms ghost-click guard is still armed here; a real user is

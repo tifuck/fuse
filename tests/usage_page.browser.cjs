@@ -147,6 +147,21 @@ function payload(range, { empty = false, huge = false, slow = false } = {}) {
     assert.equal(fetches, afterRange, 'a chart-metric switch repaints without another fetch');
     assert.equal(await page.locator('[data-mode="requests"]').getAttribute('aria-pressed'), 'true');
 
+    // The chart is a group of named bars with one tab stop; arrows walk it.
+    const bars = () => page.evaluate(() => {
+      const svg = document.querySelector('[data-plot] svg');
+      const cols = [...svg.querySelectorAll('.col')];
+      return { role: svg.getAttribute('role'), stops: cols.filter(c => c.tabIndex === 0).length, last: cols.length - 1, focus: cols.indexOf(document.activeElement) };
+    });
+    let chart = await bars();
+    assert.deepEqual([chart.role, chart.stops], ['group', 1], `chart exposes its bars: ${JSON.stringify(chart)}`);
+    await page.locator('[data-plot] .col[tabindex="0"]').focus();
+    await page.keyboard.press('ArrowLeft');
+    chart = await bars();
+    assert.equal(chart.focus, Math.max(0, chart.last - 1), 'ArrowLeft moves to the previous bar (or stays on the only one)');
+    await page.keyboard.press('Home');
+    assert.equal((await bars()).focus, 0, 'Home jumps to the first bar');
+
     // Twelve recent rows stay collapsed at ten until asked.
     assert.equal(await page.locator('[data-recent] tr').count(), 10, 'recent preview is ten rows');
     const more = page.locator('[data-recent-more]');

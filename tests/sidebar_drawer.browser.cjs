@@ -131,6 +131,17 @@ const NOW = '2026-10-05T00:00:00Z';
       await page.keyboard.press('Home');
       assert.deepEqual((await keyState()).focus, 'chats', 'Home returns to the first tab');
       assert.deepEqual((await tabState())[0].selected, 'true');
+      // The resize separator reports its width and takes Home/End/Enter.
+      const handle = page.locator('[data-history-resize]');
+      await handle.focus();
+      await page.keyboard.press('End');
+      assert.equal(await handle.getAttribute('aria-valuenow'), await handle.getAttribute('aria-valuemax'), 'End widens to the maximum');
+      await page.keyboard.press('Home');
+      assert.equal(await handle.getAttribute('aria-valuenow'), await handle.getAttribute('aria-valuemin'), 'Home narrows to the minimum');
+      await page.keyboard.press('ArrowRight');
+      assert.equal(Number(await handle.getAttribute('aria-valuenow')), 224 + 16, 'ArrowRight widens by a step');
+      await page.keyboard.press('Enter');
+      assert.equal(await handle.getAttribute('aria-valuenow'), '304', 'Enter resets the width');
 
       const chatRow = { id: 'tab-chat', kind: 'chat', title: 'Plain chat for tabs', revision: 1, archived: false, running: false, created_at: NOW, updated_at: NOW };
       const projectRow = { id: 'tab-project', kind: 'project', title: 'Project session for tabs', project_name: 'Tab project', host_alias: 'box', host_id: 7, project_id: 9, project_color: '#12A594', project_logo_url: '', revision: 1, archived: false, running: false, created_at: NOW, updated_at: NOW };

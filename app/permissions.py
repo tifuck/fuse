@@ -34,6 +34,9 @@ from .async_work import durable_call
 logger = logging.getLogger(__name__)
 
 ASK_TIMEOUT_S = 60
+# "More time" on a card restarts its minute, up to this long after it was
+# raised (WCAG 2.2.1: a time limit the user can extend).
+ASK_MAX_S = 600
 # A shell ask's description (the model's short label for the command) is
 # shown on the card above the command, as in Claude Code's "Bash command"
 # dialog. Asks live a minute, so it is kept here instead of in the table.
@@ -732,6 +735,25 @@ def resolve(user_id: int, thread_id: int, ask_id: str, action: str) -> dict:
         return _public_payload(conn.execute("SELECT * FROM chat_permission_asks WHERE id=?", (ask_id,)).fetchone())
 
 
+def extend(user_id: int, thread_id: int, ask_id: str) -> dict:
+    """Restart a pending ask's countdown, capped at ASK_MAX_S after it was raised."""
+    from datetime import datetime, timezone
+
+    ask_id = str(ask_id)
+    with db.tx() as conn:
+        row = conn.execute("SELECT * FROM chat_permission_asks WHERE id=? AND user_id=?", (ask_id, int(user_id))).fetchone()
+        if row is None or int(row["thread_id"]) != int(thread_id):
+            raise LookupError("permission request not found")
+        if row["status"] != "pending" or ask_expired(row["expires_at"]):
+            return _public_payload(row)
+        now = time.time()
+        until = min(now + ASK_TIMEOUT_S, (_parse_iso(row["created_at"]) or now) + ASK_MAX_S)
+        iso = datetime.fromtimestamp(until, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if iso > row["expires_at"]:
+            conn.execute("UPDATE chat_permission_asks SET expires_at=? WHERE id=? AND status='pending'", (iso, ask_id))
+        return _public_payload(conn.execute("SELECT * FROM chat_permission_asks WHERE id=?", (ask_id,)).fetchone())
+
+
 def resolve_thread_pending(user_id: int, thread_id: int, action: str, *, by: str = "", conn=None) -> int:
     """Resolve every pending ask on a thread (bypass flip / cleanup)."""
     def _run(c) -> int:
@@ -931,6 +953,12 @@ async def _ask_and_wait(gate: Gate, payload: dict, auto_judge=None) -> str:
                               "status": status, "decision": row["decision"] or "",
                               "grant_scope": row["decision"] if row["decision"] in ("allow_session", "allow_host") else ""})
                 return status if status != "allowed" else (row["decision"] or "allow")
+            if row is not None and row["expires_at"] != expires_iso:
+                # Extended from a card: follow the stored deadline and tell
+                # every open view of the thread.
+                expires_iso = row["expires_at"]
+                deadline = max(deadline, _parse_iso(expires_iso) or deadline)
+                gate._notify({"event": "permission", **payload, "id": ask_id, "status": "pending", "expires_at": expires_iso})
             if time.time() >= deadline:
                 await durable_call(_finish_ask, ask_id, "timeout")
                 gate._notify({"event": "permission", "kind": "tool_permission", "id": ask_id, "status": "timeout"})

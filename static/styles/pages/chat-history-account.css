@@ -40,7 +40,7 @@ body.is-pin-dragging .chat-history-item:hover { background: none; }
 }
 @media (hover: none), (max-width: 800px) {
   /* Touch: always reachable, but quiet until the row is the open chat. */
-  .chat-history-item > button.more { position: static; transform: none; width: 2.25rem; height: 2.25rem; opacity: 0.4; pointer-events: auto; }
+  .chat-history-item > button.more { position: static; transform: none; width: 2.25rem; height: 2.25rem; opacity: 0.7; pointer-events: auto; }
   .chat-history-item:is(.is-on, .is-menu) > button.more { opacity: 1; }
   .chat-history-item:is(:hover, :focus-within, .is-menu) > button.open { padding-right: 0.625rem; }
 }

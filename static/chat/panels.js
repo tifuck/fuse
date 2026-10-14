@@ -37,7 +37,6 @@ export function createPanels(ctx) {
     if (S.memoryBackdrop) S.memoryBackdrop.hidden = !S.memoryOpen;
     S.root.classList.toggle("is-memory", S.memoryOpen);
     if (S.memoryToggle) {
-      S.memoryToggle.setAttribute("aria-pressed", S.memoryOpen ? "true" : "false");
       S.memoryToggle.setAttribute("aria-expanded", S.memoryOpen ? "true" : "false");
       S.memoryToggle.classList.toggle("is-on", S.memoryOpen);
       S.memoryToggle.classList.toggle("has-notes", !S.memoryOpen && (hasMemory() || S.projectAgentsOk));
@@ -45,7 +44,6 @@ export function createPanels(ctx) {
     if (S.searchChip) {
       S.searchChip.classList.toggle("is-on", S.searchOn);
       S.searchChip.setAttribute("aria-pressed", S.searchOn ? "true" : "false");
-      S.searchChip.setAttribute("aria-label", S.searchOn ? "Web search on" : "Web search off");
       S.searchChip.title = S.searchOn ? "Web search is on" : "Web search is off";
     }
   }
@@ -216,7 +214,6 @@ export function createPanels(ctx) {
     if (S.skillsBackdrop) S.skillsBackdrop.hidden = !S.skillsOpen;
     S.root.classList.toggle("is-skills", S.skillsOpen);
     if (S.skillsToggle) {
-      S.skillsToggle.setAttribute("aria-pressed", S.skillsOpen ? "true" : "false");
       S.skillsToggle.setAttribute("aria-expanded", S.skillsOpen ? "true" : "false");
       S.skillsToggle.classList.toggle("is-on", S.skillsOpen);
     }

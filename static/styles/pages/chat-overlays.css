@@ -115,6 +115,9 @@
   transition: color 140ms ease, opacity 140ms ease, filter 140ms ease;
 }
 .chat-search-btn svg { display: block; }
+/* Off is struck through, not just dimmer: the state cannot rest on colour. */
+.chat-search-btn .chat-search-off { display: none; }
+.chat-search-btn[aria-pressed="false"] .chat-search-off { display: inline; }
 .chat-search-btn.is-on {
   color: var(--brass);
   opacity: 1;

@@ -257,7 +257,7 @@ function ccGroupHtml(group, msg, live, active, openMap, thinking) {
         `<span class="chat-step-node" aria-hidden="true"></span>` +
         `<div class="chat-step-main">` +
         `<div class="chat-step-head"><button type="button" class="chat-step-toggle" data-step-toggle aria-expanded="false"><span class="chat-step-label">${label}</span></button></div>` +
-        `<div class="chat-think-window"><div class="chat-console-think-peek" data-reason-preview="${group.liveThought}" aria-label="Live thinking"><div class="chat-console-thought chat-think-markdown"></div></div></div>` +
+        `<div class="chat-think-window"><div class="chat-console-think-peek" data-reason-preview="${group.liveThought}" role="group" aria-label="Live thinking"><div class="chat-console-thought chat-think-markdown"></div></div></div>` +
         `</div></li>`
       );
     }

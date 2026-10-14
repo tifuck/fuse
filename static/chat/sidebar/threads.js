@@ -124,6 +124,8 @@ export function createThreads(ctx) {
     if (S.titleEl) {
       S.titleEl.textContent = name;
       S.titleEl.classList.toggle("is-untitled", untitled);
+      // An untitled chat still has a heading for screen readers.
+      S.titleEl.nextElementSibling?.toggleAttribute("hidden", Boolean(name));
     }
     S.root.classList.toggle("is-untitled", untitled);
     if (S.projectChip) {
@@ -404,10 +406,44 @@ export function createThreads(ctx) {
     return S.threads.concat(S.archivedThreads).find((item) => item.id === id);
   }
 
+    // Pinned order as shown, saved in one call (the drag and the menu's Move
+  // up/down both end here).
+  function savePinOrder(ids) {
+    ids.forEach((pid, index) => {
+      const item = threadById(pid);
+      if (item) item.pin_order = index;
+    });
+    render.renderHistory();
+    return net.api("/chat/threads/pin-order", {
+      method: "POST",
+      body: JSON.stringify({ ids, command_id: newSession() }),
+    })
+      .then((data) => {
+        (data.threads || []).forEach(upsertLocal);
+        render.renderHistory();
+      })
+      .catch((error) => {
+        sync.showFailure("Could not save pinned order", error);
+        render.refreshThreads().catch(() => {});
+      });
+  }
+
     function threadMenu(anchor, id, at) {
     const thread = threadById(id);
     if (!thread) return;
     if (!net.requireLive()) return;
+    // The keyboard alternative to dragging a pinned row; offered where the drag is.
+    const pinIds = [...S.historyList.querySelectorAll(".chat-history-item.is-pinned")].map((el) => el.getAttribute("data-thread")).filter(Boolean);
+    const at_ = pinIds.indexOf(String(id));
+    const canMove = thread.pinned && at_ >= 0 && !S.historyQuery.trim() && !S.showArchived && !(S.historyTab === "projects" && S.projectFilter);
+    const move = (by) => () => {
+      const ids = pinIds.slice();
+      ids.splice(at_ + by, 0, ids.splice(at_, 1)[0]);
+      return savePinOrder(ids);
+    };
+    const moves = [];
+    if (canMove && at_ > 0) moves.push({ label: "Move up", run: move(-1) });
+    if (canMove && at_ < pinIds.length - 1) moves.push({ label: "Move down", run: move(1) });
     const items = [
       {
         label: thread.pinned ? "Unpin" : "Pin to top",
@@ -426,6 +462,7 @@ export function createThreads(ctx) {
           render.renderHistory();
         },
       },
+      ...moves,
       { label: "Rename", run: () => startRename(anchor.closest(".chat-history-item"), thread) },
       {
         label: "Fork",
@@ -521,6 +558,7 @@ export function createThreads(ctx) {
   }
 
   return {
+    savePinOrder,
     bindCreatePayload,
     copyText,
     openThread,

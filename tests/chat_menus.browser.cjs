@@ -137,7 +137,7 @@ const FAMILIES = [
       const chip = page.locator('[data-perm-chip]');
       const label = page.locator('[data-perm-chip-label]');
       assert.equal(await label.innerText(), 'Bypass', 'ask mode labels the chip Bypass');
-      assert.equal(await chip.getAttribute('aria-pressed'), 'false');
+      assert.equal(await chip.evaluate(el => String(el.classList.contains('is-on'))), 'false');
       const first = await page.evaluate(async () => (await fuseToolFixture.api('/chat/threads', {
         method: 'POST', body: JSON.stringify({ model: 'offline', tools: [], title: 'Permissions', command_id: crypto.randomUUID(), messages: [
           { id: crypto.randomUUID(), role: 'user', content: 'Pin the permission mode' },
@@ -151,7 +151,7 @@ const FAMILIES = [
       await menu.waitFor();
       inside(await box('.chat-perms-menu'), 'desktop permissions menu');
       await menu.locator('[data-perms-mode="bypass"]').click();
-      await page.waitForFunction(() => document.querySelector('[data-perm-chip]').getAttribute('aria-pressed') === 'true');
+      await page.waitForFunction(() => document.querySelector('[data-perm-chip]').classList.contains('is-on'));
       assert.equal(await menu.locator('[data-perms-mode="bypass"]').getAttribute('aria-checked'), 'true');
       // Radio keys: only the checked mode is a tab stop; arrows skip the
       // disabled Auto and pick the next mode.
@@ -175,12 +175,12 @@ const FAMILIES = [
       await page.goto(origin + '/chat?t=' + second);
       await live();
       await page.waitForFunction(() => document.querySelector('[data-perm-chip-label]').textContent === 'Bypass');
-      assert.equal(await chip.getAttribute('aria-pressed'), 'false', 'a new thread asks');
+      assert.equal(await chip.evaluate(el => String(el.classList.contains('is-on'))), 'false', 'a new thread asks');
 
       await page.goto(origin + '/chat?t=' + first);
       await live();
       await page.waitForFunction(() => document.querySelector('[data-perm-chip-label]').textContent === 'Bypass on');
-      assert.equal(await chip.getAttribute('aria-pressed'), 'true', 'reopening a bypass thread keeps Bypass on');
+      assert.equal(await chip.evaluate(el => String(el.classList.contains('is-on'))), 'true', 'reopening a bypass thread keeps Bypass on');
       await page.reload();
       await live();
       await page.waitForFunction(() => document.querySelector('[data-perm-chip-label]').textContent === 'Bypass on');

@@ -270,6 +270,34 @@ class ReviewTest(PermSchemaTest):
         self.assertEqual(row["status"], "denied")
         self.assertEqual(row["decision"], "deny")
 
+    def test_more_time_keeps_the_ask_waiting(self):
+        # The wait loop follows an extended deadline instead of its own
+        # in-memory one, and re-announces the card with the new expiry.
+        async def flow():
+            events = []
+            permissions.ASK_TIMEOUT_S = 1
+            try:
+                task = asyncio.create_task(self._review(_gate(notify=events.append), args={"path": "/etc/hosts"}))
+                for _ in range(200):
+                    await asyncio.sleep(0.02)
+                    if events:
+                        break
+                ask_id = events[0]["id"]
+                permissions.ASK_TIMEOUT_S = 30
+                permissions.extend(1, 1, ask_id)
+                await asyncio.sleep(1.6)  # past the original one-second deadline
+                self.assertFalse(task.done(), "an extended ask must still be waiting")
+                permissions.resolve(1, 1, ask_id, "allow")
+                return await task, events
+            finally:
+                permissions.ASK_TIMEOUT_S = 60
+
+        res, events = asyncio.run(flow())
+        self.assertTrue(res.allowed)
+        renewed = [e for e in events if e.get("status") == "pending" and e.get("tool")]
+        self.assertGreaterEqual(len(renewed), 2, "the new expiry is broadcast with the full card")
+        self.assertGreater(renewed[-1]["expires_at"], renewed[0]["expires_at"])
+
     def test_timeout_message(self):
         res, events = asyncio.run(self._ask_flow("timeout", {"path": "/etc/shadow"}))[:2]
         self.assertFalse(res.allowed)
@@ -586,6 +614,41 @@ class ResolveTest(PermSchemaTest):
         row = db.fetchone("SELECT status, decision FROM chat_permission_asks WHERE id='pa_d'")
         self.assertEqual(row["status"], "denied")
         self.assertEqual(row["decision"], "deny")
+
+    def _ask_row(self, ask_id, created, expires, status="pending"):
+        with db.tx() as conn:
+            conn.execute("DELETE FROM chat_permission_asks")
+            conn.execute(
+                """INSERT INTO chat_permission_asks(
+                       id,user_id,thread_id,run_id,status,decision,kind,tool,host_id,host,path,cwd,command,
+                       secret,requester,grant_kind,grant_value,created_at,expires_at)
+                   VALUES (?,1,1,'r',?,'','path','read_file',7,'prod','/etc','', '',0,'Main agent','','',?,?)""",
+                (ask_id, status, created, expires),
+            )
+
+    def test_extend_restarts_the_minute_within_the_cap(self):
+        import time as _time
+        from datetime import datetime, timezone
+
+        iso = lambda t: datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now = _time.time()
+        # Raised 20 s ago with 40 s left: More time gives a fresh minute.
+        self._ask_row("pa_ext", iso(now - 20), iso(now + 40))
+        payload = permissions.extend(1, 1, "pa_ext")
+        self.assertEqual(payload["status"], "pending")
+        left = permissions._parse_iso(payload["expires_at"]) - now
+        self.assertTrue(58 <= left <= 61, left)
+        # Raised 9.5 minutes ago: the extension stops at the 10-minute cap.
+        self._ask_row("pa_cap", iso(now - 570), iso(now + 10))
+        capped = permissions._parse_iso(permissions.extend(1, 1, "pa_cap")["expires_at"]) - now
+        self.assertTrue(28 <= capped <= 31, capped)
+        # Answered or expired asks are reported, never revived.
+        self._ask_row("pa_gone", iso(now - 120), iso(now - 60))
+        self.assertEqual(permissions.extend(1, 1, "pa_gone")["expires_at"], iso(now - 60))
+        self._ask_row("pa_done", iso(now - 5), iso(now + 55), status="allowed")
+        self.assertEqual(permissions.extend(1, 1, "pa_done")["status"], "allowed")
+        with self.assertRaises(LookupError):
+            permissions.extend(2, 1, "pa_done")
 
     def _pending_race_ask(self, ask_id):
         with db.tx() as conn:

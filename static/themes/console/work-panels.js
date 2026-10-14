@@ -29,14 +29,15 @@ function agentRowHtml(row, opts = {}) {
       alert,
     ].filter(Boolean).join(" · ");
     const id = deps.escapeHtml(row.id);
+    const who = deps.escapeHtml(row.description || "subagent");
     const stamp = Date.parse(row.cancel_requested_at || "");
     const wedged = row.cancel_requested && Number.isFinite(stamp) && Date.now() - stamp >= 15000;
     const action = live && wedged
-      ? `<button type="button" class="chat-agents-act is-urgent" data-agent-force="${id}" aria-label="Force stop subagent" title="Wedged in stopping: force stop">⊗</button>`
+      ? `<button type="button" class="chat-agents-act is-urgent" data-agent-force="${id}" aria-label="Force stop ${who}" title="Wedged in stopping: force stop">⊗</button>`
       : live && !row.cancel_requested
-        ? `<button type="button" class="chat-agents-act" data-agent-stop="${id}" aria-label="Stop subagent" title="Stop this subagent">×</button>`
+        ? `<button type="button" class="chat-agents-act" data-agent-stop="${id}" aria-label="Stop ${who}" title="Stop this subagent">×</button>`
         : deps.agentResumeAvailable(row)
-          ? `<button type="button" class="chat-agents-act is-resume" data-agent-resume="${id}" aria-label="Resume subagent" title="Resume from where it stopped">↻</button>`
+          ? `<button type="button" class="chat-agents-act is-resume" data-agent-resume="${id}" aria-label="Resume ${who}" title="Resume from where it stopped">↻</button>`
           : '<span class="chat-agents-act" aria-hidden="true"></span>';
     return (
       `<div class="chat-agents-row is-${deps.escapeHtml(row.status || "unknown")}${row.wake_state === "dropped" ? " is-undelivered" : ""}${deps.agentIsStalled(row) ? " is-stalled" : ""}" role="listitem"${opts.selected ? ' aria-current="true"' : ""}>` +
@@ -117,7 +118,7 @@ function jobRowHtml(job, nowMs) {
       (meta ? `<span class="chat-jobs-meta">${deps.escapeHtml(meta)}</span>` : "") +
       "</button>" +
       `<span class="chat-agents-time" data-job-time="${deps.escapeHtml(job.id)}">${deps.formatActivityClock(secs)}</span>` +
-      `<button type="button" class="chat-jobs-kill" data-kill-job="${id}" aria-label="${cancelling ? "Cancelling command" : "Stop background command"}" title="Stop this background command"${cancelling ? " disabled" : ""}>${cancelling ? "…" : "×"}</button>` +
+      `<button type="button" class="chat-jobs-kill" data-kill-job="${id}" aria-label="${cancelling ? "Cancelling" : "Stop"} ${deps.escapeHtml(deps.toolText(title))}" title="Stop this background command"${cancelling ? " disabled" : ""}>${cancelling ? "…" : "×"}</button>` +
       "</div>"
     );
   }

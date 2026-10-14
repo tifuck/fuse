@@ -62,8 +62,6 @@ export function createArtifacts(ctx) {
     if (S.artifactToggle) {
       const has = Boolean(latestArtifact() || (S.currentArtifact && S.currentArtifact.building));
       S.artifactToggle.disabled = !has;
-      S.artifactToggle.setAttribute("aria-disabled", has ? "false" : "true");
-      S.artifactToggle.setAttribute("aria-pressed", S.artifactOpen ? "true" : "false");
       S.artifactToggle.setAttribute("aria-expanded", S.artifactOpen ? "true" : "false");
       S.artifactToggle.classList.toggle("is-on", S.artifactOpen);
       S.artifactToggle.title = has ? "Artifact preview" : "No artifact in this chat yet";

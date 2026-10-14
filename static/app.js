@@ -628,6 +628,7 @@ window.FuseBack = (function fuseBack() {
   }
   function applyWidth(px, persist) {
     shell.style.setProperty("--chat-history", px + "px");
+    shell.querySelector("[data-rail-resize]")?.setAttribute("aria-valuenow", String(px));
     if (persist) {
       try { localStorage.setItem(STORE_WIDTH, String(px)); } catch (_) {}
     }
@@ -717,10 +718,12 @@ window.FuseBack = (function fuseBack() {
       resizeHandle.addEventListener("pointercancel", onUp);
     });
     resizeHandle.addEventListener("keydown", (event) => {
-      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-      event.preventDefault();
       const step = event.shiftKey ? 32 : 16;
-      applyWidth(clampWidth(currentWidth() + (event.key === "ArrowRight" ? step : -step)), true);
+      const now = currentWidth();
+      const to = { ArrowRight: now + step, ArrowLeft: now - step, Home: WIDTH.min, End: WIDTH.max, Enter: WIDTH.default }[event.key];
+      if (to === undefined) return;
+      event.preventDefault();
+      applyWidth(clampWidth(to), true);
     });
     resizeHandle.addEventListener("dblclick", () => applyWidth(WIDTH.default, true));
   }

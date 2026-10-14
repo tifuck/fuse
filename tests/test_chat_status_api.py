@@ -680,6 +680,23 @@ def test_permissions_ask_answer_grant_round_trip(client):
     assert [g for host in left["hosts"] for g in host["grants"]] == []
     assert left["pending"] == []
 
+    # More time: a pending ask's deadline moves later; a settled one stays put.
+    from datetime import datetime, timedelta, timezone
+
+    soon = (datetime.now(timezone.utc) + timedelta(seconds=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    db.execute(
+        """INSERT INTO chat_permission_asks(id,user_id,thread_id,run_id,status,decision,kind,tool,host_id,host,
+               path,cwd,command,secret,requester,grant_kind,grant_value,created_at,expires_at)
+           VALUES('ask-more',?,?,'run-x','pending','','path','write_file',?,'box','/etc/x','','',0,'Main agent','','',?,?)""",
+        (uid, pk, host_id, db.now(), soon),
+    )
+    more = client.post(f"/chat/threads/{thread['id']}/permissions/ask-more", json={"action": "extend"})
+    assert more.status_code == 200, more.text
+    assert more.json()["status"] == "pending" and more.json()["expires_at"] > soon
+    settled = client.post(f"/chat/threads/{thread['id']}/permissions/ask-deny", json={"action": "extend"})
+    assert settled.json()["status"] == "denied"
+    assert client.post(f"/chat/threads/{thread['id']}/permissions/missing", json={"action": "extend"}).status_code == 404
+
     assert client.post(f"/chat/threads/{thread['id']}/permissions/ask-once", json={"action": "nope"}).status_code == 422
     assert client.post(f"/chat/threads/{thread['id']}/permissions/missing", json={"action": "allow"}).status_code == 404
     assert client.delete("/chat/permissions/grants/9999").status_code == 404

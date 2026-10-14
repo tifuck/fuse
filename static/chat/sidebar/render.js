@@ -287,7 +287,7 @@ export function createRender(ctx) {
     }
     const items = filteredHistory();
     if (!items.length && !S.historyLoaded) {
-      S.historyList.innerHTML = `<div class="chat-history-loading" aria-busy="true" aria-label="Loading chats">${"<span></span>".repeat(6)}</div>`;
+      S.historyList.innerHTML = `<div class="chat-history-loading" role="img" aria-label="Loading chats">${"<span></span>".repeat(6)}</div>`;
     } else if (!items.length) {
       S.historyList.innerHTML = `<p class="chat-history-empty">No chats yet.</p>`;
     } else {

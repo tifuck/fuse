@@ -329,6 +329,17 @@
       if (col) show(col);
     });
     el.addEventListener("focusout", hide);
+    // One tab stop for the whole chart (the newest bar); arrows walk the bars.
+    el.addEventListener("keydown", (ev) => {
+      const cols = [...el.querySelectorAll(".col")];
+      const i = cols.indexOf(document.activeElement);
+      const to = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: cols.length - 1 }[ev.key];
+      if (i < 0 || to === undefined || !cols[to]) return;
+      ev.preventDefault();
+      cols[i].tabIndex = -1;
+      cols[to].tabIndex = 0;
+      cols[to].focus();
+    });
 
     function niceMax(v) {
       if (v <= 0) return 1;
@@ -376,11 +387,11 @@
       const step = plotW / points.length;
       const barW = Math.max(2, Math.min(28, step * 0.64));
       const y = (v) => (v / top_) * plotH;
-      let svg = `<svg width="${width}" height="${h}" viewBox="0 0 ${width} ${h}" role="img" aria-label="${esc(m.title)}">`;
+      let svg = `<svg width="${width}" height="${h}" viewBox="0 0 ${width} ${h}" role="group" aria-label="${esc(m.title)}">`;
       labels.forEach((label, i) => {
         const gy = Math.round(top + plotH - (plotH * i) / 4) + 0.5;
         svg += `<line class="grid" x1="${left}" x2="${width - right}" y1="${gy}" y2="${gy}"/>`;
-        svg += `<text class="axis" x="${left - 8}" y="${gy + 3.5}" text-anchor="end">${esc(label)}</text>`;
+        svg += `<text class="axis" x="${left - 8}" y="${gy + 3.5}" text-anchor="end" aria-hidden="true">${esc(label)}</text>`;
       });
       const want = narrow ? 4 : Math.max(4, Math.min(8, Math.floor(plotW / 110)));
       const every = Math.max(1, Math.ceil(points.length / want));
@@ -388,7 +399,7 @@
         const x = left + i * step + (step - barW) / 2;
         let yy = top + plotH;
         const label = `${bucketLabel(p.at)}: ${m.fmt(Number(p[m.total]) || 0)}`;
-        svg += `<g class="col" data-i="${i}" tabindex="0" role="graphics-symbol" aria-label="${esc(label)}">`;
+        svg += `<g class="col" data-i="${i}" tabindex="${i === points.length - 1 ? 0 : -1}" role="graphics-symbol" aria-label="${esc(label)}">`;
         svg += `<rect class="hit" x="${left + i * step}" y="${top}" width="${step}" height="${plotH}"/>`;
         const stack = ids.map((id) => [id, Number(p[m.key][id]) || 0]).filter(([, v]) => v);
         stack.forEach(([id, v], k) => {
@@ -404,7 +415,7 @@
         });
         svg += `</g>`;
         if (i % every === 0 && points.length - i > every * 0.4) {
-          svg += `<text class="axis" x="${x + barW / 2}" y="${h - 8}" text-anchor="${i === 0 ? "start" : "middle"}">${esc(tickLabel(p.at))}</text>`;
+          svg += `<text class="axis" x="${x + barW / 2}" y="${h - 8}" text-anchor="${i === 0 ? "start" : "middle"}" aria-hidden="true">${esc(tickLabel(p.at))}</text>`;
         }
       });
       svg += "</svg>";

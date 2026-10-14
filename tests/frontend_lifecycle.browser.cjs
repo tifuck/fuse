@@ -115,6 +115,7 @@ const out = process.env.FRONTEND_LIFECYCLE_ARTIFACTS || '/tmp/opencode/frontend-
     const card = page.locator('[data-perm-card="perm-a"]');
     assert.equal(await card.getAttribute('role'), null, 'the card is a plain list item, not a re-reading alert');
     assert.equal(await card.locator('[data-perm-count]').getAttribute('aria-hidden'), 'true');
+    assert.equal(await card.locator('[data-perm-extend]').innerText(), 'More time', 'the time limit can be extended from the card');
     await page.evaluate(at => fuseToolFixture.perm({ id: 'perm-b', status: 'pending', tool: 'list_dir', path: '/srv', expires_at: at }), expires());
     assert.deepEqual(await page.locator('[data-perm-card]').evaluateAll(els => els.map(el => el.inert)), [false, true], 'only the front card is operable');
     assert.deepEqual(errors, []);

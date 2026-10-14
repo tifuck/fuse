@@ -60,6 +60,7 @@ function permQueueCardHtml(rec) {
         ${who}${meta}
         <span class="chat-perm-card-count mono" data-perm-count aria-hidden="true">${deps.escapeHtml(deps.fmtPermCountdown(expires))}</span>
         <div class="chat-perm-card-actions">
+          <button type="button" class="chat-perm-act is-more" data-perm-extend title="Restart the countdown">More time</button>
           <button type="button" class="chat-perm-act" data-perm-decide="deny">Deny</button>
           <span class="chat-perm-always">
             <button type="button" class="chat-perm-act is-allow" data-perm-decide="allow">Allow</button>${always}

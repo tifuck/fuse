@@ -178,7 +178,7 @@ export function createQueue(ctx) {
           '<span class="chat-queue-actions">' +
           `<button type="button" class="chat-queue-action" data-queue-send="${index}" title="${S.streaming ? "Stop the current reply and send this message now" : "Send this message now"}"${!S.streaming && !held.has(item.id) ? " hidden" : ""}${sending || (!S.streaming && !held.has(item.id)) ? " disabled" : ""}>Send now</button>` +
           '<span class="chat-queue-more-wrap">' +
-          `<button type="button" class="chat-queue-more" data-queue-more="${index}" aria-haspopup="menu" aria-expanded="${open}" aria-label="More actions" title="Edit or cancel"${off}>` +
+          `<button type="button" class="chat-queue-more" data-queue-more="${index}" aria-haspopup="menu" aria-expanded="${open}" aria-label="More actions for: ${escapeHtml((item.text || "Attached files").slice(0, 40))}" title="Edit or cancel"${off}>` +
           '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="3.5" r="1.3" fill="currentColor"/><circle cx="8" cy="8" r="1.3" fill="currentColor"/><circle cx="8" cy="12.5" r="1.3" fill="currentColor"/></svg></button>' +
           `<span class="chat-queue-menu" role="menu"${open ? "" : " hidden"}>` +
           `<button type="button" class="chat-queue-action" role="menuitem" data-queue-edit="${index}"${off}>Edit</button>` +
