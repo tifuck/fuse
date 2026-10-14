@@ -1,0 +1,41 @@
+# Fuse + MariaDB. Set up with ./install.sh --docker, or create .env with
+# APP_SECRET (48+ random chars) and DB_PASSWORD (hex) and run: docker compose up -d --build
+services:
+  db:
+    image: mariadb:11.4
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: fuse
+      MARIADB_USER: fuse
+      MARIADB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+      MARIADB_RANDOM_ROOT_PASSWORD: "1"
+    volumes:
+      - db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  fuse:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: mysql://fuse:${DB_PASSWORD}@db:3306/fuse
+      DATABASE_MARIADB_ENABLED: "true"
+      HOST: 0.0.0.0
+      PORT: "8088"
+    ports:
+      - "${PORT:-8088}:8088"
+    volumes:
+      - data:/app/data
+      - certs:/app/certs
+
+volumes:
+  db:
+  data:
+  certs:

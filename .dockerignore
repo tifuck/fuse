@@ -1,0 +1,15 @@
+.git
+.env
+.env.*
+venv/
+data/
+certs/
+backups/
+screenshots/
+agent/dist/
+fuse-desktop/
+tests/
+docs/
+.claude/
+**/__pycache__
+**/.pytest_cache

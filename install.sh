@@ -6,6 +6,8 @@ cd "$FUSE_HOME"
 
 ASSUME_YES=0
 WANT_SERVICE=1
+DOCKER=0
+DB_URL_ARG=""
 PRINT_UNIT=""
 FORCE_UNIT=0
 SERVICE_INSTALLED=0
@@ -23,13 +25,19 @@ Usage: ./install.sh [options]
 
 Sets up Fuse end to end in this directory:
   - Python virtual environment (venv/) + pip dependencies
-  - .env with a freshly generated APP_SECRET (existing file is never touched)
+  - .env with a freshly generated APP_SECRET (existing values are never changed)
+  - MariaDB: as root with no DATABASE_URL yet, a local server, database and
+    user (installs mariadb-server if missing); then Fuse's tables are created
   - Self-signed TLS certificate in certs/ (existing certs are kept)
+  - fuse-agent connector binaries in agent/dist/ (needs gcc + libssl-dev; Go for Windows)
   - Optional systemd service (asks; root gets a system unit,
     non-root gets a user unit with lingering enabled)
 
 Options:
   -y, --yes          Non-interactive: accept all defaults (installs the service)
+  --database-url URL Use this existing, empty MariaDB database
+                     (mysql://user:password@host:3306/database) instead of a local one
+  --docker           Run Fuse and MariaDB with Docker Compose instead
   --no-service       Skip the systemd service entirely
   --force-unit       Overwrite an existing fuse.service that points at a
                      different directory (e.g. reclaiming a stale unit)
@@ -111,6 +119,73 @@ apt_install() {
   apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$@"
 }
 
+env_db_url() { grep -E '^DATABASE_URL=mysql://' .env | tail -1 | cut -d= -f2- || true; }
+
+set_env_db_url() {
+  printf '\nDATABASE_MARIADB_ENABLED=true\nDATABASE_URL=%s\n' "$1" >> .env
+}
+
+provision_local_mariadb() {
+  [ "$(id -u)" -eq 0 ] || die "no DATABASE_URL in .env. Run as root to set up a local MariaDB, or create an empty MariaDB database and re-run with --database-url mysql://user:password@host:3306/database"
+  if ! command -v mariadb >/dev/null 2>&1; then
+    ask "MariaDB is not installed. Install mariadb-server with apt? [Y/n] " \
+      || die "Fuse needs MariaDB; install it or pass --database-url"
+    apt_install mariadb-server || die "could not install mariadb-server; install MariaDB 10.11+ and re-run"
+    systemctl enable --now mariadb >/dev/null 2>&1 || true
+  fi
+  mariadb -e 'SELECT 1' >/dev/null 2>&1 \
+    || die "cannot reach the local MariaDB as root over its socket; start it (systemctl start mariadb) or pass --database-url"
+  # Never adopt or reset an existing database or account: either may belong
+  # to another install on this server.
+  [ -z "$(mariadb -N -e "SHOW DATABASES LIKE 'fuse'")" ] \
+    || die "MariaDB already has a 'fuse' database; pass --database-url to use it (it must be empty or a Fuse schema)"
+  [ "$(mariadb -N -e "SELECT COUNT(*) FROM mysql.user WHERE user='fuse'")" = "0" ] \
+    || die "MariaDB already has a 'fuse' user; pass --database-url with its credentials"
+  local pass
+  pass="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
+  mariadb <<SQL
+CREATE DATABASE \`fuse\` CHARACTER SET utf8mb4 COLLATE utf8mb4_nopad_bin;
+CREATE USER 'fuse'@'localhost' IDENTIFIED BY '$pass';
+CREATE USER 'fuse'@'127.0.0.1' IDENTIFIED BY '$pass';
+GRANT ALL ON \`fuse\`.* TO 'fuse'@'localhost', 'fuse'@'127.0.0.1';
+SQL
+  set_env_db_url "mysql://fuse:$pass@127.0.0.1:3306/fuse"
+  echo "created MariaDB database 'fuse' and user 'fuse' (password stored in .env)"
+}
+
+install_docker() {
+  command -v docker >/dev/null 2>&1 || die "docker is required: https://docs.docker.com/engine/install/"
+  docker compose version >/dev/null 2>&1 || die "the Docker Compose plugin is required (docker compose)"
+  if [ ! -f .env ]; then
+    old_umask="$(umask)"
+    umask 077
+    cat > .env <<EOF
+APP_SECRET=$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')
+# Password of the bundled MariaDB's 'fuse' user (hex only: it is embedded in a URL).
+DB_PASSWORD=$(python3 -c 'import secrets; print(secrets.token_hex(24))')
+# Host port to publish (the container always listens on 8088).
+PORT=8088
+
+# Public HTTPS URL of this box (required for fuse-agent connector installs):
+#PUBLIC_BASE_URL=https://your-host.example.com
+#TRUSTED_HOSTS=
+EOF
+    umask "$old_umask"
+    echo "generated .env with a fresh APP_SECRET and DB_PASSWORD (chmod 600)"
+  else
+    echo "existing .env kept untouched"
+  fi
+  grep -qE '^DB_PASSWORD=[0-9a-fA-F]+$' .env \
+    || die ".env needs DB_PASSWORD=<hex> for the bundled MariaDB (e.g. python3 -c 'import secrets; print(secrets.token_hex(24))')"
+  docker compose up -d --build
+  PORT_VALUE="$(grep -E '^PORT=' .env | tail -1 | cut -d= -f2- || true)"
+  printf '\nFuse is starting in Docker.\n'
+  printf '  URL:     https://localhost:%s  (self-signed cert: expect a browser warning)\n' "${PORT_VALUE:-8088}"
+  printf '  Logs:    docker compose logs -f fuse\n'
+  printf '  Update:  git pull && docker compose up -d --build\n'
+  printf '\nThe first account registered becomes the admin.\n'
+}
+
 install_system_service() {
   local unit=/etc/systemd/system/fuse.service
   guard_existing_unit "$unit"
@@ -145,6 +220,12 @@ while [ $# -gt 0 ]; do
   case "$1" in
     -y|--yes) ASSUME_YES=1 ;;
     --no-service) WANT_SERVICE=0 ;;
+    --docker) DOCKER=1 ;;
+    --database-url)
+      shift
+      DB_URL_ARG="${1:-}"
+      [[ "$DB_URL_ARG" == mysql://* ]] || die "--database-url requires mysql://user:password@host:3306/database"
+      ;;
     --force-unit) FORCE_UNIT=1 ;;
     --print-unit)
       shift
@@ -166,10 +247,15 @@ printf 'Fuse installer\n'
 printf '  directory: %s\n' "$FUSE_HOME"
 printf '  user:      %s (uid %s)\n' "$(id -un)" "$(id -u)"
 
-say "Step 1/5: Python virtual environment"
+if [ "$DOCKER" -eq 1 ]; then
+  install_docker
+  exit 0
+fi
+
+say "Step 1/7: Python virtual environment"
 command -v python3 >/dev/null 2>&1 || die "python3 is required"
-python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' \
-  || die "python3 >= 3.9 required (found $(python3 -V 2>&1))"
+python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' \
+  || die "python3 >= 3.11 required (found $(python3 -V 2>&1))"
 if [ ! -x venv/bin/python ]; then
   if ! python3 -m venv venv; then
     warn "python3 -m venv failed (python3-venv package missing?)"
@@ -184,11 +270,11 @@ else
   echo "venv/ already exists, reusing"
 fi
 
-say "Step 2/5: Python dependencies"
+say "Step 2/7: Python dependencies"
 venv/bin/pip install --disable-pip-version-check --upgrade pip
 venv/bin/pip install --disable-pip-version-check -r requirements.txt
 
-say "Step 3/5: Configuration"
+say "Step 3/7: Configuration"
 if [ ! -f .env ]; then
   APP_SECRET_VALUE="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
   old_umask="$(umask)"
@@ -201,9 +287,6 @@ PORT=8088
 # Public HTTPS URL of this box (required for fuse-agent connector installs
 # and desktop update checks):
 #PUBLIC_BASE_URL=https://your-host.example.com
-# Required: Fuse runs only on a migrated MariaDB schema (scripts/migrate_mariadb.py).
-#DATABASE_MARIADB_ENABLED=true
-#DATABASE_URL=mysql://fuse:CHANGE_ME@127.0.0.1:3306/fuse_live
 #TRUSTED_HOSTS=
 #FORWARDED_ALLOW_IPS=127.0.0.1
 #OPENAI_AUTH_PROXY=
@@ -214,7 +297,20 @@ else
   echo "existing .env kept untouched"
 fi
 
-say "Step 4/5: TLS certificate"
+say "Step 4/7: Database"
+if [ -n "$DB_URL_ARG" ]; then
+  current="$(env_db_url)"
+  if [ -z "$current" ]; then
+    set_env_db_url "$DB_URL_ARG"
+  elif [ "$current" != "$DB_URL_ARG" ]; then
+    die ".env already sets a different DATABASE_URL; edit .env instead of passing --database-url"
+  fi
+elif [ -z "$(env_db_url)" ]; then
+  provision_local_mariadb
+fi
+venv/bin/python -m scripts.init_db
+
+say "Step 5/7: TLS certificate"
 if [ -f certs/server.crt ] && [ -f certs/server.key ]; then
   echo "existing certs kept"
 else
@@ -233,14 +329,24 @@ else
 fi
 mkdir -p data/desktop-releases
 
-say "Step 5/5: Service"
-if [ "$WANT_SERVICE" -eq 1 ] && ! { grep -qE '^DATABASE_MARIADB_ENABLED=true' .env && grep -qE '^DATABASE_URL=mysql://' .env; }; then
-  # app/db.py refuses to boot without MariaDB: a service now would only
-  # crash-loop. Configure it, migrate the schema, then re-run this script.
-  warn "MariaDB is not configured in .env (DATABASE_MARIADB_ENABLED=true and DATABASE_URL=mysql://...);"
-  warn "skipping service setup. Set both, migrate the schema with scripts/migrate_mariadb.py, then re-run."
-  WANT_SERVICE=0
+say "Step 6/7: Connector binaries"
+# Machines connect through fuse-agent; the dashboard serves it from agent/dist.
+if ! { command -v make && command -v gcc && [ -f /usr/include/openssl/ssl.h ]; } >/dev/null 2>&1; then
+  ask "Building the Linux connector needs make, gcc and libssl-dev. Install them with apt? [Y/n] " \
+    && apt_install make gcc libc6-dev libssl-dev >/dev/null || true
 fi
+if make -s -C agent >/dev/null 2>&1; then
+  echo "built the Linux connector in agent/dist/"
+else
+  warn "could not build the Linux connector (needs make, gcc, libssl-dev); machines can still be added over SSH"
+fi
+if command -v go >/dev/null 2>&1 && make -s -C agent windows >/dev/null 2>&1; then
+  echo "built the Windows connectors in agent/dist/"
+else
+  echo "Go 1.25+ not found: skipping the Windows connector (make -C agent windows)"
+fi
+
+say "Step 7/7: Service"
 if [ "$WANT_SERVICE" -eq 1 ]; then
   if ask "Install Fuse as a systemd service for user '$(id -un)'? [Y/n] "; then
     if [ "$(id -u)" -eq 0 ]; then
