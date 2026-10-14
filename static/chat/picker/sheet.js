@@ -222,8 +222,8 @@ export function createSheet(ctx) {
     menu.tabIndex = -1;
     menu.innerHTML =
       '<div class="chat-picker-head"><p>Model</p><button type="button" class="chat-menu-close chat-picker-done" data-picker-close aria-label="Close"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div>' +
-      '<div class="chat-picker-searchrow"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10.4 10.4L13.8 13.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><input type="search" class="chat-picker-search" placeholder="Search models" aria-label="Search models"><kbd class="chat-picker-kbd" aria-hidden="true">esc</kbd></div>' +
-      '<div class="chat-picker-list" role="listbox" aria-label="Models"></div>' +
+      '<div class="chat-picker-searchrow"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10.4 10.4L13.8 13.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><input type="search" class="chat-picker-search" placeholder="Search models" aria-label="Search models" aria-controls="chat-picker-list" aria-autocomplete="list"><kbd class="chat-picker-kbd" aria-hidden="true">esc</kbd></div>' +
+      '<div class="chat-picker-list" id="chat-picker-list" role="listbox" aria-label="Models"></div>' +
       '<div class="chat-picker-thinking-host"></div>';
     overlays.attachSheetSwipe(menu, ".chat-picker-head", () => menu.classList.contains("is-sheet"), closePicker);
     const search = menu.querySelector(".chat-picker-search");

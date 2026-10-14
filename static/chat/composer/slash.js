@@ -103,18 +103,19 @@ export function createSlash(ctx) {
     if (!S.input) return;
     const spellOpen = window.FuseComposerSpell && FuseComposerSpell.isOpen();
     const palOpen = S.slashMenu && !S.slashMenu.hidden;
+    // Focus stays in the textarea, so the highlighted option is named by its
+    // aria-activedescendant (the spell popover sets its own).
     if (spellOpen) {
-      S.input.setAttribute("aria-expanded", "true");
-      if (S.spellPop && S.spellPop.id) S.input.setAttribute("aria-controls", S.spellPop.id);
-      else S.input.setAttribute("aria-controls", "chat-spell-pop");
+      S.input.setAttribute("aria-controls", "chat-spell-pop");
     } else if (palOpen) {
       S.input.setAttribute("aria-autocomplete", "list");
-      S.input.setAttribute("aria-expanded", "true");
       S.input.setAttribute("aria-controls", "chat-slash-list");
+      if (S.slashActiveId) S.input.setAttribute("aria-activedescendant", S.slashActiveId);
+      else S.input.removeAttribute("aria-activedescendant");
     } else {
-      S.input.removeAttribute("aria-expanded");
       S.input.removeAttribute("aria-controls");
       S.input.removeAttribute("aria-autocomplete");
+      S.input.removeAttribute("aria-activedescendant");
     }
   }
 
@@ -210,6 +211,7 @@ export function createSlash(ctx) {
     S.slashMenu.hidden = false;
     S.slashMenu.setAttribute("data-kind", kind);
     S.slashList.innerHTML = "";
+    S.slashActiveId = "";
     if (!S.paletteItems.length) {
       const empty = document.createElement("p");
       empty.className = "chat-slash-empty";
@@ -222,6 +224,7 @@ export function createSlash(ctx) {
         btn.className = "chat-slash-item" + (index === S.slashIndex ? " is-active" : "");
         btn.setAttribute("role", "option");
         btn.setAttribute("aria-selected", String(index === S.slashIndex));
+        btn.tabIndex = -1;
         btn.id = "chat-slash-" + kind + "-" + index;
         const label = item.kind === "skill" ? item.text : item.text;
         btn.innerHTML = `<kbd>${escapeHtml(label)}</kbd><span>${escapeHtml(item.hint || item.kind || "")}</span>`;
@@ -229,7 +232,7 @@ export function createSlash(ctx) {
         btn.addEventListener("click", () => acceptPaletteItem(item));
         S.slashList.appendChild(btn);
       });
-      S.slashList.setAttribute("aria-activedescendant", "chat-slash-" + kind + "-" + S.slashIndex);
+      S.slashActiveId = "chat-slash-" + kind + "-" + S.slashIndex;
       const active = S.slashList.querySelector(".is-active");
       if (active) active.scrollIntoView({ block: "nearest" });
     }
@@ -323,13 +326,14 @@ export function createSlash(ctx) {
       if (!slashAvailable(cmd)) btn.classList.add("is-off");
       btn.setAttribute("role", "option");
       btn.setAttribute("aria-selected", String(index === S.slashIndex));
+      btn.tabIndex = -1;
       btn.id = "chat-slash-" + cmd.name;
       btn.innerHTML = `<kbd>/${escapeHtml(cmd.name)}</kbd><span>${escapeHtml(cmd.hint)}</span>`;
       btn.addEventListener("mousedown", (event) => event.preventDefault());
       btn.addEventListener("click", () => acceptSlash(cmd));
       S.slashList.appendChild(btn);
     });
-    S.slashList.setAttribute("aria-activedescendant", items[S.slashIndex] ? "chat-slash-" + items[S.slashIndex].name : "");
+    S.slashActiveId = items[S.slashIndex] ? "chat-slash-" + items[S.slashIndex].name : "";
     const active = S.slashList.querySelector(".is-active");
     if (active) active.scrollIntoView({ block: "nearest" });
     setEnterKeyHintEnter();

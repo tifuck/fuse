@@ -52,20 +52,11 @@ function renderAssistant(msg, live) {
     function collapseConsoleGroup(group, target) {
       group.classList.remove("is-console-expanded");
       group.querySelectorAll(":scope > .chat-step-main > .chat-step-head [data-step-toggle]").forEach((el) => el.setAttribute("aria-expanded", "false"));
-      group.querySelector(":scope > .chat-step-main > .chat-console-bundle")?.removeAttribute("tabindex");
       if (!target.stepOpen) target.stepOpen = {};
       target.stepOpen[group.dataset.step] = false;
       consoleGroupOpenKeys(group, target).forEach((key) => { target.stepOpen[key] = false; });
       deps.saveDisclosures(target);
     }
-    // The expanded group hides its header, so the printed calls themselves take focus.
-    article.addEventListener("keydown", (event) => {
-      if ((event.key !== "Enter" && event.key !== " ") || !event.target.matches(".chat-console-bundle[tabindex]")) return;
-      const group = event.target.closest(".chat-step.is-console-group.is-console-expanded");
-      if (!group) return;
-      event.preventDefault();
-      collapseConsoleGroup(group, msg);
-    });
     article.addEventListener("click", (event) => {
       const thinkingSize = event.target.closest("[data-think-size]");
       if (thinkingSize) {

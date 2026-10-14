@@ -271,7 +271,7 @@ function ccGroupHtml(group, msg, live, active, openMap, thinking) {
       // A failed or interrupted member says so on its own row once the line
       // is opened; the folded line is only its summary.
       (hintHtml ? hang(hintHtml, " is-group-hint") : "") +
-      `<div class="chat-console-bundle"${open ? ' tabindex="0" role="group" aria-label="Summary details. Press Enter to collapse."' : ""}><ol class="chat-timeline">${rows}</ol></div>` +
+      `<div class="chat-console-bundle"><ol class="chat-timeline">${rows}</ol></div>` +
       `</div></li>`
     );
   }

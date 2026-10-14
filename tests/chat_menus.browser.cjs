@@ -180,6 +180,55 @@ const FAMILIES = [
       assert.notEqual(second, first);
     }
 
+    // Composer palettes and the picker keep focus in their text field and name
+    // the highlighted option with aria-activedescendant.
+    {
+      const input = page.locator('[data-chat-input]');
+      const active = (sel) => page.evaluate(s => {
+        const el = document.querySelector(s);
+        const id = el.getAttribute('aria-activedescendant');
+        const opt = id && document.getElementById(id);
+        return { id, focused: document.activeElement === el, role: opt?.getAttribute('role'), selected: opt?.getAttribute('aria-selected'), text: opt?.textContent };
+      }, sel);
+      await input.fill('/');
+      await page.locator('[data-chat-slash]:not([hidden])').waitFor();
+      const first = await active('[data-chat-input]');
+      assert.equal(first.role, 'option', `the textarea points at the highlighted command: ${JSON.stringify(first)}`);
+      assert.equal(first.selected, 'true');
+      assert.equal(await input.getAttribute('aria-expanded'), null, 'a textarea carries no aria-expanded');
+      await page.keyboard.press('ArrowDown');
+      const second = await active('[data-chat-input]');
+      assert.ok(second.focused && second.role === 'option' && second.id !== first.id, `ArrowDown moves the active descendant: ${JSON.stringify(second)}`);
+      await page.keyboard.press('Escape');
+      assert.equal(await input.getAttribute('aria-activedescendant'), null, 'closing the palette clears it');
+      await input.fill('');
+
+      await pickerBtn().click();
+      await picker().waitFor();
+      const pick = await active('.chat-picker-search');
+      assert.ok(pick.focused && pick.role === 'option', `the picker search names the highlighted model: ${JSON.stringify(pick)}`);
+      assert.equal(await page.locator('.chat-picker-list > [role="group"][aria-labelledby]').count() > 0, true, 'models are grouped by provider inside the listbox');
+      await page.keyboard.press('ArrowDown');
+      assert.notEqual((await active('.chat-picker-search')).id, pick.id, 'ArrowDown moves the picker highlight');
+      await page.keyboard.press('Escape');
+      await picker().waitFor({ state: 'hidden' });
+
+      // Spelling: Alt+Enter opens the popover; suggestions, Ignore and Add are
+      // one list walked by arrows while the textarea keeps focus.
+      await page.waitForFunction(() => window.FuseComposerSpell?.dictStatus() === 'ready', null, { timeout: 15000 });
+      await input.fill('teh cat ');
+      await input.evaluate(el => { el.setSelectionRange(3, 3); window.FuseComposerSpell.refresh(); });
+      await page.keyboard.press('Alt+Enter');
+      await page.locator('[data-chat-spell-pop]:not([hidden])').waitFor();
+      const options = await page.locator('[data-chat-spell-pop] [role="option"]').allTextContents();
+      assert.deepEqual(options.slice(-2), ['Ignore', 'Add to dictionary'], `Ignore and Add are options in the list: ${options}`);
+      for (let i = 1; i < options.length; i += 1) await page.keyboard.press('ArrowDown');
+      assert.equal((await active('[data-chat-input]')).text, 'Add to dictionary', 'arrows reach the dictionary action');
+      await page.keyboard.press('Escape');
+      assert.equal(await input.getAttribute('aria-activedescendant'), null, 'closing the popover clears it');
+      await input.fill('');
+    }
+
     // Modal sheets: focus goes in, the page behind is inert, and Escape hands
     // focus back to the opener with the page live again.
     {

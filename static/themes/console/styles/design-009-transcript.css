@@ -212,8 +212,20 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-ste
 }
 
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-group.is-console-expanded > .chat-step-node,
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-group.is-console-expanded > .chat-step-main > :is(.chat-step-head, .chat-console-hang) {
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-group.is-console-expanded > .chat-step-main > .chat-console-hang {
   display: none !important;
+}
+
+/* The opened line hides its header, as Claude Code does, but its toggle stays
+   focusable (clipped, aria-expanded=true) so activating it never drops focus;
+   keyboard focus brings it back into view. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-group.is-console-expanded > .chat-step-main > .chat-step-head:not(:has(:focus-visible)) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-group.is-console-expanded > .chat-step-main {

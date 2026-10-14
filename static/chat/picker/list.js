@@ -88,8 +88,10 @@ export function createList(ctx) {
     renderPickerThinking();
     const items = filteredModels();
     if (S.pickerIndex >= items.length) S.pickerIndex = Math.max(0, items.length - 1);
+    const search = (S.pickerMenuEl || S.pickerHost).querySelector(".chat-picker-search");
     if (!items.length) {
       menu.innerHTML = '<p class="chat-picker-empty">No models match.</p>';
+      search?.removeAttribute("aria-activedescendant");
       return;
     }
     const groups = [];
@@ -106,24 +108,26 @@ export function createList(ctx) {
         (group) =>
           // The provider mark sits once on the group label; rows carry the
           // name and context window only, so the list stays dense.
-          `<div class="chat-picker-group"><p>${sidebar.providerLogo(group.type)}<span>${escapeHtml(group.title)}</span></p>${group.items
+          `<div class="chat-picker-group" role="group" aria-labelledby="chat-pg-${escapeHtml(group.type)}"><p id="chat-pg-${escapeHtml(group.type)}">${sidebar.providerLogo(group.type)}<span>${escapeHtml(group.title)}</span></p>${group.items
             .map(({ model, index }) => {
               const selected = model.id === S.modelId;
               const ctx = model.contextWindow ? formatTokens(model.contextWindow) : "";
               const row =
-                `<button type="button" role="option" data-id="${escapeHtml(model.id)}" aria-selected="${
+                `<button type="button" role="option" id="chat-pm-${index}" tabindex="-1" data-id="${escapeHtml(model.id)}" aria-selected="${
                   selected ? "true" : "false"
                 }" class="${selected ? "is-selected" : ""}${index === S.pickerIndex ? " is-active" : ""}">` +
                 `<span>${escapeHtml(model.name)}</span>` +
-                (model.image ? `<i class="chat-picker-image" title="Reads images" aria-label="Reads images">${IMAGE_ICON}</i>` : "") +
+                (model.image ? `<i class="chat-picker-image" title="Reads images">${IMAGE_ICON}<span class="visually-hidden">, reads images</span></i>` : "") +
                 (ctx ? `<small class="chat-picker-meta" title="Context window">${ctx}</small>` : "") +
                 `<i class="chat-picker-mark" aria-hidden="true">${selected ? PICKER_CHECK : ""}</i>` +
                 `</button>`;
-              return `<div class="chat-picker-row">${row}</div>`;
+              return `<div class="chat-picker-row" role="none">${row}</div>`;
             })
             .join("")}</div>`
       )
       .join("");
+    // Arrow keys move a highlight while focus stays in the search box.
+    search?.setAttribute("aria-activedescendant", "chat-pm-" + S.pickerIndex);
   }
 
     function renderPickerThinking() {

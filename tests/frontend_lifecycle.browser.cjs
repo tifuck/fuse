@@ -68,7 +68,18 @@ const out = process.env.FRONTEND_LIFECYCLE_ARTIFACTS || '/tmp/opencode/frontend-
           { id: 'motion-a', name: 'read_file', status: 'done', path: 'README.md', output: '1: x\n', results: [], error: '' },
           { id: 'motion', name: 'read_file', status: 'done', path: 'README.md', preview: 'File contents', output: Array.from({ length: 20 }, (_, i) => `line ${i}`).join('\n') },
         ], segments: [{ type: 'tool', id: 'motion-a' }, { type: 'tool', id: 'motion' }] }]));
-        await page.locator('.is-console-group > .chat-step-main > .chat-step-head > .chat-step-toggle').click();
+        const groupToggle = page.locator('.is-console-group > .chat-step-main > .chat-step-head > .chat-step-toggle');
+        if (reduced === 'reduce') {
+          // Keyboard: the opened line's toggle keeps focus and says it is expanded.
+          await groupToggle.focus();
+          await page.keyboard.press('Enter');
+          assert.equal(await page.locator('.is-console-group.is-console-expanded').count(), 1);
+          assert.equal(await groupToggle.evaluate(el => document.activeElement === el && el.getAttribute('aria-expanded')), 'true', 'expanding keeps focus on the toggle');
+          assert.ok((await groupToggle.boundingBox()).height > 4, 'a keyboard-focused toggle stays visible');
+          await page.keyboard.press('Enter');
+          assert.equal(await page.locator('.is-console-group.is-console-expanded').count(), 0, 'Enter on the same toggle folds it again');
+        }
+        await groupToggle.click();
         if (reduced === 'reduce') assert.equal(await page.locator('.is-console-group').evaluate(el => el.getAnimations({ subtree: true }).length), 0, 'reduced-motion disables disclosure animation');
         await page.evaluate(() => {
           fuseToolFixture.mount([{ content: 'Streaming line.\n\n'.repeat(100) }], true);

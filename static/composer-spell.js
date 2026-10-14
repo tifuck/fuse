@@ -630,6 +630,7 @@
     popIssue = null;
     popSuggestions = [];
     popIndex = 0;
+    if (env && env.input) env.input.removeAttribute("aria-activedescendant");
     if (env && env.popover) {
       env.popover.hidden = true;
       env.popover.innerHTML = "";
@@ -658,37 +659,40 @@
     pop.style.top = Math.round(top) + "px";
   }
 
+  // Suggestions, then Ignore and Add to dictionary: one list the arrow keys
+  // walk while focus stays in the textarea (aria-activedescendant).
+  function popChoices() {
+    return popSuggestions.map((word) => ({ label: word, run: () => applyCorrection(popIssue, word) }))
+      .concat([
+        { label: "Ignore", attr: "data-spell-ignore", run: () => ignore(popIssue.word) },
+        { label: "Add to dictionary", attr: "data-spell-add", run: () => add(popIssue.word) },
+      ]);
+  }
+
   function renderPopover() {
     const pop = env && env.popover;
     if (!pop || !popIssue) return;
     pop.innerHTML = "";
-    popSuggestions.forEach((word, index) => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.setAttribute("role", "menuitem");
-      btn.className = index === popIndex ? "is-active" : "";
-      btn.textContent = word;
-      btn.addEventListener("mousedown", (event) => event.preventDefault());
-      btn.addEventListener("click", () => applyCorrection(popIssue, word));
-      pop.appendChild(btn);
-    });
     const actions = document.createElement("div");
     actions.className = "chat-spell-pop-actions";
     actions.setAttribute("role", "group");
-    const ignoreBtn = document.createElement("button");
-    ignoreBtn.type = "button";
-    ignoreBtn.setAttribute("data-spell-ignore", "");
-    ignoreBtn.textContent = "Ignore";
-    ignoreBtn.addEventListener("mousedown", (event) => event.preventDefault());
-    ignoreBtn.addEventListener("click", () => ignore(popIssue.word));
-    const addBtn = document.createElement("button");
-    addBtn.type = "button";
-    addBtn.setAttribute("data-spell-add", "");
-    addBtn.textContent = "Add to dictionary";
-    addBtn.addEventListener("mousedown", (event) => event.preventDefault());
-    addBtn.addEventListener("click", () => add(popIssue.word));
-    actions.append(ignoreBtn, addBtn);
+    actions.setAttribute("aria-label", "Actions");
+    popChoices().forEach((choice, index) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.id = "chat-spell-opt-" + index;
+      btn.tabIndex = -1;
+      btn.setAttribute("role", "option");
+      btn.setAttribute("aria-selected", String(index === popIndex));
+      if (choice.attr) btn.setAttribute(choice.attr, "");
+      btn.className = index === popIndex ? "is-active" : "";
+      btn.textContent = choice.label;
+      btn.addEventListener("mousedown", (event) => event.preventDefault());
+      btn.addEventListener("click", choice.run);
+      (choice.attr ? actions : pop).appendChild(btn);
+    });
     pop.appendChild(actions);
+    if (env.input) env.input.setAttribute("aria-activedescendant", "chat-spell-opt-" + popIndex);
     placePopover(popIssue);
   }
 
@@ -735,14 +739,15 @@
 
   function accept() {
     if (!isOpen()) return;
-    const word = popSuggestions[popIndex];
-    if (word) applyCorrection(popIssue, word);
+    const choice = popChoices()[popIndex];
+    if (choice) choice.run();
     else hidePopover();
   }
 
   function move(delta) {
-    if (!isOpen() || !popSuggestions.length) return;
-    popIndex = (popIndex + delta + popSuggestions.length) % popSuggestions.length;
+    if (!isOpen()) return;
+    const count = popSuggestions.length + 2;
+    popIndex = (popIndex + delta + count) % count;
     renderPopover();
   }
 
