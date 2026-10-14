@@ -52,6 +52,18 @@ class _FakeResp:
         return b""
 
 
+def _final_thinking(chunks):
+    """The claude_thinking blocks the translated stream hands the chat loop."""
+    found = []
+    for piece in chunks:
+        for line in piece.splitlines():
+            if not line.startswith("data: {"):
+                continue
+            for choice in json.loads(line[6:]).get("choices") or []:
+                found.extend((choice.get("delta") or {}).get("claude_thinking") or [])
+    return found
+
+
 class ClaudeParseTest(unittest.TestCase):
     def test_manual_code_splits_on_last_hash(self):
         code, state = claude_mod.parse_manual_code("abc#def#state")
@@ -465,7 +477,9 @@ class ClaudeStreamTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"cache_write_tokens":2', joined)
         self.assertTrue(joined.rstrip().endswith("data: [DONE]"))
         self.assertEqual(collected["stream_status"], "complete")
-        self.assertEqual(collected["claude_thinking"], [{"thinking": "plan", "signature": "SIG"}])
+        self.assertEqual(_final_thinking(chunks), [{"thinking": "plan", "signature": "SIG"}])
+        # Thinking is not usage: it must stay out of the usage holder.
+        self.assertNotIn("claude_thinking", collected)
         self.assertEqual(collected["prompt_tokens"], 16)
         self.assertEqual(collected["completion_tokens"], 6)
 
@@ -490,13 +504,43 @@ class ClaudeStreamTest(unittest.IsolatedAsyncioTestCase):
         # Both replayable forms must come through untouched: the redacted
         # blob and the signed-empty (omitted-display) block.
         self.assertEqual(
-            collected["claude_thinking"],
+            _final_thinking(chunks),
             [{"redacted_thinking": "enc-blob"}, {"thinking": "", "signature": "SIG2"}],
         )
+        self.assertNotIn("claude_thinking", collected)
         self.assertIn("redacted_thinking", joined)
         # Each silent block marks the think so the pacer keeps its patience.
         self.assertEqual(joined.count(": fuse-thinking\n\n"), 2)
         self.assertEqual(collected["stream_status"], "complete")
+
+    async def test_long_thought_signature_stays_out_of_usage(self):
+        # A long think carries a signature bigger than the run's usage cap.
+        # Merged into usage it failed the turn with "Generation usage limit
+        # reached."; it must arrive as thinking and leave usage small.
+        from app.chat_schema import USAGE_MAX
+
+        signature = "S" * (USAGE_MAX + 8_000)
+        events = [
+            {"type": "message_start", "message": {"id": "msg_l", "usage": {"input_tokens": 5}}},
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": signature}},
+            {"type": "content_block_stop", "index": 0},
+            {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "ok"}},
+            {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 15000}},
+            {"type": "message_stop"},
+        ]
+        collected = {}
+        chunks = []
+        async for piece in claude_mod._translated_stream(_FakeResp(events), AsyncMock(), "claude-opus-4-6", collected):
+            chunks.append(piece.decode())
+        self.assertEqual(_final_thinking(chunks), [{"thinking": "", "signature": signature}])
+        self.assertEqual(collected["completion_tokens"], 15000)
+        self.assertLess(len(json.dumps(collected, separators=(",", ":"))), USAGE_MAX)
+        for piece in chunks:
+            for line in piece.splitlines():
+                if line.startswith("data: {") and "usage" in json.loads(line[6:]):
+                    usage = json.loads(line[6:])["usage"]
+                    self.assertLess(len(json.dumps(usage, separators=(",", ":"))), USAGE_MAX)
 
     async def test_empty_tool_arguments_become_object(self):
         events = [

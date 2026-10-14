@@ -319,8 +319,10 @@ async def _translated_stream(resp: httpx.Response, client: httpx.AsyncClient, mo
             collected["stream_status"] = stream_status
             if translator.usage:
                 collected["usage_status"] = "complete" if stream_status == "complete" else "partial"
-            if translator.thinking:
-                collected["claude_thinking"] = translator.thinking
+            # Thinking reaches replay through the final chunk's delta. It is
+            # not usage: signatures grow with the thought, and once merged into
+            # the run's usage frame a long think overflowed USAGE_MAX and
+            # failed the turn ("Generation usage limit reached.").
 
 
 async def _aggregate(resp: httpx.Response, client: httpx.AsyncClient, model: str) -> dict:
