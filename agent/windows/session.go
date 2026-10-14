@@ -116,7 +116,8 @@ func connectURL(base string) (string, error) {
 		return "", fmt.Errorf("https required")
 	}
 	u.Scheme = "wss"
-	u.Path = "/agent/v1/connect"
+	// Keep a path prefix (Fuse served under one), as the update fetch does.
+	u.Path = strings.TrimRight(u.Path, "/") + "/agent/v1/connect"
 	u.RawQuery = ""
 	u.Fragment = ""
 	return u.String(), nil
@@ -485,7 +486,14 @@ func runSession(cfg *agentConfig, stop chan struct{}) {
 			errText := fmt.Sprint(reply["error"])
 			log.Printf("fuse-agent: %s", errText)
 			s.closeConn()
-			if strings.Contains(errText, "invalid") || strings.Contains(errText, "expired") || strings.Contains(errText, "token") {
+			// A server that sends "code" says auth outright; older ones are
+			// classified by their wording.
+			code, _ := reply["code"].(string)
+			auth := code == "auth"
+			if code == "" {
+				auth = strings.Contains(errText, "invalid") || strings.Contains(errText, "expired") || strings.Contains(errText, "token")
+			}
+			if auth {
 				if authBackoff < 60 {
 					authBackoff = 60
 				} else {

@@ -4,6 +4,7 @@
 /* Self-update: manifest fetch, sha256 verify, flock ownership, staging. */
 
 #include <stddef.h>
+#include <stdio.h>
 
 enum { UPDATE_MANUAL = 0, UPDATE_EXEC = 1, UPDATE_STAGE = 2 };
 
@@ -12,6 +13,9 @@ int update_is_self(const char *self, const char *expect_sha);
 int update_lock_acquire(const char *self, char *lockpath, size_t cap);
 int format_update_staging(char *dst, size_t cap, const char *self);
 int maybe_update(int mode);
+/* Parse an HTTP 200 response (Content-Length, chunked, or to close) from rd
+ * into f, at most max_bytes of body. Exposed for tests. */
+int http_read_response(int (*rd)(void *ctx, char *buf, size_t n), void *ctx, FILE *f, size_t max_bytes);
 /* Fetch + stage on a detached thread (no-op if one runs or a build is pending). */
 void update_start_background(void);
 /* Non-zero vetoes the post-update execv (work would be dropped). */

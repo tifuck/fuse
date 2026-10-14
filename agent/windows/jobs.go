@@ -292,7 +292,8 @@ func (h *jobHub) run(s *session, msg map[string]any) {
 			s.sendRes(id, false, 1, "", err.Error(), "read_binary failed")
 			return
 		}
-		s.sendRes(id, true, 0, string(out), "", "")
+		// Not clipOut: a chunk's JSON may exceed outCap, and clipped JSON is useless.
+		s.sendResult(jobRes{V: 1, T: "res", ID: id, OK: true, Out: string(out), TerminationConfirmed: true})
 	case "read":
 		out, err := readFileSlice(jsonStr(msg, "path", ""), jsonInt(msg, "offset", 1), jsonInt(msg, "limit", 200))
 		if err != nil {

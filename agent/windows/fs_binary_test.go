@@ -30,7 +30,7 @@ func TestReadBinary(t *testing.T) {
 	if err != nil || last["data"] != "AA==" || last["eof"] != true || last["identity"] != first["identity"] {
 		t.Fatal(last, err)
 	}
-	for _, args := range [][2]int{{-1, 1}, {0, 0}, {0, 32769}, {binaryFileMax + 1, 1}} {
+	for _, args := range [][2]int{{-1, 1}, {0, 0}, {0, binaryChunkMax + 1}, {binaryFileMax + 1, 1}} {
 		if _, err := readBinary(path, args[0], args[1]); err == nil {
 			t.Fatal("accepted", args)
 		}
@@ -38,7 +38,13 @@ func TestReadBinary(t *testing.T) {
 	if _, err := readBinary(dir, 0, 1); err == nil {
 		t.Fatal("accepted directory")
 	}
-	data[0] = 'z'
+	whole, err := readBinary(path, 0, binaryChunkMax)
+	if err != nil || whole["eof"] != true || whole["identity"] != first["identity"] {
+		t.Fatal(whole, err)
+	}
+	// Identity is size+mtime (no whole-file hash per chunk): a change that
+	// alters the size is always seen.
+	data = append(data, 'z')
 	if err := os.WriteFile(path, data, 0600); err != nil {
 		t.Fatal(err)
 	}

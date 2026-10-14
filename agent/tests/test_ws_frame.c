@@ -38,6 +38,17 @@ int main(void) {
     assert(parse_url("https://[::1]bad", &u) != 0);
     assert(parse_url("https://host:8443/p", &u) == 0 && u.port == 8443);
     assert(parse_url("https://host", &u) == 0 && u.port == 443);
+    /* Host header keeps a non-default port and brackets IPv6; the connect
+     * path keeps a base path prefix (it was overwritten with the bare path). */
+    char host[300];
+    url_host_header(&u, host, sizeof(host));
+    assert(!strcmp(host, "host"));
+    assert(parse_url("https://[::1]:8088/base/", &u) == 0);
+    url_host_header(&u, host, sizeof(host));
+    assert(!strcmp(host, "[::1]:8088"));
+    assert(url_join_path(&u, "/agent/v1/connect") == 0 && !strcmp(u.path, "/base/agent/v1/connect"));
+    assert(parse_url("https://host", &u) == 0 && url_join_path(&u, "/agent/v1/connect") == 0);
+    assert(!strcmp(u.path, "/agent/v1/connect"));
     puts("test_ws_frame: OK");
     return 0;
 }

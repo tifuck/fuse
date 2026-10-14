@@ -98,30 +98,37 @@ static int write_sleep_hook(void) {
     return 0;
 }
 
+/* Temp file + rename: writing the installed path in place failed (ETXTBSY)
+ * or truncated a live binary when reinstalling over a running connector. */
 static int copy_self(const char *dest) {
-    char self[PATH_MAX];
+    char self[PATH_MAX], tmp[PATH_MAX];
     ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1);
     if (n < 0) return -1;
     self[n] = 0;
+    if (snprintf(tmp, sizeof(tmp), "%s.new.XXXXXX", dest) >= (int)sizeof(tmp)) return -1;
     FILE *in = fopen(self, "rb");
-    FILE *out = fopen(dest, "wb");
-    if (!in || !out) {
+    int ofd = in ? mkstemp(tmp) : -1;
+    FILE *out = ofd >= 0 ? fdopen(ofd, "wb") : NULL;
+    if (!out) {
         if (in) fclose(in);
-        if (out) fclose(out);
+        if (ofd >= 0) {
+            close(ofd);
+            unlink(tmp);
+        }
         return -1;
     }
     char buf[8192];
     size_t k;
-    while ((k = fread(buf, 1, sizeof(buf), in)) > 0) {
-        if (fwrite(buf, 1, k, out) != k) {
-            fclose(in);
-            fclose(out);
-            return -1;
-        }
-    }
+    int bad = 0;
+    while (!bad && (k = fread(buf, 1, sizeof(buf), in)) > 0)
+        if (fwrite(buf, 1, k, out) != k) bad = 1;
+    bad |= ferror(in) || fflush(out) != 0 || fsync(ofd) != 0 || fchmod(ofd, 0755) != 0;
     fclose(in);
-    fclose(out);
-    chmod(dest, 0755);
+    if (fclose(out) != 0) bad = 1;
+    if (bad || rename(tmp, dest) != 0) {
+        unlink(tmp);
+        return -1;
+    }
     return 0;
 }
 

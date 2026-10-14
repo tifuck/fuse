@@ -22,6 +22,8 @@ struct tls {
 };
 
 int parse_url(const char *raw, struct url *u);
+void url_host_header(const struct url *u, char *out, size_t cap);
+int url_join_path(struct url *u, const char *suffix);
 int tls_connect(struct tls *t, const struct url *u);
 void tls_close(struct tls *t);
 int tls_write_all(struct tls *t, const void *buf, size_t n);

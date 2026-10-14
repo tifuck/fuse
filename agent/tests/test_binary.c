@@ -38,7 +38,10 @@ int main(void) {
     assert(json_bool(r, "eof") && !strcmp(json_cstr(r, "data", ""), "AA=="));
     assert(!strcmp(identity, json_cstr(r, "identity", ""))); cJSON_Delete(r);
     assert(!read_binary(path, -1, 1));
-    assert(!read_binary(path, 0, 32769));
+    assert(!read_binary(path, 0, BINARY_CHUNK_MAX + 1));
+    js = read_binary(path, 0, BINARY_CHUNK_MAX); assert(js);
+    r = cJSON_Parse(js); free(js);
+    assert(json_bool(r, "eof") && !strcmp(identity, json_cstr(r, "identity", ""))); cJSON_Delete(r);
     assert(!read_binary(path, 0, 0));
     assert(!read_binary(dir, 0, 1));
     assert(mkfifo(fifo, 0600) == 0);

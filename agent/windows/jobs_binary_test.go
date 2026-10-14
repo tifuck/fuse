@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -54,7 +55,7 @@ func TestReadBinaryDispatch(t *testing.T) {
 	if err != nil || !bytes.Equal(got, data[:binaryChunkMax]) || first["size"] != float64(len(data)) || first["eof"] != false {
 		t.Fatal("bad default chunk", err)
 	}
-	last := decode(run(`{"offset":32768,"limit":1}`))
+	last := decode(run(fmt.Sprintf(`{"offset":%d,"limit":1}`, binaryChunkMax)))
 	if last["identity"] != first["identity"] || last["data"] != "AA==" || last["eof"] != true {
 		t.Fatal(last)
 	}
@@ -62,7 +63,7 @@ func TestReadBinaryDispatch(t *testing.T) {
 		`{"offset":null}`, `{"offset":"0"}`, `{"offset":false}`, `{"offset":[]}`, `{"offset":{}}`,
 		`{"offset":0.5}`, `{"offset":-1}`, `{"offset":20971521}`, `{"offset":1e100}`,
 		`{"limit":null}`, `{"limit":"1"}`, `{"limit":true}`, `{"limit":[]}`, `{"limit":{}}`,
-		`{"limit":1.5}`, `{"limit":0}`, `{"limit":-1}`, `{"limit":32769}`, `{"limit":1e100}`,
+		`{"limit":1.5}`, `{"limit":0}`, `{"limit":-1}`, fmt.Sprintf(`{"limit":%d}`, binaryChunkMax+1), `{"limit":1e100}`,
 	} {
 		res := run(args)
 		if res.OK || res.Exit != 1 || res.Out != "" || res.Error != "invalid binary offset or limit" {

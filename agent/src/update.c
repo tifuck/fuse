@@ -13,39 +13,117 @@
 #include "reconnect.h"
 #include "update.h"
 
+/* Buffered response reader. One deadline for the whole response: a read
+ * alone gives each stalled read a fresh timeout, so a peer trickling bytes
+ * could hold the update lock forever. */
+struct rbuf {
+    int (*rd)(void *ctx, char *buf, size_t n);
+    void *ctx;
+    char b[8192];
+    size_t s, e;
+    int64_t deadline;
+};
+
+static int rb_fill(struct rbuf *r) {
+    if (r->s < r->e) return 1;
+    if (now_mono_ms() >= r->deadline) return -1;
+    int k = r->rd(r->ctx, r->b, sizeof(r->b));
+    if (k <= 0) return 0; /* closed (or failed): callers check lengths */
+    r->s = 0;
+    r->e = (size_t)k;
+    return 1;
+}
+
+/* One header or chunk-size line, CRLF stripped. */
+static int rb_line(struct rbuf *r, char *line, size_t cap) {
+    size_t n = 0;
+    for (;;) {
+        if (rb_fill(r) != 1) return -1;
+        char c = r->b[r->s++];
+        if (c == '\n') break;
+        if (n + 1 >= cap) return -1;
+        line[n++] = c;
+    }
+    if (n && line[n - 1] == '\r') n--;
+    line[n] = 0;
+    return 0;
+}
+
+/* Copy up to want bytes (or until close) into f; returns the count. */
+static size_t rb_copy(struct rbuf *r, FILE *f, size_t want, int *err) {
+    size_t done = 0;
+    while (done < want) {
+        int fr = rb_fill(r);
+        if (fr == -1) *err = 1;
+        if (fr != 1) break;
+        size_t take = r->e - r->s;
+        if (take > want - done) take = want - done;
+        if (fwrite(r->b + r->s, 1, take, f) != take) {
+            *err = 1;
+            break;
+        }
+        r->s += take;
+        done += take;
+    }
+    return done;
+}
+
+int http_read_response(int (*rd)(void *ctx, char *buf, size_t n), void *ctx, FILE *f, size_t max_bytes) {
+    struct rbuf *rb = malloc(sizeof(*rb));
+    if (!rb) return -1;
+    *rb = (struct rbuf){.rd = rd, .ctx = ctx, .deadline = now_mono_ms() + 5 * 60 * 1000};
+    char line[1024];
+    int chunked = 0, bad = 0;
+    long long clen = -1;
+    if (rb_line(rb, line, sizeof(line)) != 0 ||
+        (strncmp(line, "HTTP/1.1 200", 12) != 0 && strncmp(line, "HTTP/1.0 200", 12) != 0))
+        bad = 1;
+    while (!bad) {
+        if (rb_line(rb, line, sizeof(line)) != 0) bad = 1;
+        else if (!line[0]) break;
+        else if (strncasecmp(line, "transfer-encoding:", 18) == 0 && strcasestr(line + 18, "chunked")) chunked = 1;
+        else if (strncasecmp(line, "content-length:", 15) == 0) clen = strtoll(line + 15, NULL, 10);
+    }
+    if (clen > (long long)max_bytes) bad = 1;
+    size_t total = 0;
+    if (!bad && chunked) {
+        /* A proxy (nginx with gzip, for one) may chunk the response. */
+        for (;;) {
+            char *end;
+            unsigned long long sz;
+            if (rb_line(rb, line, sizeof(line)) != 0 || (sz = strtoull(line, &end, 16), end == line) ||
+                sz > max_bytes - total) {
+                bad = 1;
+                break;
+            }
+            if (sz == 0) break; /* trailers are ignored */
+            if (rb_copy(rb, f, (size_t)sz, &bad) != sz || rb_line(rb, line, sizeof(line)) != 0 || line[0]) {
+                bad = 1;
+                break;
+            }
+            total += (size_t)sz;
+        }
+    } else if (!bad) {
+        total = rb_copy(rb, f, clen >= 0 ? (size_t)clen : max_bytes + 1, &bad);
+        if (total > max_bytes || (clen >= 0 && total != (size_t)clen)) bad = 1;
+    }
+    free(rb);
+    return bad || ferror(f) ? -1 : 0;
+}
+
+static int tls_reader(void *ctx, char *buf, size_t n) {
+    return tls_read_some(ctx, buf, n);
+}
+
 static int http_get_file(const char *base, const char *path, int fd, size_t max_bytes) {
-    char full[512];
-    if (snprintf(full, sizeof(full), "%s%s", base, path) >= (int)sizeof(full)) return -1;
     struct url u;
-    if (parse_url(full, &u) != 0) return -1;
+    if (parse_url(base, &u) != 0 || url_join_path(&u, path) != 0) return -1;
     struct tls t;
     if (tls_connect(&t, &u) != 0) return -1;
-    char req[640];
-    int n = snprintf(req, sizeof(req), "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", u.path, u.host);
-    if (n < 0 || (size_t)n >= sizeof(req)) {
-        tls_close(&t);
-        return -1;
-    }
-    if (tls_write_all(&t, req, (size_t)n) != 0) {
-        tls_close(&t);
-        return -1;
-    }
-    char hdr[4096];
-    size_t got = 0;
-    int hdr_done = 0;
-    size_t hdr_end = 0;
-    while (got < sizeof(hdr) - 1 && !hdr_done) {
-        int k = tls_read_some(&t, hdr + got, sizeof(hdr) - 1 - got);
-        if (k <= 0) break;
-        got += (size_t)k;
-        hdr[got] = 0;
-        char *p = strstr(hdr, "\r\n\r\n");
-        if (p) {
-            hdr_done = 1;
-            hdr_end = (size_t)(p - hdr) + 4;
-        }
-    }
-    if (!hdr_done || strncmp(hdr, "HTTP/1.1 200", 12) != 0) {
+    char req[800], host[300];
+    url_host_header(&u, host, sizeof(host));
+    int n = snprintf(req, sizeof(req), "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", u.path, host);
+    if (n < 0 || (size_t)n >= sizeof(req) || tls_write_all(&t, req, (size_t)n) != 0) {
         tls_close(&t);
         return -1;
     }
@@ -58,41 +136,12 @@ static int http_get_file(const char *base, const char *path, int fd, size_t max_
         tls_close(&t);
         return -1;
     }
-    size_t total = 0;
-    int too_big = 0;
-    /* One deadline for the whole body: tls_read_some alone gives each stalled
-     * read a fresh timeout, so a peer trickling bytes could hold the update
-     * lock forever. */
-    int64_t deadline = now_mono_ms() + 5 * 60 * 1000;
-    if (got > hdr_end) {
-        size_t add = got - hdr_end;
-        if (total + add > max_bytes) too_big = 1;
-        else if (fwrite(hdr + hdr_end, 1, add, f) != add) too_big = 1;
-        else total += add;
-    }
-    char buf[8192];
-    int k;
-    while (!too_big && now_mono_ms() < deadline && (k = tls_read_some(&t, buf, sizeof(buf))) > 0) {
-        if (total + (size_t)k > max_bytes) {
-            too_big = 1;
-            break;
-        }
-        if (fwrite(buf, 1, (size_t)k, f) != (size_t)k) {
-            too_big = 1;
-            break;
-        }
-        total += (size_t)k;
-    }
-    if (too_big || ferror(f)) {
-        fclose(f);
-        tls_close(&t);
-        return -1;
-    }
-    fflush(f);
-    fsync(fd);
+    int rc = http_read_response(tls_reader, &t, f, max_bytes);
+    if (fflush(f) != 0) rc = -1;
+    if (rc == 0) fsync(fd);
     fclose(f);
     tls_close(&t);
-    return 0;
+    return rc;
 }
 
 static int sha256_file(const char *path, char *hex, size_t cap) {

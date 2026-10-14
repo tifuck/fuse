@@ -61,6 +61,22 @@ int parse_url(const char *raw, struct url *u) {
     return 0;
 }
 
+/* Host header value: IPv6 literals bracketed, non-default port kept. */
+void url_host_header(const struct url *u, char *out, size_t cap) {
+    const char *fmt = strchr(u->host, ':') ? "[%s]" : "%s";
+    int n = snprintf(out, cap, fmt, u->host);
+    if (u->port != 443 && n > 0 && (size_t)n < cap) snprintf(out + n, cap - (size_t)n, ":%d", u->port);
+}
+
+/* base path (no trailing slash) + suffix: Fuse may be served under a prefix. */
+int url_join_path(struct url *u, const char *suffix) {
+    size_t n = strlen(u->path);
+    while (n && u->path[n - 1] == '/') n--;
+    if (n + strlen(suffix) >= sizeof(u->path)) return -1;
+    strcpy(u->path + n, suffix);
+    return 0;
+}
+
 static int set_nonblock(int fd, int on) {
     int fl = fcntl(fd, F_GETFL, 0);
     if (fl < 0) return -1;
@@ -314,9 +330,10 @@ int ws_handshake(struct tls *t, const struct url *u) {
     snprintf(acc_in, sizeof(acc_in), "%s258EAFA5-E914-47DA-95CA-C5AB0DC85B11", keyb64);
     if (EVP_Digest(acc_in, strlen(acc_in), md, &mdlen, EVP_sha1(), NULL) != 1) return -1;
     if (b64(md, (int)mdlen, expect, sizeof(expect)) != 0) return -1;
-    char req[1024];
+    char req[1024], host[300];
+    url_host_header(u, host, sizeof(host));
     int n = snprintf(req, sizeof(req),
-                     "GET /agent/v1/connect HTTP/1.1\r\n"
+                     "GET %s HTTP/1.1\r\n"
                      "Host: %s\r\n"
                      "Upgrade: websocket\r\n"
                      "Connection: Upgrade\r\n"
@@ -324,7 +341,7 @@ int ws_handshake(struct tls *t, const struct url *u) {
                      "Sec-WebSocket-Version: 13\r\n"
                      "User-Agent: fuse-agent/%s\r\n"
                      "\r\n",
-                     u->host, keyb64, FUSE_AGENT_VERSION);
+                     u->path, host, keyb64, FUSE_AGENT_VERSION);
     if (n < 0 || n >= (int)sizeof(req)) return -1;
     if (tls_write_all(t, req, (size_t)n) != 0) return -1;
     char buf[2048];

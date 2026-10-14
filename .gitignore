@@ -30,5 +30,6 @@ agent/tests/test_ws_frame
 agent/tests/test_exec_stream
 agent/tests/test_jobs_pool
 agent/tests/test_ws_tls
+agent/tests/test_http
 .claude/
 AGENTS.md

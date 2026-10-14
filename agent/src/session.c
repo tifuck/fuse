@@ -76,7 +76,7 @@ int session_loop(void) {
     if (parse_url(g_url, &base) != 0) die("invalid url");
     update_exec_veto = work_waiting;
     u = base;
-    strncpy(u.path, "/agent/v1/connect", sizeof(u.path) - 1);
+    if (url_join_path(&u, "/agent/v1/connect") != 0) die("invalid url");
     char host[128], user[64];
     hostname_user(host, sizeof(host), user, sizeof(user));
     int fail_index = 0;
@@ -168,10 +168,14 @@ int session_loop(void) {
             snprintf(errbuf, sizeof(errbuf), "%s", err);
             sanitize_log(errbuf);
             fprintf(stderr, "fuse-agent: %s\n", errbuf);
+            /* A server that sends "code" says auth outright; older ones are
+             * classified by their wording. */
+            const char *code = json_cstr(reply, "code", "");
+            int auth = code[0] ? strcmp(code, "auth") == 0
+                               : strstr(errbuf, "invalid") || strstr(errbuf, "expired") || strstr(errbuf, "token");
             cJSON_Delete(reply);
             tls_close(&t);
-            /* err points into reply, freed above: classify the copy. */
-            if (strstr(errbuf, "invalid") || strstr(errbuf, "expired") || strstr(errbuf, "token")) {
+            if (auth) {
                 /* Revoked or expired credential. Never hot-exit: systemd would
                    restart-loop. Retry slowly; the host may be re-enabled. */
                 auth_backoff = auth_backoff < 60 ? 60 : (auth_backoff * 2 > 600 ? 600 : auth_backoff * 2);
@@ -399,7 +403,7 @@ int pair_once(void) {
     struct url base, u;
     if (parse_url(g_url, &base) != 0) die("invalid url");
     u = base;
-    strncpy(u.path, "/agent/v1/connect", sizeof(u.path) - 1);
+    if (url_join_path(&u, "/agent/v1/connect") != 0) die("invalid url");
     struct tls t;
     if (tls_connect(&t, &u) != 0) die("tls connect failed (need outbound HTTPS to %s)", g_url);
     if (ws_handshake(&t, &u) != 0) die("websocket handshake failed");

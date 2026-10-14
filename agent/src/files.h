@@ -8,7 +8,10 @@
 #include "agent.h"
 
 #define BINARY_FILE_MAX (20 * 1024 * 1024)
-#define BINARY_CHUNK_MAX 32768
+/* 180 KiB: base64 plus the result envelope stays under the hub's
+ * RESULT_CHARS (262144) clip. Keep in sync with binaryChunkMax in
+ * agent/windows/fs.go and _BINARY_CHUNK in app/workspace.py. */
+#define BINARY_CHUNK_MAX 184320
 
 int expand_home(const char *path, char *out, size_t cap);
 char *read_binary(const char *path, int offset, int limit);

@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -88,7 +87,9 @@ func parentOf(p string) string {
 
 const binaryFileMax = 20 << 20
 
-const binaryChunkMax = 32768
+// 180 KiB: base64 plus the envelope stays under the hub's RESULT_CHARS clip.
+// Keep in sync with BINARY_CHUNK_MAX in agent/src/files.h.
+const binaryChunkMax = 184320
 
 // readBinary returns an internal, byte-oriented result; text reads stay separate.
 func readBinary(path string, offset, limit int) (map[string]any, error) {
@@ -112,35 +113,24 @@ func readBinary(path string, offset, limit int) (map[string]any, error) {
 	if err != nil || !os.SameFile(before, opened) {
 		return nil, fmt.Errorf("binary source changed before read")
 	}
-	h := sha256.New()
-	buf := make([]byte, binaryChunkMax)
-	data := make([]byte, 0, limit)
-	var size int64
-	for {
-		n, readErr := f.Read(buf)
-		if size+int64(n) > binaryFileMax {
-			return nil, fmt.Errorf("binary source exceeds 20 MiB")
-		}
-		h.Write(buf[:n])
-		lo, hi := max(int64(offset), size), min(int64(offset+limit), size+int64(n))
-		if lo < hi {
-			data = append(data, buf[lo-size:hi-size]...)
-		}
-		size += int64(n)
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			return nil, readErr
-		}
+	// Only the requested range: hashing the whole file per chunk made an
+	// image read quadratic. The server only compares identity between chunks.
+	// ponytail: size+mtime misses a same-size rewrite within one clock tick.
+	size := before.Size()
+	data := make([]byte, limit)
+	n, readErr := f.ReadAt(data, int64(offset))
+	if readErr != nil && readErr != io.EOF {
+		return nil, readErr
 	}
+	data = data[:n]
 	after, err := f.Stat()
 	current, pathErr := os.Stat(path)
-	if err != nil || pathErr != nil || !os.SameFile(before, current) || before.Size() != size || after.Size() != size || !before.ModTime().Equal(after.ModTime()) {
+	if err != nil || pathErr != nil || !os.SameFile(before, current) || after.Size() != size ||
+		!before.ModTime().Equal(after.ModTime()) || (int64(offset+n) < size && n < limit) {
 		return nil, fmt.Errorf("binary source changed during read")
 	}
 	return map[string]any{"ok": true, "data": base64.StdEncoding.EncodeToString(data), "size": size,
-		"identity": fmt.Sprintf("sha256:%x", h.Sum(nil)), "eof": int64(offset+len(data)) >= size}, nil
+		"identity": fmt.Sprintf("stat:%d:%d", size, before.ModTime().UnixNano()), "eof": int64(offset+n) >= size}, nil
 }
 
 func readFileSlice(path string, offset, limit int) (string, error) {

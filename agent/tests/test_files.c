@@ -260,6 +260,29 @@ int main(void) {
     }
     assert(unlink(link) == 0);
     assert(unlink(path) == 0);
+    /* More than the old 400-entry readdir cap: the listing is the sorted
+     * start of the directory, not an arbitrary subset. */
+    {
+        char many[PATH_MAX], f[PATH_MAX + 16];
+        snprintf(many, sizeof(many), "%s/many", dir);
+        assert(mkdir(many, 0700) == 0);
+        for (int i = 999; i >= 0; i--) {
+            snprintf(f, sizeof(f), "%s/f%03d", many, i);
+            int fd = open(f, O_CREAT | O_WRONLY, 0600);
+            assert(fd >= 0);
+            close(fd);
+        }
+        assert(list_dir(many, out, sizeof(out)) == 0);
+        assert(!strncmp(out, "f000\nf001\nf002\n", 15));
+        char *js = browse_json(many);
+        assert(js && strstr(js, "\"name\":\"f000\"") && strstr(js, "\"name\":\"f399\"") && !strstr(js, "f400"));
+        free(js);
+        for (int i = 0; i < 1000; i++) {
+            snprintf(f, sizeof(f), "%s/f%03d", many, i);
+            unlink(f);
+        }
+        assert(rmdir(many) == 0);
+    }
     assert(rmdir(dir) == 0);
     puts("connector file reliability tests passed");
     return 0;

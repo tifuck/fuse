@@ -17,7 +17,7 @@ char *read_binary(const char *path, int offset, int limit) {
     }
     char expanded[PATH_MAX];
     if (expand_home(path, expanded, sizeof(expanded)) != 0) return NULL;
-    int fd = open(expanded, O_RDONLY | O_NONBLOCK);
+    int fd = open(expanded, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) return NULL;
     struct stat before, after, current;
     if (fstat(fd, &before) != 0 || !S_ISREG(before.st_mode)) {
@@ -26,44 +26,47 @@ char *read_binary(const char *path, int offset, int limit) {
     if (before.st_size > BINARY_FILE_MAX) {
         close(fd); errno = EFBIG; return NULL;
     }
-    unsigned char buf[BINARY_CHUNK_MAX], data[BINARY_CHUNK_MAX], digest[EVP_MAX_MD_SIZE];
-    char encoded[4 * ((BINARY_CHUNK_MAX + 2) / 3) + 1], identity[72];
-    int size = 0, used = 0, failure = 0;
-    unsigned int digest_len = 0;
-    EVP_MD_CTX *hash = EVP_MD_CTX_new();
-    if (!hash || EVP_DigestInit_ex(hash, EVP_sha256(), NULL) != 1) failure = EIO;
-    while (!failure) {
-        ssize_t n = read(fd, buf, sizeof(buf));
+    /* Only the requested range is read. Hashing the whole file for every
+     * chunk made an image read quadratic (a 20 MiB file: ~640 chunks, each
+     * re-reading and hashing all of it). The server only compares identity
+     * between chunks, so the stat identity below serves. */
+    unsigned char *data = malloc((size_t)limit);
+    char *encoded = malloc(4 * (((size_t)limit + 2) / 3) + 1);
+    char identity[128];
+    int used = 0, failure = 0;
+    if (!data || !encoded) failure = ENOMEM;
+    while (!failure && used < limit) {
+        ssize_t n = pread(fd, data + used, (size_t)(limit - used), (off_t)offset + used);
         if (n < 0) {
             if (errno == EINTR) continue;
             failure = errno; break;
         }
         if (!n) break;
-        if (size + n > BINARY_FILE_MAX) { failure = EFBIG; break; }
-        if (EVP_DigestUpdate(hash, buf, (size_t)n) != 1) { failure = EIO; break; }
-        int lo = offset > size ? offset : size;
-        int hi = offset + limit < size + n ? offset + limit : size + (int)n;
-        if (lo < hi) {
-            memcpy(data + used, buf + lo - size, (size_t)(hi - lo));
-            used += hi - lo;
-        }
-        size += (int)n;
+        used += (int)n;
     }
     if (!failure && (fstat(fd, &after) != 0 || stat(expanded, &current) != 0 ||
         before.st_dev != current.st_dev || before.st_ino != current.st_ino ||
-        before.st_size != size || after.st_size != size ||
+        after.st_size != before.st_size || (offset + used < before.st_size && used < limit) ||
         before.st_mtim.tv_sec != after.st_mtim.tv_sec || before.st_mtim.tv_nsec != after.st_mtim.tv_nsec ||
         before.st_ctim.tv_sec != after.st_ctim.tv_sec || before.st_ctim.tv_nsec != after.st_ctim.tv_nsec)) failure = ESTALE;
     close(fd);
-    if (!failure && EVP_DigestFinal_ex(hash, digest, &digest_len) != 1) failure = EIO;
-    EVP_MD_CTX_free(hash);
-    if (failure) { errno = failure; return NULL; }
-    memcpy(identity, "sha256:", 7);
-    for (unsigned int i = 0; i < digest_len; i++) snprintf(identity + 7 + i * 2, 3, "%02x", digest[i]);
+    if (failure) {
+        free(data);
+        free(encoded);
+        errno = failure;
+        return NULL;
+    }
+    int size = (int)before.st_size;
+    snprintf(identity, sizeof(identity), "stat:%llx:%llx:%d:%lld.%09ld:%lld.%09ld",
+             (unsigned long long)before.st_dev, (unsigned long long)before.st_ino, size,
+             (long long)before.st_mtim.tv_sec, before.st_mtim.tv_nsec,
+             (long long)before.st_ctim.tv_sec, before.st_ctim.tv_nsec);
     EVP_EncodeBlock((unsigned char *)encoded, data, used);
+    free(data);
     cJSON *result = cJSON_CreateObject();
     cJSON_AddBoolToObject(result, "ok", 1);
     cJSON_AddStringToObject(result, "data", encoded);
+    free(encoded);
     cJSON_AddNumberToObject(result, "size", size);
     cJSON_AddStringToObject(result, "identity", identity);
     cJSON_AddBoolToObject(result, "eof", offset + used >= size);
@@ -178,6 +181,24 @@ static int expand_dir(const char *path, char *out, size_t cap) {
     return 0;
 }
 
+#define LIST_SCAN_MAX 1500
+
+struct browse_item {
+    char *name;
+    int dir;
+};
+
+/* Directories first, then by name. */
+static int browse_cmp(const void *a, const void *b) {
+    const struct browse_item *x = a, *y = b;
+    if (x->dir != y->dir) return y->dir - x->dir;
+    return strcmp(x->name, y->name);
+}
+
+static int name_cmp(const void *a, const void *b) {
+    return strcmp(*(char *const *)a, *(char *const *)b);
+}
+
 char *browse_json(const char *path) {
     char resolved[PATH_MAX];
     if (expand_dir(path, resolved, sizeof(resolved)) != 0) return NULL;
@@ -198,14 +219,12 @@ char *browse_json(const char *path) {
         else if (slash) *slash = 0;
         cJSON_AddStringToObject(root, "parent", parent);
     }
-    typedef struct {
-        char *name;
-        int dir;
-    } item;
-    item items[400];
+    /* Up to LIST_SCAN_MAX entries are sorted and the first 400 kept: taking
+     * the first 400 in readdir order showed an arbitrary subset. */
+    struct browse_item *items = malloc(sizeof(*items) * LIST_SCAN_MAX);
     int n = 0;
     struct dirent *ent;
-    while ((ent = readdir(d)) && n < 400) {
+    while (items && (ent = readdir(d)) && n < LIST_SCAN_MAX) {
         if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
         if (strchr(ent->d_name, '/')) continue;
         int isdir = 0;
@@ -227,28 +246,17 @@ char *browse_json(const char *path) {
         if (items[n].name) n++;
     }
     closedir(d);
+    if (n) qsort(items, (size_t)n, sizeof(*items), browse_cmp);
     for (int i = 0; i < n; i++) {
-        for (int j = i + 1; j < n; j++) {
-            if (items[j].dir != items[i].dir) {
-                if (items[j].dir && !items[i].dir) {
-                    item x = items[i];
-                    items[i] = items[j];
-                    items[j] = x;
-                }
-            } else if (strcmp(items[i].name, items[j].name) > 0) {
-                item x = items[i];
-                items[i] = items[j];
-                items[j] = x;
-            }
+        if (i < 400) {
+            cJSON *row = cJSON_CreateObject();
+            cJSON_AddStringToObject(row, "name", items[i].name);
+            cJSON_AddStringToObject(row, "kind", items[i].dir ? "dir" : "file");
+            cJSON_AddItemToArray(arr, row);
         }
-    }
-    for (int i = 0; i < n; i++) {
-        cJSON *row = cJSON_CreateObject();
-        cJSON_AddStringToObject(row, "name", items[i].name);
-        cJSON_AddStringToObject(row, "kind", items[i].dir ? "dir" : "file");
-        cJSON_AddItemToArray(arr, row);
         free(items[i].name);
     }
+    free(items);
     cJSON_AddItemToObject(root, "entries", arr);
     char *js = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -277,9 +285,11 @@ int list_dir(const char *path, char *out, size_t cap) {
     struct dirent *ent;
     size_t used = 0;
     out[0] = 0;
-    char *names[400];
+    /* Sorted before the cap so the server's page is the alphabetical start
+     * (as the Windows connector), not an arbitrary readdir subset. */
+    char **names = malloc(sizeof(*names) * LIST_SCAN_MAX);
     int n = 0;
-    while ((ent = readdir(d)) && n < 400) {
+    while (names && (ent = readdir(d)) && n < LIST_SCAN_MAX) {
         if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
         size_t ln = strlen(ent->d_name);
         int dir = entry_is_dir(path, ent->d_name, ent->d_type);
@@ -295,15 +305,7 @@ int list_dir(const char *path, char *out, size_t cap) {
         names[n++] = copy;
     }
     closedir(d);
-    for (int i = 0; i < n; i++) {
-        for (int j = i + 1; j < n; j++) {
-            if (strcmp(names[i], names[j]) > 0) {
-                char *x = names[i];
-                names[i] = names[j];
-                names[j] = x;
-            }
-        }
-    }
+    if (n) qsort(names, (size_t)n, sizeof(*names), name_cmp);
     for (int i = 0; i < n; i++) {
         size_t ln = strlen(names[i]);
         if (used + ln + 2 >= cap) break;
@@ -313,5 +315,6 @@ int list_dir(const char *path, char *out, size_t cap) {
         out[used] = 0;
     }
     for (int i = 0; i < n; i++) free(names[i]);
+    free(names);
     return 0;
 }
