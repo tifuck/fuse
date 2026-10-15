@@ -36,7 +36,7 @@ Fuse needs **MariaDB 10.11+** (MySQL is not supported) and **Python 3.11+** (Deb
 
 ### Option 1: Docker (simplest)
 
-Requires Docker with the Compose plugin.
+Requires Docker with the Compose plugin (2.24 or newer).
 
 ```bash
 git clone https://github.com/tifuck/fuse.git && cd fuse
@@ -49,7 +49,7 @@ This writes `.env` with a random `APP_SECRET` and database password, asks for yo
 - Update: `git pull && docker compose up -d --build`
 - Data lives in the `db`, `data`, and `certs` volumes.
 
-Without the installer: create `.env` with `APP_SECRET=` (48+ random characters) and `DB_PASSWORD=` (hex), then run `docker compose up -d --build`.
+Without the installer: create `.env` with `APP_SECRET=` (48+ random characters) and `DB_PASSWORD=` (hex), then run `docker compose up -d --build`. Optional settings go in `config.env` (see `config.env.example`).
 
 ### Option 2: Installer on a Linux host
 
@@ -90,19 +90,19 @@ Without root, this is the only way to set up the database. The service is then i
 
 ## Configuration
 
-Settings come from `.env` (or the environment). The full list, with defaults, is in `app/config.py`. The common ones:
+Settings live in `config.env` and secrets in `.env` (`.env` wins if both set a key; the environment wins over both). `config.env.example` and `.env.example` document them; the full list, with defaults, is in `app/config.py`. The common ones:
 
-| Variable | Purpose |
-| --- | --- |
-| `APP_SECRET` | Required. Signs sessions and encrypts stored provider credentials. Changing it invalidates both. |
-| `DATABASE_URL` | `mysql://user:password@host:3306/database` |
-| `PUBLIC_BASE_URL` | Public HTTPS URL (`https://your-domain`), used in connector install lines, invite links and desktop updates. Needs a trusted certificate. |
-| `ALLOW_REGISTER` | Open registration (default: invite-only after the first user) |
-| `LLAMA_BASE_URL`, `LLAMA_API_KEY` | Optional site-wide llama.cpp backend |
-| `BRAVE_SEARCH_API_KEY` | Optional extra web search source |
-| `GITHUB_TOKEN` | Optional, raises the GitHub rate limit for skill installs |
+| Variable | File | Purpose |
+| --- | --- | --- |
+| `APP_SECRET` | `.env` | Required. Signs sessions and encrypts stored provider credentials. Changing it invalidates both. |
+| `DATABASE_URL` | `.env` | `mysql://user:password@host:3306/database` |
+| `PUBLIC_BASE_URL` | `config.env` | Public HTTPS URL (`https://your-domain`), used in connector install lines, invite links and desktop updates. Needs a trusted certificate. |
+| `ALLOW_REGISTER` | `config.env` | Open registration (default: invite-only after the first user) |
+| `LLAMA_BASE_URL`, `LLAMA_API_KEY` | `config.env`, `.env` | Optional site-wide llama.cpp backend |
+| `BRAVE_SEARCH_API_KEY` | `.env` | Optional extra web search source |
+| `GITHUB_TOKEN` | `.env` | Optional, raises the GitHub rate limit for skill installs |
 
-Back up the database with `./backup-db.sh`. Keep `.env` and `data/vapid.json` too: regenerating the VAPID keys breaks existing push subscriptions.
+Back up the database with `./backup-db.sh`. Keep `.env`, `config.env` and `data/vapid.json` too (or set `VAPID_PRIVATE_KEY`/`VAPID_PUBLIC_KEY` in `.env`): regenerating the VAPID keys breaks existing push subscriptions.
 
 ## Updating
 
@@ -111,7 +111,7 @@ Docker: `git pull && docker compose up -d --build`.
 
 ## Development
 
-`AGENTS.md` documents the code layout, model backends, and conventions. Tests run with pytest against disposable MariaDB schemas (see the Layout section of `AGENTS.md`).
+[`docs/development.md`](docs/development.md) covers the code layout, model backends, conventions, and how to run the tests (pytest against disposable MariaDB schemas, Node unit suites, Playwright browser suites).
 
 ## A note on subscription pools
 
@@ -119,4 +119,4 @@ Subscription pools sign in through each provider's own CLI login flow. Using the
 
 ## License
 
-MIT, see `LICENSE`. Vendored code under `third_party/`, `agent/third_party/`, and `static/dict/` keeps its own license.
+MIT, see `LICENSE`. Vendored code under `third_party/`, `agent/third_party/`, `static/vendor/`, and `static/dict/` keeps its own license.

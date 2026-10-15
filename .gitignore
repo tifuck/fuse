@@ -28,4 +28,4 @@ agent/tests/test_*
 /package-lock.json
 .claude/
 AGENTS.md
-docs/
+docs/archive/
