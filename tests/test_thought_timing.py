@@ -2,7 +2,7 @@
 import unittest
 from unittest.mock import patch
 
-from app import chat_runs, chats
+from app import chat_output, chat_runs, chats
 
 
 class Clock:
@@ -20,7 +20,7 @@ def reasoning(text):
 class OutputTiming(unittest.TestCase):
     def setUp(self):
         self.clock = Clock()
-        patcher = patch.object(chat_runs, "_now", self.clock)
+        patcher = patch.object(chat_output, "_now", self.clock)
         patcher.start()
         self.addCleanup(patcher.stop)
         self.out = chat_runs.Output({"message": {}})
