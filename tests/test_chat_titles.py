@@ -5,8 +5,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from app import chat_titles, chat_store as store, chats, db
-from scripts.migrate_chat_metadata import migrate
-from tests.mariadb_fixture import isolated_database
+from tests.mariadb_fixture import copy_foreign_keys, isolated_database
 
 REPLY = "Traced the login token check to an expired signing key. " * 5
 
@@ -16,8 +15,7 @@ class TitleSweepTest(unittest.IsolatedAsyncioTestCase):
         fixture = isolated_database()
         fixture.__enter__()
         self.addCleanup(fixture.__exit__, None, None, None)
-        with db.tx() as conn:
-            migrate(conn)
+        copy_foreign_keys("chat_recaps")
         store.invalidate_committed_cursors()
         # Turns finished by earlier test modules mark thread ids as due; ids
         # restart at 1 in this fresh schema, so start from an empty queue.

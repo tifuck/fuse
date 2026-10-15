@@ -362,13 +362,11 @@ class WrapTest(unittest.TestCase):
 class ContextStoreTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        from tests.mariadb_fixture import isolated_database
-        from scripts.migrate_chat_metadata import migrate
+        from tests.mariadb_fixture import copy_foreign_keys, isolated_database
         fixture = isolated_database()
         fixture.__enter__()
         cls.addClassCleanup(fixture.__exit__, None, None, None)
-        with db.tx() as conn:
-            migrate(conn)
+        copy_foreign_keys("chat_recaps")
         from app import accounts
 
         accounts.create_user("chat-runtime@example.test", "password12", admin=False, require_invite=False)

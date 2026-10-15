@@ -119,4 +119,4 @@ Subscription pools sign in through each provider's own CLI login flow. Using the
 
 ## License
 
-MIT, see `LICENSE`. Vendored code under `third_party/`, `agent/third_party/`, `static/vendor/`, and `static/dict/` keeps its own license.
+MIT, see `LICENSE`. Vendored code under `agent/third_party/`, `static/vendor/`, and `static/dict/` keeps its own license.

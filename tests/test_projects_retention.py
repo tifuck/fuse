@@ -6,9 +6,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from app import chat_store as store, chats, db, hosts, retention
-from scripts.migrate_chat_metadata import migrate as migrate_metadata
-from scripts.migrate_projects import migrate as migrate_projects
-from tests.mariadb_fixture import isolated_database
+from tests.mariadb_fixture import copy_foreign_keys, isolated_database
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -23,9 +21,7 @@ class ProjectsRetentionTest(unittest.TestCase):
         fixture = isolated_database()
         fixture.__enter__()
         self.addCleanup(fixture.__exit__, None, None, None)
-        with db.tx() as conn:
-            migrate_metadata(conn)
-            migrate_projects(conn)
+        copy_foreign_keys("chat_recaps", "project_logos")
         store.invalidate_committed_cursors()
         db.execute("INSERT INTO users(id,email,password_hash,created_at) VALUES(1,'test@invalid','unused',?)", (db.now(),))
         db.execute(

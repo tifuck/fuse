@@ -208,7 +208,7 @@ window.ConsoleAudit = (() => {
   const COMMANDS = [
     ["python -m pytest -q tests/", "Run the test suite"],
     ["npm run build -- --mode production --sourcemap", "Build the production bundle"],
-    ["cd /srv/qa && ./scripts/promote-dev.sh 2>&1 | tail -20", ""],
+    ["cd /srv/qa && ./scripts/release-now.sh 2>&1 | tail -20", ""],
     ["make -j8 all", ""],
     ["./GameServer -config=serverGS.cfg -port=2302", "Start the game server"],
     ["docker compose up --build api worker", "Bring up the stack"],

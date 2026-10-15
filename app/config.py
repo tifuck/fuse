@@ -34,9 +34,9 @@ class Settings(BaseSettings):
     public_base_url: str = ""
     trusted_hosts: str = ""
     llama_base_url: str = ""
-    # Serve /static URLs that carry ?v= as immutable for a year. promote-dev.sh
-    # raises ?v= for every changed file, so production is always fresh; dev
-    # edits files without bumping, so its config sets this false.
+    # Serve /static URLs that carry ?v= as immutable for a year. ?v= is a content
+    # hash, so a changed file is a new URL; dev's config sets this false so it
+    # revalidates every asset.
     static_immutable: bool = True
     # Refresh pooled OAuth credentials (rotating refresh tokens). Only the
     # instance that owns the credentials may: dev runs on a clone of

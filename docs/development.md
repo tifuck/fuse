@@ -16,11 +16,10 @@ build: Jinja templates and plain JS/CSS are served as-is.
 | `app/workspace_ops/` | Workspace tool families used by `app/workspace.py`. |
 | `agent/` | `fuse-agent` connector: C binary (`src/`, `make`) and Windows Go EXE (`windows/`). |
 | `templates/`, `static/` | Pages and assets. Chat UI: `static/chat.js` + `static/chat/`, rendering in `static/themes/console/`. Vendored code: `static/vendor/`, `static/dict/`. |
-| `scripts/` | Operational scripts (backups, schema dump/init, usage rollup rebuild, connector release). `scripts/qa/` holds manual QA tools that are not part of the test suite. |
+| `scripts/` | Operational scripts (database backup, schema dump/init, bug and tool-failure review, usage rollup rebuild). |
 | `scripts/sql/` | `schema.sql` (the empty schema fresh installs load) and dated migrations not yet applied everywhere. |
 | `tests/` | pytest suites, Node unit suites (`*.test.cjs`) and Playwright browser suites (`*.browser.cjs`). |
 | `fuse-desktop/` | Electron wrapper around the site (no app logic). `npm run dist` takes the site URL and app id from `fuse-desktop/site.json` (gitignored) or `FUSE_URL`/`FUSE_APP_ID`; keep the app id stable once released. |
-| `third_party/` | SCOWL word lists, the source of `static/dict/en-US.bin.gz` (`scripts/build_composer_dict.py`). |
 
 ## Configuration
 
@@ -59,8 +58,8 @@ change: each pool merges its live catalog into its seed list.
 
 ## Tests
 
-Install the tooling: `pip install -r requirements-dev.txt` and `npm install`
-(Playwright for the browser suites, then `npx playwright install chromium`).
+Install the test tooling: `pip install pytest` and `npm install playwright`
+(then `npx playwright install chromium` for the browser suites).
 
 - **pytest:** `FUSE_CHAT_TEST_MODE=1 python -m pytest tests` (that flag
   enables the MariaDB-backed modules). Each database test gets a disposable
@@ -70,8 +69,8 @@ Install the tooling: `pip install -r requirements-dev.txt` and `npm install`
   the provisioning SQL when the account is missing. `tests/conftest.py`
   refuses connections to real schemas. Tests mock httpx: never hit search
   providers or pooled models.
-- **Node unit suites:** `npm run test:unit` (`node --test tests/*.test.cjs`).
-- **Browser suites:** `npm run test:browser [tests/x.browser.cjs ...]`. Each
+- **Node unit suites:** `node --test tests/*.test.cjs`.
+- **Browser suites:** `scripts/run_browser_tests.sh [tests/x.browser.cjs ...]`. Each
   suite gets its own fixture server (`tests/chat_browser_fixture.py`).
 - **Connector:** `make -C agent test`; Windows: `make -C agent/windows test`.
 
@@ -84,7 +83,8 @@ stale). Delete the dated file once every deployment has it.
 
 ## Connector releases
 
-Bump `agent/VERSION`, then `scripts/release-connector.sh` builds every SKU
-(needs Go 1.25+ and a static aarch64 OpenSSL at `$OPENSSL_ARM64`) and stages
-the binaries into the serving tree's `agent/dist`. Agents update when the
-served version is newer than theirs.
+Bump `agent/VERSION`, then `make -C agent dist` builds every SKU into
+`agent/dist`, which Fuse serves: Linux amd64, Linux arm64 (needs
+`gcc-aarch64-linux-gnu` and a static aarch64 OpenSSL via `OPENSSL_ARM64`) and
+Windows (needs Go 1.25+). Agents update when the served version is newer than
+theirs.

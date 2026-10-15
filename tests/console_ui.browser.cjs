@@ -81,13 +81,13 @@ function scenarios() {
       truth: { call: { [a.id]: 'done' } }, has: ['Thought for 8s, searched for 1 pattern', 'Thought for 17s'] };
   });
   add('a Wait that timed out says "Returned…" once its command ended', () => {
-    const cmd = sh('cd /root/fuse && ./scripts/promote-dev.sh', { background: true, ms: 15000, job: 'stale1',
+    const cmd = sh('cd /srv/myapp && ./scripts/release-now.sh', { background: true, ms: 15000, job: 'stale1',
       extra: { status: 'interrupted', state: 'interrupted', execution_status: 'interrupted', error: 'agent is offline', exit_code: null } });
     const w1 = tool('get_command_output', { status: 'done', state: 'running', execution_status: 'running', background: true, child_id: 'stale1', command_id: 'stale1', call_duration_ms: 30006 });
     const w2 = { id: `c${++seq}`, name: 'get_command_output', child_id: 'stale1', status: 'interrupted', preview: 'still running', results: [], error: '' };
     return { rows: [user('Go.'), turn([say('Promoting.\n\n'), T(cmd), T(w1), T(w2), say('Done.')], [cmd, w1, w2], ended)],
       truth: { call: { [cmd.id]: 'interrupted', [w1.id]: 'done', [w2.id]: 'interrupted' }, exec: { stale1: 'interrupted' } },
-      has: ['Wait(cd /root/fuse && ./scripts/promote-dev.sh)', 'qa-box', '· 30s', 'Returned while the command was still running', 'Interrupted · the run ended before it finished'],
+      has: ['Wait(cd /srv/myapp && ./scripts/release-now.sh)', 'qa-box', '· 30s', 'Returned while the command was still running', 'Interrupted · the run ended before it finished'],
       lacks: ['Still running', 'Wait(command)'] };
   });
   add('a Wait says "Still running" while its command runs', () => {

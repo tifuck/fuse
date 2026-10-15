@@ -5,8 +5,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from app import chat_recaps as recaps, chat_store as store, chats, db
-from scripts.migrate_chat_metadata import migrate
-from tests.mariadb_fixture import isolated_database
+from tests.mariadb_fixture import copy_foreign_keys, isolated_database
 
 
 class RecapTest(unittest.IsolatedAsyncioTestCase):
@@ -14,8 +13,7 @@ class RecapTest(unittest.IsolatedAsyncioTestCase):
         fixture = isolated_database()
         fixture.__enter__()
         self.addCleanup(fixture.__exit__, None, None, None)
-        with db.tx() as conn:
-            migrate(conn)
+        copy_foreign_keys("chat_recaps")
         store.invalidate_committed_cursors()
         db.execute("INSERT INTO users(id,email,password_hash,created_at) VALUES(1,'test@invalid','unused',?)", (db.now(),))
         self.thread = chats.create_thread(1, model="offline")

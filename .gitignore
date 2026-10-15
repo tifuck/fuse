@@ -29,3 +29,26 @@ agent/tests/test_*
 .claude/
 AGENTS.md
 docs/archive/
+
+# Kept on this server, not published.
+/package.json
+/requirements-dev.txt
+/.gitleaks.toml
+/.github/
+/third_party/
+/scripts/promote-dev.sh
+/scripts/release-connector.sh
+/scripts/clone_db_to_dev.py
+/scripts/dev_qa_account.py
+/scripts/dev_qa_shot.py
+/scripts/loadtest_subagents.py
+/scripts/build_composer_dict.py
+/scripts/migrate_chat_metadata.py
+/scripts/migrate_projects.py
+/scripts/qa/
+/scripts/git-hooks/
+/tests/fixtures/
+/tests/page_fixtures.py
+/tests/test_page_extract.py
+/tests/test_real_fetch_pipeline.py
+/tests/test_real_pages_scrub.py

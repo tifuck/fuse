@@ -41,7 +41,7 @@ def init_schema(conn):
     db._ensure_column(conn, "users", "retention_archive_chats", "INTEGER NOT NULL DEFAULT 1")
     db._ensure_column(conn, "users", "retention_archive_projects", "INTEGER NOT NULL DEFAULT 1")
     db._ensure_column(conn, "users", "retention_delete_days", "INTEGER NOT NULL DEFAULT 0")
-    # On MariaDB this only verifies the table: scripts.migrate_projects creates it.
+    # On MariaDB this only verifies the table: scripts/sql/schema.sql creates it.
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS project_logos (
             project_id INTEGER PRIMARY KEY REFERENCES user_projects(id) ON DELETE CASCADE,

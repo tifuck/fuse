@@ -155,6 +155,39 @@ def sweep_stale_schemas(max_age_seconds=3600):
         warnings.warn(f"stale fuse_fixture_* schema sweep skipped: {exc}", stacklevel=2)
 
 
+_ACTIVE: list[tuple[str, str]] = []
+_FOREIGN_KEY = re.compile(
+    r"CONSTRAINT `(\w+)` FOREIGN KEY \(((?:`\w+`(?:, )?)+)\) REFERENCES `(\w+)` \(((?:`\w+`(?:, )?)+)\)"
+    r"((?: ON (?:DELETE|UPDATE) (?:CASCADE|SET NULL|RESTRICT|NO ACTION|SET DEFAULT))*)"
+)
+_COLUMNS = re.compile(r"`(\w+)`")
+
+
+def copy_foreign_keys(*tables):
+    """CREATE TABLE ... LIKE omits foreign keys. Add the source schema's foreign
+    keys for these tables to the innermost isolated schema (opt-in: most suites
+    insert rows without their parents). Read from SHOW CREATE TABLE, which the
+    fixture account's SELECT grant allows; information_schema hides them."""
+    schema, source = _ACTIVE[-1]
+    admin = _admin_connect(source)
+    try:
+        with admin.cursor() as cursor:
+            for table in tables:
+                if not _SCHEMA_NAME.fullmatch(table):
+                    raise RuntimeError("Unexpected schema identifier")
+                cursor.execute(f"SHOW CREATE TABLE `{source}`.`{table}`")
+                for name, cols, ref, ref_cols, rules in _FOREIGN_KEY.findall(cursor.fetchone()[1]):
+                    names = [name, ref, *_COLUMNS.findall(cols), *_COLUMNS.findall(ref_cols)]
+                    if not all(_SCHEMA_NAME.fullmatch(n) for n in names):
+                        raise RuntimeError("Unexpected foreign key definition")
+                    cursor.execute(
+                        f"ALTER TABLE `{schema}`.`{table}` ADD CONSTRAINT `{name}` FOREIGN KEY ({cols})"
+                        f" REFERENCES `{schema}`.`{ref}` ({ref_cols}){rules}"
+                    )
+    finally:
+        admin.close()
+
+
 @contextmanager
 def isolated_database(pool_size=8):
     from app import db
@@ -176,6 +209,7 @@ def isolated_database(pool_size=8):
         raise RuntimeError("Fixture isolation must be established before opening the application database")
     schema = "fuse_fixture_" + uuid4().hex
     admin = _admin_connect(source)
+    _ACTIVE.append((schema, source))
     pool = None
     old_url = settings.database_url
     try:
@@ -192,6 +226,7 @@ def isolated_database(pool_size=8):
         db._conn = pool
         yield schema
     finally:
+        _ACTIVE.remove((schema, source))
         db._conn = None
         if pool is not None:
             pool.close()
