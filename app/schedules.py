@@ -524,7 +524,6 @@ _PATCH_INTERVAL_KEYS = {
 def patch_schedule(user_id: int, token, raw: dict) -> dict:
     if not limiter.allow(f"schedules:{user_id}", 30, 60):
         raise ScheduleError("too many schedule changes", 429)
-    merged_raw = dict(raw)
     with db.tx() as conn:
         conn.execute("BEGIN IMMEDIATE")
         # Read and write in one transaction: a fire finalizing concurrently
@@ -533,8 +532,9 @@ def patch_schedule(user_id: int, token, raw: dict) -> dict:
         existing = get_schedule(user_id, token, conn=conn)
         if existing is None:
             raise ScheduleError("schedule not found", 404)
-        merged = {**existing, **merged_raw}
-        item = _normalize(user_id, merged, existing=existing)
+        # _normalize falls back to existing per field. Pre-merging the stored
+        # cron_expr made every PATCH look like a custom cron edit.
+        item = _normalize(user_id, raw, existing=existing)
         if set(raw) & _PATCH_INTERVAL_KEYS:
             _assert_interval(item)
         timing = ("recur_kind", "cron_expr", "every_seconds", "timezone", "at_local", "weekdays", "once_at",

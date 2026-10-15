@@ -18,7 +18,7 @@ _BOOL_KEYS = {
     "disable-model-invocation",
     "disable_model_invocation",
 }
-_BLOCK = re.compile(r"^([>|])([+-]?)(?:\d+)?$")
+_BLOCK = re.compile(r"^([>|])([+-]?)(?:\d+)?(?:\s+#.*)?$")
 
 
 class SkillError(Exception):

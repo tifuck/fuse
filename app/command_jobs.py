@@ -500,8 +500,17 @@ def _on_monitor_batch(rec: dict, lines: list[str], overflow: int = 0) -> None:
 
     if rec.get("status") in TERMINAL or rec.get("status") == "cancelling":
         return
+    cap = int(rec.get("max_events") or monitor_mod.DEFAULT_MAX_EVENTS)
+    room = cap - int(rec.get("event_count") or 0)
+    if room <= 0:
+        return
     matched = [ln for ln in lines if not monitor_mod.is_batch_note(ln)]
     added = len(matched) + max(0, int(overflow or 0))
+    if added > room:
+        # max_events counts matching lines: nothing past the cap is delivered.
+        if len(matched) > room:
+            lines = matched[:room]
+        added = room
     rec["event_count"] = int(rec.get("event_count") or 0) + added
     rec["event_seq"] = int(rec.get("event_seq") or 0) + 1
     seq = int(rec["event_seq"])
@@ -515,7 +524,6 @@ def _on_monitor_batch(rec: dict, lines: list[str], overflow: int = 0) -> None:
     queue = rec.get("_write_queue")
     if queue is not None:
         queue.put_nowait((envelope, seq))
-    cap = int(rec.get("max_events") or monitor_mod.DEFAULT_MAX_EVENTS)
     if int(rec.get("event_count") or 0) >= cap:
         rec["_max_events_hit"] = True
         task = rec.get("task")

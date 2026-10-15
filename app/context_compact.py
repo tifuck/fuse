@@ -911,11 +911,12 @@ def compact_instruction(instructions: str = "", prior: str = "") -> str:
     )
     return "\n\n".join(parts)
 
-def fit_summary_messages(messages: list[dict], limit: int | None, *, tools=None) -> list[dict]:
+def fit_summary_messages(messages: list[dict], limit: int | None, *, tools=None, extra: int = 0) -> list[dict]:
     """Copy of the live transcript. Shrink old tool bodies only if the call would overflow.
 
     Tool schemas ride along on the summary request (prompt-cache parity), so
-    they count against the same window.
+    they count against the same window, as do `extra` tokens the caller
+    appends (a prior handoff quoted in the instruction).
     """
     rows = [dict(msg) if isinstance(msg, dict) else msg for msg in messages]
     try:
@@ -924,7 +925,7 @@ def fit_summary_messages(messages: list[dict], limit: int | None, *, tools=None)
         window = 0
     if window <= 0:
         return rows
-    budget = max(4_000, window - config().output_reserve - 8_000 - estimate_tools(tools))
+    budget = max(4_000, window - config().output_reserve - 8_000 - estimate_tools(tools) - max(0, extra))
     if estimate_messages(rows) <= budget:
         return rows
     for index, msg in enumerate(rows):
@@ -953,11 +954,12 @@ def summarize_payload(messages: list[dict], *, instructions: str = "", limit: in
         for msg in (messages or [])
         if isinstance(msg, dict) and msg.get("role") in ("system", "user", "assistant", "tool")
     ]
-    body = fit_summary_messages(rows, limit, tools=tools)
+    prior = prior_handoff(rows)
+    body = fit_summary_messages(rows, limit, tools=tools, extra=estimate_text(prior))
     for msg in body:
         if msg.get("role") == "user" and isinstance(msg.get("content"), str):
             msg["content"] = scrub_retired_preamble(msg["content"])
-    body.append({"role": "user", "content": compact_instruction(instructions, prior_handoff(rows))})
+    body.append({"role": "user", "content": compact_instruction(instructions, prior)})
     return body
 
 async def build_checkpoint(
@@ -1147,14 +1149,18 @@ def clip_to_fit(
             }
             clipped += 1
     # Then halve the largest remaining body until the payload fits.
+    floor_of = lambda text: _chars_for_tokens(text, CLIP_FLOOR_CHARS // CHARS_PER_TOKEN)
     for _ in range(64):
         if estimate_messages(rows) <= budget:
             break
-        largest = max(clip_idx, key=lambda i: len(rows[i]["content"]))
-        text = rows[largest]["content"]
-        floor = _chars_for_tokens(text, CLIP_FLOOR_CHARS // CHARS_PER_TOKEN)
-        if len(text) <= floor:
+        # Only bodies above their floor: a long ASCII body already at its
+        # floor must not stop the loop while CJK bodies are still whole.
+        open_idx = [i for i in clip_idx if len(rows[i]["content"]) > floor_of(rows[i]["content"])]
+        if not open_idx:
             break
+        largest = max(open_idx, key=lambda i: len(rows[i]["content"]))
+        text = rows[largest]["content"]
+        floor = floor_of(text)
         keep = max(floor, len(text) // 2)
         rows[largest] = {
             **rows[largest],

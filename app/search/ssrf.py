@@ -34,7 +34,12 @@ def is_blocked_host(host: str) -> bool:
         ip = ipaddress.ip_address(host)
     except ValueError:
         return False
-    return not ip.is_global
+    return not _is_global(ip)
+
+
+def _is_global(ip) -> bool:
+    # Python 3.12 calls ::ffff:100.64.0.1 global though 100.64.0.1 is not.
+    return (getattr(ip, "ipv4_mapped", None) or ip).is_global
 
 
 def _netloc(host: str, port: int | None, scheme: str) -> str:
@@ -189,7 +194,7 @@ def public_ips(host: str, port: int = 443) -> list[str]:
             ip = ipaddress.ip_address(ip_s)
         except ValueError:
             return []
-        if not ip.is_global:
+        if not _is_global(ip):
             return []
         if ip_s not in addrs:
             addrs.append(ip_s)

@@ -323,3 +323,207 @@ def test_usage_after_a_huge_frame_in_the_same_chunk_is_recorded():
     assert rec.call_args[0][4]["prompt_tokens"] == 10
     assert rec.call_args.kwargs["request_status"] == "success"
     assert out.count(b"[DONE]") == 1
+
+
+# -- 2026-10-15 audit ---------------------------------------------------------
+
+def _review(command, root="/srv/app"):
+    gate = SimpleNamespace(thread_id=1, user_id=1, unattended=True, requester={})
+    with patch.object(permissions, "bypass_enabled", return_value=False), \
+            patch.object(permissions, "grant_covers", return_value=False), \
+            patch.object(permissions, "auto_enabled", return_value=False):
+        return asyncio.run(permissions.review(
+            tool="run_terminal_command", args={"command": command}, user_id=1,
+            host_id=1, host_alias="test", root=root, windows=False, gate=gate,
+        ))
+
+
+def test_long_option_value_is_judged_as_its_own_path():
+    paths = permissions.extract_shell_paths("grep --file=/etc/passwd README.md", "/srv/app", False)
+    assert ("/etc/passwd", False) in paths
+    assert not _review("grep --file=/etc/passwd README.md").allowed
+    assert _review("grep --file=src/p.txt README.md").allowed
+
+
+def test_home_relative_root_holds_its_children():
+    roots = permissions.compute_roots("~/work", False)
+    assert permissions.scope_allows("src/main.py", "~/work", roots, False) == (True, "~/work/src/main.py")
+    assert not permissions.scope_allows("~/workx/a", "~/work", roots, False)[0]
+    assert not permissions.scope_allows("~/other", "~/work", roots, False)[0]
+    assert permissions.under_work_root("~/work/src/main.py", "~/work", False)
+    win = permissions.compute_roots("~\\work", True)
+    assert permissions.scope_allows("src\\main.py", "~\\work", win, True)[0]
+
+
+def test_tilde_user_is_not_the_connected_users_home():
+    roots = permissions.compute_roots("", False)
+    assert permissions.scope_allows("~/notes.txt", "", roots, False)[0]
+    assert not permissions.scope_allows("~other/public.txt", "", roots, False)[0]
+
+
+def test_mapped_cgnat_address_is_not_public():
+    assert ssrf.is_blocked_host("::ffff:100.64.0.1")
+    assert not ssrf.is_blocked_host("8.8.8.8")
+    infos = [(None, None, None, None, ("::ffff:100.64.0.1", 443, 0, 0))]
+    with patch.object(ssrf.socket, "getaddrinfo", return_value=infos):
+        assert ssrf.public_ips("example.com") == []
+    with patch.object(monitor.socket, "getaddrinfo", return_value=infos):
+        assert not monitor._resolves_public("example.com", 443)
+
+
+def test_block_scalar_indicator_may_carry_a_comment():
+    from app import skill_parse
+
+    doc = ("---\nname: demo\ndescription: > # folded\n  Does a\n  thing.\n"
+           "disable-model-invocation: | # flag\n  false\n---\nBody\n")
+    parsed = skill_parse.parse_skill_md(doc)
+    assert parsed["description"] == "Does a thing."
+    assert parsed["disable_model_invocation"] is False
+
+
+def test_report_opening_with_server_overloaded_is_not_a_provider_error():
+    from app.chat_generation.policy import _provider_error_content
+
+    assert not _provider_error_content(
+        "The server was overloaded yesterday, so I switched to a smaller batch size and reran the job. "
+        "Here is the report of what I found in the logs."
+    )
+    for text in (
+        "The server had an error while processing your request. Sorry about that!",
+        "The engine is currently overloaded, please try again later",
+        "The server is overloaded or not ready yet.",
+        "The service is temporarily unable to process your request. Please try again later.",
+    ):
+        assert _provider_error_content(text), text
+
+
+def test_daily_time_patch_recompiles_the_cron():
+    daily = schedules._normalize(1, _schedule(recur_kind="cron", builder="daily", at_local="09:00"))
+    existing = {**daily, "id": 7, "public_id": "s7"}
+    conn = MagicMock()
+    tx = MagicMock()
+    tx.__enter__.return_value = conn
+    with patch.object(schedules.limiter, "allow", return_value=True), \
+            patch.object(schedules.db, "tx", return_value=tx), \
+            patch.object(schedules.db, "now", return_value="2026-10-15T00:00:00Z"), \
+            patch.object(schedules, "get_schedule", side_effect=[existing, existing]):
+        schedules.patch_schedule(1, "s7", {"at_local": "10:00"})
+    params = next(c.args[1] for c in conn.execute.call_args_list if c.args[0].lstrip().startswith("UPDATE"))
+    assert (params[14], params[17]) == ("0 10 * * *", "10:00")
+
+
+def test_rotation_keeps_cooling_keys_last():
+    from app.sources import openai_compat
+
+    for mode in ("every_request", "round_robin"):
+        openai_compat.reset_cursors()
+        src = openai_compat.OpenAICompatSource({"id": 991, "name": "t"}, {"rotation": mode}, [{"id": 1}, {"id": 2}])
+        with patch.object(openai_compat, "cooling_down", return_value=False):
+            src._next_creds()
+        with patch.object(openai_compat, "cooling_down", side_effect=lambda cid: cid == 1):
+            assert [c["id"] for c in src._next_creds()] == [2, 1]
+    openai_compat.reset_cursors()
+
+
+def test_backoff_never_overflows():
+    assert KeyPool._escalate(None, 1.0, 120.0, 1025) == 120.0
+
+
+def test_auto_rows_follow_their_reference_after_usage_is_priced():
+    from app import pricing
+
+    rows = [{"provider": "devin", "model": "gpt-5-6-sol-low", "origin": pricing.AUTO_ORIGIN}]
+    with patch.object(pricing.db, "fetchall", side_effect=[[], rows]), \
+            patch.object(pricing, "_listed_pool_models", return_value=set()), \
+            patch.object(pricing, "_reference_index", return_value={}), \
+            patch.object(pricing, "_pick_reference", return_value={"input_rate": 8}), \
+            patch.object(pricing, "_same_price", return_value=False), \
+            patch.object(pricing.db, "save_model_price") as save:
+        assert pricing.auto_price() == ["devin/gpt-5-6-sol-low"]
+    assert save.call_args.args[:2] == ("devin", "gpt-5-6-sol-low")
+
+
+def test_auto_row_matching_a_new_default_becomes_the_default():
+    from app import pricing
+
+    target = (pricing.KIMI_PROVIDER, next(iter(pricing.DEFAULT_KIMI_PRICING)))
+    row = lambda _sql, key: {"origin": pricing.AUTO_ORIGIN if key == target else "default"}
+    with patch.object(pricing.db, "fetchone", side_effect=row), \
+            patch.object(pricing, "_default_row_matches", return_value=True), \
+            patch.object(pricing.db, "save_model_price") as save:
+        assert pricing.ensure_default_prices() == ["/".join(target)]
+    assert save.call_args.args[:2] == target and save.call_args.kwargs["origin"] == "default"
+
+
+def test_summary_budget_counts_the_repeated_prior_handoff():
+    from app.context_compact import COMPACT_PREAMBLE, config, summarize_payload
+
+    history = [{"role": "user", "content": COMPACT_PREAMBLE + "漢" * 30_000}]
+    history += [{"role": "user" if i % 2 else "assistant", "content": "x" * 5_000} for i in range(20)]
+    body = summarize_payload(history, limit=64_000)
+    assert estimate_messages(body) <= 64_000 - config().output_reserve
+
+
+def test_clipping_continues_past_a_body_already_at_its_floor():
+    rows = [{"role": "user", "content": "a" * 2_000}]
+    rows += [{"role": "assistant" if i % 2 else "user", "content": "漢" * 900} for i in range(2)]
+    out, clipped = clip_to_fit(rows, limit=2_000, reserve=0)
+    assert clipped and estimate_messages(out) <= 2_000
+
+
+def test_search_verbs_are_only_stripped_when_they_lead():
+    assert engine.sanitize_query("Google Cloud pricing") == "Google Cloud pricing"
+    assert engine.sanitize_query("Google vs Bing") == "Google vs Bing"
+    assert engine.sanitize_query("linux find command") == "linux find command"
+    assert engine.sanitize_query("can you google the weather in Paris") == "the weather in Paris"
+    assert engine.sanitize_query("please find me cheap flights") == "cheap flights"
+
+
+def test_ddg_result_without_a_snippet_keeps_none():
+    from app.search.providers.ddg import parse_ddg_html
+
+    link = '<a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2F{0}.example%2F">{1}</a>'
+    html = (link.format("alpha", "Alpha") + link.format("beta", "Beta")
+            + '<a class="result__snippet" href="#">Beta won the contract.</a>')
+    assert [(h.title, h.snippet) for h in parse_ddg_html(html)] == [("Alpha", ""), ("Beta", "Beta won the contract.")]
+
+
+def test_reversed_ordered_list_counts_down():
+    html = "<ol reversed><li>Bronze</li><li>Silver</li><li>Gold</li></ol>"
+    assert "3. Bronze\n2. Silver\n1. Gold" in extract._html_extract(html, "https://example.com/")[1]
+    html = "<ol reversed start='10'><li>a</li><li>b</li></ol>"
+    assert "10. a\n9. b" in extract._html_extract(html, "https://example.com/")[1]
+
+
+def test_claude_keeps_parallel_false_without_a_tool_choice():
+    from app.sources.claude_payload import _tool_choice
+
+    assert _tool_choice(None, False) == {"type": "auto", "disable_parallel_tool_use": True}
+    assert _tool_choice(None, None) is None
+
+
+def test_monitor_batch_stops_at_max_events():
+    rec = {"id": "j3", "status": "running", "max_events": 1}
+    command_jobs._on_monitor_batch(rec, ["a", "b", "c"])
+    assert rec["event_count"] == 1 and rec["_last_event_lines"] == ["a"] and rec.get("_max_events_hit")
+
+
+def test_monitor_matches_past_the_kept_line_length():
+    async def run():
+        got = []
+        on_batch = lambda lines, _overflow=0: got.append(lines)
+        batcher = monitor.LineBatcher({"_pattern": monitor.compile_pattern("ERROR")}, on_batch)
+        batcher.feed("x" * (monitor.MAX_LINE_CHARS + 1) + "ERROR\n")
+        await batcher.close()
+        return got
+
+    got = asyncio.run(run())
+    assert len(got) == 1 and len(got[0]) == 1 and got[0][0].endswith("…")
+
+
+def test_context_grep_stops_at_max_matches():
+    from app.workspace_ops.search_render import _format_search_lines
+
+    out = "a.py:1:x\na.py-2-after\n--\nb.py-1-before\nb.py:2:x\n"
+    rows, hidden, more = _format_search_lines(out, root="", windows=False, grep=True, hide_secrets=False, cap_lines=1)
+    assert (rows, hidden, more) == (["a.py:1:x", "a.py-2-after"], 0, True)

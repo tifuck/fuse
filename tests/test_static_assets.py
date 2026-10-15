@@ -60,6 +60,14 @@ def test_a_leaf_change_reversions_every_importer(tree):
     assert f"leaf.js?v={after['leaf.js']}" in static_assets.rewritten("mid.js")[1].decode()
 
 
+def test_a_removed_leaf_reversions_its_importer(tree):
+    tree("main.js", "import './leaf.js';\n")
+    tree("leaf.js", "export default 1;\n")
+    before = static_assets.version("main.js")
+    (static_assets.ROOT / "leaf.js").unlink()
+    assert static_assets.version("main.js") != before
+
+
 def test_import_cycles_have_a_version(tree):
     tree("a.js", "import './b.js';\n")
     tree("b.js", "import './a.js';\n")

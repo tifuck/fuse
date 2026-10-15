@@ -879,7 +879,8 @@ class KeyPool:
 
     def _escalate(self, base: float, cap: float, n: int) -> float:
         """Exponential backoff: base * 2^(n-1), capped."""
-        return min(base * (2.0 ** (n - 1)), cap)
+        # Bounded exponent: 2.0 ** 1024 raises OverflowError.
+        return min(base * (2.0 ** min(n - 1, 64)), cap)
 
     # -- background sweeper -------------------------------------------------
 

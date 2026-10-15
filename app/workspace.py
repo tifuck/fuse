@@ -1311,7 +1311,9 @@ async def _pinned_public_sock(url: str):
     target = None
     for family, type_, proto, _canon, sockaddr in infos:
         addr = str(sockaddr[0]).split("%", 1)[0]
-        if not ipaddress.ip_address(addr).is_global:
+        ip = ipaddress.ip_address(addr)
+        # Unwrap ::ffff:a.b.c.d: Python 3.12 calls mapped CGNAT global.
+        if not (getattr(ip, "ipv4_mapped", None) or ip).is_global:
             raise OSError(f"{host} resolves to the non-public address {addr}")
         if target is None:
             target = (family, type_, proto, sockaddr)
@@ -2850,12 +2852,18 @@ async def load_project_agents(user_id, bound_host_id, bound_cwd: str = "", repor
     try:
         # Read one extra character to detect truncation.
         while len(body) <= AGENTS_MAX:
-            labeled, rec = await _read(
-                user_id, host_id, alias, {"path": chosen, "offset": offset, "limit": _READ_MAX_LINES}, root,
-                windows=windows, max_chars=AGENTS_MAX + 1, raw=True,
-            )
-            if isinstance(rec, dict) and rec.get("status") == "error":
-                raise WorkspaceError(rec.get("error") or "read failed")
+            try:
+                labeled, rec = await _read(
+                    user_id, host_id, alias, {"path": chosen, "offset": offset, "limit": _READ_MAX_LINES}, root,
+                    windows=windows, max_chars=AGENTS_MAX + 1, raw=True,
+                )
+                if isinstance(rec, dict) and rec.get("status") == "error":
+                    raise WorkspaceError(rec.get("error") or "read failed")
+            except WorkspaceError as exc:
+                # A file of exactly N full pages: the page after it is EOF.
+                if offset > 1 and "beyond the end of the file" in str(exc):
+                    break
+                raise
             chunk = unlabel_host(alias, labeled)
             if body and chunk and not body.endswith("\n"):
                 body += "\n"

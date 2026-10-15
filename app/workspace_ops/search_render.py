@@ -204,12 +204,14 @@ def _format_search_lines(
     rows: list[str] = []
     hidden = 0
     matches = 0
+    last_sep = last_match = -1
     for raw in (out or "").splitlines():
         if not raw.strip():
             continue
         line = _relative_line(raw.rstrip("\r"), root, windows=windows)
         if grep and line == "--":
             if rows and rows[-1] != "--":
+                last_sep = len(rows)
                 rows.append(line)
             continue
         if hide_secrets:
@@ -222,7 +224,15 @@ def _format_search_lines(
         if len(line) > _SEARCH_LINE_CHARS:
             line = line[:_SEARCH_LINE_CHARS] + f"… [line clipped at {_SEARCH_LINE_CHARS} chars]"
         if not grep or mode != "content" or _MATCH_LINE.match(line):
+            if grep and mode == "content" and matches + hidden >= cap_lines:
+                # rg -m counts per file and a context search's head cap is
+                # lines: stop at cap_lines matches, without the leading
+                # context already kept for this one.
+                if last_sep > last_match:
+                    del rows[last_sep:]
+                break
             matches += 1
+            last_match = len(rows)
         rows.append(line)
     while rows and rows[-1] == "--":
         rows.pop()

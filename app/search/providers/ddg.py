@@ -86,6 +86,12 @@ def _search_host_ok(url: str) -> bool:
     return host in _SEARCH_HOSTS or host.endswith(".duckduckgo.com")
 
 
+def _with_next_start(pattern, raw: str):
+    found = list(pattern.finditer(raw))
+    for n, match in enumerate(found):
+        yield match, found[n + 1].start() if n + 1 < len(found) else len(raw)
+
+
 def parse_ddg_html(raw: str) -> list[SearchHit]:
     if "anomaly" in (raw or "").lower() and "unfortunate" in (raw or "").lower():
         return []
@@ -95,32 +101,34 @@ def parse_ddg_html(raw: str) -> list[SearchHit]:
     results: list[SearchHit] = []
     seen: set[str] = set()
 
-    def _snippet_after(pos: int) -> str:
+    def _snippet_after(pos: int, end: int) -> str:
+        # Only before the next result's link: a result without a snippet
+        # must not take its neighbour's.
         for start, text in snips:
-            if start >= pos:
+            if pos <= start < end:
                 return text
         return ""
 
-    for match in _DDG_LINK.finditer(raw):
+    for match, end in _with_next_start(_DDG_LINK, raw):
         href = match.group(1) or match.group(3) or ""
         title = _strip(match.group(2) or match.group(4) or "")
         url = decode_ddg_url(href)
         if not url or url in seen or not title:
             continue
         seen.add(url)
-        snippet = _snippet_after(match.start())
+        snippet = _snippet_after(match.start(), end)
         results.append(SearchHit(title=title[:200], url=url, snippet=snippet[:280], provider="ddg", rank=len(results)))
         if len(results) >= 8:
             break
     if not results:
-        for match in _LITE_LINK.finditer(raw):
+        for match, end in _with_next_start(_LITE_LINK, raw):
             href = match.group(1) or match.group(3) or ""
             title = _strip(match.group(2) or match.group(4) or "")
             url = decode_ddg_url(href) or public_http_url(html_lib.unescape(href))
             if not url or url in seen or not title:
                 continue
             seen.add(url)
-            snippet = _snippet_after(match.start())
+            snippet = _snippet_after(match.start(), end)
             results.append(
                 SearchHit(title=title[:200], url=url, snippet=snippet[:280], provider="ddg", rank=len(results))
             )

@@ -150,6 +150,9 @@ def _tool_choice(choice, parallel) -> dict | None:
         fn = choice.get("function") if isinstance(choice.get("function"), dict) else {}
         if fn.get("name"):
             mapped = {"type": "tool", "name": str(fn["name"])[:64]}
+    elif choice is None and parallel is False:
+        # Omitted tool_choice is auto; the parallel limit still applies.
+        mapped = {"type": "auto"}
     if mapped is None:
         return None
     if parallel is False and mapped["type"] in ("auto", "any"):

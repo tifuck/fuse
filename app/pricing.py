@@ -211,7 +211,9 @@ def ensure_default_prices() -> list[str]:
             if existing and existing["origin"] not in ("default", AUTO_ORIGIN):
                 continue
             tiers = [_tier(threshold, long_rates)] if long_rates else None
-            if existing and _default_row_matches(
+            # A matching auto row is still re-saved, so it becomes the default
+            # and auto_price can no longer replace it.
+            if existing and existing["origin"] == "default" and _default_row_matches(
                 existing, inp=inp, cached=cached, write=write, out=out, tiers=tiers, threshold=threshold
             ):
                 continue
@@ -533,9 +535,12 @@ def auto_price(catalog: dict | None = None, *, since_days: int = 30) -> list[str
               AND reported_cost_micros IS NULL AND model != ''""",
         (since, *_AUTO_PROVIDERS),
     )
-    targets = {(row["source_type"], row["model"]) for row in used} | _listed_pool_models()
     rows = db.fetchall("SELECT * FROM model_prices")
     existing = {(row["provider"], row["model"]): row for row in rows}
+    # Existing auto rows too: a model that is neither listed nor unpriced
+    # (a Devin wire SKU once priced) must still follow its reference.
+    auto_rows = {key for key, row in existing.items() if row["origin"] == AUTO_ORIGIN}
+    targets = {(row["source_type"], row["model"]) for row in used} | _listed_pool_models() | auto_rows
     index = _reference_index(rows, catalog)
     priced = []
     for provider, model in sorted(targets):

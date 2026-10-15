@@ -118,10 +118,10 @@ _TEXT_TYPES = frozenset(
 _SNIFF_TYPES = ("", "application/octet-stream", "binary/octet-stream", "application/x-download", "application/force-download")
 
 _CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
-_FILLER = re.compile(
-    r"\b(can you|could you|please|search the web|look(?:ing)? up|tell me|what is|what's|find(?: me)?|google|lookup)\b",
-    re.I,
-)
+_FILLER = re.compile(r"\b(can you|could you|please|search the web|tell me|what is|what's)\b", re.I)
+# Search verbs only lead a request; mid-query they are the subject
+# ("linux find command"). Capitalized Google is the company.
+_LEAD_VERB = re.compile(r"^(?:(?i:look(?:ing)? up|find(?: me)?|lookup)|google)\b\s*")
 _LIVE = re.compile(r"\b(price|quote|spot|ticker)\b", re.I)
 _CRYPTO = re.compile(r"\b(btc|eth|bitcoin|ethereum)\b", re.I)
 _FIAT = re.compile(r"\b(usd|eur|gbp)\b", re.I)
@@ -345,6 +345,7 @@ def sanitize_query(raw: str) -> str:
     text = _CTRL.sub(" ", str(raw or ""))
     text = re.sub(r"\s+", " ", text).strip()
     stripped = _FILLER.sub(" ", text)
+    stripped = _LEAD_VERB.sub("", re.sub(r"\s+", " ", stripped).strip())
     stripped = re.sub(r"\s+", " ", stripped).strip(" ?!.,;:")
     if len(stripped) >= 2:
         text = stripped

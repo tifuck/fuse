@@ -561,16 +561,19 @@ def _render_pre(node) -> list[str]:
 
 
 def _render_list(node, ctx: _Ctx, depth: int, *, ordered: bool) -> list[str]:
+    # <ol reversed> counts down, from the item count unless start says otherwise.
+    step = -1 if ordered and "reversed" in node.attributes else 1
+    first = sum(1 for child in node.iter() if child.tag == "li") if step < 0 else 1
     try:
-        number = int(node.attributes.get("start") or 1)
+        number = int(node.attributes.get("start") or first)
     except ValueError:
-        number = 1
+        number = first
     items: list[str] = []
     for child in node.iter():
         if child.tag == "li":
             body = _join_item(_render_children(child, ctx, depth + 1))
             marker = f"{number}. " if ordered else "- "
-            number += 1
+            number += step
             if body:
                 items.append(_indent(body, marker))
         else:

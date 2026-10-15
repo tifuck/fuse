@@ -71,16 +71,19 @@ _RESUMABLE_MESSAGE = re.compile(
 # (OpenAI-compat proxies do this with the classic overloaded sentence).
 # Anchored to the whole reply so a real report that mentions "overloaded"
 # is not treated as a transport failure.
+# One sentence, then only retry boilerplate: a longer reply that opens
+# with "The server was overloaded" is a report, not a failure.
+_ERROR_TAIL = r"[^.!?\n]{0,80}[.!?]?(?:\s*(?:please try again|sorry about that|you can retry)[^.!?\n]{0,80}[.!?]?)*"
 _PROVIDER_CONTENT_ERROR = re.compile(
     r"^\s*(?:error:\s*)?(?:"
     r"our servers? are currently overloaded\.?(?:\s*please try again later\.?)?"
-    r"|the (?:server|engine|service) (?:is|was|had) (?:currently )?(?:overloaded|busy|unavailable|an error).*"
+    r"|the (?:server|engine|service) (?:is|was|had) (?:currently )?(?:overloaded|busy|unavailable|an error)" + _ERROR_TAIL +
     r"|please try again later\.?"
-    r"|the service is temporarily unable to process your request.*"
-    r"|server(?:s)? (?:are|is) (?:busy|at capacity).*"
+    r"|the service is temporarily unable to process your request" + _ERROR_TAIL +
+    r"|server(?:s)? (?:are|is) (?:busy|at capacity)" + _ERROR_TAIL +
     r"|overloaded\.?\s*please try again later\.?"
     r")\s*$",
-    re.I | re.S,
+    re.I,
 )
 
 

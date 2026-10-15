@@ -58,6 +58,7 @@ _SECRET_DOTENV = re.compile(r"^\.env([._-]|$)")
 _TEMPLATE_OK = frozenset({".env.example", ".env.sample", ".env.template"})
 
 _HOME_MARKERS = ("~", "$HOME", "%USERPROFILE%", "")
+_HOME_PREFIXES = ("~", "$HOME", "%USERPROFILE%")
 _DIR_TOOLS = frozenset({"list_dir", "grep", "glob"})
 _FILE_TOOLS = frozenset({"read_file", "write_file", "search_replace"})
 _WRITE_TOOLS = frozenset({"write_file", "search_replace"})
@@ -244,8 +245,13 @@ def _in_roots(resolved: str, roots: list[str], windows: bool) -> bool:
         return True
     if is_temp_path(raw, windows):
         return True
-    if _is_home_marker(raw) or raw.startswith("~") or raw.startswith("$HOME") or raw.startswith("%USERPROFILE%"):
-        return any(_is_home_marker(r) for r in roots)
+    if _is_home_marker(raw) or raw.startswith(_HOME_PREFIXES):
+        if raw.startswith("~") and raw[1:2] not in ("", "/", "\\"):
+            return False  # ~name is another account's home
+        if any(_is_home_marker(r) for r in roots):
+            return True
+        n = _norm(raw, windows)
+        return any(r.startswith(_HOME_PREFIXES) and _under(n, _norm(r, windows), windows) for r in roots)
     n = _norm(raw, windows)
     for r in roots:
         if _is_home_marker(r):
@@ -305,10 +311,10 @@ def under_work_root(resolved: str, root: str, windows: bool) -> bool:
     raw = str(resolved or "")
     if not raw:
         return True
-    home_path = raw.startswith(("~", "$HOME", "%USERPROFILE%"))
+    home_path = raw.startswith(_HOME_PREFIXES)
     if not root or _is_home_marker(root):
         return home_path
-    if home_path:
+    if home_path != root.startswith(_HOME_PREFIXES):
         return False
     return _under(_norm(raw, windows), _norm(root, windows), windows)
 
@@ -476,6 +482,9 @@ def extract_shell_paths(command: str, cwd: str, windows: bool) -> list[tuple[str
                 if stripped not in ("&&", ";", "||", "&") and not stripped.startswith("-"):
                     out.append((stripped, True))
                 continue
+            if stripped.startswith(("-", "+")) and "=" in stripped:
+                # --file=/etc/x: the value is the target, not a cwd-relative name.
+                stripped = stripped.split("=", 1)[1]
             if _looks_like_path(stripped, windows) or is_secret_path(stripped):
                 out.append((stripped, False))
     resolved: list[tuple[str, bool]] = []

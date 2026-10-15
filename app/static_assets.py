@@ -80,6 +80,13 @@ def _patterns(rel: str):
     return ()
 
 
+def _forget(rel: str) -> None:
+    # A removed file moves the version of every importer, like a change.
+    if _files.pop(rel, None) is not None:
+        _versions.clear()
+        _bodies.clear()
+
+
 def _entry(rel: str) -> dict | None:
     """Content hash and resolved references of one file, re-read when its
     stat changes (checked at most once per STAT_TTL)."""
@@ -94,7 +101,7 @@ def _entry(rel: str) -> dict | None:
             return None
         st = (ROOT / rel).stat()
     except OSError:
-        _files.pop(rel, None)
+        _forget(rel)
         return None
     stamp = (st.st_mtime_ns, st.st_size)
     if entry and entry["stamp"] == stamp:
@@ -105,7 +112,7 @@ def _entry(rel: str) -> dict | None:
     except OSError:
         # Removed or replaced since the stat (a deploy), or a directory:
         # treat it as missing, never a 500.
-        _files.pop(rel, None)
+        _forget(rel)
         return None
     refs = []
     if rel.endswith(_TEXT):

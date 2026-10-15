@@ -118,7 +118,8 @@ def _resolves_public(host: str, port: int | None) -> bool:
         except ValueError:
             return False
         seen = True
-        if not ip.is_global:
+        # Unwrap ::ffff:a.b.c.d: Python 3.12 calls mapped CGNAT global.
+        if not (getattr(ip, "ipv4_mapped", None) or ip).is_global:
             return False
     return seen
 
@@ -216,13 +217,15 @@ class LineBatcher:
             self.task = asyncio.create_task(self._flush())
 
     def _add(self, line: str, budget_end: float | None = None) -> None:
-        if len(line) > MAX_LINE_CHARS:
-            line = line[:MAX_LINE_CHARS] + "…"
         if self.pattern is not None and budget_end is not None and time.monotonic() > budget_end:
             if line.strip():
                 self.skipped += 1
             return
+        # Match the whole line (match_line has its own timeout); only the
+        # kept copy is cut, or a match past the cut is never seen.
         if match_line(line, self.pattern):
+            if len(line) > MAX_LINE_CHARS:
+                line = line[:MAX_LINE_CHARS] + "…"
             # Only the shown lines are kept; the rest is a count, so a
             # firehose cannot grow pending without limit.
             if len(self.pending) < MAX_BATCH_LINES:

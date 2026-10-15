@@ -79,7 +79,9 @@ class OpenAICompatSource:
                 return preferred + [c for c in pool if c["id"] != prefer_id]
         if self.rotation in ("every_request", "round_robin"):
             start = _advance(self.source_id, len(pool))
-            return pool[start:] + pool[:start]
+            # Rotate, then sort again: rotating the sorted list could put a
+            # cooling key back in front.
+            return sorted(pool[start:] + pool[:start], key=lambda c: cooling_down(c["id"]))
         return pool
 
     async def models(self) -> list[str]:
