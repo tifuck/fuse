@@ -462,11 +462,3 @@ async def admin_users_delete(request: Request, user_id: int):
         )
     _notices[user["id"]] = f"Deleted {email}."
     return RedirectResponse("/admin/users", status_code=303)
-
-
-@router.get("/preview/spinners", response_class=HTMLResponse)
-async def spinner_preview(request: Request):
-    user, redir = require_user(request)
-    if redir:
-        return redir
-    return render(request, "spin_preview.html", user)

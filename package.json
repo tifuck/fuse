@@ -1,0 +1,12 @@
+{
+  "name": "fuse-tests",
+  "private": true,
+  "description": "Test tooling only; the site itself has no frontend build.",
+  "scripts": {
+    "test:unit": "node --test tests/*.test.cjs",
+    "test:browser": "scripts/run_browser_tests.sh"
+  },
+  "devDependencies": {
+    "playwright": "^1.62.0"
+  }
+}

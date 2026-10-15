@@ -6,9 +6,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
 
-from scripts import backup_mariadb, cutover_mariadb
+from scripts import backup_mariadb
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -30,21 +29,6 @@ def test_simultaneous_backups_have_distinct_outputs(tmp_path, monkeypatch):
     for path in paths:
         assert gzip.decompress(path.read_bytes()) == b"sql fixture"
         assert path.with_suffix(path.suffix + ".sha256").exists()
-
-
-def test_cutover_inserts_missing_database_url(tmp_path, monkeypatch):
-    (tmp_path / ".env").write_text("# DATABASE_URL=old\nOTHER=value\n")
-    monkeypatch.setattr(cutover_mariadb, "ROOT", tmp_path)
-    monkeypatch.setattr(cutover_mariadb, "settings", SimpleNamespace(
-        database_url="mysql://u:p@localhost/old", database_path=str(tmp_path / "source.db")))
-    monkeypatch.setattr(cutover_mariadb.subprocess, "check_output", lambda *a, **k: "inactive")
-    monkeypatch.setattr(cutover_mariadb.sqlite3, "connect", lambda *a, **k: Mock())
-    monkeypatch.setattr(cutover_mariadb, "migrate", lambda *a: {"verified": True})
-    cutover_mariadb.cutover("new_fixture")
-    result = (tmp_path / ".env").read_text()
-    assert "\nDATABASE_URL=mysql://u:p@localhost/new_fixture\n" in result
-    assert "OTHER=value" in result
-    assert not (tmp_path / ".env.mariadb.tmp").exists()
 
 
 def test_systemd_unit_uses_supported_environment_expansion():

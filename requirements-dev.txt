@@ -1,0 +1,4 @@
+-r requirements.txt
+pytest>=9.0
+# Python Playwright drives scripts/dev_qa_shot.py and scripts/qa/*.
+playwright>=1.62.0

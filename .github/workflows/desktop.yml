@@ -6,6 +6,10 @@ on:
     tags:
       - "v*"
 
+defaults:
+  run:
+    working-directory: fuse-desktop
+
 jobs:
   win-linux:
     runs-on: ubuntu-latest
@@ -20,10 +24,10 @@ jobs:
         with:
           name: fuse-desktop-win-linux
           path: |
-            dist/*.exe
-            dist/*.AppImage
-            dist/*.deb
-            dist/latest*.yml
+            fuse-desktop/dist/*.exe
+            fuse-desktop/dist/*.AppImage
+            fuse-desktop/dist/*.deb
+            fuse-desktop/dist/latest*.yml
 
   mac:
     runs-on: macos-latest
@@ -38,5 +42,5 @@ jobs:
         with:
           name: fuse-desktop-mac
           path: |
-            dist/*.dmg
-            dist/latest-mac.yml
+            fuse-desktop/dist/*.dmg
+            fuse-desktop/dist/latest-mac.yml

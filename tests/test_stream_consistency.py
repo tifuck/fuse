@@ -1,4 +1,4 @@
-"""Race regression checks. Run with scripts.test_stream_consistency, not live DB."""
+"""Race regression checks on a disposable MariaDB schema (isolated_db), never a live DB."""
 import asyncio
 import copy
 import json

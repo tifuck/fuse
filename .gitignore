@@ -20,17 +20,10 @@ screenshots/
 *.tar.gz
 *.log
 
-agent/tests/test_expand_home
-agent/tests/test_files
-agent/tests/test_reconnect
-agent/tests/test_lifecycle
-agent/tests/test_output_queue
-agent/tests/test_binary
-agent/tests/test_ws_frame
-agent/tests/test_exec_stream
-agent/tests/test_jobs_pool
-agent/tests/test_ws_tls
-agent/tests/test_http
+agent/tests/test_*
+!agent/tests/test_*.c
+/node_modules/
+/package-lock.json
 .claude/
 AGENTS.md
 docs/

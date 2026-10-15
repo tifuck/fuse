@@ -5,8 +5,9 @@
 #
 #   NODE_PATH=/path/to/node_modules scripts/run_browser_tests.sh [tests/x.browser.cjs ...]
 #
-# Needs the Node "playwright" package on NODE_PATH and its Chromium
-# (npx playwright install chromium). Logs go to $LOG_DIR (default /tmp/fuse-browser-tests).
+# Needs the Node "playwright" package (npm install at the repo root, or on
+# NODE_PATH) and its Chromium (npx playwright install chromium).
+# Logs go to $LOG_DIR (default /tmp/fuse-browser-tests).
 set -u
 cd "$(dirname "$0")/.."
 LOG_DIR=${LOG_DIR:-/tmp/fuse-browser-tests}
