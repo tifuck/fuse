@@ -3,7 +3,7 @@
   "productName": "Fuse",
   "version": "1.0.5",
   "description": "Fuse desktop wrapper",
-  "homepage": "https://fuse.example.com",
+  "homepage": "https://github.com/tifuck/fuse",
   "author": {
     "name": "Fuse",
     "email": "173309113+tifuck@users.noreply.github.com"
@@ -11,9 +11,9 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --win --linux",
-    "dist:mac": "electron-builder --mac",
-    "dist:all": "electron-builder --win --mac --linux"
+    "dist": "node scripts/dist.js --win --linux",
+    "dist:mac": "node scripts/dist.js --mac",
+    "dist:all": "node scripts/dist.js --win --mac --linux"
   },
   "dependencies": {
     "electron-updater": "6.8.9"

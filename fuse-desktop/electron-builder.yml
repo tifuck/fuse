@@ -1,3 +1,5 @@
+# appId and publish.url are placeholders: scripts/dist.js sets this instance's
+# values from site.json (gitignored) or FUSE_APP_ID / FUSE_URL.
 appId: com.example.fuse
 productName: Fuse
 copyright: Fuse

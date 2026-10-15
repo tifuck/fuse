@@ -10,6 +10,11 @@ defaults:
   run:
     working-directory: fuse-desktop
 
+# The instance this build wraps (scripts/dist.js): set as repository variables.
+env:
+  FUSE_URL: ${{ vars.FUSE_URL }}
+  FUSE_APP_ID: ${{ vars.FUSE_APP_ID }}
+
 jobs:
   win-linux:
     runs-on: ubuntu-latest

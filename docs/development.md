@@ -19,7 +19,7 @@ build: Jinja templates and plain JS/CSS are served as-is.
 | `scripts/` | Operational scripts (backups, schema dump/init, usage rollup rebuild, connector release). `scripts/qa/` holds manual QA tools that are not part of the test suite. |
 | `scripts/sql/` | `schema.sql` (the empty schema fresh installs load) and dated migrations not yet applied everywhere. |
 | `tests/` | pytest suites, Node unit suites (`*.test.cjs`) and Playwright browser suites (`*.browser.cjs`). |
-| `fuse-desktop/` | Electron wrapper around the site (no app logic). |
+| `fuse-desktop/` | Electron wrapper around the site (no app logic). `npm run dist` takes the site URL and app id from `fuse-desktop/site.json` (gitignored) or `FUSE_URL`/`FUSE_APP_ID`; keep the app id stable once released. |
 | `third_party/` | SCOWL word lists, the source of `static/dict/en-US.bin.gz` (`scripts/build_composer_dict.py`). |
 
 ## Configuration

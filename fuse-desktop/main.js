@@ -3,7 +3,19 @@ const { autoUpdater } = require("electron-updater");
 const { readFileSync, statSync, writeFileSync } = require("fs");
 const path = require("path");
 
-const APP_URL = process.env.FUSE_URL || "https://fuse.example.com";
+// The site this build wraps: FUSE_URL at runtime, else the fuseUrl that
+// scripts/dist.js stamps into package.json, else site.json for `npm start`.
+function siteUrl() {
+  if (process.env.FUSE_URL) return process.env.FUSE_URL;
+  const stamped = require("./package.json").fuseUrl;
+  if (stamped) return stamped;
+  try {
+    return JSON.parse(readFileSync(path.join(__dirname, "site.json"), "utf8")).url;
+  } catch {
+    return "https://fuse.example.com";
+  }
+}
+const APP_URL = siteUrl();
 const APP_ORIGIN = new URL(APP_URL).origin;
 const BACKGROUND = "#141615";
 
