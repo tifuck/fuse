@@ -1,6 +1,8 @@
 data/
 .env
 .env.*
+!.env.example
+config.env
 venv/
 agent/dist/
 __pycache__/

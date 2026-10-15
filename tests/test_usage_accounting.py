@@ -25,7 +25,6 @@ import pytest
 # Uses the database: a disposable MariaDB schema shared by this module.
 pytestmark = pytest.mark.usefixtures("isolated_db")
 
-db.settings.database_path = str(Path(_TMP) / "usage.db")
 db._conn = None
 
 

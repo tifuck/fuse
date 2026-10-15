@@ -40,7 +40,6 @@ from app.chat_tools import (  # noqa: E402
 )
 from app.search.ssrf import domain_allowed, domain_pattern, parse_domain_list  # noqa: E402
 
-db.settings.database_path = str(Path(_TMP) / "chat.db")
 db._conn = None
 
 

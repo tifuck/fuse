@@ -12,6 +12,7 @@ from ...security import allowed_base_url, limiter
 from ...sources import TYPES
 from ...sources import openrouter as openrouter_mod
 from ...sources import pool_policy
+from ...sources.ollama import DEFAULT_BASE as OLLAMA_BASE
 from ...sources.probe import probe_source
 from ..deps import _notices, current_user, render, require_admin
 from .admin_pages import _admin_sources_ctx, _admin_web_ctx
@@ -203,7 +204,7 @@ async def admin_ollama_save(
     from ...sources import ensure_ollama_source
 
     sid = ensure_ollama_source()
-    url = base_url.strip() or "https://ollama.com/api"
+    url = base_url.strip() or OLLAMA_BASE
     if not allowed_base_url(url):
         return render(
             request,

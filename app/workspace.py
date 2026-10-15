@@ -1,4 +1,4 @@
-"""Workspace tools on user SSH hosts. Fuse-local is denied unless all three flags (later PR)."""
+"""Workspace tools on user SSH hosts and connector machines. There is no Fuse-local workspace."""
 from __future__ import annotations
 
 import asyncio

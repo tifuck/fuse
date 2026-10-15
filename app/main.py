@@ -184,7 +184,7 @@ async def lifespan(app: FastAPI):
     await asyncio.to_thread(static_assets.warm)
     try:
         url = (getattr(settings, "database_url", "") or "").strip()
-        if settings.database_mariadb_enabled and url.startswith("mysql://"):
+        if url.startswith("mysql://"):
             schema = urlsplit(url).path.strip("/") or "fuse"
             if not re.fullmatch(r"[A-Za-z0-9_-]+", schema):
                 raise RuntimeError("Refusing worker lock for an invalid database name")

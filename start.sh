@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# The one place the server's uvicorn flags live: the systemd unit written by
+# install.sh and the Docker entrypoint both run this script.
 set -euo pipefail
 cd "$(dirname "$0")"
 if [ -d venv ]; then
@@ -16,7 +18,11 @@ fi
 exec python -m uvicorn app.main:app \
   --host "${HOST:-0.0.0.0}" \
   --port "${PORT:-8088}" \
-  --limit-concurrency "${LIMIT_CONCURRENCY:-64}" \
+  --workers 1 \
+  --limit-concurrency "${LIMIT_CONCURRENCY:-256}" \
+  --timeout-graceful-shutdown 8 \
+  --ws-max-size 1048576 \
+  --ws-max-queue 32 \
   --proxy-headers \
   --forwarded-allow-ips "${FORWARDED_ALLOW_IPS:-127.0.0.1}" \
   --ssl-certfile "$SSL_CERT" \

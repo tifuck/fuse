@@ -19,7 +19,6 @@ os.environ.setdefault("APP_SECRET", "x" * 32)
 from app import agent_catalog, chats, db  # noqa: E402
 from app.chat_tools import execute_tool, openai_tools  # noqa: E402
 
-db.settings.database_path = str(Path(_TMP) / "xcript.db")
 db._conn = None
 
 AGENTS_RULE = "run tests with `make test`"

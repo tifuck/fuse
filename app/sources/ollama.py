@@ -19,6 +19,7 @@ _pools: dict[int, KeyPool] = {}
 _tags_cache: dict[int, tuple[float, list[str]]] = {}
 _access_tasks: dict[int, asyncio.Task] = {}
 _TAGS_TTL = 300.0
+DEFAULT_BASE = "https://ollama.com/api"
 
 
 class UnsupportedAttachment(ValueError):
@@ -169,7 +170,7 @@ class OllamaSource:
         self.pin_kind = f"ollama:{self.source_id}"
         self.cfg = cfg
         self.creds = list(creds)
-        self.base = (cfg.get("base_url") or "https://ollama.com/api").rstrip("/")
+        self.base = (cfg.get("base_url") or DEFAULT_BASE).rstrip("/")
         if self.source_id not in _pools:
             pool = KeyPool(
                 keys_file="",

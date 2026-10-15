@@ -55,9 +55,9 @@ def test_fresh_schema_matches_source_and_boots():
         )
         assert init_db.init(url) == "exists"
 
-        saved = settings.database_url, settings.database_mariadb_enabled
+        saved = settings.database_url
         assert db._conn is None
-        settings.database_url, settings.database_mariadb_enabled = url, True
+        settings.database_url = url
         try:
             db.connect()
             assert token_store.claim_refresh_ownership() is True
@@ -66,7 +66,7 @@ def test_fresh_schema_matches_source_and_boots():
             assert user["is_admin"]
         finally:
             db.close()
-            settings.database_url, settings.database_mariadb_enabled = saved
+            settings.database_url = saved
 
 
 def test_refuses_a_schema_with_foreign_tables():

@@ -9,10 +9,10 @@ STOP_MAX_TOKENS is a normal end of turn (never `length`).
 from __future__ import annotations
 
 import json
-import os as _os
 import time
 import uuid
 
+from ..config import ROOT, settings
 from ..proxy import usage_from_obj
 from . import devin_proto as proto
 from .devin_catalog import canonical_fuse_id, fuse_id, note_sku_failure, sku_error_kind
@@ -67,8 +67,11 @@ def _completion_id() -> str:
     return "chatcmpl-" + uuid.uuid4().hex[:24]
 
 
+_DEBUG_LOG = ROOT / "data" / "devin-stream-debug.log"
+
+
 def _devin_debug() -> bool:
-    return _os.environ.get("FUSE_DEVIN_DEBUG", "0") == "1"
+    return settings.fuse_devin_debug
 
 
 def _debug_tool_call(cid: str, msg: dict, tc: dict) -> None:
@@ -89,7 +92,7 @@ def _debug_tool_call(cid: str, msg: dict, tc: dict) -> None:
             },
             ensure_ascii=False,
         )
-        with open("/root/fuse/data/devin-stream-debug.log", "a") as fh:
+        with open(_DEBUG_LOG, "a") as fh:
             fh.write(line + "\n")
     except Exception:
         pass
@@ -208,7 +211,7 @@ class _ToolBook:
                  "head": args[:40], "tail": args[-24:]},
                 ensure_ascii=False,
             )
-            with open("/root/fuse/data/devin-stream-debug.log", "a") as fh:
+            with open(_DEBUG_LOG, "a") as fh:
                 fh.write(line + "\n")
         except Exception:
             pass

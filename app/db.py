@@ -34,8 +34,8 @@ def connect():
         if _conn is not None:
             return _conn
         url = (getattr(settings, "database_url", "") or "").strip()
-        if not settings.database_mariadb_enabled or not url.startswith("mysql://"):
-            raise RuntimeError("Fuse requires MariaDB: configure DATABASE_URL and DATABASE_MARIADB_ENABLED=true")
+        if not url.startswith("mysql://"):
+            raise RuntimeError("Fuse requires MariaDB: configure DATABASE_URL=mysql://…")
         from .mysql_compat import connect as mysql_connect
         conn = mysql_connect(url, max_connections=settings.database_pool_size)
         try:

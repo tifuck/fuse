@@ -33,16 +33,9 @@ pytestmark = pytest.mark.usefixtures("isolated_db")
 
 
 def _fresh_db():
-    """Other test modules own DATABASE_PATH; just reset this suite's tables."""
-    from app import chat_store, config
+    """Reset this suite's tables in the module's disposable schema."""
+    from app import chat_store
 
-    live = (config.ROOT / "data" / "fuse.db").resolve()
-    current = Path(str(config.settings.database_path)).expanduser().resolve()
-    if current == live:
-        # A previous test imported app.db against the live file. Rebind; never DELETE it.
-        os.environ["DATABASE_PATH"] = str(Path(_TMP) / "tool-failures.db")
-        config.settings.database_path = os.environ["DATABASE_PATH"]
-        db.close()
     with db.tx() as conn:
         chat_store.init_schema(conn)
         conn.execute("DELETE FROM tool_failures")

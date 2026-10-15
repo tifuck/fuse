@@ -103,7 +103,7 @@ _JWT_TTL = 240.0
 
 
 def _api_server() -> str:
-    return (settings.devin_api_server or "https://server.codeium.com").rstrip("/")
+    return settings.devin_api_server.rstrip("/")
 
 
 def _error_text(body) -> str:
@@ -411,7 +411,7 @@ async def exchange_cli_code(code: str, verifier: str, redirect_uri: str = "") ->
     verifier = (verifier or "").strip()
     if not code or not verifier:
         return "", "Devin sign-in did not return an authorization code."
-    url = (settings.devin_cli_token_url or "https://api.devin.ai/auth/cli/token").strip()
+    url = settings.devin_cli_token_url.strip()
     payload = {"code": code, "code_verifier": verifier}
     async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0), follow_redirects=False) as client:
         try:

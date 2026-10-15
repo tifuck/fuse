@@ -95,6 +95,8 @@ def _b64url(raw: bytes) -> str:
 
 def _load_keys() -> dict | None:
     """None = no file yet (safe to generate). {} = file exists but is corrupt."""
+    if settings.vapid_private_key and settings.vapid_public_key:
+        return {"private_key": settings.vapid_private_key, "public_key": settings.vapid_public_key}
     if not _KEY_PATH.exists():
         return None
     try:

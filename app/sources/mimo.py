@@ -140,7 +140,7 @@ def model_window(model: str) -> int:
 
 
 def _platform() -> str:
-    return (settings.mimo_platform_url or "https://platform.xiaomimimo.com").rstrip("/")
+    return settings.mimo_platform_url.rstrip("/")
 
 
 def region_for_url(url: str) -> str:

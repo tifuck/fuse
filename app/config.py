@@ -7,33 +7,55 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=str(ROOT / ".env"), extra="ignore")
+    # config.env holds settings, .env holds secrets (see config.env.example and
+    # .env.example). Process environment wins over both; .env wins over config.env.
+    model_config = SettingsConfigDict(env_file=(str(ROOT / "config.env"), str(ROOT / ".env")), extra="ignore")
 
+    # --- Secrets (.env only) ---
     app_secret: str
-    # Retained only while offline legacy migration tools are being retired.
-    database_path: str = ""
-    skills_directory: str = str(ROOT / "data" / "skills")
-    # mysql://user:pass@127.0.0.1:3306/fuse — when set, this is the only database.
+    # mysql://user:pass@127.0.0.1:3306/fuse — the only database.
     database_url: str = ""
-    database_mariadb_enabled: bool = True
-    database_pool_size: int = 48
-    host: str = "0.0.0.0"
-    port: int = 8088
+    llama_api_key: str = ""
+    brave_search_api_key: str = ""
+    # Optional catalog/install credentials. SKILLS_SH_TOKEN must be a
+    # non-expiring skills.sh credential — a Vercel OIDC JWT expires ~12h
+    # and is not a valid .env secret. GITHUB_TOKEN raises the process-wide
+    # GitHub install cap from 20 to 200 HTTP calls/hour.
+    skills_sh_token: str = ""
+    github_token: str = ""
+    # Web Push keys. Empty = data/vapid.json (generated on first use). Copy the
+    # existing values when moving them here: new keys break every subscription.
+    vapid_private_key: str = ""
+    vapid_public_key: str = ""
 
-    allow_register: bool = False
-    allow_private_hosts: bool = False
-    allow_local_workspace: bool = False
+    # --- Deployment ---
+    database_pool_size: int = 48
+    skills_directory: str = str(ROOT / "data" / "skills")
     public_base_url: str = ""
     trusted_hosts: str = ""
+    llama_base_url: str = ""
     # Serve /static URLs that carry ?v= as immutable for a year. promote-dev.sh
     # raises ?v= for every changed file, so production is always fresh; dev
-    # edits files without bumping, so its .env sets this false.
+    # edits files without bumping, so its config sets this false.
     static_immutable: bool = True
     # Refresh pooled OAuth credentials (rotating refresh tokens). Only the
     # instance that owns the credentials may: dev runs on a clone of
     # production's rows, and spending a shared refresh token there kills the
-    # production copy. Dev's .env sets this false.
+    # production copy. Dev's config sets this false.
     oauth_refresh_enabled: bool = True
+
+    # --- Feature flags ---
+    allow_register: bool = False
+    allow_private_hosts: bool = False
+    # Bug-report triage pipeline. Disabled by default; reports queue in the
+    # bug_reports table until ISSUES_PIPELINE_ENABLED=1. The triage model is
+    # resolved through the site's own sources (llama / OpenAI-compat / site
+    # OpenRouter key) — never the pooled Grok/ChatGPT/Z.AI/Devin subscriptions.
+    issues_pipeline_enabled: bool = False
+    # Append raw Devin stream frames to data/devin-stream-debug.log.
+    fuse_devin_debug: bool = False
+
+    # --- Limits and tunables ---
     max_body_bytes: int = 2_097_152
     chat_body_bytes: int = 8_388_608
     max_tokens: int = 16_384
@@ -56,6 +78,9 @@ class Settings(BaseSettings):
     # Archive chats/projects inactive this many days; delete what has been archived this long.
     retention_force_archive_days: int = 0
     retention_force_delete_days: int = 0
+    issues_pipeline_model: str = ""
+    issues_pipeline_batch: int = 2
+    issues_pipeline_max_attempts: int = 5
 
     # Dashboard context meter + compaction. Ratios are of the model window.
     # Strategy is a name in app.context_compact.STRATEGIES so a later summarizer can
@@ -74,6 +99,7 @@ class Settings(BaseSettings):
     # is retried once before falling back to the truncate strategy.
     context_summarizer_model: str = ""
 
+    # --- Provider client identities and endpoints (protocol defaults) ---
     grok_client_id: str = "b1a00492-073a-47ea-816f-4c329264a828"
     # Bootstrap/fallback version; disable auto-refresh to pin this value.
     grok_client_version: str = "1.0.46"
@@ -95,11 +121,9 @@ class Settings(BaseSettings):
     # model's minimal_client_version; a high value lists every new slug.
     openai_codex_client_version: str = "99.0.0"
     # SOCKS/HTTP proxy for ChatGPT OAuth only (device code, token, refresh).
-    # Empty = direct. Use socks5h:// so DNS is resolved by the proxy.
+    # Empty = direct. Use socks5h:// so DNS is resolved by the proxy. Keep it in
+    # .env if the URL carries credentials.
     openai_auth_proxy: str = ""
-
-    llama_base_url: str = ""
-    llama_api_key: str = ""
 
     zai_coding_base: str = "https://api.z.ai/api/coding/paas/v4"
     zai_quota_url: str = "https://api.z.ai/api/monitor/usage/quota/limit"
@@ -145,24 +169,6 @@ class Settings(BaseSettings):
     claude_token_url: str = "https://platform.claude.com/v1/oauth/token"
     claude_manual_redirect_url: str = "https://platform.claude.com/oauth/code/callback"
     claude_api_base: str = "https://api.anthropic.com"
-
-    brave_search_api_key: str = ""
-
-    # Bug-report triage pipeline. Disabled by default; reports queue in the
-    # bug_reports table until ISSUES_PIPELINE_ENABLED=1. The triage model is
-    # resolved through the site's own sources (llama / OpenAI-compat / site
-    # OpenRouter key) — never the pooled Grok/ChatGPT/Z.AI/Devin subscriptions.
-    issues_pipeline_enabled: bool = False
-    issues_pipeline_model: str = ""
-    issues_pipeline_batch: int = 2
-    issues_pipeline_max_attempts: int = 5
-
-    # Optional catalog/install credentials. SKILLS_SH_TOKEN must be a
-    # non-expiring skills.sh credential — a Vercel OIDC JWT expires ~12h
-    # and is not a valid .env secret. GITHUB_TOKEN raises the process-wide
-    # GitHub install cap from 20 to 200 HTTP calls/hour.
-    skills_sh_token: str = ""
-    github_token: str = ""
 
     @field_validator("app_secret")
     @classmethod

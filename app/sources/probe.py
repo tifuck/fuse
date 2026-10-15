@@ -14,6 +14,7 @@ from .grok import (
     is_held,
     refresh_billing,
 )
+from .ollama import DEFAULT_BASE as OLLAMA_BASE
 from .openrouter import catalog_available as openrouter_catalog_available
 from .openrouter import fetch_catalog as openrouter_fetch_catalog
 from .zai import (
@@ -650,7 +651,7 @@ async def _probe_chat_source(src) -> list[dict]:
     if isinstance(cfg, dict):
         base = str(cfg.get("base_url") or "")
     if src.type_id == "ollama":
-        base = getattr(src, "base", None) or base or "https://ollama.com/api"
+        base = getattr(src, "base", None) or base or OLLAMA_BASE
     if src.type_id == "llama":
         base = getattr(src, "_url", lambda: base)()
     if src.type_id == "openai":

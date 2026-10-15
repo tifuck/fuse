@@ -27,7 +27,8 @@ Usage: ./install.sh [options]
 
 Sets up Fuse end to end in this directory:
   - Python virtual environment (venv/) + pip dependencies
-  - .env with a freshly generated APP_SECRET (existing values are never changed)
+  - .env (secrets) with a freshly generated APP_SECRET and config.env (settings);
+    existing values are never changed
   - MariaDB: as root with no DATABASE_URL yet, a local server, database and
     user (installs mariadb-server if missing); then Fuse's tables are created
   - Self-signed TLS certificate in certs/ (existing certs are kept)
@@ -93,9 +94,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=$FUSE_HOME
-Environment="PORT=8088" "FORWARDED_ALLOW_IPS=127.0.0.1"
+EnvironmentFile=-$FUSE_HOME/config.env
 EnvironmentFile=$FUSE_HOME/.env
-ExecStart=$FUSE_HOME/venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port \${PORT} --workers 1 --limit-concurrency 256 --timeout-graceful-shutdown 8 --ws-max-size 1048576 --ws-max-queue 32 --proxy-headers --forwarded-allow-ips \${FORWARDED_ALLOW_IPS} --ssl-certfile $FUSE_HOME/certs/server.crt --ssl-keyfile $FUSE_HOME/certs/server.key
+ExecStart=$FUSE_HOME/start.sh
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=20
@@ -128,7 +129,23 @@ apt_install() {
 }
 
 env_db_url() { grep -E '^DATABASE_URL=mysql://' .env | tail -1 | cut -d= -f2- || true; }
-env_get() { grep -E "^$1=" .env | tail -1 | cut -d= -f2- || true; }
+# Settings live in config.env, secrets in .env; .env wins, as in app/config.py.
+env_get() { cat config.env .env 2>/dev/null | grep -E "^$1=" | tail -1 | cut -d= -f2- || true; }
+write_config_env() {
+  [ -f config.env ] && return 0
+  cat > config.env <<EOF
+# Non-secret settings (see config.env.example). Secrets stay in .env.
+HOST=0.0.0.0
+PORT=8088
+
+# Public HTTPS URL of this box (required for fuse-agent connector installs
+# and desktop update checks):
+#PUBLIC_BASE_URL=https://your-host.example.com
+#TRUSTED_HOSTS=
+#FORWARDED_ALLOW_IPS=127.0.0.1
+EOF
+  echo "generated config.env"
+}
 port_busy() { ss -Hltn "sport = :$1" 2>/dev/null | grep -q .; }
 
 # Connectors download from PUBLIC_BASE_URL and verify its certificate, so the
@@ -155,7 +172,7 @@ choose_domain() {
   fi
   [[ "$DOMAIN" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]+)?$ ]] || die "invalid domain: $DOMAIN"
   getent hosts "${DOMAIN%%:*}" >/dev/null 2>&1 || warn "$DOMAIN does not resolve yet; point its DNS at this server"
-  printf '\nPUBLIC_BASE_URL=https://%s\n' "$DOMAIN" >> .env
+  printf '\nPUBLIC_BASE_URL=https://%s\n' "$DOMAIN" >> config.env
   echo "set PUBLIC_BASE_URL=https://$DOMAIN (used in the connector install line)"
 }
 
@@ -194,7 +211,7 @@ setup_caddy() {
 }
 
 set_env_db_url() {
-  printf '\nDATABASE_MARIADB_ENABLED=true\nDATABASE_URL=%s\n' "$1" >> .env
+  printf '\nDATABASE_URL=%s\n' "$1" >> .env
 }
 
 provision_local_mariadb() {
@@ -237,10 +254,6 @@ APP_SECRET=$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')
 DB_PASSWORD=$(python3 -c 'import secrets; print(secrets.token_hex(24))')
 # Host port to publish (the container always listens on 8088).
 PORT=8088
-
-# Public HTTPS URL of this box (required for fuse-agent connector installs):
-#PUBLIC_BASE_URL=https://your-host.example.com
-#TRUSTED_HOSTS=
 EOF
     umask "$old_umask"
     echo "generated .env with a fresh APP_SECRET and DB_PASSWORD (chmod 600)"
@@ -260,7 +273,7 @@ EOF
       printf 'FUSE_DOMAIN=%s\nCOMPOSE_FILE=docker-compose.yml:docker-compose.caddy.yml\n' "${DOMAIN%%:*}" >> .env
     fi
   elif [ -n "$DOMAIN" ]; then
-    echo "point your reverse proxy for $DOMAIN at https://127.0.0.1:${PORT_VALUE:-8088} and set FORWARDED_ALLOW_IPS in .env to the address Fuse sees it from"
+    echo "point your reverse proxy for $DOMAIN at https://127.0.0.1:${PORT_VALUE:-8088} and set FORWARDED_ALLOW_IPS in config.env to the address Fuse sees it from"
   fi
   docker compose up -d --build
   printf '\nFuse is starting in Docker.\n'
@@ -354,15 +367,8 @@ if [ ! -f .env ]; then
   old_umask="$(umask)"
   umask 077
   cat > .env <<EOF
+# Secrets only (see .env.example); settings go in config.env.
 APP_SECRET=$APP_SECRET_VALUE
-HOST=0.0.0.0
-PORT=8088
-
-# Public HTTPS URL of this box (required for fuse-agent connector installs
-# and desktop update checks):
-#PUBLIC_BASE_URL=https://your-host.example.com
-#TRUSTED_HOSTS=
-#FORWARDED_ALLOW_IPS=127.0.0.1
 #OPENAI_AUTH_PROXY=
 EOF
   umask "$old_umask"
@@ -370,6 +376,7 @@ EOF
 else
   echo "existing .env kept"
 fi
+write_config_env
 choose_domain
 
 say "Step 2/8: Python virtual environment"
@@ -503,7 +510,7 @@ else
 fi
 [ -z "$(env_get PUBLIC_BASE_URL)" ] || printf '  URL:       %s\n' "$(env_get PUBLIC_BASE_URL)"
 printf '  Direct:    https://%s:%s  (self-signed cert: expect a browser warning)\n' "$ADDR" "$PORT_VALUE"
-printf '  Config:    %s/.env\n' "$FUSE_HOME"
+printf '  Config:    %s/config.env (secrets: .env)\n' "$FUSE_HOME"
 printf '  Data:      %s/data\n' "$FUSE_HOME"
 printf '\n'
 printf 'The first account registered becomes the admin.\n'

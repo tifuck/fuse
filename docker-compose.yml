@@ -24,10 +24,13 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    env_file: .env
+    # Settings in config.env (optional), secrets in .env; later files win.
+    env_file:
+      - path: config.env
+        required: false
+      - path: .env
     environment:
       DATABASE_URL: mysql://fuse:${DB_PASSWORD}@db:3306/fuse
-      DATABASE_MARIADB_ENABLED: "true"
       HOST: 0.0.0.0
       PORT: "8088"
     ports:

@@ -178,7 +178,6 @@ def isolated_database(pool_size=8):
     admin = _admin_connect(source)
     pool = None
     old_url = settings.database_url
-    old_enabled = settings.database_mariadb_enabled
     try:
         with admin.cursor() as cursor:
             cursor.execute(f"CREATE DATABASE `{schema}`")
@@ -189,7 +188,6 @@ def isolated_database(pool_size=8):
                 cursor.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
             cursor.execute(f"INSERT INTO `{schema}`.schema_meta SELECT * FROM `{source}`.schema_meta")
         settings.database_url = urlunsplit(url._replace(path="/" + schema))
-        settings.database_mariadb_enabled = True
         pool = connect(settings.database_url, max_connections=pool_size)
         db._conn = pool
         yield schema
@@ -198,7 +196,6 @@ def isolated_database(pool_size=8):
         if pool is not None:
             pool.close()
         settings.database_url = old_url
-        settings.database_mariadb_enabled = old_enabled
         try:
             with admin.cursor() as cursor:
                 cursor.execute(f"DROP DATABASE IF EXISTS `{schema}`")

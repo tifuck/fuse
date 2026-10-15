@@ -13,7 +13,7 @@ from .chatgpt import CHATGPT_MODELS, ChatGPTSource, ensure_chatgpt_source, refre
 from .grok import GROK_MODELS, GrokSource, ensure_grok_source, grok_access_state, refresh_due, user_has_grok
 from .llama import LlamaSource
 from .openai_compat import OpenAICompatSource
-from .ollama import OllamaSource
+from .ollama import DEFAULT_BASE as OLLAMA_BASE, OllamaSource
 from .openrouter import OpenRouterSource, ensure_openrouter_source, user_has_openrouter
 from .explabs import ExperientialLabsSource, ensure_explabs_source
 from .zai import ZAI_MODELS, ZaiSource, ensure_zai_source, user_has_zai
@@ -574,7 +574,7 @@ def ensure_llama_source() -> int:
 
 
 def ensure_ollama_source() -> int:
-    return _ensure_typed_source("ollama", "Ollama Cloud", {"base_url": "https://ollama.com/api"})
+    return _ensure_typed_source("ollama", "Ollama Cloud", {"base_url": OLLAMA_BASE})
 
 
 def ensure_chatgpt_source_row() -> int:

@@ -1,6 +1,7 @@
 .git
 .env
 .env.*
+config.env
 venv/
 data/
 certs/
