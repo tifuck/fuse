@@ -27,6 +27,7 @@ import asyncssh  # noqa: E402
 
 from app import chat_runtime as runtime  # noqa: E402
 from app import command_jobs as jobs  # noqa: E402
+from app import command_render  # noqa: E402
 from app import permissions  # noqa: E402
 from app import workspace as ws  # noqa: E402
 from app.search import extract as extract_mod  # noqa: E402
@@ -163,7 +164,7 @@ class ReadResultClipTest(unittest.TestCase):
 
     def test_other_tool_budgets_fit_runtime_clip(self):
         self.assertLess(ws._SEARCH_OUT_CHARS + 2000, runtime.TOOL_RESULT_CHARS)
-        self.assertLess(jobs.OUT_HEAD_CHARS + jobs.MODEL_TAIL_CHARS + 1000, runtime.TOOL_RESULT_CHARS)
+        self.assertLess(jobs.OUT_HEAD_CHARS + command_render.MODEL_TAIL_CHARS + 1000, runtime.TOOL_RESULT_CHARS)
         from app.chat_generation import tool_jobs
         from app.search.pack import PAGE_BUDGET
 
@@ -539,7 +540,7 @@ class JobOutputTest(unittest.TestCase):
         text = "FIRST ERROR\n" + ("noise\n" * 10000) + "LAST LINE\n"
         for i in range(0, len(text), 777):
             jobs._append_out(rec, text[i:i + 777])
-        body = jobs._model_body(rec, rec["out"])
+        body = command_render._model_body(rec, rec["out"])
         self.assertTrue(body.startswith("FIRST ERROR"))
         self.assertTrue(body.rstrip().endswith("LAST LINE"))
         self.assertIn("characters of output omitted", body)
@@ -549,7 +550,7 @@ class JobOutputTest(unittest.TestCase):
         text = "".join(f"{i} abcdefghij\n" for i in range(1, 60001))
         for i in range(0, len(text), 777):
             jobs._append_out(rec, text[i:i + 777])
-        body = jobs._model_body(rec, rec["out"])
+        body = command_render._model_body(rec, rec["out"])
         head, rest = body.split("\n[... ", 1)
         count, tail = rest.split(" characters of output omitted ...]\n", 1)
         # Both sides are whole lines, and the gap rejoined with its two line
@@ -565,7 +566,7 @@ class JobOutputTest(unittest.TestCase):
         text = "FIRST ERROR\n" + ("noise\n" * 10000) + "LAST LINE\n"
         for i in range(0, len(text), 777):
             jobs._append_out(rec, text[i:i + 777])
-        body = jobs._model_body(rec, rec["out"])
+        body = command_render._model_body(rec, rec["out"])
         self.assertTrue(body.startswith("[Output truncated; total unknown]\nFIRST ERROR"))
         self.assertIn("characters of output omitted", body)
         self.assertTrue(body.rstrip().endswith("LAST LINE"))
@@ -573,7 +574,7 @@ class JobOutputTest(unittest.TestCase):
     def test_short_output_is_verbatim(self):
         rec = {"out": ""}
         jobs._append_out(rec, "hello\n")
-        self.assertEqual(jobs._model_body(rec, rec["out"]), "hello\n")
+        self.assertEqual(command_render._model_body(rec, rec["out"]), "hello\n")
 
 
 # --- web --------------------------------------------------------------------------
