@@ -9,7 +9,7 @@ import json
 import time
 from uuid import uuid4
 
-from . import db, chat_schema, chat_tx, chat_views, chat_checkpoint, run_inbox
+from . import db, chat_schema, chat_tx, chat_views, chat_checkpoint, chat_scratch, run_inbox
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +190,6 @@ def _start_turn(user_id, thread_id, text, expected_revision, command_id, model=N
                 attachments=None, reasoning_effort=None, auto_title=False, invoke_skill=None, auto=False,
                 scheduled=False, coding_override=None, command_receipt_ids=None, replace_from=None,
                 schedule_id=None, schedule_manual=False, auto_resumed_at="", wake=None, _pinned=None):
-    from . import chat_children
     from . import chats
 
     text = chats._text(text if text is not None else "", "text", chats.AUTO_CONTENT_MAX if auto else chats.CONTENT_MAX)
@@ -404,7 +403,7 @@ def _start_turn(user_id, thread_id, text, expected_revision, command_id, model=N
                 "spawns_used": 0,
                 "vault_unlocked": vault_ok,
             }
-            carried = chat_children._carried_scratch(conn, thread_id, messages)
+            carried = chat_scratch._carried_scratch(conn, thread_id, messages)
             if carried:
                 request["agent"]["scratch"] = carried
             if auto or scheduled:
