@@ -25,7 +25,7 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-perm-btn {
   border: 0;
   border-radius: 0;
   background: none;
-  color: var(--perm-guard);
+  color: var(--brass);
 }
 
 html[data-chat-console="true"] .chat[data-view="console"] .chat-perm-btn.is-bypass { color: var(--mute); }

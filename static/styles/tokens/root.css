@@ -16,9 +16,6 @@
   --status-done: #34D399;
   --status-fail: #F87171;
   --reason: #94A3B8;
-  /* Permission shield while prompts guard the chat (Ask/Auto); fixed like
-     the status colors so it reads the same in every theme. */
-  --perm-guard: #4C8DFF;
   /* Notch, status bar and home bar insets. Styles read these, never env()
      directly, so a browser test can fake an iPhone's insets. */
   --safe-top: env(safe-area-inset-top, 0px);

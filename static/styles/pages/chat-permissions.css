@@ -273,13 +273,13 @@
   border: 0;
   border-radius: 5px;
   background: transparent;
-  color: var(--perm-guard);
+  color: var(--brass);
   font: inherit;
   cursor: pointer;
   transition: color 140ms ease, opacity 140ms ease, filter 140ms ease;
 }
 .chat-perm-btn svg { display: block; }
-.chat-perm-btn:hover { filter: drop-shadow(0 0 5px color-mix(in srgb, var(--perm-guard) 55%, transparent)); }
+.chat-perm-btn:hover { filter: drop-shadow(0 0 5px color-mix(in srgb, var(--brass) 55%, transparent)); }
 .chat-perm-btn.is-bypass { color: var(--mute); opacity: 0.55; }
 .chat-perm-btn.is-bypass:hover { opacity: 0.85; filter: none; }
 .chat-perm-btn-label { display: none; }
