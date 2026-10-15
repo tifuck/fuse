@@ -427,10 +427,14 @@ def create_thread(
     host_id=None,
     project_id=None,
     schedule_id=None,
+    bypass_permissions: bool | None = None,
+    auto_permissions: bool | None = None,
 ) -> dict:
     from . import chat_store as store
+    from . import hosts
 
-    request = ["create", model, messages, title, context, tools, expected_revision, kind, host_id, project_id, schedule_id]
+    request = ["create", model, messages, title, context, tools, expected_revision, kind, host_id, project_id, schedule_id,
+               bypass_permissions, auto_permissions]
     msgs = parse_messages(messages or [], strict=True)
     title = _clean_title(_text(title, "title", TITLE_MAX), strict=True)
     model = _text(model, "model", 200)
@@ -446,6 +450,7 @@ def create_thread(
         thread_kind = "chat"
         hid = None
         pid = None
+        proj = None
         if kind not in (None, "", "chat"):
             if kind != "project":
                 raise ChatValidationError("kind must be chat or project")
@@ -456,7 +461,7 @@ def create_thread(
             except (TypeError, ValueError):
                 raise ChatValidationError("project threads need host_id and project_id")
             proj = conn.execute(
-                "SELECT p.id, p.name, p.host_id, p.default_model FROM user_projects p JOIN user_hosts h ON h.id=p.host_id "
+                "SELECT p.id, p.name, p.host_id, p.default_model, p.default_permissions FROM user_projects p JOIN user_hosts h ON h.id=p.host_id "
                 "WHERE p.id=? AND p.user_id=? AND p.host_id=? AND h.user_id=?",
                 (pid, user_id, hid, user_id),
             ).fetchone()
@@ -470,6 +475,18 @@ def create_thread(
                 except (KeyError, IndexError, TypeError):
                     model = ""
                 model = _text(model, "model", 200)
+        # The mode the client showed on the unsent chat, else the default.
+        if bypass_permissions or auto_permissions:
+            perms = "bypass" if bypass_permissions else "auto"
+        elif bypass_permissions is False or auto_permissions is False:
+            perms = "ask"
+        else:
+            perms = hosts.new_thread_permissions(user_id, conn, proj)
+        if perms == "auto":
+            from . import jev
+
+            if not jev.user_can_auto(user_id):
+                perms = "ask"
         tid = conn.execute("INSERT INTO chat_thread_ids DEFAULT VALUES").lastrowid
         conn.execute("DELETE FROM chat_thread_ids WHERE id=?", (tid,))
         public = _alloc_public_id(conn)
@@ -481,9 +498,11 @@ def create_thread(
                 sid = None
         conn.execute(
             """INSERT INTO chat_threads (id, user_id, title, model, archived, messages, context, tools,
-               created_at, updated_at, active_at, kind, host_id, project_id, public_id, schedule_id)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (tid, user_id, title, model, 0, payload, context, tool_json, ts, ts, ts, thread_kind, hid, pid, public, sid),
+               created_at, updated_at, active_at, kind, host_id, project_id, public_id, schedule_id,
+               bypass_permissions, auto_permissions)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (tid, user_id, title, model, 0, payload, context, tool_json, ts, ts, ts, thread_kind, hid, pid, public, sid,
+             int(perms == "bypass"), int(perms == "auto")),
         )
         store.thread_event(conn, user_id, tid)
         result = store.thread_view(conn, user_id, tid)
@@ -1078,6 +1097,7 @@ def _project_sidebar_view(row) -> dict:
         "remote_path": row["remote_path"],
         "default_model": row["default_model"] if "default_model" in row.keys() else "",
         "permission_mode": row["permission_mode"] if "permission_mode" in row.keys() else "project",
+        "default_permissions": (row["default_permissions"] or "") if "default_permissions" in row.keys() else "",
         "thread_id": thread_id or None,
         "created_at": row["created_at"],
         "updated_at": updated,
@@ -1090,7 +1110,7 @@ def _project_sidebar_view(row) -> dict:
         "last_active_at": (row["last_active_at"] or "") if "last_active_at" in row.keys() else "",
     }
 _PROJECT_SIDEBAR_SQL = """
-    SELECT p.id, p.host_id, p.name, p.remote_path, p.default_model, p.permission_mode,
+    SELECT p.id, p.host_id, p.name, p.remote_path, p.default_model, p.permission_mode, p.default_permissions,
            p.color, p.logo_rev, p.archived, p.archived_at,
            (SELECT COUNT(*) FROM chat_threads c
             WHERE c.user_id=p.user_id AND c.project_id=p.id AND c.kind='project') AS sessions,

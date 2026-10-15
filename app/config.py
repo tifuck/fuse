@@ -47,11 +47,6 @@ class Settings(BaseSettings):
     # --- Feature flags ---
     allow_register: bool = False
     allow_private_hosts: bool = False
-    # Bug-report triage pipeline. Disabled by default; reports queue in the
-    # bug_reports table until ISSUES_PIPELINE_ENABLED=1. The triage model is
-    # resolved through the site's own sources (llama / OpenAI-compat / site
-    # OpenRouter key) — never the pooled Grok/ChatGPT/Z.AI/Devin subscriptions.
-    issues_pipeline_enabled: bool = False
     # Append raw Devin stream frames to data/devin-stream-debug.log.
     fuse_devin_debug: bool = False
 
@@ -78,9 +73,6 @@ class Settings(BaseSettings):
     # Archive chats/projects inactive this many days; delete what has been archived this long.
     retention_force_archive_days: int = 0
     retention_force_delete_days: int = 0
-    issues_pipeline_model: str = ""
-    issues_pipeline_batch: int = 2
-    issues_pipeline_max_attempts: int = 5
 
     # Dashboard context meter + compaction. Ratios are of the model window.
     # Strategy is a name in app.context_compact.STRATEGIES so a later summarizer can

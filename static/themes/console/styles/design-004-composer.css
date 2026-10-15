@@ -25,29 +25,14 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-perm-btn {
   border: 0;
   border-radius: 0;
   background: none;
-  color: var(--mute);
+  color: var(--perm-guard);
 }
 
-html[data-chat-console="true"] .chat[data-view="console"] .chat-perm-btn:hover { color: var(--mist); }
+html[data-chat-console="true"] .chat[data-view="console"] .chat-perm-btn.is-bypass { color: var(--mute); }
 
-html[data-chat-console="true"] .chat[data-view="console"] .chat-perm-btn.is-on {
-  color: var(--brass);
-  background: none;
-  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--brass) 55%, transparent));
-}
+html[data-chat-console="true"] .chat[data-view="console"] .chat-perm-btn.is-bypass:hover { color: var(--mist); }
 
 html[data-chat-console="true"] .chat[data-view="console"] .chat-perm-btn .chat-perm-btn-label { display: none; }
-
-html[data-chat-console="true"] .chat[data-view="console"] .chat-report-btn {
-  order: 3;
-  width: 1.6rem;
-  height: 1.75rem;
-  background: none;
-  color: var(--mute);
-  opacity: 1;
-}
-
-html[data-chat-console="true"] .chat[data-view="console"] .chat-report-btn:hover { color: var(--mist); }
 
 html[data-chat-console="true"] .chat[data-view="console"] .chat-context-wrap { order: 4; }
 

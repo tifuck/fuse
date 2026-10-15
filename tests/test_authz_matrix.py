@@ -4,9 +4,9 @@ Three boundaries, each asserted as "blocked AND no effect" with a positive
 control proving the route itself works for its intended caller:
 
 - non-admins on admin mutations (/admin/users role/delete/invite-delete,
-  the pricing mutation routes, /admin/issues*): rejected with no state
+  the pricing mutation routes): rejected with no state
   change. Committed behavior: the form-backed dashboard routes redirect a
-  non-admin to "/" (303), the JSON admin routes answer 401.
+  non-admin to "/" (303).
 - cross-user isolation: user B gets 404/403 on user A's hosts, artifacts,
   threads and runs, and cannot remove A's push subscription or API key.
 - serialized host payloads never carry the stored secret/passphrase.
@@ -20,7 +20,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.middleware.sessions import SessionMiddleware
 
-from app import accounts, artifacts, chats, chat_store, db, hosts, issues, push, vault, web
+from app import accounts, artifacts, chats, chat_store, db, hosts, push, vault, web
 from app.config import settings
 from app.security import limiter
 from tests.mariadb_fixture import isolated_database
@@ -30,10 +30,9 @@ pytestmark = pytest.mark.skipif(
 )
 
 _PASSWORD = "password12"
-# Committed rejection codes: the dashboard's admin form routes redirect a
-# signed-in non-admin home; the JSON admin routes answer 401.
+# Committed rejection code: the dashboard's admin form routes redirect a
+# signed-in non-admin home.
 _ADMIN_BLOCKED_FORM = 303
-_ADMIN_BLOCKED_JSON = 401
 
 
 @pytest.fixture()
@@ -137,27 +136,6 @@ def test_non_admin_cannot_mutate_pricing(client):
         assert res.status_code == _ADMIN_BLOCKED_FORM, path
     rows = db.fetchall("SELECT provider, model FROM model_prices ORDER BY provider, model")
     assert rows == [{"provider": "grok", "model": "test-model"}]
-
-
-def test_non_admin_cannot_read_or_triage_issues(client):
-    report = issues.submit(summary="Something broke on /usage")
-    assert report is not None
-
-    _login(client, "bob@authz.invalid")
-    pack = client.get("/admin/issues")
-    assert pack.status_code == _ADMIN_BLOCKED_JSON
-    assert pack.json() == {"error": "auth"}
-    triage = client.post("/admin/issues/status", json={"id": report["id"], "status": "rejected"})
-    assert triage.status_code == _ADMIN_BLOCKED_JSON
-    status = db.fetchone("SELECT status FROM bug_reports WHERE id=?", (report["id"],))["status"]
-    assert status == "new"
-
-    # Control: an admin reads the pack and the mutation lands.
-    _login(client, "root@authz.invalid")
-    assert client.get("/admin/issues").status_code == 200
-    rejected = client.post("/admin/issues/status", json={"id": report["id"], "status": "rejected"})
-    assert rejected.status_code == 200
-    assert rejected.json() == {"ok": True, "status": "rejected"}
 
 
 # --- (b) cross-user isolation ----------------------------------------------

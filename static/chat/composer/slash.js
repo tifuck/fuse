@@ -1,5 +1,5 @@
 // Slash palette, skills, composer suggestions, retry hint.
-import { S } from '../state.js';
+import { S, draftKey } from '../state.js';
 import { escapeHtml } from '../core.js';
 
 const SLASH_MAX = 24;
@@ -174,7 +174,7 @@ export function createSlash(ctx) {
     const end = S.paletteTrigger ? S.paletteTrigger.end : (S.slashKind === "history" ? 0 : 0);
     S.input.setRangeText(item.insert, start, end, "end");
     closeSlash();
-    S.drafts.set(S.currentId, S.input.value);
+    S.drafts.set(draftKey(), S.input.value);
     input.resizeInput();
     input.syncComposer();
     input.syncEmptyComposer();
@@ -292,7 +292,7 @@ export function createSlash(ctx) {
     const query = slashQuery();
     S.input.value = slashValue(cmd, query && cmd.args ? query.arg : "");
     closeSlash();
-    S.drafts.set(S.currentId, S.input.value);
+    S.drafts.set(draftKey(), S.input.value);
     input.resizeInput();
     input.syncComposer();
     input.syncEmptyComposer();

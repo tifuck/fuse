@@ -102,6 +102,13 @@ def _require_dek(user_id: int) -> bytes:
         raise HostError("vault locked", 401) from exc
 
 
+PERMISSION_DEFAULTS = ("ask", "auto", "bypass")
+
+
+def _permission_default(value) -> str:
+    return value if value in PERMISSION_DEFAULTS else "ask"
+
+
 def settings_for(user_id: int, conn=None) -> dict:
     q = "SELECT * FROM user_agent_settings WHERE user_id=?"
     row = conn.execute(q, (user_id,)).fetchone() if conn is not None else db.fetchone(q, (user_id,))
@@ -111,6 +118,8 @@ def settings_for(user_id: int, conn=None) -> dict:
             "allow_nested_spawn": False,
             "permission_mode": "project",
             "local_workspace_enabled": False,
+            "default_chat_permissions": "ask",
+            "default_project_permissions": "ask",
         }
     mode = row["permission_mode"] if row["permission_mode"] in ("project", "read_only") else "project"
     return {
@@ -118,6 +127,8 @@ def settings_for(user_id: int, conn=None) -> dict:
         "allow_nested_spawn": bool(row["allow_nested_spawn"]),
         "permission_mode": mode,
         "local_workspace_enabled": bool(row["local_workspace_enabled"]),
+        "default_chat_permissions": _permission_default(_row_get(row, "default_chat_permissions")),
+        "default_project_permissions": _permission_default(_row_get(row, "default_project_permissions")),
     }
 
 
@@ -142,7 +153,8 @@ def enable_coding_if_off(user_id: int) -> None:
         )
 
 
-def set_settings(user_id: int, *, agent_coding=None, allow_nested_spawn=None, permission_mode=None) -> dict:
+def set_settings(user_id: int, *, agent_coding=None, allow_nested_spawn=None, permission_mode=None,
+                 default_chat_permissions=None, default_project_permissions=None) -> dict:
     with db.tx() as conn:
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(
@@ -161,11 +173,17 @@ def set_settings(user_id: int, *, agent_coding=None, allow_nested_spawn=None, pe
             if permission_mode not in ("project", "read_only"):
                 raise HostError("invalid permission_mode")
             mode = permission_mode
+        for raw in (default_chat_permissions, default_project_permissions):
+            if raw is not None and raw not in PERMISSION_DEFAULTS:
+                raise HostError("default permissions must be ask, auto or bypass")
+        chat_default = default_chat_permissions or row["default_chat_permissions"]
+        project_default = default_project_permissions or row["default_project_permissions"]
         conn.execute(
             """UPDATE user_agent_settings
-               SET agent_coding=?, allow_nested_spawn=?, permission_mode=?
+               SET agent_coding=?, allow_nested_spawn=?, permission_mode=?,
+                   default_chat_permissions=?, default_project_permissions=?
                WHERE user_id=?""",
-            (1 if coding else 0, 1 if nested else 0, mode, user_id),
+            (1 if coding else 0, 1 if nested else 0, mode, chat_default, project_default, user_id),
         )
         return settings_for(user_id, conn)
 
@@ -191,6 +209,24 @@ def _permission_mode(raw, *, required: bool = False) -> str:
     if mode not in ("project", "read_only"):
         raise HostError("invalid permission_mode")
     return mode
+
+
+def _project_permissions(raw) -> str:
+    if raw is None or raw == "":
+        return ""
+    if raw not in PERMISSION_DEFAULTS:
+        raise HostError("default_permissions must be ask, auto, bypass or empty")
+    return raw
+
+
+def new_thread_permissions(user_id: int, conn, project=None) -> str:
+    """Permission mode a new chat starts in: its project's own default, else
+    the account default for project sessions or plain chats."""
+    own = _row_get(project, "default_permissions") or ""
+    if own in PERMISSION_DEFAULTS:
+        return own
+    key = "default_project_permissions" if project is not None else "default_chat_permissions"
+    return settings_for(user_id, conn)[key]
 
 
 def project_color(project_id, stored="") -> str:
@@ -230,6 +266,7 @@ def _project_view(row) -> dict:
         "notes": _row_get(row, "notes") or "",
         "default_model": _row_get(row, "default_model") or "",
         "permission_mode": mode,
+        "default_permissions": _row_get(row, "default_permissions") or "",
         "color": project_color(row["id"], _row_get(row, "color") or ""),
         "logo_url": logo_url(row["id"], _row_get(row, "logo_rev") or 0),
         "archived": bool(_row_get(row, "archived") or 0),
@@ -529,6 +566,7 @@ def add_project(user_id: int, host_id: int, raw: dict) -> dict:
     if not isinstance(model, str) or len(model) > 200:
         raise HostError("invalid default_model")
     mode = _permission_mode(raw.get("permission_mode"))
+    perms = _project_permissions(raw.get("default_permissions"))
     color = _color(raw["color"]) if raw.get("color") else secrets.choice(PROJECT_COLORS)
     ts = db.now()
     with db.tx() as conn:
@@ -541,9 +579,10 @@ def add_project(user_id: int, host_id: int, raw: dict) -> dict:
         try:
             conn.execute(
                 """INSERT INTO user_projects(
-                    user_id, host_id, name, remote_path, notes, default_model, permission_mode, color, created_at, updated_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                (user_id, host_id, name, path, notes.strip(), model.strip(), mode, color, ts, ts),
+                    user_id, host_id, name, remote_path, notes, default_model, permission_mode, default_permissions,
+                    color, created_at, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (user_id, host_id, name, path, notes.strip(), model.strip(), mode, perms, color, ts, ts),
             )
         except IntegrityError as exc:
             raise HostError("project already exists on this host", 409) from exc
@@ -553,7 +592,7 @@ def add_project(user_id: int, host_id: int, raw: dict) -> dict:
 
 
 def patch_project(user_id: int, host_id: int, project_id: int, raw: dict) -> dict:
-    allowed = {"name", "remote_path", "notes", "default_model", "permission_mode", "color", "archived"}
+    allowed = {"name", "remote_path", "notes", "default_model", "permission_mode", "default_permissions", "color", "archived"}
     if set(raw) - allowed:
         raise HostError("unsupported project fields")
     from . import chat_store as store
@@ -582,15 +621,17 @@ def patch_project(user_id: int, host_id: int, project_id: int, raw: dict) -> dic
         mode = _permission_mode(_row_get(row, "permission_mode") or "project")
         if "permission_mode" in raw:
             mode = _permission_mode(raw.get("permission_mode"), required=True)
+        perms = _project_permissions(raw.get("default_permissions", _row_get(row, "default_permissions")))
         color = _color(raw["color"]) if "color" in raw else project_color(row["id"], _row_get(row, "color") or "")
         if "archived" in raw and not isinstance(raw["archived"], bool):
             raise HostError("archived must be true or false")
         ts = db.now()
         try:
             conn.execute(
-                """UPDATE user_projects SET name=?, remote_path=?, notes=?, default_model=?, permission_mode=?, color=?, updated_at=?
+                """UPDATE user_projects SET name=?, remote_path=?, notes=?, default_model=?, permission_mode=?,
+                   default_permissions=?, color=?, updated_at=?
                    WHERE id=?""",
-                (name, path, notes, model, mode, color, ts, project_id),
+                (name, path, notes, model, mode, perms, color, ts, project_id),
             )
         except IntegrityError as exc:
             raise HostError("project already exists on this host", 409) from exc

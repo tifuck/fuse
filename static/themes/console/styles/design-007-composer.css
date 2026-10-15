@@ -15,11 +15,6 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat
   height: 1.55rem;
 }
 
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-report-btn {
-  width: 1.4rem;
-  height: 1.55rem;
-}
-
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-pop,
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-picker-menu,
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-context-pop {

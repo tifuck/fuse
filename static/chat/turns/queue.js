@@ -1,5 +1,5 @@
 // Queued turns: store, render, drain, dispatch.
-import { S } from '../state.js';
+import { S, draftKey } from '../state.js';
 import { escapeHtml } from '../core.js';
 import { newSession } from '../state.js';
 import { readQueue, writeQueueItem, deleteQueueItem } from './queue-store.js';
@@ -283,7 +283,7 @@ export function createQueue(ctx) {
       return;
     }
     S.input.value = "";
-    S.drafts.delete(S.currentId);
+    S.drafts.delete(draftKey());
     S.pendingAttachments = [];
     composer.renderAttachList();
     if (window.FuseComposerSpell) {

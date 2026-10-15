@@ -526,6 +526,11 @@ def _ensure_host_tables(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "user_projects", "default_model", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "user_projects", "permission_mode", "TEXT NOT NULL DEFAULT 'project'")
     _ensure_column(conn, "user_projects", "updated_at", "TEXT NOT NULL DEFAULT ''")
+    # Permission mode new chats start in: ask / auto / bypass. A project's own
+    # default is '' (use the account's default for project sessions).
+    _ensure_column(conn, "user_projects", "default_permissions", "VARCHAR(16) NOT NULL DEFAULT ''")
+    _ensure_column(conn, "user_agent_settings", "default_chat_permissions", "VARCHAR(16) NOT NULL DEFAULT 'ask'")
+    _ensure_column(conn, "user_agent_settings", "default_project_permissions", "VARCHAR(16) NOT NULL DEFAULT 'ask'")
     _ensure_column(conn, "user_hosts", "device_token_hash", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "user_hosts", "agent_version", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "user_hosts", "agent_os", "TEXT NOT NULL DEFAULT ''")

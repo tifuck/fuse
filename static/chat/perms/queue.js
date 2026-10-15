@@ -149,6 +149,7 @@ export function createQueue(ctx) {
     const mode = S.threadBypass ? "bypass" : (S.threadAuto ? "auto" : "ask");
     S.permChip.classList.toggle("is-on", mode !== "ask");
     S.permChip.classList.toggle("is-auto", mode === "auto");
+    S.permChip.classList.toggle("is-bypass", mode === "bypass");
     S.permChip.setAttribute("aria-expanded", S.permsOpen ? "true" : "false");
     const title = mode === "bypass"
       ? "Bypass on — no permission prompts"

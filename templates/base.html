@@ -81,44 +81,6 @@
       </div>
     </div>
   </dialog>
-  <dialog class="modal modal-bugreport" data-bug-report aria-labelledby="fuse-bugreport-title">
-    <div class="modal-shell">
-      <header class="modal-head">
-        <div>
-          <p class="metric-label">Fuse · Feedback</p>
-          <h2 id="fuse-bugreport-title">Report an issue</h2>
-        </div>
-        <button type="button" class="btn ghost sm" data-bug-close aria-label="Close report dialog">Close</button>
-      </header>
-      <form data-bug-report-form>
-        <p class="aside">A short rundown is enough — what happened, where, and what you were doing when it did.</p>
-        <label class="bugreport-field">
-          <span>What went wrong?</span>
-          <textarea data-bug-summary rows="4" required minlength="4" maxlength="4000" placeholder="Model picker stopped responding after switching to a second model…"></textarea>
-        </label>
-        <label class="bugreport-field">
-          <span>What did you expect to happen? <em>optional</em></span>
-          <input type="text" data-bug-expected maxlength="2000" placeholder="It should have switched models and kept my draft">
-        </label>
-        <details class="bugreport-details" data-bug-details>
-          <summary>Technical details sent with this report</summary>
-          <pre data-bug-context></pre>
-        </details>
-        <p class="bugreport-note">Automatic context only — no account, no IP, no conversation content.</p>
-        <div class="modal-actions">
-          <span class="bugreport-status" data-bug-status role="status"></span>
-          <button type="submit" class="btn sm" data-bug-send>Send report</button>
-        </div>
-      </form>
-      <div class="bugreport-done" data-bug-done hidden>
-        <p class="aside">Thanks — your report is in the queue.</p>
-        <p class="bugreport-ref">Reference <strong data-bug-ref></strong></p>
-        <div class="modal-actions">
-          <button type="button" class="btn sm" data-bug-finish>Done</button>
-        </div>
-      </div>
-    </div>
-  </dialog>
   <p class="visually-hidden" role="status" data-announce></p>
   <p class="visually-hidden" role="alert" data-announce-alert></p>
   <script src="{{ asset('back.js') }}"></script>

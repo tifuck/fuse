@@ -272,7 +272,7 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-picker-efforts-s
 
 html[data-chat-console="true"] .chat[data-view="console"] .chat-picker-kbd { border-radius: 0; }
 
-html[data-chat-console="true"] .chat[data-view="console"] :is(.chat-model, .chat-search-btn, .chat-perm-host, .chat-perm-btn, .chat-report-btn, .chat-context-wrap, .chat-send) {
+html[data-chat-console="true"] .chat[data-view="console"] :is(.chat-model, .chat-search-btn, .chat-perm-host, .chat-perm-btn, .chat-context-wrap, .chat-send) {
   align-self: flex-end;
 }
 

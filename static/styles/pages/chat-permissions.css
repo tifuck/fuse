@@ -273,27 +273,15 @@
   border: 0;
   border-radius: 5px;
   background: transparent;
-  color: color-mix(in srgb, var(--mute) 55%, var(--ink));
-  opacity: 0.32;
+  color: var(--perm-guard);
   font: inherit;
   cursor: pointer;
   transition: color 140ms ease, opacity 140ms ease, filter 140ms ease;
 }
 .chat-perm-btn svg { display: block; }
-.chat-perm-btn:hover { opacity: 0.55; color: var(--mute); }
-.chat-perm-btn.is-on {
-  color: var(--brass);
-  opacity: 1;
-  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--brass) 55%, transparent));
-}
-.chat-perm-btn.is-auto {
-  color: var(--steel);
-  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--steel) 45%, transparent));
-}
-.chat-perm-btn.is-on:hover {
-  opacity: 1;
-  filter: drop-shadow(0 0 7px color-mix(in srgb, var(--brass) 70%, transparent));
-}
+.chat-perm-btn:hover { filter: drop-shadow(0 0 5px color-mix(in srgb, var(--perm-guard) 55%, transparent)); }
+.chat-perm-btn.is-bypass { color: var(--mute); opacity: 0.55; }
+.chat-perm-btn.is-bypass:hover { opacity: 0.85; filter: none; }
 .chat-perm-btn-label { display: none; }
 .chat-perms-menu {
   position: absolute;

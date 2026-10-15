@@ -285,6 +285,7 @@
       name: project ? project.name : "",
       path: project ? project.remote_path : "",
       readOnly: project ? project.permission_mode === "read_only" : false,
+      perms: project ? project.default_permissions || "" : "",
       color: project ? colorFor(project) : COLORS[Math.floor(Math.random() * COLORS.length)],
       logoUrl: project ? logoFor(project) : "",
       logoData: "",
@@ -318,6 +319,11 @@
         `<input name="remote_path" required maxlength="400" placeholder="Choose a folder" autocomplete="off" value="${esc(draft.path)}">` +
         `<button type="button" class="btn sm ghost" data-fp-browse>Browse</button></span></label>` +
         `<label class="check fp-field-wide"><input type="checkbox" name="read_only"${draft.readOnly ? " checked" : ""}><span>Read-only (no writes or shell in this project)</span></label>` +
+        `<label class="fp-field fp-field-wide"><span>New sessions start in</span><select name="default_permissions">` +
+        [["", "Account default"], ["ask", "Ask"], ["auto", "Auto"], ["bypass", "Bypass"]]
+          .map(([value, label]) => `<option value="${value}"${value === draft.perms ? " selected" : ""}>${label}</option>`)
+          .join("") +
+        `</select></label>` +
         `<fieldset class="fp-field fp-field-wide fp-colors"><legend>Folder color</legend><div class="fp-swatches">` +
         COLORS.map(
           (c) =>
@@ -352,6 +358,7 @@
       draft.name = f.elements.name.value;
       draft.path = f.elements.remote_path.value;
       draft.readOnly = f.elements.read_only.checked;
+      draft.perms = f.elements.default_permissions.value;
       if (f.elements.host) draft.hostId = f.elements.host.value;
     };
     const repaintPreview = () => {
@@ -453,6 +460,7 @@
           name: draft.name.trim(),
           remote_path: draft.path.trim(),
           permission_mode: draft.readOnly ? "read_only" : "project",
+          default_permissions: draft.perms,
           color: draft.color,
         };
         try {

@@ -9,14 +9,14 @@ build: Jinja templates and plain JS/CSS are served as-is.
 | Path | What lives there |
 | --- | --- |
 | `app/` | The server. Large modules keep stable facades (`app/chats.py`, `app/chat_store.py` re-export their owner modules); new code imports the owner. |
-| `app/web/` | Dashboard HTTP routes (`auth`, `hosts`, `issues`, `skills`, `schedules`, `dashboard`, `models`, `chat`, `notifications`, `artifacts`, `sources`, `settings`); `deps.py` holds shared auth/render helpers. No domain SQL here. |
+| `app/web/` | Dashboard HTTP routes (`auth`, `hosts`, `skills`, `schedules`, `dashboard`, `models`, `chat`, `notifications`, `artifacts`, `sources`, `settings`); `deps.py` holds shared auth/render helpers. No domain SQL here. |
 | `app/sources/` | Model backends, one module per type, registered in `app/sources/__init__.py` (`_BUILDERS` + `TYPES`). |
 | `app/chat_generation/` | Dashboard generation loop pieces (parsing, streaming, resume policy, tool rounds, run inbox). |
 | `app/search/` | Fuse-hosted web search: one file per provider under `providers/`. |
 | `app/workspace_ops/` | Workspace tool families used by `app/workspace.py`. |
 | `agent/` | `fuse-agent` connector: C binary (`src/`, `make`) and Windows Go EXE (`windows/`). |
 | `templates/`, `static/` | Pages and assets. Chat UI: `static/chat.js` + `static/chat/`, rendering in `static/themes/console/`. Vendored code: `static/vendor/`, `static/dict/`. |
-| `scripts/` | Operational scripts (database backup, schema dump/init, bug and tool-failure review, usage rollup rebuild). |
+| `scripts/` | Operational scripts (database backup, schema dump/init, tool-failure review, usage rollup rebuild). |
 | `scripts/sql/` | `schema.sql` (the empty schema fresh installs load) and dated migrations not yet applied everywhere. |
 | `tests/` | pytest suites, Node unit suites (`*.test.cjs`) and Playwright browser suites (`*.browser.cjs`). |
 | `fuse-desktop/` | Electron wrapper around the site (no app logic). `npm run dist` takes the site URL and app id from `fuse-desktop/site.json` (gitignored) or `FUSE_URL`/`FUSE_APP_ID`; keep the app id stable once released. |

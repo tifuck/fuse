@@ -95,6 +95,8 @@
       await api("/hosts/settings", "POST", {
         agent_coding: agent.elements.agent_coding.checked,
         allow_nested_spawn: agent.elements.allow_nested_spawn.checked,
+        default_chat_permissions: agent.elements.default_chat_permissions.value,
+        default_project_permissions: agent.elements.default_project_permissions.value,
       });
       return "Saved.";
     });

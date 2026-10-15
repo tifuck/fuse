@@ -117,6 +117,19 @@
       <label class="check"><input type="checkbox" name="allow_nested_spawn"{% if agent.allow_nested_spawn %} checked{% endif %}> Allow subagents to start subagents</label>
     </div>
   </div>
+  {% set perm_modes = [("ask", "Ask"), ("auto", "Auto"), ("bypass", "Bypass")] %}
+  <div class="set-row">
+    <div class="set-label"><strong>Default permissions</strong><span>The mode a new chat starts in. A project can set its own in its settings. Auto needs an OpenRouter key.</span></div>
+    <div class="set-control">
+      {% for field, label in [("default_chat_permissions", "New chats"), ("default_project_permissions", "New project sessions")] %}
+      <div class="set-inline">
+        <label><span>{{ label }}</span> <select name="{{ field }}">
+          {% for value, text in perm_modes %}<option value="{{ value }}"{% if agent[field] == value %} selected{% endif %}>{{ text }}</option>{% endfor %}
+        </select></label>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
   <div class="set-foot">
     <button type="submit" class="btn sm">Save coding agents</button>
     <span class="set-status" data-agent-status role="status"></span>

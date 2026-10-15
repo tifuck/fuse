@@ -172,7 +172,7 @@ html[data-chat-console="true"] body.is-settings .settings-shell input[type="chec
 /* Field labels read like the chat sheets' ("SEARCH SKILLS.SH"). :not(input[…]) only
    holds the specificity of a former :not(:has(> input[type=checkbox])), which
    ran on the parent of every first-child span on the page and dominated restyles. */
-html[data-chat-console="true"] body:is(.is-settings, .is-chat) :is(.settings-shell, dialog.modal) :is(.hosts-field, .bugreport-field, .fp-field):not(.check):not(.hosts-check):not(input[type="checkbox"]) > span:first-child:not(:has(input)) {
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) :is(.settings-shell, dialog.modal) :is(.hosts-field, .fp-field):not(.check):not(.hosts-check):not(input[type="checkbox"]) > span:first-child:not(:has(input)) {
   color: var(--mute);
   font: 0.66rem/1.4 var(--mono);
   letter-spacing: 0.06em;

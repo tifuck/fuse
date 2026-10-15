@@ -164,7 +164,7 @@ export function createOverlays(ctx) {
     // a repaint replaces the row nodes, and syncHistoryFooter re-stamps them.
     const menuRow = anchor && anchor.closest ? anchor.closest(".chat-history-item") : null;
     if (menuRow) {
-      const attr = menuRow.hasAttribute("data-thread") ? "data-thread" : "data-project";
+      const attr = ["data-thread", "data-draft"].find((name) => menuRow.hasAttribute(name)) || "data-project";
       S.popRowKey = [attr, menuRow.getAttribute(attr)];
       menuRow.classList.add("is-menu");
     }

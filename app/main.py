@@ -16,7 +16,7 @@ from starlette.responses import JSONResponse, Response
 
 from .config import ROOT, settings
 from . import static_assets
-from . import accounts, db, chat_store, chat_runs, chat_events, chat_recaps, chat_titles, host_events, issues_pipeline, retention, sources as sources_module
+from . import accounts, db, chat_store, chat_runs, chat_events, chat_recaps, chat_titles, host_events, retention, sources as sources_module
 from .api import http_errors, router as api_router
 from .web import router as web_router
 from .agent_http import router as agent_http_router
@@ -114,9 +114,8 @@ async def _refresh_loop(app: FastAPI):
     )
     local_jobs = (
         ("model pricing", auto_price_due),
-        ("bug triage", issues_pipeline.tick),
     )
-    # Each job backs off on its own: one failing catalog or triage job used to
+    # Each job backs off on its own: one failing catalog job used to
     # double the shared delay and hold OAuth refresh back for up to 5 minutes.
     delays = {name: _REFRESH_INTERVAL for name, _ in (*provider_jobs, *local_jobs)}
     skip = dict.fromkeys(delays, 0)
@@ -212,11 +211,6 @@ async def lifespan(app: FastAPI):
         recovered_skills = skill_install.sweep_partial_swaps()
         if recovered_skills:
             logger.warning("Recovered skill directories from partial swaps: %s", recovered_skills)
-        from .issues_pipeline import recover_stuck as recover_stuck_issues
-
-        stuck_reports = recover_stuck_issues()
-        if stuck_reports:
-            logger.warning("Released %d bug reports stuck in triaging", stuck_reports)
         chat_runs._stopping = False
         chat_events.start()
         host_events.start()

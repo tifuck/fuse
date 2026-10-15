@@ -1,5 +1,5 @@
 // History list rendering, tabs, search.
-import { S } from '../state.js';
+import { S, draftKey } from '../state.js';
 import { escapeHtml, safeUrl } from '../core.js';
 
 function sourceCatalog(msg) {
@@ -40,6 +40,11 @@ function splitPinned(items) {
 
 // Hairline between the pinned section and the timeline below it.
 const PINNED_SEP = '<div class="chat-history-sep" aria-hidden="true"></div>';
+
+const DRAFT_ICON = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M10.8 2.7l2.5 2.5-7.6 7.6-3.2.7.7-3.2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>';
+
+// Sorts unsent drafts above every dated row.
+const DRAFT_AT = "9999-12-31T00:00:00Z";
 
 function historyIcons() {
   return {
@@ -164,6 +169,69 @@ export function createRender(ctx) {
     return `<div class="chat-history-item${on}${twoLine ? " has-snip" : ""}${project ? " is-project" : ""}${groupedClass}${runningClass}${scheduledClass}${pinClass}${unreadClass}" data-thread="${escapeHtml(String(item.id))}"${busy}><button type="button" class="open" title="${title}"${on ? ' aria-current="true"' : ""}>${working}<span class="chat-history-title">${lead}<span class="chat-history-copy"><span class="chat-history-name">${title}</span>${meta}${snip}</span></span>${chip}</button><button type="button" class="more" aria-label="Actions for ${title}" aria-haspopup="menu" aria-expanded="false">⋯</button></div>`;
   }
 
+    // Unsent new chats that have text or files in their box (null key: a
+  // plain chat, "p:<host>:<project>": a project session). They live only in
+  // this tab, like every other draft.
+  function draftItems(projectTab) {
+    const items = [];
+    new Set([...S.drafts.keys(), ...S.draftFiles.keys()]).forEach((key) => {
+      const text = String(S.drafts.get(key) || "").trim();
+      if (!text && !(S.draftFiles.get(key) || []).length) return;
+      const title = text.split("\n")[0] || "Attachment";
+      if (key === null) {
+        if (!projectTab) items.push({ draft: "", title, updated_at: DRAFT_AT });
+        return;
+      }
+      if (!projectTab || !String(key).startsWith("p:")) return;
+      const [, hostId, projectId] = key.split(":");
+      const info = projects.resolveProjectInfo(hostId, projectId);
+      if (!info) return;
+      items.push({
+        draft: key, title, kind: "project", updated_at: DRAFT_AT,
+        host_id: info.host_id, project_id: info.project_id, project_name: info.project_name,
+        host_alias: info.host_alias, project_color: info.color, project_logo_url: info.logo_url,
+      });
+    });
+    return items;
+  }
+
+    function draftRow(item, grouped = false) {
+    const project = item.kind === "project";
+    const on = !S.currentId && (draftKey() ?? "") === item.draft ? " is-on" : "";
+    const title = escapeHtml(item.title);
+    const meta = project && !grouped ? projects.projectMeta(item.project_name || "Project", item.host_alias) : "";
+    const pen = `<span class="chat-history-age">${DRAFT_ICON}</span>`;
+    const lead = project
+      ? pen + `<span class="chat-history-indicator is-folder">${projects.projectIcon({ color: item.project_color, logo_url: item.project_logo_url })}</span>`
+      : `<span class="chat-history-indicator">${pen}</span>`;
+    const classes = `${on}${meta ? " has-snip" : ""}${project ? " is-project" : ""}${project && grouped ? " is-grouped" : ""}`;
+    return `<div class="chat-history-item is-draft${classes}" data-draft="${escapeHtml(item.draft)}"><button type="button" class="open" title="Draft: ${title}"${on ? ' aria-current="true"' : ""}><span class="chat-history-title">${lead}<span class="chat-history-copy"><span class="chat-history-name"><span class="chat-history-draft">Draft</span> ${title}</span>${meta}</span></span></button><button type="button" class="more" aria-label="Actions for draft ${title}" aria-haspopup="menu" aria-expanded="false">⋯</button></div>`;
+  }
+
+    function sessionRow(item, grouped = false) {
+    return item.draft === undefined ? historyRow(item, grouped) : draftRow(item, grouped);
+  }
+
+    function draftMenu(anchor, key, at) {
+    overlays.showPop(anchor, [{
+      label: "Discard draft",
+      danger: true,
+      run: () => {
+        const slot = key || null;
+        S.drafts.delete(slot);
+        S.draftFiles.delete(slot);
+        if (!S.currentId && draftKey() === slot) {
+          S.input.value = "";
+          S.pendingAttachments = [];
+          composer.renderAttachList();
+          composer.resizeInput();
+          composer.syncEmptyComposer();
+        }
+        renderHistory();
+      },
+    }], at);
+  }
+
     function searchingChip(item) {
     const searching = Boolean(S.historyQuery.trim());
     if (!searching) return "";
@@ -258,7 +326,7 @@ export function createRender(ctx) {
       return;
     }
     if (S.historyTab === "projects") {
-      const sessions = projects.projectSessionList();
+      const sessions = projects.projectSessionList(draftItems(true));
       const { pinned, rest } = splitPinned(sessions);
       if (!sessions.length) {
         S.historyList.innerHTML =
@@ -276,23 +344,24 @@ export function createRender(ctx) {
             `<span class="chat-history-project">${escapeHtml(group.name)}</span>` +
             (group.host ? `<span class="chat-history-host-label">${escapeHtml(group.host)}</span>` : "") +
             `</div>`;
-          html += group.items.map((item) => historyRow(item, true)).join("");
+          html += group.items.map((item) => sessionRow(item, true)).join("");
         });
       } else {
-        html += rest.map((item) => historyRow(item)).join("");
+        html += rest.map((item) => sessionRow(item)).join("");
       }
       S.historyList.innerHTML = html;
       syncHistoryFooter();
       return;
     }
     const items = filteredHistory();
-    if (!items.length && !S.historyLoaded) {
+    const drafts = draftItems(false).map((item) => draftRow(item)).join("");
+    if (!items.length && !drafts && !S.historyLoaded) {
       S.historyList.innerHTML = `<div class="chat-history-loading" role="img" aria-label="Loading chats">${"<span></span>".repeat(6)}</div>`;
-    } else if (!items.length) {
+    } else if (!items.length && !drafts) {
       S.historyList.innerHTML = `<p class="chat-history-empty">No chats yet.</p>`;
     } else {
       const { pinned, rest } = splitPinned(items);
-      S.historyList.innerHTML =
+      S.historyList.innerHTML = drafts +
         (pinned.length ? `<p class="chat-history-kicker">Pinned</p>` + pinned.map((item) => historyRow(item)).join("") + (rest.length ? PINNED_SEP : "") : "") +
         rest.map((item) => historyRow(item)).join("");
     }
@@ -371,6 +440,7 @@ export function createRender(ctx) {
   }
 
   return {
+    draftMenu,
     filteredHistory,
     providerLogo,
     queueSearch,

@@ -458,6 +458,15 @@ function initState() {
     return "c" + Math.random().toString(36).slice(2) + Date.now().toString(36);
   }
 
+// Where the composer text is kept: a chat's id, or for an unsent chat null
+// (plain) or "p:<host>:<project>" (project session), so each new chat keeps
+// its own draft and the sidebar can list it.
+function draftKey() {
+  if (S.currentId) return S.currentId;
+  const project = S.pendingProject;
+  return project ? `p:${project.host_id}:${project.project_id}` : null;
+}
+
     function pickInitialModel() {
     const wanted = resolveListedModel((S.config.preselect || "").trim());
     if (wanted) return wanted;
@@ -473,4 +482,4 @@ function initState() {
     return S.allModels[0] ? S.allModels[0].id : "";
   }
 
-export { S, defaultReasoningFor, newSession, resolveListedModel };
+export { S, defaultReasoningFor, draftKey, newSession, resolveListedModel };

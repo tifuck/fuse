@@ -147,15 +147,6 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-pen
 }
 
 @media (max-width: 800px) {
-  html[data-chat-console="true"] .chat[data-view="console"] .chat-report-btn {
-    width: 1.7rem;
-    height: 1.875rem;
-    min-width: 0;
-    min-height: 0;
-  }
-}
-
-@media (max-width: 800px) {
   html[data-chat-console="true"] .chat[data-view="console"] :is(.chat-context, .chat-send) {
     width: 1.875rem;
     height: 1.875rem;

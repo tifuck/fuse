@@ -25,7 +25,7 @@ One Fuse instance serves many users. The first account registered becomes the ad
 - Projects per machine, permission prompts for commands and files, and per-user encrypted host secrets.
 
 **Admin**
-- Users, invites, model sources, pools, pricing, retention (auto-archive/delete), and a bug-report inbox.
+- Users, invites, model sources, pools, pricing, and retention (auto-archive/delete).
 - Optional desktop app (`fuse-desktop/`, Electron wrapper around the site).
 
 ## Setup

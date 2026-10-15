@@ -188,7 +188,7 @@ async def hosts_project_create(request: Request, host_id: int):
     if err:
         return err
     raw = await _json_object(request)
-    if set(raw) - {"name", "remote_path", "notes", "default_model", "permission_mode", "color"}:
+    if set(raw) - {"name", "remote_path", "notes", "default_model", "permission_mode", "default_permissions", "color"}:
         raise HTTPException(422, "Unsupported project fields")
     try:
         item = hosts.add_project(user["id"], host_id, raw)
@@ -344,7 +344,7 @@ async def hosts_settings(request: Request):
     if err:
         return err
     raw = await _json_object(request)
-    if set(raw) - {"agent_coding", "permission_mode", "allow_nested_spawn"}:
+    if set(raw) - {"agent_coding", "permission_mode", "allow_nested_spawn", "default_chat_permissions", "default_project_permissions"}:
         raise HTTPException(422, "Unsupported settings fields")
     try:
         data = hosts.set_settings(
@@ -352,6 +352,8 @@ async def hosts_settings(request: Request):
             agent_coding=raw.get("agent_coding"),
             allow_nested_spawn=raw.get("allow_nested_spawn"),
             permission_mode=raw.get("permission_mode"),
+            default_chat_permissions=raw.get("default_chat_permissions"),
+            default_project_permissions=raw.get("default_project_permissions"),
         )
     except hosts.HostError as exc:
         return _host_fail(exc)

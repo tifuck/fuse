@@ -325,6 +325,14 @@
 .chat-history-item.is-project .chat-history-title { align-items: flex-start; }
 .chat-history-item.is-project .chat-history-title > :is(.chat-history-age, .chat-history-glyph, .chat-run-spin) { margin-top: 0.2rem; }
 .chat-history-item.is-task .chat-history-name::after { content: " · task"; color: var(--steel); font-size: 0.72em; }
+.chat-history-age > svg { display: block; }
+.chat-history-draft {
+  margin-right: 0.15rem;
+  color: var(--brass);
+  font: 0.625rem/1 var(--mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
 .chat-history-chip {
   flex: 0 0 auto;
   align-self: flex-start;

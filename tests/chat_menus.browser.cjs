@@ -150,8 +150,10 @@ const FAMILIES = [
       const menu = page.locator('.chat-perms-menu');
       await menu.waitFor();
       inside(await box('.chat-perms-menu'), 'desktop permissions menu');
+      assert.equal(await chip.evaluate(el => String(el.classList.contains('is-bypass'))), 'false', 'ask keeps the blue shield');
       await menu.locator('[data-perms-mode="bypass"]').click();
       await page.waitForFunction(() => document.querySelector('[data-perm-chip]').classList.contains('is-on'));
+      assert.equal(await chip.evaluate(el => String(el.classList.contains('is-bypass'))), 'true', 'bypass greys the shield');
       assert.equal(await menu.locator('[data-perms-mode="bypass"]').getAttribute('aria-checked'), 'true');
       // Radio keys: only the checked mode is a tab stop; arrows skip the
       // disabled Auto and pick the next mode.
@@ -188,6 +190,22 @@ const FAMILIES = [
       await live();
       await page.waitForFunction(() => document.querySelector('[data-perm-chip-label]').textContent === 'Bypass');
       assert.notEqual(second, first);
+
+      // A new chat starts in the account default, and its mode can change
+      // before the first send (the server applies it on create).
+      const settings = body => page.evaluate(b => fuseToolFixture.api('/hosts/settings', { method: 'POST', body: JSON.stringify(b) }), body);
+      await settings({ default_chat_permissions: 'bypass' });
+      await page.goto(origin + '/chat');
+      await live();
+      await page.waitForFunction(() => document.querySelector('[data-perm-chip]').classList.contains('is-bypass'));
+      await chip.click();
+      await menu.waitFor();
+      assert.match(await menu.locator('.chat-perms-empty').innerText(), /once the chat starts/);
+      await menu.locator('[data-perms-mode="ask"]').click();
+      await page.waitForFunction(() => !document.querySelector('[data-perm-chip]').classList.contains('is-on'));
+      await page.keyboard.press('Escape');
+      await menu.waitFor({ state: 'hidden' });
+      await settings({ default_chat_permissions: 'ask' });
     }
 
     // Composer palettes and the picker keep focus in their text field and name

@@ -232,7 +232,6 @@ def test_one_failing_refresh_job_does_not_delay_oauth_refresh(monkeypatch):
         monkeypatch.setattr(main, name, noop)
     monkeypatch.setattr(main, "refresh_due", oauth)
     monkeypatch.setattr(main, "openrouter_refresh_due", catalog)
-    monkeypatch.setattr(main.issues_pipeline, "tick", noop)
     app = type("App", (), {"state": type("State", (), {})()})()
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(main._refresh_loop(app))

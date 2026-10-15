@@ -143,9 +143,6 @@ def init_schema(connection=None):
         from . import tool_failures
 
         tool_failures.init_schema(conn)
-        from . import issues
-
-        issues.init_schema(conn)
         chats.ensure_thread_public_ids(conn)
         maximum = conn.execute("SELECT MAX(id) FROM chat_threads").fetchone()[0]
         if maximum is not None:

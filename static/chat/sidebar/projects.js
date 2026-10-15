@@ -111,8 +111,8 @@ export function createProjects(ctx) {
     if (sortEl) sortEl.value = S.projectSort;
   }
 
-    function projectSessionList() {
-    let items = S.threads.filter((item) => item.kind === "project");
+    function projectSessionList(drafts = []) {
+    let items = [...drafts, ...S.threads.filter((item) => item.kind === "project")];
     if (S.projectFilter) {
       items = items.filter((item) => projectKey(item.host_id, item.project_id) === S.projectFilter);
     }
@@ -172,6 +172,7 @@ export function createProjects(ctx) {
         project_name: native.name || "Project",
         remote_path: native.remote_path || "",
         permission_mode: native.permission_mode || "",
+        default_permissions: native.default_permissions || "",
         default_model: native.default_model || "",
         color: native.color || "",
         logo_url: native.logo_url || "",
@@ -187,6 +188,7 @@ export function createProjects(ctx) {
         project_name: proj.name || "Project",
         remote_path: proj.remote_path || "",
         permission_mode: proj.permission_mode || "",
+        default_permissions: proj.default_permissions || "",
         default_model: proj.default_model || "",
         color: proj.color || "",
         logo_url: proj.logo_url || "",
@@ -200,6 +202,7 @@ export function createProjects(ctx) {
         project_name: extra.name || extra.project_name || "Project",
         remote_path: extra.remote_path || "",
         permission_mode: extra.permission_mode || "",
+        default_permissions: extra.default_permissions || "",
         default_model: extra.default_model || "",
         color: extra.color || "",
         logo_url: extra.logo_url || "",

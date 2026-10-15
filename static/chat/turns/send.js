@@ -1,5 +1,5 @@
 // Send path: slash parse, complete, stop, retry, rewind.
-import { S } from '../state.js';
+import { S, draftKey } from '../state.js';
 import { escapeHtml } from '../core.js';
 import { newSession } from '../state.js';
 
@@ -198,6 +198,7 @@ export function createSend(ctx) {
     S.navigation += 1;
     const gen = S.generation;
     const origin = S.currentId;
+    const originDraft = draftKey();
     const settings = { model: S.modelId, tools: panels.enabledTools(), context: S.threadContext };
     S.sending = true;
     // Retry, edit and continue replace history, so they say so until the
@@ -207,7 +208,7 @@ export function createSend(ctx) {
     // text and must not overwrite an unrelated draft.
     if (!opts?.queueId && usedPending && !opts?.undoSnap) {
       S.input.value = text;
-      S.drafts.set(origin, text);
+      S.drafts.set(originDraft, text);
     }
     // Show local feedback before copying history or waiting for HTTP. This is
     // deliberately outside the durable transcript: retries keep their command
@@ -252,6 +253,9 @@ export function createSend(ctx) {
         S.serverRevision = created.revision;
         S.pendingCreate = null;
         S.pendingProject = null;
+        // The box's text belongs to the created chat now: no draft row.
+        S.drafts.delete(originDraft);
+        S.draftFiles.delete(originDraft);
         sidebar.upsertLocal(created);
         sync.setThreadUrl(S.currentId);
       }
@@ -290,9 +294,9 @@ export function createSend(ctx) {
       if (!opts?.queueId && usedPending && !opts?.undoSnap && S.input.value === text) {
         if (window.FuseComposerSpell) FuseComposerSpell.learnFromSent(text);
         S.input.value = "";
-        S.drafts.delete(origin);
+        S.drafts.delete(originDraft);
         S.drafts.delete(S.currentId);
-        S.draftFiles.delete(origin);
+        S.draftFiles.delete(originDraft);
         S.draftFiles.delete(S.currentId);
         if (window.FuseComposerSpell) {
           FuseComposerSpell.close();
@@ -314,7 +318,7 @@ export function createSend(ctx) {
         // needs its text (and files) back in the composer to try again. An
         // edit still has them in its open editor.
         S.input.value = text;
-        S.drafts.set(origin, text);
+        S.drafts.set(originDraft, text);
         S.pendingAttachments = attachments;
         composer.renderAttachList();
         composer.resizeInput();

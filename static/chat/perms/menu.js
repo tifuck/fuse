@@ -54,7 +54,7 @@ function paintPermsList() {
   const listEl = permsMenuEl && permsMenuEl.querySelector("[data-perms-list]");
   if (!listEl) return;
   if (!threadPermData) {
-    listEl.innerHTML = '<p class="chat-perms-empty">Loading…</p>';
+    listEl.innerHTML = `<p class="chat-perms-empty">${S.currentId ? "Loading…" : "Access appears here once the chat starts."}</p>`;
     return;
   }
   const q = permsFilter.trim().toLowerCase();
@@ -88,6 +88,17 @@ export function createMenu(ctx) {
 
     function permMode() {
     return S.threadBypass ? "bypass" : (S.threadAuto ? "auto" : "ask");
+  }
+
+  // An unsent chat shows the mode it will be created in: its project's own
+  // default, else the account default. A change stays local until the send.
+  function applyNewChatMode() {
+    const project = S.pendingProject;
+    const defaults = S.config.permission_defaults || {};
+    const mode = (project && project.default_permissions) || defaults[project ? "project" : "chat"] || "ask";
+    S.threadBypass = mode === "bypass";
+    S.threadAuto = mode === "auto" && autoAvailable;
+    queue.syncPermChip();
   }
 
     // The permissions menu mirrors the model picker: filter row on top, one
@@ -268,8 +279,14 @@ export function createMenu(ctx) {
   }
 
     async function setPermMode(mode) {
-    if (!S.currentId || mode === permMode()) return;
+    if (mode === permMode()) return;
     if (mode === "auto" && !autoAvailable) return;
+    if (!S.currentId) {
+      S.threadBypass = mode === "bypass";
+      S.threadAuto = mode === "auto";
+      queue.syncPermChip();
+      return;
+    }
     const body = { expected_revision: S.serverRevision };
     if (mode === "bypass") body.bypass_permissions = true;
     else {
@@ -300,6 +317,7 @@ export function createMenu(ctx) {
   }
 
   return {
+    applyNewChatMode,
     paintPermsMode,
     paintPermsPanel,
     permHost,

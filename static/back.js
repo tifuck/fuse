@@ -113,7 +113,7 @@ window.FuseBack = (function fuseBack() {
     }
   });
 
-  // Modal <dialog>s on every page (confirm, bug report, Hosts, Tasks,
+  // Modal <dialog>s on every page (confirm, Hosts, Tasks,
   // Sources) register themselves: back closes the dialog like its Close button.
   let dialogSeq = 0;
   function watchDialog(dialog) {

@@ -304,9 +304,13 @@ async def login(request: Request):
 async def page(request: Request):
     if not request.session.get("uid"):
         return RedirectResponse("/")
+    from app import hosts
+
     user = web.current_user(request)
+    agent = hosts.settings_for(1)
     config = {"families": [{"type": "llama", "title": "Test", "models": [{"id": "offline", "name": "Offline fixture", "reasoning": ["none", "low", "medium", "high"], "reasoning_default": "medium"}]}],
-              "locked": [], "preselect": "offline", "tools": [], "context": chats.get_user_context(1), "limits": {"context": 4000, "attachments": 4, "attachment_chars": 1500000}}
+              "locked": [], "preselect": "offline", "tools": [], "context": chats.get_user_context(1), "limits": {"context": 4000, "attachments": 4, "attachment_chars": 1500000},
+              "permission_defaults": {"chat": agent["default_chat_permissions"], "project": agent["default_project_permissions"]}}
     return web.render(request, "chat.html", user=user, chat_config=config, skills_bundle=[])
 
 

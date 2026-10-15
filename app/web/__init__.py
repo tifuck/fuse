@@ -13,7 +13,6 @@ from . import auth
 from . import chat as chat_routes
 from . import dashboard
 from . import hosts as hosts_routes
-from . import issues as issues_routes
 from . import models as models_routes
 from . import notifications as notifications_routes
 from . import skills as skills_routes
@@ -24,7 +23,6 @@ from . import settings as settings_routes
 router = APIRouter(dependencies=[Depends(csrf_guard)])
 router.include_router(auth.router)
 router.include_router(hosts_routes.router)
-router.include_router(issues_routes.router)
 router.include_router(skills_routes.router)
 router.include_router(schedules_routes.router)
 router.include_router(dashboard.router)

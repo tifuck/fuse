@@ -77,28 +77,6 @@ CREATE TABLE `artifacts` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!40101 SET character_set_client = utf8mb4 */;
-CREATE TABLE `bug_reports` (
-  `id` bigint(20) NOT NULL AUTO_INCREMENT,
-  `created_at` longtext NOT NULL,
-  `updated_at` longtext NOT NULL,
-  `ref` longtext NOT NULL,
-  `status` longtext NOT NULL DEFAULT 'new',
-  `attempts` bigint(20) NOT NULL DEFAULT 0,
-  `summary` longtext NOT NULL DEFAULT '',
-  `expected` longtext NOT NULL DEFAULT '',
-  `page` longtext NOT NULL DEFAULT '',
-  `view` longtext NOT NULL DEFAULT '',
-  `user_agent` longtext NOT NULL DEFAULT '',
-  `context` longtext NOT NULL DEFAULT '',
-  `triage` longtext NOT NULL DEFAULT '',
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `sqlite_autoindex_bug_reports_1` (`ref`) USING HASH,
-  KEY `bug_reports_created` (`created_at`(191)),
-  KEY `bug_reports_status` (`status`(191),`created_at`(191))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_nopad_bin ROW_FORMAT=DYNAMIC;
-/*!40101 SET character_set_client = @saved_cs_client */;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!40101 SET character_set_client = utf8mb4 */;
 CREATE TABLE `chat_commands` (
   `user_id` bigint(20) NOT NULL,
   `command_id` varchar(128) NOT NULL,
@@ -713,6 +691,8 @@ CREATE TABLE `user_agent_settings` (
   `allow_nested_spawn` bigint(20) NOT NULL DEFAULT 0,
   `permission_mode` longtext NOT NULL DEFAULT 'project',
   `local_workspace_enabled` bigint(20) NOT NULL DEFAULT 0,
+  `default_chat_permissions` varchar(16) NOT NULL DEFAULT 'ask',
+  `default_project_permissions` varchar(16) NOT NULL DEFAULT 'ask',
   PRIMARY KEY (`user_id`),
   CONSTRAINT `fk_user_agent_settings_0` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_nopad_bin ROW_FORMAT=DYNAMIC;
@@ -766,6 +746,7 @@ CREATE TABLE `user_projects` (
   `logo_rev` bigint(20) NOT NULL DEFAULT 0,
   `archived` bigint(20) NOT NULL DEFAULT 0,
   `archived_at` varchar(32) NOT NULL DEFAULT '',
+  `default_permissions` varchar(16) NOT NULL DEFAULT '',
   PRIMARY KEY (`id`),
   UNIQUE KEY `sqlite_autoindex_user_projects_1` (`user_id`,`host_id`,`name`) USING HASH,
   KEY `user_projects_host` (`user_id`,`host_id`),

@@ -1,6 +1,6 @@
 // Thread navigation: open, list mutation, rename, session project.
 import { S } from '../state.js';
-import { newSession, resolveListedModel } from '../state.js';
+import { draftKey, newSession, resolveListedModel } from '../state.js';
 
 function isUntitledThread(current) {
   if (!current) return true;
@@ -162,6 +162,8 @@ export function createThreads(ctx) {
   }
 
     function bindCreatePayload(payload) {
+    payload.bypass_permissions = Boolean(S.threadBypass);
+    payload.auto_permissions = Boolean(S.threadAuto);
     if (!S.pendingProject) return payload;
     payload.kind = "project";
     payload.host_id = S.pendingProject.host_id;
@@ -184,6 +186,11 @@ export function createThreads(ctx) {
       render.setHistoryTab("projects", { persist: true, silent: true });
       chatApi.clearChatState();
       S.pendingProject = info;
+      perms.applyNewChatMode();
+      S.input.value = S.drafts.get(draftKey()) || "";
+      S.pendingAttachments = S.draftFiles.get(draftKey()) || [];
+      composer.renderAttachList();
+      composer.resizeInput();
       const listed = resolveListedModel(info.default_model);
       if (listed) {
         S.modelId = listed;
@@ -205,7 +212,7 @@ export function createThreads(ctx) {
     try {
     if (!gone) {
       // A deleted thread keeps nothing: no draft to stash and no save to wait for.
-      S.drafts.set(S.currentId, S.input.value);
+      S.drafts.set(draftKey(), S.input.value);
       await sync.flushPending();
     }
     if (nav !== S.navigation) return;
@@ -251,8 +258,8 @@ export function createThreads(ctx) {
     // setActive shows the log again in this same task, so nothing flashes.
     if (S.log._threadId !== data.id) S.log.hidden = true;
     transcript.setPartialTranscript(Boolean(data.partial));
-    S.drafts.set(S.currentId, S.input.value);
-    S.draftFiles.set(S.currentId, S.pendingAttachments);
+    S.drafts.set(draftKey(), S.input.value);
+    S.draftFiles.set(draftKey(), S.pendingAttachments);
     S.currentId = data.id;
     S.sessionId = "thread-" + data.id;
     const listed = resolveListedModel(data.model);

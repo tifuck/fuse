@@ -218,24 +218,6 @@
   display: block;
 }
 .chat-attach-btn:hover { border-color: color-mix(in srgb, var(--mist) 22%, transparent); }
-.chat-report-btn {
-  display: grid;
-  place-items: center;
-  width: 1.6rem;
-  height: 1.6rem;
-  padding: 0;
-  line-height: 0;
-  flex-shrink: 0;
-  border: none;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--mute);
-  opacity: 0.45;
-  transition: opacity 0.15s ease, color 0.15s ease;
-}
-.chat-report-btn svg { display: block; }
-.chat-report-btn:hover,
-.chat-report-btn:focus-visible { opacity: 1; color: var(--mist); }
 .chat-box.is-drop {
   border-color: color-mix(in srgb, var(--brass) 55%, var(--line));
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--brass) 35%, transparent);

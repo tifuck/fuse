@@ -30,6 +30,7 @@ async def chat_page(request: Request):
     if redir:
         return redir
     available, locked = await _models_page_families(user)
+    agent_settings = hosts.settings_for(user["id"])
     families = [
         {
             "type": group["type"],
@@ -70,8 +71,12 @@ async def chat_page(request: Request):
             },
             "compaction": context_meter.public_config(),
             "skills": skills.index_for_chat(user["id"]),
-            "coding": bool(hosts.settings_for(user["id"]).get("agent_coding")),
+            "coding": bool(agent_settings.get("agent_coding")),
             "openrouter": bool(openrouter_mod.user_has_openrouter(user["id"])),
+            "permission_defaults": {
+                "chat": agent_settings["default_chat_permissions"],
+                "project": agent_settings["default_project_permissions"],
+            },
         },
     )
 
@@ -405,9 +410,13 @@ async def chat_thread_create(request: Request):
     if err:
         return err
     raw = await _json_object(request)
-    unknown = set(raw) - {"model", "messages", "title", "context", "tools", "command_id", "kind", "host_id", "project_id"}
+    unknown = set(raw) - {"model", "messages", "title", "context", "tools", "command_id", "kind", "host_id", "project_id",
+                          "bypass_permissions", "auto_permissions"}
     if unknown:
         raise HTTPException(422, "Unsupported chat fields")
+    for key in ("bypass_permissions", "auto_permissions"):
+        if key in raw and not isinstance(raw[key], bool):
+            raise HTTPException(422, f"{key} must be true or false")
     if "messages" in raw and not isinstance(raw["messages"], list):
         raise HTTPException(422, "messages must be an array")
     if "tools" in raw:
@@ -427,6 +436,8 @@ async def chat_thread_create(request: Request):
             kind=raw.get("kind"),
             host_id=raw.get("host_id"),
             project_id=raw.get("project_id"),
+            bypass_permissions=raw.get("bypass_permissions"),
+            auto_permissions=raw.get("auto_permissions"),
         )
     except chats.ChatValidationError as exc:
         raise _chat_validation_error(exc) from None

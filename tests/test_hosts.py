@@ -176,6 +176,38 @@ class HostsProjectsTest(unittest.TestCase):
         self.assertIsNotNone(applied)
         self.assertEqual(applied["title"], "Handler fix")
 
+    def test_new_threads_start_in_the_default_permission_mode(self):
+        h = hosts.add_host(
+            1,
+            {"alias": "box", "hostname": "box.example.com", "username": "u", "auth_type": "key", "secret": "k"},
+        )
+        p = hosts.add_project(1, h["id"], {"name": "api", "remote_path": "/srv/api"})
+        self.assertEqual(p["default_permissions"], "")
+
+        def mode(thread):
+            return "bypass" if thread["bypass_permissions"] else "auto" if thread["auto_permissions"] else "ask"
+
+        def session(**kw):
+            return chats.create_thread(1, kind="project", host_id=h["id"], project_id=p["id"], **kw)
+
+        self.assertEqual(mode(chats.create_thread(1)), "ask")
+        hosts.set_settings(1, default_chat_permissions="bypass")
+        self.assertEqual(mode(chats.create_thread(1)), "bypass")
+        self.assertEqual(mode(session()), "ask", "project sessions have their own account default")
+        hosts.set_settings(1, default_project_permissions="bypass")
+        self.assertEqual(mode(session()), "bypass")
+        hosts.patch_project(1, h["id"], p["id"], {"default_permissions": "ask"})
+        self.assertEqual(mode(session()), "ask", "the project's own default wins")
+        self.assertEqual(mode(session(bypass_permissions=True)), "bypass", "the mode chosen before the send wins")
+        self.assertEqual(mode(chats.create_thread(1, bypass_permissions=False, auto_permissions=False)), "ask")
+        with patch("app.jev.user_can_auto", return_value=False):
+            self.assertEqual(mode(chats.create_thread(1, auto_permissions=True)), "ask", "auto needs an OpenRouter key")
+        with self.assertRaises(hosts.HostError):
+            hosts.set_settings(1, default_chat_permissions="always")
+        with self.assertRaises(hosts.HostError):
+            hosts.patch_project(1, h["id"], p["id"], {"default_permissions": "always"})
+        self.assertEqual(hosts.settings_for(1)["default_chat_permissions"], "bypass")
+
     def test_sidebar_lists_and_searches_native_projects(self):
         h = hosts.add_host(
             1,

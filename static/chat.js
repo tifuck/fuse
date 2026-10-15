@@ -1,5 +1,5 @@
 import { createConsoleTheme } from './themes/console/index.js';
-import { S, newSession } from './chat/state.js';
+import { S, draftKey, newSession } from './chat/state.js';
 import { escapeHtml, formatTurnDuration, formatTurnMeta, humanMs, runIsStopping, safeUrl, usageInOut } from './chat/core.js';
 import { createOverlays } from './chat/overlays.js';
 import { createNet } from './chat/net.js';
@@ -665,6 +665,7 @@ import { createBoot } from './chat/boot.js';
       perms.setPermsOpen(!S.permsOpen);
     });
   }
+  perms.applyNewChatMode();
 
     document.addEventListener("click", (event) => {
     if (!S.permsOpen) return;
@@ -915,7 +916,7 @@ import { createBoot } from './chat/boot.js';
         S.input.value = item.text;
         S.pendingAttachments = (item.attachments || []).slice();
         composer.renderAttachList();
-        S.drafts.set(S.currentId, item.text);
+        S.drafts.set(draftKey(), item.text);
         S.input.focus();
         composer.resizeInput();
         composer.syncComposer();
@@ -933,19 +934,16 @@ import { createBoot } from './chat/boot.js';
     function clearChatState({ keepList = false } = {}) {
     const stayOnList = keepList && S.historyMobile.matches && S.root.classList.contains("is-history");
     transcript.setPartialTranscript(false);
-    S.drafts.set(S.currentId, S.input.value);
-    S.draftFiles.set(S.currentId, S.pendingAttachments);
+    S.drafts.set(draftKey(), S.input.value);
+    S.draftFiles.set(draftKey(), S.pendingAttachments);
     S.stoppingRunId = "";
     S.activeRun = null;
     S.cacheProbe = null;
     sync.setRunning();
     S.permCards.clear();
     perms.renderPermQueue();
-    S.threadBypass = false;
-    S.threadAuto = false;
     perms.threadPermData = null;
     perms.permsFilter = "";
-    perms.syncPermChip();
     S.navigation += 1;
     S.loading = false;
     S.generation += 1;
@@ -965,6 +963,7 @@ import { createBoot } from './chat/boot.js';
     turns.loadQueue();
     S.pendingCreate = null;
     S.pendingProject = null;
+    perms.applyNewChatMode();
     S.pendingSave = null;
     S.input.value = S.drafts.get(null) || "";
     composer.resizeInput();
@@ -1072,7 +1071,12 @@ import { createBoot } from './chat/boot.js';
 
     S.input.addEventListener("input", () => {
     S.composerVersion += 1;
-    S.drafts.set(S.currentId, S.input.value);
+    S.drafts.set(draftKey(), S.input.value);
+    if (!S.currentId) {
+      // The unsent chat's sidebar row follows what is typed.
+      window.clearTimeout(S.draftRowTimer);
+      S.draftRowTimer = window.setTimeout(() => sidebar.renderHistory(), 250);
+    }
     composer.resizeInput();
     composer.syncComposer();
     context.queueContextMeter();
@@ -1804,6 +1808,10 @@ import { createBoot } from './chat/boot.js';
       if (!row || !S.historyList.contains(row)) return;
       event.preventDefault();
       const at = { x: event.clientX, y: event.clientY };
+      if (row.dataset.draft !== undefined) {
+        sidebar.draftMenu(row, row.dataset.draft, at);
+        return;
+      }
       if (row.dataset.project) {
         sidebar.projectMenu(row, row.dataset.project, at);
         return;
@@ -1917,7 +1925,11 @@ import { createBoot } from './chat/boot.js';
       if (more) {
         event.preventDefault();
         event.stopPropagation();
-        const row = more.closest("[data-project], [data-thread]");
+        const row = more.closest("[data-project], [data-thread], [data-draft]");
+        if (row?.dataset.draft !== undefined) {
+          sidebar.draftMenu(more, row.dataset.draft);
+          return;
+        }
         if (row?.dataset.project) {
           sidebar.projectMenu(more, row.dataset.project);
           return;
@@ -1928,7 +1940,14 @@ import { createBoot } from './chat/boot.js';
       }
       const open = event.target.closest("button.open");
       if (open) {
-        const row = open.closest("[data-project], [data-thread]");
+        const row = open.closest("[data-project], [data-thread], [data-draft]");
+        const draft = row?.dataset.draft;
+        if (draft !== undefined) {
+          const [, hostId, projectId] = draft.split(":");
+          const start = draft ? sidebar.startProjectThread(hostId, projectId) : resetChat();
+          start.catch((error) => sync.showFailure("Could not open the draft", error));
+          return;
+        }
         const project = row?.dataset.project;
         if (project) {
           const [hostId, projectId] = project.split(":");
