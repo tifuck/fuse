@@ -12,7 +12,7 @@ import json
 from pathlib import Path
 from jinja2 import Environment, FileSystemLoader, ChoiceLoader, DictLoader
 root = Path('templates')
-base = '<!doctype html><html><head><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/static/app.css"></head><body>{% block body %}{% endblock %}<script src="/static/app.js"></script></body></html>'
+base = '<!doctype html><html><head><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/static/app.css"></head><body>{% block body %}{% endblock %}<script src="/static/back.js"></script><script src="/static/app.js"></script></body></html>'
 env = Environment(loader=ChoiceLoader([DictLoader({'base.html': base}), FileSystemLoader(root)]), autoescape=True)
 source = (root / 'sources.html').read_text()
 nav = source.split('<nav class="usage-tabs"', 1)[1].split('</nav>', 1)[0]

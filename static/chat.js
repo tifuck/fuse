@@ -1629,7 +1629,7 @@ import { createBoot } from './chat/boot.js';
     // Back swipe: inside a chat it reveals the chat list (like the Chats toggle);
   // from the list itself the browser leaves the page, as usual.
   window.addEventListener("popstate", (event) => {
-    // FuseBack (app.js, registered first) already closed a layer for this one.
+    // FuseBack (back.js, registered first) already closed a layer for this one.
     if (event.fuseBackHandled) return;
     if (!overlays.overlayIsMobile()) return;
     if (event.state && event.state.fuseChat) {

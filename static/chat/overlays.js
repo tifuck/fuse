@@ -102,7 +102,7 @@ export function createOverlays(ctx) {
     }
   }
 
-    // Mobile layers ride the site-wide back stack (FuseBack in app.js): back
+    // Mobile layers ride the site-wide back stack (FuseBack in back.js): back
   // closes the top one, and closing one from its own UI removes its entry.
   function overlayPush(kind) {
     if (!overlayIsMobile()) return;
