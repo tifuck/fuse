@@ -255,8 +255,10 @@ export function createQueue(ctx) {
       if (ok) {
         acknowledgeQueuedTurn(origin, item.id);
         composer.scheduleFitChatBar();
-      } else {
+      } else if (origin === S.currentId) {
         // A reload may have replaced `item` meanwhile; update the shown copy.
+        // Another chat open now (its own was deleted mid-send) must not get
+        // this item written into its queue.
         item.immediate = false;
         for (const entry of S.queuedTurns) if (entry.id === item.id) entry.immediate = false;
         persistQueue(item);

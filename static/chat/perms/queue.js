@@ -113,13 +113,15 @@ export function createQueue(ctx) {
   const { menu, net, sync, ui } = ctx;
     async function hydratePermissionCards(flow) {
     flow.querySelectorAll("[data-perm-id]").forEach((card) => {
-      if (card.dataset.hydrated === "1") return;
-      card.dataset.hydrated = "1";
+      // A node property, not an attribute: the flow reconcile strips
+      // attributes its template lacks, and a refill would erase the user's edit.
+      if (card._hydrated) return;
+      card._hydrated = true;
       const id = card.getAttribute("data-perm-id");
       const body = card.querySelector("[data-perm-body]");
       if (!id || !body) return;
       net.api("/skills/proposals/" + encodeURIComponent(id)).then((data) => {
-        if (typeof data.body === "string") body.value = data.body;
+        if (typeof data.body === "string" && !body.value) body.value = data.body;
       }).catch(() => {});
     });
   }

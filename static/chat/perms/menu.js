@@ -261,10 +261,14 @@ export function createMenu(ctx) {
   }
 
     async function refreshPerms() {
-    if (!S.currentId) return;
+    const id = S.currentId;
+    if (!id) return;
     if (!permsMenuEl) renderPermsMenu();
     try {
-      threadPermData = await net.api(`/chat/threads/${encodeURIComponent(S.currentId)}/permissions`);
+      const data = await net.api(`/chat/threads/${encodeURIComponent(id)}/permissions`);
+      // Another chat opened meanwhile: its mode and pending asks are its own.
+      if (id !== S.currentId) return;
+      threadPermData = data;
       S.threadBypass = Boolean(threadPermData.bypass);
       S.threadAuto = Boolean(threadPermData.auto);
       autoAvailable = Boolean(threadPermData.auto_available);
@@ -273,6 +277,7 @@ export function createMenu(ctx) {
       queue.syncPermChip();
       paintPermsPanel();
     } catch (error) {
+      if (id !== S.currentId) return;
       const listEl = permsMenuEl && permsMenuEl.querySelector("[data-perms-list]");
       if (listEl && !threadPermData) listEl.innerHTML = '<p class="chat-perms-empty">Could not load permissions.</p>';
     }
@@ -293,15 +298,18 @@ export function createMenu(ctx) {
       if (S.threadBypass) body.bypass_permissions = false;
       if (S.threadAuto !== (mode === "auto")) body.auto_permissions = mode === "auto";
     }
+    const id = S.currentId;
     const prev = [S.threadBypass, S.threadAuto];
     S.threadBypass = mode === "bypass";
     if (mode !== "bypass") S.threadAuto = mode === "auto";
     queue.syncPermChip();
     try {
-      const data = await net.api(`/chat/threads/${encodeURIComponent(S.currentId)}`, {
+      const data = await net.api(`/chat/threads/${encodeURIComponent(id)}`, {
         method: "PATCH",
         body: JSON.stringify(body),
       });
+      // Another chat opened meanwhile: this revision and mode are not its own.
+      if (id !== S.currentId) return;
       if (data && Object.prototype.hasOwnProperty.call(data, "bypass_permissions")) S.threadBypass = Boolean(data.bypass_permissions);
       if (data && Object.prototype.hasOwnProperty.call(data, "auto_permissions")) S.threadAuto = Boolean(data.auto_permissions);
       if (data && data.revision != null) S.serverRevision = data.revision;
@@ -310,7 +318,7 @@ export function createMenu(ctx) {
         queue.renderPermQueue();
       }
     } catch (error) {
-      [S.threadBypass, S.threadAuto] = prev;
+      if (id === S.currentId) [S.threadBypass, S.threadAuto] = prev;
       sync.showFailure("Could not change permission mode", error);
     }
     queue.syncPermChip();

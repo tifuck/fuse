@@ -11,6 +11,31 @@ function isUntitledThread(current) {
   return false;
 }
 
+// A snapshot message as the transcript holds it once a thread opens.
+function openedMessage(msg) {
+  return {
+    id: msg.id,
+    role: msg.role,
+    content: msg.content || "",
+    reasoning: msg.reasoning || "",
+    error: msg.error || "",
+    usage: msg.usage || null,
+    model: msg.model || "",
+    tools: Array.isArray(msg.tools) ? msg.tools : [],
+    tools_live: Boolean(msg.tools_live),
+    segments: Array.isArray(msg.segments) ? msg.segments : undefined,
+    // Skill-proposal cards render from these; the reconcile after opening
+    // reports "unchanged" and never brings them back.
+    permissions: Array.isArray(msg.permissions) ? msg.permissions : [],
+    notice: msg.notice || "",
+    elapsedMs: msg.elapsedMs ?? null,
+    endedAt: typeof msg.endedAt === "string" ? msg.endedAt : "",
+    stopped: Boolean(msg.stopped),
+    attachments: Array.isArray(msg.attachments) ? msg.attachments : [],
+    auto: Boolean(msg.auto),
+  };
+}
+
 export function createThreads(ctx) {
   const { agents, artifacts, chatApi, composer, context, drawer, net, overlays, panels, perms, picker, projects, render, spinners, sync, traces, transcript, turns, undo } = ctx;
     function upsertLocal(thread) {
@@ -270,24 +295,7 @@ export function createThreads(ctx) {
     S.contextMessages = Array.isArray(data.context_messages) ? data.context_messages.map((msg) => ({ ...msg, noActions: true })) : [];
     S.contextLive = Boolean(data.context_live);
     S.threadRecaps = transcript.visibleRecaps(data);
-    S.messages = (data.messages || []).map((msg) => ({
-      id: msg.id,
-      role: msg.role,
-      content: msg.content || "",
-      reasoning: msg.reasoning || "",
-      error: msg.error || "",
-      usage: msg.usage || null,
-      model: msg.model || "",
-      tools: Array.isArray(msg.tools) ? msg.tools : [],
-      tools_live: Boolean(msg.tools_live),
-      segments: Array.isArray(msg.segments) ? msg.segments : undefined,
-      notice: msg.notice || "",
-      elapsedMs: msg.elapsedMs ?? null,
-      endedAt: typeof msg.endedAt === "string" ? msg.endedAt : "",
-      stopped: Boolean(msg.stopped),
-      attachments: Array.isArray(msg.attachments) ? msg.attachments : [],
-      auto: Boolean(msg.auto),
-    }));
+    S.messages = (data.messages || []).map(openedMessage);
     S.serverRevision = data.revision;
     perms.acceptPermThread(data);
     S.viewCursor = Number(data.event_cursor || 0);
@@ -356,6 +364,9 @@ export function createThreads(ctx) {
   }
 
     function startRename(row, thread) {
+    // A detached row never takes focus, so finish() would never run and
+    // S.renaming would freeze the list.
+    if (!row?.isConnected) return;
     S.renaming = true;
     const inputEl = document.createElement("input");
     inputEl.className = "rename";
@@ -470,7 +481,11 @@ export function createThreads(ctx) {
         },
       },
       ...moves,
-      { label: "Rename", run: () => startRename(anchor.closest(".chat-history-item"), thread) },
+      {
+        label: "Rename",
+        // A list repaint while the menu was open replaced the row it opened on.
+        run: () => startRename(S.historyList.querySelector(`.chat-history-item[data-thread="${CSS.escape(String(id))}"]`), threadById(id) || thread),
+      },
       {
         label: "Fork",
         run: async () => {
@@ -581,4 +596,4 @@ export function createThreads(ctx) {
   };
 }
 
-export { isUntitledThread };
+export { isUntitledThread, openedMessage };

@@ -14,6 +14,7 @@ const { createSend } = require('../static/chat/turns/send.js');
 const { createUndo } = require('../static/chat/sidebar/undo.js');
 const { createRender } = require('../static/chat/sidebar/render.js');
 const { runIsActive } = require('../static/chat/traces/semantics.js');
+const { readQueue } = require('../static/chat/turns/queue-store.js');
 
 const noop = () => {};
 // Any collaborator method a test does not name is a no-op.
@@ -85,6 +86,18 @@ test('a snapshot older than the applied patches keeps the newer live reply', () 
   assert.equal(S.viewCursor, 60);
 });
 
+test('a snapshot clears fields the server left out instead of keeping the old ones', () => {
+  const file = { id: 'f', name: 'a.txt', kind: 'text', data: 'x' };
+  const user = { id: 'u', role: 'user', content: 'Hi', attachments: [file] };
+  baseState({ messages: [user, { id: 'm', role: 'assistant', content: 'Hel', usage: { output_tokens: 3 }, tools: [] }],
+    activeRun: { id: 'r', message_id: 'm', status: 'running' } });
+  makeApply().acceptThread({ id: 't', revision: 4, event_cursor: 9, run: { id: 'r', message_id: 'm', status: 'running' },
+    messages: [{ id: 'u', role: 'user', content: 'Hi' }, { id: 'm', role: 'assistant', content: 'Hello' }] });
+  assert.equal(S.messages[0], user, 'the message object is kept');
+  assert.equal('attachments' in S.messages[0], false, 'an attachment removed elsewhere does not come back');
+  assert.deepEqual(S.messages[1].usage, { output_tokens: 3 }, 'the live reply keeps what it streamed');
+});
+
 test('a snapshot that switches to the compacted view repaints instead of patching in place', () => {
   const messages = () => [{ id: 'u', role: 'user', content: 'Hi' }, { id: 'a', role: 'assistant', content: 'Done', tools: [] }];
   const snapshot = extra => ({ id: 't', revision: 4, event_cursor: 9, run: null, messages: messages(), ...extra });
@@ -125,6 +138,19 @@ test('run progress is applied while a message is being edited', async () => {
   assert.equal(applied.length, 1);
   assert.equal(applied[0][0], live);
   assert.equal(S.viewCursor, 11);
+  assert.equal(S.cursor, 11);
+});
+
+test('a progress update that had to refetch keeps the snapshot\'s newer cursors', async () => {
+  baseState({ messages: [{ id: 'm', role: 'assistant', content: '' }], cursor: 10, viewCursor: 10, threadWatermark: 10,
+    activeRun: { id: 'r', message_id: 'm', status: 'running' } });
+  const calls = {};
+  const stream = makeStream(calls, { applyProgressPayload: noop,
+    reconcileThread: async () => { calls.reconcile = 1; S.viewCursor = 20; S.threadWatermark = 20; } });
+  await stream.receiveEvent({ id: 11, type: 'run.progress', thread_id: 't', payload: { run_id: 'r', message_id: 'm', updates: [{ id: 'gone' }] } });
+  assert.equal(calls.reconcile, 1);
+  assert.equal(S.viewCursor, 20);
+  assert.equal(S.threadWatermark, 20);
   assert.equal(S.cursor, 11);
 });
 
@@ -205,6 +231,24 @@ test('a queued item stays in flight when another tab reloads the queue', async (
   await draining;
   assert.equal(queue.queueItemSending(S.queuedTurns[0]), false);
   assert.equal(S.queuedTurns.length, 1, 'a refused send stays queued');
+});
+
+test('a queued send that fails after its chat was replaced is not written into the open chat', async () => {
+  localStorage.clear();
+  baseState({ currentId: 'a' });
+  let finish;
+  const queue = createQueue({
+    composer: stub(), picker: stub(), transcript: stub(), ui: stub(), sync: stub(), traces: stub({ runIsActive }),
+    send: stub({ completeTurn: () => new Promise(resolve => { finish = resolve; }) }),
+  });
+  assert.equal(queue.enqueueTurn('for a', []), true);
+  const draining = queue.drainQueue();
+  // a was deleted elsewhere mid-send and the next chat opened.
+  S.currentId = 'b';
+  finish(false);
+  await draining;
+  assert.deepEqual(readQueue('b'), []);
+  assert.equal(readQueue('a').length, 1);
 });
 
 function makeSend(api, calls = {}) {

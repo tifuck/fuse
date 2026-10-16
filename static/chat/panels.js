@@ -86,11 +86,14 @@ export function createPanels(ctx) {
       renderProjectAgents(null);
       return;
     }
+    let data;
     try {
-      renderProjectAgents(await net.api("/chat/threads/" + id + "/project-agents"));
+      data = await net.api("/chat/threads/" + id + "/project-agents");
     } catch {
-      renderProjectAgents({ applicable: true, state: "error", reason: "" });
+      data = { applicable: true, state: "error", reason: "" };
     }
+    // Another chat opened meanwhile renders its own state.
+    if (id === S.currentId) renderProjectAgents(data);
   }
 
     function queueMemorySave() {

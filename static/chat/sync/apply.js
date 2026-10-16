@@ -3,6 +3,10 @@ import { S } from '../state.js';
 import { newSession, resolveListedModel } from '../state.js';
 import { deltaParts, messageRunLive, splitThink, untimed } from '../core.js';
 
+// Stored messages leave these out when empty (app/chat_schema.py
+// parse_messages). A merge into the prior object would keep the old value.
+const SERVER_OPTIONAL = ["notice", "elapsedMs", "endedAt", "stopped", "auto", "usage", "model", "tools", "permissions", "segments", "attachments"];
+
 export function createApply(ctx) {
   const { agents, artifacts, composer, context, net, panels, perms, persist, picker, sidebar, status, traces, transcript, turns, ui } = ctx;
   // Patches are suffixes of the last published text. One that does not fit
@@ -150,6 +154,9 @@ export function createApply(ctx) {
       const prior = old.get(msg.id);
       if (!prior) return { ...msg };
       if (prior === keepLive) return prior;
+      // The live reply's projection is cursor-stamped and fills in as it
+      // streams; only stored rows are complete.
+      if (msg.id !== data.run?.message_id) for (const key of SERVER_OPTIONAL) if (!(key in msg)) delete prior[key];
       Object.assign(prior, msg);
       delete prior._raw;
       delete prior._reason;

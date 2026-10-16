@@ -975,7 +975,6 @@ import { createBoot } from './chat/boot.js';
     S.sessionId = newSession();
     S.liveMeter = null;
     S.compacting = false;
-    S.compactingRequest = false;
     S.contextWarned = false;
     S.contextAlertHidden = false;
     S.threadContext = "";
@@ -2047,7 +2046,7 @@ import { createBoot } from './chat/boot.js';
       getPrefs: composer.composerPrefs,
       getContext: composer.getComposerContext,
       onChange() {
-        S.drafts.set(S.currentId, S.input.value);
+        S.drafts.set(draftKey(), S.input.value);
         composer.resizeInput();
         composer.syncComposer();
         composer.syncEmptyComposer();
@@ -2110,6 +2109,16 @@ import { createBoot } from './chat/boot.js';
         if (view && !(agentView ? S.agentStick : S.stickToBottom)) view.scrollTop += h - stripH;
         stripH = h;
       }).observe(S.workStripEl);
+      // Switching between the main and a subagent transcript restores that
+      // view's own scroll and redraws the strip for it: rebase, or the
+      // restored position shifts by the difference.
+      let stripView = S.root.classList.contains("is-agent-view");
+      new MutationObserver(() => {
+        const agentView = S.root.classList.contains("is-agent-view");
+        if (agentView === stripView) return;
+        stripView = agentView;
+        stripH = S.workStripEl.offsetHeight;
+      }).observe(S.root, { attributes: true, attributeFilter: ["class"] });
     }
   }
 

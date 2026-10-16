@@ -1,7 +1,7 @@
 // Trace mutation: subagent reconciliation, event merge, persistence, wake folding.
 import { S } from '../state.js';
 import { EXECUTION_FIELDS, applyCommandResult, childBackedTool, executionIdentity, executionPending, executionState, isShellExecTool, mapAgentToolStatus, runIsActive, shellExitCode, toolBackground, toolFailed, toolIsCurrent } from './semantics.js';
-import { runIsStopping } from '../core.js';
+import { messageRunLive, runIsStopping } from '../core.js';
 import { newSession } from '../state.js';
 
 function lastCurrentTrace(groups) {
@@ -163,7 +163,7 @@ export function createMerge(ctx) {
       });
       if (changed && index < S.messages.length) {
         const article = articleFor(msg);
-        if (article) ui.updateAssistant(article, msg, Boolean(S.streaming && S.activeRun?.message_id === msg.id));
+        if (article) ui.updateAssistant(article, msg, messageRunLive(msg));
       }
       if (changed && index >= S.messages.length) childChanged = true;
     });
@@ -431,7 +431,7 @@ export function createMerge(ctx) {
       S.messages.forEach((msg) => {
         const article = msg.id ? articles.get(msg.id) : null;
         if (article && msg.role === "assistant") {
-          ui.updateAssistant(article, msg, Boolean(S.streaming && S.activeRun && msg.id === S.activeRun.message_id));
+          ui.updateAssistant(article, msg, messageRunLive(msg));
         }
       });
     }

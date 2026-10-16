@@ -32,7 +32,8 @@ export function createArtifacts(ctx) {
   }
 
     function rememberLatestArtifact() {
-    const last = latestArtifact();
+    const all = artifactsInThread();
+    const last = all.length ? all[all.length - 1] : null;
     if (!last) {
       S.currentArtifact = null;
       // Close through setArtifactOpen so the mobile overlay/history entry is
@@ -42,6 +43,13 @@ export function createArtifacts(ctx) {
       return;
     }
     if (S.currentArtifact && S.currentArtifact.building) {
+      syncArtifactUi();
+      return;
+    }
+    // An open pane keeps what the reader picked (an older artifact, a version,
+    // its loaded version list) while that artifact is still in the thread.
+    const picked = S.currentArtifact && S.currentArtifact.identifier;
+    if (S.artifactOpen && picked && all.some((trace) => trace.identifier === picked)) {
       syncArtifactUi();
       return;
     }

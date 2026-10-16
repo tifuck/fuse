@@ -156,11 +156,14 @@ export function createSlash(ctx) {
     S.projectListingCache = null;
     const bound = sidebar.sessionProject();
     if (!bound || S.config.vault === "locked" || !bound.host_id) return;
+    const project = (p) => p && `${p.host_id}:${p.project_id}`;
     try {
       const data = await net.api(`/hosts/${bound.host_id}/browse`, {
         method: "POST",
         body: JSON.stringify({ path: bound.remote_path || "" }),
       });
+      // Another chat may be open now: keep the listing only for its project.
+      if (project(sidebar.sessionProject()) !== project(bound)) return;
       S.projectListingCache = {
         path: data.path || bound.remote_path,
         entries: (data.entries || []).slice(0, 200),

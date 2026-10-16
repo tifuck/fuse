@@ -478,7 +478,7 @@ export function createContext(ctx) {
     if (S.contextBtn) {
       S.contextBtn.classList.toggle("is-warn", Boolean(snap.warn) && !snap.auto);
       S.contextBtn.classList.toggle("is-auto", Boolean(snap.auto));
-      S.contextBtn.classList.toggle("is-busy", Boolean(snap.compacting || S.compactingRequest));
+      S.contextBtn.classList.toggle("is-busy", Boolean(snap.compacting || (S.compactingRequest && S.compactingRequest === S.currentId)));
       S.contextBtn.setAttribute("aria-label", "Context usage " + title);
       S.contextBtn.title = title;
     }
@@ -492,7 +492,11 @@ export function createContext(ctx) {
   }
 
     async function runCompact(instructions) {
-    if (S.compactingRequest) return;
+    // Holds the id of the chat whose compaction is in flight.
+    if (S.compactingRequest) {
+      if (S.compactingRequest !== S.currentId) picker.setHint("Another chat is compacting. Try again when it finishes.", true);
+      return;
+    }
     if (!S.currentId || !S.messages.length) {
       picker.setHint("Nothing to compact yet.");
       return;
@@ -502,12 +506,13 @@ export function createContext(ctx) {
       return;
     }
     if (!net.requireLive()) return;
-    S.compactingRequest = true;
+    const id = S.currentId;
+    S.compactingRequest = id;
     syncContextMeter();
     closeContextPop();
     picker.holdHint("compact", "Compacting context · summarizing " + formatTokens(contextSnapshot().used) + " tokens, this can take a few minutes…");
     try {
-      const data = await net.api("/chat/threads/" + S.currentId + "/compact", {
+      const data = await net.api("/chat/threads/" + id + "/compact", {
         method: "POST",
         body: JSON.stringify({
           expected_revision: S.serverRevision,
@@ -516,24 +521,26 @@ export function createContext(ctx) {
         }),
       });
       if (data && data.thread) sync.acceptThread(data.thread);
-      if (data && data.thread && data.thread.compaction && data.thread.compaction.meter) {
-        acceptMeter(data.thread.compaction.meter);
-      } else {
-        syncContextMeter();
-      }
+      // Compacting can take minutes; if another chat is open now, its meter
+      // and alert are not this compaction's to change.
+      const here = id === S.currentId;
+      const meter = data && data.thread && data.thread.compaction && data.thread.compaction.meter;
+      if (here && meter) acceptMeter(meter);
       if (data && data.compacted === false) {
         picker.releaseHint("compact", "Not enough history to compact yet.");
       } else {
-        const meter = (data && data.thread && data.thread.compaction && data.thread.compaction.meter) || contextSnapshot();
-        picker.releaseHint("compact", "Context compacted · " + formatTokens(meter.used) + " / " + formatTokens(meter.limit) + " tokens.");
-        S.contextWarned = false;
-        S.contextAlertHidden = false;
-        hideContextAlert();
+        const shown = meter || (here ? contextSnapshot() : null);
+        picker.releaseHint("compact", shown ? "Context compacted · " + formatTokens(shown.used) + " / " + formatTokens(shown.limit) + " tokens." : "Context compacted.");
+        if (here) {
+          S.contextWarned = false;
+          S.contextAlertHidden = false;
+          hideContextAlert();
+        }
       }
     } catch (error) {
       sync.showFailure("Could not compact this chat", error);
     } finally {
-      S.compactingRequest = false;
+      if (S.compactingRequest === id) S.compactingRequest = false;
       syncContextMeter();
     }
   }
