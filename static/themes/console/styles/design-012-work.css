@@ -1,15 +1,18 @@
 /* Work strip: the agent tree and the background commands of the transcript
    on screen, one dense block under the header. Every row is one thin mono
    line on the composer's surface, like Claude Code's agent and task lists:
-   no headings, the main row and the `$` prompt say what each group is. */
+   no headings, the main row and the `$` prompt say what each group is.
+   Rows are the transcript's line height; main stays tall enough to tap,
+   since it folds the tree and leads back from a subagent. */
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-work {
-  --work-row: 1.3rem;
+  --work-row: var(--console-row);
+  --work-main: max(var(--work-row), 1.3rem);
   padding: 0;
   background: color-mix(in srgb, var(--ink) 92%, var(--panel));
   font: calc(var(--console-type) * 0.92)/var(--work-row) var(--mono);
   color: var(--mist);
 }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-work-agents { max-height: calc(10 * var(--work-row)); }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-work-agents { max-height: calc(var(--work-main) + 9 * var(--work-row)); }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-work-jobs { max-height: calc(5 * var(--work-row)); }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-work-agents + .chat-work-jobs:not([hidden]) {
   margin-top: 0.15rem;
@@ -20,6 +23,7 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat
   padding: 0 0.5rem 0 0.75rem;
   column-gap: 0.6rem;
 }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-agents-row.is-main { height: var(--work-main); }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-agents-row, .chat-jobs-row):hover {
   background: color-mix(in srgb, var(--mist) 5%, transparent);
 }
@@ -54,24 +58,25 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-job
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-jobs-meta { max-width: 40%; }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-agents-act, .chat-jobs-kill) {
   width: 1.2rem;
-  height: 1.2rem;
+  height: var(--work-row);
+  overflow: hidden; /* a glyph's text box is taller than the row: keep its hit area out of the rows around it */
   font-size: 0.95rem;
 }
 
-/* Phones: rows tall enough to tap, the lists shorter so the transcript keeps
-   the screen. Clocks keep their column so they line up. */
+/* Phones: a taller main row to tap, the lists shorter so the transcript
+   keeps the screen. Clocks keep their column so they line up. */
 @media (max-width: 800px) {
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-work {
-    --work-row: 1.6rem;
+    --work-main: max(var(--work-row), 1.6rem);
   }
-  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-work-agents { max-height: calc(6 * var(--work-row)); }
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-work-agents { max-height: calc(var(--work-main) + 5 * var(--work-row)); }
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-work-jobs { max-height: calc(3 * var(--work-row)); }
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-agents-row, .chat-jobs-row) {
     grid-template-columns: minmax(0, 1fr) 6ch 1.6rem;
     padding: 0 0.1rem 0 var(--console-gutter, 0.55rem);
     column-gap: 0.4rem;
   }
-  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-agents-act, .chat-jobs-kill) { width: 1.6rem; height: 1.6rem; }
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-agents-act, .chat-jobs-kill) { width: 1.6rem; }
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-agents-name { max-width: 72%; }
 }
 /* Narrow phones: a subagent row is its task and dot (the dot carries its
