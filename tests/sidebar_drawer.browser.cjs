@@ -104,6 +104,17 @@ const NOW = '2026-10-05T00:00:00Z';
       const edge = async () => { await page.mouse.move(900, 500); await page.mouse.move(2, 500); await peekOpen(); };
       await page.evaluate(row => fuseToolFixture.sidebar.mount(row), { id: 'peek-row', kind: 'chat', title: 'Peek row', revision: 1, archived: false, running: false, created_at: NOW, updated_at: NOW });
       const stageX = await page.locator('.chat-stage').evaluate(el => el.getBoundingClientRect().x);
+      const reach = await page.evaluate(() => ({
+        edge: document.querySelector('[data-history-edge]').getBoundingClientRect().right,
+        controls: ['.chat-bar [data-history-toggle]', '.chat-attach-btn'].map(sel => document.querySelector(sel).getBoundingClientRect().left),
+      }));
+      assert.ok(reach.edge >= 12 && reach.controls.every(left => left >= reach.edge), `the edge zone is wide but covers no control: ${JSON.stringify(reach)}`);
+      await page.mouse.move(900, 500);
+      await page.mouse.down();
+      await page.mouse.move(4, 500);
+      await page.waitForTimeout(400);
+      assert.equal((await state()).peek, false, 'a drag run to the edge (text selection) does not peek');
+      await page.mouse.up();
       await edge();
       assert.deepEqual(await state(), { collapsed: true, peek: true, inert: false }, 'the edge peeks without unpinning, and the list takes input');
       assert.equal(await page.locator('[data-history-list]').isVisible(), true);

@@ -74,9 +74,10 @@ export function createDrawer(ctx) {
   }
 
     // Real travel only: the zone appearing under a resting pointer (page load,
-  // a collapse) fires pointerenter but no movement.
+  // a collapse) fires pointerenter but no movement. A held button is a drag,
+  // such as a text selection run to the edge.
   historyEdge?.addEventListener("pointermove", (event) => {
-    if (event.pointerType !== "mouse" || !(event.movementX || event.movementY)) return;
+    if (event.pointerType !== "mouse" || event.buttons || !(event.movementX || event.movementY)) return;
     if (!canPeek() || peeking() || peekOpenTimer) return;
     peekHover = false;
     peekOpenTimer = setTimeout(() => setHistoryPeek(true), PEEK_OPEN_MS);

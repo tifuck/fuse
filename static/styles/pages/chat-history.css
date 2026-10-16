@@ -29,12 +29,14 @@
 }
 .chat-history-edge { display: none; }
 @media (min-width: 801px) and (hover: hover) {
+  /* As wide as it gets without covering the agent picker, composer + and bar
+     toggle (12px and up from the edge). */
   .chat.history-collapsed .chat-history-edge {
     position: absolute;
     inset: 0 auto 0 0;
     z-index: 11;
     display: block;
-    width: 0.5rem;
+    width: 0.75rem;
   }
 }
 @media (max-width: 800px) {
