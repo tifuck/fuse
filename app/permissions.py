@@ -71,6 +71,9 @@ _WIN_DRIVE = re.compile(r"^[A-Za-z]:")
 # A command whose real targets cannot be listed: globs expand on the host, so
 # the extracted paths do not bound what it touches ("cat .*" sweeps .env).
 _GLOB_SHELL = re.compile(r"[*?\[\]]")
+# Brace expansion ({a,b}, {1..3}) is POSIX-shell only: `cat {/etc/passwd,x}`
+# reads /etc/passwd while its literal token looks like a cwd-relative name.
+_BRACE_SHELL = re.compile(r"\{[^\s{}]*(?:,|\.\.)[^\s{}]*\}")
 # Separators make operands non-exhaustive (cd X && anything), so a compound
 # command is never covered by a dir grant - but it still runs silently in scope.
 _COMPOUND_SHELL = re.compile(r"[;&|\n]")
@@ -427,7 +430,8 @@ def _has_shell_glob(command: str, windows: bool) -> bool:
             continue
         out.append(ch)
         i += 1
-    return bool(_GLOB_SHELL.search(_TEST_BRACKETS.sub(" ", "".join(out))))
+    text = "".join(out)
+    return bool(_GLOB_SHELL.search(_TEST_BRACKETS.sub(" ", text)) or (not windows and _BRACE_SHELL.search(text)))
 
 
 def _opaque_reason(command: str) -> str:
@@ -1253,7 +1257,7 @@ async def review(*, tool: str, args: dict, user_id: int,
         if paths is None:
             restricted_why.append(_opaque_reason(command))
         if _has_shell_glob(command, windows):
-            restricted_why.append("it uses unquoted glob patterns (*, ?, [...]) that expand on the host")
+            restricted_why.append("it uses unquoted glob patterns (*, ?, [...], {a,b}) that expand on the host")
         if _destructive_command(command):
             restricted_why.append("it matches a destructive command pattern")
         if _FETCH_EXEC_SHELL.search(command):

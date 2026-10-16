@@ -147,6 +147,9 @@ def _search_target(path: str, root: str, *, windows: bool) -> tuple[str, str]:
         return "", path
     sep = "\\" if windows else "/"
     norm = (lambda p: p.lower()) if windows else (lambda p: p)
+    if windows:
+        # Project roots are stored with / (C:/proj); confined paths use \.
+        root = root.replace("/", "\\")
     base = root.rstrip(sep) if root.rstrip(sep) else root
     if norm(path.rstrip(sep) or path) == norm(base):
         return root, "."
@@ -164,7 +167,7 @@ def _relative_line(line: str, root: str, *, windows: bool) -> str:
         line = line[2:]
     if root:
         sep = "\\" if windows else "/"
-        prefix = root.rstrip(sep) + sep
+        prefix = (root.replace("/", "\\") if windows else root).rstrip(sep) + sep
         if (line.lower() if windows else line).startswith(prefix.lower() if windows else prefix):
             line = line[len(prefix):]
     return line

@@ -193,6 +193,10 @@ class ScopeTest(PermSchemaTest):
             # Heredoc bodies for programs that are not shells are data.
             ".venv/bin/python - <<'PY'\npaths=['app/a.html','app/b.py']\nprint(paths[0])\nPY",
             "cat > notes.md <<EOF\n- [x] done *now*\nEOF",
+            # Braces that do not brace-expand, or that are quoted.
+            "find . -name x -exec rm {} +",
+            "{ make; make test; } > build.log",
+            "echo '{a,b}'",
         )
         for command in not_globs:
             self.assertFalse(permissions._has_shell_glob(command, False), command)
@@ -211,9 +215,15 @@ class ScopeTest(PermSchemaTest):
             "cat <<<'x'\nls *.log",
             # Unbalanced quotes: judged as written.
             "echo 'unterminated *",
+            # Brace expansion: the literal token looks in-root, bash reads outside it.
+            "cat {/etc/passwd,x}",
+            "cat /tmp/{x,../etc/shadow}",
+            "ls /srv/log{1..3}",
         )
         for command in globs:
             self.assertTrue(permissions._has_shell_glob(command, False), command)
+        # PowerShell has no brace expansion.
+        self.assertFalse(permissions._has_shell_glob("Get-Item {a,b}", True))
 
 
 class ReviewTest(PermSchemaTest):

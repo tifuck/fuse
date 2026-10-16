@@ -21,25 +21,32 @@ _SPECIAL_TOKENS = re.compile(
     r"|</s>",
     re.I,
 )
+# A parameter value may quote a closing tag (an edit to this file, echo
+# '</function>'), so each element ends at the first closing tag that sits on a
+# structural boundary, without crossing the next opener of its kind. Only when
+# there is none does the first closing tag end it.
 _TOOL_XML_BLOCK = re.compile(
-    r"<tool_calls?\b[^>]*>.*?</tool_calls?>",
+    r"<tool_calls?\b[^>]*>"
+    r"(?:(?:(?!<tool_calls?\b).)*?(?:</function>|</invoke>)\s*|(?:(?!<function\s*=|<invoke\b).)*?)"
+    r"</tool_calls?>",
     re.I | re.S,
 )
 _TOOL_XML_OPEN = re.compile(r"<tool_calls?\b", re.I)
 _FUNCTION_XML = re.compile(
-    r"<function\s*=\s*([A-Za-z][\w.-]*)>(.*?)</function>",
+    r"<function\s*=\s*([A-Za-z][\w.-]*)>((?:(?!<function\s*=).)*?</parameter>\s*(?=</function>)|.*?)</function>",
     re.I | re.S,
 )
 _INVOKE_XML = re.compile(
-    r"<invoke\s+name\s*=\s*[\"']([^\"']+)[\"']>(.*?)</invoke>",
+    r"<invoke\s+name\s*=\s*[\"']([^\"']+)[\"']>((?:(?!<invoke\b).)*?</parameter>\s*(?=</invoke>)|.*?)</invoke>",
     re.I | re.S,
 )
+_PARAM_END = r"(?=</parameter>\s*(?:<parameter\b|</function>|</invoke>|\Z))"
 _PARAM_EQ_XML = re.compile(
-    r"<parameter\s*=\s*([A-Za-z][\w.-]*)>(.*?)</parameter>",
+    r"<parameter\s*=\s*([A-Za-z][\w.-]*)>((?:(?!<parameter\b).)*?" + _PARAM_END + r"|.*?)</parameter>",
     re.I | re.S,
 )
 _PARAM_NAME_XML = re.compile(
-    r"<parameter\s+name\s*=\s*[\"']([^\"']+)[\"']>(.*?)</parameter>",
+    r"<parameter\s+name\s*=\s*[\"']([^\"']+)[\"']>((?:(?!<parameter\b).)*?" + _PARAM_END + r"|.*?)</parameter>",
     re.I | re.S,
 )
 

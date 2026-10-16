@@ -216,6 +216,27 @@ class SpecialTokenAndXmlTest(unittest.TestCase):
         self.assertEqual(calls[0]["function"]["name"], "run_terminal_command")
         self.assertNotIn("<function=", text)
 
+    def test_values_quoting_a_closing_tag_are_not_cut(self):
+        cases = (
+            ("search_replace", "<parameter=path>a.py</parameter><parameter=old_string>x</parameter>"
+             "<parameter=new_string>print('</parameter>')</parameter>",
+             {"path": "a.py", "old_string": "x", "new_string": "print('</parameter>')"}),
+            ("run_terminal_command", "<parameter=command>echo '</function>'</parameter>",
+             {"command": "echo '</function>'"}),
+            ("run_terminal_command", "<parameter=command>printf x '</tool_call>' > f</parameter><parameter=host>box</parameter>",
+             {"command": "printf x '</tool_call>' > f", "host": "box"}),
+        )
+        for name, params, want in cases:
+            raw = f"Doing it.\n<tool_call><function={name}>{params}</function></tool_call>\nDone."
+            text, calls = extract_text_tool_calls(raw, coding=True)
+            self.assertEqual([c["function"]["name"] for c in calls], [name], raw)
+            self.assertEqual(json.loads(calls[0]["function"]["arguments"]), want, raw)
+            self.assertEqual(text, "Doing it.\n\nDone.", raw)
+            self.assertEqual(drop_tool_xml(raw), ("Doing it.\n\nDone.", ""), raw)
+        raw = '<invoke name="run_terminal_command"><parameter name="command">echo \'</invoke>\'</parameter></invoke>'
+        _, calls = extract_text_tool_calls(raw, coding=True)
+        self.assertEqual(json.loads(calls[0]["function"]["arguments"]), {"command": "echo '</invoke>'"})
+
     def test_incomplete_calls_and_round_signature(self):
         self.assertTrue(
             calls_incomplete(

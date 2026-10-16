@@ -319,6 +319,9 @@ class QuoteDetectTest(unittest.TestCase):
         self.assertTrue(is_live_query("What's the price of Bitcoin?"))
         self.assertTrue(is_live_query("BTC USD price"))
         self.assertFalse(is_live_query("history of Ada Lovelace"))
+        # A past price is not a spot quote.
+        self.assertFalse(is_live_query("bitcoin price in 2017"))
+        self.assertFalse(is_live_query("bitcoin price history"))
 
 
 class RecencyTest(unittest.TestCase):

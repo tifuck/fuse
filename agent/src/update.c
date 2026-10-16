@@ -82,7 +82,10 @@ int http_read_response(int (*rd)(void *ctx, char *buf, size_t n), void *ctx, FIL
         if (rb_line(rb, line, sizeof(line)) != 0) bad = 1;
         else if (!line[0]) break;
         else if (strncasecmp(line, "transfer-encoding:", 18) == 0 && strcasestr(line + 18, "chunked")) chunked = 1;
-        else if (strncasecmp(line, "content-length:", 15) == 0) clen = strtoll(line + 15, NULL, 10);
+        else if (strncasecmp(line, "content-length:", 15) == 0) {
+            clen = strtoll(line + 15, NULL, 10);
+            if (clen < 0) bad = 1; /* -1 is the no-length sentinel: never read-to-close on a bad header */
+        }
     }
     if (clen > (long long)max_bytes) bad = 1;
     size_t total = 0;

@@ -51,7 +51,7 @@ _HIST = re.compile(r"\b(history|historical|in \d{4}|as of|on \d{4})\b", re.I)
 def is_live_query(query: str) -> bool:
     q = query or ""
     if _HIST.search(q):
-        return bool(_LIVE.search(q))
+        return False
     tokens = _WORD.findall(q.lower())
     coin = any(t in _COINS for t in tokens)
     fiat = any(t in _FIAT for t in tokens)

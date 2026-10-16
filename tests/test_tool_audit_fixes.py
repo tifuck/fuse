@@ -32,6 +32,7 @@ from app import permissions  # noqa: E402
 from app import workspace as ws  # noqa: E402
 from app.search import extract as extract_mod  # noqa: E402
 from app.search.pack import pack_page  # noqa: E402
+from app.workspace_ops.search_render import _relative_line  # noqa: E402
 
 
 # --- fakes -------------------------------------------------------------------
@@ -400,6 +401,10 @@ class SearchTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ws._search_target("/repo/src", "/repo", windows=False), ("/repo", "src"))
         self.assertEqual(ws._search_target("/etc", "/repo", windows=False), ("/repo", "/etc"))
         self.assertEqual(ws._search_target("~/p/src", "~/p", windows=False), ("~/p", "src"))
+        # Windows project roots are stored with / (C:/proj); confined paths use \.
+        for root in ("C:/proj", "C:\\proj", "c:/proj/"):
+            self.assertEqual(ws._search_target("C:\\proj\\src", root, windows=True)[1], "src", root)
+            self.assertEqual(_relative_line("C:\\proj\\src\\a.py:3:hit", root, windows=True), "src\\a.py:3:hit", root)
 
     def test_exit_2_with_matches_is_partial_success(self):
         notes = ws._search_status({"exit": 2, "out": "a.py:1:x\n", "err": "rg: b: Permission denied (os error 13)\n"}, "grep")

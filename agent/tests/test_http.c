@@ -45,6 +45,7 @@ int main(void) {
     assert(!get("HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\n\r\nno", 100));
     assert(!get("HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\nshort", 100));       /* truncated */
     assert(!get("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello", 4));         /* too big */
+    assert(!get("HTTP/1.1 200 OK\r\nContent-Length: -1\r\n\r\nshort", 100));      /* negative */
     assert(!get("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n", 100)); /* no last chunk */
     assert(!get("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n9\r\nhello\r\n0\r\n\r\n", 100));
     assert(!get("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n10\r\n0123456789abcdef\r\n0\r\n\r\n", 8));
