@@ -10,6 +10,32 @@
 }
 @media (min-width: 801px) {
   .chat.history-collapsed .chat-history { display: none; }
+  /* Peek: resting the pointer on the left edge overlays the collapsed list
+     (drawer.js). It slides out under history-peek-leave, then hides. */
+  .chat.history-collapsed:is(.history-peek, .history-peek-leave) .chat-history {
+    position: absolute;
+    inset: 0 auto 0 0;
+    z-index: 12;
+    display: flex;
+    width: var(--chat-history);
+    box-shadow: 8px 0 28px rgb(0 0 0 / 24%);
+    transition: transform var(--dur-3) var(--ease-glide);
+  }
+  .chat.history-collapsed.history-peek-leave .chat-history { transform: translateX(-100%); }
+  @starting-style {
+    .chat.history-collapsed.history-peek .chat-history { transform: translateX(-100%); }
+  }
+  .chat.history-peek .chat-history-collapse { display: grid; }
+}
+.chat-history-edge { display: none; }
+@media (min-width: 801px) and (hover: hover) {
+  .chat.history-collapsed .chat-history-edge {
+    position: absolute;
+    inset: 0 auto 0 0;
+    z-index: 11;
+    display: block;
+    width: 0.5rem;
+  }
 }
 @media (max-width: 800px) {
   .chat .chat-history {

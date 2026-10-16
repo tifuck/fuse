@@ -1993,6 +1993,7 @@ import { createBoot } from './chat/boot.js';
     if (event.key === "Escape") {
       const confirmOpen = document.querySelector("dialog.modal[data-confirm][open], dialog.fp-dialog[open]");
       if (confirmOpen) return;
+      const popOpen = Boolean(S.pop);
       overlays.closePop();
       if (window.FuseComposerSpell && FuseComposerSpell.isOpen()) {
         FuseComposerSpell.close();
@@ -2014,6 +2015,7 @@ import { createBoot } from './chat/boot.js';
         return;
       }
       sidebar.setHistoryOpen(false);
+      if (!event.defaultPrevented && !popOpen) sidebar.setHistoryPeek(false);
       if (S.artifactOpen) {
         artifacts.setArtifactOpen(false);
         return;

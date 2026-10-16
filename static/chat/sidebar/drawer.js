@@ -4,6 +4,10 @@ import { S } from '../state.js';
 let historyWasOpen = false;
 
 const STORE_HISTORY_COLLAPSED = "fuse.chat.historyCollapsed.v1";
+// Desktop peek: the pointer rests on the left edge this long before the
+// collapsed list slides in, and it stays this long after the pointer leaves.
+const PEEK_OPEN_MS = 120;
+const PEEK_CLOSE_MS = 1000;
 
 function historyCollapsedPrefs() {
   try { return JSON.parse(localStorage.getItem(STORE_HISTORY_COLLAPSED) || "{}") || {}; } catch (_) { return {}; }
@@ -19,14 +23,102 @@ export function createDrawer(ctx) {
 
     const historyBackground = S.root.querySelectorAll(".chat-thread, .chat-dock, .chat-latest, .chat-bar > :not([data-history-toggle])");
 
+    const historyEdge = S.root.querySelector("[data-history-edge]");
+
+    let peekOpenTimer = 0;
+
+    let peekCloseTimer = 0;
+
+    let peekHover = false;
+
+    function clearPeekTimers() {
+    clearTimeout(peekOpenTimer);
+    clearTimeout(peekCloseTimer);
+    peekOpenTimer = 0;
+  }
+
+    function canPeek() {
+    return !S.historyMobile.matches && S.root.classList.contains("history-collapsed");
+  }
+
+    function peeking() {
+    return S.root.classList.contains("history-peek");
+  }
+
+    // Overlays the collapsed list without unpinning it. Closing slides it out
+  // under history-peek-leave, so collapsing or loading the page never animates.
+  function setHistoryPeek(open) {
+    clearPeekTimers();
+    const next = Boolean(open) && canPeek();
+    if (next === peeking()) return;
+    if (!next && historyPanel?.contains(document.activeElement)) S.historyToggle?.focus({ preventScroll: true });
+    S.root.classList.toggle("history-peek", next);
+    S.root.classList.toggle("history-peek-leave", !next && canPeek());
+    if (next || !historyPanel) return;
+    Promise.allSettled(historyPanel.getAnimations().map((animation) => animation.finished)).then(() => {
+      if (!peeking()) S.root.classList.remove("history-peek-leave");
+    });
+  }
+
+    // A row menu, dialog, resize drag or typing in the list keeps it open.
+  function schedulePeekClose() {
+    clearTimeout(peekCloseTimer);
+    peekCloseTimer = setTimeout(() => {
+      if (peekHover) return;
+      const active = document.activeElement;
+      const held = S.pop || document.querySelector("dialog[open]") || document.body.classList.contains("is-resizing-history") ||
+        (historyPanel?.contains(active) && active.matches("input, select, textarea"));
+      if (held) schedulePeekClose();
+      else setHistoryPeek(false);
+    }, PEEK_CLOSE_MS);
+  }
+
+    // Real travel only: the zone appearing under a resting pointer (page load,
+  // a collapse) fires pointerenter but no movement.
+  historyEdge?.addEventListener("pointermove", (event) => {
+    if (event.pointerType !== "mouse" || !(event.movementX || event.movementY)) return;
+    if (!canPeek() || peeking() || peekOpenTimer) return;
+    peekHover = false;
+    peekOpenTimer = setTimeout(() => setHistoryPeek(true), PEEK_OPEN_MS);
+  });
+
+    historyEdge?.addEventListener("pointerleave", () => {
+    if (!peeking()) clearPeekTimers();
+    else if (!peekHover) schedulePeekClose();
+  });
+
+    historyPanel?.addEventListener("pointerenter", (event) => {
+    if (event.pointerType !== "mouse") return;
+    peekHover = true;
+    clearTimeout(peekCloseTimer);
+    if (S.root.classList.contains("history-peek-leave")) setHistoryPeek(true);
+  });
+
+    historyPanel?.addEventListener("pointerleave", () => {
+    peekHover = false;
+    if (peeking()) schedulePeekClose();
+  });
+
+    document.addEventListener("pointerdown", (event) => {
+    if (peeking() && !historyPanel.contains(event.target) && !event.target.closest?.(".chat-pop, dialog")) setHistoryPeek(false);
+  }, true);
+
     function syncHistory() {
     const drawer = S.historyMobile.matches && S.root.classList.contains("is-history");
     const expanded = S.historyMobile.matches ? drawer : !S.root.classList.contains("history-collapsed");
     const focusInHistory = historyPanel?.contains(document.activeElement);
+    // toggle(…, false) writes only when the class is there; remove() always
+    // rewrites the attribute and would re-run this observer forever.
+    if (!canPeek()) {
+      clearPeekTimers();
+      S.root.classList.toggle("history-peek", false);
+      S.root.classList.toggle("history-peek-leave", false);
+    }
+    const peek = S.root.classList.contains("history-peek") || S.root.classList.contains("history-peek-leave");
     S.historyToggles.forEach((btn) => btn.setAttribute("aria-expanded", String(expanded)));
     if (historyBackdrop) historyBackdrop.hidden = !drawer;
     historyBackground.forEach((element) => { element.inert = drawer; });
-    if (historyPanel) historyPanel.inert = !expanded;
+    if (historyPanel) historyPanel.inert = !expanded && !peek;
     if (historyWasOpen && !drawer) {
       overlays.closePop();
       if (focusInHistory && !document.body.classList.contains("is-nav")) {
@@ -94,6 +186,7 @@ export function createDrawer(ctx) {
     historyPanel,
     saveHistoryCollapsed,
     setHistoryOpen,
+    setHistoryPeek,
     syncHistory,
     historyCollapsedPrefs,
   };

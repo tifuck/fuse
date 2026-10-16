@@ -89,6 +89,66 @@ const NOW = '2026-10-05T00:00:00Z';
       await page.context().close();
     }
 
+    // Desktop peek: resting on the left edge overlays the collapsed list
+    // without unpinning it. It holds while hovered or while a row menu is
+    // open, closes about a second after the pointer leaves, and pins from
+    // its own toggle.
+    {
+      const page = await makePage(1440);
+      const state = () => page.evaluate(() => {
+        const chat = document.querySelector('[data-chat]');
+        return { collapsed: chat.classList.contains('history-collapsed'), peek: chat.classList.contains('history-peek'), inert: document.querySelector('[data-history]').inert };
+      });
+      const peekOpen = () => page.waitForFunction(() => document.querySelector('[data-chat]').classList.contains('history-peek'));
+      const peekShut = () => page.waitForFunction(() => !document.querySelector('[data-chat]').className.includes('history-peek'));
+      const edge = async () => { await page.mouse.move(900, 500); await page.mouse.move(2, 500); await peekOpen(); };
+      await page.evaluate(row => fuseToolFixture.sidebar.mount(row), { id: 'peek-row', kind: 'chat', title: 'Peek row', revision: 1, archived: false, running: false, created_at: NOW, updated_at: NOW });
+      const stageX = await page.locator('.chat-stage').evaluate(el => el.getBoundingClientRect().x);
+      await edge();
+      assert.deepEqual(await state(), { collapsed: true, peek: true, inert: false }, 'the edge peeks without unpinning, and the list takes input');
+      assert.equal(await page.locator('[data-history-list]').isVisible(), true);
+      assert.deepEqual(await toggles(page), ['false', 'false', 'false'], 'toggles keep reporting the collapsed sidebar');
+      assert.equal(await page.locator('.chat-stage').evaluate(el => el.getBoundingClientRect().x), stageX, 'the peek overlays the chat instead of pushing it');
+      await page.mouse.move(150, 500);
+      await page.waitForTimeout(1300);
+      assert.equal((await state()).peek, true, 'hovering the list holds it open');
+      await page.mouse.move(900, 500);
+      assert.equal((await state()).peek, true, 'leaving starts a grace period, not an instant close');
+      await peekShut();
+      assert.equal(await page.locator('[data-history-list]').isVisible(), false);
+      assert.equal((await state()).inert, true, 'the closed peek is inert again');
+
+      await edge();
+      await rowMenu(page, 'peek-row');
+      await page.mouse.move(900, 700);
+      await page.waitForTimeout(1300);
+      assert.equal((await state()).peek, true, 'an open row menu holds the peek');
+      await page.keyboard.press('Escape');
+      await page.locator('.chat-pop').waitFor({ state: 'detached' });
+      assert.equal((await state()).peek, true, 'escape closes the menu before the peek');
+      await peekShut();
+
+      await edge();
+      await page.mouse.move(150, 500);
+      await page.keyboard.press('Escape');
+      await peekShut();
+      assert.equal((await state()).collapsed, true, 'escape closes the peek and keeps the sidebar collapsed');
+
+      await edge();
+      await page.setViewportSize({ width: 700, height: 1000 });
+      await peekShut();
+      assert.equal(await page.locator('[data-history-edge]').isVisible(), false, 'phone widths have no edge zone');
+      await page.setViewportSize({ width: 1440, height: 1000 });
+
+      await edge();
+      await page.locator('.chat-history-head [data-history-toggle]').click();
+      await peekShut();
+      assert.deepEqual(await state(), { collapsed: false, peek: false, inert: false }, 'the head toggle pins the peeked list');
+      assert.equal((await page.evaluate(() => JSON.parse(localStorage.getItem('fuse.chat.historyCollapsed.v1') || '{}'))).console, false, 'pinning is remembered');
+      console.log('PASS desktop edge peek: overlay, hover hold, delayed close, menu hold, escape, phone, pin');
+      await page.context().close();
+    }
+
     // Tabs: active indicator, per-tab new action, filters, empty states, and
     // the tab itself surviving a reload. Runs before any thread is seeded so
     // the empty states are real.
