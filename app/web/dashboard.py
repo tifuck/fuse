@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from decimal import Decimal, InvalidOperation
@@ -198,7 +199,10 @@ async def save_pricing(
         raise HTTPException(400, "Rates must be non-negative USD amounts per million tokens") from None
     if input_v is None or output_v is None:
         raise HTTPException(400, "Input and output rates are required")
-    db.save_model_price(provider, model, input_v, cached_v, output_v, reasoning_v, cache_write_rate=write_v)
+    # Repricing walks the model's whole history: never on the event loop.
+    await asyncio.to_thread(
+        db.save_model_price, provider, model, input_v, cached_v, output_v, reasoning_v, cache_write_rate=write_v
+    )
     return RedirectResponse("/admin/pricing", status_code=303)
 
 
@@ -221,7 +225,7 @@ async def remove_pricing(request: Request, provider: str = Form(), model: str = 
     if redir:
         return redir
     if provider in TYPES and model:
-        db.delete_model_price(provider, model[:200])
+        await asyncio.to_thread(db.delete_model_price, provider, model[:200])
     return RedirectResponse("/admin/pricing", status_code=303)
 
 

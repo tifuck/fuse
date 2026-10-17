@@ -56,6 +56,23 @@ def test_reprice_up_and_down_moves_every_rollup_with_its_events():
         assert _report() == _clean()
 
 
+def test_reprice_pages_history_by_id_window(monkeypatch):
+    # One id per window, another model's event inside the span: every window
+    # must still move the rollups by exactly what its events moved.
+    monkeypatch.setattr(db, "REPRICE_WINDOW", 1)
+    with isolated_database():
+        source_id, cred = _seed()
+        db.record_usage(1, source_id, cred, "glm-y", dict(USAGE), provider="zai")
+        db.record_usage(1, source_id, cred, "glm-x", dict(USAGE), provider="zai")
+        db.save_model_price("zai", "glm-x", 1_000_000, None, 2_000_000, None)
+        assert _report() == _clean()
+        assert db.fetchone("SELECT SUM(cost_micros) AS c FROM usage_hourly WHERE model='glm-x'")["c"] == 4 * 1800
+        assert db.fetchone("SELECT COUNT(*) AS n FROM usage_events WHERE pricing_known=1")["n"] == 4
+        db.delete_model_price("zai", "glm-x")
+        assert _report() == _clean()
+        assert db.fetchone("SELECT COUNT(*) AS n FROM usage_events WHERE pricing_known=1")["n"] == 0
+
+
 def test_delete_user_takes_their_events_out_of_credential_rollups():
     with isolated_database():
         _seed()

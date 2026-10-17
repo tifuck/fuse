@@ -516,47 +516,75 @@ def save_model_price(
             # personal (per-account, user pays 1:1): repricing history must
             # never attach estimated cost to them.
             return
-        rows = write_conn.execute(
-            """SELECT e.id, e.user_id, e.api_key_id, e.credential_id, e.reported_cost_micros,
-                      e.estimated_cost_micros, e.prompt_tokens, e.completion_tokens,
-                      e.output_tokens, e.visible_tokens, e.reasoning_tokens, e.cached_tokens,
-                      e.cache_write_tokens, e.source_id, e.created_at
-               FROM usage_events e LEFT JOIN sources s ON s.id=e.source_id
-               WHERE COALESCE(NULLIF(e.source_type, ''), s.type, 'unknown')=? AND e.model=?""",
-            (provider, model),
+        for rows in _priced_events(
+            write_conn,
+            """e.id, e.user_id, e.api_key_id, e.credential_id, e.reported_cost_micros,
+               e.estimated_cost_micros, e.prompt_tokens, e.completion_tokens,
+               e.output_tokens, e.visible_tokens, e.reasoning_tokens, e.cached_tokens,
+               e.cache_write_tokens, e.source_id, e.created_at""",
+            provider,
+            model,
+        ):
+            _reprice_batch(write_conn, provider, model, persisted_price, rows)
+
+
+# Events repriced per id window: a popular model's whole history never sits in
+# memory at once. Windows on the primary key keep each query a bounded range
+# scan; ORDER BY id LIMIT re-sorts the model's remaining rows on every page.
+REPRICE_WINDOW = 5000
+
+
+def _priced_events(conn, columns: str, provider: str, model: str):
+    span = conn.execute("SELECT MIN(id) AS lo, MAX(id) AS hi FROM usage_events WHERE model=?", (model,)).fetchone()
+    if span is None or span["lo"] is None:
+        return
+    lo, hi = int(span["lo"]) - 1, int(span["hi"])
+    while lo < hi:
+        rows = conn.execute(
+            f"""SELECT {columns}
+                FROM usage_events e LEFT JOIN sources s ON s.id=e.source_id
+                WHERE COALESCE(NULLIF(e.source_type, ''), s.type, 'unknown')=? AND e.model=?
+                  AND e.id>? AND e.id<=?""",
+            (provider, model, lo, lo + REPRICE_WINDOW),
         ).fetchall()
-        updates = []
-        key_deltas: dict[int, int] = {}
-        user_deltas: dict[int, int] = {}
-        cred_deltas: dict[int, int] = {}
-        hour_deltas: dict[tuple, int] = {}
-        for row in rows:
-            output, visible = _canonical_output(row)
-            estimate = _estimated_cost(
-                persisted_price,
-                int(row["prompt_tokens"] or 0),
-                output,
-                visible,
-                int(row["reasoning_tokens"] or 0),
-                int(row["cached_tokens"] or 0),
-                int(row["cache_write_tokens"] or 0),
-            )
-            old_effective = row["reported_cost_micros"] if row["reported_cost_micros"] is not None else int(row["estimated_cost_micros"] or 0)
-            new_effective = row["reported_cost_micros"] if row["reported_cost_micros"] is not None else estimate
-            delta = int(new_effective) - int(old_effective)
-            updates.append((estimate, row["id"]))
-            user_deltas[row["user_id"]] = user_deltas.get(row["user_id"], 0) + delta
-            if row["api_key_id"]:
-                key_deltas[row["api_key_id"]] = key_deltas.get(row["api_key_id"], 0) + delta
-            if row["credential_id"]:
-                cred_deltas[row["credential_id"]] = cred_deltas.get(row["credential_id"], 0) + delta
-            hour = _hour_key(row)
-            hour_deltas[hour] = hour_deltas.get(hour, 0) + delta
-        write_conn.executemany(
-            "UPDATE usage_events SET estimated_cost_micros=?, pricing_known=1 WHERE id=?",
-            updates,
+        lo += REPRICE_WINDOW
+        if rows:
+            yield rows
+
+
+def _reprice_batch(write_conn, provider, model, persisted_price, rows) -> None:
+    updates = []
+    key_deltas: dict[int, int] = {}
+    user_deltas: dict[int, int] = {}
+    cred_deltas: dict[int, int] = {}
+    hour_deltas: dict[tuple, int] = {}
+    for row in rows:
+        output, visible = _canonical_output(row)
+        estimate = _estimated_cost(
+            persisted_price,
+            int(row["prompt_tokens"] or 0),
+            output,
+            visible,
+            int(row["reasoning_tokens"] or 0),
+            int(row["cached_tokens"] or 0),
+            int(row["cache_write_tokens"] or 0),
         )
-        _apply_cost_deltas(write_conn, provider, model, key_deltas, user_deltas, cred_deltas, hour_deltas)
+        old_effective = row["reported_cost_micros"] if row["reported_cost_micros"] is not None else int(row["estimated_cost_micros"] or 0)
+        new_effective = row["reported_cost_micros"] if row["reported_cost_micros"] is not None else estimate
+        delta = int(new_effective) - int(old_effective)
+        updates.append((estimate, row["id"]))
+        user_deltas[row["user_id"]] = user_deltas.get(row["user_id"], 0) + delta
+        if row["api_key_id"]:
+            key_deltas[row["api_key_id"]] = key_deltas.get(row["api_key_id"], 0) + delta
+        if row["credential_id"]:
+            cred_deltas[row["credential_id"]] = cred_deltas.get(row["credential_id"], 0) + delta
+        hour = _hour_key(row)
+        hour_deltas[hour] = hour_deltas.get(hour, 0) + delta
+    write_conn.executemany(
+        "UPDATE usage_events SET estimated_cost_micros=?, pricing_known=1 WHERE id=?",
+        updates,
+    )
+    _apply_cost_deltas(write_conn, provider, model, key_deltas, user_deltas, cred_deltas, hour_deltas)
 
 
 def _hour_key(row) -> tuple:
@@ -587,33 +615,37 @@ def _apply_cost_deltas(conn, provider, model, key_deltas, user_deltas, cred_delt
 def delete_model_price(provider: str, model: str) -> None:
     with tx() as conn:
         conn.execute("DELETE FROM model_prices WHERE provider=? AND model=?", (provider, model))
-        rows = conn.execute(
-            """SELECT e.id, e.user_id, e.api_key_id, e.credential_id, e.reported_cost_micros, e.estimated_cost_micros,
-                      e.source_id, e.created_at
-               FROM usage_events e LEFT JOIN sources s ON s.id=e.source_id
-               WHERE COALESCE(NULLIF(e.source_type, ''), s.type, 'unknown')=? AND e.model=?""",
-            (provider, model),
-        ).fetchall()
-        conn.executemany(
-            "UPDATE usage_events SET estimated_cost_micros=0, pricing_known=0 WHERE id=?",
-            [(row["id"],) for row in rows],
-        )
-        key_deltas: dict[int, int] = {}
-        user_deltas: dict[int, int] = {}
-        cred_deltas: dict[int, int] = {}
-        hour_deltas: dict[tuple, int] = {}
-        for row in rows:
-            if row["reported_cost_micros"] is not None:
-                continue
-            delta = -int(row["estimated_cost_micros"] or 0)
-            user_deltas[row["user_id"]] = user_deltas.get(row["user_id"], 0) + delta
-            if row["api_key_id"]:
-                key_deltas[row["api_key_id"]] = key_deltas.get(row["api_key_id"], 0) + delta
-            if row["credential_id"]:
-                cred_deltas[row["credential_id"]] = cred_deltas.get(row["credential_id"], 0) + delta
-            hour = _hour_key(row)
-            hour_deltas[hour] = hour_deltas.get(hour, 0) + delta
-        _apply_cost_deltas(conn, provider, model, key_deltas, user_deltas, cred_deltas, hour_deltas)
+        for rows in _priced_events(
+            conn,
+            """e.id, e.user_id, e.api_key_id, e.credential_id, e.reported_cost_micros, e.estimated_cost_micros,
+               e.source_id, e.created_at""",
+            provider,
+            model,
+        ):
+            _unprice_batch(conn, provider, model, rows)
+
+
+def _unprice_batch(conn, provider, model, rows) -> None:
+    conn.executemany(
+        "UPDATE usage_events SET estimated_cost_micros=0, pricing_known=0 WHERE id=?",
+        [(row["id"],) for row in rows],
+    )
+    key_deltas: dict[int, int] = {}
+    user_deltas: dict[int, int] = {}
+    cred_deltas: dict[int, int] = {}
+    hour_deltas: dict[tuple, int] = {}
+    for row in rows:
+        if row["reported_cost_micros"] is not None:
+            continue
+        delta = -int(row["estimated_cost_micros"] or 0)
+        user_deltas[row["user_id"]] = user_deltas.get(row["user_id"], 0) + delta
+        if row["api_key_id"]:
+            key_deltas[row["api_key_id"]] = key_deltas.get(row["api_key_id"], 0) + delta
+        if row["credential_id"]:
+            cred_deltas[row["credential_id"]] = cred_deltas.get(row["credential_id"], 0) + delta
+        hour = _hour_key(row)
+        hour_deltas[hour] = hour_deltas.get(hour, 0) + delta
+    _apply_cost_deltas(conn, provider, model, key_deltas, user_deltas, cred_deltas, hour_deltas)
 
 
 def provider_usage_for(user_id: int):

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import time
 from datetime import datetime, timedelta, timezone
@@ -325,19 +326,24 @@ async def sync_openrouter_prices() -> dict:
             staged[("openrouter", model_id)] = values
             imported.add(model_id)
 
-    manual_ids: set[str] = set()
-    with db.tx() as conn:
-        for (provider, model) in staged:
-            row = conn.execute(
-                "SELECT origin FROM model_prices WHERE provider=? AND model=?", (provider, model)
-            ).fetchone()
-            if row is not None and row["origin"] == "manual":
-                # The upsert's manual guard will skip this row; do not count
-                # it as synced.
-                if provider == "openrouter":
-                    manual_ids.add(model)
-        for (provider, model), values in staged.items():
-            db.save_model_price(provider, model, conn=conn, **values)
+    def store() -> set[str]:
+        manual_ids: set[str] = set()
+        with db.tx() as conn:
+            for (provider, model) in staged:
+                row = conn.execute(
+                    "SELECT origin FROM model_prices WHERE provider=? AND model=?", (provider, model)
+                ).fetchone()
+                if row is not None and row["origin"] == "manual":
+                    # The upsert's manual guard will skip this row; do not count
+                    # it as synced.
+                    if provider == "openrouter":
+                        manual_ids.add(model)
+            for (provider, model), values in staged.items():
+                db.save_model_price(provider, model, conn=conn, **values)
+        return manual_ids
+
+    # Every save reprices that model's history: run it off the event loop.
+    manual_ids = await asyncio.to_thread(store)
     models = sorted(imported - manual_ids)
     return {"count": len(models), "models": models}
 
@@ -567,5 +573,5 @@ async def auto_price_due() -> None:
     catalog = openrouter_mod.cached_catalog()
     if catalog is None:
         catalog = await openrouter_mod.fetch_catalog()
-    auto_price(catalog)
+    await asyncio.to_thread(auto_price, catalog)
     _auto_last_run = time.time()
