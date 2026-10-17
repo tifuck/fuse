@@ -276,13 +276,6 @@ def _view(row, *, include_messages: bool = False, coding: bool = False, conn=Non
         ):
             rebuilt.update(context_meter.meter(used=rebuilt["used"], limit=stored["limit"], model=model,
                                        estimated=True))
-        checkpoint = ctxmod.latest_checkpoint(state, data["messages"])
-        if checkpoint:
-            rebuilt["projection"] = {
-                "through": checkpoint.get("through_message_id"),
-                "summary": ctxmod.COMPACT_PREAMBLE + (checkpoint.get("summary") or "").strip(),
-                "ack": ctxmod.COMPACT_ACK,
-            }
         meter = rebuilt
         meter["history_info"] = history_info
         state["meter"] = meter
