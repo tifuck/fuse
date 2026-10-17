@@ -305,11 +305,12 @@ export function createQueue(ctx) {
 
     async function sendQueuedNow(item) {
     if (!item || inFlight.has(item.id)) return;
-    // Send now interrupts: the running reply is stopped outright (Stop kills
-    // its tree and force-finishes a wedged worker after the grace window),
-    // then this message starts a new turn. Steering kept the old request
-    // streaming until its next tool boundary, so the session the user just
-    // replaced went on producing tokens and late tool calls.
+    // Send now interrupts: the running reply is stopped outright (a wedged
+    // worker is force-finished after the grace window), then this message
+    // starts a new turn. Unlike Stop, the reply's subagents and background
+    // commands keep running and report to that turn. Steering kept the old
+    // request streaming until its next tool boundary, so the session the user
+    // just replaced went on producing tokens and late tool calls.
     item.immediate = true;
     item.priority = Date.now();
     S.queuedTurns = [item, ...S.queuedTurns.filter((entry) => entry.id !== item.id)];
@@ -328,7 +329,7 @@ export function createQueue(ctx) {
         S.sendNowRuns.add(S.activeRun.id);
         markCause(S.activeRun.id, 'send-now');
       }
-      try { await send.stopActiveRun(); } finally { inFlight.delete(item.id); }
+      try { await send.stopActiveRun("reply"); } finally { inFlight.delete(item.id); }
       if (origin !== S.currentId) return;
       renderQueue();
     }

@@ -242,11 +242,12 @@ def _schedule_aclose(iterator):
     loop.create_task(_close())
 
 
-def cancel(run_id):
+def cancel(run_id, jobs=True):
     """Wake a local run after the HTTP handler persists request_cancel.
 
     If no live worker owns the run, finish it immediately so Stop cannot hang
-    on a phantom queued/running row.
+    on a phantom queued/running row. jobs=False (Send now) leaves the run's
+    background commands running.
     """
     task = _tasks.get(run_id)
     if task is not None and not task.done():
@@ -256,16 +257,17 @@ def cancel(run_id):
         except RuntimeError:
             current_loop = None
         if current_loop is not loop:
-            loop.call_soon_threadsafe(cancel, run_id)
+            loop.call_soon_threadsafe(cancel, run_id, jobs)
             return
     _cancelled.add(run_id)
     _signal_cancel(run_id)
-    try:
-        from . import workspace
+    if jobs:
+        try:
+            from . import workspace
 
-        workspace.cancel_run_jobs(run_id)
-    except Exception:
-        logger.exception("Failed to cancel workspace jobs for %s", run_id)
+            workspace.cancel_run_jobs(run_id)
+        except Exception:
+            logger.exception("Failed to cancel workspace jobs for %s", run_id)
     iterator = _iterators.get(run_id)
     if iterator is not None:
         _schedule_aclose(iterator)
@@ -324,6 +326,28 @@ async def cancel_wait(user_id, run_id, *, tree=True, force=False, by_user=False)
         row = await asyncio.to_thread(chat_store.get_run, user_id, ident)
         if row and row["status"] in chat_store.ACTIVE:
             await durable_call(chat_store.abort_active, ident, "cancelled")
+
+
+async def interrupt_wait(user_id, run_id):
+    """Send now: stop a root run's reply but not the work it started.
+
+    Stop (cancel_wait) ends the whole tree and the thread's other subagents.
+    Here only the root is cancelled. Its live children are handed to the
+    background first, so its finalizer (which cancels foreground descendants)
+    leaves them running and their reports reach the next turn; its background
+    commands keep going too. A worker still wedged after the grace window is
+    force-finished like Stop.
+    """
+    children = await durable_call(chat_store.request_interrupt, user_id, run_id)
+    if children is None:
+        return
+    for ident in children:
+        await durable_call(chat_store.mark_child_background, ident)
+    cancel(run_id, jobs=False)
+    await _await_tasks([run_id], CANCEL_GRACE_SECONDS)
+    row = await asyncio.to_thread(chat_store.get_run, user_id, run_id)
+    if row and row["status"] in chat_store.ACTIVE:
+        await durable_call(chat_store.abort_active, run_id, "cancelled")
 
 
 async def _finish_durably(ident: str, stored: dict, status: str) -> bool:

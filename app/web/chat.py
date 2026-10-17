@@ -311,10 +311,15 @@ async def chat_cancel(request: Request, run_id: str):
     if run["status"] in chat_store.ACTIVE:
         scope = (request.query_params.get("scope") or "").strip().lower()
         force = (request.query_params.get("force") or "").strip().lower() in ("1", "true", "yes")
-        # Child runs default to self: stopping one subagent must not kill the
-        # parent turn and its siblings. Root runs keep the tree default.
-        tree = scope == "tree" if run.get("parent_run_id") else scope != "self"
-        await chat_runs.cancel_wait(user["id"], run_id, tree=tree, force=force, by_user=True)
+        if scope == "reply" and not run.get("parent_run_id"):
+            # Send now: stop the main agent's reply only; its subagents and
+            # background commands keep running and report to the next turn.
+            await chat_runs.interrupt_wait(user["id"], run_id)
+        else:
+            # Child runs default to self: stopping one subagent must not kill the
+            # parent turn and its siblings. Root runs keep the tree default.
+            tree = scope == "tree" if run.get("parent_run_id") else scope != "self"
+            await chat_runs.cancel_wait(user["id"], run_id, tree=tree, force=force, by_user=True)
         run = chat_store.get_run(user["id"], run_id) or run
     return JSONResponse({"ok": True, "run": _chat_public_run(run)}, headers={"Cache-Control": "no-store"})
 

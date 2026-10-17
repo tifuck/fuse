@@ -65,13 +65,13 @@ const out = process.env.QUEUE_UI_ARTIFACTS || '/tmp/opencode/queue-ui-artifacts'
       const requests = [];
       page.on('request', request => {
         if (request.method() !== 'POST') return;
-        const path = new URL(request.url()).pathname;
-        if (/\/(steer|cancel|turns)$/.test(path)) requests.push({ path, body: request.postDataJSON() });
+        const url = new URL(request.url());
+        if (/\/(steer|cancel|turns)$/.test(url.pathname)) requests.push({ path: url.pathname, scope: url.searchParams.get('scope'), body: request.postDataJSON() });
       });
       // Gate the stop so the sending state can be observed mid-flight.
       let releaseStop;
       const stopGate = new Promise(resolve => { releaseStop = resolve; });
-      await page.route('**/cancel', async route => { await stopGate; await route.continue(); }, { times: 1 });
+      await page.route(url => url.pathname.endsWith('/cancel'), async route => { await stopGate; await route.continue(); }, { times: 1 });
       await page.locator('[data-queue-send]').first().click();
       const sendingItem = page.locator('.chat-queue-item').first();
       assert.equal(await sendingItem.getAttribute('aria-busy'), 'true');
@@ -83,6 +83,7 @@ const out = process.env.QUEUE_UI_ARTIFACTS || '/tmp/opencode/queue-ui-artifacts'
       await observer.waitForFunction(() => document.querySelector('[data-chat-log]').textContent.includes('Queue fixture send now target'));
       assert.equal(requests.filter(r => r.path.endsWith('/steer')).length, 0, 'Send now no longer steers the live run');
       assert.equal(requests.filter(r => r.path.endsWith('/cancel')).length, 1, 'Send now stops the running reply');
+      assert.equal(requests.find(r => r.path.endsWith('/cancel')).scope, 'reply', 'Send now stops only the reply, never its subagents');
       const sentTurn = requests.filter(r => r.path.endsWith('/turns') && r.body.text === 'Queue fixture send now target');
       assert.equal(sentTurn.length, 1, 'the queued message goes out as a new turn');
       assert.equal(sentTurn[0].body.attachments.length, 0);
@@ -208,7 +209,7 @@ const out = process.env.QUEUE_UI_ARTIFACTS || '/tmp/opencode/queue-ui-artifacts'
         const attachmentRun = (await read()).run.id;
         const attachmentRequests = [];
         const recordRequest = request => {
-          if (request.method() === 'POST' && /\/(steer|cancel|turns)$/.test(request.url())) attachmentRequests.push({ url: request.url(), body: request.postDataJSON() });
+          if (request.method() === 'POST' && /\/(steer|cancel|turns)$/.test(new URL(request.url()).pathname)) attachmentRequests.push({ url: new URL(request.url()).pathname, body: request.postDataJSON() });
         };
         page.on('request', recordRequest);
         await send('Earlier queued message');

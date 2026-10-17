@@ -112,7 +112,7 @@ export function createSend(ctx) {
     host.appendChild(button);
   }
 
-    async function stopActiveRun() {
+    async function stopActiveRun(scope) {
     const id = S.activeRun?.id;
     if (!id) return;
     // Hold before the request: its reconcile must not drain the queue.
@@ -123,7 +123,7 @@ export function createSend(ctx) {
     picker.holdHint("stop:" + id, "Stopping…");
     sync.setRunning();
     try {
-      const data = await net.api("/chat/runs/" + encodeURIComponent(id) + "/cancel", { method: "POST", body: "{}" });
+      const data = await net.api("/chat/runs/" + encodeURIComponent(id) + "/cancel" + (scope ? "?scope=" + scope : ""), { method: "POST", body: "{}" });
       sync.applyCancelResult(data, id);
     } catch (error) {
       sync.showFailure("Stop failed", error);

@@ -1162,6 +1162,30 @@ def request_cancel(user_id, run_id):
         return True
 
 
+def request_interrupt(user_id, run_id):
+    """Send now: flag one active root run to stop its reply, nothing else.
+
+    Unlike a root Stop (request_cancel), its subagents, the thread's other
+    subagents and its schedules are left alone. Returns the root's live
+    children that are not already stopping, or None when run_id is not an
+    active root. The root row is locked until commit and a stopping parent
+    admits no new child, so the list is complete."""
+    with chat_tx.transaction() as conn:
+        row = conn.execute("SELECT * FROM chat_runs WHERE id=? AND user_id=?", (run_id, user_id)).fetchone()
+        if row is None or row["parent_run_id"] or row["status"] not in chat_tx.ACTIVE:
+            return None
+        ts = db.now()
+        if conn.execute(
+            "UPDATE chat_runs SET cancel_requested=1,cancel_requested_at=?,updated_at=? WHERE id=? AND cancel_requested=0",
+            (ts, ts, run_id),
+        ).rowcount:
+            chat_tx.event(conn, user_id, "run.cancel_requested", row["thread_id"], _cancel_event_payload(row))
+        return [item["id"] for item in conn.execute(
+            "SELECT id FROM chat_runs WHERE user_id=? AND parent_run_id=? AND status IN ('queued','running') AND cancel_requested=0",
+            (user_id, run_id),
+        ).fetchall()]
+
+
 def request_cancel_thread_agents(user_id, run_id):
     """Stop of a main run also stops the thread's other live subagents.
 

@@ -306,6 +306,30 @@ def test_cancel_scope_self_spares_a_sibling(client):
     assert chat_store.get_run(uid, root["id"])["status"] == "queued"
 
 
+def test_cancel_scope_reply_stops_only_the_main_reply(client):
+    """Send now: the root's reply ends and its subagents keep running (a
+    plain root cancel is Stop, which ends every subagent in the chat)."""
+    _login(client)
+    thread, pk = _thread(client, "reply-create")
+    uid = _uid()
+    root = chat_store.start_turn(uid, pk, "hello", thread["revision"], "reply-turn")["run"]
+    for ident in ("kid-a", "kid-b"):
+        db.execute(
+            """INSERT INTO chat_runs(id,thread_id,user_id,status,request,message_id,message,created_at,updated_at,
+                   parent_run_id,root_run_id,agent_depth)
+               VALUES(?,?,?,'running','{}',?,'{}',?,?,?,?,1)""",
+            (ident, pk, uid, "m-" + ident, db.now(), db.now(), root["id"], root["id"]),
+        )
+    got = client.post(f"/chat/runs/{root['id']}/cancel?scope=reply")
+    assert got.status_code == 200
+    assert got.json()["run"]["status"] == "cancelled"
+    for ident in ("kid-a", "kid-b"):
+        kid = chat_store.get_run(uid, ident)
+        assert kid["status"] == "running" and not kid["cancel_requested"]
+        # Handed to the background, so its report reaches the next turn.
+        assert kid["request"]["agent"]["background"] is True
+
+
 # --- steer ----------------------------------------------------------------
 
 

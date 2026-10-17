@@ -425,6 +425,51 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(closed.is_set())
         self.assertEqual(store.get_run(1, run["id"])["status"], "cancelled")
 
+    async def test_send_now_interrupt_ends_the_reply_but_keeps_its_subagents(self):
+        # Send now used Stop's tree cancel, which ended every subagent in the
+        # chat with "Subagent stopped by cancellation".
+        first = self.turn()
+        earlier = store.start_child_run(
+            user_id=1, thread_id=first["thread_id"], parent_run_id=first["id"],
+            prompt="earlier work", description="earlier", background=True,
+        )
+        store.finish_run(first["id"], {"content": "Done"}, "completed")
+        thread = chats.get_thread(1, first["thread_id"])
+        run = store.start_turn(1, first["thread_id"], "Next", thread["revision"], None)["run"]
+        background = store.start_child_run(
+            user_id=1, thread_id=run["thread_id"], parent_run_id=run["id"],
+            prompt="background work", description="background", background=True,
+        )
+        foreground = store.start_child_run(
+            user_id=1, thread_id=run["thread_id"], parent_run_id=run["id"],
+            prompt="foreground work", description="foreground",
+        )
+
+        async def gen():
+            # The reply is waiting on its foreground spawn when Send now lands.
+            yield frame({"fuse": {"event": "tool", "id": "spawn", "name": "spawn_subagent",
+                                  "status": "running", "child_id": foreground["id"]}})
+            await asyncio.Future()
+
+        task, _ = await self.launch(run, gen())
+        async with asyncio.timeout(2):
+            while not store.get_run(1, run["id"])["message"].get("tools"):
+                await asyncio.sleep(.01)
+        with patch("app.workspace.cancel_run_jobs") as jobs:
+            await runs.interrupt_wait(1, run["id"])
+            await asyncio.wait_for(task, 2)
+        stopped = store.get_run(1, run["id"])
+        self.assertEqual(stopped["status"], "cancelled")
+        for child in (earlier, background, foreground):
+            row = store.get_run(1, child["id"])
+            self.assertIn(row["status"], ("queued", "running"))
+            self.assertFalse(row["cancel_requested"])
+        # The in-flight foreground child was handed to the background: its
+        # row stays live and its report reaches the next turn.
+        self.assertTrue(store.get_run(1, foreground["id"])["request"]["agent"]["background"])
+        self.assertEqual(stopped["message"]["tools"][0]["status"], "running")
+        jobs.assert_not_called()  # background commands keep running too
+
     async def test_delete_poll_cancels_provider(self):
         run = self.turn()
         entered = asyncio.Event()

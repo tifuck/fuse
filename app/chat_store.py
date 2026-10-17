@@ -196,6 +196,7 @@ from .chat_run_state import (
     request_cancel_descendants,
     request_cancel_self,
     request_cancel_thread_agents,
+    request_interrupt,
     resumed_after_stop,
     row_work_ms,
     run_work_fields,
