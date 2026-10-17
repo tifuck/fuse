@@ -158,9 +158,14 @@ class ProjectsRetentionTest(unittest.TestCase):
         # A running session is cancelled and deleted with the project.
         current = chats.get_thread(1, first["id"])
         run = store.start_turn(1, first["id"], "hello", current["revision"], "send-live")["run"]
-        with patch("app.chat_runs.cancel") as cancel:
+        from app import vault
+
+        record = {"dek": b"x" * 32, "last_seen": 0.0, "pinned_runs": {run["id"]}}
+        with patch("app.chat_runs.cancel") as cancel, patch.object(vault, "_vault", {1: record}):
             self.assertTrue(hosts.delete_project(1, 7, live["id"]))
         cancel.assert_called_once_with(run["id"])
+        # Its row is gone, so only the delete can release the vault pin.
+        self.assertEqual(record["pinned_runs"], set())
         self.assertIsNone(chats.get_thread(1, first["id"]))
         self.assertIsNone(hosts.get_project(1, 7, live["id"]))
 

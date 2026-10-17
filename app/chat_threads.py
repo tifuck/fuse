@@ -851,9 +851,13 @@ def delete_thread(user_id: int, thread_id, *, expected_revision=None, command_id
     # Wake live workers after the commit so they stop promptly instead of
     # burning provider quota until the next periodic poll notices the row is gone.
     from . import chat_runs
+    from .vault import unpin_run
 
     for run in active:
         chat_runs.cancel(run["id"])
+        # The row is gone, so finish_run can never unpin it; a stale pin
+        # keeps the vault unlocked past its idle timeout.
+        unpin_run(user_id, run["id"])
     try:
         from . import command_jobs
 

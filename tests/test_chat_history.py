@@ -209,6 +209,16 @@ class HistoryTest(unittest.TestCase):
         self.assertIsNone(chats.get_thread(1, tid))
         self.assertIsNone(store.get_run(1, run["id"]))
 
+    def test_deleting_a_busy_thread_unpins_its_runs_from_the_vault(self):
+        from app import vault
+
+        run = self.start("busy")
+        record = {"dek": b"x" * 32, "last_seen": 0.0, "pinned_runs": {run["id"], "other-run"}}
+        with patch.object(vault, "_vault", {1: record}):
+            self.assertTrue(chats.delete_thread(1, self.thread["id"]))
+        # finish_run finds no row for a deleted run; the delete must unpin it.
+        self.assertEqual(record["pinned_runs"], {"other-run"})
+
     def test_search_matches_message_text_within_the_scan_window(self):
         self.complete(self.start("question"), content="the NEEDLE_RESULT is here")
         view = chats.get_thread(1, self.thread["id"])

@@ -826,9 +826,11 @@ def delete_project(user_id: int, host_id: int, project_id: int, *, sessions: str
         )
     # Wake live workers after the commit, as delete_thread does.
     from . import chat_runs, command_jobs
+    from .vault import unpin_run
 
     for run in active:
         chat_runs.cancel(run["id"])
+        unpin_run(user_id, run["id"])  # its row is gone: finish_run cannot unpin it
     for tid in ids:
         try:
             command_jobs.cancel_thread(user_id, tid)
