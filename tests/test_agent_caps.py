@@ -351,7 +351,8 @@ class AgentCapsTest(AgentCapsBase):
     def test_scratch_carries_into_next_turn_and_wake(self):
         from app import hosts
 
-        coding = patch.object(hosts, "settings_for", return_value={"agent_coding": True})
+        real = hosts.settings_for
+        coding = patch.object(hosts, "settings_for", side_effect=lambda *a, **k: {**real(*a, **k), "agent_coding": True})
         coding.start()
         self.addCleanup(coding.stop)
         thread, first = self._parent()

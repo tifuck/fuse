@@ -427,7 +427,7 @@ def test_project_rows_carry_the_grouping_fields_the_projects_tab_renders(client)
     assert len(listed["projects"]) == 1
     proj = listed["projects"][0]
     assert set(proj) == {"id", "host_id", "host_alias", "name", "remote_path", "default_model",
-                         "permission_mode", "thread_id", "created_at", "updated_at", "running",
+                         "permission_mode", "default_permissions", "thread_id", "created_at", "updated_at", "running",
                          "color", "logo_url", "archived", "archived_at", "sessions", "last_active_at"}
     assert proj["id"] == project_id and proj["host_id"] == host_id
     assert proj["name"] == "billing-service" and proj["host_alias"] == "box"
