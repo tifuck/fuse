@@ -121,8 +121,8 @@ class CursorUnitTest(unittest.TestCase):
             ]},
             {"role": "tool", "tool_call_id": "c1", "content": "sunny"},
         ]
-        history, text = agent.build_turn(msgs)
-        self.assertEqual(text, agent.CONTINUE_TEXT)
+        history, text, images = agent.build_turn(msgs)
+        self.assertEqual((text, images), (agent.CONTINUE_TEXT, []))
         self.assertIn("be terse", history[0]["content"][0]["text"])
         self.assertEqual(history[3]["content"][0], {"type": "tool-call", "toolCallId": "c1", "toolName": "get_weather", "args": {"city": "Osaka"}})
         self.assertEqual(history[4]["content"][0]["result"], "sunny")
@@ -164,6 +164,11 @@ class CursorUnitTest(unittest.TestCase):
         self.assertEqual(cursor_mod.resolve("grok-4.6", "low")["slug"], "grok-4.6-low-fast")
         self.assertEqual(cursor_mod.resolve("legacy-slug", "high")["params"], [])
 
+    def test_auto_is_upstream_default(self):
+        self.assertEqual(cursor_mod.resolve("cursor/auto", None)["model_id"], "default")
+        rows = cursor_mod.parse_available_models([{"name": "default", "clientDisplayName": "Auto"}])
+        self.assertEqual([(r["id"], r["model"]) for r in rows], [("cursor/auto", "default")])
+
 
 class CursorRunTest(unittest.IsolatedAsyncioTestCase):
     """A scripted api2.cursor.sh: one RunSSE stream that waits on BidiAppend
@@ -190,6 +195,11 @@ class CursorRunTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn(blob, got)
             yield _frame(_wrap(2, _enc(lambda e: (e.uint32(1, 1), e.string(15, "x1"), e.blob(10, b"")))))
             self.assertIn(b"get_weather", await appends.get())
+            # The model's GET_MCP_TOOLS call asks for the MCP state.
+            yield _frame(_wrap(2, _enc(lambda e: (e.uint32(1, 3), e.string(15, "x3"), e.blob(36, b"")))))
+            state = await appends.get()
+            self.assertEqual(_top_field(state), 2)
+            self.assertIn(b"get_weather", state)
             yield _update(4, _text(1, "hmm"))
             yield _update(1, _text(1, "Checking"))
             yield _update(8, _enc(lambda e: e.uint32(1, 7)))
@@ -240,6 +250,7 @@ class CursorRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(run.checkpoint)
         self.assertEqual(seen["headers"]["content-type"], "application/connect+proto")
         self.assertEqual(seen["headers"]["x-cursor-streaming"], "true")
+        self.assertIn("get_mcp_tools_tool_call", seen["headers"]["x-cursor-agent-allowed-tools"])
         self.assertEqual(seen["seq"][:4], ["0", "1", "2", "3"])
 
     async def test_trailer_error_maps_to_status(self):
@@ -276,7 +287,8 @@ class FakeRun:
 
     async def start(self, request: bytes):
         if FakeRun.fail:
-            raise agent.TurnError(FakeRun.fail.pop(0), "refused")
+            item = FakeRun.fail.pop(0)
+            raise agent.TurnError(*item) if isinstance(item, tuple) else agent.TurnError(item, "refused")
         self.started = request
 
     async def round(self):
@@ -425,20 +437,41 @@ class CursorPoolTest(unittest.IsolatedAsyncioTestCase):
             await self._chat(messages)
         started = FakeRun.instances[0].started
         self.assertIn(png, started)  # the active message's image, raw, in selected_context
-        self.assertIn(base64.b64encode(png), started)  # the earlier user image, in the history
         self.assertIn(b"image/png", started)
         self.assertIn(b"read_file", started)
+        blobs = b"".join(FakeRun.instances[0].kw["blobs"].values())
+        self.assertIn(base64.b64encode(png), blobs)  # the earlier user image, in the replayed history
+        self.assertIn(b'"experimental_content"', blobs)  # the tool's image, beside its text result
 
     @patch("app.sources.cursor.refresh_pool_quota", new_callable=AsyncMock)
     @patch("app.sources.cursor.refresh_due", new_callable=AsyncMock)
-    async def test_refused_history_replays_as_text_blobs(self, _due, _quota):
+    async def test_fresh_turn_replays_history_as_root_blobs(self, _due, _quota):
+        # Cursor ignores UserMessageAction.conversation_history; root prompt
+        # blobs are the replay it honors.
         cursor_mod.store_tokens(self.sid, _jwt(), "refresh-token-1234", self.alice["id"])
-        FakeRun.fail = [400]
         with patch.object(agent, "CursorRun", FakeRun), patch.object(cursor_mod, "note_pool_invoke"):
             await self._chat([{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}])
-        self.assertEqual(len(FakeRun.instances), 2)
-        self.assertTrue(FakeRun.instances[1].kw["blobs"])
-        self.assertTrue(any(b"Configuration for this session" in blob for blob in FakeRun.instances[1].kw["blobs"].values()))
+        self.assertEqual(len(FakeRun.instances), 1)
+        self.assertTrue(any(b"Configuration for this session" in blob for blob in FakeRun.instances[0].kw["blobs"].values()))
+
+    @patch("app.sources.cursor.refresh_pool_quota", new_callable=AsyncMock)
+    @patch("app.sources.cursor.refresh_due", new_callable=AsyncMock)
+    async def test_free_plan_gate_is_403_without_cooldown_and_lists_only_auto(self, _due, _quota):
+        cid = cursor_mod.store_tokens(self.sid, _jwt(), "refresh-token-1234", self.alice["id"])
+        row = db.fetchone("SELECT * FROM credentials WHERE id=?", (cid,))
+        extra = accounts.cred_extra(row)
+        extra["billing"] = {"plan_type": "free"}
+        accounts.update_extra(cid, extra)
+        names = ["cursor/auto", "cursor/grok-4.7"]
+        self.assertEqual(cursor_mod.listable_models(names, self.alice["id"]), ["cursor/auto"])
+        FakeRun.fail = [(429, "Free plans can only use Auto. Switch to Auto or upgrade plans to continue.")]
+        src = cursor_mod.CursorSource({"id": self.sid, "name": "Cursor"}, {}, [])
+        with patch.object(agent, "CursorRun", FakeRun), patch.object(cursor_mod, "note_pool_invoke"):
+            denied = await src.chat({"model": "cursor/grok-4.7", "messages": [{"role": "user", "content": "hi"}]},
+                                    user_id=self.alice["id"])
+            self.assertEqual(denied.status, 403)
+            self.assertIn("paid plan", json.dumps(denied.body))
+            await self._chat([{"role": "user", "content": "hi"}])  # the account is not cooled down
 
     async def test_tool_images_are_normalized_like_cursors_sdk(self):
         big = _png(3000, 2000, noise=True)

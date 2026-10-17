@@ -47,6 +47,8 @@ PREFIX = "cursor/"
 USAGE_TTL = 300
 # Cursor's Auto router: on every plan, so it is the one seed that is always real.
 CURSOR_MODELS = ["cursor/auto"]
+# Auto's upstream id; "auto" itself is refused as an invalid model name.
+AUTO_UPSTREAM = "default"
 _models_cache: tuple[float, list[str]] | None = None
 _labels: dict[str, str] = {}
 _refresh_locks: dict[int, asyncio.Lock] = {}
@@ -86,6 +88,33 @@ def upstream_id(model: str) -> str:
     return mid[len(PREFIX):] if mid.startswith(PREFIX) else mid
 
 
+def _fid(model: str) -> str:
+    return PREFIX + ("auto" if model == AUTO_UPSTREAM else model)
+
+
+def _plan_denied(message: str) -> bool:
+    """Cursor's free-plan gate ("Free plans can only use Auto..."), sent as
+    resource_exhausted: an entitlement, not a rate limit."""
+    low = message.lower()
+    return "free plan" in low or "only use auto" in low
+
+
+def listable_models(names: list[str], user_id: int | None) -> list[str]:
+    """A user routed only onto Free accounts sees only Auto, the one model
+    a Free plan may run."""
+    if user_id is None:
+        return names
+    plans = set()
+    for row in pool_policy.load_credentials(ensure_cursor_source(), "cursor", user_id):
+        extra = accounts.cred_extra(row)
+        if credential_is_authed(row, extra):
+            billing = extra.get("billing") if isinstance(extra.get("billing"), dict) else {}
+            plans.add(str(billing.get("plan_type") or ""))
+    if plans == {"free"}:
+        return [name for name in names if name in CURSOR_MODELS]
+    return names
+
+
 def model_label(model: str) -> str:
     return _labels.get(model, "")
 
@@ -102,8 +131,9 @@ def _headers(token: str) -> dict:
         "x-cursor-client-version": settings.cursor_client_version,
         # Privacy mode: Cursor does not store or train on these requests.
         "x-ghost-mode": "true",
-        # Hide Cursor's native tools; the model sees only the caller's.
-        "x-cursor-agent-allowed-tools": "mcp_tool_call",
+        # Hide Cursor's native tools; the model sees only the caller's. Cursor
+        # requires GET_MCP_TOOLS whenever MCP tools are present.
+        "x-cursor-agent-allowed-tools": "mcp_tool_call,get_mcp_tools_tool_call",
     }
 
 
@@ -645,7 +675,7 @@ def parse_available_models(models: list) -> list[dict]:
             except (TypeError, ValueError):
                 window = 0
             rows.append({
-                "id": PREFIX + base + suffix,
+                "id": _fid(base) + suffix,
                 "model": base,
                 "name": " ".join([title, *words]),
                 "efforts": efforts,
@@ -664,7 +694,7 @@ def _legacy_rows(models: list) -> list[dict]:
         mid = str(item.get("modelId") or "") if isinstance(item, dict) else ""
         if mid:
             name = str(item.get("displayName") or item.get("displayNameShort") or mid)
-            rows.append({"id": PREFIX + mid, "model": mid, "name": name, "efforts": {"": []}, "default": "",
+            rows.append({"id": _fid(mid), "model": mid, "name": name, "efforts": {"": []}, "default": "",
                          "max": bool(item.get("maxMode")), "window": 0, "fast": False})
     return rows
 
@@ -738,6 +768,7 @@ def resolve(model: str, effort: str | None) -> dict:
     row = _catalog.get(fid)
     if not row:
         mid = upstream_id(fid)
+        mid = AUTO_UPSTREAM if mid == "auto" else mid
         return {"model_id": mid, "params": [], "max": False, "name": mid, "slug": mid}
     efforts = row["efforts"]
     label = str(effort or "").strip().lower()
@@ -1011,18 +1042,16 @@ class CursorSource:
                 for m in results
             ])
         else:
-            history = None
-            images: list = []
             if how == "followup":
                 state = conv.checkpoint
                 news = await _resolve_images(tail)
                 user_text = "\n\n".join(t for t in (agent._text(m.get("content")) for m in news) if t)
                 images = [image for m in news for image in agent.images_of(m.get("content"))]
-            elif how == "blobs":
-                # Text-only replay as root prompt blobs: the fallback when the
-                # structured history is refused.
+            else:
+                # Replay as root prompt blobs. The server ignores
+                # UserMessageAction.conversation_history (checked live).
                 conv = agent.Conversation(user_id=user_id, cred_id=cid)
-                entries, user_text = agent.build_turn(messages)
+                entries, user_text, images = agent.build_turn(await _resolve_images(messages))
                 ids = []
                 for entry in entries:
                     data = json.dumps(entry, ensure_ascii=False, separators=(",", ":")).encode()
@@ -1030,19 +1059,12 @@ class CursorSource:
                     conv.blobs[digest] = data
                     ids.append(digest)
                 state = agent.encode_state(ids)
-            else:
-                conv = agent.Conversation(user_id=user_id, cred_id=cid)
-                earlier, active = agent.split_turn(await _resolve_images(messages))
-                history = agent.encode_history(earlier) or None
-                user_text = agent._text(active.get("content")) if active else agent.CONTINUE_TEXT
-                images = agent.images_of(active.get("content")) if active else []
-                state = agent.encode_state([])
             run = agent.CursorRun(base=_base(), headers=_headers(extra.get("access_token") or ""),
                                   timeout=_CHAT_TIMEOUT, blobs=conv.blobs, tools=tools)
             await run.start(agent.encode_run_request(
                 state=state, user_text=user_text, model_id=sel["model_id"], params=sel["params"],
                 max_mode=sel["max"], display_name=sel["name"], tools=tools, conversation_id=conv.conversation_id,
-                images=images, history=history,
+                images=images,
             ))
         conv.busy = True
         conv.selection = (sel["model_id"], tuple(sel["params"]), sel["max"])
@@ -1097,11 +1119,6 @@ class CursorSource:
                 rnd = await self._open(extra, cid, user_id, body, sel, plan)
             except TurnError as exc:
                 release(cid)
-                if plan[0] == "fresh" and exc.status == 400:
-                    # Structured history refused: replay as text blobs.
-                    plan = ("blobs", None, [])
-                    tried.discard(cid)
-                    continue
                 if plan[0] in ("resume", "followup"):
                     # The kept state is gone (expired run, unknown
                     # checkpoint): replay the history on this account.
@@ -1121,6 +1138,11 @@ class CursorSource:
                         disable_credential(cid, extra=cred.get("extra"))
                     last.status = 502
                     last.body = {"error": {"message": "Cursor rejected the configured account"}}
+                    continue
+                if _plan_denied(exc.message):
+                    # Keep the account warm; another account may be paid.
+                    last.status = 403
+                    last.body = {"error": {"message": "This Cursor model needs a paid plan; Free accounts can only use Auto (cursor/auto)."}}
                     continue
                 if exc.status in (403, 429):
                     try:

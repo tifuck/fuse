@@ -276,6 +276,10 @@ async def _user_source_models(s: Source, user_id: int | None) -> list[str]:
         from . import chatgpt as chatgpt_mod
 
         return chatgpt_mod.listable_models(names, user_id)
+    if s.type_id == "cursor":
+        from . import cursor as cursor_mod
+
+        return cursor_mod.listable_models(names, user_id)
     return names
 
 

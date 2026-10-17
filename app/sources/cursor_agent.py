@@ -101,9 +101,15 @@ def _active_user(msgs: list[dict]) -> int:
     return -1
 
 
-def build_turn(messages) -> tuple[list[dict], str]:
-    """(history entries, active user text). The trailing user message is the
-    action; everything before it is history."""
+def _b64(data: bytes) -> str:
+    return base64.b64encode(data).decode("ascii")
+
+
+def build_turn(messages) -> tuple[list[dict], str, list[tuple[str, bytes]]]:
+    """(history entries, active user text, active user images). The trailing
+    user message is the action; everything before it is history, as AI SDK
+    messages: images inline as base64, a tool result's images in
+    experimental_content (the forms Cursor's root prompt blobs accept)."""
     msgs = [m for m in (messages or []) if isinstance(m, dict)]
     active = _active_user(msgs)
     names: dict[str, str] = {}
@@ -118,8 +124,10 @@ def build_turn(messages) -> tuple[list[dict], str]:
                 history.append({"role": "user", "content": [{"type": "text", "text": f"{SYSTEM_LEAD}\n\n{text}"}]})
                 history.append({"role": "assistant", "content": [{"type": "text", "text": SYSTEM_ACK}]})
         elif role == "user":
-            if text:
-                history.append({"role": "user", "content": [{"type": "text", "text": text}]})
+            parts = [{"type": "text", "text": text}] if text else []
+            parts += [{"type": "image", "image": _b64(data), "mediaType": mime} for mime, data in images_of(msg.get("content"))]
+            if parts:
+                history.append({"role": "user", "content": parts})
         elif role == "assistant":
             parts: list[dict] = [{"type": "text", "text": text}] if text else []
             for call in msg.get("tool_calls") or []:
@@ -133,28 +141,22 @@ def build_turn(messages) -> tuple[list[dict], str]:
         elif role == "tool":
             # Kept even when empty: dropping it would orphan the call above.
             cid = str(msg.get("tool_call_id") or "")
-            history.append({
-                "role": "tool",
-                "id": cid,
-                "content": [{
-                    "type": "tool-result",
-                    "toolName": str(msg.get("name") or names.get(cid, "")),
-                    "toolCallId": cid,
-                    "result": text,
-                }],
-            })
-    user_text = _text(msgs[active].get("content")) if active >= 0 else ""
-    return history, user_text or CONTINUE_TEXT
-
-
-def split_turn(messages) -> tuple[list[dict], dict | None]:
-    """(history, active user message). A request that ends on tool results
-    has no active user message."""
-    msgs = [m for m in (messages or []) if isinstance(m, dict)]
-    active = _active_user(msgs)
+            result = {
+                "type": "tool-result",
+                "toolName": str(msg.get("name") or names.get(cid, "")),
+                "toolCallId": cid,
+                "result": text,
+            }
+            images = images_of(msg.get("content"))
+            if images:
+                result["experimental_content"] = [{"type": "text", "text": text}] + [
+                    {"type": "image", "data": _b64(data), "mimeType": mime} for mime, data in images
+                ]
+            history.append({"role": "tool", "id": cid, "content": [result]})
     if active < 0:
-        return msgs, None
-    return msgs[:active] + msgs[active + 1:], msgs[active]
+        return history, CONTINUE_TEXT, []
+    content = msgs[active].get("content")
+    return history, _text(content), images_of(content)
 
 
 def images_of(content) -> list[tuple[str, bytes]]:
@@ -194,77 +196,6 @@ def _tool_def(e: ProtoEncoder, tool: dict) -> None:
     e.string(6, tool["schema"])
 
 
-def _content_items(text: str, images: list[tuple[str, bytes]]) -> list[bytes]:
-    """ConversationHistory user/tool-result content: {1 text, 2 image}.
-    History images are base64 strings, as in the CLI's history-file import."""
-    items = [_wrap(1, _enc_text(text))] if text else []
-    for mime, data in images:
-        image = ProtoEncoder()
-        image.string(1, base64.b64encode(data).decode("ascii"))
-        image.string(2, mime)
-        items.append(_wrap(2, image.finish()))
-    return items
-
-
-def _enc_text(text: str) -> bytes:
-    e = ProtoEncoder()
-    e.string(1, text)
-    return e.finish()
-
-
-def encode_history(messages) -> bytes:
-    """ConversationHistory, the structured transcript the CLI imports with
-    --conversation-history-file: user text and images, assistant text and
-    tool calls (args as JSON), tool results with text and images. It has no
-    system role, so a system message becomes an opening exchange."""
-    out = ProtoEncoder()
-    names: dict[str, str] = {}
-
-    def user(text: str, images: list) -> None:
-        u = ProtoEncoder()
-        for item in _content_items(text, images):
-            u.blob(1, item)
-        out.blob(1, _wrap(1, u.finish()))
-
-    for msg in messages or []:
-        if not isinstance(msg, dict):
-            continue
-        role = msg.get("role")
-        text, images = _text(msg.get("content")), images_of(msg.get("content"))
-        if role in ("system", "developer"):
-            if text:
-                user(f"{SYSTEM_LEAD}\n\n{text}", [])
-                out.blob(1, _wrap(2, _wrap(1, _wrap(1, _enc_text(SYSTEM_ACK)))))
-        elif role == "user":
-            if text or images:
-                user(text, images)
-        elif role == "assistant":
-            a = ProtoEncoder()
-            if text:
-                a.blob(1, _wrap(1, _enc_text(text)))
-            for call in msg.get("tool_calls") or []:
-                fn = (call.get("function") or {}) if isinstance(call, dict) else {}
-                cid = str(call.get("id") or "") if isinstance(call, dict) else ""
-                names[cid] = str(fn.get("name") or "")
-                tc = ProtoEncoder()
-                tc.string(1, cid)
-                tc.string(2, names[cid])
-                tc.string(3, json.dumps(_args(fn.get("arguments")), ensure_ascii=False))
-                a.blob(1, _wrap(4, tc.finish()))
-            body = a.finish()
-            if body:
-                out.blob(1, _wrap(2, body))
-        elif role == "tool":
-            cid = str(msg.get("tool_call_id") or "")
-            t = ProtoEncoder()
-            t.string(1, cid)
-            t.string(2, str(msg.get("name") or names.get(cid, "")))
-            for item in _content_items(text, images):
-                t.blob(3, item)
-            out.blob(1, _wrap(3, t.finish()))
-    return out.finish()
-
-
 def encode_selected_context(images: list[tuple[str, bytes]]) -> bytes:
     """SelectedContext with the user's images inline, as the CLI's ACP mode
     and the SDK attach them."""
@@ -299,7 +230,6 @@ def encode_run_request(
     tools: list[dict],
     conversation_id: str,
     images: list[tuple[str, bytes]] = (),
-    history: bytes | None = None,
 ) -> bytes:
     user = ProtoEncoder()
     user.string(1, user_text)
@@ -309,8 +239,6 @@ def encode_run_request(
     user.uint32(4, AGENT_MODE_AGENT)
     user_action = ProtoEncoder()
     user_action.blob(1, user.finish())
-    if history:
-        user_action.blob(7, history)
     action = _wrap(1, user_action.finish())
     details = ProtoEncoder()
     details.string(1, model_id)
@@ -368,6 +296,23 @@ def encode_request_context(exec_num: int, exec_id: str, tools: list[dict]) -> by
     ex.uint32(1, exec_num)
     ex.string(15, exec_id)
     ex.blob(10, _wrap(1, _wrap(1, ctx.finish())))
+    return _wrap(2, ex.finish())
+
+
+def encode_mcp_state(exec_num: int, exec_id: str, tools: list[dict]) -> bytes:
+    """ExecClientMessage.mcp_state_exec_result: the caller's tools as one MCP
+    server, the way the CLI answers when its model calls GET_MCP_TOOLS."""
+    server = ProtoEncoder()
+    server.string(1, TOOL_PROVIDER)
+    server.string(2, TOOL_PROVIDER)
+    for tool in tools:
+        server.message(5, lambda e, t=tool: _tool_def(e, t))
+    success = ProtoEncoder()
+    success.blob(1, server.finish())
+    ex = ProtoEncoder()
+    ex.uint32(1, exec_num)
+    ex.string(15, exec_id)
+    ex.blob(36, _wrap(1, success.finish()))
     return _wrap(2, ex.finish())
 
 
@@ -497,6 +442,8 @@ def decode_server_message(data: bytes) -> tuple:
         exec_num, exec_id = _int(ex, 1), _str(ex, 15)
         if 10 in ex:
             return ("request_context", exec_num, exec_id)
+        if 36 in ex:
+            return ("mcp_state", exec_num, exec_id)
         if 11 in ex:
             mcp = _fields(_one(ex, 11))
             args = {}
@@ -693,6 +640,8 @@ class CursorRun:
             await self.append(encode_set_blob_ack(event[1]))
         elif kind == "request_context":
             await self.append(encode_request_context(event[1], event[2], self.tools))
+        elif kind == "mcp_state":
+            await self.append(encode_mcp_state(event[1], event[2], self.tools))
         elif kind == "mcp":
             _, exec_num, exec_id, args = event
             call_id = safe_call_id(args["tool_call_id"])
