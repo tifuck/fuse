@@ -228,7 +228,7 @@ class CursorRunTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(first[3], ("usage", {"prompt_tokens": 100, "completion_tokens": 7, "total_tokens": 107}))
             self.assertEqual(first[4], ("end", "tool_calls"))
             self.assertFalse(run.closed)
-            await run.resume([("call-1_fc_2", "sunny")])
+            await run.resume([("call-1_fc_2", "sunny", [])])
             second = [e async for e in run.round()]
             await run.aclose()
         self.assertEqual(second[0], ("text", "Sunny."))
@@ -262,7 +262,7 @@ class CursorRunTest(unittest.IsolatedAsyncioTestCase):
 class FakeRun:
     """Stands in for agent.CursorRun: a tool round, then the turn's end."""
 
-    fail = 0
+    fail: list = []
     instances: list = []
 
     def __init__(self, **kw):
@@ -276,8 +276,7 @@ class FakeRun:
 
     async def start(self, request: bytes):
         if FakeRun.fail:
-            FakeRun.fail -= 1
-            raise agent.TurnError(401, "not logged in")
+            raise agent.TurnError(FakeRun.fail.pop(0), "refused")
         self.started = request
 
     async def round(self):
@@ -311,7 +310,7 @@ class CursorPoolTest(unittest.IsolatedAsyncioTestCase):
         for conv in list(agent._conversations.values()):
             agent.drop(conv)
         FakeRun.instances = []
-        FakeRun.fail = 0
+        FakeRun.fail = []
         db.execute("DELETE FROM credentials")
         db.execute("DELETE FROM api_keys")
         db.execute("DELETE FROM users")
@@ -372,7 +371,7 @@ class CursorPoolTest(unittest.IsolatedAsyncioTestCase):
                               {"role": "tool", "tool_call_id": "c1", "content": "file data"}]
             await self._chat(round2)
             self.assertEqual(len(FakeRun.instances), 1)
-            self.assertEqual(FakeRun.instances[0].resumed, [("c1", "file data")])
+            self.assertEqual(FakeRun.instances[0].resumed, [("c1", "file data", [])])
             # Next turn: stored history without the session tail, plus a new
             # user message. It continues from the checkpoint, same conversation.
             turn2 = [system, {"role": "user", "content": "hi"}, {"role": "assistant", "content": "Hi", "tool_calls": [call]},
@@ -389,7 +388,7 @@ class CursorPoolTest(unittest.IsolatedAsyncioTestCase):
     @patch("app.sources.cursor.refresh_due", new_callable=AsyncMock)
     async def test_diverged_history_replays_and_401_refreshes_once(self, _due, _quota):
         cursor_mod.store_tokens(self.sid, _jwt(), "refresh-token-1234", self.alice["id"])
-        FakeRun.fail = 1
+        FakeRun.fail = [401]
 
         async def fake_refresh(cred):
             return True
@@ -408,6 +407,66 @@ class CursorPoolTest(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)  # drop() closes the stale parked run on the loop
         self.assertTrue(FakeRun.instances[1].closed)
         self.assertIn(b"stop", FakeRun.instances[2].started)
+
+    @patch("app.sources.cursor.refresh_pool_quota", new_callable=AsyncMock)
+    @patch("app.sources.cursor.refresh_due", new_callable=AsyncMock)
+    async def test_images_ride_inline_in_history_and_selected_context(self, _due, _quota):
+        cursor_mod.store_tokens(self.sid, _jwt(), "refresh-token-1234", self.alice["id"])
+        png = _png(40, 30)
+        url = "data:image/png;base64," + base64.b64encode(png).decode()
+        call = {"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": "see"}, {"type": "image_url", "image_url": {"url": url}}]},
+            {"role": "assistant", "content": "", "tool_calls": [call]},
+            {"role": "tool", "tool_call_id": "c1", "content": [{"type": "text", "text": "shot"}, {"type": "image_url", "image_url": {"url": url}}]},
+            {"role": "user", "content": [{"type": "text", "text": "and this"}, {"type": "image_url", "image_url": {"url": url}}]},
+        ]
+        with patch.object(agent, "CursorRun", FakeRun), patch.object(cursor_mod, "note_pool_invoke"):
+            await self._chat(messages)
+        started = FakeRun.instances[0].started
+        self.assertIn(png, started)  # the active message's image, raw, in selected_context
+        self.assertIn(base64.b64encode(png), started)  # the earlier user image, in the history
+        self.assertIn(b"image/png", started)
+        self.assertIn(b"read_file", started)
+
+    @patch("app.sources.cursor.refresh_pool_quota", new_callable=AsyncMock)
+    @patch("app.sources.cursor.refresh_due", new_callable=AsyncMock)
+    async def test_refused_history_replays_as_text_blobs(self, _due, _quota):
+        cursor_mod.store_tokens(self.sid, _jwt(), "refresh-token-1234", self.alice["id"])
+        FakeRun.fail = [400]
+        with patch.object(agent, "CursorRun", FakeRun), patch.object(cursor_mod, "note_pool_invoke"):
+            await self._chat([{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}])
+        self.assertEqual(len(FakeRun.instances), 2)
+        self.assertTrue(FakeRun.instances[1].kw["blobs"])
+        self.assertTrue(any(b"Configuration for this session" in blob for blob in FakeRun.instances[1].kw["blobs"].values()))
+
+    async def test_tool_images_are_normalized_like_cursors_sdk(self):
+        big = _png(3000, 2000, noise=True)
+        part = {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(big).decode()}}
+        out = await cursor_mod._image_part(part, tool=True)
+        self.assertEqual(out["type"], "image_bytes")
+        self.assertLessEqual(len(out["data"]), cursor_mod.TOOL_IMAGE_BYTES)
+        from PIL import Image
+        import io
+
+        with Image.open(io.BytesIO(out["data"])) as shrunk:
+            self.assertLessEqual(max(shrunk.size), cursor_mod.TOOL_IMAGE_SIDE)
+        user = await cursor_mod._image_part(part, tool=False)
+        self.assertEqual((user["mime"], user["data"]), ("image/png", big))
+        bad = await cursor_mod._image_part({"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}, tool=True)
+        self.assertEqual(bad["type"], "text")
+        self.assertIn("could not be decoded", bad["text"])
+
+
+def _png(width: int, height: int, noise: bool = False) -> bytes:
+    import io
+    import os as _os
+    from PIL import Image
+
+    img = Image.frombytes("RGB", (width, height), _os.urandom(width * height * 3)) if noise else Image.new("RGB", (width, height), "teal")
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
 
 
 if __name__ == "__main__":

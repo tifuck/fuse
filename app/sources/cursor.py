@@ -23,12 +23,13 @@ import math
 import secrets
 import time
 import uuid
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 import httpx
 
-from .. import accounts, db
+from .. import accounts, db, file_images
 from ..async_work import durable_call
 from ..config import settings
 from ..crypto import encrypt
@@ -652,6 +653,7 @@ def parse_available_models(models: list) -> list[dict]:
                 "max": max_mode,
                 "window": window,
                 "fast": dict(rest).get("fast", plain.get("fast", "")) == "true",
+                "images": m.get("supportsImages") if isinstance(m.get("supportsImages"), bool) else None,
             })
     return rows
 
@@ -745,6 +747,87 @@ def resolve(model: str, effort: str | None) -> dict:
     # Usage records the base model with its tier tails, which pricing strips.
     slug = "-".join(part for part in (row["model"], label, "fast" if row["fast"] else "", "max" if row["max"] else "") if part)
     return {"model_id": row["model"], "params": efforts[label], "max": row["max"], "name": row["name"], "slug": slug}
+
+
+# --- Images ---------------------------------------------------------------------
+#
+# As in Cursor's SDK: a user's images go up inline with the mime type sniffed
+# from the bytes; a tool's images are normalized first (long side at most
+# 1024 px, at most 1 MiB), and one that cannot be decoded becomes a note.
+
+TOOL_IMAGE_SIDE = 1024
+TOOL_IMAGE_BYTES = 1024 * 1024
+_tool_images: OrderedDict[str, tuple | str] = OrderedDict()
+
+
+def _sniff(data: bytes, declared: str) -> str:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return declared
+
+
+async def _image_part(part: dict, *, tool: bool) -> dict:
+    image = part.get("image_url")
+    url = image.get("url") if isinstance(image, dict) else image
+    url = url if isinstance(url, str) else ""
+    if not url.startswith("data:"):
+        note = f"[Image: {url}]" if url.startswith(("https://", "http://")) else "[Image omitted]"
+        return {"type": "text", "text": note}
+    header, _, payload = url.partition(",")
+    mime = header[5:].split(";", 1)[0] or "image/png"
+    try:
+        data = base64.b64decode(payload)
+    except ValueError:
+        return {"type": "text", "text": "[Image omitted: invalid image data]"}
+    if not tool:
+        return {"type": "image_bytes", "mime": _sniff(data, mime), "data": data}
+    key = hashlib.sha256(data).hexdigest()
+    hit = _tool_images.get(key)
+    if hit is None:
+        try:
+            out = await file_images.decode_image(data, max_side=TOOL_IMAGE_SIDE, max_bytes=TOOL_IMAGE_BYTES)
+            hit = (out["mime"], base64.b64decode(out["data"]))
+        except Exception:
+            hit = f"[Image omitted: the tool returned {mime} data ({len(data)} bytes) that could not be decoded.]"
+        _tool_images[key] = hit
+        while len(_tool_images) > 64:
+            _tool_images.popitem(last=False)
+    _tool_images.move_to_end(key)
+    if isinstance(hit, str):
+        return {"type": "text", "text": hit}
+    return {"type": "image_bytes", "mime": hit[0], "data": hit[1]}
+
+
+async def _resolve_images(messages) -> list[dict]:
+    """Copies of the messages with image_url parts turned into image bytes."""
+    out = []
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list) or not any(isinstance(p, dict) and p.get("type") == "image_url" for p in content):
+            out.append(msg)
+            continue
+        tool = msg.get("role") == "tool"
+        parts = [
+            await _image_part(p, tool=tool) if isinstance(p, dict) and p.get("type") == "image_url" else p
+            for p in content
+        ]
+        out.append({**msg, "content": parts})
+    return out
+
+
+def image_support(model: str) -> bool | None:
+    """Whether Cursor's catalog says this model reads images (None: unknown)."""
+    fid = model if model.startswith(PREFIX) else PREFIX + model
+    value = (_catalog.get(fid) or {}).get("images")
+    return value if isinstance(value, bool) else None
 
 
 # --- Chat -----------------------------------------------------------------------
@@ -922,26 +1005,44 @@ class CursorSource:
         tools = agent.mcp_tools(body.get("tools"))
         if how == "resume":
             run = conv.run
-            await run.resume([(str(m.get("tool_call_id") or ""), agent._text(m.get("content"))) for m in tail])
+            results = await _resolve_images(tail)
+            await run.resume([
+                (str(m.get("tool_call_id") or ""), agent._text(m.get("content")), agent.images_of(m.get("content")))
+                for m in results
+            ])
         else:
+            history = None
+            images: list = []
             if how == "followup":
                 state = conv.checkpoint
-                user_text = "\n\n".join(t for t in (agent._text(m.get("content")) for m in tail) if t) or agent.CONTINUE_TEXT
-            else:
+                news = await _resolve_images(tail)
+                user_text = "\n\n".join(t for t in (agent._text(m.get("content")) for m in news) if t)
+                images = [image for m in news for image in agent.images_of(m.get("content"))]
+            elif how == "blobs":
+                # Text-only replay as root prompt blobs: the fallback when the
+                # structured history is refused.
                 conv = agent.Conversation(user_id=user_id, cred_id=cid)
-                history, user_text = agent.build_turn(messages)
+                entries, user_text = agent.build_turn(messages)
                 ids = []
-                for entry in history:
+                for entry in entries:
                     data = json.dumps(entry, ensure_ascii=False, separators=(",", ":")).encode()
                     digest = hashlib.sha256(data).digest()
                     conv.blobs[digest] = data
                     ids.append(digest)
                 state = agent.encode_state(ids)
+            else:
+                conv = agent.Conversation(user_id=user_id, cred_id=cid)
+                earlier, active = agent.split_turn(await _resolve_images(messages))
+                history = agent.encode_history(earlier) or None
+                user_text = agent._text(active.get("content")) if active else agent.CONTINUE_TEXT
+                images = agent.images_of(active.get("content")) if active else []
+                state = agent.encode_state([])
             run = agent.CursorRun(base=_base(), headers=_headers(extra.get("access_token") or ""),
                                   timeout=_CHAT_TIMEOUT, blobs=conv.blobs, tools=tools)
             await run.start(agent.encode_run_request(
                 state=state, user_text=user_text, model_id=sel["model_id"], params=sel["params"],
                 max_mode=sel["max"], display_name=sel["name"], tools=tools, conversation_id=conv.conversation_id,
+                images=images, history=history,
             ))
         conv.busy = True
         conv.selection = (sel["model_id"], tuple(sel["params"]), sel["max"])
@@ -996,7 +1097,12 @@ class CursorSource:
                 rnd = await self._open(extra, cid, user_id, body, sel, plan)
             except TurnError as exc:
                 release(cid)
-                if plan[0] != "fresh":
+                if plan[0] == "fresh" and exc.status == 400:
+                    # Structured history refused: replay as text blobs.
+                    plan = ("blobs", None, [])
+                    tried.discard(cid)
+                    continue
+                if plan[0] in ("resume", "followup"):
                     # The kept state is gone (expired run, unknown
                     # checkpoint): replay the history on this account.
                     agent.drop(plan[1])

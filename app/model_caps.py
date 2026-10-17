@@ -39,8 +39,6 @@ _RULES = (
     ("devin", re.compile(r"^(claude|gpt)-"), True),
     ("kimi", re.compile(r"^k3"), True),
     ("mimo", re.compile(r"^mimo-v2\.5$"), True),
-    # The agent protocol carries history as text blobs; images are not sent.
-    ("cursor", re.compile(r""), False),
 )
 
 
@@ -81,6 +79,10 @@ def image_input(type_id: str, model: str, *, user_id: int | None = None) -> bool
         value = kimi._meta_for(mid).get("image")
         if isinstance(value, bool):
             return value
+    if type_id == "cursor":
+        from .sources import cursor
+
+        return cursor.image_support(mid)
     for kind, pattern, value in _RULES:
         if kind == type_id and pattern.search(mid):
             return value

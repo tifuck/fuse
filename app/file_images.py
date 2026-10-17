@@ -34,7 +34,7 @@ def image_magic(data: bytes) -> bool:
             or (data[:4] == b"RIFF" and data[8:12] == b"WEBP"))
 
 
-async def decode_image(data: bytes, frame: int = 0) -> dict:
+async def decode_image(data: bytes, frame: int = 0, *, max_side: int = 2048, max_bytes: int = MAX_OUTPUT) -> dict:
     if len(data) > MAX_SOURCE:
         raise ValueError("image source exceeds 20 MiB")
     if not image_magic(data):
@@ -43,7 +43,7 @@ async def decode_image(data: bytes, frame: int = 0) -> dict:
         raise ValueError("frame must be a zero-based non-negative integer")
     async with _decode_gate():
         proc = await asyncio.create_subprocess_exec(
-            sys.executable, str(Path(__file__).resolve()), str(frame),
+            sys.executable, str(Path(__file__).resolve()), str(frame), str(int(max_side)), str(int(max_bytes)),
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
@@ -54,7 +54,7 @@ async def decode_image(data: bytes, frame: int = 0) -> dict:
                 proc.kill()
             await proc.wait()
             raise
-    if proc.returncode or len(stdout) > MAX_OUTPUT * 2:
+    if proc.returncode or len(stdout) > max(MAX_OUTPUT, max_bytes) * 2:
         raise ValueError("image decoding failed or exceeded resource limits")
     result = json.loads(stdout)
     if "error" in result:
@@ -62,7 +62,7 @@ async def decode_image(data: bytes, frame: int = 0) -> dict:
     return result
 
 
-def _decode(data: bytes, frame: int) -> dict:
+def _decode(data: bytes, frame: int, max_side: int = 2048, max_bytes: int = MAX_OUTPUT) -> dict:
     import warnings
     from PIL import Image, ImageOps
 
@@ -85,7 +85,7 @@ def _decode(data: bytes, frame: int) -> dict:
             source.load()
         oriented = ImageOps.exif_transpose(source)
         width, height = oriented.size
-        oriented.thumbnail((2048, 2048), Image.Resampling.LANCZOS)
+        oriented.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
         mode = "RGBA" if "A" in oriented.getbands() or "transparency" in oriented.info else "RGB"
         converted = oriented.convert(mode)
         clean = Image.new(mode, converted.size)
@@ -93,14 +93,23 @@ def _decode(data: bytes, frame: int) -> dict:
         output = io.BytesIO()
         clean.save(output, format="PNG")
         mime = "image/png"
-        if output.tell() > MAX_OUTPUT:
+        if output.tell() > max_bytes:
             background = Image.new("RGB", clean.size, "white")
             background.paste(clean, mask=clean.getchannel("A") if mode == "RGBA" else None)
             output = io.BytesIO()
             background.save(output, format="JPEG", quality=85)
             mime = "image/jpeg"
-        if output.tell() > MAX_OUTPUT:
-            raise ValueError("decoded image exceeds 5 MiB")
+            # Shrink by a fifth until it fits, as Cursor's SDK does for tool images.
+            while output.tell() > max_bytes and min(background.size) > 16:
+                background = background.resize(
+                    (max(8, round(background.width * 0.8)), max(8, round(background.height * 0.8))),
+                    Image.Resampling.LANCZOS,
+                )
+                output = io.BytesIO()
+                background.save(output, format="JPEG", quality=85)
+            clean = background
+        if output.tell() > max_bytes:
+            raise ValueError("decoded image exceeds the size limit")
         return {"mime": mime, "data": base64.b64encode(output.getvalue()).decode("ascii"),
                 "width": clean.width, "height": clean.height,
                 "original_width": width, "original_height": height,
@@ -118,7 +127,8 @@ if __name__ == "__main__":
         payload = sys.stdin.buffer.read(MAX_SOURCE + 1)
         if len(payload) > MAX_SOURCE:
             raise ValueError("image source exceeds 20 MiB")
-        result = _decode(payload, int(sys.argv[1]))
+        bounds = [int(v) for v in sys.argv[2:4]]
+        result = _decode(payload, int(sys.argv[1]), *bounds)
     except Exception as exc:
         message = str(exc) if isinstance(exc, ValueError) else "invalid image or image exceeds decoding limits"
         result = {"error": message}

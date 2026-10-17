@@ -147,6 +147,23 @@ def build_turn(messages) -> tuple[list[dict], str]:
     return history, user_text or CONTINUE_TEXT
 
 
+def split_turn(messages) -> tuple[list[dict], dict | None]:
+    """(history, active user message). A request that ends on tool results
+    has no active user message."""
+    msgs = [m for m in (messages or []) if isinstance(m, dict)]
+    active = _active_user(msgs)
+    if active < 0:
+        return msgs, None
+    return msgs[:active] + msgs[active + 1:], msgs[active]
+
+
+def images_of(content) -> list[tuple[str, bytes]]:
+    """(mime, bytes) of the images the source resolved into this content."""
+    if not isinstance(content, list):
+        return []
+    return [(p["mime"], p["data"]) for p in content if isinstance(p, dict) and p.get("type") == "image_bytes"]
+
+
 def mcp_tools(tools) -> list[dict]:
     out = []
     for tool in tools or []:
@@ -177,6 +194,90 @@ def _tool_def(e: ProtoEncoder, tool: dict) -> None:
     e.string(6, tool["schema"])
 
 
+def _content_items(text: str, images: list[tuple[str, bytes]]) -> list[bytes]:
+    """ConversationHistory user/tool-result content: {1 text, 2 image}.
+    History images are base64 strings, as in the CLI's history-file import."""
+    items = [_wrap(1, _enc_text(text))] if text else []
+    for mime, data in images:
+        image = ProtoEncoder()
+        image.string(1, base64.b64encode(data).decode("ascii"))
+        image.string(2, mime)
+        items.append(_wrap(2, image.finish()))
+    return items
+
+
+def _enc_text(text: str) -> bytes:
+    e = ProtoEncoder()
+    e.string(1, text)
+    return e.finish()
+
+
+def encode_history(messages) -> bytes:
+    """ConversationHistory, the structured transcript the CLI imports with
+    --conversation-history-file: user text and images, assistant text and
+    tool calls (args as JSON), tool results with text and images. It has no
+    system role, so a system message becomes an opening exchange."""
+    out = ProtoEncoder()
+    names: dict[str, str] = {}
+
+    def user(text: str, images: list) -> None:
+        u = ProtoEncoder()
+        for item in _content_items(text, images):
+            u.blob(1, item)
+        out.blob(1, _wrap(1, u.finish()))
+
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        text, images = _text(msg.get("content")), images_of(msg.get("content"))
+        if role in ("system", "developer"):
+            if text:
+                user(f"{SYSTEM_LEAD}\n\n{text}", [])
+                out.blob(1, _wrap(2, _wrap(1, _wrap(1, _enc_text(SYSTEM_ACK)))))
+        elif role == "user":
+            if text or images:
+                user(text, images)
+        elif role == "assistant":
+            a = ProtoEncoder()
+            if text:
+                a.blob(1, _wrap(1, _enc_text(text)))
+            for call in msg.get("tool_calls") or []:
+                fn = (call.get("function") or {}) if isinstance(call, dict) else {}
+                cid = str(call.get("id") or "") if isinstance(call, dict) else ""
+                names[cid] = str(fn.get("name") or "")
+                tc = ProtoEncoder()
+                tc.string(1, cid)
+                tc.string(2, names[cid])
+                tc.string(3, json.dumps(_args(fn.get("arguments")), ensure_ascii=False))
+                a.blob(1, _wrap(4, tc.finish()))
+            body = a.finish()
+            if body:
+                out.blob(1, _wrap(2, body))
+        elif role == "tool":
+            cid = str(msg.get("tool_call_id") or "")
+            t = ProtoEncoder()
+            t.string(1, cid)
+            t.string(2, str(msg.get("name") or names.get(cid, "")))
+            for item in _content_items(text, images):
+                t.blob(3, item)
+            out.blob(1, _wrap(3, t.finish()))
+    return out.finish()
+
+
+def encode_selected_context(images: list[tuple[str, bytes]]) -> bytes:
+    """SelectedContext with the user's images inline, as the CLI's ACP mode
+    and the SDK attach them."""
+    ctx = ProtoEncoder()
+    for mime, data in images:
+        image = ProtoEncoder()
+        image.blob(8, data)
+        image.string(2, str(uuid.uuid4()))
+        image.string(7, mime)
+        ctx.blob(1, image.finish())
+    return ctx.finish()
+
+
 def encode_state(blob_ids: list[bytes]) -> bytes:
     """A first-turn ConversationStateStructure. Never empty: the server
     rejects a zero-length state."""
@@ -197,12 +298,20 @@ def encode_run_request(
     display_name: str,
     tools: list[dict],
     conversation_id: str,
+    images: list[tuple[str, bytes]] = (),
+    history: bytes | None = None,
 ) -> bytes:
     user = ProtoEncoder()
     user.string(1, user_text)
     user.string(2, str(uuid.uuid4()))
+    if images:
+        user.blob(3, encode_selected_context(images))
     user.uint32(4, AGENT_MODE_AGENT)
-    action = _wrap(1, _wrap(1, user.finish()))
+    user_action = ProtoEncoder()
+    user_action.blob(1, user.finish())
+    if history:
+        user_action.blob(7, history)
+    action = _wrap(1, user_action.finish())
     details = ProtoEncoder()
     details.string(1, model_id)
     details.string(3, model_id)
@@ -262,11 +371,18 @@ def encode_request_context(exec_num: int, exec_id: str, tools: list[dict]) -> by
     return _wrap(2, ex.finish())
 
 
-def encode_mcp_result(exec_num: int, exec_id: str, text: str, is_error: bool = False) -> bytes:
-    """ExecClientMessage.mcp_result: the caller's tool output, sent back into
-    the live run the way the CLI answers an MCP exec."""
+def encode_mcp_result(exec_num: int, exec_id: str, text: str, images: list[tuple[str, bytes]] = (), is_error: bool = False) -> bytes:
+    """ExecClientMessage.mcp_result: the caller's tool output (text, then
+    images as McpImageContent), sent back into the live run the way the CLI
+    answers an MCP exec."""
     success = ProtoEncoder()
-    success.blob(1, _wrap(1, _wrap(1, text.encode("utf-8"))))
+    if text or not images:
+        success.blob(1, _wrap(1, _wrap(1, text.encode("utf-8"))))
+    for mime, data in images:
+        image = ProtoEncoder()
+        image.blob(1, data)
+        image.string(2, mime)
+        success.blob(1, _wrap(2, image.finish()))
     success.bool(2, is_error)
     ex = ProtoEncoder()
     ex.uint32(1, exec_num)
@@ -654,13 +770,13 @@ class CursorRun:
         self.reported_output += completion
         return usage
 
-    async def resume(self, results: list[tuple[str, str]]) -> None:
-        """Hand the caller's tool results to the parked run."""
+    async def resume(self, results: list[tuple[str, str, list]]) -> None:
+        """Hand the caller's tool results (text, images) to the parked run."""
         if self.closed or self._shut:
             raise TurnError(502, "the parked Cursor run is gone")
-        for call_id, text in results:
+        for call_id, text, images in results:
             exec_num, exec_id = self.pending.pop(call_id)
-            await self.append(encode_mcp_result(exec_num, exec_id, text))
+            await self.append(encode_mcp_result(exec_num, exec_id, text, images))
 
     def park(self) -> None:
         self._disarm()
