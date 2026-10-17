@@ -11,6 +11,7 @@ from .sources import grok as grok_mod
 from .sources import kimi as kimi_mod
 from .sources import mimo as mimo_mod
 from .sources import claude as claude_mod
+from .sources import cursor as cursor_mod
 from .sources import zai as zai_mod
 from .sources.pool_pick import (
     CHATGPT_FREE_PLANS,
@@ -1104,6 +1105,26 @@ def claude_pool_meter(rows, *, owner_id: int | None = None) -> dict:
         percents.append(pct)
         # Only measured accounts: pool_meter pairs plans with readings by index.
         plans.append(str(billing.get("plan_type") or extra.get("subscription_type") or "Claude"))
+    return _finish_pool_meter(percents, plans, unread)
+
+
+def cursor_pool_meter(rows, *, owner_id: int | None = None) -> dict:
+    percents: list[float] = []
+    plans: list[str] = []
+    unread = 0
+    for row in rows:
+        if row["disabled"]:
+            continue
+        extra = accounts.cred_extra(row)
+        if _held_from(row, cursor_mod.is_held, owner_id) or not cursor_mod.credential_is_authed(row, extra):
+            continue
+        billing = extra.get("billing") if isinstance(extra.get("billing"), dict) else {}
+        pct = kimi_usage_percent(extra) if cursor_mod.billing_has_subscription(billing) else None
+        if pct is None:
+            unread += 1
+            continue
+        percents.append(pct)
+        plans.append(str(billing.get("plan_type") or ""))
     return _finish_pool_meter(percents, plans, unread)
 
 

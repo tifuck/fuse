@@ -21,6 +21,7 @@ from .devin import DEVIN_MODELS, DevinSource, ensure_devin_source, user_has_devi
 from .kimi import KIMI_MODELS, KimiSource, ensure_kimi_source, user_has_kimi
 from .mimo import MIMO_MODELS, MimoSource, ensure_mimo_source, user_has_mimo
 from .claude import CLAUDE_MODELS, ClaudeSource, ensure_claude_source, user_has_claude
+from .cursor import CURSOR_MODELS, CursorSource, ensure_cursor_source, user_has_cursor
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ _BUILDERS: dict[str, Callable] = {
     "kimi": KimiSource,
     "mimo": MimoSource,
     "claude": ClaudeSource,
+    "cursor": CursorSource,
     "openrouter": OpenRouterSource,
     "explabs": ExperientialLabsSource,
 }
@@ -50,6 +52,7 @@ TYPES = {
     "kimi": "Kimi pool",
     "mimo": "Xiaomi pool",
     "claude": "Claude pool",
+    "cursor": "Cursor pool",
     "openrouter": "OpenRouter",
     "explabs": "Experiential Labs",
 }
@@ -65,12 +68,13 @@ PROVIDER_LABELS = {
     "kimi": "Kimi",
     "mimo": "Xiaomi",
     "claude": "Anthropic",
+    "cursor": "Cursor",
     "openrouter": "OpenRouter",
     "explabs": "Experiential Labs",
     "unknown": "Unknown",
 }
 
-POOL_TYPES = frozenset({"grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude"})
+POOL_TYPES = frozenset({"grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude", "cursor"})
 _SEEDED_MODELS = {
     "grok": GROK_MODELS,
     "chatgpt": CHATGPT_MODELS,
@@ -79,6 +83,7 @@ _SEEDED_MODELS = {
     "kimi": KIMI_MODELS,
     "mimo": MIMO_MODELS,
     "claude": CLAUDE_MODELS,
+    "cursor": CURSOR_MODELS,
 }
 
 
@@ -298,6 +303,9 @@ def reasoning_efforts(type_id: str, model: str | None = None, user_id: int | Non
         return ("none", "high")
     if type_id == "claude":
         return claude_mod.efforts_for(model)
+    if type_id == "cursor":
+        # Cursor ids carry their effort (claude-opus-5-thinking-high).
+        return ()
     if type_id == "ollama":
         return ("none", "low", "medium", "high", "max")
     return GENERIC_EFFORTS
@@ -339,6 +347,8 @@ def catalog_unavailable_for(model: str) -> bool:
         return "devin" in _unavailable_types
     if model.startswith("claude/"):
         return "claude" in _unavailable_types
+    if model.startswith("cursor/"):
+        return "cursor" in _unavailable_types
     if model.startswith("openrouter/") or ("/" in model and not model.startswith("/")):
         return "openrouter" in _unavailable_types
     if model.startswith("grok"):
@@ -363,6 +373,7 @@ def _sources(
     allow_kimi: bool = False,
     allow_mimo: bool = False,
     allow_claude: bool = False,
+    allow_cursor: bool = False,
 ) -> list[Source]:
     return [
         s
@@ -374,6 +385,7 @@ def _sources(
         and (allow_kimi or s.type_id != "kimi")
         and (allow_mimo or s.type_id != "mimo")
         and (allow_claude or s.type_id != "claude")
+        and (allow_cursor or s.type_id != "cursor")
     ]
 
 
@@ -405,6 +417,7 @@ async def models_union(
     allow_kimi: bool = False,
     allow_mimo: bool = False,
     allow_claude: bool = False,
+    allow_cursor: bool = False,
     user_id: int | None = None,
 ) -> list[str]:
     sources = _sources(
@@ -415,6 +428,7 @@ async def models_union(
         allow_kimi=allow_kimi,
         allow_mimo=allow_mimo,
         allow_claude=allow_claude,
+        allow_cursor=allow_cursor,
     )
     results = await asyncio.gather(*(_user_source_models(s, user_id) for s in sources))
     names: list[str] = []
@@ -435,6 +449,7 @@ async def pick(
     allow_kimi: bool = False,
     allow_mimo: bool = False,
     allow_claude: bool = False,
+    allow_cursor: bool = False,
     user_id: int | None = None,
 ) -> tuple[Source, str] | None:
     from . import openrouter as openrouter_mod
@@ -443,6 +458,7 @@ async def pick(
     from . import kimi as kimi_mod
     from . import mimo as mimo_mod
     from . import claude as claude_mod
+    from . import cursor as cursor_mod
 
     from . import explabs as explabs_mod
 
@@ -455,7 +471,7 @@ async def pick(
     route = db.fetchone("SELECT * FROM model_routes WHERE model=?", (model,))
     if route:
         src = get(route["source_id"])
-        if src and src.type_id != "explabs" and (allow_grok or src.type_id != "grok") and (allow_chatgpt or src.type_id != "chatgpt") and (allow_zai or src.type_id != "zai") and (allow_devin or src.type_id != "devin") and (allow_kimi or src.type_id != "kimi") and (allow_mimo or src.type_id != "mimo") and (allow_claude or src.type_id != "claude"):
+        if src and src.type_id != "explabs" and (allow_grok or src.type_id != "grok") and (allow_chatgpt or src.type_id != "chatgpt") and (allow_zai or src.type_id != "zai") and (allow_devin or src.type_id != "devin") and (allow_kimi or src.type_id != "kimi") and (allow_mimo or src.type_id != "mimo") and (allow_claude or src.type_id != "claude") and (allow_cursor or src.type_id != "cursor"):
             upstream = route["upstream_model"] or model
             if src.type_id != "openrouter":
                 return src, upstream
@@ -490,6 +506,12 @@ async def pick(
                 if s.type_id == "claude":
                     return s, claude_mod.upstream_id(model)
         return None
+    if cursor_mod.is_cursor_model(model):
+        if allow_cursor:
+            for s in all_enabled():
+                if s.type_id == "cursor":
+                    return s, cursor_mod.upstream_id(model)
+        return None
     if allow_grok and model.startswith("grok"):
         for s in all_enabled():
             if s.type_id == "grok":
@@ -518,6 +540,7 @@ async def pick(
         allow_kimi=allow_kimi,
         allow_mimo=allow_mimo,
         allow_claude=allow_claude,
+        allow_cursor=allow_cursor,
         user_id=user_id,
     )
     for s in _sources(
@@ -528,6 +551,7 @@ async def pick(
         allow_kimi=allow_kimi,
         allow_mimo=allow_mimo,
         allow_claude=allow_claude,
+        allow_cursor=allow_cursor,
     ):
         # OpenRouter's _cache is whichever account refreshed last; only its
         # per-account resolve() above may admit a model for this user.
@@ -590,6 +614,7 @@ async def models_by_source(
     allow_kimi: bool = False,
     allow_mimo: bool = False,
     allow_claude: bool = False,
+    allow_cursor: bool = False,
     user_id: int | None = None,
 ) -> list[dict]:
     sources = _sources(
@@ -600,6 +625,7 @@ async def models_by_source(
         allow_kimi=allow_kimi,
         allow_mimo=allow_mimo,
         allow_claude=allow_claude,
+        allow_cursor=allow_cursor,
     )
     results = await asyncio.gather(*(_user_source_models(s, user_id) for s in sources))
     groups = [
@@ -638,6 +664,7 @@ async def bootstrap() -> None:
     ensure_kimi_source()
     ensure_mimo_source()
     ensure_claude_source()
+    ensure_cursor_source()
     ensure_explabs_source()
     or_id = ensure_openrouter_source()
     from .openrouter import clear_global_key

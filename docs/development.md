@@ -33,7 +33,7 @@ Docker entrypoint both run it.
 
 Types: `llama`, `openai`, `ollama`, `openrouter`, `explabs` (site or per-user
 keys) and the shared subscription pools `grok`, `chatgpt`, `zai`, `devin`,
-`kimi`, `mimo`, `claude` (`POOL_TYPES`). New upstream models need no code
+`kimi`, `mimo`, `claude`, `cursor` (`POOL_TYPES`). New upstream models need no code
 change: each pool merges its live catalog into its seed list.
 
 - Pools route only for users who may use them (`user_has_*`; always pass the

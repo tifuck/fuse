@@ -20,6 +20,7 @@ DEVIN_PROVIDER = "devin"
 KIMI_PROVIDER = "kimi"
 MIMO_PROVIDER = "mimo"
 CLAUDE_PROVIDER = "claude"
+CURSOR_PROVIDER = "cursor"
 
 # OpenAI list prices (USD per million tokens) for the ChatGPT pool models:
 # model -> (input, cached_input, cache_write, output). GPT-5.6 charges cache
@@ -362,16 +363,17 @@ AUTO_ORIGIN = "auto"
 AUTO_PRICE_INTERVAL = 1800.0
 _AUTO_PROVIDERS = (
     CHATGPT_PROVIDER, GROK_PROVIDER, ZAI_PROVIDER, DEVIN_PROVIDER,
-    KIMI_PROVIDER, MIMO_PROVIDER, CLAUDE_PROVIDER,
+    KIMI_PROVIDER, MIMO_PROVIDER, CLAUDE_PROVIDER, CURSOR_PROVIDER,
 )
 # Effort, speed and region tails appended to one priced model id. They are a
-# service tier on ChatGPT/Devin ids only (gpt-5.6-sol-fast, gpt-5-6-sol-low);
+# service tier on ChatGPT/Devin/Cursor ids only (gpt-5.6-sol-fast, gpt-5-6-sol-low,
+# claude-opus-5-thinking-high);
 # elsewhere such suffixes are distinct models (grok-4-fast) and must not be
 # priced from the base id.
 _SKU_TAILS = frozenset(
     {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "thinking", "priority", "fast", "usa"}
 )
-_TIER_TAIL_PROVIDERS = frozenset({CHATGPT_PROVIDER, DEVIN_PROVIDER})
+_TIER_TAIL_PROVIDERS = frozenset({CHATGPT_PROVIDER, DEVIN_PROVIDER, CURSOR_PROVIDER})
 _PRICE_COLUMNS = (
     "input_micros_per_million", "cached_input_micros_per_million", "cache_write_micros_per_million",
     "output_micros_per_million", "reasoning_micros_per_million", "cached_input_known",
@@ -516,7 +518,7 @@ def _expected_columns(values: dict) -> dict:
 
 def _listed_pool_models() -> set[tuple[str, str]]:
     """(provider, recorded model) for every id the pool catalogs list now."""
-    from .sources import chatgpt, chatgpt_catalog, claude, claude_catalog, grok, kimi, mimo, zai
+    from .sources import chatgpt, chatgpt_catalog, claude, claude_catalog, cursor, grok, kimi, mimo, zai
 
     out: set[tuple[str, str]] = set()
     for provider, mod in (
@@ -528,6 +530,8 @@ def _listed_pool_models() -> set[tuple[str, str]]:
     cache = claude_catalog._models_cache
     # The Claude pool records the upstream slug, not the claude/ Fuse id.
     out.update((CLAUDE_PROVIDER, claude.upstream_id(mid)) for mid in (cache[1] if cache else []))
+    cache = cursor._models_cache
+    out.update((CURSOR_PROVIDER, cursor.upstream_id(mid)) for mid in (cache[1] if cache else []))
     return out
 
 

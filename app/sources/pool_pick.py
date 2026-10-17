@@ -348,7 +348,7 @@ def pick_account(
 ):
     """The caller's primary account, then their own, then the least-used plan.
 
-    kind is 'grok', 'chatgpt', 'zai', 'devin', 'kimi', 'mimo', or 'claude'. Returns (cred, extra)
+    kind is 'grok', 'chatgpt', 'zai', 'devin', 'kimi', 'mimo', 'claude' or 'cursor'. Returns (cred, extra)
     or None.
 
     Order: healthy plans before busy ones (USAGE_BUSY or above) before ones
@@ -428,7 +428,7 @@ def pick_account(
             pct = kimi_usage_percent(extra)
         elif kind == "mimo":
             pct = mimo_usage_percent(extra)
-        elif kind == "claude":
+        elif kind in ("claude", "cursor"):
             pct = kimi_usage_percent(extra)
         else:
             pct = grok_usage_percent(cred, extra)

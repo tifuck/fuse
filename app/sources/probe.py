@@ -153,6 +153,8 @@ async def probe_source(source_id: int) -> dict:
         checks = await _probe_mimo(src)
     elif src.type_id == "claude":
         checks = await _probe_claude(src)
+    elif src.type_id == "cursor":
+        checks = await _probe_cursor(src)
     elif src.type_id == "devin":
         checks = await _probe_devin(src)
     elif src.type_id == "explabs":
@@ -511,6 +513,37 @@ async def _probe_claude(src) -> list[dict]:
     checks.append(
         _check("Chat", True, "Skipped — Fuse does not send Claude completions as a probe.", skip=True)
     )
+    return checks
+
+
+async def _probe_cursor(src) -> list[dict]:
+    """Usage and catalog only. Never send a Cursor completion."""
+    from .cursor import credential_is_authed, is_held, refresh_quota
+
+    skip = _check("Chat", True, "Skipped — Fuse does not send Cursor completions as a probe.", skip=True)
+    creds = db.fetchall("SELECT * FROM credentials WHERE source_id=? AND disabled=0", (src.source_id,))
+    if not creds:
+        return [_check("Accounts", False, "No Cursor accounts linked"), skip]
+    checks = [_check("Accounts", True, f"{len(creds)} linked")]
+    authed = usable = 0
+    for cred in creds:
+        try:
+            await refresh_quota(cred, force=True)
+        except Exception:
+            pass
+        row = db.fetchone("SELECT * FROM credentials WHERE id=?", (cred["id"],))
+        if row and credential_is_authed(row, accounts.cred_extra(row)):
+            authed += 1
+            usable += 0 if is_held(row) else 1
+    checks.append(_check("Auth", authed > 0, f"{authed} of {len(creds)} still authed" if authed else "No live token"))
+    checks.append(_check("Pool", usable > 0, f"{usable} usable" if usable else "Every account is held or unusable"))
+    try:
+        names = await asyncio.wait_for(src.models(), timeout=20)
+    except Exception as e:
+        checks.append(_check("Catalog", False, f"Could not list models ({type(e).__name__})"))
+    else:
+        checks.append(_check("Catalog", bool(names), _summary(names) if names else "No models listed"))
+    checks.append(skip)
     return checks
 
 

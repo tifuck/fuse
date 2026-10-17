@@ -75,6 +75,14 @@ class ProtoEncoder:
         self._tag(field, 1)
         self._buf.extend(struct.pack("<d", float(value)))
 
+    def blob(self, field: int, value: bytes | None) -> None:
+        """Length-delimited bytes, written even when empty: an empty
+        sub-message still selects its oneof member."""
+        data = bytes(value or b"")
+        self._tag(field, 2)
+        self._varint(len(data))
+        self._buf.extend(data)
+
     def message(self, field: int, encode) -> None:
         sub = ProtoEncoder()
         encode(sub)

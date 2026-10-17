@@ -30,7 +30,7 @@ def test_invoke_chat_replaces_effort_for_the_resolved_route(monkeypatch):
             sent.append((self.type_id, body.get("reasoning_effort")))
             return ChatResult(status=self.status, body={}, model=body["model"])
 
-    for name in ("grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude"):
+    for name in ("grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude", "cursor"):
         monkeypatch.setattr(api, f"user_has_{name}", lambda _uid: True)
     monkeypatch.setattr(api, "_safe_record_usage", lambda *a, **k: True)
     monkeypatch.setattr(api, "session_id_from", lambda *a, **k: None)

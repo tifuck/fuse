@@ -131,6 +131,8 @@ def _model_type_guess(model: str) -> str | None:
         return "zai"
     if mid.startswith("kimi-") or mid == "k3" or mid.startswith("k3-"):
         return "kimi"
+    if mid.startswith("cursor/"):
+        return "cursor"
     return None
 
 

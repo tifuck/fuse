@@ -15,12 +15,13 @@ from ...sources import explabs as explabs_mod
 from ...sources import kimi as kimi_mod
 from ...sources import mimo as mimo_mod
 from ...sources import claude as claude_mod
+from ...sources import cursor as cursor_mod
 from ...sources import zai as zai_mod
 from ...sources.grok import ensure_grok_source, grok_access_state, is_held
 from ...sources.pool_pick import CHATGPT_FREE_PLANS, chatgpt_plan_type, chatgpt_usage_percent, grok_usage_percent
 from ...sources import pool_policy
 from ..deps import _pool_flash, render, require_user
-from .context import _chatgpt_pending_for, _claude_pending_for, _devin_pending_for, _kimi_pending_for, _mimo_pending_for, _pending_for, _pool_card
+from .context import _chatgpt_pending_for, _claude_pending_for, _cursor_pending_for, _devin_pending_for, _kimi_pending_for, _mimo_pending_for, _pending_for, _pool_card
 from .openrouter import _openrouter_model_rows
 
 router = APIRouter()
@@ -355,6 +356,38 @@ async def user_sources(request: Request):
     _fuse_fill(claude_visible)
     claude_pending = _claude_pending_for(user["id"])
 
+    cursor_sid = cursor_mod.ensure_cursor_source()
+    cursor_rows = db.fetchall(
+        "SELECT * FROM credentials WHERE source_id=? AND disabled=0 ORDER BY id",
+        (cursor_sid,),
+    )
+    cursor_access = cursor_mod.cursor_access_state(user["id"])
+    cursor_ui, cursor_ids, cursor_routable = _pool_scope(user, "cursor", cursor_rows, cursor_access["ok"])
+    cursor_visible = []
+    for a in cursor_rows:
+        if not _pool_account_visible(user, a, cursor_ids):
+            continue
+        extra = accounts.cred_extra(a)
+        billing = extra.get("billing") if isinstance(extra.get("billing"), dict) else None
+        guard = extra.get("guard") if isinstance(extra.get("guard"), dict) else None
+        held = cursor_mod.is_held(a)
+        card = _pool_card(user, a, kind="Cursor", index=len(cursor_visible) + 1, extra=extra)
+        _pool_card_scope(card, "cursor", a, user, cursor_ids)
+        card.update(
+            {
+                "billing": stats.billing_view(billing, last_percent=a["last_usage_percent"]),
+                "held": held,
+                "hold": stats.hold_view(a["pool_held_until"] if held else None, guard, a["last_usage_percent"]),
+                "authed": cursor_mod.credential_is_authed(a, extra),
+                "subscribed": cursor_mod.billing_has_subscription(billing),
+            }
+        )
+        cursor_visible.append(card)
+    _sort_mine_first(cursor_visible)
+    cursor_pool = stats.cursor_pool_meter(cursor_routable, owner_id=user["id"])
+    _fuse_fill(cursor_visible)
+    cursor_pending = _cursor_pending_for(user["id"])
+
     openrouter_sid = openrouter_mod.ensure_openrouter_source()
     or_access = openrouter_mod.openrouter_access_state(user["id"])
     or_owned = openrouter_mod.user_credential(user["id"], openrouter_sid)
@@ -428,6 +461,7 @@ async def user_sources(request: Request):
         kimi_ui=kimi_ui,
         mimo_ui=mimo_ui,
         claude_ui=claude_ui,
+        cursor_ui=cursor_ui,
         chatgpt_accounts=chatgpt_visible,
         chatgpt_paid_accounts=chatgpt_paid_accounts,
         chatgpt_free_accounts=chatgpt_free_accounts,
@@ -476,6 +510,15 @@ async def user_sources(request: Request):
         claude_auth_url=safe_verify_url((claude_pending or {}).get("auth_url") or ""),
         claude_flash_kind=flash[0] if flash and flash[2] == "claude" else "",
         claude_flash_msg=flash[1] if flash and flash[2] == "claude" else "",
+        cursor_accounts=cursor_visible,
+        cursor_ok=cursor_access["ok"],
+        cursor_reason=cursor_access["reason"],
+        cursor_pool=cursor_pool,
+        cursor_pending=cursor_pending,
+        cursor_interval=(cursor_pending or {}).get("interval", 3),
+        cursor_auth_url=safe_verify_url((cursor_pending or {}).get("auth_url") or ""),
+        cursor_flash_kind=flash[0] if flash and flash[2] == "cursor" else "",
+        cursor_flash_msg=flash[1] if flash and flash[2] == "cursor" else "",
         zai_flash=flash,
         pool_flash_kind=flash[0] if flash and flash[2] == "pool" else "",
         pool_flash_msg=flash[1] if flash and flash[2] == "pool" else "",

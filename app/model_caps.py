@@ -39,6 +39,8 @@ _RULES = (
     ("devin", re.compile(r"^(claude|gpt)-"), True),
     ("kimi", re.compile(r"^k3"), True),
     ("mimo", re.compile(r"^mimo-v2\.5$"), True),
+    # The agent protocol carries history as text blobs; images are not sent.
+    ("cursor", re.compile(r""), False),
 )
 
 
@@ -49,7 +51,7 @@ def remember(type_id: str, model: str, value) -> None:
 
 def _bare(type_id: str, model: str) -> str:
     mid = (model or "").strip()
-    prefix = {"devin": "devin/", "claude": "claude/", "openrouter": "openrouter/", "explabs": "explabs/"}.get(type_id)
+    prefix = {"devin": "devin/", "claude": "claude/", "cursor": "cursor/", "openrouter": "openrouter/", "explabs": "explabs/"}.get(type_id)
     if prefix and mid.startswith(prefix):
         mid = mid[len(prefix):]
     return mid.replace(".", "-") if type_id == "devin" else mid

@@ -162,6 +162,14 @@ class Settings(BaseSettings):
     claude_manual_redirect_url: str = "https://platform.claude.com/oauth/code/callback"
     claude_api_base: str = "https://api.anthropic.com"
 
+    # Cursor subscription. Sign-in is `cursor-agent login` (deep-link PKCE,
+    # polled); chat is the agent backend's RunSSE + BidiAppend. Bump the
+    # client version if Cursor starts refusing old CLI builds.
+    cursor_api_base: str = "https://api2.cursor.sh"
+    cursor_login_url: str = "https://cursor.com/loginDeepControl"
+    cursor_client_id: str = "KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB"
+    cursor_client_version: str = "cli-2026.10.16-e3cb207"
+
     @field_validator("app_secret")
     @classmethod
     def _require_secret(cls, v: str) -> str:

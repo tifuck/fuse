@@ -11,7 +11,8 @@ from ...sources import chatgpt as chatgpt_mod
 from ...sources import devin as devin_mod
 from ...sources import kimi as kimi_mod
 from ...sources import claude as claude_mod
-from ..deps import _chatgpt_pending, _devin_pending, _kimi_pending, _mimo_pending, _claude_pending, _pending, _PENDING_TTL
+from ...sources import cursor as cursor_mod
+from ..deps import _chatgpt_pending, _devin_pending, _kimi_pending, _mimo_pending, _claude_pending, _cursor_pending, _pending, _PENDING_TTL
 
 def _source_cfg(row) -> dict:
     try:
@@ -71,6 +72,17 @@ def _claude_pending_for(uid: int):
     if time.time() - float(data.get("_started") or 0) > _PENDING_TTL:
         _claude_pending.pop(uid, None)
         return None
+    return data
+
+
+def _cursor_pending_for(uid: int):
+    data = _cursor_pending.get(uid)
+    if not data:
+        return None
+    if time.time() - float(data.get("_started") or 0) > _PENDING_TTL:
+        _cursor_pending.pop(uid, None)
+        return None
+    _clamp_interval(data)
     return data
 
 
@@ -166,6 +178,8 @@ def _pool_card(user, row, *, kind: str, index: int, extra: dict | None = None) -
             email = kimi_mod.account_email(extra)
         elif kind == "Claude":
             email = claude_mod.account_email(extra)
+        elif kind == "Cursor":
+            email = cursor_mod.account_email(extra)
         if not email and admin and row["donated_by"] and row["donated_by"] != user["id"]:
             donor = accounts.get_user(row["donated_by"])
             try:

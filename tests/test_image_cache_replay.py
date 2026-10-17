@@ -21,7 +21,7 @@ def image(label="one"):
 def routed(monkeypatch):
     sent = []
     route = {"provider": "openai", "model": "eye", "image": True}
-    for name in ("grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude"):
+    for name in ("grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude", "cursor"):
         monkeypatch.setattr(api, f"user_has_{name}", lambda uid: True)
     monkeypatch.setattr(api, "session_id_from", lambda *a, **k: None)
     monkeypatch.setattr(api, "_record_attempts", lambda *a, **k: None)

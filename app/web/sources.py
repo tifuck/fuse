@@ -22,6 +22,7 @@ from .source_routes import (
     kimi,
     mimo,
     claude,
+    cursor,
     openrouter,
     admin_pages,
     admin_actions,
@@ -89,6 +90,7 @@ router.include_router(devin.router)
 router.include_router(kimi.router)
 router.include_router(mimo.router)
 router.include_router(claude.router)
+router.include_router(cursor.router)
 router.include_router(openrouter.router)
 router.include_router(admin_pages.router)
 router.include_router(admin_actions.router)

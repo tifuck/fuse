@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 from .. import accounts, db
 from . import chatgpt as chatgpt_mod
+from . import cursor as cursor_mod
 from . import devin as devin_mod
 from . import grok as grok_mod
 from . import kimi as kimi_mod
@@ -21,7 +22,7 @@ from .pool_pick import CHATGPT_FREE_PLANS, chatgpt_plan_type
 logger = logging.getLogger(__name__)
 
 WALK_PAUSE = 20.0
-WALK_KINDS = ("grok", "chatgpt", "zai", "devin", "kimi", "mimo", "openrouter")
+WALK_KINDS = ("grok", "chatgpt", "zai", "devin", "kimi", "mimo", "cursor", "openrouter")
 
 
 def _parse_ts(ts: str) -> datetime | None:
@@ -75,7 +76,7 @@ def _is_paid(kind: str, extra: dict) -> bool:
         return kimi_mod.billing_has_subscription(billing) or not billing.get("fetched_at")
     if kind == "mimo":
         return mimo_mod.billing_has_subscription(billing) or not billing.get("fetched_at")
-    if kind == "devin":
+    if kind in ("devin", "cursor"):
         return True
     return False
 
@@ -119,6 +120,8 @@ async def refresh_one_usage(kind: str, cred) -> None:
         await kimi_mod.refresh_quota(cred, force=True)
     elif kind == "mimo":
         await mimo_mod.refresh_quota(cred, force=True)
+    elif kind == "cursor":
+        await cursor_mod.refresh_quota(cred, force=True)
     elif kind == "openrouter":
         await openrouter_mod.refresh_key_info(cred, force=True)
 

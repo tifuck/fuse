@@ -17,6 +17,7 @@ from ..sources import kimi as kimi_mod
 from ..sources import mimo as mimo_mod
 from ..sources import claude as claude_mod
 from ..sources import claude_catalog as claude_catalog_mod
+from ..sources import cursor as cursor_mod
 from ..sources import zai as zai_mod
 from ..sources.grok import grok_access_state
 from ..sources import pool_policy
@@ -60,6 +61,7 @@ _FAMILY_TITLES = {
     "kimi": "Kimi",
     "mimo": "Xiaomi",
     "claude": "Claude",
+    "cursor": "Cursor",
     "llama": "Local inference",
     "ollama": "Ollama Cloud",
     "openrouter": "OpenRouter",
@@ -104,6 +106,10 @@ _LOCK_COPY = {
         "no_sub": "The linked Claude account needs an active subscription.",
         "unauthed": "The linked Claude sign-in is no longer valid.",
     },
+    "cursor": {
+        "none": "You need to link a Cursor account.",
+        "unauthed": "The linked Cursor sign-in is no longer valid.",
+    },
 }
 
 _POOL_FALLBACKS = {
@@ -114,6 +120,7 @@ _POOL_FALLBACKS = {
     "kimi": kimi_mod.KIMI_MODELS,
     "mimo": mimo_mod.MIMO_MODELS,
     "claude": claude_mod.CLAUDE_MODELS,
+    "cursor": cursor_mod.CURSOR_MODELS,
 }
 
 _MODEL_NAMES = {
@@ -318,6 +325,10 @@ def _model_display_name(model: str, type_id: str, openrouter_catalog: dict | Non
         named = _named_model(model) or claude_mod.model_label(model)
         if named:
             return _standardize_display_name(named)
+    if type_id == "cursor":
+        upstream = cursor_mod.upstream_id(model)
+        label = cursor_mod.model_label(model) or ("Auto" if upstream == "auto" else "")
+        return _standardize_display_name(label) if label else _humanize_model_id(upstream)
     return _MODEL_NAMES.get(model) or _humanize_model_id(model)
 
 
@@ -349,6 +360,7 @@ def _pool_catalog(type_id: str) -> list[str]:
         "kimi": kimi_mod._models_cache,
         "mimo": mimo_mod._models_cache,
         "claude": claude_catalog_mod._models_cache,
+        "cursor": cursor_mod._models_cache,
     }.get(type_id)
     if cache and cache[1]:
         return list(cache[1])
@@ -376,8 +388,9 @@ async def _models_page_families(user) -> tuple[list[dict], list[dict]]:
     kimi = kimi_mod.kimi_access_state(user["id"])
     mimo = mimo_mod.mimo_access_state(user["id"])
     claude = claude_mod.claude_access_state(user["id"])
+    cursor = cursor_mod.cursor_access_state(user["id"])
     or_state = openrouter_mod.openrouter_access_state(user["id"])
-    access = {"grok": grok, "chatgpt": chatgpt, "zai": zai, "devin": devin, "kimi": kimi, "mimo": mimo, "claude": claude}
+    access = {"grok": grok, "chatgpt": chatgpt, "zai": zai, "devin": devin, "kimi": kimi, "mimo": mimo, "claude": claude, "cursor": cursor}
     groups = await models_by_source(
         allow_grok=grok["ok"],
         allow_chatgpt=chatgpt["ok"],
@@ -386,6 +399,7 @@ async def _models_page_families(user) -> tuple[list[dict], list[dict]]:
         allow_kimi=kimi["ok"],
         allow_mimo=mimo["ok"],
         allow_claude=claude["ok"],
+        allow_cursor=cursor["ok"],
         user_id=user["id"],
     )
     catalog = openrouter_mod.cached_catalog()
@@ -410,7 +424,7 @@ async def _models_page_families(user) -> tuple[list[dict], list[dict]]:
         )
     have = {g["type"] for g in available}
     locked: list[dict] = []
-    for type_id in ("grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude"):
+    for type_id in ("grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude", "cursor"):
         state = access[type_id]
         if state["ok"] or type_id in have:
             continue

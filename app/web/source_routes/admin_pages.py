@@ -14,6 +14,7 @@ from ...sources import explabs as explabs_mod
 from ...sources import kimi as kimi_mod
 from ...sources import mimo as mimo_mod
 from ...sources import claude as claude_mod
+from ...sources import cursor as cursor_mod
 from ...sources import zai as zai_mod
 from ...sources import ollama_access
 from ...sources.grok import ensure_grok_source
@@ -185,6 +186,7 @@ def _admin_pools_ctx(notice: str | None = None) -> dict:
         "kimi": kimi_mod.ensure_kimi_source,
         "mimo": mimo_mod.ensure_mimo_source,
         "claude": claude_mod.ensure_claude_source,
+        "cursor": cursor_mod.ensure_cursor_source,
     }
     counts = {}
     for kind in pool_policy.POOL_KINDS:

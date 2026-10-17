@@ -440,6 +440,18 @@
       {{ table_bar(claude_accounts) }}
       {{ source_table(claude_accounts, 'Claude', '/sources/claude', 'Remove this Claude account from the shared pool?', 'Optional — Claude is already unlocked. Add an account if you want to donate one.' if claude_ok and claude_reason == 'open' else ('Sign in with the same Claude account you use for Claude Code.' if claude_ui.uses_shared else 'Add a Claude account. This pool is limited to accounts you link.'), claude_ui) }}
     </section>
+
+    <section class="pool stack-y" id="pool-cursor">
+      {% call pool_head(cursor_ui, 'Cursor', 'cursor', pool_state(cursor_ok, cursor_reason, cursor_ui, 'needs a Cursor sign-in'), [('Pool usage', cursor_pool)]) %}{% if cursor_pending %}{{ add_button('cursor-connect-dialog', 'Add account', cursor_pending) }}{% else %}<form method="post" action="/sources/cursor/start"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit" class="btn sm ghost">Add account</button></form>{% endif %}{% endcall %}
+      {% if cursor_reason == 'unauthed' %}
+      <p class="callout fault">The linked Cursor sign-in is no longer valid. Remove it and add the account again.</p>
+      {% endif %}
+      {% if cursor_flash_kind == 'ok' %}
+      <p class="callout ok" role="alert">{{ cursor_flash_msg }}</p>
+      {% endif %}
+      {{ table_bar(cursor_accounts) }}
+      {{ source_table(cursor_accounts, 'Cursor', '/sources/cursor', 'Remove this Cursor account from the shared pool?', 'Optional — Cursor is already unlocked. Add an account if you want to donate one.' if cursor_ok and cursor_reason == 'open' else ('Sign in with Cursor to unlock its models. No API key needed.' if cursor_ui.uses_shared else 'Add a Cursor account. This pool is limited to accounts you link.'), cursor_ui) }}
+    </section>
   </div>
 
   <div data-tab-panel="openrouter" class="stack-y{% if not openrouter_flash_msg %} hidden{% endif %}">
@@ -853,6 +865,50 @@
   </div>
 </dialog>
 
+<dialog class="modal device-modal" id="cursor-connect-dialog" aria-labelledby="cursor-connect-title"{% if cursor_pending or cursor_flash_kind == 'err' %} data-auto-open{% if cursor_pending %} data-device-poll data-endpoint="/sources/cursor/poll" data-interval="{{ cursor_interval }}"{% endif %}{% endif %}>
+  <div class="modal-shell">
+    <header class="modal-head">
+      <div>
+        <p class="metric-label">Cursor · sign-in</p>
+        <h2 id="cursor-connect-title">Connect your Cursor account</h2>
+      </div>
+      <button type="button" class="btn ghost sm" data-dialog-close aria-label="Close Cursor connection dialog">Close</button>
+    </header>
+    {% if cursor_flash_kind == 'err' %}
+    <p class="callout fault" role="alert">{{ cursor_flash_msg }}</p>
+    {% endif %}
+    {% if cursor_pending %}
+    <p class="aside">Open Cursor, sign in, and approve. This page picks the account up on its own — the same sign-in as <code>cursor-agent login</code>.</p>
+    <div class="modal-actions">
+      {% if cursor_auth_url %}
+      <a class="btn" href="{{ cursor_auth_url }}" target="_blank" rel="noopener">Open Cursor and sign in</a>
+      {% endif %}
+      <form method="post" action="/sources/cursor/cancel">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn ghost">Cancel</button>
+      </form>
+    </div>
+    <p class="pulse poll-status">Waiting for approval…</p>
+    {% else %}
+    <p class="aside">Fuse uses Cursor’s browser sign-in, the same flow as <code>cursor-agent login</code>. You can also paste a user API key from the Cursor dashboard.</p>
+    <form method="post" action="/sources/cursor/start" class="modal-actions">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="btn">Sign in with Cursor</button>
+    </form>
+    {% endif %}
+    <form method="post" action="/sources/cursor/add" class="stack" style="margin-top:0.85rem">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Or a user API key
+        <input name="api_key" type="password" autocomplete="off" required placeholder="From cursor.com/dashboard → API Keys">
+      </label>
+      <label>Label (optional)
+        <input name="label" maxlength="80" placeholder="Cursor account">
+      </label>
+      <button type="submit" class="btn ghost">Add API key</button>
+    </form>
+  </div>
+</dialog>
+
 <dialog class="modal device-modal" id="mimo-connect-dialog" aria-labelledby="mimo-connect-title"{% if mimo_pending or mimo_flash_kind == 'err' %} data-auto-open{% endif %}>
   <div class="modal-shell">
     <header class="modal-head">
@@ -917,4 +973,5 @@
 {{ pool_share_dialog(kimi_ui, kimi_accounts) }}
 {{ pool_share_dialog(mimo_ui, mimo_accounts) }}
 {{ pool_share_dialog(claude_ui, claude_accounts) }}
+{{ pool_share_dialog(cursor_ui, cursor_accounts) }}
 {% endblock %}

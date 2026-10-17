@@ -26,6 +26,7 @@ from .sources import (
     user_has_kimi,
     user_has_mimo,
     user_has_claude,
+    user_has_cursor,
     user_has_zai,
 )
 from .sources import pool_policy
@@ -450,6 +451,7 @@ async def list_models(request: Request):
         allow_kimi=user_has_kimi(user["id"]),
         allow_mimo=user_has_mimo(user["id"]),
         allow_claude=user_has_claude(user["id"]),
+        allow_cursor=user_has_cursor(user["id"]),
         user_id=user["id"],
     )
     if not names and catalog_unavailable_for(""):
@@ -553,6 +555,7 @@ async def _invoke_chat(request: Request, user, body: dict, *, cheap_reasoning: b
     kimi_ok = user_has_kimi(user["id"])
     mimo_ok = user_has_mimo(user["id"])
     claude_ok = user_has_claude(user["id"])
+    cursor_ok = user_has_cursor(user["id"])
     if model.startswith("explabs/") and not explabs_mod.user_has_explabs(user["id"]):
         raise HTTPException(403, "Connect an Experiential Labs API key to use its models")
     try:
@@ -565,6 +568,7 @@ async def _invoke_chat(request: Request, user, body: dict, *, cheap_reasoning: b
             allow_kimi=kimi_ok,
             allow_mimo=mimo_ok,
             allow_claude=claude_ok,
+            allow_cursor=cursor_ok,
             user_id=user["id"],
         )
     except explabs_mod.CatalogError:
@@ -595,6 +599,8 @@ async def _invoke_chat(request: Request, user, body: dict, *, cheap_reasoning: b
         raise HTTPException(403, "Connect a Xiaomi Token Plan to use MiMo models")
     if src.type_id == "claude" and not claude_ok:
         raise HTTPException(403, "Connect a Claude account to use Claude models")
+    if src.type_id == "cursor" and not cursor_ok:
+        raise HTTPException(403, "Connect a Cursor account to use Cursor models")
     _ensure_encodable(body)
     requested = model
     if cheap_reasoning:

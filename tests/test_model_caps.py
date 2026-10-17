@@ -109,7 +109,7 @@ def test_invoke_chat_strips_per_route_and_reports(monkeypatch):
             sent.append((self.type_id, body["messages"]))
             return ChatResult(status=self.status, body={}, model=body["model"])
 
-    for name in ("grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude"):
+    for name in ("grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude", "cursor"):
         monkeypatch.setattr(api, f"user_has_{name}", lambda _uid: True)
     monkeypatch.setattr(api, "pick", lambda *a, **k: asyncio.sleep(0, (Src("zai", 503), "glm-5.3")))
     monkeypatch.setattr(api, "_safe_record_usage", lambda *a, **k: True)

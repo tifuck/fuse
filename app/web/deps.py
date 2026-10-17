@@ -51,6 +51,7 @@ _devin_pending: dict[int, dict] = {}
 _kimi_pending: dict[int, dict] = {}
 _mimo_pending: dict[int, dict] = {}
 _claude_pending: dict[int, dict] = {}
+_cursor_pending: dict[int, dict] = {}
 _notices: dict[int, str] = {}
 _pool_flash: dict[int, tuple[str, str, str]] = {}
 _PENDING_TTL = 900

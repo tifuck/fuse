@@ -600,7 +600,7 @@ def test_api_invoke_explicit_explabs_requires_key(backend, monkeypatch, has_key)
     from app.sources.base import ChatResult
 
     _, uid, _ = backend
-    for kind in ("grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude"):
+    for kind in ("grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude", "cursor"):
         monkeypatch.setattr(api, "user_has_" + kind, lambda user_id: False)
     monkeypatch.setattr(explabs, "user_has_explabs", lambda user_id: has_key)
     result = ChatResult(status=429, body={"error": {"message": "Synthetic quota exhausted"}})

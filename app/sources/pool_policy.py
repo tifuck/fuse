@@ -1,4 +1,4 @@
-"""Admin and per-user policy for donated Grok, ChatGPT, Z.AI, Devin, Kimi, Xiaomi, and Claude pools.
+"""Admin and per-user policy for donated Grok, ChatGPT, Z.AI, Devin, Kimi, Xiaomi, Claude, and Cursor pools.
 
 Two admin switches per pool, stored on sources.config:
 
@@ -43,7 +43,7 @@ import time
 from .. import accounts, db
 from ..crypto import DecryptionError
 
-POOL_KINDS = ("grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude")
+POOL_KINDS = ("grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude", "cursor")
 POOL_KIND_SET = frozenset(POOL_KINDS)
 POOL_LABELS = {
     "grok": "x.ai",
@@ -53,6 +53,7 @@ POOL_LABELS = {
     "kimi": "Kimi",
     "mimo": "Xiaomi",
     "claude": "Claude",
+    "cursor": "Cursor",
 }
 
 SHARE_LEVELS = ("everyone", "contributors", "private")
@@ -99,6 +100,10 @@ def source_id(kind: str) -> int:
         from .claude import ensure_claude_source
 
         return ensure_claude_source()
+    if kind == "cursor":
+        from .cursor import ensure_cursor_source
+
+        return ensure_cursor_source()
     raise ValueError(f"unknown pool kind {kind!r}")
 
 
@@ -132,6 +137,10 @@ def own_access(kind: str, user_id: int) -> dict:
         from .claude import claude_own_access
 
         return claude_own_access(user_id)
+    if kind == "cursor":
+        from .cursor import cursor_own_access
+
+        return cursor_own_access(user_id)
     raise ValueError(f"unknown pool kind {kind!r}")
 
 
@@ -167,7 +176,7 @@ def set_admin_policy(kind: str, *, pool_shared: bool, open_access: bool) -> None
 # Pools that hold an account out for HOLD_HOURS when its plan usage rises with
 # no Fuse traffic (its owner is using it elsewhere). The hold withholds the
 # account from other users only; pool_pick never applies it to the owner.
-GUARD_KINDS = ("grok", "zai", "kimi", "mimo", "claude")
+GUARD_KINDS = ("grok", "zai", "kimi", "mimo", "claude", "cursor")
 
 
 def guard_enabled(kind: str) -> bool:

@@ -67,6 +67,7 @@ TYPE_WINDOWS = {
     "kimi": 262_144,
     "mimo": 1_048_576,
     "claude": 1_000_000,
+    "cursor": 200_000,
     "openrouter": 128_000,
     "explabs": 128_000,
     "openai": 128_000,
@@ -86,6 +87,7 @@ PREFIX_WINDOWS = (
     ("k3-", 262_144),
     ("mimo-", 1_048_576),
     ("claude/", 200_000),
+    ("cursor/", 200_000),
 )
 
 _WINDOW_CACHE: dict[tuple[str, str], tuple[float, int]] = {}
@@ -224,6 +226,8 @@ def type_id_for_model(model: str) -> str | None:
         return "mimo"
     if mid.startswith("claude/"):
         return "claude"
+    if mid.startswith("cursor/"):
+        return "cursor"
     return None
 
 
