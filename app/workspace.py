@@ -1751,11 +1751,19 @@ async def _sftp_write_in_place(sftp, path: str, content: bytes, *, expected=None
     if expected is not None and _sftp_version(await sftp.lstat(path)) != expected:
         raise _changed_during_edit(path)
     # Truncation happens at open: keep the old bytes to put back if the write
-    # then fails (ENOSPC, dropped connection). Unreadable file: no copy.
+    # then fails (ENOSPC, dropped connection). Unreadable file: no copy. The
+    # copy is held in Fuse's memory, so it is bounded like a whole-file edit;
+    # a larger file is refused before anything is truncated.
     original = None
     with contextlib.suppress(Exception):
         async with sftp.open(path, "rb") as handle:
-            original = await handle.read()
+            original = await handle.read(_REPLACE_FILE_MAX + 1)
+    if original is not None and len(original) > _REPLACE_FILE_MAX:
+        raise WorkspaceError(
+            f"{path} must be rewritten in place (it is hard-linked or its directory is not writable), "
+            f"which keeps a copy for recovery and is limited to {_REPLACE_FILE_MAX} bytes. "
+            "Nothing was written; apply the change with run_terminal_command instead"
+        )
     truncated = False
     try:
         async with sftp.open(path, "wb") as handle:

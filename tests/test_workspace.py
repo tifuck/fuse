@@ -548,8 +548,8 @@ class HostFailureMappingTest(unittest.IsolatedAsyncioTestCase):
             async def __aexit__(self, *exc):
                 return False
 
-            async def read(self):
-                return files[self.path]
+            async def read(self, n=-1):
+                return files[self.path] if n < 0 else files[self.path][:n]
 
             async def write(self, data):
                 if data != b"original bytes":
@@ -560,6 +560,13 @@ class HostFailureMappingTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(workspace.WorkspaceError) as caught:
             await workspace._sftp_write_in_place(sftp, "/srv/f", b"new bytes")
         self.assertNotIn("truncated", caught.exception.detail)
+        self.assertEqual(files["/srv/f"], b"original bytes")
+
+        # The recovery copy lives in Fuse's memory: a file over the edit
+        # ceiling is refused before it is truncated, never read whole.
+        with patch.object(workspace, "_REPLACE_FILE_MAX", 4):
+            with self.assertRaisesRegex(workspace.WorkspaceError, "Nothing was written"):
+                await workspace._sftp_write_in_place(sftp, "/srv/f", b"new")
         self.assertEqual(files["/srv/f"], b"original bytes")
 
 
