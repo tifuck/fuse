@@ -190,7 +190,7 @@ def copy_foreign_keys(*tables):
 
 @contextmanager
 def isolated_database(pool_size=8):
-    from app import db
+    from app import chat_tx, db
     from app.config import settings
     from app.mysql_compat import connect
 
@@ -220,7 +220,10 @@ def isolated_database(pool_size=8):
                 if not _SCHEMA_NAME.fullmatch(table):
                     raise RuntimeError("Unexpected schema identifier")
                 cursor.execute(f"CREATE TABLE `{schema}`.`{table}` LIKE `{source}`.`{table}`")
-            cursor.execute(f"INSERT INTO `{schema}`.schema_meta SELECT * FROM `{source}`.schema_meta")
+            # Migration markers, not the source's runtime state: its receipt
+            # prune mark would make a fresh schema look already pruned.
+            cursor.execute(f"INSERT INTO `{schema}`.schema_meta SELECT * FROM `{source}`.schema_meta WHERE `key`<>%s",
+                           (chat_tx._RECEIPT_MARK,))
         settings.database_url = urlunsplit(url._replace(path="/" + schema))
         pool = connect(settings.database_url, max_connections=pool_size)
         db._conn = pool
