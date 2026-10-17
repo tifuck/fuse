@@ -899,10 +899,12 @@ async def _run_remote(user_id, host_id, command: str, cwd: str, seconds: int, *,
     except asyncio.CancelledError:
         with contextlib.suppress(Exception):
             proc.kill()
+        _close_channel(proc)
         raise
     except TimeoutError:
         with contextlib.suppress(Exception):
             proc.kill()
+        _close_channel(proc)
         raise WorkspaceError("command timed out")
     class _Res:
         pass
@@ -972,6 +974,15 @@ def _make_agent_runner(user_id, host_id, command: str, cwd: str, timeout_ms: int
         return _ExecResult(res.exit_status, "")
 
     return runner
+
+
+def _close_channel(proc) -> None:
+    """Close an exec channel whose output nobody reads any more. Unread output
+    fills the receive window, so the server can never finish and close it:
+    the channel would stay open and keep its pooled connection from ever
+    being reaped as idle. Idempotent once the process has exited."""
+    with contextlib.suppress(Exception):
+        proc.close()
 
 
 async def _start_ssh_process(user_id, host_id, script: str):
@@ -1052,6 +1063,7 @@ def _make_ssh_runner(user_id, host_id, command: str, cwd: str, timeout_ms: int):
             for dt in dtasks:
                 dt.cancel()
             await asyncio.gather(*dtasks, return_exceptions=True)
+            _close_channel(proc)
         code = proc.exit_status
         return _ExecResult(code, "")
 
@@ -1285,6 +1297,7 @@ def _make_monitor_ssh_runner(user_id, host_id, command: str, cwd: str, timeout_m
             for dt in tasks:
                 dt.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            _close_channel(proc)
         return _ExecResult(proc.exit_status, "")
 
     return runner

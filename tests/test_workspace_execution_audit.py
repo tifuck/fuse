@@ -4,7 +4,7 @@ import json
 import sqlite3
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from app import agent_catalog, agent_hub as hub, command_jobs as jobs, db, workspace as ws
 from tests.test_workspace_reliability import SFTP
@@ -84,6 +84,28 @@ class ExecutionAudit(unittest.IsolatedAsyncioTestCase):
             output = []
             await ws._make_ssh_runner(1, 2, "true", "/repo", 1000)(output.append)
         self.assertEqual(output, ["last output\n"])
+
+    async def test_ssh_timeout_closes_the_exec_channel(self):
+        # Unread output would hold the channel (and its pooled connection) open.
+        async def hang(*_):
+            await asyncio.Event().wait()
+
+        def process():
+            reader = SimpleNamespace(read=hang)
+            return SimpleNamespace(stdout=reader, stderr=reader, wait=hang, exit_status=None, kill=Mock(), close=Mock())
+
+        runner_proc, remote_proc = process(), process()
+        with patch("app.ssh_pool.connection", AsyncMock(return_value=SimpleNamespace(create_process=AsyncMock(return_value=runner_proc)))), \
+                patch.object(ws, "_rate_ok"), patch.object(ws, "_remote_group_kill", AsyncMock(return_value=True)):
+            with self.assertRaises(jobs.CommandTimedOut):
+                await ws._make_ssh_runner(1, 2, "yes", "/repo", 50)([].append)
+        with patch("app.ssh_pool.connection", AsyncMock(return_value=SimpleNamespace(create_process=AsyncMock(return_value=remote_proc)))), \
+                patch.object(ws, "_is_agent", return_value=False):
+            with self.assertRaisesRegex(ws.WorkspaceError, "timed out"):
+                await ws._run_remote(1, 2, "yes", "", 0.05, rate=False)
+        for proc in (runner_proc, remote_proc):
+            proc.kill.assert_called_once()
+            proc.close.assert_called_once()
 
     async def test_agent_timeout_retains_output(self):
         with patch.object(ws, "_agent_call", AsyncMock(return_value={"ok": False, "exit": 1, "timeout": True, "out": "progress"})), patch.object(ws, "_rate_ok"):
