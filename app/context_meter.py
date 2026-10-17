@@ -291,6 +291,15 @@ def window_for(
                 return _clamp_window(got, cfg.default_window)
         except Exception:
             pass
+    if kind == "cursor":
+        try:
+            from .sources.cursor import model_window as cursor_window
+
+            got = cursor_window(mid)
+            if got:
+                return _clamp_window(got, cfg.default_window)
+        except Exception:
+            pass
     if kind == "claude":
         try:
             from .sources.claude import model_window as claude_window

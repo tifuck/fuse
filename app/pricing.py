@@ -531,7 +531,8 @@ def _listed_pool_models() -> set[tuple[str, str]]:
     # The Claude pool records the upstream slug, not the claude/ Fuse id.
     out.update((CLAUDE_PROVIDER, claude.upstream_id(mid)) for mid in (cache[1] if cache else []))
     cache = cursor._models_cache
-    out.update((CURSOR_PROVIDER, cursor.upstream_id(mid)) for mid in (cache[1] if cache else []))
+    # The Cursor pool records the base model with its tier tails (resolve's slug).
+    out.update((CURSOR_PROVIDER, cursor.resolve(mid, None)["slug"]) for mid in (cache[1] if cache else []))
     return out
 
 

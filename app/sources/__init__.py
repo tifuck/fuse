@@ -304,8 +304,9 @@ def reasoning_efforts(type_id: str, model: str | None = None, user_id: int | Non
     if type_id == "claude":
         return claude_mod.efforts_for(model)
     if type_id == "cursor":
-        # Cursor ids carry their effort (claude-opus-5-thinking-high).
-        return ()
+        from . import cursor as cursor_mod
+
+        return cursor_mod.efforts_for(model)
     if type_id == "ollama":
         return ("none", "low", "medium", "high", "max")
     return GENERIC_EFFORTS

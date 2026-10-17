@@ -34,7 +34,8 @@ from ..config import settings
 from ..crypto import encrypt
 from ..proxy import UsageStream, usage_from_obj
 from .base import ChatResult
-from .cursor_agent import TurnError, run_turn
+from . import cursor_agent as agent
+from .cursor_agent import TurnError
 from .grok import apply_usage_guard, is_held
 from .pool_pick import Failover, auth_failure_confirmed, note_failure, pick_account, release, reserve
 from . import pool_policy
@@ -544,23 +545,137 @@ async def refresh_pool_quota(*, force: bool = False) -> None:
 
 
 # --- Catalog --------------------------------------------------------------------
+#
+# The CLI lists models with AiService.AvailableModels(useModelParameters):
+# each base model carries parameter definitions and its concrete variants.
+# Fuse folds the effort-like parameters (reasoning, effort, reasoning_effort,
+# boolean thinking) into its effort picker and turns the rest into sibling ids:
+# `:fast` / `:slow` for the fast parameter, `@value` for others (context
+# windows), `:max` for Max Mode. A request then becomes the CLI's
+# RequestedModel{model_id, parameters, max_mode}. GetUsableModels (flattened
+# legacy slugs, no parameters) is the fallback.
 
-def _remember_catalog(models: list) -> list[str]:
-    global _models_cache
-    names: list[str] = []
+_EFFORT_PARAMS = ("reasoning", "effort", "reasoning_effort")
+_EFFORT_ALIASES = {"extra-high": "xhigh", "extra_high": "xhigh", "off": "none", "false": "none"}
+_EFFORT_ORDER = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+# fuse id -> {"model", "name", "efforts": {label: [(id, value)]}, "default", "max", "window", "fast"}
+_catalog: dict[str, dict] = {}
+
+
+def _variant_params(variant: dict) -> dict[str, str]:
+    out = {}
+    for item in variant.get("parameterValues") or []:
+        if isinstance(item, dict) and item.get("id"):
+            out[str(item["id"])] = str(item.get("value") if item.get("value") is not None else "")
+    return out
+
+
+def _effort_label(params: dict[str, str]) -> str:
+    for pid in _EFFORT_PARAMS:
+        if pid in params:
+            value = params[pid].strip().lower()
+            return _EFFORT_ALIASES.get(value, value)
+    if "thinking" in params:
+        return "none" if params["thinking"].strip().lower() in ("false", "off", "0") else "high"
+    return ""
+
+
+def _context_tokens(value: str) -> int:
+    raw = value.strip().lower()
+    scale = {"k": 1_000, "m": 1_000_000}.get(raw[-1:], 1)
+    try:
+        return int(float(raw.rstrip("km")) * scale)
+    except ValueError:
+        return 0
+
+
+def parse_available_models(models: list) -> list[dict]:
+    rows: list[dict] = []
+    for m in models:
+        if not isinstance(m, dict) or m.get("isHidden") or m.get("supportsAgent") is False:
+            continue
+        base = str(m.get("name") or "").strip()
+        if not base:
+            continue
+        title = str(m.get("clientDisplayName") or base)
+        variants = [v for v in m.get("variants") or [] if isinstance(v, dict)]
+        if not variants:
+            variants = [{"parameterValues": [], "isMaxMode": m.get("supportsNonMaxMode") is False}]
+        default = (
+            next((v for v in variants if v.get("isDefaultNonMaxConfig")), None)
+            or next((v for v in variants if v.get("isDefaultMaxConfig")), None)
+            or variants[0]
+        )
+
+        def key_of(variant: dict) -> tuple:
+            params = _variant_params(variant)
+            rest = tuple(sorted((k, v) for k, v in params.items() if k not in _EFFORT_PARAMS and k != "thinking"))
+            return rest, bool(variant.get("isMaxMode"))
+
+        base_rest, base_max = key_of(default)
+        groups: dict[tuple, list[dict]] = {}
+        for variant in variants:
+            groups.setdefault(key_of(variant), []).append(variant)
+        for (rest, max_mode), members in groups.items():
+            plain = dict(base_rest)
+            suffix, words, window = "", [], 0
+            for pid, value in rest:
+                if plain.get(pid) == value:
+                    continue
+                if pid == "fast":
+                    suffix += ":fast" if value == "true" else ":slow"
+                    words.append("Fast" if value == "true" else "Standard")
+                else:
+                    suffix += f"@{value}"
+                    words.append(value.upper())
+                    window = _context_tokens(value) if pid == "context" else window
+            if max_mode != base_max:
+                suffix += ":max" if max_mode else ":nomax"
+                words.append("Max" if max_mode else "Standard")
+            efforts: dict[str, list[tuple[str, str]]] = {}
+            for variant in members:
+                efforts.setdefault(_effort_label(_variant_params(variant)), sorted(_variant_params(variant).items()))
+            lead = default if default in members else next(
+                (v for v in members if v.get("isDefaultNonMaxConfig") or v.get("isDefaultMaxConfig")), members[0]
+            )
+            limit = m.get("contextTokenLimitForMaxMode") if max_mode else m.get("contextTokenLimit")
+            try:
+                window = window or int(limit or 0)
+            except (TypeError, ValueError):
+                window = 0
+            rows.append({
+                "id": PREFIX + base + suffix,
+                "model": base,
+                "name": " ".join([title, *words]),
+                "efforts": efforts,
+                "default": _effort_label(_variant_params(lead)),
+                "max": max_mode,
+                "window": window,
+                "fast": dict(rest).get("fast", plain.get("fast", "")) == "true",
+            })
+    return rows
+
+
+def _legacy_rows(models: list) -> list[dict]:
+    rows = []
     for item in models:
         mid = str(item.get("modelId") or "") if isinstance(item, dict) else ""
-        if not mid:
-            continue
-        fid = PREFIX + mid
-        if fid not in names:
-            names.append(fid)
-        label = str(item.get("displayName") or item.get("displayNameShort") or "")
-        if label:
-            _labels[fid] = label[:80]
+        if mid:
+            name = str(item.get("displayName") or item.get("displayNameShort") or mid)
+            rows.append({"id": PREFIX + mid, "model": mid, "name": name, "efforts": {"": []}, "default": "",
+                         "max": bool(item.get("maxMode")), "window": 0, "fast": False})
+    return rows
+
+
+def _remember_catalog(rows: list[dict]) -> list[str]:
+    global _models_cache
     prior = list(_models_cache[1]) if _models_cache else list(CURSOR_MODELS)
-    if not names:
+    if not rows:
         return prior
+    for row in rows:
+        _catalog[row["id"]] = row
+        _labels[row["id"]] = row["name"][:80]
+    names = list(dict.fromkeys(row["id"] for row in rows))
     # Upstream order first, then ids an earlier listing had.
     names += [mid for mid in prior if mid not in names]
     _models_cache = (time.time(), names)
@@ -570,13 +685,66 @@ def _remember_catalog(models: list) -> list[str]:
 async def fetch_catalog(token: str) -> list[str]:
     if _models_cache and time.time() - _models_cache[0] < 60:
         return list(_models_cache[1])
+    rows: list[dict] = []
     try:
         async with httpx.AsyncClient(timeout=20) as client:
-            status, data = await _unary(client, "/agent.v1.AgentService/GetUsableModels", token)
+            status, data = await _unary_body(
+                client, "/aiserver.v1.AiService/AvailableModels", token,
+                {"useModelParameters": True, "doNotUseMarkdown": True},
+            )
+            if status == 200 and isinstance(data.get("models"), list):
+                rows = parse_available_models(data["models"])
+            if not rows:
+                status, data = await _unary(client, "/agent.v1.AgentService/GetUsableModels", token)
+                if status == 200 and isinstance(data.get("models"), list):
+                    rows = _legacy_rows(data["models"])
     except httpx.HTTPError:
-        status, data = 0, {}
-    models = data.get("models") if status == 200 and isinstance(data.get("models"), list) else []
-    return _remember_catalog(models)
+        rows = []
+    return _remember_catalog(rows)
+
+
+async def _unary_body(client: httpx.AsyncClient, path: str, token: str, body: dict) -> tuple[int, dict]:
+    r = await client.post(_base() + path, json=body, headers={**_headers(token), "Content-Type": "application/json"})
+    try:
+        data = r.json()
+    except ValueError:
+        data = {}
+    return r.status_code, data if isinstance(data, dict) else {}
+
+
+def efforts_for(model: str | None) -> tuple[str, ...]:
+    row = _catalog.get(model or "")
+    labels = [label for label in (row or {}).get("efforts", {}) if label]
+    if len(labels) < 2:
+        return ()
+    known = [label for label in _EFFORT_ORDER if label in labels]
+    return tuple(known + [label for label in labels if label not in known])
+
+
+def default_effort(model: str | None) -> str:
+    row = _catalog.get(model or "") or {}
+    return row.get("default", "") if row.get("default") in efforts_for(model) else ""
+
+
+def model_window(model: str) -> int | None:
+    return int((_catalog.get(model) or {}).get("window") or 0) or None
+
+
+def resolve(model: str, effort: str | None) -> dict:
+    """A Fuse id plus requested effort as the CLI's RequestedModel."""
+    fid = model if model.startswith(PREFIX) else PREFIX + model
+    row = _catalog.get(fid)
+    if not row:
+        mid = upstream_id(fid)
+        return {"model_id": mid, "params": [], "max": False, "name": mid, "slug": mid}
+    efforts = row["efforts"]
+    label = str(effort or "").strip().lower()
+    label = _EFFORT_ALIASES.get(label, label)
+    if label not in efforts:
+        label = row["default"] if row["default"] in efforts else next(iter(efforts))
+    # Usage records the base model with its tier tails, which pricing strips.
+    slug = "-".join(part for part in (row["model"], label, "fast" if row["fast"] else "", "max" if row["max"] else "") if part)
+    return {"model_id": row["model"], "params": efforts[label], "max": row["max"], "name": row["name"], "slug": slug}
 
 
 # --- Chat -----------------------------------------------------------------------
@@ -585,54 +753,79 @@ def _sse(obj: dict) -> bytes:
     return f"data: {json.dumps(obj, separators=(',', ':'))}\n\n".encode()
 
 
-def _usage_obj(raw: dict | None) -> dict:
-    raw = raw or {}
-    prompt = int(raw.get("prompt_tokens") or 0)
-    completion = int(raw.get("completion_tokens") or 0)
-    return {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": prompt + completion}
-
-
 def _tool_call(index: int, call: dict) -> dict:
     return {"index": index, "id": call["id"], "type": "function",
             "function": {"name": call["name"], "arguments": call["arguments"]}}
 
 
-async def _stream(first: tuple, events, collected: dict, model: str):
+def _reply(text: list[str], calls: list[dict]) -> dict:
+    """The assistant message this round adds to the conversation."""
+    message: dict = {"role": "assistant", "content": "".join(text)}
+    if calls:
+        message["tool_calls"] = [{k: v for k, v in call.items() if k != "index"} for call in calls]
+    return message
+
+
+class _Round:
+    """One request's share of a Cursor run, and what to do when it ends."""
+
+    def __init__(self, run: agent.CursorRun, conv: agent.Conversation, messages, first: tuple, events):
+        self.run = run
+        self.conv = conv
+        self.messages = messages
+        self.first = first
+        self.events = events
+        self.kept = False
+
+    async def finish(self, text: list[str], calls: list[dict]) -> None:
+        agent.keep(self.conv, self.messages, _reply(text, calls), self.run)
+        self.kept = True
+
+    async def close(self) -> None:
+        await self.events.aclose()
+        if not self.kept:
+            agent.drop(self.conv)
+            await self.run.aclose()
+
+
+async def _stream(rnd: _Round, collected: dict, model: str):
     cid = "chatcmpl-" + uuid.uuid4().hex[:24]
     created = int(time.time())
 
     def chunk(delta: dict, finish=None, usage=None) -> bytes:
-        obj = {"id": cid, "object": "chat.completion.chunk", "created": created, "model": PREFIX + model,
+        obj = {"id": cid, "object": "chat.completion.chunk", "created": created, "model": model,
                "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
         if usage is not None:
             obj["usage"] = usage
         return _sse(obj)
 
     usage: dict = {}
-    calls = 0
+    text: list[str] = []
+    calls: list[dict] = []
     try:
         yield chunk({"role": "assistant"})
-        event = first
+        event = rnd.first
         while True:
             kind, value = event
             if kind == "text":
+                text.append(value)
                 yield chunk({"content": value})
             elif kind == "thinking":
                 yield chunk({"reasoning_content": value})
             elif kind == "tool_call":
-                yield chunk({"tool_calls": [_tool_call(calls, value)]})
-                calls += 1
+                calls.append(_tool_call(len(calls), value))
+                yield chunk({"tool_calls": [calls[-1]]})
             elif kind == "usage":
                 usage = value
             elif kind == "end":
-                obj = _usage_obj(usage)
-                if usage:
-                    collected.update(usage_from_obj({"usage": obj}))
-                yield chunk({}, value, obj)
+                if usage.get("prompt_tokens") or usage.get("completion_tokens"):
+                    collected.update(usage_from_obj({"usage": usage}))
+                await rnd.finish(text, calls)
+                yield chunk({}, value, usage or None)
                 yield b"data: [DONE]\n\n"
                 collected["stream_status"] = "complete"
                 return
-            event = await events.__anext__()
+            event = await rnd.events.__anext__()
     except TurnError as exc:
         collected["stream_status"] = "failed"
         yield _sse({"error": {"message": exc.message, "code": exc.status}})
@@ -640,12 +833,12 @@ async def _stream(first: tuple, events, collected: dict, model: str):
         collected["stream_status"] = "failed"
         raise
     finally:
-        await events.aclose()
+        await rnd.close()
 
 
-async def _collect(first: tuple, events, model: str) -> tuple[dict, dict]:
+async def _collect(rnd: _Round, model: str) -> tuple[dict, dict]:
     text, thinking, calls, usage, finish = [], [], [], {}, "stop"
-    event = first
+    event = rnd.first
     try:
         while True:
             kind, value = event
@@ -659,22 +852,22 @@ async def _collect(first: tuple, events, model: str) -> tuple[dict, dict]:
                 usage = value
             elif kind == "end":
                 finish = value
+                await rnd.finish(text, calls)
                 break
-            event = await events.__anext__()
+            event = await rnd.events.__anext__()
     finally:
-        await events.aclose()
-    message: dict = {"role": "assistant", "content": "".join(text) or None}
+        await rnd.close()
+    message = _reply(text, calls)
+    message["content"] = message["content"] or None
     if thinking:
         message["reasoning_content"] = "".join(thinking)
-    if calls:
-        message["tool_calls"] = [{k: v for k, v in call.items() if k != "index"} for call in calls]
     obj = {
         "id": "chatcmpl-" + uuid.uuid4().hex[:24],
         "object": "chat.completion",
         "created": int(time.time()),
-        "model": PREFIX + model,
+        "model": model,
         "choices": [{"index": 0, "message": message, "finish_reason": finish}],
-        "usage": _usage_obj(usage),
+        "usage": usage or {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }
     return obj, usage_from_obj(obj) if usage else {}
 
@@ -720,15 +913,65 @@ class CursorSource:
             user_id,
         )
 
+    async def _open(self, extra: dict, cid: int, user_id, body: dict, sel: dict, plan: tuple) -> _Round:
+        """Start this request's round: hand tool results to a parked run,
+        continue a finished turn from its checkpoint, or replay the history
+        into a new conversation."""
+        how, conv, tail = plan
+        messages = body.get("messages")
+        tools = agent.mcp_tools(body.get("tools"))
+        if how == "resume":
+            run = conv.run
+            await run.resume([(str(m.get("tool_call_id") or ""), agent._text(m.get("content"))) for m in tail])
+        else:
+            if how == "followup":
+                state = conv.checkpoint
+                user_text = "\n\n".join(t for t in (agent._text(m.get("content")) for m in tail) if t) or agent.CONTINUE_TEXT
+            else:
+                conv = agent.Conversation(user_id=user_id, cred_id=cid)
+                history, user_text = agent.build_turn(messages)
+                ids = []
+                for entry in history:
+                    data = json.dumps(entry, ensure_ascii=False, separators=(",", ":")).encode()
+                    digest = hashlib.sha256(data).digest()
+                    conv.blobs[digest] = data
+                    ids.append(digest)
+                state = agent.encode_state(ids)
+            run = agent.CursorRun(base=_base(), headers=_headers(extra.get("access_token") or ""),
+                                  timeout=_CHAT_TIMEOUT, blobs=conv.blobs, tools=tools)
+            await run.start(agent.encode_run_request(
+                state=state, user_text=user_text, model_id=sel["model_id"], params=sel["params"],
+                max_mode=sel["max"], display_name=sel["name"], tools=tools, conversation_id=conv.conversation_id,
+            ))
+        conv.busy = True
+        conv.selection = (sel["model_id"], tuple(sel["params"]), sel["max"])
+        events = run.round()
+        try:
+            first = await events.__anext__()
+        except BaseException:
+            await events.aclose()
+            agent.drop(conv)
+            await run.aclose()
+            raise
+        return _Round(run, conv, messages, first, events)
+
     async def chat(self, body: dict, *, session_id: str | None = None, user_id: int | None = None, affinity_id: str | None = None) -> ChatResult:
         await refresh_due()
         await refresh_pool_quota()
         self._load(user_id)
-        model = upstream_id(body.get("model") or "") or "auto"
+        reasoning = body.get("reasoning") if isinstance(body.get("reasoning"), dict) else {}
+        sel = resolve(body.get("model") or "auto", body.get("reasoning_effort") or reasoning.get("effort"))
+        model = PREFIX + upstream_id(body.get("model") or "auto")
+        conv, how, tail = agent.match(user_id, body.get("messages"))
+        if how == "resume" and conv.selection != (sel["model_id"], tuple(sel["params"]), sel["max"]):
+            # A parked run cannot change model mid-turn; replay on the new one.
+            agent.drop(conv)
+            conv, how = None, ""
+        plan = (how, conv, tail) if conv else ("fresh", None, [])
         tried: set[int] = set()
         attempts: list[dict] = []
         last = ChatResult(status=503, body={"error": "No Cursor accounts in the pool"})
-        prefer_id = lookup("cursor", session_id)
+        prefer_id = conv.cred_id if conv else lookup("cursor", session_id)
         hint_id = lookup("cursor", affinity_id) if prefer_id is None and affinity_id else None
         primary_id = pool_policy.primary_account(user_id, "cursor")
         failover = Failover()
@@ -742,27 +985,28 @@ class CursorSource:
                 return last
             cred, extra = picked
             cid = int(cred["id"])
+            if plan[1] is not None and plan[1].cred_id != cid:
+                # That conversation lives on another account.
+                agent.drop(plan[1])
+                plan = ("fresh", None, [])
             tried.add(cid)
             note_pool_invoke(cid)
             reserve(cid)
-            events = run_turn(
-                base=_base(),
-                headers=_headers(extra.get("access_token") or ""),
-                model=model,
-                messages=body.get("messages"),
-                tools=body.get("tools"),
-                timeout=_CHAT_TIMEOUT,
-            )
             try:
-                first = await events.__anext__()
+                rnd = await self._open(extra, cid, user_id, body, sel, plan)
             except TurnError as exc:
                 release(cid)
-                await events.aclose()
-                last = ChatResult(status=exc.status, body={"error": {"message": exc.message}}, credential_id=cid, model=model)
+                if plan[0] != "fresh":
+                    # The kept state is gone (expired run, unknown
+                    # checkpoint): replay the history on this account.
+                    agent.drop(plan[1])
+                    plan = ("fresh", None, [])
+                    tried.discard(cid)
+                    continue
+                last = ChatResult(status=exc.status, body={"error": {"message": exc.message}}, credential_id=cid, model=sel["slug"])
                 attempts.append({"credential_id": cid, "status": exc.status, "usage": {}})
                 if exc.status == 401:
                     if cid not in refreshed and await refresh_one(cred):
-                        # Same account, fresh token: try it once more.
                         refreshed.add(cid)
                         tried.discard(cid)
                         self._load(user_id)
@@ -785,29 +1029,28 @@ class CursorSource:
                 return last
             except BaseException:
                 release(cid)
-                await events.aclose()
                 raise
             failover.served()
             if body.get("stream"):
-                return self._stream_result(first, events, cid, session_id, model, attempts)
+                return self._stream_result(rnd, cid, session_id, model, sel["slug"], attempts)
             try:
-                obj, usage = await _collect(first, events, model)
+                obj, usage = await _collect(rnd, model)
             except TurnError as exc:
-                last = ChatResult(status=exc.status, body={"error": {"message": exc.message}}, credential_id=cid, model=model)
+                last = ChatResult(status=exc.status, body={"error": {"message": exc.message}}, credential_id=cid, model=sel["slug"])
                 last.attempts = attempts
                 return last
             finally:
                 release(cid)
             bind("cursor", session_id, cid)
-            result = ChatResult(status=200, body=obj, usage=usage, credential_id=cid, model=model)
+            result = ChatResult(status=200, body=obj, usage=usage, credential_id=cid, model=sel["slug"])
             result.attempts = attempts
             return result
 
-    def _stream_result(self, first, events, cid: int, session_id: str | None, model: str, attempts: list[dict]) -> ChatResult:
+    def _stream_result(self, rnd: _Round, cid: int, session_id: str | None, model: str, slug: str, attempts: list[dict]) -> ChatResult:
         collected: dict = {}
 
         async def _bind_on_finish():
-            inner = _stream(first, events, collected, model)
+            inner = _stream(rnd, collected, model)
             try:
                 async for chunk in inner:
                     yield chunk
@@ -820,6 +1063,8 @@ class CursorSource:
                     note_failure(cid, cooldown_seconds=5, affinity_safe=True)
 
         wrapped = UsageStream(_bind_on_finish(), collected, on_close=lambda: release(cid))
-        result = ChatResult(status=200, stream=wrapped, credential_id=cid, model=model)
+        result = ChatResult(status=200, stream=wrapped, credential_id=cid, model=slug)
         result.attempts = attempts
         return result
+
+
