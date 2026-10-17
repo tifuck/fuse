@@ -344,17 +344,20 @@ def pick_account(
     prefer_id: int | None = None,
     owner_id: int | None = None,
     hint_id: int | None = None,
+    primary_id: int | None = None,
 ):
-    """The caller's own accounts first, then the least-used plan.
+    """The caller's primary account, then their own, then the least-used plan.
 
     kind is 'grok', 'chatgpt', 'zai', 'devin', 'kimi', 'mimo', or 'claude'. Returns (cred, extra)
     or None.
 
     Order: healthy plans before busy ones (USAGE_BUSY or above) before ones
-    `no_plan` says have no subscription; then the caller's own accounts
-    (owner_id) before anyone else's, so a donor spends their own plan first
-    and the shared pool is the fallback; then ChatGPT plan tier, usage
-    percent, week_tokens and id.
+    `no_plan` says have no subscription; then the account the caller chose
+    as primary (primary_id), then the caller's own accounts (owner_id)
+    before anyone else's, so a donor spends their own plan first and the
+    shared pool is the fallback; then ChatGPT plan tier, usage percent,
+    week_tokens and id. A busy or failing primary therefore loses to any
+    healthy account, and the request fails over without the caller seeing it.
 
     ChatGPT: models Free/Go can serve (luna, terra, 5.5, 5.4-mini) pick those
     plans first, then paid. Paid-only models (sol, 5.4) never consider Free/Go.
@@ -385,6 +388,7 @@ def pick_account(
     exclude = exclude or set()
     week = db.iso_week_start()
     owner = int(owner_id) if owner_id is not None else None
+    primary = int(primary_id) if primary_id is not None else None
     ready = []
     pinned = []
     for cred in creds:
@@ -436,7 +440,7 @@ def pick_account(
             tier = _TIER_OK
         week_tok = int(cred["week_tokens"] or 0) if cred["week_start"] == week else 0
         score = pct if pct is not None else 0.0
-        row = (tier, 0 if mine else 1, rank, score, week_tok, cid, cred, extra)
+        row = (tier, 0 if cid == primary else 1 if mine else 2, rank, score, week_tok, cid, cred, extra)
         if cooling:
             pinned.append(row)
         else:

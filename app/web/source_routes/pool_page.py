@@ -36,8 +36,14 @@ def _pool_scope(user, kind: str, rows, ok: bool) -> tuple[dict, set[int], list]:
     has access (plus their own; admins also see the rest)."""
     uid = user["id"]
     ui = pool_policy.ui_state(uid, kind)
-    routable = pool_policy.filter_credentials(rows, kind, uid)
-    ids = {int(row["id"]) for row in routable} if ok else set()
+    reachable = pool_policy.filter_credentials(rows, kind, uid, chosen=False)
+    choice = pool_policy.account_choice(uid, kind)
+    routable = [row for row in reachable if int(row["id"]) not in choice["skip"]]
+    ids = {int(row["id"]) for row in reachable} if ok else set()
+    used = {int(row["id"]) for row in routable}
+    ui["reachable"] = ids
+    ui["skip"] = choice["skip"]
+    ui["primary"] = choice["primary"] if ok and choice["primary"] in used else None
     ui["n_mine"] = sum(1 for row in rows if row["donated_by"] == uid)
     ui["n_shared"] = sum(1 for row in routable if row["donated_by"] != uid)
     ui["contributor"] = pool_policy.contributes(uid, kind) if ui["pool_shared"] else False
@@ -528,9 +534,45 @@ async def user_pool_prefs(request: Request, kind: str):
     pref = pool_policy.set_user_pref(user["id"], kind, share=share, use=use or None)
     eff = pool_policy.effective_pref(user["id"], kind)
     shared = _SHARE_COPY[pref["share"]].format(label=label)
+    choice = pool_policy.account_choice(user["id"], kind)
+    if "accounts_listed" in form:
+        choice, refused = _save_account_choice(user["id"], kind, form)
+        if refused:
+            _pool_flash[user["id"]] = ("fault", f"{label}: sharing saved, but {refused}", "pool")
+            return RedirectResponse(f"/sources#pool-{kind}", status_code=303)
     if eff["use"] == "mine":
         routing = "Your requests use only your accounts"
+    elif choice["primary"] is not None:
+        routing = "New conversations start on the account you picked, then fall back to your other accounts"
     else:
         routing = "Your requests use your accounts first, then accounts shared with you"
-    _pool_flash[user["id"]] = ("ok", f"{label}: {routing}; {shared}.", "pool")
+    left_out = len(choice["skip"])
+    skipped = f" {left_out} account{'s' if left_out != 1 else ''} left out of your rotation." if left_out else ""
+    _pool_flash[user["id"]] = ("ok", f"{label}: {routing}; {shared}.{skipped}", "pool")
     return RedirectResponse(f"/sources#pool-{kind}", status_code=303)
+
+
+def _form_ids(values) -> set[int]:
+    return {int(v) for v in values if str(v).strip().isdigit()}
+
+
+def _save_account_choice(uid: int, kind: str, form) -> tuple[dict, str]:
+    """Apply the dialog's account list. Only the accounts the dialog listed
+    change, so an account that appears after the page rendered stays in the
+    rotation. Returns (choice, refusal message)."""
+    listed = _form_ids(str(form.get("accounts_listed") or "").split(",")[: pool_policy.MAX_SKIP])
+    checked = _form_ids(form.getlist("account")) & listed
+    old = pool_policy.account_choice(uid, kind)
+    skip = (set(old["skip"]) - listed) | (listed - checked)
+    raw_primary = str(form.get("primary") or "")
+    primary = int(raw_primary) if raw_primary.isdigit() and int(raw_primary) in checked else None
+    rows = db.fetchall(
+        "SELECT * FROM credentials WHERE source_id=? AND disabled=0", (pool_policy.source_id(kind),)
+    )
+    reachable = {int(row["id"]) for row in pool_policy.filter_credentials(rows, kind, uid, chosen=False)}
+    skip &= {int(row["id"]) for row in rows} | set(old["skip"])
+    if reachable and not reachable - skip:
+        return old, "keep at least one account in your rotation."
+    if len(skip) > pool_policy.MAX_SKIP:
+        return old, "too many accounts left out."
+    return pool_policy.set_account_choice(uid, kind, skip=skip, primary=primary), ""

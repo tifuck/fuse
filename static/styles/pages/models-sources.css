@@ -134,6 +134,23 @@ label.share-option:has(input:disabled) { opacity: 0.5; cursor: not-allowed; }
 .share-option b { font-size: 0.86rem; font-weight: 600; }
 .share-option small { color: var(--mute); font-size: 0.76rem; line-height: 1.4; }
 .share-note { margin: 0; color: var(--mute); font-size: 0.76rem; line-height: 1.45; }
+.share-account {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.45rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.share-account:has(input[name="account"]:not(:checked)) { opacity: 0.55; }
+.share-account label { display: flex; flex-direction: row; align-items: center; gap: 0.5rem; min-width: 0; margin: 0; cursor: pointer; }
+.share-account input { width: 0.95rem; height: 0.95rem; margin: 0; padding: 0; flex-shrink: 0; accent-color: var(--brass); }
+.share-account-use { flex: 1; }
+.share-account-name { overflow: hidden; font-size: 0.84rem; text-overflow: ellipsis; white-space: nowrap; }
+.share-account-pct { margin-left: auto; color: var(--mute); font: 0.72rem/1 var(--mono); }
+.share-account-first { color: var(--mute); font-size: 0.76rem; }
+/* "Only your accounts" never reaches anyone else's, so hide them. */
+.share-form:has(input[name="use"][value="mine"]:checked) .share-account.is-other { display: none; }
 .source-table-scroll {
   max-height: min(28rem, 62dvh);
   overflow: auto;

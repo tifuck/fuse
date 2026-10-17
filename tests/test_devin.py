@@ -933,5 +933,33 @@ class StreamUsageDetailsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(collected["cache_write_tokens"], 6)
 
 
+class StreamTrailerFailoverTest(unittest.IsolatedAsyncioTestCase):
+    async def _run(self, error: dict) -> tuple[str, dict]:
+        body = json.dumps({"error": error}).encode()
+        end = bytes([proto.CONNECT_END_STREAM]) + len(body).to_bytes(4, "big") + body
+        collected: dict = {}
+        chunks = []
+        async for chunk in devin_stream._stream_sse(_FrameResp([end]), unittest.mock.AsyncMock(), collected, "swe-2", "uid-1"):
+            chunks.append(chunk.decode())
+        return "".join(chunks), collected
+
+    async def test_quota_trailer_is_a_resumable_429(self):
+        # An exhausted account answers 200 and reports quota in the trailer:
+        # the chat loop must retry (onto another account), not end the turn.
+        from app.chat_generation.policy import _error_code_and_message, _should_resume
+
+        text, collected = await self._run({"code": "resource_exhausted", "message": "daily quota exceeded"})
+        self.assertEqual(collected["trailer_status"], 429)
+        frame = next(json.loads(line[6:]) for line in text.splitlines() if line.startswith("data: {") and '"error"' in line)
+        code, msg = _error_code_and_message(frame)
+        self.assertEqual(code, 429)
+        self.assertTrue(_should_resume(code, msg, resumes_left=1, idle_stalls=0))
+
+    async def test_request_trailer_stays_terminal(self):
+        text, collected = await self._run({"code": "invalid_argument", "message": "bad request"})
+        self.assertNotIn("trailer_status", collected)
+        self.assertNotIn('"code"', text)
+
+
 if __name__ == "__main__":
     unittest.main()

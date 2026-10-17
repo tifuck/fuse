@@ -26,7 +26,7 @@
 {% endif %}
 {% endmacro %}
 
-{% macro pool_share_dialog(ui) %}
+{% macro pool_share_dialog(ui, accounts) %}
 {% if ui.can_override %}
 <dialog class="modal share-modal" id="share-{{ ui.kind }}-dialog" aria-labelledby="share-{{ ui.kind }}-title">
   <div class="modal-shell">
@@ -65,6 +65,32 @@
           <span><b>Only your accounts</b><small>Requests never touch anyone else's plan. When yours are spent, they fail instead of falling back.</small></span>
         </label>
       </fieldset>
+      {% set choices = accounts|selectattr('id', 'in', ui.reachable)|list %}
+      {% if choices|length > 1 %}
+      <fieldset class="share-group">
+        <legend>Accounts your requests use</legend>
+        <input type="hidden" name="accounts_listed" value="{{ choices|map(attribute='id')|join(',') }}">
+        <label class="share-option">
+          <input type="radio" name="primary" value=""{% if not ui.primary %} checked{% endif %}>
+          <span><b>No first choice</b><small>{% if ui.n_mine %}Your own accounts first, then{% else %}Fuse picks{% endif %} the least used account.</small></span>
+        </label>
+        {% for a in choices %}
+        <div class="share-account{% if not a.mine %} is-other{% endif %}">
+          <label class="share-account-use" title="Unchecked: never used for your requests">
+            <input type="checkbox" name="account" value="{{ a.id }}"{% if a.id not in ui.skip %} checked{% endif %}>
+            <span class="share-account-name">{% if a.email %}{{ a.email }}{% else %}{{ a.label }}{% endif %}</span>
+            {% if a.mine %}<span class="badge">Yours</span>{% endif %}
+            {% if a.billing and a.billing.available %}<span class="share-account-pct">{{ a.billing.percent_label }}</span>{% endif %}
+          </label>
+          <label class="share-account-first" title="New conversations start on this account while it has room">
+            <input type="radio" name="primary" value="{{ a.id }}"{% if ui.primary == a.id %} checked{% endif %}>
+            <span>First</span>
+          </label>
+        </div>
+        {% endfor %}
+        <p class="share-note">Unchecked accounts are never used for your requests. When your first choice is busy, at its limit or failing, the request moves to the next account on its own; that conversation then stays there to keep its prompt cache.</p>
+      </fieldset>
+      {% endif %}
       <p class="share-note">{% if ui.n_mine %}You have {{ ui.n_mine }} {{ ui.label }} account{{ 's' if ui.n_mine != 1 else '' }} linked.{% else %}You have no {{ ui.label }} account linked; these choices apply once you add one.{% endif %}{% if ui.contributor %} You count as sharing, so accounts shared only with people who share are open to you too.{% endif %}</p>
       <div class="modal-actions">
         <button type="submit" class="btn">Save</button>
@@ -80,7 +106,7 @@
    requests are routed. Replaces the old subline + gauge state pair. #}
 {% macro pool_state(ok, reason, ui, locked, no_sub='No active plan') -%}
   {%- if ok -%}
-  <p class="pool-state is-ok"><b>{% if reason == 'open' %}Open to everyone{% elif reason == 'pool' %}Unlocked by your shared accounts{% else %}Unlocked{% endif %}</b><span>{% if ui.own_only %}your accounts only{% elif ui.n_mine %}yours first, then the pool{% else %}shared pool{% endif %}</span></p>
+  <p class="pool-state is-ok"><b>{% if reason == 'open' %}Open to everyone{% elif reason == 'pool' %}Unlocked by your shared accounts{% else %}Unlocked{% endif %}</b><span>{% if ui.own_only %}your accounts only{% elif ui.primary %}your first choice, then the pool{% elif ui.n_mine %}yours first, then the pool{% else %}shared pool{% endif %}</span></p>
   {%- elif reason == 'no_sub' -%}
   <p class="pool-state is-fault"><b>{{ no_sub }}</b><span>models locked</span></p>
   {%- elif reason == 'unauthed' -%}
@@ -246,11 +272,14 @@
     </thead>
     <tbody>
       {% for a in accounts %}
-      <tr class="{% if a.mine %}is-mine{% endif %}{% if a.held or not a.authed %} is-held{% endif %}{% if a.routable is defined and not a.routable %} is-unrouted{% endif %}" data-mine="{{ '1' if a.mine else '0' }}"{% if a.routable is defined and not a.routable %} title="Not used for your requests"{% endif %}>
+      {% set skipped = ui and a.id in ui.skip %}
+      {% set unrouted = skipped or (a.routable is defined and not a.routable) %}
+      <tr class="{% if a.mine %}is-mine{% endif %}{% if a.held or not a.authed %} is-held{% endif %}{% if unrouted %} is-unrouted{% endif %}" data-mine="{{ '1' if a.mine else '0' }}"{% if unrouted %} title="Not used for your requests"{% endif %}>
         <td class="source-account" title="{{ source_account_name(a) }}">
           <span class="source-account-line">
             <span class="source-account-name">{{ source_account_name(a) }}</span>
             {% if a.mine %}<span class="badge">Yours</span>{% endif %}
+            {% if ui and ui.primary == a.id %}<span class="badge on" title="New conversations start on this account">First</span>{% elif skipped %}<span class="badge off" title="You left it out of your rotation (Sharing)">Not used</span>{% endif %}
             {% if a.share == 'private' %}<span class="badge" title="Its owner keeps it private">Private</span>{% elif a.share == 'contributors' %}<span class="badge" title="Its owner shares it only with people who share an account here too">Sharers</span>{% endif %}
             {% if a.region == 'cn' %}<span class="badge">CN</span>{% endif %}
           </span>
@@ -881,11 +910,11 @@
   </div>
 </dialog>
 
-{{ pool_share_dialog(grok_ui) }}
-{{ pool_share_dialog(chatgpt_ui) }}
-{{ pool_share_dialog(zai_ui) }}
-{{ pool_share_dialog(devin_ui) }}
-{{ pool_share_dialog(kimi_ui) }}
-{{ pool_share_dialog(mimo_ui) }}
-{{ pool_share_dialog(claude_ui) }}
+{{ pool_share_dialog(grok_ui, accounts) }}
+{{ pool_share_dialog(chatgpt_ui, chatgpt_accounts) }}
+{{ pool_share_dialog(zai_ui, zai_accounts) }}
+{{ pool_share_dialog(devin_ui, devin_accounts) }}
+{{ pool_share_dialog(kimi_ui, kimi_accounts) }}
+{{ pool_share_dialog(mimo_ui, mimo_accounts) }}
+{{ pool_share_dialog(claude_ui, claude_accounts) }}
 {% endblock %}

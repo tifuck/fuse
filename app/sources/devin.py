@@ -547,7 +547,7 @@ class DevinSource:
         self.cfg = cfg
         self.creds = list(creds)
 
-    def _pick(self, exclude: set[int] | None = None, prefer_id: int | None = None, owner_id: int | None = None, hint_id: int | None = None):
+    def _pick(self, exclude: set[int] | None = None, prefer_id: int | None = None, owner_id: int | None = None, hint_id: int | None = None, primary_id: int | None = None):
         now = datetime.now(timezone.utc)
         return pick_account(
             self.creds,
@@ -558,6 +558,7 @@ class DevinSource:
             prefer_id=prefer_id,
             owner_id=owner_id,
             hint_id=hint_id,
+            primary_id=primary_id,
         )
 
     async def models(self) -> list[str]:
@@ -612,9 +613,10 @@ class DevinSource:
             )
         prefer_id = lookup("devin", session_id)
         hint_id = lookup("devin", affinity_id) if prefer_id is None and affinity_id else None
+        primary_id = pool_policy.primary_account(user_id, "devin")
         failover = Failover()
         while True:
-            picked = self._pick(exclude=tried, prefer_id=prefer_id, owner_id=user_id, hint_id=hint_id)
+            picked = self._pick(exclude=tried, prefer_id=prefer_id, owner_id=user_id, hint_id=hint_id, primary_id=primary_id)
             if not picked:
                 # Parity with grok/chatgpt/kimi/zai/mimo: the final failed
                 # attempt is reported once via the returned result; drop the
@@ -788,10 +790,11 @@ class DevinSource:
                     # window; cool it well past the generic failure blip so
                     # the pool stops hammering it turn after turn.
                     quota_hit = "quota" in str((collected or {}).get("trailer_error") or "").lower()
+                    limited = (collected or {}).get("trailer_status") == 429
                     note_failure(
                         cid,
-                        cooldown_seconds=900 if quota_hit else 5,
-                        affinity_safe=not quota_hit,
+                        cooldown_seconds=900 if quota_hit else 60 if limited else 5,
+                        affinity_safe=not (quota_hit or limited),
                     )
 
         wrapped = UsageStream(_bind_on_finish(), collected, on_close=lambda: release(cid), hints=hints)

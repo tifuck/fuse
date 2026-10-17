@@ -1233,4 +1233,18 @@ document.querySelectorAll(".probe").forEach((btn) => {
     });
     sync();
   });
+
+  // A first choice is always in the rotation; leaving it out clears it.
+  document.querySelectorAll("[data-share-form] .share-account").forEach((row) => {
+    const use = row.querySelector('input[name="account"]');
+    const first = row.querySelector('input[name="primary"]');
+    const none = row.closest("form")?.querySelector('input[name="primary"][value=""]');
+    if (!use || !first || !none) return;
+    first.addEventListener("change", () => {
+      if (first.checked) use.checked = true;
+    });
+    use.addEventListener("change", () => {
+      if (!use.checked && first.checked) none.checked = true;
+    });
+  });
 })();

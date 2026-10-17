@@ -308,6 +308,24 @@ class PoolSessionTest(unittest.TestCase):
         self.assertEqual(picked["id"], 211)
 
     @patch("app.sources.pool_pick.accounts.cred_extra", side_effect=lambda c: c.get("_extra") or {})
+    def test_first_choice_beats_own_but_not_health_or_a_warm_pin(self, _extra):
+        mine = _cred(231, pct=10.0, donor=7)
+        theirs = _cred(232, pct=50.0, donor=8)
+        busy = _cred(233, pct=USAGE_BUSY, donor=9)
+        picked, _ = pick_account([mine, theirs], kind="grok", owner_id=7, primary_id=232)
+        self.assertEqual(picked["id"], 232)
+        # A busy, failed or missing first choice falls back to the usual order.
+        picked, _ = pick_account([mine, busy], kind="grok", owner_id=7, primary_id=233)
+        self.assertEqual(picked["id"], 231)
+        picked, _ = pick_account([mine, theirs], kind="grok", owner_id=7, primary_id=232, exclude={232})
+        self.assertEqual(picked["id"], 231)
+        picked, _ = pick_account([mine], kind="grok", owner_id=7, primary_id=232)
+        self.assertEqual(picked["id"], 231)
+        # A conversation already warm elsewhere stays there.
+        picked, _ = pick_account([mine, theirs], kind="grok", owner_id=7, primary_id=232, prefer_id=231)
+        self.assertEqual(picked["id"], 231)
+
+    @patch("app.sources.pool_pick.accounts.cred_extra", side_effect=lambda c: c.get("_extra") or {})
     def test_warm_pin_beats_own_first(self, _extra):
         mine = _cred(221, pct=40.0, donor=7)
         theirs = _cred(222, pct=10.0, donor=8)

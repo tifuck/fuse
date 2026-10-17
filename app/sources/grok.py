@@ -500,7 +500,7 @@ class GrokSource:
     def _headers(self, token: str, model: str, conv_id: str | None = None) -> dict:
         return _auth_headers(token, model, conv_id)
 
-    def _pick(self, exclude: set[int] | None = None, prefer_id: int | None = None, owner_id: int | None = None, hint_id: int | None = None):
+    def _pick(self, exclude: set[int] | None = None, prefer_id: int | None = None, owner_id: int | None = None, hint_id: int | None = None, primary_id: int | None = None):
         now = datetime.now(timezone.utc)
         return pick_account(
             self.creds,
@@ -512,6 +512,7 @@ class GrokSource:
             prefer_id=prefer_id,
             owner_id=owner_id,
             hint_id=hint_id,
+            primary_id=primary_id,
         )
 
     async def models(self) -> list[str]:
@@ -542,9 +543,10 @@ class GrokSource:
         payload = drop_cache_routing_fields(body)
         prefer_id = lookup("grok", session_id)
         hint_id = lookup("grok", affinity_id) if prefer_id is None and affinity_id else None
+        primary_id = pool_policy.primary_account(user_id, "grok")
         failover = Failover()
         while True:
-            picked = self._pick(exclude=tried, prefer_id=prefer_id, owner_id=user_id, hint_id=hint_id)
+            picked = self._pick(exclude=tried, prefer_id=prefer_id, owner_id=user_id, hint_id=hint_id, primary_id=primary_id)
             if not picked:
                 if attempts and last.credential_id == attempts[-1].get("credential_id"):
                     attempts.pop()

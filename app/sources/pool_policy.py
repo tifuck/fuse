@@ -22,6 +22,13 @@ has sharing on:
     when theirs are busy, at capacity, cooling down, or out of plan.
   - "mine": only their own accounts.
 
+Two more per user and pool pick accounts within what share/use allow:
+
+* skip: account ids the user left out of their rotation. They are never
+  used for that user's requests (their own accounts included).
+* primary: the account new conversations start on while it is healthy,
+  ahead of the user's own accounts.
+
 Before share/use existed the only setting was own_only, a two-way opt-out.
 A row without share/use still reads that way, and every write keeps an
 own_only mirror that is at least as private as the new settings, so code
@@ -260,6 +267,61 @@ def set_user_pref(user_id: int, kind: str, *, share: str | None = None, use: str
     return pref
 
 
+_NO_CHOICE = {"skip": frozenset(), "primary": None}
+# Bounds what one form post can store in users.pool_prefs.
+MAX_SKIP = 200
+
+
+def _parse_choice(item) -> dict:
+    item = item if isinstance(item, dict) else {}
+    skip = set()
+    raw = item.get("skip")
+    for val in raw if isinstance(raw, list) else []:
+        try:
+            skip.add(int(val))
+        except (TypeError, ValueError):
+            continue
+    try:
+        primary = int(item["primary"]) if item.get("primary") is not None else None
+    except (TypeError, ValueError):
+        primary = None
+    return {"skip": frozenset(skip), "primary": None if primary in skip else primary}
+
+
+def account_choice(user_id: int | None, kind: str) -> dict:
+    """The accounts this user left out and the one they start on.
+
+    Like share/use, it applies only while the admin shares the pool.
+    """
+    if user_id is None or kind not in POOL_KIND_SET or not admin_policy(kind)["pool_shared"]:
+        return dict(_NO_CHOICE)
+    return _parse_choice(user_prefs(int(user_id)).get(kind))
+
+
+def primary_account(user_id: int | None, kind: str) -> int | None:
+    return account_choice(user_id, kind)["primary"]
+
+
+def set_account_choice(user_id: int, kind: str, *, skip, primary: int | None) -> dict:
+    if kind not in POOL_KIND_SET:
+        raise ValueError(f"unknown pool kind {kind!r}")
+    skip = sorted({int(v) for v in skip})
+    if len(skip) > MAX_SKIP:
+        raise ValueError("too many accounts")
+    primary = int(primary) if primary is not None and int(primary) not in skip else None
+    uid = int(user_id)
+    with db.tx() as conn:
+        row = conn.execute("SELECT pool_prefs FROM users WHERE id=? FOR UPDATE", (uid,)).fetchone()
+        prefs = _parse_prefs(row["pool_prefs"] if row else None)
+        old = prefs.get(kind)
+        item = dict(old) if isinstance(old, dict) else {}
+        item["skip"] = skip
+        item["primary"] = primary
+        prefs[kind] = item
+        conn.execute("UPDATE users SET pool_prefs=? WHERE id=?", (json.dumps(prefs), uid))
+    return {"skip": frozenset(skip), "primary": primary}
+
+
 def uses_shared_pool(user_id: int | None, kind: str) -> bool:
     """Whether this user's requests may fall back onto other users' accounts."""
     if user_id is None:
@@ -389,7 +451,7 @@ def share_level(kind: str, donor_id: int | None) -> str:
     return _share_levels(kind).get(int(donor_id), "everyone")
 
 
-def filter_credentials(rows, kind: str, user_id: int | None):
+def filter_credentials(rows, kind: str, user_id: int | None, *, chosen: bool = True):
     """Keep only the donated accounts this user may be routed onto.
 
     The caller's own accounts always stay. Everyone else's stay only when
@@ -397,7 +459,17 @@ def filter_credentials(rows, kind: str, user_id: int | None):
     caller: "everyone" admits any caller, "contributors" admits a caller who
     shares a live account here too, and "private" admits nobody. A caller
     with no user (system work) reaches only accounts shared with everyone.
+    With chosen, the accounts the caller left out of their rotation go too.
     """
+    out = _reachable(rows, kind, user_id)
+    if chosen and user_id is not None:
+        skip = account_choice(user_id, kind)["skip"]
+        if skip:
+            out = [row for row in out if int(row["id"]) not in skip]
+    return out
+
+
+def _reachable(rows, kind: str, user_id: int | None):
     rows = list(rows)
     uid = int(user_id) if user_id is not None else None
     if uid is not None and not uses_shared_pool(uid, kind):

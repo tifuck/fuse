@@ -214,6 +214,27 @@ class PoolPolicyTest(unittest.TestCase):
         self.assertEqual(pool_policy.share_level("grok", self.donor["id"]), "private")
         self.assertNotIn(donor_acct, self._visible(self.alice["id"]))
 
+    def test_accounts_left_out_leave_only_that_users_rotation(self):
+        mine = self._add("grok", self.alice["id"], GROK_EXTRA)
+        other = self._add("grok", self.donor["id"], GROK_EXTRA)
+        pool_policy.set_account_choice(self.alice["id"], "grok", skip=[mine], primary=other)
+        self.assertEqual(self._visible(self.alice["id"]), {other})
+        reachable = pool_policy.filter_credentials(self._grok_rows(), "grok", self.alice["id"], chosen=False)
+        self.assertEqual({r["id"] for r in reachable}, {mine, other})
+        self.assertEqual(self._visible(self.bob["id"]), {mine, other})
+        self.assertEqual(pool_policy.primary_account(self.alice["id"], "grok"), other)
+        self.assertIsNone(pool_policy.primary_account(None, "grok"))
+        # Share/use writes keep the choice, and the choice keeps share/use.
+        pool_policy.set_user_pref(self.alice["id"], "grok", share="contributors")
+        self.assertEqual(pool_policy.account_choice(self.alice["id"], "grok")["skip"], {mine})
+        self.assertEqual(pool_policy.user_pref(self.alice["id"], "grok")["share"], "contributors")
+        # A left-out account is never the first choice.
+        saved = pool_policy.set_account_choice(self.alice["id"], "grok", skip=[other], primary=other)
+        self.assertIsNone(saved["primary"])
+        # Like share/use, the choice applies only while the admin shares the pool.
+        pool_policy.set_admin_policy("grok", pool_shared=False, open_access=False)
+        self.assertEqual(self._visible(self.alice["id"]), {mine})
+
     def test_legacy_own_only_reads_as_private_and_writes_keep_a_mirror(self):
         import json
 
@@ -361,6 +382,31 @@ class PoolChatOwnFirstTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, 200)
         self.assertEqual(result.credential_id, self.other)
         self.assertEqual(chat.call_count, 2)
+
+    @patch("app.sources.grok.note_pool_invoke")
+    @patch("app.sources.grok.openai_chat", new_callable=AsyncMock)
+    @patch("app.sources.grok.refresh_pool_billing", new_callable=AsyncMock)
+    @patch("app.sources.grok.refresh_due", new_callable=AsyncMock)
+    async def test_first_choice_on_someone_elses_account_fails_over_quietly(self, _due, _bill, chat, _invoke):
+        chat.return_value = self._reply(200)
+        pool_policy.set_account_choice(self.alice["id"], "grok", skip=[], primary=self.other)
+        result = await self.src.chat(self.body, user_id=self.alice["id"])
+        self.assertEqual(result.credential_id, self.other)
+        # The first choice is full: the same request moves on, no error.
+        chat.side_effect = [self._reply(429), self._reply(200)]
+        result = await self.src.chat(self.body, user_id=self.alice["id"])
+        self.assertEqual(result.status, 200)
+        self.assertEqual(result.credential_id, self.mine)
+        # An own account left out is never used, even as the last resort.
+        reset_health()
+        pool_policy.set_account_choice(self.alice["id"], "grok", skip=[self.mine], primary=None)
+        chat.reset_mock()
+        chat.side_effect = None
+        chat.return_value = self._reply(429)
+        result = await self.src.chat(self.body, user_id=self.alice["id"])
+        self.assertEqual(result.status, 429)
+        self.assertEqual(result.credential_id, self.other)
+        self.assertEqual(chat.call_count, 1)
 
     @patch("app.sources.grok.note_pool_invoke")
     @patch("app.sources.grok.openai_chat", new_callable=AsyncMock)
@@ -652,6 +698,45 @@ class PoolPolicyHttpTest(unittest.TestCase):
         self.assertIn(">Private<", page.text)
         self.assertIn("is-unrouted", page.text)
         self.assertIn("2 plans", page.text)
+
+    def test_user_picks_accounts_and_a_first_choice(self):
+        grok_sid = grok_mod.ensure_grok_source()
+        donor = accounts.create_user("donor-pick@test.invalid", "password12", admin=False)
+        extra = dict(GROK_EXTRA, billing=dict(GROK_EXTRA["billing"], credit_usage_percent=10))
+        theirs = accounts.add_credential(grok_sid, "theirs", "g1", extra=extra, donated_by=donor["id"])
+        mine = accounts.add_credential(grok_sid, "mine", "g2", extra=extra, donated_by=self.user["id"])
+        self._login("user@test.invalid")
+        page = self.client.get("/sources")
+        self.assertRegex(page.text, rf'id="share-grok-dialog"[\s\S]*name="accounts_listed" value="{mine},{theirs}"')
+        csrf = self._csrf(page.text)
+
+        def post(checked, primary=""):
+            return self.client.post(
+                "/sources/pool/grok/prefs",
+                data={
+                    "csrf_token": csrf, "share": "everyone", "use": "pool",
+                    "accounts_listed": f"{mine},{theirs}", "account": [str(i) for i in checked], "primary": primary,
+                },
+                follow_redirects=False,
+            )
+
+        self.assertEqual(post([mine, theirs], str(theirs)).status_code, 303)
+        self.assertEqual(pool_policy.account_choice(self.user["id"], "grok"), {"skip": set(), "primary": theirs})
+        page = self.client.get("/sources")
+        self.assertIn("your first choice, then the pool", page.text)
+        self.assertIn(">First<", page.text)
+
+        # Leaving their own account out keeps it out of their rotation only.
+        post([theirs], str(theirs))
+        self.assertEqual(pool_policy.account_choice(self.user["id"], "grok")["skip"], {mine})
+        self.assertIn(">Not used<", self.client.get("/sources").text)
+        # A first choice that is unchecked is dropped, not saved.
+        post([mine], str(theirs))
+        self.assertEqual(pool_policy.account_choice(self.user["id"], "grok"), {"skip": {theirs}, "primary": None})
+        # Leaving every account out would 503 every request: refused.
+        post([])
+        self.assertEqual(pool_policy.account_choice(self.user["id"], "grok")["skip"], {theirs})
+        self.assertIn("keep at least one account in your rotation", self.client.get("/sources").text)
 
     def test_sources_tables_split_openai_and_sort_mine_first(self):
         grok_sid = grok_mod.ensure_grok_source()
