@@ -342,6 +342,35 @@ def prune_events():
     # Floors moved: the cached committed cursors can no longer validate a
     # replay cursor without a fresh read.
     invalidate_committed_cursors()
+    prune_command_receipts()
+
+
+# Command receipts dedupe a retried command (a lost ACK, a queued turn a client
+# resends on reconnect), so they must outlive any realistic retry, but they
+# grew without bound. The table has no timestamp: the rowid it had reached is
+# recorded, and one retention period later every row at or below it goes, so
+# no receipt younger than COMMAND_RECEIPT_DAYS is ever dropped.
+COMMAND_RECEIPT_DAYS = 30
+_RECEIPT_MARK = "chat_commands_prune_mark"
+
+
+def prune_command_receipts(now: datetime | None = None) -> int:
+    now = now or datetime.now(timezone.utc)
+    cutoff = (now - timedelta(days=COMMAND_RECEIPT_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    with transaction() as conn:
+        row = conn.execute("SELECT value FROM schema_meta WHERE key=?", (_RECEIPT_MARK,)).fetchone()
+        mark = json.loads(row["value"]) if row else None
+        if mark and mark["at"] > cutoff:
+            return 0
+        deleted = 0
+        if mark:
+            deleted = conn.execute("DELETE FROM chat_commands WHERE rowid<=?", (int(mark["rowid"]),)).rowcount
+        hi = conn.execute("SELECT MAX(rowid) AS hi FROM chat_commands").fetchone()["hi"]
+        conn.execute(
+            "INSERT INTO schema_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (_RECEIPT_MARK, dumps({"at": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "rowid": int(hi or 0)})),
+        )
+    return int(deleted or 0)
 
 
 def thread_event(conn, user_id, thread_id, transcript_changed=False):

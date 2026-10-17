@@ -1080,6 +1080,40 @@ class SidebarPinsUnreadTest(unittest.TestCase):
         self.assertFalse(chats.mark_thread_read(1, thread["id"]))
 
 
+class CommandReceiptPruneTest(unittest.TestCase):
+    """Command receipts age out, but never one younger than the retention."""
+
+    def setUp(self):
+        fixture = isolated_database()
+        fixture.__enter__()
+        self.addCleanup(fixture.__exit__, None, None, None)
+        db.execute("INSERT INTO users(id,email,password_hash,created_at) VALUES(1,'1@test.invalid','unused',?)",
+                   (db.now(),))
+
+    def receipt(self, ident):
+        with store.transaction() as conn:
+            chat_tx.remember(conn, 1, ident, "fp", {"ok": True})
+
+    def ids(self):
+        return {row["command_id"] for row in db.fetchall("SELECT command_id FROM chat_commands")}
+
+    def test_receipts_go_one_retention_period_after_the_mark(self):
+        from datetime import datetime, timedelta, timezone
+
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        self.receipt("old")
+        self.assertEqual(chat_tx.prune_command_receipts(start), 0)  # the first pass only marks
+        self.receipt("new")
+        due = start + timedelta(days=chat_tx.COMMAND_RECEIPT_DAYS)
+        self.assertEqual(chat_tx.prune_command_receipts(due - timedelta(seconds=1)), 0)
+        self.assertEqual(self.ids(), {"old", "new"})
+        self.assertEqual(chat_tx.prune_command_receipts(due), 1)
+        self.assertEqual(self.ids(), {"new"})
+        # "new" is below the fresh mark: it goes one period later, not sooner.
+        self.assertEqual(chat_tx.prune_command_receipts(due + timedelta(days=1)), 0)
+        self.assertEqual(self.ids(), {"new"})
+
+
 class RecordUsageWeekRolloverTest(unittest.TestCase):
     """db.record_usage weekly counters roll over atomically."""
 
