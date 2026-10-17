@@ -120,6 +120,31 @@ def handoff_display_cut(transcript: list) -> int | None:
     return cut
 
 
+def _has_handoff(msg: dict) -> bool:
+    return msg.get("role") == "assistant" and any(
+        isinstance(part, dict) and part.get("type") == "marker" and part.get("kind") == "compaction" and part.get("summary")
+        for part in msg.get("segments") or [])
+
+
+def compaction_cut(messages: list, state: dict) -> dict | None:
+    """Where the compacted view starts in the durable transcript, or None.
+
+    Rows before the latest handoff's boundary are no longer sent to the model.
+    A turn that compacted mid-reply opens with its own handoff marker
+    (Output.fold_handoff), so the view starts at that reply; otherwise it
+    starts after the boundary under a banner carrying the summary.
+    """
+    checkpoint = (state.get("checkpoints") or [{}])[-1]
+    boundary = checkpoint.get("display_through_id" if checkpoint.get("provider") else "through_message_id")
+    index = next((i for i, msg in enumerate(messages) if boundary and msg.get("id") == boundary), None)
+    if index is None:
+        return None
+    include = bool(checkpoint.get("provider")) and _has_handoff(messages[index])
+    start = index if include else index + 1
+    opens = start < len(messages) and _has_handoff(messages[start])
+    return {"id": boundary, "include": include, "summary": "" if opens else str(checkpoint.get("summary") or "")}
+
+
 def child_display_messages(run: dict, *, include_current: bool = False) -> list[dict]:
     """UI history for a child run from provider_messages (user/assistant + tools).
 
@@ -269,7 +294,9 @@ def _child_display(run: dict, *, include_current: bool = False) -> tuple[list[di
             continue
         if role != "user":
             continue
-        text = _provider_text(item.get("content"))
+        from .chat_generation.messages import SESSION_TAIL_MARK
+
+        text = _provider_text(item.get("content")).split(SESSION_TAIL_MARK, 1)[0]
         if not text.strip():
             continue
         from . import context_compact as ctxmod, context_meter
@@ -851,13 +878,14 @@ def thread_view(conn, user_id, thread_id, *, queued=(), stamps=None):
         result["messages"] = _project_thread_messages(result["messages"], projected, run.get("request") or {})
         result["run"] = {**run, "message": projected[run["message_id"]]}
         from . import context_compact as ctxmod, context_meter
-        snap = ctxmod.parse_state(row["compaction"]).get("meter") or {}
+        state = ctxmod.parse_state(row["compaction"])
+        snap = state.get("meter") or {}
         if snap.get("scope") == "prompt" and snap.get("run_id") == run["id"] and snap.get("model") == result["model"]:
             result["compaction"]["meter"] = snap
-        shown = child_display_messages(run, include_current=False)
-        if any(item.get("compaction") for item in shown):
-            result["context_messages"] = shown
-            result["context_live"] = True
+        # A handoff this run just made is not in the replay until it finalizes.
+        latest = (state.get("checkpoints") or [{}])[-1]
+        if not result.get("context_cut") and latest.get("display_through_id") == run["message_id"]:
+            result["context_cut"] = compaction_cut(result["messages"], state)
     result["messages"] = settle_spawn_traces(conn, user_id, result["messages"])
     result["messages"] = settle_command_traces(conn, user_id, thread_id, result["messages"])
     # Lets reconnecting senders retire locally queued items after a lost HTTP

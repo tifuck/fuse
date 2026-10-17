@@ -256,13 +256,8 @@ def _view(row, *, include_messages: bool = False, coding: bool = False, conn=Non
         replay, history_info = chat_history.build(conn if conn is not None else db.connect(), row["user_id"], row["id"], data["messages"], state,
             retained=row["retained_history"] if "retained_history" in keys else "{}", model=model)
         if any(isinstance(msg, dict) and ctxmod.is_compact_preamble(str(msg.get("content") or "")) for msg in replay):
-            from . import chat_store as store
-            data["context_messages"] = store.child_display_messages({
-                "provider_messages": replay,
-                "request": {},
-                "message": {},
-                "status": "completed",
-            })
+            from .chat_views import compaction_cut
+            data["context_cut"] = compaction_cut(data["messages"], state)
         rebuilt = context_meter.standing_meter(
             chat_history.for_model(replay, model),
             model=model,

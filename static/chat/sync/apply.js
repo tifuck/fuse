@@ -147,8 +147,7 @@ export function createApply(ctx) {
     const same = S.messages.length <= data.messages.length && S.log.children.length === S.messages.length &&
       S.messages.every((msg, i) => msg.id === data.messages[i].id && S.log.children[i].dataset.messageId === msg.id);
     const oldLength = S.messages.length;
-    S.contextMessages = Array.isArray(data.context_messages) ? data.context_messages.map((msg) => ({ ...msg, noActions: true })) : [];
-    S.contextLive = Boolean(data.context_live);
+    S.contextCut = data.context_cut || null;
     S.threadRecaps = transcript.visibleRecaps(data);
     S.messages = data.messages.map((msg) => {
       const prior = old.get(msg.id);

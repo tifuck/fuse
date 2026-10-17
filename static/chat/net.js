@@ -31,7 +31,6 @@ function unpackSegments(list) {
 function unpackThread(data) {
   if (data && data.segments_packed) {
     unpackSegments(data.messages);
-    unpackSegments(data.context_messages);
     delete data.segments_packed;
   }
   return data;

@@ -292,8 +292,7 @@ export function createThreads(ctx) {
       S.modelId = listed;
       picker.renderPickerButton();
     }
-    S.contextMessages = Array.isArray(data.context_messages) ? data.context_messages.map((msg) => ({ ...msg, noActions: true })) : [];
-    S.contextLive = Boolean(data.context_live);
+    S.contextCut = data.context_cut || null;
     S.threadRecaps = transcript.visibleRecaps(data);
     S.messages = (data.messages || []).map(openedMessage);
     S.serverRevision = data.revision;

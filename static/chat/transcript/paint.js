@@ -143,12 +143,12 @@ export function createPaint(ctx) {
     } else follow.restoreThreadViewport(viewport);
   }
 
-    function renderTranscriptMessage(msg, index, live) {
+    function renderTranscriptMessage(msg, index, live, older) {
     // Keep stable, indexed shells so editing/rewinding and run updates still
     // address the complete server-owned transcript. Expensive markdown, tool
     // trees and syntax highlighting for old answers are created on demand.
     if (msg.role === "marker" || msg.kind === "compaction" || msg.compaction) return agents.agentSeedArticle(msg, index);
-    if (historyObserver && msg.role === "assistant" && !live && index < viewMessages().length - 8 &&
+    if (historyObserver && msg.role === "assistant" && !live && older &&
         (msg.content || msg.reasoning || msg.tools?.length || msg.permissions?.length || ui.visibleAssistantError(msg))) {
       const shell = document.createElement("article");
       shell.className = "chat-turn is-assistant chat-deferred-message";
@@ -166,12 +166,15 @@ export function createPaint(ctx) {
     return msg.role === "user" ? ui.renderUser(msg, index, live) : ui.renderAssistant(msg, live);
   }
 
-    function viewMessages() {
-    if (S.editingIndex >= 0 || !S.contextMessages.length) return S.messages;
-    if (traces.runIsActive(S.activeRun) && !S.contextLive) return S.messages;
-    const live = S.messages.find((msg) => msg.role === "assistant" && messageRunLive(msg));
-    if (!live || S.contextMessages.some((msg) => msg.id === live.id)) return S.contextMessages;
-    return S.contextMessages.concat([live]);
+    // A compacted thread shows the session the model still has: the rows from
+  // the latest handoff on, under its summary unless a reply there carries it.
+  function viewMessages() {
+    const cut = S.contextCut;
+    if (S.editingIndex >= 0 || !cut) return S.messages;
+    const at = S.messages.findIndex((msg) => msg.id === cut.id);
+    if (at < 0) return S.messages;
+    const rows = S.messages.slice(cut.include ? at : at + 1);
+    return cut.summary ? [{ id: "compaction:" + cut.id, role: "marker", compaction: true, summary: cut.summary }, ...rows] : rows;
   }
 
     function visibleRecaps(data) {
@@ -221,15 +224,19 @@ export function createPaint(ctx) {
     const existing = new Map(S.log._threadId === S.currentId ? [...S.log.children].map(el => [el.dataset.messageId, el]) : []);
     const keep = new Set();
     let cursor = S.log.firstElementChild;
-    viewMessages().forEach((msg, index) => {
+    const shown = viewMessages();
+    shown.forEach((msg, shownIndex) => {
+      // Actions and edits address S.messages, which a compacted view starts partway into.
+      const index = S.messages.indexOf(msg);
       const live = msg.role === "assistant" && messageRunLive(msg);
-      const signature = msg.role === "user" ? JSON.stringify([index, "console", live, S.editingIndex === index, msg.content, msg.attachments, msg.auto, msg.autoSteps, msg.noActions]) : "";
+      const signature = msg.role === "user" ? JSON.stringify([index, "console", live, S.editingIndex === index, msg.content, msg.attachments, msg.auto, msg.autoSteps, msg.noActions])
+        : msg.role === "marker" ? msg.summary : "";
       let article = existing.get(msg.id);
-      const reusable = article && article.classList.contains(msg.role === "assistant" ? "is-assistant" : "is-user") &&
+      const reusable = article && article.classList.contains(msg.role === "assistant" ? "is-assistant" : msg.role === "marker" ? "is-marker" : "is-user") &&
         (msg.role === "assistant" || article._userSignature === signature) && !(live && article.hasAttribute("data-deferred-message"));
       if (!reusable) {
         const old = article;
-        article = renderTranscriptMessage(msg, index, live);
+        article = renderTranscriptMessage(msg, index, live, shownIndex < shown.length - 8);
         if (!old && !cursor && msg.role === "assistant" && S.log._threadId === S.currentId && S.log.childElementCount) markArriving(article);
         if (old) { ui.disposeThinking(old); historyObserver?.unobserve(old); old.replaceWith(article); if (cursor === old) cursor = article; }
       } else if (msg.role === "assistant") {

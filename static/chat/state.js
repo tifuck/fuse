@@ -143,8 +143,7 @@ function initState() {
   S.threadRecaps = [];
   S.dismissedRecapAnchors = new Map();
   S.recapsEnabled = S.config.context?.recaps !== false;
-  S.contextMessages = [];
-  S.contextLive = false;
+  S.contextCut = null;
   S.undoStack = [];
   S.redoStack = [];
   S.composerVersion = 0;

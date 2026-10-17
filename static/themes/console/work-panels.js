@@ -82,9 +82,9 @@ function compactionMarkHtml(text, summary) {
     const handoff = String(summary || "").trim();
     if (title === "Context compacted" && handoff) {
       return (
-        `<details class="chat-compact-banner" data-compaction>` +
+        `<details class="chat-compact-banner" data-compaction open>` +
         `<summary><strong>Compaction</strong><span>Handoff sent to the model</span></summary>` +
-        `<div class="chat-compact-handoff">${deps.renderMarkdown(handoff, false, [])}</div>` +
+        `<div class="chat-compact-handoff chat-md">${deps.renderMarkdown(handoff, false, [])}</div>` +
         `</details>`
       );
     }

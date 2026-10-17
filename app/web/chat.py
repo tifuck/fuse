@@ -501,8 +501,6 @@ async def chat_thread_get(request: Request, thread_id: str):
     public = _chat_public_thread(thread)
     if request.query_params.get("pack") == "1":
         public["messages"] = await asyncio.to_thread(chats.pack_segment_text, public.get("messages"))
-        if isinstance(public.get("context_messages"), list):
-            public["context_messages"] = await asyncio.to_thread(chats.pack_segment_text, public["context_messages"])
         public["segments_packed"] = True
     if request.query_params.get("stream") != "1":
         return JSONResponse(public, headers={"Cache-Control": "no-store"})
@@ -527,8 +525,6 @@ def _thread_stream(public):
     if len(messages) <= THREAD_TAIL:
         return Response(_json_line(public), media_type="application/x-ndjson", headers=headers)
     head = {**public, "messages": messages[-THREAD_TAIL:], "partial": True, "message_count": len(messages)}
-    if isinstance(public.get("context_messages"), list):
-        head["context_messages"] = public["context_messages"][-THREAD_TAIL:]
 
     async def body():
         yield _json_line(head)

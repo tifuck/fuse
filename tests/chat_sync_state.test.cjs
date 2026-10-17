@@ -39,7 +39,7 @@ function baseState(overrides = {}) {
   Object.assign(S, {
     currentId: 't', generation: 1, navigation: 0, editingIndex: -1, editingFiles: [], transcriptDirty: false, dirty: false,
     streaming: false, sending: false, loading: false, stoppingRunId: '', serverRevision: 3, viewCursor: 0, threadWatermark: 0,
-    cursor: 0, replayedThrough: 0, gapReplayFrom: 0, activeRun: null, messages: [], contextMessages: [], contextLive: false,
+    cursor: 0, replayedThrough: 0, gapReplayFrom: 0, activeRun: null, messages: [], contextCut: null,
     completedJobs: new Map(), agentLifecycle: new Map(), agentLifecycleEpoch: 0, modelsById: new Map(), modelId: 'offline',
     pendingTurns: new Map(), queuedTurns: [], acceptedQueueCommands: new Set(), sendNowRuns: new Set(),
     locallyStoppedRuns: new Set(), queueEl: null, queueListEl: null, historyQuery: '', searchThreads: [],
@@ -110,9 +110,30 @@ test('a snapshot that switches to the compacted view repaints instead of patchin
 
   baseState({ messages: messages() });
   calls = {};
-  makeApply(calls).acceptThread(snapshot({ context_messages: [{ id: 'c', role: 'marker', kind: 'compaction', summary: 'Earlier work' }, { id: 'a', role: 'assistant', content: 'Done' }] }));
+  makeApply(calls).acceptThread(snapshot({ context_cut: { id: 'u', include: false, summary: 'Earlier work' } }));
   assert.equal(calls.paint, 1, 'the compacted view replaces the full transcript');
   assert.equal(calls.update, undefined);
+});
+
+test('the compacted view is the stored rows after the cut, under the summary', () => {
+  const traces = stub({ runIsActive });
+  const { viewMessages } = createPaint({ traces });
+  const rows = [{ id: 'u1', role: 'user', content: 'old' }, { id: 'a1', role: 'assistant', content: 'old reply' },
+    { id: 'u2', role: 'user', content: 'Hi' }, { id: 'a2', role: 'assistant', content: 'Hello' }];
+  baseState({ messages: rows, contextCut: { id: 'a1', include: false, summary: 'Earlier work' } });
+  const shown = viewMessages();
+  assert.deepEqual(shown.map(msg => msg.id), ['compaction:a1', 'u2', 'a2']);
+  assert.equal(shown[0].summary, 'Earlier work');
+  assert.equal(shown[1], rows[2], 'rows are the transcript objects, so actions keep their S.messages index');
+
+  // A reply that compacted mid-turn carries its own handoff marker.
+  S.contextCut = { id: 'a1', include: true, summary: '' };
+  assert.deepEqual(viewMessages().map(msg => msg.id), ['a1', 'u2', 'a2']);
+  S.editingIndex = 0;
+  assert.equal(viewMessages(), rows, 'editing shows the whole transcript');
+  S.editingIndex = -1;
+  S.contextCut = { id: 'gone', include: false, summary: 'x' };
+  assert.equal(viewMessages(), rows, 'an unknown boundary falls back to the whole transcript');
 });
 
 function makeStream(calls, apply = {}) {

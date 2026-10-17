@@ -955,8 +955,7 @@ import { createBoot } from './chat/boot.js';
     S.serverRevision = 0;
     S.viewCursor = 0;
     S.threadWatermark = 0;
-    S.contextMessages = [];
-    S.contextLive = false;
+    S.contextCut = null;
     // The queue belongs to the thread it was typed in (persisted under that
     // thread's key); never let it drain into the next chat.
     S.acceptedQueueCommands = new Set();
