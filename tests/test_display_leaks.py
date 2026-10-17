@@ -227,8 +227,21 @@ def test_views_never_show_server_added_text():
     parent = store.start_turn(1, thread_id, "eight", thread["revision"], "cmd-eight")["run"]
     child = store.start_child_run(user_id=1, thread_id=thread_id, parent_run_id=parent["id"],
                                   prompt="inspect src", description="explore")
-    run_worker(store.get_run(1, child["id"]))
-    assert SERVER_ONLY["session tail"] in json.dumps(provider_rows(child["id"]), ensure_ascii=False)
-    found += problems(store.get_run_snapshot(1, child["id"])["display_messages"], "subagent panel")
+    # The parent sends the running child a follow-up; the panel shows it while
+    # queued and after the child received it inside its envelope.
+    pending = []
+
+    def follow_up(n, _payload):
+        if n == 1:
+            assert store.queue_followup(child["id"], "also check the tests")
+            pending.append(store.get_run_snapshot(1, child["id"])["display_messages"])
+    run_worker(store.get_run(1, child["id"]), follow_up)
+    child_rows = json.dumps(provider_rows(child["id"]), ensure_ascii=False)
+    assert SERVER_ONLY["session tail"] in child_rows and "(followup:" in child_rows
+    assert any(row.get("pending") for row in pending[0]), pending[0]
+    found += problems(pending[0], "subagent panel, follow-up queued")
+    panel = store.get_run_snapshot(1, child["id"])["display_messages"]
+    found += problems(panel, "subagent panel")
+    assert [row["content"] for row in panel if row.get("fromParent")] == ["also check the tests"]
 
     assert not found, "server-added text reached the client:\n" + "\n".join(found)
