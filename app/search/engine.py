@@ -142,7 +142,13 @@ _ENTITY_TOKENS = {"today", "latest", "news", "vs", "versus"}
 _RECENCY_WORDS = re.compile(r"\b(today|latest|news|now)\b", re.I)
 
 _cache = TtlLru(512)
-_page_cache = TtlLru(256)
+# Pages hold their whole extracted text (up to ~6 MB of HTML/text, more for
+# PDFs): bound the cache by size, not only by count.
+PAGE_CACHE_BYTES = 64 * 1024 * 1024
+_page_cache = TtlLru(
+    256, max_bytes=PAGE_CACHE_BYTES,
+    sizeof=lambda cached: sys.getsizeof(cached[1].full_text) + sys.getsizeof(cached[1].text),
+)
 _blocked_hosts = TtlLru(512)
 _search_sem = asyncio.Semaphore(SEARCH_CONCURRENCY)
 _wiki = WikipediaProvider()

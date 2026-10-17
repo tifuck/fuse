@@ -1235,3 +1235,35 @@ class MalformedPageInputTest(unittest.TestCase):
         self.assertIsInstance(_decode(b"<meta charset=punycode>\xff hi", "text/html"), str)
         self.assertEqual(urljoin_safe("https://a.example/", "https://[bad"), "")
         self.assertEqual(public_ips("a" * 64 + ".example.com"), [])
+
+
+class TtlLruBoundsTest(unittest.TestCase):
+    def test_byte_budget_evicts_oldest_but_keeps_the_newest(self):
+        from app.search.cache import TtlLru
+
+        cache = TtlLru(10, max_bytes=10, sizeof=len)
+        cache.set("a", "x" * 4, 60)
+        cache.set("b", "x" * 4, 60)
+        cache.set("c", "x" * 4, 60)  # 12 bytes: "a" goes
+        self.assertIsNone(cache.get("a"))
+        self.assertEqual(cache.get("c"), "xxxx")
+        cache.set("huge", "x" * 50, 60)  # over budget alone: kept, the rest go
+        self.assertEqual(cache.get("huge"), "x" * 50)
+        self.assertIsNone(cache.get("b"))
+        self.assertIsNone(cache.get("c"))
+
+    def test_set_drops_expired_entries_nobody_reads_again(self):
+        from app.search.cache import TtlLru
+
+        cache = TtlLru(10, max_bytes=100, sizeof=len)
+        with patch("app.search.cache.time.monotonic", return_value=0.0):
+            cache.set("old", "x" * 40, 5)
+        with patch("app.search.cache.time.monotonic", return_value=10.0):
+            cache.set("new", "x" * 40, 5)
+        self.assertNotIn("old", cache._data)
+        self.assertEqual(cache._bytes, 40)
+
+    def test_page_cache_is_byte_bounded(self):
+        from app.search import engine
+
+        self.assertEqual(engine._page_cache.max_bytes, engine.PAGE_CACHE_BYTES)
