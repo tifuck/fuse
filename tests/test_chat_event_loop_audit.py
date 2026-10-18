@@ -228,7 +228,7 @@ def test_one_failing_refresh_job_does_not_delay_oauth_refresh(monkeypatch):
 
     monkeypatch.setattr(main.asyncio, "sleep", sleep)
     for name in ("grok_version_refresh_due", "chatgpt_refresh_due", "kimi_refresh_due",
-                 "claude_refresh_due", "auto_price_due"):
+                 "claude_refresh_due", "cursor_refresh_due", "auto_price_due"):
         monkeypatch.setattr(main, name, noop)
     monkeypatch.setattr(main, "refresh_due", oauth)
     monkeypatch.setattr(main, "openrouter_refresh_due", catalog)
