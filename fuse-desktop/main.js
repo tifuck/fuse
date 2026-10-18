@@ -1,6 +1,6 @@
-const { app, BaseWindow, WebContentsView, ipcMain, shell } = require("electron");
+const { app, BaseWindow, WebContentsView, dialog, ipcMain, shell } = require("electron");
 const { autoUpdater } = require("electron-updater");
-const { readFileSync, statSync, writeFileSync } = require("fs");
+const { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } = require("fs");
 const path = require("path");
 
 // The site this build wraps: FUSE_URL at runtime, else the fuseUrl that
@@ -297,6 +297,47 @@ ipcMain.on("titlebar", (event, action) => {
   else if (action === "close") win.close();
 });
 
+// A single launch-time check with install-on-quit never updated a .deb install
+// and failed silently, so check every few hours, offer a restart once an
+// update is downloaded, and keep the updater's log in <logs>/updater.log.
+const UPDATE_CHECK_MS = 4 * 60 * 60 * 1000;
+
+function startUpdater() {
+  const dir = app.getPath("logs");
+  try {
+    mkdirSync(dir, { recursive: true });
+  } catch {}
+  const file = path.join(dir, "updater.log");
+  const write = (level) => (...args) => {
+    try {
+      appendFileSync(file, `${new Date().toISOString()} ${level} ${args.join(" ")}\n`);
+    } catch {}
+  };
+  autoUpdater.logger = { info: write("info"), warn: write("warn"), error: write("error"), debug() {} };
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  let offered = null;
+  autoUpdater.on("update-downloaded", async ({ version }) => {
+    if (offered === version) return;
+    offered = version;
+    const options = {
+      type: "info",
+      buttons: ["Restart now", "Later"],
+      defaultId: 0,
+      cancelId: 1,
+      message: `Fuse ${version} is ready to install`,
+      detail: "Restart Fuse to finish updating. Choosing Later installs it the next time Fuse quits.",
+    };
+    const { response } = await (win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options));
+    if (response === 0) autoUpdater.quitAndInstall(true, true);
+  });
+
+  const check = () => autoUpdater.checkForUpdates().catch(() => {});
+  check();
+  setInterval(check, UPDATE_CHECK_MS);
+}
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
@@ -314,11 +355,7 @@ if (!gotLock) {
     loadFrameTheme();
     createWindow();
 
-    if (app.isPackaged) {
-      autoUpdater.autoDownload = true;
-      autoUpdater.autoInstallOnAppQuit = true;
-      autoUpdater.checkForUpdatesAndNotify().catch(() => {});
-    }
+    if (app.isPackaged) startUpdater();
 
     app.on("activate", () => {
       if (!win) createWindow();
