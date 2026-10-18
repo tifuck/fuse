@@ -1,7 +1,7 @@
 {
   "name": "fuse-desktop",
   "productName": "Fuse",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Fuse desktop wrapper",
   "homepage": "https://github.com/tifuck/fuse",
   "author": {
