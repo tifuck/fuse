@@ -172,18 +172,25 @@
 .proj-menu button:hover, .proj-menu button:focus-visible { background: color-mix(in srgb, var(--mist) 7%, transparent); outline: none; }
 .proj-menu button.is-danger { color: var(--fault); }
 
-@media (max-width: 1000px) {
-  .proj-list { --proj-cols: minmax(0, 1fr) minmax(6rem, 9rem) 6.5rem auto; }
+/* Breakpoints follow the list's own width, not the viewport: beside the
+   19rem rail the list is far narrower than the window. Each is the column
+   sum with a 12rem name floor, plus gaps and row padding. Every row is its
+   own grid, so the tracks must not depend on content (no `auto`), or the
+   header (empty actions cell) drifts off the data rows. */
+.proj-list { container-type: inline-size; }
+@container (max-width: 52rem) {
+  .proj-row { --proj-cols: minmax(0, 1fr) minmax(6rem, 9rem) 6.5rem 9.5rem; }
   .proj-row > .proj-chats, .proj-head > :nth-child(3) { display: none; }
 }
-@media (max-width: 720px) {
-  .proj-list { --proj-cols: minmax(0, 1fr) auto; }
+@container (max-width: 42rem) {
+  .proj-row { --proj-cols: minmax(0, 1fr) auto; grid-template-areas: "open actions" "meta meta"; row-gap: 0.35rem; padding: 0.7rem 0.75rem; }
   .proj-head { display: none; }
-  .proj-row { grid-template-areas: "open actions" "meta meta"; row-gap: 0.35rem; padding: 0.7rem 0.75rem; }
   .proj-open { grid-area: open; }
   .proj-actions { grid-area: actions; }
   .proj-row > .proj-host { grid-area: meta; padding-left: 1.95rem; }
   .proj-row > .proj-when { display: none; }
+}
+@media (max-width: 720px) {
   .proj-search { flex-basis: 100%; }
   .proj-search input { font-size: 16px; }
   .proj-menu button { min-height: 44px; }

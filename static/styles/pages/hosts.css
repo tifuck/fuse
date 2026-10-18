@@ -427,6 +427,13 @@ label.check.hosts-check,
   white-space: nowrap;
 }
 .hosts-proj-go { color: var(--mute); font: 0.7rem/1.4 var(--mono); white-space: nowrap; }
+/* The row's tracks need ~27rem (13rem name, path, hint, gaps, padding); the
+   detail pane is that narrow beside the rail long before the viewport is. */
+.hosts-proj-list { container-type: inline-size; }
+@container (max-width: 28rem) {
+  .hosts-proj-open { grid-template-columns: minmax(0, 1fr); row-gap: 0.15rem; }
+  .hosts-proj-go { display: none; }
+}
 .hosts-proj-open:hover .hosts-proj-go { color: var(--brass); }
 .hosts-ibtn {
   display: grid;
@@ -457,8 +464,6 @@ label.check.hosts-check,
 }
 @media (max-width: 720px) {
   .hosts-empty-steps { grid-template-columns: minmax(0, 1fr); }
-  .hosts-proj-open { grid-template-columns: minmax(0, 1fr); row-gap: 0.15rem; }
-  .hosts-proj-go { display: none; }
   .hosts-pane-head { padding: 0.8rem 0.85rem; }
   .hosts-pane > .callout, .hosts-warn, .hosts-facts { margin-left: 0.85rem; margin-right: 0.85rem; }
   .hosts-projects { padding: 0.9rem 0.85rem 1rem; }
