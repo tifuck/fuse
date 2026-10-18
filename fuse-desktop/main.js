@@ -52,6 +52,12 @@ if (process.platform === "linux" && process.getuid() !== 0) {
   if (!setuidHelper && !userNamespacesUsable()) app.commandLine.appendSwitch("no-sandbox");
 }
 
+// GPU rendering on Linux flashes random pink/green/black garbage blocks on
+// some AMD and NVIDIA machines (seen on Strix Halo and an RTX 5060). Machines
+// where Chromium already falls back to software never show it, so draw in
+// software everywhere on Linux.
+if (process.platform === "linux") app.disableHardwareAcceleration();
+
 let win = null;
 let bar = null;
 let site = null;
