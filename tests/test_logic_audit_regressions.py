@@ -527,3 +527,70 @@ def test_context_grep_stops_at_max_matches():
     out = "a.py:1:x\na.py-2-after\n--\nb.py-1-before\nb.py:2:x\n"
     rows, hidden, more = _format_search_lines(out, root="", windows=False, grep=True, hide_secrets=False, cap_lines=1)
     assert (rows, hidden, more) == (["a.py:1:x", "a.py-2-after"], 0, True)
+
+
+# -- logic audit 2026-10-18 ---------------------------------------------------
+
+def test_skill_description_continues_on_indented_lines():
+    from app import skill_parse
+
+    doc = ("---\nname: demo\ndescription: Use this when the user asks to deploy\n"
+           "  the service or roll it back.\nlicense: MIT\n---\nBody\n")
+    parsed = skill_parse.parse_skill_md(doc)
+    assert parsed["description"] == "Use this when the user asks to deploy the service or roll it back."
+    assert parsed["license"] == "MIT"
+
+
+def test_empty_frontmatter_keeps_the_whole_body():
+    from app import skill_parse
+
+    parsed = skill_parse.parse_skill_md("---\n---\n# Deploy\nStep one.\n\n---\n\nStep two.\n", slug="deploy")
+    assert parsed["body"] == "# Deploy\nStep one.\n\n---\n\nStep two.\n"
+
+
+@pytest.mark.parametrize("field", ["prompt", "model"])
+def test_null_schedule_text_field_is_missing_not_the_string_none(field):
+    with pytest.raises(schedules.ScheduleError):
+        schedules._normalize(1, _schedule(recur_kind="every", every_seconds=3600, **{field: None}))
+    item = schedules._normalize(1, _schedule(recur_kind="every", every_seconds=3600, timezone=None))
+    assert item["timezone"] == "UTC"
+
+
+def test_every_preview_steps_from_the_stored_next_fire():
+    item = {"recur_kind": "every", "every_seconds": 3600, "enabled": True, "paused": False,
+            "next_fire_at": "2026-10-18T10:00:00Z"}
+    assert schedules.preview_fires(item, 3) == [
+        "2026-10-18T10:00:00Z", "2026-10-18T11:00:00Z", "2026-10-18T12:00:00Z"]
+    assert schedules.preview_fires({**item, "paused": True}) == []
+    assert schedules.preview_fires({**item, "enabled": False}) == []
+
+
+def test_star_step_dom_is_unrestricted_so_dow_must_match_too():
+    after = datetime(2026, 10, 20, 1, tzinfo=timezone.utc)  # a Tuesday
+    fires = cron.next_n("0 0 */2 * 1", "UTC", after, 3)
+    assert [(d.day, d.isoweekday()) for d in fires] == [(9, 1), (23, 1), (7, 1)]
+
+
+def test_xml_string_parameters_stay_text():
+    def args(params: str) -> dict:
+        _, calls = parsing.extract_text_tool_calls(
+            f"<tool_call>\n<function=write_file>\n{params}</function>\n</tool_call>", coding=True)
+        return json.loads(calls[0]["function"]["arguments"])
+
+    got = args('<parameter=path>\npackage.json\n</parameter>\n<parameter=content>\n{"name": "x"}\n</parameter>\n')
+    assert got == {"path": "package.json", "content": '{"name": "x"}'}
+    assert args("<parameter=path>n.txt</parameter><parameter=content>42</parameter>")["content"] == "42"
+    assert args("<parameter=path>a.py</parameter><parameter=content>\n    pass\n\n</parameter>")["content"] == "    pass\n"
+    assert args('<parameter=path>"README.md"</parameter><parameter=content>x</parameter>')["path"] == "README.md"
+    _, calls = parsing.extract_text_tool_calls(
+        "<tool_call><function=run_terminal_command><parameter=command>ls</parameter>"
+        "<parameter=timeout>\n600\n</parameter></function></tool_call>", coding=True)
+    assert json.loads(calls[0]["function"]["arguments"]) == {"command": "ls", "timeout": 600}
+
+
+def test_devin_dead_sku_is_not_resumed():
+    from app.chat_generation.policy import _should_resume
+    from app.sources.devin_catalog import _sku_unavailable_message
+
+    assert not _should_resume(503, _sku_unavailable_message("devin/swe-2", "high"), resumes_left=4, idle_stalls=0)
+    assert _should_resume(503, "upstream error", resumes_left=4, idle_stalls=0)

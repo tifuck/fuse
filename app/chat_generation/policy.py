@@ -99,7 +99,10 @@ _TERMINAL_MESSAGE = re.compile(
     r"rejected the configured (account|api key)"
     r"|requires a (paid|subscription)"
     r"|context length"
-    r"|invalid api key",
+    r"|invalid api key"
+    # Devin's dead-SKU breaker (devin_catalog._sku_unavailable_message): the
+    # same model and effort fail instantly for the next 30 minutes or more.
+    r"|is temporarily unavailable on devin",
     re.I,
 )
 

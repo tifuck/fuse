@@ -148,12 +148,33 @@ class ScopeTest(PermSchemaTest):
             "expect -c 'spawn ssh host'",
             "busybox sh",
             "make && bash -c 'false'",
+            # Inline code for a language interpreter hides its paths the same way.
+            "python3 -c \"print(open('/etc/shadow').read())\"",
+            "python3 -c \"import shutil; shutil.rmtree('/etc/nginx')\"",
+            ".venv/bin/python -Bc 'x'",
+            "node -e \"require('fs').readFileSync('/etc/shadow')\"",
+            "node --eval 1",
+            "perl -e \"unlink '/etc/hosts'\"",
+            "perl -pi -e 's/a/b/' x.txt",
+            "ruby -e 1",
+            "php -r 'echo 1;'",
+            "make && python3 -c 1",
         )
         for command in opaque:
             self.assertIsNone(permissions.extract_shell_paths(command, "/srv/app", False), command)
         # Running a script file is still enumerable: only -c is opaque.
         paths = permissions.extract_shell_paths("bash scripts/run.sh", "/srv/app", False)
         self.assertIn("/srv/app/scripts/run.sh", [p for p, _ in paths])
+        # So is an interpreter running a file, whatever flags its script takes.
+        for command in ("python3 scripts/x.py", "node server.js -p 3000", "python -m pytest -q tests",
+                        "python3 -u app.py", "pytest -c setup.cfg"):
+            self.assertIsNotNone(permissions.extract_shell_paths(command, "/srv/app", False), command)
+
+    def test_assigned_value_is_judged_as_its_own_path(self):
+        # name=/abs is the value's path, not a cwd-relative word.
+        paths = permissions.extract_shell_paths("awk -v f=/etc/shadow 'BEGIN{print}'", "/srv/app", False)
+        self.assertEqual(paths, [("/etc/shadow", False)])
+        self.assertEqual(permissions.extract_shell_paths("make -j4 CFLAGS=-O2", "/srv/app", False), [])
 
     def test_separators_never_stick_to_a_path(self):
         # shlex kept `;` on the word before it: `2>/dev/null;` asked about

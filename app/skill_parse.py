@@ -191,6 +191,18 @@ def _parse_yaml_subset(block: str) -> dict:
             nested, i = _consume_nested(lines, i + 1, 0)
             data[key] = nested
             continue
+        # A scalar may continue on indented lines; YAML folds them with
+        # spaces, and a blank line between them is a line break.
+        more = i + 1
+        while more < len(lines) and (not lines[more].strip() or lines[more].startswith(" ")):
+            more += 1
+        tail = [line.strip() for line in lines[i + 1:more]]
+        while tail and not tail[-1]:
+            tail.pop()
+        if tail:
+            paragraphs = re.split(r"\n\s*\n", "\n".join([rest, *tail]))
+            rest = "\n".join(" ".join(p.split()) for p in paragraphs)
+            i = more - 1
         value = _scalar(rest)
         if key in _BOOL_KEYS:
             flag = _as_bool(value)
@@ -214,7 +226,8 @@ def parse_skill_md(text: str, *, slug: str | None = None) -> dict:
     rest = raw[3:]
     if rest.startswith("\n"):
         rest = rest[1:]
-    end_m = re.search(r"\n-{3,}[ \t]*(?:\n|$)", rest)
+    # `^`: an empty frontmatter closes on the very next line.
+    end_m = re.search(r"(?:^|\n)-{3,}[ \t]*(?:\n|$)", rest)
     if end_m is None:
         raise SkillError("invalid SKILL.md")
     fm = rest[: end_m.start()]

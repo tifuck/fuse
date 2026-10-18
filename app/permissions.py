@@ -104,13 +104,21 @@ _TEST_BRACKETS = re.compile(r"(?<!\S)(?:\[\[|\]\]|\[|\])(?=[\s;&|)]|$)")
 # A flag joined to its path argument (tar -C/etc, gcc -I~/inc) leaves the path
 # unlisted as an operand; treat the whole command as opaque instead.
 _ATTACHED_FLAG_PATH = re.compile(r"^-[A-Za-z0-9]*[~/\\%.]")
+# An option or assignment whose value follows `=` (--file=x, f=x, -Dk=x).
+_ASSIGNED_VALUE = re.compile(r"^(?:[-+][^=]*|[\w.-]+)=")
 # A script string handed to an interpreter (bash -c '…', pwsh -Command "…")
 # hides its real targets behind one quoted argument, and eval/sshpass/expect/
 # busybox run arbitrary programs outright; only partial tokens would be
-# enumerable, so these commands are opaque and always ask.
+# enumerable, so these commands are opaque and always ask. Inline code for a
+# language interpreter (python -c, node -e, perl -ne, php -r) is the same:
+# open('/etc/shadow') inside it is one word that looks cwd-relative. Only
+# interpreter options may sit before the code flag (node app.js -p 80 runs a
+# script file, which stays enumerable).
 _INTERPRETER_SHELL = re.compile(
     r"(?is)\b(?:(?:ba|z|da|k|a|c|tc|fi)?sh|pwsh|powershell)\b[^;|&\n]*\s-{1,2}[a-z]*c(?:ommand)?\b"
     r"|\b(?:eval|sshpass|expect|busybox)\b"
+    r"|(?-i:(?<![^\s;&|(])(?:[^\s;&|()]*[/\\])?(?:python[\d.]*|pypy[\d.]*|node|nodejs|bun|perl|ruby|php|lua(?:jit)?|Rscript)"
+    r"(?:\.exe)?(?:\s+-\S*)*?\s+(?:-[A-Za-z]*[ceE]|-r|-p|--eval|--print)(?![^\s'\"=]))"
 )
 _FETCH_EXEC_SHELL = re.compile(
     r"(?is)\b(?:curl|wget|fetch|aria2c)\b[^\n;]*\|\s*(?:sudo\s+)?(?:ba|z|k|fi|a|c|tc|da)?sh\b"
@@ -486,8 +494,9 @@ def extract_shell_paths(command: str, cwd: str, windows: bool) -> list[tuple[str
                 if stripped not in ("&&", ";", "||", "&") and not stripped.startswith("-"):
                     out.append((stripped, True))
                 continue
-            if stripped.startswith(("-", "+")) and "=" in stripped:
-                # --file=/etc/x: the value is the target, not a cwd-relative name.
+            if _ASSIGNED_VALUE.match(stripped):
+                # --file=/etc/x, if=/dev/sda, awk -v f=/etc/x: the value is the
+                # target, not a cwd-relative name.
                 stripped = stripped.split("=", 1)[1]
             if _looks_like_path(stripped, windows) or is_secret_path(stripped):
                 out.append((stripped, False))

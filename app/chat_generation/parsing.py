@@ -123,21 +123,51 @@ def _xml_param_value(raw: str):
     return text if quoted and not isinstance(value, (dict, list)) else value
 
 
+def _xml_text(raw: str) -> str:
+    """A string parameter as written. Only the newline after the opening tag
+    and the one before the closing tag are layout (as Qwen's parser reads
+    them); a bare JSON string literal ("README.md") is unquoted."""
+    text = raw or ""
+    text = text[1:] if text.startswith("\n") else text
+    text = text[:-1] if text.endswith("\n") else text
+    if text.startswith('"'):
+        try:
+            value = json.loads(text)
+        except (json.JSONDecodeError, ValueError, RecursionError):
+            return text
+        return value if isinstance(value, str) else text
+    return text
+
+
 def _xml_params(body: str) -> dict:
+    """Raw parameter text; _xml_call types it against the tool's schema."""
     args = {}
     for match in _PARAM_EQ_XML.finditer(body or ""):
-        args[match.group(1)] = _xml_param_value(match.group(2))
+        args[match.group(1)] = match.group(2)
     for match in _PARAM_NAME_XML.finditer(body or ""):
-        args[match.group(1)] = _xml_param_value(match.group(2))
+        args[match.group(1)] = match.group(2)
     return args
 
 
-def _xml_call(name: str, args: dict, index: int, *, coding: bool) -> dict | None:
+def _string_params(tool: str) -> set[str]:
+    from ..chat_tools import _schema_for
+
+    schema = _schema_for(tool) or {}
+    props = ((schema.get("function") or {}).get("parameters") or {}).get("properties") or {}
+    return {key for key, spec in props.items() if isinstance(spec, dict) and spec.get("type") == "string"}
+
+
+def _xml_call(name: str, args: dict, index: int, *, coding: bool, raw: bool = False) -> dict | None:
     from ..chat_tools import suggest_tool
 
     resolved = suggest_tool(name, json.dumps(args, ensure_ascii=False), coding=coding) or (name or "").strip()
     if not resolved:
         return None
+    if raw:
+        # A string parameter is text even when it reads as JSON or a number
+        # (write_file content '{"a": 1}', '42'); the rest are typed values.
+        strings = _string_params(resolved)
+        args = {key: _xml_text(value) if key in strings else _xml_param_value(value) for key, value in args.items()}
     return {
         "id": f"xml_{index}",
         "type": "function",
@@ -151,13 +181,13 @@ def _xml_call(name: str, args: dict, index: int, *, coding: bool) -> dict | None
 def _calls_from_xml_body(body: str, *, coding: bool, start: int = 0) -> list[dict]:
     calls = []
     for match in _FUNCTION_XML.finditer(body or ""):
-        rec = _xml_call(match.group(1), _xml_params(match.group(2)), start + len(calls), coding=coding)
+        rec = _xml_call(match.group(1), _xml_params(match.group(2)), start + len(calls), coding=coding, raw=True)
         if rec:
             calls.append(rec)
     if calls:
         return calls
     for match in _INVOKE_XML.finditer(body or ""):
-        rec = _xml_call(match.group(1), _xml_params(match.group(2)), start + len(calls), coding=coding)
+        rec = _xml_call(match.group(1), _xml_params(match.group(2)), start + len(calls), coding=coding, raw=True)
         if rec:
             calls.append(rec)
     if calls:

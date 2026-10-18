@@ -305,23 +305,19 @@ def _compute_first(item: dict) -> str | None:
 
 
 def preview_fires(item: dict, n: int = 5) -> list[str]:
-    out = []
-    kind = item.get("recur_kind")
-    now = utcnow()
-    if kind == "once":
+    """The fires the scheduler will run: from the stored next_fire_at (an
+    `every` cadence steps from its last slot, not from now), none while the
+    schedule is paused or disabled."""
+    if not item.get("enabled", True) or item.get("paused"):
+        return []
+    if item.get("recur_kind") == "once":
         dt = parse_iso_utc(item.get("once_at") or "")
         return [iso_utc(dt)] if dt else []
-    cursor = now
-    for _ in range(n):
-        nxt = _next_after(item, cursor) if kind == "every" else cron.next_fire(
-            item.get("cron_expr") or "", item.get("timezone") or "UTC", cursor
-        )
-        if kind == "every" and cursor == now:
-            nxt = now + timedelta(seconds=int(item.get("every_seconds") or 0))
-        if nxt is None:
-            break
+    out = []
+    nxt = parse_iso_utc(item.get("next_fire_at") or "") or _next_after(item, utcnow())
+    while nxt is not None and len(out) < n:
         out.append(iso_utc(nxt))
-        cursor = nxt
+        nxt = _next_after(item, nxt)
     return out
 
 
@@ -365,19 +361,19 @@ def _normalize(user_id: int, raw: dict, *, existing: dict | None = None) -> dict
             raise ScheduleError("project not found", 404)
     else:
         project_id = None
-    prompt = str(raw.get("prompt") if "prompt" in raw else (existing or {}).get("prompt") or "")
+    prompt = str((raw.get("prompt") if "prompt" in raw else (existing or {}).get("prompt")) or "")
     if not prompt.strip() or len(prompt) > PROMPT_MAX:
         raise ScheduleError("prompt is required")
     variables = _parse_vars(raw.get("variables") if "variables" in raw else (existing or {}).get("variables"))
-    model = str(raw.get("model") if "model" in raw else (existing or {}).get("model") or "").strip()[:200]
+    model = str((raw.get("model") if "model" in raw else (existing or {}).get("model")) or "").strip()[:200]
     if not model:
         raise ScheduleError("model is required")
     tools = chats.parse_thread_tools(raw.get("tools") if "tools" in raw else (existing or {}).get("tools"), strict=True)
     effort = raw.get("reasoning_effort") if "reasoning_effort" in raw else (existing or {}).get("reasoning_effort")
     effort = chats.parse_reasoning_effort(effort or None, strict=True) or ""
-    tz = str(raw.get("timezone") if "timezone" in raw else (existing or {}).get("timezone") or "UTC").strip()
+    tz = str((raw.get("timezone") if "timezone" in raw else (existing or {}).get("timezone")) or "UTC").strip()
     cron.parse_tz(tz)
-    recur_kind = str(raw.get("recur_kind") if "recur_kind" in raw else (existing or {}).get("recur_kind") or "")
+    recur_kind = str((raw.get("recur_kind") if "recur_kind" in raw else (existing or {}).get("recur_kind")) or "")
     if recur_kind not in RECUR:
         raise ScheduleError("recur_kind must be once, every, or cron")
     if recur_kind == "monitor":
@@ -385,7 +381,7 @@ def _normalize(user_id: int, raw: dict, *, existing: dict | None = None) -> dict
     cron_expr = ""
     every_seconds = None
     weekdays = _int_field(raw.get("weekdays") if "weekdays" in raw else (existing or {}).get("weekdays") or 0, "weekdays")
-    at_local = str(raw.get("at_local") if "at_local" in raw else (existing or {}).get("at_local") or "")
+    at_local = str((raw.get("at_local") if "at_local" in raw else (existing or {}).get("at_local")) or "")
     once_at = raw.get("once_at") if "once_at" in raw else (existing or {}).get("once_at")
     if recur_kind == "cron":
         builder = str(raw.get("builder") or "")
@@ -401,7 +397,7 @@ def _normalize(user_id: int, raw: dict, *, existing: dict | None = None) -> dict
             hour, minute = cron.parse_hhmm(at_local)
             cron_expr = cron.compile_weekly(hour, minute, int(weekdays))
         else:
-            cron_expr = str(raw.get("cron_expr") if "cron_expr" in raw else (existing or {}).get("cron_expr") or "")
+            cron_expr = str((raw.get("cron_expr") if "cron_expr" in raw else (existing or {}).get("cron_expr")) or "")
             weekdays, at_local = 0, ""
         cron.parse_cron(cron_expr)
     elif recur_kind == "every":

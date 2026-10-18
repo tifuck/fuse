@@ -125,13 +125,14 @@ def next_fire(expr: str, tz_name: str, after_utc: datetime) -> datetime | None:
     Walks real time and re-reads local wall fields per candidate, so a slot
     that occurs twice (DST fall-back) fires at both real occurrences, while a
     slot inside a spring-forward gap never appears on the local clock and does
-    not fire. dom/dow follow POSIX: when both fields are restricted (not `*`),
-    a match in either is enough.
+    not fire. dom/dow follow POSIX: when both fields are restricted, a match
+    in either is enough. As in Vixie cron and cronie, a field that starts with
+    `*` (`*/2`) is not restricted, so `0 0 */2 * 1` is odd-dated Mondays.
     """
     minute, hour, dom, month, dow = parse_cron(expr)
     tz = parse_tz(tz_name)
     parts = (expr or "").strip().split()
-    date_or = parts[2] != "*" and parts[4] != "*"
+    date_or = not parts[2].startswith("*") and not parts[4].startswith("*")
     if after_utc.tzinfo is None:
         after_utc = after_utc.replace(tzinfo=timezone.utc)
     cursor = (after_utc.replace(second=0, microsecond=0) + timedelta(minutes=1))
