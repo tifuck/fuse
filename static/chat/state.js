@@ -2,6 +2,24 @@
 // catalogs, session/sync/sidebar/composer data. One field list, accessed as
 // S.<field> from every module. Node-loadable: DOM init is guarded so the node
 // test suites can require modules that import this file.
+// Composer text per draftKey(). Every local change goes to `save` (wired in
+// composer/drafts.js) so all of the user's devices show it; remote() applies
+// another device's text without sending it back.
+class DraftMap extends Map {
+  set(key, value) {
+    const text = String(value ?? "");
+    if ((super.get(key) ?? "") !== text) this.save?.(key, text);
+    return super.set(key, text);
+  }
+  delete(key) {
+    if (super.get(key)) this.save?.(key, "");
+    return super.delete(key);
+  }
+  remote(key, text) {
+    return text ? super.set(key, text) : super.delete(key);
+  }
+}
+
 const root = typeof document === "undefined" ? null : document.querySelector("[data-chat]");
 const S = { root };
 if (root) initState();
@@ -256,7 +274,7 @@ function initState() {
   S.renaming = false;
   S.renameSaving = null;
   S.transcriptDirty = false;
-  S.drafts = new Map();
+  S.drafts = new DraftMap();
   S.draftFiles = new Map();
   S.stickToBottom = true;
   S.pickerOpen = false;

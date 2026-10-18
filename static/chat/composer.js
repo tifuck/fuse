@@ -15,7 +15,7 @@ export function createComposer(ctx) {
     input,
   });
   const drafts = createDrafts({ ...ctx,
-
+    input,
   });
   return {
     ...input, ...slash, ...attachments, ...drafts,

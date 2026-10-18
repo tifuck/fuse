@@ -285,6 +285,22 @@ class ChatSyncTest(unittest.TestCase):
             with self.assertRaises(WebSocketDisconnect):
                 ws.receive_json()
 
+    def test_drafts_sync_between_devices(self):
+        with self.socket() as ws:
+            self.assertEqual(ws.receive_json()["type"], "ready")
+            saved = self.client.put("/chat/drafts", json={"key": "", "text": "half a thought", "origin": "tab-a"})
+            self.assertEqual(saved.status_code, 204, saved.text)
+            event = self.until(ws, "draft.updated")["payload"]
+            self.assertEqual(event, {"key": "", "text": "half a thought", "origin": "tab-a"})
+            self.client.put("/chat/drafts", json={"key": "p:7:3", "text": "project note"})
+            self.assertEqual(self.client.get("/chat/sync").json()["drafts"], {"": "half a thought", "p:7:3": "project note"})
+            self.client.put("/chat/drafts", json={"key": "", "text": "  "})
+            self.assertEqual(self.until(ws, "draft.updated")["payload"]["key"], "p:7:3")
+            self.assertEqual(self.until(ws, "draft.updated")["payload"]["text"], "")
+            self.assertEqual(self.client.get("/chat/sync").json()["drafts"], {"p:7:3": "project note"})
+            self.assertEqual(self.client.put("/chat/drafts", json={"key": 5, "text": "x"}).status_code, 422)
+            self.assertEqual(self.client.put("/chat/drafts", json={"key": "", "text": "x", "files": []}).status_code, 422)
+
 
 if __name__ == "__main__":
     unittest.main()

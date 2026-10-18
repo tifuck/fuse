@@ -309,6 +309,22 @@ async def hosts_browse(request: Request, host_id: int):
     return JSONResponse(data)
 
 
+@router.post("/hosts/{host_id}/mkdir")
+async def hosts_mkdir(request: Request, host_id: int):
+    user, err = _chat_auth(request)
+    if err:
+        return err
+    if not limiter.allow(f"host-mkdir:{user['id']}", 20, 60):
+        raise HTTPException(429, "Too many new folders")
+    raw = await _json_object(request)
+    from .. import workspace
+    try:
+        await workspace.make_folder(user["id"], host_id, raw.get("path"), raw.get("name"))
+    except (workspace.WorkspaceError, hosts.HostError) as exc:
+        return _host_fail(exc)
+    return Response(status_code=204)
+
+
 @router.post("/hosts/{host_id}/test")
 async def hosts_test(request: Request, host_id: int):
     user, err = _chat_auth(request)

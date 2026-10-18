@@ -787,6 +787,13 @@ def _ensure_push_table(conn: sqlite3.Connection) -> None:
             last_push_at TEXT
         );
         CREATE INDEX IF NOT EXISTS push_subscriptions_user ON push_subscriptions (user_id);
+        CREATE TABLE IF NOT EXISTS chat_drafts (
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            draft_key TEXT NOT NULL,
+            text TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (user_id, draft_key)
+        );
         """
     )
 

@@ -2,7 +2,7 @@
 import { S } from '../state.js';
 
 export function createStream(ctx) {
-  const { agents, apply, context, net, perms, persist, picker, sidebar, status, traces, transcript, turns, ui } = ctx;
+  const { agents, apply, composer, context, net, perms, persist, picker, sidebar, status, traces, transcript, turns, ui } = ctx;
     async function receiveEvent(event) {
     if (event.id <= S.cursor) return;
     // A gap replay (replayGap) resends events this view already handled. Only
@@ -16,6 +16,13 @@ export function createStream(ctx) {
     if (event.type === "context.updated") {
       if (S.contextSaving) await S.contextSaving.catch(() => {});
       apply.acceptContext(payload);
+    } else if (event.type === "projects.updated") {
+      if (Array.isArray(payload.projects)) {
+        S.projects = payload.projects;
+        sidebar.renderHistory();
+      }
+    } else if (event.type === "draft.updated") {
+      if (payload.origin !== S.draftOrigin) composer.applyRemoteDraft(String(payload.key ?? ""), payload.text);
     } else if (event.type === "compaction.done" || event.type === "compaction.updated" || event.type === "compaction.pruned") {
       if (event.thread_id === S.currentId) {
         if (payload && payload.meter) context.acceptMeter(payload.meter);
@@ -274,6 +281,7 @@ export function createStream(ctx) {
         sidebar.noteServerRunning(data.threads);
         if (Array.isArray(data.projects)) S.projects = data.projects;
         apply.acceptContext(data.context);
+        composer.acceptDrafts(data.drafts);
         sidebar.resetSearchLists();
         if (S.historyQuery) sidebar.queueSearch();
         sidebar.renderHistory();

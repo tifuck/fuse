@@ -7,7 +7,7 @@ import asyncio
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 
-from .. import artifacts, chat_events, chat_runtime, chat_runs, chat_recaps, chat_store, chat_titles, chat_tools, chats, context_compact as ctxmod, db, hosts, model_caps, permissions as permissions_mod, skills, vault, context_meter
+from .. import artifacts, chat_drafts, chat_events, chat_runtime, chat_runs, chat_recaps, chat_store, chat_titles, chat_tools, chats, context_compact as ctxmod, db, hosts, model_caps, permissions as permissions_mod, skills, vault, context_meter
 from ..config import settings
 from ..security import limiter
 from ..sources import openrouter as openrouter_mod
@@ -112,6 +112,7 @@ async def chat_sync_snapshot(request: Request):
                 "threads": [chats._view(row) for row in rows],
                 "context": chats._context_view(account),
                 "live_agents": int(live_agents),
+                "drafts": chat_drafts.list_drafts(user["id"], conn),
             }
         data["projects"] = chats.list_sidebar_projects(user["id"])
         return data
@@ -1005,6 +1006,23 @@ async def chat_context_put(request: Request):
     except chats.ChatValidationError as exc:
         raise _chat_validation_error(exc) from None
     return JSONResponse(data)
+
+
+@router.put("/chat/drafts")
+async def chat_draft_put(request: Request):
+    user, err = _chat_auth(request)
+    if err:
+        return err
+    if not limiter.allow(f"chat-draft:{user['id']}", 240, 60):
+        raise HTTPException(429, "Too many draft saves")
+    raw = await _json_object(request)
+    if set(raw) - {"key", "text", "origin"}:
+        raise HTTPException(422, "Unsupported draft fields")
+    try:
+        await asyncio.to_thread(chat_drafts.set_draft, user["id"], raw.get("key"), raw.get("text"), raw.get("origin"))
+    except chats.ChatValidationError as exc:
+        raise _chat_validation_error(exc) from None
+    return Response(status_code=204)
 
 
 @router.post("/chat/completions")

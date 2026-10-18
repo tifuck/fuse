@@ -109,6 +109,7 @@ from .workspace_ops.transport import (
     _as_text,
     _is_sleep_command,
     _probe_cmd,
+    _ps_literal,
     _ps_path_expr,
     _shell_prefix,
     _ssh_job_script,
@@ -1531,6 +1532,49 @@ async def browse(user_id: int, host_id: int, path: str = "") -> dict:
     lines = out.splitlines()
     cwd = lines[0].strip() if lines else needle
     return _browse_from_ls(cwd, "", "\n".join(lines[1:]))
+
+
+async def make_folder(user_id: int, host_id: int, parent: str, name: str) -> None:
+    """Create one folder `name` inside `parent` (the folder picker's New folder)."""
+    parent = parent if isinstance(parent, str) else ""
+    name = name.strip() if isinstance(name, str) else ""
+    if len(parent) > 400 or any(ord(ch) < 32 for ch in parent):
+        raise WorkspaceError("invalid path")
+    if not name or len(name) > 255 or name in (".", "..") or any(ch in name for ch in '/\\') or any(ord(ch) < 32 for ch in name):
+        raise WorkspaceError("invalid folder name")
+    cwd = parent.strip() or "~"
+    if _is_agent(user_id, host_id):
+        from . import db as _db
+
+        row = _db.fetchone("SELECT * FROM user_hosts WHERE id=? AND user_id=?", (host_id, user_id))
+        cmd = (f"New-Item -ItemType Directory -Path {_ps_literal(name)} -ErrorAction Stop | Out-Null"
+               if _is_windows_row(row) else f"mkdir -- {shlex.quote(name)}")
+        data = await _agent_call(user_id, host_id, "exec", {"cwd": cwd, "cmd": cmd, "timeout_ms": 10000}, 14)
+        if not data.get("ok") or (data.get("exit") or 0) != 0:
+            raise WorkspaceError(_mkdir_error(_exec_text(data) or data.get("error")))
+        return
+    from . import ssh_pool
+
+    try:
+        conn = await ssh_pool.connection(user_id, host_id)
+        cmd = _shell_prefix(cwd) + " && mkdir -- " + shlex.quote(name)
+        result = await conn.run(f"bash -lc {shlex.quote(cmd)}", check=False, timeout=15)
+    except VaultLocked as exc:
+        raise WorkspaceError("vault locked") from exc
+    except Exception as exc:
+        failure = _host_failure(exc)
+        if failure is None:
+            raise
+        raise WorkspaceError(failure[0]) from exc
+    if result.exit_status not in (0, None):
+        raise WorkspaceError(_mkdir_error(result.stderr))
+
+
+def _mkdir_error(text) -> str:
+    detail = " ".join(str(text or "").split())
+    if "exists" in detail.lower():
+        return "a folder or file with that name already exists"
+    return ("could not create the folder: " + detail[:200]) if detail else "could not create the folder"
 
 
 # One SFTP subsystem per pooled SSH connection instead of one per tool call:

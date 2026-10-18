@@ -343,7 +343,7 @@ import { createBoot } from './chat/boot.js';
   const sync = createSync({
     agents: { compactionMarkerText: (...args) => agents.compactionMarkerText(...args), pollAgentView: (...args) => agents.pollAgentView(...args), refreshAgents: (...args) => agents.refreshAgents(...args), renderAgentsList: (...args) => agents.renderAgentsList(...args), scheduleAgentView: (...args) => agents.scheduleAgentView(...args) },
     artifacts,
-    composer: { syncComposer: (...args) => composer.syncComposer(...args) },
+    composer: { acceptDrafts: (...args) => composer.acceptDrafts(...args), applyRemoteDraft: (...args) => composer.applyRemoteDraft(...args), syncComposer: (...args) => composer.syncComposer(...args) },
     context,
     net,
     overlays,

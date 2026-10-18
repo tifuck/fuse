@@ -525,7 +525,7 @@
 
   function openBrowseView(hostId, start, onUse, onBack) {
     const s = state;
-    const b = { path: start || "", parent: "", home: "", entries: [], err: "", loading: true };
+    const b = { path: start || "", parent: "", home: "", entries: [], err: "", loading: true, creating: false, newName: "" };
     s.back = onBack;
     s.view = "browse";
     const crumbs = (path) => {
@@ -561,9 +561,15 @@
         `<div class="fp-toolbar fp-browse-bar">${crumbs(b.path)}` +
         (b.parent ? `<button type="button" class="btn sm ghost" data-fp-up>Up</button>` : "") +
         (b.home && b.home !== b.path ? `<button type="button" class="btn sm ghost" data-fp-home>Home</button>` : "") +
+        `<button type="button" class="btn sm ghost" data-fp-newdir-open${b.loading || b.creating ? " disabled" : ""}>New folder</button>` +
         `</div>` +
         (b.err ? `<p class="callout fault fp-inline-error">${esc(b.err)}</p>` : "") +
         `<div class="fp-scroll"><ul class="fp-dirs">` +
+        (b.creating
+          ? `<li><form class="fp-newdir" data-fp-newdir>${icon({ color: "#8F978F" }, { size: 15 })}` +
+            `<input name="name" maxlength="255" required placeholder="Folder name" autocomplete="off" aria-label="New folder name" value="${esc(b.newName)}">` +
+            `<button type="submit" class="btn sm">Create</button><button type="button" class="btn sm ghost" data-fp-newdir-cancel>Cancel</button></form></li>`
+          : "") +
         (b.loading
           ? `<li class="fp-muted">Opening…</li>`
           : dirs.length
@@ -573,19 +579,48 @@
         `<footer class="fp-foot fp-actions"><span class="fp-chosen">${esc(b.path || "~")}</span>` +
         `<button type="button" class="btn sm" data-fp-use${b.loading || b.err ? " disabled" : ""}>Use this folder</button></footer>`;
       body().querySelectorAll("[data-fp-go]").forEach((el) => el.addEventListener("click", () => load(el.getAttribute("data-fp-go"))));
-      body().querySelectorAll("[data-fp-into]").forEach((el) =>
-        el.addEventListener("click", () => {
-          const name = el.getAttribute("data-fp-into");
-          if (isWinPath(b.path)) load(String(b.path).replace(/\\+$/, "") + "\\" + name);
-          else {
-            const base = String(b.path || "").replace(/\/+$/, "");
-            load((base && base !== "/" ? base : "") + "/" + name);
+      body().querySelectorAll("[data-fp-into]").forEach((el) => el.addEventListener("click", () => load(child(el.getAttribute("data-fp-into")))));
+      body().querySelector("[data-fp-newdir-open]")?.addEventListener("click", () => {
+        b.creating = true;
+        b.newName = "";
+        render();
+      });
+      const form = body().querySelector("[data-fp-newdir]");
+      if (form) {
+        const input = form.querySelector("input");
+        input.focus();
+        input.addEventListener("input", () => { b.newName = input.value; });
+        form.querySelector("[data-fp-newdir-cancel]").addEventListener("click", () => {
+          b.creating = false;
+          b.err = "";
+          render();
+        });
+        form.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const name = input.value.trim();
+          if (!name) return;
+          form.querySelectorAll("input, button").forEach((el) => { el.disabled = true; });
+          try {
+            await api(`/hosts/${hostId}/mkdir`, { method: "POST", body: JSON.stringify({ path: b.path, name }) });
+            if (state !== s || s.view !== "browse") return;
+            b.creating = false;
+            load(child(name));
+          } catch (err) {
+            if (state !== s || s.view !== "browse") return;
+            b.err = err.message || "Could not create the folder";
+            render();
           }
-        })
-      );
+        });
+      }
       body().querySelector("[data-fp-up]")?.addEventListener("click", () => load(b.parent));
       body().querySelector("[data-fp-home]")?.addEventListener("click", () => load(b.home));
       body().querySelector("[data-fp-use]").addEventListener("click", () => onUse(b.path));
+    };
+    // Windows connectors list drive paths, so join with a backslash there.
+    const child = (name) => {
+      if (isWinPath(b.path)) return String(b.path).replace(/\\+$/, "") + "\\" + name;
+      const base = String(b.path || "").replace(/\/+$/, "");
+      return (base && base !== "/" ? base : "") + "/" + name;
     };
     const load = async (path) => {
       b.loading = true;

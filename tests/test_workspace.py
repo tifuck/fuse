@@ -491,6 +491,26 @@ class BrowseViewTest(unittest.TestCase):
         cleaned = workspace._browse_view("/x", "", "/home", [{"name": "../etc", "kind": "dir"}, {"name": "ok", "kind": "dir"}])
         self.assertEqual([item["name"] for item in cleaned["entries"]], ["ok"])
 
+    def test_make_folder_creates_one_named_child(self):
+        calls = []
+
+        async def agent(user_id, host_id, op, args, seconds=30):
+            calls.append(args)
+            return {"ok": not args["cmd"].endswith(" taken"), "exit": 0, "err": "mkdir: cannot create directory: File exists"}
+
+        with patch.object(workspace, "_is_agent", return_value=True), patch.object(workspace, "_agent_call", agent), \
+                patch("app.db.fetchone", return_value={"agent_os": "linux"}):
+            asyncio.run(workspace.make_folder(1, 2, "/srv/apps", "new site"))
+            self.assertEqual(calls[-1]["cwd"], "/srv/apps")
+            self.assertEqual(calls[-1]["cmd"], "mkdir -- 'new site'")
+            with self.assertRaisesRegex(workspace.WorkspaceError, "already exists"):
+                asyncio.run(workspace.make_folder(1, 2, "", "taken"))
+            self.assertEqual(calls[-1]["cwd"], "~")
+            for bad in ("", "..", "a/b", "a\\b", "x\ny"):
+                with self.assertRaisesRegex(workspace.WorkspaceError, "invalid folder name"):
+                    asyncio.run(workspace.make_folder(1, 2, "/srv", bad))
+        self.assertEqual(len(calls), 2)
+
 
 class DenylistTest(unittest.TestCase):
     def test_blocks_destructive(self):

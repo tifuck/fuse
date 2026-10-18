@@ -90,6 +90,17 @@ CREATE TABLE `chat_commands` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!40101 SET character_set_client = utf8mb4 */;
+CREATE TABLE `chat_drafts` (
+  `user_id` bigint(20) NOT NULL,
+  `draft_key` varchar(191) NOT NULL,
+  `text` longtext NOT NULL,
+  `updated_at` varchar(32) NOT NULL,
+  PRIMARY KEY (`user_id`,`draft_key`),
+  CONSTRAINT `fk_chat_drafts_0` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_nopad_bin ROW_FORMAT=DYNAMIC;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8mb4 */;
 CREATE TABLE `chat_event_cursors` (
   `user_id` bigint(20) NOT NULL,
   `cursor` bigint(20) NOT NULL,

@@ -53,6 +53,19 @@ class ProjectsRetentionTest(unittest.TestCase):
         sidebar = next(p for p in chats.list_sidebar_projects(1) if p["id"] == made["id"])
         self.assertEqual((sidebar["color"], sidebar["sessions"]), ("#12AB34", 1))
 
+    def test_project_changes_reach_open_chat_pages(self):
+        def projects():
+            events = [e for e in store.events_after(1, 0) if e["type"] == "projects.updated"]
+            return [[(p["name"], p["color"], p["host_alias"]) for p in e["payload"]["projects"]] for e in events]
+
+        made = self.project(color="#000000")
+        hosts.patch_project(1, 7, made["id"], {"name": "core"})
+        hosts.patch_host(1, 7, {"alias": "rig"})
+        hosts.delete_project(1, 7, made["id"])
+        self.assertEqual(projects(), [
+            [("api", "#000000", "box")], [("core", "#000000", "box")], [("core", "#000000", "rig")], [],
+        ])
+
     def test_legacy_projects_get_a_stable_color(self):
         made = self.project()
         db.execute("UPDATE user_projects SET color='' WHERE id=?", (made["id"],))

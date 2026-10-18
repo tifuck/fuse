@@ -1123,8 +1123,9 @@ _PROJECT_SIDEBAR_SQL = """
     JOIN user_hosts h ON h.id=p.host_id AND h.user_id=p.user_id
     WHERE p.user_id=?
 """
-def list_sidebar_projects(user_id: int) -> list[dict]:
-    rows = db.fetchall(_PROJECT_SIDEBAR_SQL + " ORDER BY h.alias, p.name", (user_id,))
+def list_sidebar_projects(user_id: int, conn=None) -> list[dict]:
+    sql = _PROJECT_SIDEBAR_SQL + " ORDER BY h.alias, p.name"
+    rows = conn.execute(sql, (user_id,)).fetchall() if conn is not None else db.fetchall(sql, (user_id,))
     return [_project_sidebar_view(row) for row in rows]
 def search_projects(user_id: int, q: str) -> list[dict]:
     needle = q.strip()

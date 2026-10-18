@@ -428,8 +428,9 @@ def patch_host(user_id: int, host_id: int, raw: dict) -> dict:
     unknown = set(raw) - allowed
     if unknown:
         raise HostError("unsupported host fields")
-    with db.tx() as conn:
-        conn.execute("BEGIN IMMEDIATE")
+    from . import chat_store as store
+
+    with store.transaction() as conn:
         # Row-locked: every column is written back, so a concurrent patch read
         # from the same snapshot would revert a secret saved in between.
         row = conn.execute(
@@ -523,6 +524,8 @@ def patch_host(user_id: int, host_id: int, raw: dict) -> dict:
             if exc.errno == 1062:
                 raise HostError("alias already exists", 409) from exc
             raise HostError("could not update host", 500) from exc
+        if alias != row["alias"]:
+            projects_changed(conn, user_id)
         row = conn.execute("SELECT * FROM user_hosts WHERE id=?", (host_id,)).fetchone()
         public = _public_host(row, _projects(conn, user_id, host_id))
     if clear_pin or any(k in raw for k in ("username", "auth_type", "secret", "passphrase")):
@@ -534,8 +537,9 @@ def patch_host(user_id: int, host_id: int, raw: dict) -> dict:
 
 
 def delete_host(user_id: int, host_id: int) -> bool:
-    with db.tx() as conn:
-        conn.execute("BEGIN IMMEDIATE")
+    from . import chat_store as store
+
+    with store.transaction() as conn:
         row = conn.execute(
             "SELECT id FROM user_hosts WHERE id=? AND user_id=?", (host_id, user_id)
         ).fetchone()
@@ -544,13 +548,19 @@ def delete_host(user_id: int, host_id: int) -> bool:
         # Threads keep running without their host binding, but never point at
         # ids that this host's cascading project deletes (or a future reused
         # project rowid) will silently rebind to.
+        bound = "user_id=? AND (host_id=? OR project_id IN (SELECT id FROM user_projects WHERE host_id=? AND user_id=?))"
+        tids = [int(r["id"]) for r in conn.execute(
+            "SELECT id FROM chat_threads WHERE " + bound, (user_id, host_id, host_id, user_id)).fetchall()]
         conn.execute(
             """UPDATE chat_threads SET host_id=NULL,
                    project_id=CASE WHEN project_id IN (SELECT id FROM user_projects WHERE host_id=? AND user_id=?) THEN NULL ELSE project_id END
-               WHERE user_id=? AND (host_id=? OR project_id IN (SELECT id FROM user_projects WHERE host_id=? AND user_id=?))""",
+               WHERE """ + bound,
             (host_id, user_id, user_id, host_id, host_id, user_id),
         )
         conn.execute("DELETE FROM user_hosts WHERE id=? AND user_id=?", (host_id, user_id))
+        for tid in tids:
+            store.thread_event(conn, user_id, tid)
+        projects_changed(conn, user_id)
     _evict_pool(user_id, host_id)
     _publish(user_id, {"type": "host_removed", "id": int(host_id)})
     return True
@@ -569,8 +579,9 @@ def add_project(user_id: int, host_id: int, raw: dict) -> dict:
     perms = _project_permissions(raw.get("default_permissions"))
     color = _color(raw["color"]) if raw.get("color") else secrets.choice(PROJECT_COLORS)
     ts = db.now()
-    with db.tx() as conn:
-        conn.execute("BEGIN IMMEDIATE")
+    from . import chat_store as store
+
+    with store.transaction() as conn:
         host = conn.execute(
             "SELECT id FROM user_hosts WHERE id=? AND user_id=?", (host_id, user_id)
         ).fetchone()
@@ -587,6 +598,7 @@ def add_project(user_id: int, host_id: int, raw: dict) -> dict:
         except IntegrityError as exc:
             raise HostError("project already exists on this host", 409) from exc
         pid = db.last_id(conn)
+        projects_changed(conn, user_id)
         row = conn.execute("SELECT * FROM user_projects WHERE id=?", (pid,)).fetchone()
         return _project_view(row)
 
@@ -637,8 +649,17 @@ def patch_project(user_id: int, host_id: int, project_id: int, raw: dict) -> dic
             raise HostError("project already exists on this host", 409) from exc
         if "archived" in raw and raw["archived"] != bool(_row_get(row, "archived") or 0):
             set_project_archived(conn, user_id, project_id, raw["archived"])
+        projects_changed(conn, user_id)
         row = conn.execute("SELECT * FROM user_projects WHERE id=?", (project_id,)).fetchone()
         return _project_view(row)
+
+
+def projects_changed(conn, user_id: int) -> None:
+    """Every open chat page redraws its project rows from this list."""
+    from . import chat_store as store
+    from .chat_threads import list_sidebar_projects
+
+    store.event(conn, user_id, "projects.updated", payload={"projects": list_sidebar_projects(user_id, conn)})
 
 
 def set_project_archived(conn, user_id: int, project_id: int, archived: bool, *, skip_running: bool = False) -> list[int]:
@@ -701,8 +722,9 @@ def set_project_logo(user_id: int, project_id: int, mime: str, data: bytes) -> d
     if not any(data.startswith(magic) for magic in _LOGO_MAGIC[mime]) or (mime == "image/webp" and data[8:12] != b"WEBP"):
         raise HostError("logo file does not match its type")
     ts = db.now()
-    with db.tx() as conn:
-        conn.execute("BEGIN IMMEDIATE")
+    from . import chat_store as store
+
+    with store.transaction() as conn:
         row = conn.execute("SELECT * FROM user_projects WHERE id=? AND user_id=?", (project_id, user_id)).fetchone()
         if row is None:
             raise HostError("project not found", 404)
@@ -715,18 +737,21 @@ def set_project_logo(user_id: int, project_id: int, mime: str, data: bytes) -> d
             "UPDATE user_projects SET logo_rev=logo_rev+1, updated_at=? WHERE id=? AND user_id=?",
             (ts, project_id, user_id),
         )
+        projects_changed(conn, user_id)
         row = conn.execute("SELECT * FROM user_projects WHERE id=?", (project_id,)).fetchone()
         return _project_view(row)
 
 
 def clear_project_logo(user_id: int, project_id: int) -> dict:
-    with db.tx() as conn:
-        conn.execute("BEGIN IMMEDIATE")
+    from . import chat_store as store
+
+    with store.transaction() as conn:
         row = conn.execute("SELECT * FROM user_projects WHERE id=? AND user_id=?", (project_id, user_id)).fetchone()
         if row is None:
             raise HostError("project not found", 404)
         conn.execute("DELETE FROM project_logos WHERE project_id=? AND user_id=?", (project_id, user_id))
         conn.execute("UPDATE user_projects SET logo_rev=0, updated_at=? WHERE id=? AND user_id=?", (db.now(), project_id, user_id))
+        projects_changed(conn, user_id)
         row = conn.execute("SELECT * FROM user_projects WHERE id=?", (project_id,)).fetchone()
         return _project_view(row)
 
@@ -824,6 +849,7 @@ def delete_project(user_id: int, host_id: int, project_id: int, *, sessions: str
             "DELETE FROM user_projects WHERE id=? AND user_id=? AND host_id=?",
             (project_id, user_id, host_id),
         )
+        projects_changed(conn, user_id)
     # Wake live workers after the commit, as delete_thread does.
     from . import chat_runs, command_jobs
     from .vault import unpin_run
@@ -880,6 +906,7 @@ def _delete_archived_project(user_id: int, host_id: int, project_id: int, archiv
             "DELETE FROM user_projects WHERE id=? AND user_id=? AND host_id=?",
             (project_id, user_id, host_id),
         )
+        projects_changed(conn, user_id)
     from . import command_jobs
 
     for tid in ids:
