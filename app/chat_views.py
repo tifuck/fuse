@@ -301,7 +301,7 @@ def _child_display(run: dict, *, include_current: bool = False) -> tuple[list[di
             continue
         from . import context_compact as ctxmod, context_meter
 
-        if ctxmod.is_compact_ack(text):
+        if ctxmod.is_compact_ack(text) or text.strip() == ctxmod.COMPACT_CONTINUE:
             continue
         flush_pending()
         n += 1

@@ -723,6 +723,42 @@ class LoopTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(p.get("tool_choice") == "none" for p in payloads))
         self.assertGreaterEqual(len(payloads), 4)
 
+    async def test_tool_calls_finish_without_runnable_call_ends_the_turn(self):
+        # finish_reason tool_calls with only nameless (or no) calls is not a
+        # tool round; it used to resend the same request until the wall clock.
+        for content, tool_calls in (("", [{"id": "bad", "function": {"name": "", "arguments": "{}"}}]),
+                                    ("Here is the answer.", [{"id": "bad", "function": {"arguments": "{}"}}]),
+                                    ("", [])):
+            payloads = []
+
+            async def invoke(request, user, payload, **_kwargs):
+                payloads.append(dict(payload))
+                if len(payloads) > 5:
+                    return user, FakeSrc("llama"), "m", "m", FakeResult(
+                        200, {"choices": [{"message": {"content": "looped"}, "finish_reason": "stop"}]})
+                message = {"role": "assistant", "content": content}
+                if tool_calls:
+                    message["tool_calls"] = tool_calls
+                return user, FakeSrc("llama"), "m", "m", FakeResult(
+                    200, {"choices": [{"message": message, "finish_reason": "tool_calls"}]})
+
+            ran = []
+
+            async def fake_tools(calls, **_kwargs):
+                ran.append(calls)
+                yield []
+
+            with patch("app.chat_runtime._run_tools", fake_tools):
+                body, _ = await self._run_raw(invoke, {
+                    "model": "test-model", "messages": [{"role": "user", "content": "hi"}],
+                    "tools": ["web_search"], "agent": {"coding": True, "project_session": True},
+                })
+            self.assertEqual(ran, [])
+            self.assertEqual(len(payloads), 1, (content, tool_calls))
+            self.assertNotIn(b"looped", body)
+            if content:
+                self.assertIn(content.encode(), body)
+
     async def test_search_last_round_executes_tools_then_wraps(self):
         payloads = []
         rounds = {"n": 0}

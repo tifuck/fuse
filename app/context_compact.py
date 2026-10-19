@@ -39,6 +39,13 @@ COMPACT_ACK = (
     "Acknowledged. I have the compacted context and will continue from the "
     "handoff alone."
 )
+# Sent after the ACK when no user row follows it: providers reject a request
+# that ends on an assistant turn (Claude 4.6+: "does not support assistant
+# message prefill").
+COMPACT_CONTINUE = (
+    "[Fuse] Context compacted. Continue from the handoff above. "
+    "Server-added notice, not user input."
+)
 COMPACT_PREAMBLE = (
     "[Compacted conversation]\n"
     "This session is being continued from a previous conversation that ran out of context. "
@@ -656,11 +663,12 @@ def _summary_span(text: str, cap: int) -> str:
 def compact_result_body(text: str) -> str:
     """The <summary> block of a compaction reply; the <analysis> scratchpad is dropped."""
     body = (text or "").strip()
-    match = re.search(r"<summary>([\s\S]*?)</summary>", body, re.IGNORECASE)
-    if match:
-        return match.group(1).strip()
     cut = body.lower().rfind("</analysis>")
-    return body[cut + len("</analysis>"):].strip() if cut >= 0 else body
+    if cut >= 0:
+        body = body[cut + len("</analysis>"):].strip()
+    # Greedy: the summary may quote <details><summary>…</summary> markup.
+    match = re.search(r"<summary>([\s\S]*)</summary>", body, re.IGNORECASE)
+    return match.group(1).strip() if match else body
 
 def is_compact_ack(text: str) -> bool:
     return (text or "").strip() == COMPACT_ACK
@@ -789,6 +797,23 @@ def preserve_budget(limit: int | None) -> int:
         window = config().default_window
     usable = max(0, window - config().output_reserve)
     return min(MAX_PRESERVE_RECENT, max(MIN_PRESERVE_RECENT, usable // 4))
+
+def split_trailing_users(messages: list | None, limit: int | None) -> tuple[list[dict], list[dict]]:
+    """(rows to summarize, user rows after the last reply to re-send verbatim).
+
+    The trailing user rows are the request being answered, images included.
+    They stay out of the summary when they fit the preserve budget and the
+    rest is still worth summarizing; otherwise everything is summarized.
+    """
+    rows = [msg for msg in (messages or []) if isinstance(msg, dict)]
+    cut = len(rows)
+    while cut and rows[cut - 1].get("role") == "user":
+        cut -= 1
+    head, tail = rows[:cut], rows[cut:]
+    if (not tail or not compactable_transcript(head, provider=True)
+            or estimate_messages(tail) > preserve_budget(limit)):
+        return rows, []
+    return head, tail
 
 def continuation(summary: str, tail: list[dict] | None = None, *, pinned: str = "") -> list[dict]:
     """The handoff alone. `tail` is ignored: compaction replaces every earlier turn."""
@@ -1028,6 +1053,7 @@ def durable_checkpoint(
     checkpoint: dict,
     *,
     keep_tail: int | None = None,
+    held: int = 0,
 ) -> dict | None:
     """Durable twin of a boot-time live checkpoint, or None.
 
@@ -1037,6 +1063,8 @@ def durable_checkpoint(
     the durable rows with the same rule and point `through_message_id` at the
     last id'd user/assistant row of the durable head. The projection then
     reuses this summary on every later turn instead of re-summarizing.
+    `held` trailing user rows were re-sent verbatim, not summarized, so the
+    anchor stops before them.
     """
     if not durable_messages or not isinstance(checkpoint, dict):
         return None
@@ -1044,6 +1072,10 @@ def durable_checkpoint(
         return None
     head = [msg for msg in durable_messages if isinstance(msg, dict)]
     tail: list[dict] = []
+    if held > 0:
+        users = [i for i, msg in enumerate(head) if msg.get("role") == "user"]
+        cut = users[-held] if len(users) >= held else 0
+        head, tail = head[:cut], head[cut:]
     if not head:
         return None
     through = None

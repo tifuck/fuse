@@ -851,6 +851,14 @@ class DurableCheckpointTest(unittest.TestCase):
         self.assertIn("the handoff", projected[0]["content"])
         self.assertLess(context_meter.estimate_messages(projected), context_meter.estimate_messages(self._durable()))
 
+    def test_twin_anchors_before_held_user_rows(self):
+        durable = self._durable()
+        durable.append({"id": "new", "role": "user", "content": "the new ask"})
+        cp = context_compact.durable_checkpoint(durable, {"summary": "the handoff"}, held=1)
+        self.assertEqual(cp["through_message_id"], "a11")
+        projected = context_compact.project_transcript(durable, context_compact.append_checkpoint({}, cp))
+        self.assertEqual(projected[-1]["id"], "new")
+
     def test_twin_needs_ids_and_enough_rows(self):
         no_ids = [{"role": "user", "content": "q"} for _ in range(20)]
         self.assertIsNone(context_compact.durable_checkpoint(no_ids, {"summary": "s"}))
@@ -1005,6 +1013,62 @@ class DurableCompactCurrentTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["tool_call_id"], calls[0]["id"])
         self.assertEqual(results[0]["content"], "Skill body stays.")
+        # Nothing followed the ACK, so the request still ends on a user row.
+        self.assertEqual(rebuilt[-1], {"role": "user", "content": context_compact.COMPACT_CONTINUE})
+
+    async def _compact(self, current, **kwargs):
+        from unittest.mock import patch
+
+        from starlette.requests import Request as StarletteRequest
+
+        from app.chat_runtime import _compact_current
+
+        seen = []
+
+        async def fake_sum(request, user, model, head, instructions="", **_kwargs):
+            seen.append(head)
+            return "handoff"
+
+        request = StarletteRequest(
+            {"type": "http", "method": "POST", "path": "/", "headers": [], "client": ("127.0.0.1", 1)},
+            lambda: None,
+        )
+        with (
+            patch("app.chat_runtime.summarize_conversation", fake_sum),
+            patch("app.chat_store.apply_compaction_checkpoint") as apply_cp,
+        ):
+            rebuilt, _meter, kind = await _compact_current(
+                current, request=request, user={"id": 1}, model="offline", type_id="openai",
+                trigger="auto", thread_id=42, override=2048, **kwargs)
+        self.assertEqual(kind, "summarize")
+        return rebuilt, seen[0], apply_cp
+
+    async def test_boot_compact_resends_the_new_user_turn_verbatim(self):
+        current = [{"role": "system", "content": "sys"}]
+        for i in range(10):
+            current.append({"role": "user", "content": f"q{i} " + "w" * 400})
+            current.append({"role": "assistant", "content": f"a{i} " + "w" * 400})
+        ask = {"role": "user", "content": [
+            {"type": "text", "text": "what is in this picture?"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]}
+        current.append(ask)
+        durable = [{"id": f"d{i}", "role": row["role"], "content": row["content"]}
+                   for i, row in enumerate(current[1:])]
+        rebuilt, summarized, apply_cp = await self._compact(current, durable_messages=durable)
+        self.assertNotIn(ask, summarized)
+        self.assertEqual([m["role"] for m in rebuilt], ["system", "user", "assistant", "user"])
+        self.assertTrue(rebuilt[1]["content"].startswith(context_compact.COMPACT_PREAMBLE))
+        self.assertEqual(rebuilt[-1], ask)
+        persisted = apply_cp.call_args.args[2]
+        self.assertEqual(persisted["through_message_id"], durable[-2]["id"])
+
+    async def test_mid_run_compact_ends_on_a_user_row(self):
+        current = [{"role": "system", "content": "sys"}, {"role": "user", "content": "go"}]
+        for i in range(6):
+            current += _tool_round(i, 2_000)
+        rebuilt, _summarized, _apply = await self._compact(current)
+        self.assertEqual([m["role"] for m in rebuilt], ["system", "user", "assistant", "user"])
+        self.assertEqual(rebuilt[-1]["content"], context_compact.COMPACT_CONTINUE)
 
 
 class RetainedSkillRowsTest(unittest.TestCase):
@@ -1157,6 +1221,15 @@ class SubagentHandoffTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("thinking out loud", context_compact.compact_result_body(reply))
         self.assertEqual(context_compact.compact_result_body("plain fallback"), "plain fallback")
         self.assertEqual(context_compact.compact_result_body("<analysis>\nplan\n</analysis>\nbody only"), "body only")
+
+    def test_compact_result_body_keeps_quoted_details_summary(self):
+        reply = ("<analysis>\nThe user wants <summary> tags kept.\n</analysis>\n<summary>\n## Current Work\n"
+                 "<details><summary>Log</summary>\nfail\n</details>\n9. Optional Next Step: rerun\n</summary>")
+        body = context_compact.compact_result_body(reply)
+        self.assertTrue(body.startswith("## Current Work"), body)
+        self.assertIn("<details><summary>Log</summary>", body)
+        self.assertTrue(body.endswith("9. Optional Next Step: rerun"), body)
+        self.assertNotIn("tags kept", body)
 
     async def test_truncate_fallback_describes_the_actual_dropped_span(self):
         head = [{"role": "user", "content": "first ask"}]

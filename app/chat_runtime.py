@@ -394,7 +394,9 @@ async def _compact_current(
         chat_history.for_model(current_messages, model), model=model, type_id=type_id, tools=tools,
         override=override, calibration=calibration,
     )
-    dropped, kept = source, []
+    # The request being answered (trailing user rows, images included) is
+    # re-sent verbatim after the handoff, so the request ends on a user row.
+    dropped, kept = ctxmod.split_trailing_users(source, snap["limit"])
     can_summarize = bool(dropped) and ctxmod.compactable_transcript(source, provider=True) and (
         trigger != "auto" or context_meter.should_compact(snap["used"], snap["limit"])
     )
@@ -410,7 +412,7 @@ async def _compact_current(
         checkpoint = await _touch_run_while(
             run_id,
             ctxmod.build_checkpoint(
-                source,
+                dropped,
                 strategy=cfg.strategy,
                 instructions=focus,
                 trigger=trigger,
@@ -430,6 +432,8 @@ async def _compact_current(
             *system,
             *ctxmod.continuation(checkpoint["summary"], kept, pinned=pinned),
             *ctxmod.retained_skill_rows(source),
+            # Providers reject a request that ends on the ACK (assistant prefill).
+            *(kept or [{"role": "user", "content": ctxmod.COMPACT_CONTINUE}]),
         ]
         after = context_meter.meter_from_messages(chat_history.for_model(rebuilt, model), model=model, type_id=type_id,
                                                   tools=tools, override=override, calibration=calibration)
@@ -446,7 +450,7 @@ async def _compact_current(
                 # A boot compact on a fresh turn summarizes exactly the
                 # durable rows; anchor the projection so later turns reuse
                 # this summary instead of re-summarizing every turn.
-                ctxmod.durable_checkpoint(durable_messages, checkpoint) or checkpoint,
+                ctxmod.durable_checkpoint(durable_messages, checkpoint, held=len(kept)) or checkpoint,
             )
             try:
                 await asyncio.to_thread(store.apply_compaction_checkpoint, *apply, meter=after, run_id=run_id)
@@ -1266,7 +1270,8 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 if first_tools_request and _TOOLS_UNSUPPORTED.search(msg or ""):
                     # One-shot compatibility path. Folding tools into text changes
                     # the prefix, so it stays on this request's copy only.
-                    api._safe_record_usage(
+                    await asyncio.to_thread(
+                        api._safe_record_usage,
                         _user["id"], src.source_id, result.credential_id, upstream,
                         result.usage, key_id=_user.get("key_id"), provider=src.type_id,
                         requested_model=requested, request_status="failed", count_request=False,
@@ -1316,7 +1321,8 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 break
 
             if result.status != 200:
-                api._safe_record_usage(
+                await asyncio.to_thread(
+                    api._safe_record_usage,
                     _user["id"], src.source_id, result.credential_id, upstream,
                     result.usage, key_id=_user.get("key_id"), provider=src.type_id,
                     requested_model=requested, request_status="failed", count_request=True,
@@ -1531,8 +1537,13 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                         error="Tool call had no function name.",
                     )
             calls = [c for c in raw_calls if isinstance(c, dict) and (c.get("function") or {}).get("name")]
+            summary["calls"] = calls
             if calls:
                 summary["finish"] = "tool_calls"
+            elif summary.get("finish") == "tool_calls":
+                # Nothing runnable came back: not a tool round. Treating it as
+                # one re-sent the identical request until the wall clock.
+                summary["finish"] = "stop"
             finish = summary.get("finish")
             # A response cut off mid-arguments invalidates only that call: its
             # well-formed siblings still run, and the truncated ones are
