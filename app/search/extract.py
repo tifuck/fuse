@@ -54,7 +54,7 @@ CHROME_ROLES = frozenset(
 _CHROME_TOKEN = re.compile(
     r"^(?:nav|navbar|navbox|navigation|menu|menubar|sidebar|side-bar|sidenav|"
     r"breadcrumbs?|toc|table-of-contents|site-footer|site-header|footer|masthead|"
-    r"cookies?|cookie-?\w*|\w*-cookies?|\w*consent\w*|gdpr\w*|share|sharing|share-\w+|"
+    r"cookies?|cookie-?\w*|\w*-cookies?|(?=\w*consent)\w*|gdpr\w*|share|sharing|share-\w+|"
     r"social|social-\w+|newsletter|subscribe|related|related-\w+|recommended|promo|"
     r"advert\w*|ads|ad-slot|ad-container|banner-ad|skip-?links?|skip-to-content|"
     r"sr-only|visually-hidden|screen-reader-text|mw-editsection|mw-jump-link|catlinks|"
@@ -92,8 +92,7 @@ _LANG_RE = re.compile(r"(?:^|\s)(?:language|lang|highlight-source|highlight|brus
 _BR = " "  # <br> marker inside inline runs; never appears in page text we keep
 _INLINE_WS = re.compile(r"[ \t\n\r\f\v ​‌‍﻿]+")
 _MULTI_NL = re.compile(r"\n{3,}")
-_TRAILING_WS = re.compile(r"[ \t]+\n")
-_HEADING_TRAIL = re.compile(r"\s*[¶#🔗§]+\s*$")
+_HEADING_MARKS = "¶#🔗§"
 _CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _OUTLINE_RE = re.compile(r"^(#{1,6}) (.+)$")
 _FENCE_RE = re.compile(r"^(```|~~~)")
@@ -256,6 +255,95 @@ def _text_len(node) -> int:
     return len(_INLINE_WS.sub(" ", node.text(deep=True) or "").strip())
 
 
+# A run summarises one string s for _text_len's len(sub(s).strip()) as
+# (length, leading spaces, trailing spaces, starts with a collapsed run, ends
+# with one), so runs of adjacent text join without rereading the text.
+_NO_RUN = (0, 0, 0, False, False)
+
+
+def _run(text: str, collapsed: bool) -> tuple:
+    n = len(text)
+    return (n, n - len(text.lstrip()), n - len(text.rstrip()),
+            collapsed and text[:1] == " ", collapsed and text[-1:] == " ")
+
+
+def _join_runs(a: tuple, b: tuple) -> tuple:
+    if not a[0]:
+        return b
+    if not b[0]:
+        return a
+    merged = 1 if a[4] and b[3] else 0
+    lead = a[1] if a[1] < a[0] else a[0] + b[1] - merged
+    trail = b[2] if b[2] < b[0] else b[0] + a[2] - merged
+    return (a[0] + b[0] - merged, lead, trail, a[3], b[4])
+
+
+def _run_len(run: tuple) -> int:
+    return 0 if run[1] == run[0] else run[0] - run[1] - run[2]
+
+
+class _Sizes:
+    """Per element: _text_len, the stripped text length of its links, and
+    whether css_first("article, main, [role=main]") finds anything.
+
+    Memoized bottom-up, so each subtree is read once: measuring every level
+    of deeply nested wrappers separately is quadratic in the nesting depth.
+    Valid only while the tree is unchanged.
+    """
+
+    def __init__(self, root) -> None:
+        self._memo: dict[int, tuple] = {}
+        # css() matches root itself too.
+        self._content = {node.mem_id for node in root.css("article, main, [role=main]")}
+
+    def text_len(self, node) -> int:
+        return _run_len(self._stats(node)[0])
+
+    def link_len(self, node) -> int:
+        return self._stats(node)[2]
+
+    def holds_content(self, node) -> bool:
+        return self._stats(node)[3]
+
+    def _stats(self, top) -> tuple:
+        """(collapsed run, raw run, link chars, holds content) of top."""
+        memo = self._memo
+        if top.mem_id in memo:
+            return memo[top.mem_id]
+        content = self._content
+        frames = [[top, top.iter(include_text=True), _NO_RUN, _NO_RUN, 0, top.mem_id in content]]
+        while frames:
+            frame = frames[-1]
+            for child in frame[1]:
+                tag = child.tag
+                if tag == "-text":
+                    text = child.text_content or ""
+                    frame[2] = _join_runs(frame[2], _run(_INLINE_WS.sub(" ", text), True))
+                    frame[3] = _join_runs(frame[3], _run(text, False))
+                elif tag and not tag.startswith("-"):
+                    stats = memo.get(child.mem_id)
+                    if stats is None:
+                        frames.append([child, child.iter(include_text=True), _NO_RUN, _NO_RUN, 0, child.mem_id in content])
+                        break
+                    frame[2] = _join_runs(frame[2], stats[0])
+                    frame[3] = _join_runs(frame[3], stats[1])
+                    frame[4] += stats[2]
+                    frame[5] = frame[5] or stats[3]
+            else:
+                frames.pop()
+                node, _, run, raw, links, holds = frame
+                if node.tag == "a":
+                    links += _run_len(raw)
+                memo[node.mem_id] = (run, raw, links, holds)
+                if frames:
+                    parent = frames[-1]
+                    parent[2] = _join_runs(parent[2], run)
+                    parent[3] = _join_runs(parent[3], raw)
+                    parent[4] += links
+                    parent[5] = parent[5] or holds
+        return memo[top.mem_id]
+
+
 def _remove(root, judge) -> None:
     """Decompose every element judge() picks, never descending into one.
 
@@ -282,53 +370,63 @@ def _strip_junk(root) -> None:
 def _prune(body) -> None:
     """Drop hidden nodes and site chrome, but never a wrapper of the content."""
     total = max(1, _text_len(body))
+    sizes = _Sizes(body)
+    inside: dict[int, bool] = {}
 
     def judge(node) -> bool:
         tag = node.tag
         attrs = node.attributes
         if tag == "header":
-            chrome = not _inside_content(node)
+            chrome = not _inside_content(node, inside)
         elif tag == "form":
-            return _text_len(node) < 0.5 * total and node.css_first("article, main, [role=main]") is None
+            return sizes.text_len(node) < 0.5 * total and not sizes.holds_content(node)
         else:
             chrome = _is_hidden(attrs) or _is_chrome(tag, attrs)
         if not chrome:
             return False
-        if node.css_first("article, main, [role=main]") is not None:
+        if sizes.holds_content(node):
             return False
-        return _text_len(node) <= 0.4 * total
+        return sizes.text_len(node) <= 0.4 * total
 
     _remove(body, judge)
 
 
-def _inside_content(node) -> bool:
+def _inside_content(node, memo: dict[int, bool]) -> bool:
+    """An article/main ancestor below body; memo maps each ancestor walked to
+    whether it or one of its own ancestors is one."""
+    walked = []
+    found = False
     parent = node.parent
     while parent is not None and parent.tag not in ("body", "html"):
+        if parent.mem_id in memo:
+            found = memo[parent.mem_id]
+            break
         if parent.tag in ("article", "main") or (parent.attributes.get("role") or "") == "main":
-            return True
+            found = True
+            break
+        walked.append(parent.mem_id)
         parent = parent.parent
-    return False
-
-
-def _link_len(node) -> int:
-    return sum(len((a.text() or "").strip()) for a in node.css("a"))
+    for key in walked:
+        memo[key] = found
+    return found
 
 
 def _pick_root(tree: LexborHTMLParser, body):
     seen: set[int] = set()
     ranked = []
     articles = 0
+    sizes = _Sizes(tree.root)
     for node in tree.css(MAIN_SELECTOR):
         if node.mem_id in seen:
             continue
         seen.add(node.mem_id)
-        length = _text_len(node)
+        length = sizes.text_len(node)
         if not length:
             continue
         if node.tag == "article":
             articles += 1
         is_main = node.tag == "main" or (node.attributes.get("role") or "") == "main"
-        score = length - 2 * _link_len(node) + (100 if is_main else 0)
+        score = length - 2 * sizes.link_len(node) + (100 if is_main else 0)
         ranked.append((score, length, node))
     if not ranked:
         return body, False
@@ -513,7 +611,7 @@ def _render_block(node, ctx: _Ctx, depth: int) -> list[str]:
         return [text] if text else []
     level = HEADING_LEVEL.get(tag)
     if level:
-        text = _HEADING_TRAIL.sub("", _norm_inline(_inline(node, ctx, depth)).replace("\n", " "))
+        text = _trim_heading(_norm_inline(_inline(node, ctx, depth)).replace("\n", " "))
         return [f"{'#' * level} {text[:300]}"] if text else []
     if tag == "pre":
         return _render_pre(node)
@@ -534,6 +632,13 @@ def _render_block(node, ctx: _Ctx, depth: int) -> list[str]:
     if tag == "hr":
         return []
     return _render_children(node, ctx, depth)
+
+
+def _trim_heading(text: str) -> str:
+    """Drop trailing anchor marks ("Install ¶") and the spaces around them."""
+    body = text.rstrip()
+    core = body.rstrip(_HEADING_MARKS)
+    return core.rstrip() if len(core) < len(body) else text
 
 
 def _render_pre(node) -> list[str]:
@@ -706,8 +811,14 @@ def _render_root(root, ctx: _Ctx) -> str:
     return _collapse("\n\n".join(blocks))
 
 
+def _strip_line_ends(text: str) -> str:
+    """Drop spaces and tabs before each newline; the last line keeps its own."""
+    lines = text.split("\n")
+    return "\n".join([line.rstrip(" \t") for line in lines[:-1]] + lines[-1:])
+
+
 def _collapse(text: str) -> str:
-    text = _TRAILING_WS.sub("\n", text)
+    text = _strip_line_ends(text)
     text = _MULTI_NL.sub("\n\n", text)
     return text.strip()
 
@@ -754,25 +865,83 @@ def _clean_plain(raw: str) -> str:
     """Plain text, markdown and code keep their lines and indentation."""
     text = (raw or "").replace("\r\n", "\n").replace("\r", "\n").lstrip("﻿")
     text = _CTRL.sub("", text)
-    text = _TRAILING_WS.sub("\n", text)
+    text = _strip_line_ends(text)
     text = re.sub(r"\n{4,}", "\n\n\n", text)
     return text.strip("\n")
 
 
-_FEED_ITEM = re.compile(r"(?is)<(item|entry)\b.*?</\1>")
+_FEED_ITEM_OPEN = re.compile(r"(?i)<(item|entry)\b")
+# (opener, pattern): each pattern fails at every later opener once it fails at
+# the first (it needs a ">" and then a close tag after it), so one anchored try
+# finds what pattern.search would without rescanning the rest per opener.
 _FEED_FIELD = {
-    "title": re.compile(r"(?is)<title[^>]*>(.*?)</title>"),
-    "link": re.compile(r"(?is)<link[^>]*>(.*?)</link>|<link[^>]*href=[\"']([^\"']+)[\"']"),
-    "date": re.compile(r"(?is)<(?:pubDate|published|updated|dc:date)[^>]*>(.*?)</"),
-    "summary": re.compile(r"(?is)<(?:description|summary|content)[^>]*>(.*?)</(?:description|summary|content)>"),
+    "title": (re.compile(r"(?i)<title"), re.compile(r"(?is)<title[^>]*>(.*?)</title>")),
+    "date": (
+        re.compile(r"(?i)<(?:pubDate|published|updated|dc:date)"),
+        re.compile(r"(?is)<(?:pubDate|published|updated|dc:date)[^>]*>(.*?)</"),
+    ),
+    "summary": (
+        re.compile(r"(?i)<(?:description|summary|content)"),
+        re.compile(r"(?is)<(?:description|summary|content)[^>]*>(.*?)</(?:description|summary|content)>"),
+    ),
 }
+_LINK_OPEN = re.compile(r"(?i)<link")
+_LINK_PAIR = re.compile(r"(?is)<link[^>]*>(.*?)</link>")
+_LINK_HREF = re.compile(r"(?is)<link[^>]*href=[\"']([^\"']+)[\"']")
+
+
+def _feed_items(raw: str):
+    """The blocks (?is)<(item|entry)\\b.*?</\\1> finds, in one pass.
+
+    Once no close tag follows one opener, none follows a later opener of the
+    same name, so that name is not searched for again.
+    """
+    unclosed: set[str] = set()
+    pos = 0
+    while (start := _FEED_ITEM_OPEN.search(raw, pos)) is not None:
+        name = start.group(1).lower()
+        end = None
+        if name not in unclosed:
+            end = re.compile(f"(?i)</{re.escape(name)}>").search(raw, start.end())
+        if end is None:
+            unclosed.add(name)
+            pos = start.end()
+            continue
+        yield raw[start.start():end.end()]
+        pos = end.end()
+
+
+def _feed_field(name: str, block: str):
+    if name == "link":
+        return _feed_link(block)
+    opener, pattern = _FEED_FIELD[name]
+    start = opener.search(block)
+    return pattern.match(block, start.start()) if start else None
+
+
+def _feed_link(block: str):
+    """<link>url</link>, else the first <link … href="url"> (RSS, then Atom)."""
+    start = _LINK_OPEN.search(block)
+    if start is None:
+        return None
+    match = _LINK_PAIR.match(block, start.start())
+    while match is None:
+        match = _LINK_HREF.match(block, start.start())
+        if match is not None:
+            break
+        # Openers before the same ">" see the same attributes: skip them.
+        close = block.find(">", start.start())
+        start = _LINK_OPEN.search(block, close) if close >= 0 else None
+        if start is None:
+            return None
+    return match
 
 
 def _feed_text(raw: str) -> str:
     """RSS/Atom feeds as a dated markdown list instead of raw XML."""
 
     def field_of(name: str, block: str) -> str:
-        match = _FEED_FIELD[name].search(block)
+        match = _feed_field(name, block)
         if not match:
             return ""
         value = next((g for g in match.groups() if g), "")
@@ -782,14 +951,13 @@ def _feed_text(raw: str) -> str:
         return value.strip()
 
     lines: list[str] = []
-    channel = _FEED_FIELD["title"].search(raw[:4000])
+    channel = _feed_field("title", raw[:4000])
     if channel:
         lines.append("# " + _norm_inline(re.sub(r"(?is)<!\[CDATA\[(.*)\]\]>", r"\1", channel.group(1))))
-    for index, match in enumerate(_FEED_ITEM.finditer(raw)):
+    for index, block in enumerate(_feed_items(raw)):
         if index >= FEED_MAX_ITEMS:
             lines.append(f"(… more feed items not shown)")
             break
-        block = match.group(0)
         title = _norm_inline(field_of("title", block)).replace("\n", " ")
         link = field_of("link", block)
         date = field_of("date", block)
