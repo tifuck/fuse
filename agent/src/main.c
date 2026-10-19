@@ -236,8 +236,10 @@ int main(int argc, char **argv) {
     ensure_home_env(); /* before any thread: setenv is not thread-safe */
     srand((unsigned)(time(NULL) ^ getpid()));
     setvbuf(stderr, NULL, _IOLBF, 0);
-    SSL_library_init();
-    SSL_load_error_strings();
+    /* No openssl.cnf: the static build's OPENSSLDIR is a writable /tmp path,
+     * and a planted config could load any provider into this process. */
+    OPENSSL_init_ssl(OPENSSL_INIT_NO_LOAD_CONFIG | OPENSSL_INIT_LOAD_SSL_STRINGS | OPENSSL_INIT_LOAD_CRYPTO_STRINGS,
+                     NULL);
     const char *cmd = "run";
     int i = 1;
     if (i < argc && argv[i][0] != '-') cmd = argv[i++];

@@ -174,12 +174,39 @@ static int connect_timeout(int fd, const struct sockaddr *sa, socklen_t len, int
 static SSL_CTX *s_ctx;
 static pthread_once_t s_ctx_once = PTHREAD_ONCE_INIT;
 
+/* The system CA bundle by fixed path, never OpenSSL's default paths: the
+ * static arm64 build's OPENSSLDIR is under /tmp, so any local user could
+ * plant a trusted cert there (and a clean host has no CAs there at all). */
+static const char *const CA_FILES[] = {
+    "/etc/ssl/certs/ca-certificates.crt",                /* Debian, Ubuntu, Arch, Alpine */
+    "/etc/pki/tls/certs/ca-bundle.crt",                  /* Fedora, RHEL */
+    "/etc/ssl/ca-bundle.pem",                            /* openSUSE */
+    "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem", /* RHEL, CentOS */
+    "/etc/ssl/cert.pem",                                 /* Alpine, others */
+    NULL,
+};
+
+/* SSL_CERT_FILE first, then the first file in files that yields a cert.
+ * Returns the loaded path, or NULL when nothing loaded. */
+const char *tls_load_ca(SSL_CTX *ctx, const char *const *files) {
+    const char *env = getenv("SSL_CERT_FILE");
+    if (env && *env && SSL_CTX_load_verify_locations(ctx, env, NULL) == 1) return env;
+    for (; *files; files++)
+        if (SSL_CTX_load_verify_locations(ctx, *files, NULL) == 1) return *files;
+    return NULL;
+}
+
 static void ctx_init(void) {
     s_ctx = SSL_CTX_new(TLS_client_method());
     if (!s_ctx) return;
     SSL_CTX_set_verify(s_ctx, SSL_VERIFY_PEER, NULL);
-    SSL_CTX_set_default_verify_paths(s_ctx);
     SSL_CTX_set_min_proto_version(s_ctx, TLS1_2_VERSION);
+    if (!tls_load_ca(s_ctx, CA_FILES)) {
+        fprintf(stderr, "fuse-agent: no CA bundle found (set SSL_CERT_FILE or install ca-certificates); "
+                        "refusing TLS connections\n");
+        SSL_CTX_free(s_ctx);
+        s_ctx = NULL;
+    }
 }
 
 /* The last resumable session, keyed by host:port, so a reconnect resumes

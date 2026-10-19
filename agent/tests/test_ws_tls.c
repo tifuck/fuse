@@ -1,12 +1,17 @@
 /* ws_send over real TLS: masked frames round-trip, and a frame is one
  * SSL_write (the fewest TLS records), not a header record plus a record per
- * 4 KB piece. ws_read_text reads a large server frame back. */
+ * 4 KB piece. ws_read_text reads a large server frame back.
+ * tls_load_ca trusts only SSL_CERT_FILE or the listed bundles, and loads
+ * nothing (so the client refuses TLS) when none of them yields a cert. */
 #include "../src/agent.h"
 #include "../src/net.h"
 #include <assert.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
+#include <openssl/pem.h>
 #include <openssl/x509.h>
+
+const char *tls_load_ca(SSL_CTX *ctx, const char *const *files);
 #include <pthread.h>
 #include <sys/socket.h>
 
@@ -61,6 +66,45 @@ static void *server(void *arg) {
     return NULL;
 }
 
+static int store_count(SSL_CTX *ctx) {
+    return sk_X509_OBJECT_num(X509_STORE_get0_objects(SSL_CTX_get_cert_store(ctx)));
+}
+
+static void check_load_ca(X509 *cert) {
+    char dir[] = "/tmp/fuse-ca-test-XXXXXX", pem[64], empty[64];
+    assert(mkdtemp(dir));
+    snprintf(pem, sizeof(pem), "%s/ca.pem", dir);
+    snprintf(empty, sizeof(empty), "%s/empty.pem", dir);
+    FILE *f = fopen(pem, "w");
+    assert(f && PEM_write_X509(f, cert) == 1);
+    fclose(f);
+    f = fopen(empty, "w");
+    assert(f);
+    fclose(f);
+    unsetenv("SSL_CERT_FILE");
+
+    const char *none[] = {"/nonexistent/ca.pem", empty, NULL};
+    SSL_CTX *c = SSL_CTX_new(TLS_client_method());
+    assert(tls_load_ca(c, none) == NULL && store_count(c) == 0);
+    SSL_CTX_free(c);
+
+    const char *later[] = {"/nonexistent/ca.pem", empty, pem, NULL};
+    c = SSL_CTX_new(TLS_client_method());
+    assert(tls_load_ca(c, later) == pem && store_count(c) == 1);
+    SSL_CTX_free(c);
+
+    setenv("SSL_CERT_FILE", pem, 1);
+    c = SSL_CTX_new(TLS_client_method());
+    const char *got = tls_load_ca(c, none);
+    assert(got && strcmp(got, pem) == 0 && store_count(c) == 1);
+    SSL_CTX_free(c);
+    unsetenv("SSL_CERT_FILE");
+
+    unlink(pem);
+    unlink(empty);
+    rmdir(dir);
+}
+
 int main(void) {
     EVP_PKEY *key = EVP_EC_gen("P-256");
     X509 *cert = X509_new();
@@ -72,6 +116,7 @@ int main(void) {
     X509_NAME_add_entry_by_txt(X509_get_subject_name(cert), "CN", MBSTRING_ASC, (unsigned char *)"t", -1, -1, 0);
     X509_set_issuer_name(cert, X509_get_subject_name(cert));
     assert(X509_sign(cert, key, EVP_sha256()));
+    check_load_ca(cert);
     SSL_CTX *sctx = SSL_CTX_new(TLS_server_method()), *cctx = SSL_CTX_new(TLS_client_method());
     assert(SSL_CTX_use_certificate(sctx, cert) == 1 && SSL_CTX_use_PrivateKey(sctx, key) == 1);
     int sv[2];
