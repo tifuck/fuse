@@ -191,10 +191,10 @@ class ChatStoreTest(unittest.TestCase):
         self.assertConflict(lambda: chats.update_thread(1, tid, title="bad", expected_revision=0))
         self.assertConflict(lambda: chats.update_thread(1, tid, messages=[], expected_revision=1))
         self.assertConflict(lambda: store.start_turn(1, tid, "again", 1, "again"))
-        for i in range(3):
+        for i in range(19):
             self.turn(command=f"extra{i}")
-        self.assertConflict(lambda: self.turn(command="fifth"))
-        self.assertEqual(len(store.active_runs(1)), 4)
+        self.assertConflict(lambda: self.turn(command="over-limit"))
+        self.assertEqual(len(store.active_runs(1)), 20)
         self.assertEqual(len(store.active_runs(2)), 0)
 
     def test_database_enforces_one_active_run(self):
