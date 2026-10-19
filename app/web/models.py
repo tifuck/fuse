@@ -18,6 +18,7 @@ from ..sources import mimo as mimo_mod
 from ..sources import claude as claude_mod
 from ..sources import claude_catalog as claude_catalog_mod
 from ..sources import cursor as cursor_mod
+from ..sources import nanogpt as nanogpt_mod
 from ..sources import zai as zai_mod
 from ..sources.grok import grok_access_state
 from ..sources import pool_policy
@@ -50,7 +51,7 @@ def _opencode_model_config(name: str, type_id: str, model: str | None = None, us
     return {
         "name": name,
         "reasoning": bool(efforts),
-        "interleaved": {"field": "reasoning" if type_id == "openrouter" else "reasoning_content"},
+        "interleaved": {"field": "reasoning" if type_id in ("openrouter", "nanogpt") else "reasoning_content"},
         "variants": {effort: {"reasoningEffort": effort} for effort in efforts},
     }
 
@@ -64,6 +65,7 @@ _FAMILY_TITLES = {
     "mimo": "Xiaomi",
     "claude": "Claude",
     "cursor": "Cursor",
+    "nanogpt": "NanoGPT",
     "llama": "Local inference",
     "ollama": "Ollama Cloud",
     "openrouter": "OpenRouter",
@@ -111,6 +113,10 @@ _LOCK_COPY = {
     "cursor": {
         "none": "You need to link a Cursor account.",
         "unauthed": "The linked Cursor sign-in is no longer valid.",
+    },
+    "nanogpt": {
+        "none": "Sign in with NanoGPT to use its models.",
+        "unauthed": "The linked NanoGPT key is no longer valid. Sign in with NanoGPT again.",
     },
 }
 
@@ -291,6 +297,10 @@ def _named_model(model: str, *alts: str) -> str:
 
 
 def _model_display_name(model: str, type_id: str, openrouter_catalog: dict | None = None) -> str:
+    if type_id == "nanogpt":
+        upstream = nanogpt_mod.upstream_id(model)
+        name = (nanogpt_mod.catalog_record(upstream) or {}).get("name")
+        return _standardize_display_name(str(name)) if name else _humanize_model_id(upstream.split("/")[-1])
     if type_id == "explabs":
         upstream = explabs_mod.upstream_id(model)
         record = (openrouter_catalog or {}).get("by_id", {}).get(upstream) or {}
@@ -340,6 +350,7 @@ def _model_rows(type_id: str, names: list[str], catalog: dict | None = None) -> 
             "id": name,
             "display_id": (
                 explabs_mod.upstream_id(name) if type_id == "explabs"
+                else nanogpt_mod.upstream_id(name) if type_id == "nanogpt"
                 else openrouter_mod.upstream_id(name) if type_id == "openrouter" else name
             ),
             "name": _model_display_name(name, type_id, catalog),
@@ -354,6 +365,10 @@ def _family_title(group: dict) -> str:
 
 
 def _pool_catalog(type_id: str) -> list[str]:
+    if type_id == "nanogpt":
+        # Locked preview: a handful of subscription models.
+        by_id = (nanogpt_mod.cached_catalog() or {}).get("by_id") or {}
+        return [nanogpt_mod.public_id(mid) for mid, rec in by_id.items() if rec["subscription"]][:24]
     cache = {
         "grok": grok_mod._models_cache,
         "chatgpt": chatgpt_catalog_mod._models_cache,
@@ -376,6 +391,15 @@ def _lock_copy(type_id: str, reason: str, user_id: int | None = None) -> str:
     return copy.get(reason) or copy.get("none") or "You need to link an account."
 
 
+def _family_catalog(type_id: str, openrouter_catalog: dict | None, explabs_catalog: dict | None) -> dict | None:
+    """The catalog a family's names and windows come from."""
+    if type_id == "explabs":
+        return explabs_catalog
+    if type_id == "nanogpt":
+        return nanogpt_mod.cached_catalog()
+    return openrouter_catalog
+
+
 def _openrouter_locked_models(catalog: dict) -> list[str]:
     """Preview a handful of free SKUs on the locked OpenRouter panel."""
     ids = catalog.get("free_ids") or []
@@ -391,8 +415,9 @@ async def _models_page_families(user) -> tuple[list[dict], list[dict]]:
     mimo = mimo_mod.mimo_access_state(user["id"])
     claude = claude_mod.claude_access_state(user["id"])
     cursor = cursor_mod.cursor_access_state(user["id"])
+    nanogpt = nanogpt_mod.nanogpt_access_state(user["id"])
     or_state = openrouter_mod.openrouter_access_state(user["id"])
-    access = {"grok": grok, "chatgpt": chatgpt, "zai": zai, "devin": devin, "kimi": kimi, "mimo": mimo, "claude": claude, "cursor": cursor}
+    access = {"grok": grok, "chatgpt": chatgpt, "zai": zai, "devin": devin, "kimi": kimi, "mimo": mimo, "claude": claude, "cursor": cursor, "nanogpt": nanogpt}
     groups = await models_by_source(
         allow_grok=grok["ok"],
         allow_chatgpt=chatgpt["ok"],
@@ -402,6 +427,7 @@ async def _models_page_families(user) -> tuple[list[dict], list[dict]]:
         allow_mimo=mimo["ok"],
         allow_claude=claude["ok"],
         allow_cursor=cursor["ok"],
+        allow_nanogpt=nanogpt["ok"],
         user_id=user["id"],
     )
     catalog = openrouter_mod.cached_catalog()
@@ -421,12 +447,12 @@ async def _models_page_families(user) -> tuple[list[dict], list[dict]]:
             {
                 "type": group["type"],
                 "title": _family_title(group),
-                "models": _model_rows(group["type"], names, explabs_catalog if group["type"] == "explabs" else catalog),
+                "models": _model_rows(group["type"], names, _family_catalog(group["type"], catalog, explabs_catalog)),
             }
         )
     have = {g["type"] for g in available}
     locked: list[dict] = []
-    for type_id in ("grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude", "cursor"):
+    for type_id in ("grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude", "cursor", "nanogpt"):
         state = access[type_id]
         if state["ok"] or type_id in have:
             continue
@@ -440,7 +466,7 @@ async def _models_page_families(user) -> tuple[list[dict], list[dict]]:
             {
                 "type": type_id,
                 "title": _FAMILY_TITLES.get(type_id, row["name"]),
-                "models": _model_rows(type_id, names, catalog),
+                "models": _model_rows(type_id, names, _family_catalog(type_id, catalog, None)),
                 "why": _lock_copy(type_id, state["reason"], user["id"]),
                 "href": "/sources",
                 "link_label": "Open Sources",

@@ -122,6 +122,8 @@ def _model_type_guess(model: str) -> str | None:
     mid = (model or "").strip()
     if mid.startswith("explabs/"):
         return "explabs"
+    if mid.startswith("nanogpt/"):
+        return "nanogpt"
     if mid.startswith("openrouter/"):
         return "openrouter"
     if mid.startswith("devin/"):

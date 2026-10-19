@@ -244,7 +244,7 @@ def looks_like_openrouter_id(model: str) -> bool:
     mid = (model or "").strip()
     if not mid or " " in mid:
         return False
-    if mid.startswith("explabs/") or mid.startswith("devin/") or mid.startswith("devin-"):
+    if mid.startswith(("explabs/", "nanogpt/", "devin/", "devin-")):
         return False
     if mid.startswith(PUBLIC_PREFIX) and mid.count("/") >= 2:
         return True

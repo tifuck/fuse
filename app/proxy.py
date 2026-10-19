@@ -122,10 +122,18 @@ def usage_from_obj(obj: dict, *, reasoning_separate: bool = False) -> dict:
     if cache_status not in ("known", "unknown", "partial"):
         cache_status = "known" if any(
             details_p.get(key) is not None or u.get(key) is not None
-            for key in ("cached_tokens", "cache_write_tokens")
+            for key in ("cached_tokens", "cache_write_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
         ) else "unknown"
-    cached = max(0, _int(details_p.get("cached_tokens") if "cached_tokens" in details_p else u.get("cached_tokens")))
-    cache_write = max(0, _int(details_p.get("cache_write_tokens") if "cache_write_tokens" in details_p else u.get("cache_write_tokens")))
+    # Anthropic-style names are the fallback (NanoGPT sends them alongside or
+    # instead of the OpenAI fields); prompt_tokens still includes both.
+    cached = max(0, _int(
+        details_p["cached_tokens"] if "cached_tokens" in details_p
+        else u["cached_tokens"] if "cached_tokens" in u else u.get("cache_read_input_tokens")
+    ))
+    cache_write = max(0, _int(
+        details_p["cache_write_tokens"] if "cache_write_tokens" in details_p
+        else u["cache_write_tokens"] if "cache_write_tokens" in u else u.get("cache_creation_input_tokens")
+    ))
     cached = min(cached, prompt)
     cache_write = min(cache_write, max(prompt - cached, 0))
     audio = min(
@@ -163,6 +171,14 @@ def usage_from_obj(obj: dict, *, reasoning_separate: bool = False) -> dict:
     reported_cost = _cost_micros(u)
     if reported_cost is None:
         reported_cost = _cost_micros(obj)
+    nanogpt = obj.get("x_nanogpt_pricing")
+    if isinstance(nanogpt, dict):
+        if reported_cost is None:
+            reported_cost = _cost_micros(nanogpt)
+        # NanoGPT reports 0 for subscription-covered calls: leave those to the
+        # price estimate (API equivalent), as for every other pool.
+        if reported_cost == 0:
+            reported_cost = None
     return {
         "prompt_tokens": prompt,
         "completion_tokens": completion,

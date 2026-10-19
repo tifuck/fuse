@@ -21,6 +21,7 @@ KIMI_PROVIDER = "kimi"
 MIMO_PROVIDER = "mimo"
 CLAUDE_PROVIDER = "claude"
 CURSOR_PROVIDER = "cursor"
+NANOGPT_PROVIDER = "nanogpt"
 
 # OpenAI list prices (USD per million tokens) for the ChatGPT pool models:
 # model -> (input, cached_input, cache_write, output). GPT-5.6 charges cache
@@ -363,7 +364,7 @@ AUTO_ORIGIN = "auto"
 AUTO_PRICE_INTERVAL = 1800.0
 _AUTO_PROVIDERS = (
     CHATGPT_PROVIDER, GROK_PROVIDER, ZAI_PROVIDER, DEVIN_PROVIDER,
-    KIMI_PROVIDER, MIMO_PROVIDER, CLAUDE_PROVIDER, CURSOR_PROVIDER,
+    KIMI_PROVIDER, MIMO_PROVIDER, CLAUDE_PROVIDER, CURSOR_PROVIDER, NANOGPT_PROVIDER,
 )
 # Effort, speed and region tails appended to one priced model id. They are a
 # service tier on ChatGPT/Devin/Cursor ids only (gpt-5.6-sol-fast, gpt-5-6-sol-low,
@@ -470,7 +471,46 @@ def _reference_index(rows, catalog: dict | None) -> dict[str, list[tuple[int, st
     return index
 
 
+def _nanogpt_rate(value, per_tokens: int) -> int | None:
+    """USD per `per_tokens` tokens as microdollars per million."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        rate = Decimal(str(value)) * Decimal(1_000_000_000_000) / Decimal(per_tokens)
+        stored = int(rate.quantize(Decimal("1")))
+    except (InvalidOperation, ValueError, OverflowError):
+        return None
+    if rate < 0 or stored > db.SQLITE_INT_MAX:
+        return None
+    return stored
+
+
+def _nanogpt_values(model: str) -> dict | None:
+    """NanoGPT's own list price for one of its ids: prompt/completion per
+    million tokens, cache read/write per thousand."""
+    from .sources import nanogpt
+
+    pricing = (nanogpt.catalog_record(model) or {}).get("pricing") or {}
+    input_rate = _nanogpt_rate(pricing.get("prompt"), 1_000_000)
+    output_rate = _nanogpt_rate(pricing.get("completion"), 1_000_000)
+    if input_rate is None or output_rate is None or (input_rate == 0 and output_rate == 0):
+        return None
+    return {
+        "input_rate": input_rate,
+        "cached_rate": _nanogpt_rate(pricing.get("cacheReadInputPer1kTokens"), 1000),
+        "output_rate": output_rate,
+        "reasoning_rate": None,
+        "cache_write_rate": _nanogpt_rate(pricing.get("cacheWriteInputPer1kTokens"), 1000),
+        "tiers": [],
+        "openrouter_id": None,
+    }
+
+
 def _pick_reference(index: dict, provider: str, model: str) -> dict | None:
+    if provider == NANOGPT_PROVIDER:
+        # Its catalog prices every id it serves; a same-named pool price is
+        # not NanoGPT's.
+        return _nanogpt_values(model)
     for key in price_keys(model, tiered=provider in _TIER_TAIL_PROVIDERS):
         refs = index.get(key)
         if not refs:

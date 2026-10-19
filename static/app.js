@@ -73,12 +73,15 @@ window.fuseAnnounce = function fuseAnnounce(text, assertive) {
   window.setTimeout(() => { el.textContent = text || ""; }, 50);
 };
 
-(function openRouterSettings() {
-  const root = document.querySelector("[data-or-models]");
-  if (!root) return;
-  const settings = document.querySelector("[data-or-settings]");
-  const status = document.querySelector("[data-or-status]");
-  const tpl = document.querySelector("[data-or-drawer-tpl]");
+// Per-account model list and provider pins: OpenRouter, and NanoGPT through
+// the same JSON contract under its own data-endpoint.
+document.querySelectorAll("[data-or-models]").forEach(function modelListSettings(root) {
+  const scope = root.closest("[data-or-scope]") || document;
+  const base = root.dataset.endpoint || "/sources/openrouter";
+  const label = root.dataset.label || "OpenRouter";
+  const settings = scope.querySelector("[data-or-settings]");
+  const status = scope.querySelector("[data-or-status]");
+  const tpl = scope.querySelector("[data-or-drawer-tpl]");
   const list = root.querySelector("[data-or-list]");
   const filter = root.querySelector("[data-or-filter]");
   const count = root.querySelector("[data-or-count]");
@@ -154,7 +157,7 @@ window.fuseAnnounce = function fuseAnnounce(text, assertive) {
       const want = box.checked;
       box.disabled = true;
       try {
-        const state = await send("POST", "/sources/openrouter/settings", { [key]: want });
+        const state = await send("POST", base + "/settings", { [key]: want });
         settings.querySelectorAll("[data-or-setting]").forEach((el) => {
           if (el.dataset.orSetting in state) el.checked = Boolean(state[el.dataset.orSetting]);
         });
@@ -177,7 +180,7 @@ window.fuseAnnounce = function fuseAnnounce(text, assertive) {
     row.classList.toggle("is-on", want);
     refresh();
     try {
-      const data = await send("POST", "/sources/openrouter/model", { model: row.dataset.id, enabled: want });
+      const data = await send("POST", base + "/model", { model: row.dataset.id, enabled: want });
       box.checked = data.enabled;
       row.classList.toggle("is-on", data.enabled);
       say(data.enabled ? "Added to your model picker" : "Removed from your model picker");
@@ -226,7 +229,7 @@ window.fuseAnnounce = function fuseAnnounce(text, assertive) {
     const hint = drawer.querySelector("[data-or-hint]");
     let data;
     try {
-      data = await send("GET", "/sources/openrouter/providers?model=" + encodeURIComponent(row.dataset.id));
+      data = await send("GET", base + "/providers?model=" + encodeURIComponent(row.dataset.id));
     } catch (err) {
       note.textContent = err.message;
       note.classList.add("bad");
@@ -236,13 +239,13 @@ window.fuseAnnounce = function fuseAnnounce(text, assertive) {
     const providers = data.providers || [];
     title.textContent = `Providers for ${row.querySelector(".or-row-name").textContent}`;
     if (!providers.length) {
-      note.textContent = "OpenRouter lists no providers for this model right now.";
+      note.textContent = `${label} lists no providers for this model right now.`;
       return;
     }
     const chosen = new Set(data.selected || []);
     const stale = [...chosen].filter((slug) => !providers.some((p) => p.slug === slug));
     note.textContent = chosen.size
-      ? "Requests for this model only go to the checked providers. OpenRouter still balances between them."
+      ? `Requests for this model only go to the checked providers. ${label} still balances between them.`
       : "Any provider can serve this model. Check providers to allow only those.";
     if (stale.length) note.textContent += ` No longer listed: ${stale.join(", ")}.`;
     providers.forEach((p) => {
@@ -311,7 +314,7 @@ window.fuseAnnounce = function fuseAnnounce(text, assertive) {
       const buttons = actions.querySelectorAll("button");
       buttons.forEach((b) => { b.disabled = true; });
       try {
-        const res = await send("POST", "/sources/openrouter/providers", { model: row.dataset.id, providers: slugs });
+        const res = await send("POST", base + "/providers", { model: row.dataset.id, providers: slugs });
         setPinned(row, (res.selected || []).length);
         closeDrawer(row);
         say(res.selected && res.selected.length ? "Providers pinned" : "Using any provider");
@@ -357,7 +360,7 @@ window.fuseAnnounce = function fuseAnnounce(text, assertive) {
     if (event.key === "Enter") event.preventDefault();
   });
   refresh();
-})();
+});
 
 (function accountMenu() {
   document.querySelectorAll("[data-account]").forEach((root) => {

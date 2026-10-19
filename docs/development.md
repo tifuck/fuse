@@ -33,7 +33,7 @@ Docker entrypoint both run it.
 
 Types: `llama`, `openai`, `ollama`, `openrouter`, `explabs` (site or per-user
 keys) and the shared subscription pools `grok`, `chatgpt`, `zai`, `devin`,
-`kimi`, `mimo`, `claude`, `cursor` (`POOL_TYPES`). New upstream models need no code
+`kimi`, `mimo`, `claude`, `cursor`, `nanogpt` (`POOL_TYPES`). New upstream models need no code
 change: each pool merges its live catalog into its seed list.
 
 - Pools route only for users who may use them (`user_has_*`; always pass the
@@ -42,6 +42,9 @@ change: each pool merges its live catalog into its seed list.
   may use; a healthy session pin always wins over load balancing.
 - `openrouter` and `explabs` are per-account keys only. OpenRouter ids are
   `openrouter/{author}/{slug}`; Experiential Labs ids are `explabs/{model}`.
+- `nanogpt` ids are `nanogpt/{nanogpt id}`. Its subscription models may use
+  shared keys only when the key cannot spend its owner's balance; paid models
+  use only the caller's own key (`app/sources/nanogpt.py`).
 - Probes never run completions on pooled subscriptions: they check quota
   and/or catalog only.
 - Permission auto-approve (`app/jev.py`) asks OpenRouter's decisions API and

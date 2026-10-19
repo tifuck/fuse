@@ -1032,7 +1032,7 @@ def test_invoke_chat_passes_the_parents_cache_key_to_pools_only(monkeypatch):
             seen.append((self.type_id, kw.get("affinity_id"), kw.get("session_id")))
             return ChatResult(status=200, body={}, model=body["model"])
 
-    for name in ("grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude", "cursor"):
+    for name in ("grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude", "cursor", "nanogpt"):
         monkeypatch.setattr(api, f"user_has_{name}", lambda _uid: True)
     monkeypatch.setattr(api, "_safe_record_usage", lambda *a, **k: True)
 
@@ -1069,7 +1069,7 @@ def test_runtime_names_the_parent_cache_key_for_subagents_only(monkeypatch):
     from app import api, artifacts, chat_runtime, chat_store, hosts
     from app.sources.base import ChatResult
 
-    for name in ("grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude", "cursor"):
+    for name in ("grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude", "cursor", "nanogpt"):
         monkeypatch.setattr(api, f"user_has_{name}", lambda uid: True)
     monkeypatch.setattr(api, "_record_attempts", lambda *a, **k: None)
     monkeypatch.setattr(api, "_safe_record_usage", lambda *a, **k: True)

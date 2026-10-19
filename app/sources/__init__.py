@@ -22,6 +22,7 @@ from .kimi import KIMI_MODELS, KimiSource, ensure_kimi_source, user_has_kimi
 from .mimo import MIMO_MODELS, MimoSource, ensure_mimo_source, user_has_mimo
 from .claude import CLAUDE_MODELS, ClaudeSource, ensure_claude_source, user_has_claude
 from .cursor import CURSOR_MODELS, CursorSource, ensure_cursor_source, user_has_cursor
+from .nanogpt import NanoGPTSource, ensure_nanogpt_source, user_has_nanogpt
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ _BUILDERS: dict[str, Callable] = {
     "mimo": MimoSource,
     "claude": ClaudeSource,
     "cursor": CursorSource,
+    "nanogpt": NanoGPTSource,
     "openrouter": OpenRouterSource,
     "explabs": ExperientialLabsSource,
 }
@@ -53,6 +55,7 @@ TYPES = {
     "mimo": "Xiaomi pool",
     "claude": "Claude pool",
     "cursor": "Cursor pool",
+    "nanogpt": "NanoGPT pool",
     "openrouter": "OpenRouter",
     "explabs": "Experiential Labs",
 }
@@ -69,12 +72,13 @@ PROVIDER_LABELS = {
     "mimo": "Xiaomi",
     "claude": "Anthropic",
     "cursor": "Cursor",
+    "nanogpt": "NanoGPT",
     "openrouter": "OpenRouter",
     "explabs": "Experiential Labs",
     "unknown": "Unknown",
 }
 
-POOL_TYPES = frozenset({"grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude", "cursor"})
+POOL_TYPES = frozenset({"grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude", "cursor", "nanogpt"})
 _SEEDED_MODELS = {
     "grok": GROK_MODELS,
     "chatgpt": CHATGPT_MODELS,
@@ -280,6 +284,10 @@ async def _user_source_models(s: Source, user_id: int | None) -> list[str]:
         from . import cursor as cursor_mod
 
         return cursor_mod.listable_models(names, user_id)
+    if s.type_id == "nanogpt":
+        from . import nanogpt as nanogpt_mod
+
+        return nanogpt_mod.listable_models(names, user_id)
     return names
 
 
@@ -311,6 +319,10 @@ def reasoning_efforts(type_id: str, model: str | None = None, user_id: int | Non
         from . import cursor as cursor_mod
 
         return cursor_mod.efforts_for(model)
+    if type_id == "nanogpt":
+        from . import nanogpt as nanogpt_mod
+
+        return nanogpt_mod.efforts_for(model)
     if type_id == "ollama":
         return ("none", "low", "medium", "high", "max")
     return GENERIC_EFFORTS
@@ -354,6 +366,8 @@ def catalog_unavailable_for(model: str) -> bool:
         return "claude" in _unavailable_types
     if model.startswith("cursor/"):
         return "cursor" in _unavailable_types
+    if model.startswith("nanogpt/"):
+        return "nanogpt" in _unavailable_types
     if model.startswith("openrouter/") or ("/" in model and not model.startswith("/")):
         return "openrouter" in _unavailable_types
     if model.startswith("grok"):
@@ -379,6 +393,7 @@ def _sources(
     allow_mimo: bool = False,
     allow_claude: bool = False,
     allow_cursor: bool = False,
+    allow_nanogpt: bool = False,
 ) -> list[Source]:
     return [
         s
@@ -391,6 +406,7 @@ def _sources(
         and (allow_mimo or s.type_id != "mimo")
         and (allow_claude or s.type_id != "claude")
         and (allow_cursor or s.type_id != "cursor")
+        and (allow_nanogpt or s.type_id != "nanogpt")
     ]
 
 
@@ -423,6 +439,7 @@ async def models_union(
     allow_mimo: bool = False,
     allow_claude: bool = False,
     allow_cursor: bool = False,
+    allow_nanogpt: bool = False,
     user_id: int | None = None,
 ) -> list[str]:
     sources = _sources(
@@ -434,6 +451,7 @@ async def models_union(
         allow_mimo=allow_mimo,
         allow_claude=allow_claude,
         allow_cursor=allow_cursor,
+        allow_nanogpt=allow_nanogpt,
     )
     results = await asyncio.gather(*(_user_source_models(s, user_id) for s in sources))
     names: list[str] = []
@@ -455,9 +473,11 @@ async def pick(
     allow_mimo: bool = False,
     allow_claude: bool = False,
     allow_cursor: bool = False,
+    allow_nanogpt: bool = False,
     user_id: int | None = None,
 ) -> tuple[Source, str] | None:
     from . import openrouter as openrouter_mod
+    from . import nanogpt as nanogpt_mod
     from . import chatgpt as chatgpt_mod
     from . import devin as devin_mod
     from . import kimi as kimi_mod
@@ -476,7 +496,7 @@ async def pick(
     route = db.fetchone("SELECT * FROM model_routes WHERE model=?", (model,))
     if route:
         src = get(route["source_id"])
-        if src and src.type_id != "explabs" and (allow_grok or src.type_id != "grok") and (allow_chatgpt or src.type_id != "chatgpt") and (allow_zai or src.type_id != "zai") and (allow_devin or src.type_id != "devin") and (allow_kimi or src.type_id != "kimi") and (allow_mimo or src.type_id != "mimo") and (allow_claude or src.type_id != "claude") and (allow_cursor or src.type_id != "cursor"):
+        if src and src.type_id != "explabs" and (allow_grok or src.type_id != "grok") and (allow_chatgpt or src.type_id != "chatgpt") and (allow_zai or src.type_id != "zai") and (allow_devin or src.type_id != "devin") and (allow_kimi or src.type_id != "kimi") and (allow_mimo or src.type_id != "mimo") and (allow_claude or src.type_id != "claude") and (allow_cursor or src.type_id != "cursor") and (allow_nanogpt or src.type_id != "nanogpt"):
             upstream = route["upstream_model"] or model
             if src.type_id != "openrouter":
                 return src, upstream
@@ -517,6 +537,13 @@ async def pick(
                 if s.type_id == "cursor":
                     return s, cursor_mod.upstream_id(model)
         return None
+    if nanogpt_mod.is_nanogpt_model(model):
+        if allow_nanogpt:
+            for s in all_enabled():
+                if s.type_id == "nanogpt":
+                    upstream = await nanogpt_mod.resolve(model, user_id)
+                    return (s, upstream) if upstream else None
+        return None
     if allow_grok and model.startswith("grok"):
         for s in all_enabled():
             if s.type_id == "grok":
@@ -546,6 +573,7 @@ async def pick(
         allow_mimo=allow_mimo,
         allow_claude=allow_claude,
         allow_cursor=allow_cursor,
+        allow_nanogpt=allow_nanogpt,
         user_id=user_id,
     )
     for s in _sources(
@@ -557,10 +585,12 @@ async def pick(
         allow_mimo=allow_mimo,
         allow_claude=allow_claude,
         allow_cursor=allow_cursor,
+        allow_nanogpt=allow_nanogpt,
     ):
         # OpenRouter's _cache is whichever account refreshed last; only its
         # per-account resolve() above may admit a model for this user.
-        if s.type_id in ("explabs", "openrouter"):
+        # NanoGPT's lists every catalog id; its resolve() applies the user's list.
+        if s.type_id in ("explabs", "openrouter", "nanogpt"):
             continue
         hit = _cache.get(s.source_id)
         if hit and model in hit[1]:
@@ -620,6 +650,7 @@ async def models_by_source(
     allow_mimo: bool = False,
     allow_claude: bool = False,
     allow_cursor: bool = False,
+    allow_nanogpt: bool = False,
     user_id: int | None = None,
 ) -> list[dict]:
     sources = _sources(
@@ -631,6 +662,7 @@ async def models_by_source(
         allow_mimo=allow_mimo,
         allow_claude=allow_claude,
         allow_cursor=allow_cursor,
+        allow_nanogpt=allow_nanogpt,
     )
     results = await asyncio.gather(*(_user_source_models(s, user_id) for s in sources))
     groups = [
@@ -670,6 +702,7 @@ async def bootstrap() -> None:
     ensure_mimo_source()
     ensure_claude_source()
     ensure_cursor_source()
+    ensure_nanogpt_source()
     ensure_explabs_source()
     or_id = ensure_openrouter_source()
     from .openrouter import clear_global_key
@@ -697,8 +730,13 @@ async def bootstrap() -> None:
     _seed_pool_catalogs()
     from . import openrouter as openrouter_mod
 
+    from . import nanogpt as nanogpt_mod
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
     if openrouter_mod.cached_catalog() is None:
-        try:
-            asyncio.get_running_loop().create_task(openrouter_mod.fetch_catalog())
-        except RuntimeError:
-            pass
+        loop.create_task(openrouter_mod.fetch_catalog())
+    if nanogpt_mod.cached_catalog() is None:
+        loop.create_task(nanogpt_mod.fetch_catalog())

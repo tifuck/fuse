@@ -282,6 +282,7 @@
             {% if ui and ui.primary == a.id %}<span class="badge on" title="New conversations start on this account">First</span>{% elif skipped %}<span class="badge off" title="You left it out of your rotation (Sharing)">Not used</span>{% endif %}
             {% if a.share == 'private' %}<span class="badge" title="Its owner keeps it private">Private</span>{% elif a.share == 'contributors' %}<span class="badge" title="Its owner shares it only with people who share an account here too">Sharers</span>{% endif %}
             {% if a.region == 'cn' %}<span class="badge">CN</span>{% endif %}
+            {% if a.owner_only %}<span class="badge" title="This key can spend its owner's NanoGPT balance, so only its owner uses it">Owner only</span>{% endif %}
           </span>
         </td>
         <td class="source-status" title="{{ source_status_title(a, kind) }}">
@@ -452,6 +453,90 @@
       {{ table_bar(cursor_accounts) }}
       {{ source_table(cursor_accounts, 'Cursor', '/sources/cursor', 'Remove this Cursor account from the shared pool?', 'Optional — Cursor is already unlocked. Add an account if you want to donate one.' if cursor_ok and cursor_reason == 'open' else ('Sign in with Cursor to unlock its models. No API key needed.' if cursor_ui.uses_shared else 'Add a Cursor account. This pool is limited to accounts you link.'), cursor_ui) }}
     </section>
+
+    <section class="pool stack-y" id="pool-nanogpt">
+      {% call pool_head(nanogpt_ui, 'NanoGPT', 'nanogpt', pool_state(nanogpt_ok, nanogpt_reason, nanogpt_ui, 'needs a NanoGPT sign-in'), [('Pool usage', nanogpt_pool)]) %}{% if nanogpt_oauth and not nanogpt_pending %}<a class="btn sm" href="/sources/nanogpt/start">Sign in with NanoGPT</a>{% endif %}{{ add_button('nanogpt-connect-dialog', 'Other ways' if nanogpt_oauth else 'Add account', nanogpt_pending) }}{% endcall %}
+      <p class="sources-note">Subscription models also run on accounts others share, but only from keys that cannot spend their owner's balance (billing set to Subscription only). Paid models run only on your own key and bill your NanoGPT balance.</p>
+      {% if nanogpt_reason == 'unauthed' %}
+      <p class="callout fault">The linked NanoGPT key is no longer valid. Sign in with NanoGPT again.</p>
+      {% endif %}
+      {% if nanogpt_flash_kind == 'ok' %}
+      <p class="callout ok" role="alert">{{ nanogpt_flash_msg }}</p>
+      {% endif %}
+      {{ table_bar(nanogpt_accounts) }}
+      {{ source_table(nanogpt_accounts, 'NanoGPT', '/sources/nanogpt', 'Remove this NanoGPT account from Fuse? Also delete its OAuth: Fuse key on nano-gpt.com/api to revoke it there.', 'Optional — NanoGPT subscription models are already unlocked. Sign in to add your own account.' if nanogpt_ok and nanogpt_reason == 'open' else 'Sign in with NanoGPT to use its models. No API key to copy.', nanogpt_ui) }}
+      {% if nanogpt_owner %}
+      <article class="panel source-card" data-or-scope>
+        <div class="section-heading">
+          <h2>Your NanoGPT models</h2>
+          <span class="usage-sub">your picker only · <a href="/models">Models</a></span>
+        </div>
+        <div class="or-settings" data-or-settings>
+          <fieldset class="or-group">
+            <legend>Models</legend>
+            <label class="or-switch">
+              <input type="checkbox" role="switch" data-or-setting="free_models" {% if nanogpt_prefs.subscription %}checked{% endif %}>
+              <span><b>Subscription models</b><small>Models NanoGPT's subscription includes. Shared accounts can serve these too.</small></span>
+            </label>
+            <label class="or-switch">
+              <input type="checkbox" role="switch" data-or-setting="paid_all" {% if nanogpt_prefs.paid_all %}checked{% endif %}>
+              <span><b>Every paid model</b><small>Paid models bill your NanoGPT balance. Turn off to pick them one by one below.</small></span>
+            </label>
+          </fieldset>
+        </div>
+        <section class="or-models" data-or-models data-endpoint="/sources/nanogpt" data-label="NanoGPT" data-paid-all="{{ '1' if nanogpt_prefs.paid_all else '0' }}" data-free-on="{{ '1' if nanogpt_prefs.subscription else '0' }}">
+          <div class="or-toolbar">
+            <input type="search" data-or-filter placeholder="Search models, e.g. glm, deepseek, anthropic/" aria-label="Search NanoGPT models">
+            <div class="or-seg" role="group" aria-label="Show">
+              <button type="button" class="on" data-or-view="all" aria-pressed="true">All</button>
+              <button type="button" data-or-view="on" aria-pressed="false">On</button>
+              <button type="button" data-or-view="pinned" aria-pressed="false">Pinned</button>
+              <button type="button" data-or-view="free" aria-pressed="false">Subscription</button>
+            </div>
+            <span class="or-count" data-or-count aria-live="polite"></span>
+          </div>
+          <p class="or-paid-note" data-or-paid-note{% if not nanogpt_prefs.paid_all %} hidden{% endif %}>Every paid model is on. Turn off <b>Every paid model</b> above to pick them individually.</p>
+          <ul class="or-list" data-or-list>
+            {% for m in nanogpt_models %}
+            <li class="or-row{% if m.enabled %} is-on{% endif %}" data-or-row data-id="{{ m.id }}" data-free="{{ '1' if m.free else '0' }}" data-pinned="{{ m.pinned }}">
+              <div class="or-row-main">
+                <label class="or-toggle" title="{{ 'Controlled by Subscription models' if m.free else 'Show in my model picker' }}">
+                  <input type="checkbox" role="switch" data-or-model {% if m.enabled %}checked{% endif %}{% if m.free or nanogpt_prefs.paid_all %} disabled{% endif %} aria-label="Enable {{ m.name }}">
+                </label>
+                <div class="or-row-title">
+                  <span class="or-row-name">{{ m.name }}</span>
+                  <code class="or-row-id">{{ m.id }}</code>
+                </div>
+                <span class="or-row-price">{% if m.free %}<span class="or-free">Subscription</span>{% endif %}{% if m.input is not none and m.output is not none %}<span>${{ '%g'|format(m.input) }}<i>in/M</i></span><span>${{ '%g'|format(m.output) }}<i>out/M</i></span>{% endif %}</span>
+                <button type="button" class="or-prov-btn" data-or-providers aria-expanded="false">
+                  <span data-or-pin-label>{% if m.pinned %}{{ m.pinned }} pinned{% else %}Providers{% endif %}</span>
+                </button>
+              </div>
+            </li>
+            {% endfor %}
+          </ul>
+          <p class="or-empty" data-or-empty hidden>No models match.</p>
+          <p class="or-foot">Prices are NanoGPT's list price per million tokens. Pinning providers makes that model pay-as-you-go at the provider's price plus NanoGPT's selection fee, even when your subscription covers it.</p>
+        </section>
+        <div class="or-status" data-or-status role="status" aria-live="polite"></div>
+        <template data-or-drawer-tpl>
+          <div class="or-drawer" data-or-drawer>
+            <p class="or-drawer-title" data-or-drawer-title></p>
+            <p class="or-drawer-note" data-or-drawer-note>Loading providers…</p>
+            <table class="or-prov" hidden>
+              <thead><tr><th scope="col"><span class="visually-hidden">Allow</span></th><th scope="col">Provider</th><th scope="col" class="num">Input $/M</th><th scope="col" class="num">Output $/M</th><th scope="col" class="num">Cache $/M</th><th scope="col" class="num">Context</th><th scope="col" class="num">Uptime</th></tr></thead>
+              <tbody></tbody>
+            </table>
+            <div class="or-drawer-actions" hidden>
+              <button type="button" class="btn sm" data-or-save>Save</button>
+              <button type="button" class="btn sm ghost" data-or-any>Use any provider</button>
+              <span class="or-drawer-hint" data-or-hint></span>
+            </div>
+          </div>
+        </template>
+      </article>
+      {% endif %}
+    </section>
   </div>
 
   <div data-tab-panel="openrouter" class="stack-y{% if not openrouter_flash_msg %} hidden{% endif %}">
@@ -465,7 +550,7 @@
 
     {% if openrouter_account %}
     {% set a = openrouter_account %}
-    <article class="panel source-card{% if not a.authed %} held{% endif %}">
+    <article class="panel source-card{% if not a.authed %} held{% endif %}" data-or-scope>
       <div class="section-heading">
         <h2>{{ source_identity(a) }}{% if a.free_tier %} <span class="badge">Free tier</span>{% elif a.authed %} <span class="badge on">Linked</span>{% endif %}{{ source_auth(a) }}</h2>
         <div class="row-actions">
@@ -966,6 +1051,59 @@
   </div>
 </dialog>
 
+<dialog class="modal device-modal" id="nanogpt-connect-dialog" aria-labelledby="nanogpt-connect-title"{% if nanogpt_pending or nanogpt_flash_kind == 'err' %} data-auto-open{% if nanogpt_pending %} data-device-poll data-endpoint="/sources/nanogpt/poll" data-interval="{{ nanogpt_interval }}"{% endif %}{% endif %}>
+  <div class="modal-shell">
+    <header class="modal-head">
+      <div>
+        <p class="metric-label">NanoGPT · sign-in</p>
+        <h2 id="nanogpt-connect-title">Connect your NanoGPT account</h2>
+      </div>
+      <button type="button" class="btn ghost sm" data-dialog-close aria-label="Close NanoGPT connection dialog">Close</button>
+    </header>
+    {% if nanogpt_flash_kind == 'err' %}
+    <p class="callout fault" role="alert">{{ nanogpt_flash_msg }}</p>
+    {% endif %}
+    {% if nanogpt_pending %}
+    <p class="aside">Open NanoGPT, sign in, and approve Fuse. This page picks the key up on its own.</p>
+    <div class="device-code">
+      <span>Code</span>
+      <strong>{{ nanogpt_pending.user_code }}</strong>
+    </div>
+    <div class="modal-actions">
+      {% if nanogpt_verify %}
+      <a class="btn" href="{{ nanogpt_verify }}" target="_blank" rel="noopener">Open NanoGPT and approve</a>
+      {% endif %}
+      <form method="post" action="/sources/nanogpt/cancel">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn ghost">Cancel</button>
+      </form>
+    </div>
+    <p class="pulse poll-status">Waiting for approval…</p>
+    {% else %}
+    <p class="aside">NanoGPT gives Fuse an API key for your account, named <code>OAuth: Fuse</code>. Paid models bill your NanoGPT balance; the consent screen lets you cap that spend. To share your subscription with the pool, set the key's billing to Subscription only on nano-gpt.com/api.</p>
+    {% if nanogpt_oauth %}
+    <div class="modal-actions">
+      <a class="btn" href="/sources/nanogpt/start">Sign in with NanoGPT</a>
+    </div>
+    {% endif %}
+    <form method="post" action="/sources/nanogpt/device" class="modal-actions" style="margin-top:0.5rem">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="btn{% if nanogpt_oauth %} ghost{% endif %}">{{ 'Use a device code instead' if nanogpt_oauth else 'Start NanoGPT sign-in' }}</button>
+    </form>
+    <form method="post" action="/sources/nanogpt/add" class="stack" style="margin-top:0.85rem">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Or an API key
+        <input name="api_key" type="password" autocomplete="off" required placeholder="sk-nano-… from nano-gpt.com/api">
+      </label>
+      <label>Label (optional)
+        <input name="label" maxlength="80" placeholder="NanoGPT account">
+      </label>
+      <button type="submit" class="btn ghost">Add API key</button>
+    </form>
+    {% endif %}
+  </div>
+</dialog>
+
 {{ pool_share_dialog(grok_ui, accounts) }}
 {{ pool_share_dialog(chatgpt_ui, chatgpt_accounts) }}
 {{ pool_share_dialog(zai_ui, zai_accounts) }}
@@ -974,4 +1112,5 @@
 {{ pool_share_dialog(mimo_ui, mimo_accounts) }}
 {{ pool_share_dialog(claude_ui, claude_accounts) }}
 {{ pool_share_dialog(cursor_ui, cursor_accounts) }}
+{{ pool_share_dialog(nanogpt_ui, nanogpt_accounts) }}
 {% endblock %}

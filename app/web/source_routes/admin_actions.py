@@ -20,7 +20,7 @@ from .context import _source_cfg
 
 router = APIRouter()
 
-_BUILTINS = {"grok", "llama", "ollama", "zai", "chatgpt", "devin", "kimi", "mimo", "claude", "cursor", "openrouter", "explabs"}
+_BUILTINS = {"grok", "llama", "ollama", "zai", "chatgpt", "devin", "kimi", "mimo", "claude", "cursor", "nanogpt", "openrouter", "explabs"}
 
 
 def _add_key_lines(conn, source_id: int, text: str) -> int:

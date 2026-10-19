@@ -48,6 +48,8 @@ _PROVIDER_ALIASES = {
     "openrouter": "openrouter",
     "explabs": "explabs",
     "experiential-labs": "explabs",
+    "nanogpt": "nanogpt",
+    "nano-gpt": "nanogpt",
     "ollama": "ollama",
     "llama": "llama",
     "llama.cpp": "llama",
@@ -57,6 +59,7 @@ _PROVIDER_ALIASES = {
 def _norm_model_query(raw: str) -> str:
     text = (raw or "").strip().lower()
     text = text.replace("openrouter/", "")
+    text = text.replace("nanogpt/", "")
     text = text.replace("devin/", "")
     return re.sub(r"[\s_]+", "-", text).strip("-")
 
@@ -113,8 +116,8 @@ def _item_providers(item: dict) -> set[str]:
     out: set[str] = set()
     if type_id:
         out.add(type_id)
-    if mid.startswith("openrouter/"):
-        out.add("openrouter")
+    if mid.startswith(("openrouter/", "nanogpt/")):
+        out.add(mid.split("/", 1)[0])
         parts = mid.split("/")
         if len(parts) >= 3:
             mapped = _alias_type(parts[1])
@@ -131,7 +134,7 @@ def _item_providers(item: dict) -> set[str]:
 
 def _stem(model_id: str) -> str:
     text = (model_id or "").strip().lower()
-    if text.startswith("openrouter/"):
+    if text.startswith(("openrouter/", "nanogpt/")):
         text = text.split("/", 2)[-1]
     elif text.startswith("devin/"):
         text = text[6:]
@@ -279,7 +282,7 @@ async def search_models(*, user_id: int, arguments: str) -> tuple[str, dict]:
             {
                 "query": query,
                 "models": [],
-                "usage": "No models matched. Try a provider name (grok, chatgpt, zai, openrouter, explabs) or a model family.",
+                "usage": "No models matched. Try a provider name (grok, chatgpt, zai, nanogpt, openrouter, explabs) or a model family.",
             },
             ensure_ascii=False,
         )
@@ -313,6 +316,9 @@ async def resolve_spawn_model(*, user_id: int, slug: str, parent_model: str) -> 
     _, providers = _query_parts(want)
     if "explabs" not in providers:
         hits = [h for h in hits if h["provider"] != "explabs"]
+    if "nanogpt" not in providers:
+        # NanoGPT relists most pool models; it wins only when nothing else matches.
+        hits = [h for h in hits if h["provider"] != "nanogpt"] or hits
     if len(hits) == 1:
         return hits[0]["id"], ""
     if not hits:

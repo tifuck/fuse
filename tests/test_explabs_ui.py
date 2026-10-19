@@ -122,7 +122,7 @@ def test_scoped_model_metadata_and_efforts(monkeypatch):
 def test_models_page_passes_owner_catalog(monkeypatch):
     denied = {"ok": False, "reason": "none"}
     monkeypatch.setattr(models, "grok_access_state", lambda uid: denied)
-    for module, name in ((models.chatgpt_mod, "chatgpt_access_state"), (models.zai_mod, "zai_access_state"), (models.devin_mod, "devin_access_state"), (models.kimi_mod, "kimi_access_state"), (models.mimo_mod, "mimo_access_state"), (models.claude_mod, "claude_access_state"), (models.cursor_mod, "cursor_access_state")):
+    for module, name in ((models.chatgpt_mod, "chatgpt_access_state"), (models.zai_mod, "zai_access_state"), (models.devin_mod, "devin_access_state"), (models.kimi_mod, "kimi_access_state"), (models.mimo_mod, "mimo_access_state"), (models.claude_mod, "claude_access_state"), (models.cursor_mod, "cursor_access_state"), (models.nanogpt_mod, "nanogpt_access_state")):
         monkeypatch.setattr(module, name, lambda uid: denied)
     monkeypatch.setattr(models.openrouter_mod, "openrouter_access_state", lambda uid: {"ok": False, "user_key": False})
     monkeypatch.setattr(models.openrouter_mod, "cached_catalog", lambda: None)

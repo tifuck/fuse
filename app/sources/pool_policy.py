@@ -1,4 +1,4 @@
-"""Admin and per-user policy for donated Grok, ChatGPT, Z.AI, Devin, Kimi, Xiaomi, Claude, and Cursor pools.
+"""Admin and per-user policy for donated Grok, ChatGPT, Z.AI, Devin, Kimi, Xiaomi, Claude, Cursor and NanoGPT pools.
 
 Two admin switches per pool, stored on sources.config:
 
@@ -43,7 +43,7 @@ import time
 from .. import accounts, db
 from ..crypto import DecryptionError
 
-POOL_KINDS = ("grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude", "cursor")
+POOL_KINDS = ("grok", "chatgpt", "zai", "devin", "kimi", "mimo", "claude", "cursor", "nanogpt")
 POOL_KIND_SET = frozenset(POOL_KINDS)
 POOL_LABELS = {
     "grok": "x.ai",
@@ -54,6 +54,7 @@ POOL_LABELS = {
     "mimo": "Xiaomi",
     "claude": "Claude",
     "cursor": "Cursor",
+    "nanogpt": "NanoGPT",
 }
 
 SHARE_LEVELS = ("everyone", "contributors", "private")
@@ -104,6 +105,10 @@ def source_id(kind: str) -> int:
         from .cursor import ensure_cursor_source
 
         return ensure_cursor_source()
+    if kind == "nanogpt":
+        from .nanogpt import ensure_nanogpt_source
+
+        return ensure_nanogpt_source()
     raise ValueError(f"unknown pool kind {kind!r}")
 
 
@@ -141,6 +146,10 @@ def own_access(kind: str, user_id: int) -> dict:
         from .cursor import cursor_own_access
 
         return cursor_own_access(user_id)
+    if kind == "nanogpt":
+        from .nanogpt import nanogpt_own_access
+
+        return nanogpt_own_access(user_id)
     raise ValueError(f"unknown pool kind {kind!r}")
 
 
@@ -176,7 +185,7 @@ def set_admin_policy(kind: str, *, pool_shared: bool, open_access: bool) -> None
 # Pools that hold an account out for HOLD_HOURS when its plan usage rises with
 # no Fuse traffic (its owner is using it elsewhere). The hold withholds the
 # account from other users only; pool_pick never applies it to the owner.
-GUARD_KINDS = ("grok", "zai", "kimi", "mimo", "claude", "cursor")
+GUARD_KINDS = ("grok", "zai", "kimi", "mimo", "claude", "cursor", "nanogpt")
 
 
 def guard_enabled(kind: str) -> bool:
@@ -487,11 +496,17 @@ def _reachable(rows, kind: str, user_id: int | None):
         return []
     levels = _share_levels(kind)
     contributor: bool | None = None
+    lendable = None
+    if kind == "nanogpt":
+        # A NanoGPT key that can spend its owner's balance is never lent.
+        from .nanogpt import lendable_row as lendable
     out = []
     for row in rows:
         donor = donated_by(row)
         if uid is not None and donor == uid:
             out.append(row)
+            continue
+        if lendable is not None and not lendable(row):
             continue
         level = levels.get(donor, "everyone") if donor is not None else "everyone"
         if level == "private":

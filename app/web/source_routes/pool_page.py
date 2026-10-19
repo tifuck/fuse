@@ -16,12 +16,14 @@ from ...sources import kimi as kimi_mod
 from ...sources import mimo as mimo_mod
 from ...sources import claude as claude_mod
 from ...sources import cursor as cursor_mod
+from ...sources import nanogpt as nanogpt_mod
 from ...sources import zai as zai_mod
 from ...sources.grok import ensure_grok_source, grok_access_state, is_held
 from ...sources.pool_pick import CHATGPT_FREE_PLANS, chatgpt_plan_type, chatgpt_usage_percent, grok_usage_percent
 from ...sources import pool_policy
 from ..deps import _pool_flash, render, require_user
-from .context import _chatgpt_pending_for, _claude_pending_for, _cursor_pending_for, _devin_pending_for, _kimi_pending_for, _mimo_pending_for, _pending_for, _pool_card
+from .context import _chatgpt_pending_for, _claude_pending_for, _cursor_pending_for, _devin_pending_for, _kimi_pending_for, _mimo_pending_for, _nanogpt_pending_for, _pending_for, _pool_card
+from .nanogpt import _redirect_uri as _nanogpt_redirect_uri, model_rows as _nanogpt_model_rows
 from .openrouter import _openrouter_model_rows
 
 router = APIRouter()
@@ -388,6 +390,42 @@ async def user_sources(request: Request):
     _fuse_fill(cursor_visible)
     cursor_pending = _cursor_pending_for(user["id"])
 
+    nanogpt_sid = nanogpt_mod.ensure_nanogpt_source()
+    nanogpt_rows = db.fetchall(
+        "SELECT * FROM credentials WHERE source_id=? AND disabled=0 ORDER BY id",
+        (nanogpt_sid,),
+    )
+    nanogpt_access = nanogpt_mod.nanogpt_access_state(user["id"])
+    nanogpt_ui, nanogpt_ids, nanogpt_routable = _pool_scope(user, "nanogpt", nanogpt_rows, nanogpt_access["ok"])
+    nanogpt_visible = []
+    for a in nanogpt_rows:
+        if not _pool_account_visible(user, a, nanogpt_ids):
+            continue
+        extra = accounts.cred_extra(a)
+        billing = extra.get("billing") if isinstance(extra.get("billing"), dict) else {}
+        guard = extra.get("guard") if isinstance(extra.get("guard"), dict) else None
+        held = nanogpt_mod.is_held(a)
+        card = _pool_card(user, a, kind="NanoGPT", index=len(nanogpt_visible) + 1, extra=extra)
+        _pool_card_scope(card, "nanogpt", a, user, nanogpt_ids)
+        # The balance is the owner's business; everyone else sees quota only.
+        shown = billing if card["show_billing"] else {k: v for k, v in billing.items() if k != "prepaid_cents"}
+        card.update(
+            {
+                "billing": stats.billing_view(shown, last_percent=a["last_usage_percent"]),
+                "held": held,
+                "hold": stats.hold_view(a["pool_held_until"] if held else None, guard, a["last_usage_percent"]),
+                "authed": nanogpt_mod.credential_is_authed(a, extra),
+                "subscribed": nanogpt_mod.billing_has_subscription(billing),
+                "owner_only": not nanogpt_mod.shareable(extra),
+            }
+        )
+        nanogpt_visible.append(card)
+    _sort_mine_first(nanogpt_visible)
+    nanogpt_pool = stats.nanogpt_pool_meter(nanogpt_routable, owner_id=user["id"])
+    _fuse_fill(nanogpt_visible)
+    nanogpt_pending = _nanogpt_pending_for(user["id"])
+    nanogpt_owner = nanogpt_mod.nanogpt_own_access(user["id"])["ok"]
+
     openrouter_sid = openrouter_mod.ensure_openrouter_source()
     or_access = openrouter_mod.openrouter_access_state(user["id"])
     or_owned = openrouter_mod.user_credential(user["id"], openrouter_sid)
@@ -519,6 +557,20 @@ async def user_sources(request: Request):
         cursor_auth_url=safe_verify_url((cursor_pending or {}).get("auth_url") or ""),
         cursor_flash_kind=flash[0] if flash and flash[2] == "cursor" else "",
         cursor_flash_msg=flash[1] if flash and flash[2] == "cursor" else "",
+        nanogpt_ui=nanogpt_ui,
+        nanogpt_accounts=nanogpt_visible,
+        nanogpt_ok=nanogpt_access["ok"],
+        nanogpt_reason=nanogpt_access["reason"],
+        nanogpt_pool=nanogpt_pool,
+        nanogpt_pending=nanogpt_pending if (nanogpt_pending or {}).get("kind") == "device" else None,
+        nanogpt_interval=(nanogpt_pending or {}).get("interval", 3),
+        nanogpt_verify=safe_verify_url((nanogpt_pending or {}).get("verify") or ""),
+        nanogpt_oauth=bool(_nanogpt_redirect_uri(request)),
+        nanogpt_owner=nanogpt_owner,
+        nanogpt_models=_nanogpt_model_rows(user["id"]) if nanogpt_owner else [],
+        nanogpt_prefs=nanogpt_mod.model_prefs(user["id"]),
+        nanogpt_flash_kind=flash[0] if flash and flash[2] == "nanogpt" else "",
+        nanogpt_flash_msg=flash[1] if flash and flash[2] == "nanogpt" else "",
         zai_flash=flash,
         pool_flash_kind=flash[0] if flash and flash[2] == "pool" else "",
         pool_flash_msg=flash[1] if flash and flash[2] == "pool" else "",

@@ -12,7 +12,7 @@ from ...sources import devin as devin_mod
 from ...sources import kimi as kimi_mod
 from ...sources import claude as claude_mod
 from ...sources import cursor as cursor_mod
-from ..deps import _chatgpt_pending, _devin_pending, _kimi_pending, _mimo_pending, _claude_pending, _cursor_pending, _pending, _PENDING_TTL
+from ..deps import _chatgpt_pending, _devin_pending, _kimi_pending, _mimo_pending, _claude_pending, _cursor_pending, _nanogpt_pending, _pending, _PENDING_TTL
 
 def _source_cfg(row) -> dict:
     try:
@@ -93,6 +93,17 @@ def _mimo_pending_for(uid: int):
     if time.time() - float(data.get("_started") or 0) > _PENDING_TTL:
         _mimo_pending.pop(uid, None)
         return None
+    return data
+
+
+def _nanogpt_pending_for(uid: int):
+    data = _nanogpt_pending.get(uid)
+    if not data:
+        return None
+    if time.time() - float(data.get("_started") or 0) > _PENDING_TTL:
+        _nanogpt_pending.pop(uid, None)
+        return None
+    _clamp_interval(data)
     return data
 
 

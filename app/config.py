@@ -169,6 +169,15 @@ class Settings(BaseSettings):
     cursor_client_id: str = "KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB"
     cursor_client_version: str = "cli-2026.10.16-e3cb207"
 
+    # NanoGPT. Sign-in (OAuth PKCE key handoff, device login) is on the
+    # website host; chat, catalog and quota use the direct API host, which
+    # allows larger bodies and longer runs. invitation_code is an optional
+    # NanoGPT referral code shown on the consent screen to new accounts.
+    nanogpt_web_base: str = "https://nano-gpt.com"
+    nanogpt_api_base: str = "https://api.nano-gpt.com/api"
+    nanogpt_client_name: str = "Fuse"
+    nanogpt_invitation_code: str = ""
+
     @field_validator("app_secret")
     @classmethod
     def _require_secret(cls, v: str) -> str:

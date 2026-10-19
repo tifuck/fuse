@@ -14,6 +14,7 @@ from .sources import kimi as kimi_mod
 from .sources import mimo as mimo_mod
 from .sources import claude as claude_mod
 from .sources import cursor as cursor_mod
+from .sources import nanogpt as nanogpt_mod
 from .sources import zai as zai_mod
 from .sources.grok import grok_access_state
 from .web.models import _model_display_name, _opencode_model_config
@@ -24,6 +25,7 @@ _OPENCODE_NAME_PREFIX = {
     "devin": "Devin",
     "cursor": "Cursor",
     "explabs": "Experiential Labs",
+    "nanogpt": "NanoGPT",
 }
 
 
@@ -48,6 +50,7 @@ async def model_options(user_id: int, groups: list[dict] | None = None) -> list[
         mimo = mimo_mod.mimo_access_state(user_id)
         claude = claude_mod.claude_access_state(user_id)
         cursor = cursor_mod.cursor_access_state(user_id)
+        nanogpt = nanogpt_mod.nanogpt_access_state(user_id)
         groups = await models_by_source(
             allow_grok=grok["ok"],
             allow_chatgpt=chatgpt["ok"],
@@ -57,6 +60,7 @@ async def model_options(user_id: int, groups: list[dict] | None = None) -> list[
             allow_mimo=mimo["ok"],
             allow_claude=claude["ok"],
             allow_cursor=cursor["ok"],
+            allow_nanogpt=nanogpt["ok"],
             user_id=user_id,
         )
     entries: list[dict] = []
@@ -77,7 +81,11 @@ async def model_options(user_id: int, groups: list[dict] | None = None) -> list[
                 explabs_catalog = explabs_mod.cached_catalog(user_id)
                 if explabs_catalog is None:
                     explabs_catalog = await explabs_mod.fetch_catalog(user_id)
-        catalog = explabs_catalog if group["type"] == "explabs" else openrouter_catalog
+        catalog = (
+            explabs_catalog if group["type"] == "explabs"
+            else nanogpt_mod.cached_catalog() if group["type"] == "nanogpt"
+            else openrouter_catalog
+        )
         for model in group["models"]:
             mid = model
             if group["type"] == "devin":
@@ -107,6 +115,8 @@ async def model_options(user_id: int, groups: list[dict] | None = None) -> list[
                 window = ctxmod.window_for(mid, "explabs", catalog=catalog)
                 if window:
                     config["limit"] = {"context": window}
+            if group["type"] == "nanogpt":
+                config["limit"] = {"context": ctxmod.window_for(mid, "nanogpt", catalog=catalog)}
             if image is not None:
                 config["modalities"] = {"input": ["text", "image"] if image else ["text"], "output": ["text"]}
             entries.append(

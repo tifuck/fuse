@@ -157,6 +157,8 @@ async def probe_source(source_id: int) -> dict:
         checks = await _probe_cursor(src)
     elif src.type_id == "devin":
         checks = await _probe_devin(src)
+    elif src.type_id == "nanogpt":
+        checks = await _probe_nanogpt(src)
     elif src.type_id == "explabs":
         checks = [_check("Personal keys", True, "Validated when each user connects a key; no shared-key or completion probe.", skip=True)]
     elif src.type_id == "openrouter":
@@ -603,6 +605,38 @@ async def _probe_mimo(src) -> list[dict]:
     else:
         checks.append(_check("Catalog", bool(names), _summary(names) if names else "No models listed"))
     checks.append(_check("Chat", True, "Skipped — Fuse does not send MiMo completions as a probe.", skip=True))
+    return checks
+
+
+async def _probe_nanogpt(src) -> list[dict]:
+    """Usage and catalog only. Never send a NanoGPT completion."""
+    from . import nanogpt
+
+    skipped = _check("Chat", True, "Skipped — Fuse does not send NanoGPT completions as a probe.", skip=True)
+    creds = db.fetchall("SELECT * FROM credentials WHERE source_id=? AND disabled=0", (src.source_id,))
+    checks: list[dict] = []
+    if creds:
+        authed = shared = 0
+        for cred in creds:
+            try:
+                await nanogpt.refresh_usage(cred, force=True)
+            except Exception:
+                pass
+            row = db.fetchone("SELECT * FROM credentials WHERE id=?", (cred["id"],))
+            if not row:
+                continue
+            extra = accounts.cred_extra(row)
+            authed += nanogpt.credential_is_authed(row, extra)
+            shared += nanogpt.shareable(extra)
+        checks.append(_check("Accounts", True, f"{len(creds)} linked"))
+        checks.append(_check("Auth", authed > 0, f"{authed} of {len(creds)} still authed" if authed else "No live key"))
+        checks.append(_check("Shareable", True, f"{shared} subscription key{'s' if shared != 1 else ''} that cannot spend balance"))
+    else:
+        checks.append(_check("Accounts", True, "None linked yet", skip=True))
+    catalog = await nanogpt.fetch_catalog(force=True)
+    names = list(catalog["by_id"])
+    checks.append(_check("Catalog", bool(names), _summary(names) if names else "Could not read the catalog"))
+    checks.append(skipped)
     return checks
 
 
