@@ -53,7 +53,6 @@ class Settings(BaseSettings):
     # --- Limits and tunables ---
     max_body_bytes: int = 2_097_152
     chat_body_bytes: int = 8_388_608
-    max_tokens: int = 16_384
     auth_rate_per_minute: int = 10
     api_rate_per_minute: int = 90
     web_search_queries_per_turn: int = 32

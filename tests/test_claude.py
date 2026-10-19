@@ -393,7 +393,7 @@ class ClaudeParseTest(unittest.TestCase):
                                         "name": "Opus 5.5",
                                         "offered_on": ["first_party"],
                                         "thinking": {"type": "effort"},
-                                        "runtime": {"max_input_tokens": 1000000, "effort_levels": ["low", "medium"], "default_effort": "medium"},
+                                        "runtime": {"max_input_tokens": 1000000, "max_output_tokens": 128000, "effort_levels": ["low", "medium"], "default_effort": "medium"},
                                     },
                                     {"id": "claude-opus-4-1-20250805", "name": "Opus 4.1", "offered_on": ["bedrock"]},
                                 ]
@@ -405,7 +405,17 @@ class ClaudeParseTest(unittest.TestCase):
         )
         self.assertEqual([row["id"] for row in rows], ["claude-opus-5-5"])
         self.assertEqual(rows[0]["window"], 1_000_000)
+        self.assertEqual(rows[0]["max_output"], 128_000)
         self.assertEqual(rows[0]["default_effort"], "medium")
+
+    def test_max_tokens_defaults_to_model_output_ceiling(self):
+        from app.sources import claude_payload
+
+        with patch.object(claude_payload, "_meta_for", return_value={"max_output": 128_000}):
+            default = claude_mod.build_messages_payload({"messages": [{"role": "user", "content": "hi"}]}, "claude-opus-5-5")
+            over = claude_mod.build_messages_payload({"max_tokens": 500_000, "messages": [{"role": "user", "content": "hi"}]}, "claude-opus-5-5")
+        self.assertEqual(default["max_tokens"], 128_000)
+        self.assertEqual(over["max_tokens"], 128_000)
 
     def test_missing_signature_is_dropped(self):
         payload = claude_mod.build_messages_payload(

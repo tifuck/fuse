@@ -252,8 +252,8 @@ def _start_turn(user_id, thread_id, text, expected_revision, command_id, model=N
             """SELECT COUNT(*) FROM chat_runs WHERE user_id=? AND status IN ('queued','running')
                AND parent_run_id IS NULL""",
             (user_id,),
-        ).fetchone()[0] >= 4:
-            raise chats.ChatValidationError("maximum of 4 active runs reached", 409)
+        ).fetchone()[0] >= 20:
+            raise chats.ChatValidationError("maximum of 20 active runs reached", 409)
         if conn.execute(
             """SELECT COUNT(*) FROM chat_runs WHERE status IN ('queued','running') AND parent_run_id IS NULL"""
         ).fetchone()[0] >= 32:

@@ -16,7 +16,6 @@ from fastapi.responses import StreamingResponse
 from . import api, artifacts, chats, context_compact as ctxmod, context_meter
 from .chat_generation import inbox, metadata, policy, tool_runner
 from .chat_tools import execute_tool, openai_tools, parse_tool_names
-from .config import settings
 from .proxy import merge_usage, usage_from_obj
 from .sources import POOL_TYPES
 
@@ -700,7 +699,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             number = float(value)
             if not math.isfinite(number) or not number.is_integer():
                 raise ValueError
-            payload["max_tokens"] = max(1, min(int(number), settings.max_tokens))
+            payload["max_tokens"] = max(1, int(number))
         except (TypeError, ValueError, OverflowError):
             raise HTTPException(400, "Invalid max_tokens") from None
     candidate_schemas = openai_tools(

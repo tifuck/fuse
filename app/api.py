@@ -534,7 +534,8 @@ async def _invoke_chat(request: Request, user, body: dict, *, cheap_reasoning: b
     _validate_reasoning(body)
     if "stream" in body and not isinstance(body["stream"], bool):
         raise HTTPException(400, "Invalid stream")
-    # Both spellings reach upstreams; each gets the same ceiling.
+    # Both spellings reach upstreams; each is validated the same way. The
+    # ceiling is the upstream's, not Fuse's.
     for field in ("max_tokens", "max_completion_tokens"):
         if body.get(field) is None:
             continue
@@ -545,7 +546,7 @@ async def _invoke_chat(request: Request, user, body: dict, *, cheap_reasoning: b
             number = float(value)
             if not math.isfinite(number) or not number.is_integer():
                 raise ValueError
-            body[field] = max(1, min(int(number), settings.max_tokens))
+            body[field] = max(1, int(number))
         except (TypeError, ValueError, OverflowError):
             raise HTTPException(400, f"Invalid {field}")
     grok_ok = user_has_grok(user["id"])

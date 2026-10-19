@@ -425,8 +425,8 @@ def _check_resume_admission(row, user_id, is_child):
 
     live = "status IN ('queued','running')"
     if not is_child:
-        if count(f"SELECT COUNT(*) AS n FROM chat_runs WHERE user_id=? AND {live} AND parent_run_id IS NULL", (user_id,)) >= 4:
-            raise chats.ChatValidationError("maximum of 4 active runs reached", 409)
+        if count(f"SELECT COUNT(*) AS n FROM chat_runs WHERE user_id=? AND {live} AND parent_run_id IS NULL", (user_id,)) >= 20:
+            raise chats.ChatValidationError("maximum of 20 active runs reached", 409)
         if count(f"SELECT COUNT(*) AS n FROM chat_runs WHERE {live} AND parent_run_id IS NULL") >= 32:
             raise chats.ChatValidationError("chat generation capacity reached; try again shortly", 429)
         return

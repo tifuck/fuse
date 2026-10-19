@@ -17,10 +17,10 @@ CLAUDE_MODELS = [
 ]
 
 CLAUDE_MODEL_META = {
-    "claude-opus-5-5": {"name": "Opus 5.5", "window": 1_000_000, "efforts": ("low", "medium", "high", "xhigh", "max"), "default_effort": "medium"},
-    "claude-sonnet-5": {"name": "Sonnet 5", "window": 1_000_000, "efforts": ("low", "medium", "high", "xhigh", "max"), "default_effort": "high"},
-    "claude-fable-5-1": {"name": "Fable 5.1", "window": 1_000_000, "efforts": ("low", "medium", "high", "xhigh", "max"), "default_effort": "high"},
-    "claude-haiku-4-5-20251001": {"name": "Haiku 4.5", "window": 200_000, "efforts": (), "default_effort": ""},
+    "claude-opus-5-5": {"name": "Opus 5.5", "window": 1_000_000, "max_output": 128_000, "efforts": ("low", "medium", "high", "xhigh", "max"), "default_effort": "medium"},
+    "claude-sonnet-5": {"name": "Sonnet 5", "window": 1_000_000, "max_output": 128_000, "efforts": ("low", "medium", "high", "xhigh", "max"), "default_effort": "high"},
+    "claude-fable-5-1": {"name": "Fable 5.1", "window": 1_000_000, "max_output": 128_000, "efforts": ("low", "medium", "high", "xhigh", "max"), "default_effort": "high"},
+    "claude-haiku-4-5-20251001": {"name": "Haiku 4.5", "window": 200_000, "max_output": 64_000, "efforts": (), "default_effort": ""},
 }
 _catalog_meta: dict[str, dict] = {}
 _models_cache: tuple[float, list[str]] | None = None
@@ -112,11 +112,16 @@ def parse_catalog_payload(data: dict) -> list[dict]:
                 window = min(int(runtime.get("max_input_tokens") or 0), 1_000_000)
             except (TypeError, ValueError):
                 window = 0
+            try:
+                max_output = int(runtime.get("max_output_tokens") or 0)
+            except (TypeError, ValueError):
+                max_output = 0
             rows.append(
                 {
                     "id": mid,
                     "name": str(model.get("name") or mid),
                     "window": window or 200_000,
+                    "max_output": max_output,
                     "efforts": efforts,
                     "default_effort": str(runtime.get("default_effort") or ""),
                     "thinking_type": str(thinking.get("type") or ""),

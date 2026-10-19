@@ -848,7 +848,7 @@ async def _fire(schedule: dict, fire: dict, *, consume_slot: bool) -> None:
                    WHERE r.status IN ('queued','running') AND r.parent_run_id IS NULL
                      AND instr(r.request, '"scheduled":true') > 0"""
             )["n"])
-            return n_sched >= MAX_CONCURRENT_USER or n_sched_global >= MAX_CONCURRENT_GLOBAL or n_user >= 4 or n_global >= 32
+            return n_sched >= MAX_CONCURRENT_USER or n_sched_global >= MAX_CONCURRENT_GLOBAL or n_user >= 20 or n_global >= 32
 
         if over_capacity():
             status = "skipped_capacity"

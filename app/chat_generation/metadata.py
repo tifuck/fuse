@@ -53,8 +53,8 @@ async def summarize_once(request: Request, user, model: str, head: list[dict], i
                                              instructions=instructions, limit=limit, tools=tools),
         "stream": False,
         # The handoff replaces the whole conversation, so it needs room to carry
-        # the work. Reply caps are about chat answers, not internal handoffs.
-        "max_tokens": max(16_000, min(32_000, settings.max_tokens)),
+        # the work.
+        "max_tokens": 16_384,
     }
     if tools:
         payload["tools"] = tools

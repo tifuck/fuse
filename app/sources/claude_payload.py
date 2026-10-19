@@ -10,7 +10,6 @@ import hashlib
 import json
 import re
 
-from ..config import settings
 from .claude_catalog import _meta_for, efforts_for
 
 _THINKING_OFF = frozenset({"none", "off", "disabled"})
@@ -263,11 +262,14 @@ def build_messages_payload(body: dict, model: str) -> dict:
     if not messages:
         messages = [{"role": "user", "content": [{"type": "text", "text": ""}]}]
 
+    # Anthropic requires max_tokens: default to the model's own output
+    # ceiling from the catalog, so Fuse never cuts a reply short itself.
+    cap = int(_meta_for(model).get("max_output") or 32_000)
     try:
-        max_tokens = int(body.get("max_tokens") or settings.max_tokens)
+        max_tokens = int(body.get("max_tokens") or cap)
     except (TypeError, ValueError):
-        max_tokens = int(settings.max_tokens)
-    max_tokens = max(1, min(max_tokens, int(settings.max_tokens)))
+        max_tokens = cap
+    max_tokens = max(1, min(max_tokens, cap))
 
     payload: dict = {
         "model": model,
