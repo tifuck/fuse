@@ -72,7 +72,8 @@ async def summarize_once(request: Request, user, model: str, head: list[dict], i
         return ""
     if result.status != 200:
         logger.warning("Context compaction request failed upstream (status %s)", result.status)
-        api._safe_record_usage(
+        await asyncio.to_thread(
+            api._safe_record_usage,
             _user["id"],
             src.source_id,
             result.credential_id,
@@ -164,7 +165,8 @@ async def metadata_once(request, user, model, text, system, limit, parser, *, co
         logger.exception("Chat title request failed")
         return ""
     if result.status != 200:
-        api._safe_record_usage(
+        await asyncio.to_thread(
+            api._safe_record_usage,
             _user["id"],
             src.source_id,
             result.credential_id,

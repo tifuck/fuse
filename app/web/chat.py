@@ -926,7 +926,9 @@ async def chat_thread_fork(request: Request, thread_id: str):
         return err
     raw = await _json_object(request)
     try:
-        thread = chats.fork_thread(user["id"], thread_id, expected_revision=_chat_revision(raw), command_id=_chat_command(raw))
+        thread = await asyncio.to_thread(
+            chats.fork_thread, user["id"], thread_id, expected_revision=_chat_revision(raw), command_id=_chat_command(raw)
+        )
     except chats.ChatValidationError as exc:
         raise _chat_validation_error(exc) from None
     if not thread:

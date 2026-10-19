@@ -1,5 +1,6 @@
 """Reorganized settings pages: navigation, moved sections, and the saves they
 carry, in a disposable MariaDB schema."""
+import json
 import os
 import re
 
@@ -71,6 +72,23 @@ def test_nav_groups_and_admin_pages(client):
     usage = client.get("/usage").text
     assert "/admin/pricing" not in usage.split('<main id="content"')[1]
     assert 'action="/keys"' not in usage
+
+
+def test_llama_skip_verify_is_unticked_unless_verify_is_off(client):
+    from app.sources import ensure_llama_source
+
+    _login(client, "admin@test.invalid")
+    llama_id = ensure_llama_source()
+    box = re.compile(r'<input type="checkbox" name="insecure" value="1"( checked)?>')
+    for cfg, ticked in (
+        ({"base_url": "https://llama.example.test/v1"}, False),
+        ({"base_url": "https://llama.example.test/v1", "verify": 1}, False),
+        ({"base_url": "https://llama.example.test/v1", "verify": 0}, True),
+    ):
+        db.execute("UPDATE sources SET config=? WHERE id=?", (json.dumps(cfg), llama_id))
+        match = box.search(client.get("/admin/sources").text)
+        assert match, cfg
+        assert bool(match.group(1)) is ticked, cfg
 
 
 def test_pool_access_saves_every_kind_including_claude(client):

@@ -891,11 +891,18 @@ def delete_schedule_owned_thread(user_id: int, thread_id: int, *, keep_thread_id
 # fork rewrites every occurrence (traces, provider transcripts, "task_id: …"
 # lines the model saw) so the copy never shares an id with its source.
 _FORK_ID_EDGE = r"(?<![0-9A-Za-z-])(?:{alts})(?![0-9A-Za-z-])"
+_FORK_ID_TOKEN = re.compile(r"[0-9A-Za-z-]+")
 def _fork_rewriter(id_map: dict):
+    """An edge-bounded id made only of [0-9A-Za-z-] is exactly one maximal
+    token, so match tokens generically and look them up: linear in the text
+    however many ids there are. Ids with other characters (none in practice)
+    keep an explicit alternative, tried first as their match is longer."""
     ids = [old for old in id_map if old]
     if not ids:
         return lambda text: text
-    pattern = re.compile(_FORK_ID_EDGE.format(alts="|".join(re.escape(i) for i in sorted(ids, key=len, reverse=True))))
+    odd = [i for i in ids if not _FORK_ID_TOKEN.fullmatch(i)]
+    alts = [re.escape(i) for i in sorted(odd, key=len, reverse=True)] + [_FORK_ID_TOKEN.pattern]
+    pattern = re.compile(_FORK_ID_EDGE.format(alts="|".join(alts)))
 
     def rewrite(text):
         if not isinstance(text, str) or not text:

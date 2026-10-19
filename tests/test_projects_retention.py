@@ -1,11 +1,13 @@
 """Project colors/logos/archive, deep chat forks, and automatic cleanup."""
 import json
 import re
+import time
 import unittest
+import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-from app import chat_store as store, chats, db, hosts, retention
+from app import chat_store as store, chat_threads, chats, db, hosts, retention
 from tests.mariadb_fixture import copy_foreign_keys, isolated_database
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
@@ -273,6 +275,28 @@ class ProjectsRetentionTest(unittest.TestCase):
         fork = chats.fork_thread(1, thread["id"])
         self.assertEqual((fork["kind"], fork["project_id"]), ("project", made["id"]))
 
+    def test_fork_of_a_long_thread_rewrites_every_id(self):
+        thread = chats.create_thread(1, model="offline")
+        pk = chats.resolve_thread_pk(1, thread["id"])
+        old = [str(uuid.uuid4()) for _ in range(2000)]
+        messages = [
+            {"id": mid, "role": "user" if i % 2 == 0 else "assistant",
+             "content": f"see {old[i - 1]} and x{old[i - 1]}" if i else "start"}
+            for i, mid in enumerate(old)
+        ]
+        db.execute("UPDATE chat_threads SET messages=? WHERE id=?", (json.dumps(messages), pk))
+        started = time.monotonic()
+        fork = chats.fork_thread(1, thread["id"])
+        self.assertLess(time.monotonic() - started, 10)
+        stored = chat_threads.parse_messages(db.fetchone("SELECT messages FROM chat_threads WHERE id=?",
+                                        (chats.resolve_thread_pk(1, fork["id"]),))["messages"])
+        new = [m["id"] for m in stored]
+        self.assertEqual(len(new), 2000)
+        self.assertTrue(set(new).isdisjoint(old))
+        for i in range(1, 2000):
+            # Edge-bounded mentions follow the id map; glued ones are left alone.
+            self.assertEqual(stored[i]["content"], f"see {new[i - 1]} and x{old[i - 1]}")
+
     # -- retention --------------------------------------------------------
 
     def test_settings_validate(self):
@@ -453,6 +477,26 @@ class ProjectsRetentionTest(unittest.TestCase):
         ]), pk))
         settled = chats.get_thread(1, thread["id"])["messages"][1]["tools"][0]
         self.assertEqual((settled["status"], settled["execution_status"]), ("interrupted", "lost"))
+
+
+class ForkRewriterTest(unittest.TestCase):
+    def test_thousands_of_ids_rewrite_in_linear_time(self):
+        id_map = {str(uuid.uuid4()): str(uuid.uuid4()) for _ in range(3000)}
+        id_map.update({uuid.uuid4().hex[:12]: uuid.uuid4().hex[:12] for _ in range(1000)})
+        id_map["call_7"] = "call_8"
+        stranger = str(uuid.uuid4())
+        parts, expected = [], []
+        for old, new in id_map.items():
+            parts.append(f'"{old}" task_id: {old}\n-{old} x{old} {old}-a {old}_b {stranger}\n' + "." * 700)
+            expected.append(f'"{new}" task_id: {new}\n-{old} x{old} {old}-a {new}_b {stranger}\n' + "." * 700)
+        text = "".join(parts)
+        self.assertGreater(len(text), 3_000_000)
+        rewrite = chat_threads._fork_rewriter(id_map)
+        started = time.monotonic()
+        out = rewrite(text)
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertEqual(out, "".join(expected))
+        self.assertEqual(rewrite("(call_7) xcall_7 call_77"), "(call_8) xcall_7 call_77")
 
 
 if __name__ == "__main__":

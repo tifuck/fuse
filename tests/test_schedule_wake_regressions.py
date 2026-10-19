@@ -165,6 +165,38 @@ class VaultLockedRetryTest(unittest.TestCase):
             "queued",
         )
 
+    def test_cooling_rows_do_not_starve_other_due_schedules(self):
+        now = db.now()
+        for i in range(10):
+            slot = iso_utc(utcnow() - timedelta(hours=2, minutes=i))
+            db.execute(
+                """INSERT INTO chat_schedules(public_id,user_id,name,target,prompt,model,timezone,
+                                             recur_kind,once_at,next_fire_at,created_at,updated_at)
+                   VALUES(?,1,?,'chat','locked','offline','UTC','once',?,?,?,?)""",
+                (f"locked{i}", f"locked{i}", slot, slot, now, now),
+            )
+            locked_id = db.fetchone("SELECT id FROM chat_schedules WHERE public_id=?", (f"locked{i}",))["id"]
+            # Just retried: still inside RETRY_COOLDOWN_S.
+            db.execute(
+                """INSERT INTO schedule_fires(schedule_id,user_id,trigger,status,slot_key,fire_id,started_at)
+                   VALUES(?,1,'scheduled','vault_locked',?,?,?)""",
+                (locked_id, slot, f"fire-locked{i}", now),
+            )
+        due = iso_utc(utcnow() - timedelta(minutes=1))
+        db.execute(
+            """INSERT INTO chat_schedules(public_id,user_id,name,target,prompt,model,timezone,
+                                         recur_kind,every_seconds,next_fire_at,created_at,updated_at)
+               VALUES('normal',1,'normal','chat','hi','offline','UTC','every',3600,?,?,?)""",
+            (due, now, now),
+        )
+
+        with patch.object(schedules, "_fire", new_callable=AsyncMock) as fire:
+            delay = runs.asyncio.run(schedules.tick())
+        fire.assert_called_once()
+        self.assertEqual(fire.call_args[0][0]["public_id"], "normal")
+        # Rows only waiting out their cooldown do not pin the 0.5s spin.
+        self.assertEqual(delay, 5.0)
+
 
 class SweepWakeTest(unittest.TestCase):
     def setUp(self):

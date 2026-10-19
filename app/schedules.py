@@ -1142,63 +1142,83 @@ async def tick() -> float:
         reconcile()
     now = utcnow()
     claimed = []
+    # Due rows still in retry cooldown are paged past (keyset on
+    # next_fire_at, id), so any number of them cannot starve the rest; they
+    # set the next wake-up to their cooldown end instead of pinning 0.5s.
+    cursor = ("", 0)
+    seen = set()
+    backlog = False
+    cooling = None
     with db.tx() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        rows = conn.execute(
-            """SELECT * FROM chat_schedules
-               WHERE enabled=1 AND paused=0 AND firing_at IS NULL
-                 AND next_fire_at IS NOT NULL AND next_fire_at <= ?
-               ORDER BY next_fire_at LIMIT 8""",
-            (iso_utc(now),),
-        ).fetchall()
-        for raw in rows:
-            item = _row(raw)
-            slot = item.get("next_fire_at") or ""
-            if not slot or item["id"] in _INFLIGHT:
-                continue
-            existing = conn.execute(
-                "SELECT * FROM schedule_fires WHERE schedule_id=? AND slot_key=?",
-                (item["id"], slot),
-            ).fetchone()
-            fire_id = str(uuid4())
-            fire_status = "queued"
-            if existing:
-                fire_d = dict(existing)
-                if fire_row_retryable(fire_d, item):
-                    if not _retry_due(fire_d):
-                        continue
-                    conn.execute(
-                        """UPDATE schedule_fires SET status='queued', started_at=?, error=''
-                           WHERE id=?""",
-                        (db.now(), existing["id"]),
-                    )
-                    fire_id = fire_d.get("fire_id") or fire_id
-                    # Keep the pre-retry status (e.g. vault_locked): _fire's
-                    # grace exemption for a locked one-shot depends on seeing
-                    # it, and the row was just overwritten to 'queued'.
-                    fire_status = fire_d.get("status") or "queued"
-                else:
-                    if item.get("next_fire_at") == slot:
-                        if item["recur_kind"] == "once":
-                            conn.execute(
-                                "UPDATE chat_schedules SET enabled=0, next_fire_at=NULL, firing_at=NULL WHERE id=?",
-                                (item["id"],),
-                            )
-                        else:
-                            nxt = _next_after(item, parse_iso_utc(slot) or now)
-                            conn.execute(
-                                "UPDATE chat_schedules SET next_fire_at=?, firing_at=NULL WHERE id=?",
-                                (iso_utc(nxt) if nxt else None, item["id"]),
-                            )
+        while len(claimed) < 8:
+            rows = conn.execute(
+                """SELECT * FROM chat_schedules
+                   WHERE enabled=1 AND paused=0 AND firing_at IS NULL
+                     AND next_fire_at IS NOT NULL AND next_fire_at <= ?
+                     AND (next_fire_at > ? OR (next_fire_at = ? AND id > ?))
+                   ORDER BY next_fire_at, id LIMIT 8""",
+                (iso_utc(now), cursor[0], cursor[0], cursor[1]),
+            ).fetchall()
+            if not rows:
+                break
+            cursor = (rows[-1]["next_fire_at"], rows[-1]["id"])
+            for raw in rows:
+                if len(claimed) >= 8:
+                    backlog = True
+                    break
+                item = _row(raw)
+                slot = item.get("next_fire_at") or ""
+                if not slot or item["id"] in _INFLIGHT or item["id"] in seen:
+                    backlog = True
                     continue
-            else:
-                conn.execute(
-                    """INSERT INTO schedule_fires(schedule_id, user_id, trigger, status, slot_key, fire_id, started_at)
-                       VALUES(?,?, 'scheduled', 'queued', ?, ?, ?)""",
-                    (item["id"], item["user_id"], slot, fire_id, db.now()),
-                )
-            conn.execute("UPDATE chat_schedules SET firing_at=? WHERE id=?", (iso_utc(now), item["id"]))
-            claimed.append((item, {"slot_key": slot, "fire_id": fire_id, "status": fire_status, "run_id": None}))
+                seen.add(item["id"])
+                existing = conn.execute(
+                    "SELECT * FROM schedule_fires WHERE schedule_id=? AND slot_key=?",
+                    (item["id"], slot),
+                ).fetchone()
+                fire_id = str(uuid4())
+                fire_status = "queued"
+                if existing:
+                    fire_d = dict(existing)
+                    if fire_row_retryable(fire_d, item):
+                        if not _retry_due(fire_d):
+                            started = parse_iso_utc(str(fire_d.get("started_at") or ""))
+                            left = RETRY_COOLDOWN_S - (utcnow() - started).total_seconds()
+                            cooling = left if cooling is None else min(cooling, left)
+                            continue
+                        conn.execute(
+                            """UPDATE schedule_fires SET status='queued', started_at=?, error=''
+                               WHERE id=?""",
+                            (db.now(), existing["id"]),
+                        )
+                        fire_id = fire_d.get("fire_id") or fire_id
+                        # Keep the pre-retry status (e.g. vault_locked): _fire's
+                        # grace exemption for a locked one-shot depends on seeing
+                        # it, and the row was just overwritten to 'queued'.
+                        fire_status = fire_d.get("status") or "queued"
+                    else:
+                        if item.get("next_fire_at") == slot:
+                            if item["recur_kind"] == "once":
+                                conn.execute(
+                                    "UPDATE chat_schedules SET enabled=0, next_fire_at=NULL, firing_at=NULL WHERE id=?",
+                                    (item["id"],),
+                                )
+                            else:
+                                nxt = _next_after(item, parse_iso_utc(slot) or now)
+                                conn.execute(
+                                    "UPDATE chat_schedules SET next_fire_at=?, firing_at=NULL WHERE id=?",
+                                    (iso_utc(nxt) if nxt else None, item["id"]),
+                                )
+                        continue
+                else:
+                    conn.execute(
+                        """INSERT INTO schedule_fires(schedule_id, user_id, trigger, status, slot_key, fire_id, started_at)
+                           VALUES(?,?, 'scheduled', 'queued', ?, ?, ?)""",
+                        (item["id"], item["user_id"], slot, fire_id, db.now()),
+                    )
+                conn.execute("UPDATE chat_schedules SET firing_at=? WHERE id=?", (iso_utc(now), item["id"]))
+                claimed.append((item, {"slot_key": slot, "fire_id": fire_id, "status": fire_status, "run_id": None}))
     for item, fire in claimed:
         _inflight_enter(item["id"])
         try:
@@ -1206,17 +1226,20 @@ async def tick() -> float:
         finally:
             _inflight_exit(item["id"])
             db.execute("UPDATE chat_schedules SET firing_at=NULL WHERE id=? AND firing_at IS NOT NULL", (item["id"],))
+    if backlog:
+        return 0.5
+    # Rows due at the claim time were all handled or are cooling down; only
+    # later ones (including any that came due while firing) set the wake-up.
     row = db.fetchone(
         """SELECT next_fire_at FROM chat_schedules
-           WHERE enabled=1 AND paused=0 AND next_fire_at IS NOT NULL
-           ORDER BY next_fire_at LIMIT 1"""
+           WHERE enabled=1 AND paused=0 AND next_fire_at IS NOT NULL AND next_fire_at > ?
+           ORDER BY next_fire_at LIMIT 1""",
+        (iso_utc(now),),
     )
-    if not row or not row["next_fire_at"]:
-        return 5.0
-    nxt = parse_iso_utc(row["next_fire_at"])
-    if nxt is None:
-        return 5.0
-    delay = (nxt - utcnow()).total_seconds()
+    nxt = parse_iso_utc(row["next_fire_at"]) if row and row["next_fire_at"] else None
+    delay = (nxt - utcnow()).total_seconds() if nxt is not None else 5.0
+    if cooling is not None:
+        delay = min(delay, cooling)
     return max(0.5, min(delay, 5.0))
 
 

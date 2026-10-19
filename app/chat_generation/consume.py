@@ -84,7 +84,8 @@ async def consume_round(result, user, src, upstream: str, requested: str, *, cod
     error = None
     if result.stream is None:
         usage = result.usage or {}
-        api._safe_record_usage(
+        await asyncio.to_thread(
+            api._safe_record_usage,
             user["id"],
             src.source_id,
             result.credential_id,

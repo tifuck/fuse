@@ -670,6 +670,45 @@ class TapAccountingTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(kwargs.get("request_status"), "cancelled")
             self.assertEqual(rec.call_args[0][4]["usage_status"], "unknown")
 
+    async def test_usage_write_is_off_loop_and_survives_a_second_cancel(self):
+        import threading
+        import time
+
+        from app.api import _tap
+
+        started = asyncio.Event()
+        loop_thread = threading.get_ident()
+        writes = []
+
+        async def gen():
+            yield _sse({"choices": [{"delta": {"content": "hi"}}]})
+            started.set()
+            await asyncio.Event().wait()
+
+        def slow_write(*args, **kwargs):
+            time.sleep(0.2)
+            writes.append((threading.get_ident(), kwargs.get("request_status")))
+
+        async def consume():
+            async for _ in _tap(gen(), 1, 1, None, "m", provider="grok"):
+                pass
+
+        with mock.patch("app.api.db.record_usage", side_effect=slow_write):
+            task = asyncio.create_task(consume())
+            await started.wait()
+            task.cancel()
+            await asyncio.sleep(0.05)
+            task.cancel()  # lands while the usage write is in flight
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            for _ in range(50):
+                if writes:
+                    break
+                await asyncio.sleep(0.02)
+        self.assertEqual(len(writes), 1)
+        self.assertNotEqual(writes[0][0], loop_thread)
+        self.assertEqual(writes[0][1], "cancelled")
+
 
 if __name__ == "__main__":
     unittest.main()

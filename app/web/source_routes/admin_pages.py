@@ -146,11 +146,8 @@ def _admin_sources_ctx(error: str | None = None, notice: str | None = None, olla
         "llama": llama,
         "llama_cfg": llama_cfg,
         "llama_key_set": bool(llama_key),
-        "llama_insecure": (
-            not bool(llama_cfg["verify"])
-            if "verify" in llama_cfg
-            else str(llama_cfg.get("base_url") or "").startswith("https://")
-        ),
+        # Unset means verify, as the backend does (LlamaSource._verify).
+        "llama_insecure": not bool(llama_cfg.get("verify", 1)),
         "ollama": ollama,
         "ollama_cfg": ollama_cfg,
         "ollama_keys": paged["items"],

@@ -417,17 +417,18 @@ async def _tap(
             usage["usage_status"] = "unknown"
         elif usage:
             usage.setdefault("usage_status", "complete")
-        _safe_record_usage(
-            user_id,
-            source_id,
-            cred_id,
-            model,
-            usage,
-            key_id=key_id,
-            provider=provider,
-            requested_model=requested_model,
-            request_status=request_status,
-        )
+        record = (user_id, source_id, cred_id, model, usage)
+        options = {"key_id": key_id, "provider": provider, "requested_model": requested_model,
+                   "request_status": request_status}
+        try:
+            # Off the event loop, and finished even if this generator is being
+            # cancelled or closed: anyio's shield stops scope re-cancellation,
+            # asyncio.shield keeps a native cancel from dropping the write.
+            with anyio.CancelScope(shield=True):
+                await asyncio.shield(asyncio.to_thread(_safe_record_usage, *record, **options))
+        except RuntimeError:
+            # No executor (loop shutting down): write inline rather than lose it.
+            _safe_record_usage(*record, **options)
         close = getattr(stream, "aclose", None)
         if close:
             try:
@@ -635,7 +636,7 @@ async def _invoke_chat(request: Request, user, body: dict, *, cheap_reasoning: b
                 body={"error": {"message": f"upstream request failed ({type(exc).__name__})"}},
                 model=upstream,
             )
-        _record_attempts(result, user, src, upstream, requested)
+        await asyncio.to_thread(_record_attempts, result, user, src, upstream, requested)
         if result.status == 200 or not model_caps.image_refusal(result.status, _error_message(result.body)):
             break
         # The provider refused this many images (Fuse sets no cap): drop the
@@ -646,9 +647,9 @@ async def _invoke_chat(request: Request, user, body: dict, *, cheap_reasoning: b
         shed_total += shed
         logger.warning("Provider refused images provider=%s model=%s status=%s; dropped %s older image(s)",
                        src.type_id, upstream, result.status, shed)
-        _safe_record_usage(user["id"], src.source_id, result.credential_id, upstream, result.usage,
-                           key_id=user.get("key_id"), provider=src.type_id, requested_model=requested,
-                           request_status="failed", count_request=False)
+        await asyncio.to_thread(_safe_record_usage, user["id"], src.source_id, result.credential_id, upstream,
+                                result.usage, key_id=user.get("key_id"), provider=src.type_id,
+                                requested_model=requested, request_status="failed", count_request=False)
         body["messages"], omitted = model_caps.prepare(original, src.type_id, upstream,
                                                        user_id=user["id"], snapshot=images)
         if prepared is not None:
@@ -666,7 +667,8 @@ async def _invoke_chat(request: Request, user, body: dict, *, cheap_reasoning: b
 async def dispatch_chat(request: Request, user, body: dict):
     user, src, upstream, requested, result = await invoke_chat(request, user, body)
     if result.status != 200:
-        _safe_record_usage(
+        await asyncio.to_thread(
+            _safe_record_usage,
             user["id"],
             src.source_id,
             result.credential_id,
@@ -706,7 +708,8 @@ async def dispatch_chat(request: Request, user, body: dict):
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", **omitted},
         )
-    _safe_record_usage(
+    await asyncio.to_thread(
+        _safe_record_usage,
         user["id"],
         src.source_id,
         result.credential_id,
