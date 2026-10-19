@@ -15,7 +15,9 @@ from .common import _quote_host_path
 
 
 def _ps_literal(text: str) -> str:
-    return "'" + str(text).replace("'", "''") + "'"
+    # PowerShell also closes a single-quoted string on the curly quotes
+    # U+2018-U+201B; doubling any of them keeps it literal.
+    return "'" + re.sub("(['\u2018\u2019\u201a\u201b])", r"\1\1", str(text)) + "'"
 
 
 def _ps_path_expr(path: str) -> str:

