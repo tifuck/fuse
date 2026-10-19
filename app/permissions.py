@@ -106,6 +106,13 @@ _TEST_BRACKETS = re.compile(r"(?<!\S)(?:\[\[|\]\]|\[|\])(?=[\s;&|)]|$)")
 _ATTACHED_FLAG_PATH = re.compile(r"^-[A-Za-z0-9]*[~/\\%.]")
 # An option or assignment whose value follows `=` (--file=x, f=x, -Dk=x).
 _ASSIGNED_VALUE = re.compile(r"^(?:[-+][^=]*|[\w.-]+)=")
+# An absolute, home or parent path glued behind another word (curl -d
+# @/etc/x, rsync box:/etc/x, f=../x, system("/x")): the whole token looks
+# like a cwd-relative name, so it would be judged inside the project.
+_PATH_STOP = r"\s'\"(){}\[\]<>;,|&`"
+_EMBEDDED_PATH = re.compile(
+    rf"(?<=[@:=('\"\[{{,])(?:(?:~|\.\.)?/[^{_PATH_STOP}]*|(?:~|\.\.)(?![^{_PATH_STOP}]))"
+)
 # A script string handed to an interpreter (bash -c '…', pwsh -Command "…")
 # hides its real targets behind one quoted argument, and eval/sshpass/expect/
 # busybox run arbitrary programs outright; only partial tokens would be
@@ -353,11 +360,40 @@ def _looks_like_path(token: str, windows: bool) -> bool:
         token = token.split("=", 1)[1] if "=" in token else ""
         if not token:
             return False
-    if token.startswith(("/", "./", "../", "~")):
+    if token == ".." or token.startswith(("/", "./", "../", "~")):
         return True
     if windows and (token.startswith("\\\\") or _WIN_DRIVE.match(token) or "\\" in token or token.startswith("%temp%")):
         return True
     return "/" in token
+
+
+def _token_paths(token: str, windows: bool) -> list[str]:
+    """Paths one shell word names. file:// URLs name their local path; other
+    URLs name none. A word holding whitespace is a quoted script for another
+    program (su -c '...', awk '...', ssh host '...'), so each of its words is
+    judged on its own."""
+    if windows:
+        return [token] if _looks_like_path(token, True) or is_secret_path(token) else []
+    if re.search(r"\s", token):
+        out: list[str] = []
+        for word in token.split():
+            word = word.strip("'\"(){}[];,")
+            flag = _ATTACHED_FLAG_PATH.match(word)
+            if flag:
+                word = word[flag.end() - 1:]
+            out.extend(_token_paths(word, windows))
+        return out
+    low = token.lower()
+    if low.startswith("file://"):
+        rest = token[7:]
+        return [rest[rest.find("/"):]] if "/" in rest else []
+    if "://" in low:
+        return []
+    found = _EMBEDDED_PATH.findall(token)
+    if (_looks_like_path(token, False) or is_secret_path(token)) and (
+            not found or token.startswith(("/", "./", "../", "~"))):
+        found.insert(0, token)
+    return found
 
 
 def _shell_tokens(text: str, windows: bool) -> list[str]:
@@ -480,9 +516,12 @@ def extract_shell_paths(command: str, cwd: str, windows: bool) -> list[tuple[str
                 return None
             if expect_target:
                 expect_target = False
-                out.append((stripped, False))
-                prev = ""
-                continue
+                # Inside a quoted script the rest of the script follows the
+                # operator: judge its words, not the whole piece as one name.
+                if not re.search(r"\s", stripped):
+                    out.append((stripped, False))
+                    prev = ""
+                    continue
             if stripped in (">", ">>", "2>", "2>>", "<", "&>", "&>>", "1>", "1>>", "0<"):
                 expect_target = True
                 continue
@@ -498,8 +537,7 @@ def extract_shell_paths(command: str, cwd: str, windows: bool) -> list[tuple[str
                 # --file=/etc/x, if=/dev/sda, awk -v f=/etc/x: the value is the
                 # target, not a cwd-relative name.
                 stripped = stripped.split("=", 1)[1]
-            if _looks_like_path(stripped, windows) or is_secret_path(stripped):
-                out.append((stripped, False))
+            out.extend((path, False) for path in _token_paths(stripped, windows))
     resolved: list[tuple[str, bool]] = []
     seen: list[str] = []
     for item, is_dir in out:
@@ -1279,6 +1317,8 @@ async def review(*, tool: str, args: dict, user_id: int,
             reasons.append(_SHELL_APPROVAL)
         if deny_reason:
             reasons.append(deny_reason)
+        # In-scope targets, re-checked below against where they really point.
+        probe: list[tuple[str, bool]] = [(resolved_cwd, True)] if raw_cwd and cwd_in else []
         if paths is not None:
             for cand, is_dir in paths:
                 # Secret-named targets inside an approved dir are in scope and
@@ -1298,6 +1338,7 @@ async def review(*, tool: str, args: dict, user_id: int,
                     secret_target = secret_target or resolved_cand
                     reasons.append("credential directory")
                 if ok:
+                    probe.append((resolved_cand, is_dir))
                     continue
                 reasons.append(f"{resolved_cand} is outside the allowed roots")
                 out_of_root = True
@@ -1311,8 +1352,41 @@ async def review(*, tool: str, args: dict, user_id: int,
                     shell_grants.append(need)
                     if not grant_value:
                         grant_kind, grant_value = need
+        unresolved: list[str] = []
+        if realpath is not None and not windows and probe:
+            # As for file tools below: a symlink inside a root can point out
+            # of it, and an unresolved target or root fails closed.
+            reals = list(await realpath([p for p, _ in probe] + roots) or [])
+            real_roots = reals[len(probe):]
+            roots_ok = len(real_roots) == len(roots) and all(real_roots)
+            for i, (lexical, is_dir) in enumerate(probe):
+                real = reals[i] if roots_ok and i < len(reals) else None
+                if not real:
+                    unresolved.append(lexical)
+                    reasons.append(f"cannot resolve where {lexical} points")
+                    need = ("dir", lexical if is_dir else _grant_dir_for("read_file", lexical, windows))
+                elif real == lexical:
+                    continue
+                else:
+                    real_ok = _in_roots(real, real_roots, windows)
+                    if (is_secret_path(real) and (secret_dir_in_path(real) or not real_ok)) or (
+                            not real_ok and is_secret_dir(real)):
+                        secret = True
+                        secret_target = secret_target or real
+                        reasons.append("secret-named file")
+                    if real_ok:
+                        continue
+                    reasons.append(f"{real} is outside the allowed roots (symlink {lexical})")
+                    need = (
+                        ("file", real) if is_secret_path(real) else
+                        ("dir", real if is_dir else _grant_dir_for("read_file", real, windows))
+                    )
+                out_of_root = True
+                shell_grants.append(need)
+                if not grant_value:
+                    grant_kind, grant_value = need
         offending = [r.split(" is outside")[0] for r in reasons if "outside" in r]
-        display = offending[0] if offending else (secret_target or cwd)
+        display = offending[0] if offending else (unresolved[0] if unresolved else secret_target or cwd)
     else:
         in_roots, resolved = scope_allows(target, root, roots, windows)
         display = resolved or target
