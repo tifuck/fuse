@@ -23,7 +23,7 @@
   overscroll-behavior: contain;
   scrollbar-width: thin;
 }
-.chat-work-agents + .chat-work-jobs:not([hidden]) { border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent); }
+.chat-work-agents:not([hidden]) + .chat-work-jobs:not([hidden]) { border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent); }
 
 .chat-agents-row,
 .chat-jobs-row {

@@ -14,7 +14,7 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-wor
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-work-agents { max-height: calc(var(--work-main) + 9 * var(--work-row)); }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-work-jobs { max-height: calc(5 * var(--work-row)); }
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-work-agents + .chat-work-jobs:not([hidden]) {
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-work-agents:not([hidden]) + .chat-work-jobs:not([hidden]) {
   margin-top: 0.15rem;
   padding-top: 0.15rem;
 }
