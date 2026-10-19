@@ -190,7 +190,12 @@
   overflow-wrap: anywhere;
   word-break: break-word;
 }
-.chat-perm-card-cmd { margin-top: 0.3rem; }
+.chat-perm-card-cmd {
+  margin-top: 0.3rem;
+  max-height: 9.5rem;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
 .chat-perm-card-desc {
   margin: 0.3rem 0 0;
   min-width: 0;

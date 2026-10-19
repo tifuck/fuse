@@ -435,7 +435,7 @@ export function createApply(ctx) {
             host: String(event.host || "").slice(0, 80),
             path: String(event.path || "").slice(0, 400),
             cwd: String(event.cwd || "").slice(0, 400),
-            command: String(event.command || "").slice(0, 400),
+            command: String(event.command || "").slice(0, 8000),
             secret: Boolean(event.secret),
             requester: String(event.requester_label || event.requester || "Main agent").slice(0, 200),
             reasons: Array.isArray(event.reasons) ? event.reasons.map((r) => String(r).slice(0, 120)).slice(0, 4) : [],

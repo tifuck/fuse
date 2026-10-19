@@ -56,7 +56,7 @@ function permCardCopy(rec) {
     noun,
     path,
     why,
-    command: rec.tool === "run_terminal_command" ? String(rec.command || "").trim() : "",
+    command: shell ? String(rec.command || "").trim() : "",
     // The model's label for the command, above it as in Claude Code's dialog.
     description: shell ? String(rec.description || "").replace(/\s+/g, " ").trim() : "",
     host: rec.host || "",

