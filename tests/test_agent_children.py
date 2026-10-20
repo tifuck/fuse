@@ -634,6 +634,26 @@ class AgentChildrenTest(AgentCapsBase):
         self.assertIn("TEST ADDED", report)
         self.assertLess(report.index("REPORT ONE"), report.index("TEST ADDED"))
 
+    def test_agent_summaries_preserve_request_report_state(self):
+        thread, parent = self._parent()
+        cases = [
+            ("completed", {"carried_report": "REPORT ONE"}, "REPORT TWO", ["REPORT ONE", "REPORT TWO"]),
+            ("cancelled", {"unconsumed_followups": ["CHECK LEXER"]}, "", ["CHECK LEXER"]),
+        ]
+        for status, agent, content, expected in cases:
+            with self.subTest(status=status):
+                child = self._live_child(thread, parent)
+                request = child["request"]
+                request["agent"].update(agent)
+                db.execute("UPDATE chat_runs SET request=? WHERE id=?", (json.dumps(request), child["id"]))
+                store.finish_run(child["id"], {"content": content}, status)
+                trace = {"name": "spawn_subagent", "child_id": child["id"], "status": "running"}
+                store.settle_spawn_traces(self.conn, 1, [{"tools": [trace]}])
+                listed = next(row for row in store.list_thread_agents(1, parent["thread_id"]) if row["id"] == child["id"])
+                for text in expected:
+                    self.assertIn(text, trace["summary"])
+                    self.assertIn(text, listed["summary"])
+
     def test_stopped_child_reports_unconsumed_followups(self):
         thread, parent = self._parent()
         child = self._live_child(thread, parent)
@@ -883,6 +903,39 @@ class AgentChildrenTest(AgentCapsBase):
         hit = store.resolve_child_run(1, "explore api", thread_id=thread["id"])
         self.assertEqual(hit["id"], a["id"])
         self.assertEqual(store.resolve_child_run(1, a["id"][:8], thread_id=thread["id"])["id"], a["id"])
+
+    def test_resolve_child_run_requires_exact_spawn_tool_id(self):
+        thread, parent = self._parent()
+        children = [self._live_child(thread, parent) for _ in range(2)]
+        call_ids = ["toolu_01FirstSpawn", "toolu_01SecondSpawn"]
+        message = parent["message"]
+        message["tools"] = [
+            {"id": call_id, "name": "spawn_subagent", "child_id": child["id"]}
+            for call_id, child in zip(call_ids, children)
+        ]
+        db.execute("UPDATE chat_runs SET message=? WHERE id=?", (json.dumps(message), parent["id"]))
+        for call_id, child in zip(call_ids, children):
+            hit = store.resolve_child_run(1, call_id, thread_id=thread["id"], parent_run_id=parent["id"])
+            self.assertEqual(hit["id"], child["id"])
+        self.assertIsNone(store.resolve_child_run(
+            1, "toolu_01", thread_id=thread["id"], parent_run_id=parent["id"],
+        ))
+
+    def test_resolve_child_run_description_checks_all_children(self):
+        thread, parent = self._parent()
+        children = []
+        for index in range(26):
+            description = "worker" if index in (0, 25) else "old unique" if index == 1 else f"worker {index}"
+            child = store.start_child_run(
+                user_id=1, thread_id=thread["id"], parent_run_id=parent["id"],
+                prompt="inspect", description=description,
+            )
+            store.finish_run(child["id"], {"content": "done"}, "completed")
+            db.execute("UPDATE chat_runs SET created_at=? WHERE id=?", (f"2026-10-01T00:00:{index:02d}Z", child["id"]))
+            children.append(child)
+        self.assertIsNone(store.resolve_child_run(1, "worker", thread_id=thread["id"]))
+        self.assertEqual(store.resolve_child_run(1, "OLD UNIQUE", thread_id=thread["id"])["id"], children[1]["id"])
+        self.assertEqual(store.resolve_child_run(1, children[0]["id"][:8], thread_id=thread["id"])["id"], children[0]["id"])
 
     def test_continue_child_with_followups_requeues_same_id(self):
         thread, parent = self._parent()

@@ -155,6 +155,8 @@ def scratch_apply(run_id: str, ops: list[dict]) -> dict:
                 if name not in pad:
                     raise ScratchError(f"ops[{index}]: scratch slot {name!r} not found")
                 hits = pad[name].count(find)
+                if hits == 1 and pad[name].find(find, pad[name].find(find) + 1) >= 0:
+                    hits = 2
                 if hits != 1:
                     raise ScratchError(
                         f"ops[{index}]: old must match exactly once in {name!r} (found {hits}); "

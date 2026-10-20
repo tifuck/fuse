@@ -348,6 +348,18 @@ class AgentCapsTest(AgentCapsBase):
         store.scratch_apply(rid, [{"op": "delete", "name": "plan"}])
         self.assertIsNone(store.scratch_read(rid, "plan"))
 
+    def test_scratch_edit_rejects_overlapping_matches_atomically(self):
+        _, parent = self._parent()
+        rid = parent["id"]
+        store.scratch_apply(rid, [{"op": "put", "name": "plan", "text": "aaa"}])
+        with self.assertRaisesRegex(store.ScratchError, "exactly once"):
+            store.scratch_apply(rid, [
+                {"op": "put", "name": "other", "text": "pending"},
+                {"op": "edit", "name": "plan", "old": "aa", "new": "X"},
+            ])
+        self.assertEqual(store.scratch_read(rid, "plan"), "aaa")
+        self.assertIsNone(store.scratch_read(rid, "other"))
+
     def test_scratch_carries_into_next_turn_and_wake(self):
         from app import hosts
 

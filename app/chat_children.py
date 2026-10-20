@@ -898,9 +898,9 @@ def resolve_child_run(user_id, token: str, *, thread_id=None, parent_run_id: str
     if pk is None:
         return None
     rows = db.fetchall(
-        """SELECT * FROM chat_runs
-           WHERE user_id=? AND thread_id=? AND parent_run_id IS NOT NULL
-           ORDER BY created_at DESC, id DESC LIMIT 24""",
+        """SELECT id, CASE WHEN json_valid(request) THEN json_extract(request, '$.agent.description') END AS description
+           FROM chat_runs WHERE user_id=? AND thread_id=? AND parent_run_id IS NOT NULL
+           ORDER BY created_at DESC, id DESC""",
         (user_id, pk),
     )
     needle = raw.lower()
@@ -908,28 +908,23 @@ def resolve_child_run(user_id, token: str, *, thread_id=None, parent_run_id: str
         # Prefix ids must be uuid-like: a 1-2 character token would resolve to
         # whichever recent child happens to sort first.
         if len(raw) >= 8 and str(row["id"]).startswith(raw):
-            return chat_views.run_view(row)
+            return chat_views.get_run(user_id, row["id"])
     # Description fallback must be an exact, unique match: substring matching
     # resolves vague tokens (kill/get_output) to an arbitrary recent child.
     exact = []
     for row in rows:
-        try:
-            req = json.loads(row["request"] or "{}")
-        except (json.JSONDecodeError, TypeError):
-            req = {}
-        agent = req.get("agent") if isinstance(req, dict) and isinstance(req.get("agent"), dict) else {}
-        desc = str(agent.get("description") or "").strip().lower()
+        desc = str(row["description"] or "").strip().lower()
         if desc and desc == needle:
             exact.append(row)
     if len(exact) == 1:
-        return chat_views.run_view(exact[0])
+        return chat_views.get_run(user_id, exact[0]["id"])
     if parent_run_id:
         parent = chat_views.get_run(user_id, parent_run_id)
         tools = ((parent or {}).get("message") or {}).get("tools") if parent else None
         for tool in tools or []:
             if not isinstance(tool, dict) or tool.get("name") != "spawn_subagent":
                 continue
-            if str(tool.get("id") or "") != raw and str(tool.get("id") or "")[:8] != raw[:8]:
+            if str(tool.get("id") or "") != raw:
                 continue
             cid = str(tool.get("child_id") or "")
             if cid:

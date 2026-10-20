@@ -1149,7 +1149,11 @@ def settle_spawn_traces(conn, user_id, messages):
             msg = json.loads(row["message"] or "{}") if "message" in row.keys() else {}
         except (json.JSONDecodeError, TypeError):
             msg = {}
-        writeup = child_writeup({"id": row["id"], "status": row["status"], "message": msg}, conn)
+        try:
+            req = json.loads(row["request"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            req = {}
+        writeup = child_writeup({"id": row["id"], "status": row["status"], "message": msg, "request": req}, conn)
         if isinstance(msg, dict):
             if tool["status"] == "error":
                 tool["error"] = str(msg.get("error") or "Subagent failed without a report.")[:400]

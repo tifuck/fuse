@@ -973,7 +973,7 @@ def list_thread_agents(user_id, thread_id, limit=100):
             "root_run_id": row["root_run_id"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
-            "summary": (chat_views.child_writeup({"status": row["status"], "message": message})
+            "summary": (chat_views.child_writeup({"status": row["status"], "message": message, "request": req})
                         if row["status"] not in chat_tx.ACTIVE else "")[:200],
             "error": str(message.get("error") or "")[:400],
             "children": counts.get(row["id"], 0),
