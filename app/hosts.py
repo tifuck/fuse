@@ -935,13 +935,9 @@ def secret_plain(user_id: int, host_id: int) -> tuple[str, str, dict]:
 
 def set_pin(user_id: int, host_id: int, algorithm: str, fingerprint: str) -> dict:
     algo = _text(algorithm, "algorithm", 32)
-    digest = _text(fingerprint, "fingerprint", 128).lower()
-    if not re.fullmatch(r"[0-9a-f]{32,128}", digest.replace(":", "")):
-        # accept colon-separated SHA256 hex
-        compact = digest.replace(":", "")
-        if not re.fullmatch(r"[0-9a-f]{32,128}", compact):
-            raise HostError("invalid fingerprint")
-        digest = compact
+    digest = _text(fingerprint, "fingerprint", 128).lower().replace(":", "")
+    if not re.fullmatch(r"[0-9a-f]{32,128}", digest):
+        raise HostError("invalid fingerprint")
     ts = db.now()
     with db.tx() as conn:
         conn.execute("BEGIN IMMEDIATE")

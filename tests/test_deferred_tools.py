@@ -782,6 +782,24 @@ class SearchModelsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model, "grok-4.6")
         self.assertEqual(err, "")
 
+    async def test_provider_prefix_constrains_fuzzy_model_selection(self):
+        from app import agents as agents_mod
+
+        catalog = self.CATALOG + [
+            {"id": "nanogpt/gpt-5.4", "name": "GPT 5.4", "type": "nanogpt"},
+            {"id": "devin/gpt-5.4", "name": "GPT 5.4", "type": "devin"},
+        ]
+        for query, expected in (
+            ("nanogpt/gpt-5", "nanogpt/gpt-5.4"),
+            ("openrouter/x-ai/grok-4", "openrouter/x-ai/grok-4.6"),
+            ("devin/gpt-5", "devin/gpt-5.4"),
+        ):
+            with self.subTest(query=query), patch.object(agents_mod, "_catalog_entries", AsyncMock(return_value=catalog)):
+                hits = agents_mod._match_entries(catalog, query)
+                self.assertEqual([hit["id"] for hit in hits], [expected])
+                model, error = await agents_mod.resolve_spawn_model(user_id=1, slug=query, parent_model="")
+                self.assertEqual((model, error), (expected, ""))
+
     async def test_omitted_model_clones_parent(self):
         from app import agents as agents_mod
 

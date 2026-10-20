@@ -79,6 +79,29 @@ class SecretNameTest(PermSchemaTest):
 
 
 class ScopeTest(PermSchemaTest):
+    def test_home_aliases_share_normalized_scope(self):
+        from unittest.mock import patch
+        from app import hosts
+
+        for windows, parent, child in (
+            (False, "$HOME/docs", "~/docs/sub"),
+            (False, "~/docs", "$HOME/docs/sub"),
+            (True, "%USERPROFILE%\\docs", "~\\docs\\sub"),
+            (True, "~\\docs", "%USERPROFILE%\\DOCS\\sub"),
+        ):
+            with self.subTest(parent=parent, child=child):
+                self.assertTrue(hosts._path_within(child, parent))
+                self.assertTrue(permissions.under_work_root(child, parent, windows))
+                with patch.object(permissions, "_grant_rows", return_value=[{"kind": "dir", "value": parent}]):
+                    self.assertTrue(permissions.grant_covers(1, 1, 1, "dir", child, windows))
+        self.assertEqual(permissions._norm("$HOMELESS/docs", False), "$HOMELESS/docs")
+        self.assertEqual(permissions._norm("$HOME\\docs", False), "$HOME\\docs")
+        self.assertEqual(permissions._norm("%USERPROFILE%extra\\docs", True), "%userprofile%extra\\docs")
+        with patch.object(hosts, "settings_for", return_value={"permission_mode": "project"}), \
+                patch.object(hosts.db, "fetchall", return_value=[{"remote_path": "$HOME/docs"}]):
+            self.assertEqual(hosts.effective_permission(1, bound_host_id=1, bound_cwd="~/docs/sub"), "read_only")
+            self.assertEqual(hosts.effective_permission(1, bound_host_id=1, bound_cwd="~/docsx"), "project")
+
     def test_roots(self):
         self.assertEqual(permissions.compute_roots("/srv/app", False), ["/tmp", "/srv/app"])
         self.assertEqual(permissions.compute_roots("", False), ["/tmp", "~"])

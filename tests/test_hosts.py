@@ -35,6 +35,15 @@ class HostsProjectsTest(unittest.TestCase):
         accounts.create_user("1@test.invalid", "password12", admin=False)
         vault.unlock(1, "password12")
 
+    def test_pin_compacts_colon_separated_fingerprint(self):
+        host = hosts.add_host(1, {
+            "alias": "box", "hostname": "box.example.com", "username": "u",
+            "auth_type": "key", "secret": "k",
+        })
+        view = hosts.set_pin(1, host["id"], "ssh-ed25519", ":".join(["AB"] * 32))
+        self.assertEqual(view["fingerprint"], "ab" * 32)
+        self.assertEqual(hosts.get_host(1, host["id"])["fingerprint"], "ab" * 32)
+
     def test_project_fields_and_resolve_by_id(self):
         a = hosts.add_host(
             1,

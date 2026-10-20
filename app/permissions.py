@@ -199,7 +199,10 @@ def secret_dir_in_path(path: str) -> bool:
 
 def _norm(path: str, windows: bool) -> str:
     text = str(path or "")
+    home = r"^\$HOME(?=$|[/\\])" if windows else r"^\$HOME(?=$|/)"
+    text = re.sub(home, "~", text)
     if windows:
+        text = re.sub(r"^%USERPROFILE%(?=$|[/\\])", "~", text, flags=re.I)
         return ntpath.normcase(ntpath.normpath(text.replace("/", "\\")))
     return posixpath.normpath(text)
 

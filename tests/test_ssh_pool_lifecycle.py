@@ -1,8 +1,11 @@
 """SSH pool lifecycle and bounded helper output (no live SSH)."""
 import asyncio
+import socket
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from app import ssh_pool, workspace
 
@@ -23,6 +26,49 @@ def _reset():
     ssh_pool._pool.clear()
     ssh_pool._gen.clear()
     ssh_pool._key_locks.clear()
+
+
+def test_self_addresses_preserve_ipv6_origin_without_port():
+    address = "2606:4700::1111"
+
+    def resolve(name, port, **kwargs):
+        if name != address:
+            raise socket.gaierror("unknown host")
+        return [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", (address, port or 0, 0, 0))]
+
+    ssh_pool._self_addresses.cache_clear()
+    try:
+        with patch.object(ssh_pool.settings, "public_base_url", f"https://[{address}]"), \
+                patch.object(socket, "gethostname", return_value="fuse-host"), \
+                patch.object(socket, "getfqdn", return_value="fuse-host"), \
+                patch.object(socket, "getaddrinfo", side_effect=resolve):
+            assert address in ssh_pool._self_addresses()
+            with pytest.raises(ssh_pool.SshError, match="this Fuse server"):
+                ssh_pool.resolve_public(address, 22)
+    finally:
+        ssh_pool._self_addresses.cache_clear()
+
+
+@pytest.mark.parametrize("own,target", [
+    ("8.8.8.8", "::ffff:8.8.8.8"),
+    ("::ffff:8.8.8.8", "8.8.8.8"),
+])
+def test_self_addresses_match_ipv4_mapped_ipv6(own, target):
+    def resolve(name, port, **kwargs):
+        address = target if name == "target.example" else own
+        family = socket.AF_INET6 if ":" in address else socket.AF_INET
+        return [(family, socket.SOCK_STREAM, 6, "", (address, port or 0))]
+
+    ssh_pool._self_addresses.cache_clear()
+    try:
+        with patch.object(ssh_pool.settings, "public_base_url", "https://fuse.example"), \
+                patch.object(socket, "gethostname", return_value="fuse-host"), \
+                patch.object(socket, "getfqdn", return_value="fuse-host"), \
+                patch.object(socket, "getaddrinfo", side_effect=resolve):
+            with pytest.raises(ssh_pool.SshError, match="this Fuse server"):
+                ssh_pool.resolve_public("target.example", 22)
+    finally:
+        ssh_pool._self_addresses.cache_clear()
 
 
 def test_reaper_closes_idle_sessions_but_never_busy_ones():

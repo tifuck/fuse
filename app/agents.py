@@ -58,9 +58,6 @@ _PROVIDER_ALIASES = {
 
 def _norm_model_query(raw: str) -> str:
     text = (raw or "").strip().lower()
-    text = text.replace("openrouter/", "")
-    text = text.replace("nanogpt/", "")
-    text = text.replace("devin/", "")
     return re.sub(r"[\s_]+", "-", text).strip("-")
 
 
@@ -82,9 +79,13 @@ def _query_parts(query: str) -> tuple[str, set[str]]:
     q = _norm_model_query(query)
     if not q:
         return "", set()
+    prefix, separator, rest = q.partition("/")
+    provider = _alias_type(prefix) if separator else ""
+    if provider:
+        q = rest
     whole = _alias_type(q)
     if whole:
-        return "", {whole}
+        return "", {provider or whole}
     providers: set[str] = set()
     kept: list[str] = []
     tokens = [t for t in re.split(r"[-/]+", q) if t]
@@ -103,7 +104,7 @@ def _query_parts(query: str) -> tuple[str, set[str]]:
         else:
             kept.append(token)
         i += 1
-    return "-".join(kept), providers
+    return "-".join(kept), {provider} if provider else providers
 
 
 def _item_providers(item: dict) -> set[str]:

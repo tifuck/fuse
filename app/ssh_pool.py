@@ -8,6 +8,7 @@ import ipaddress
 import socket
 import time
 import weakref
+from urllib.parse import urlsplit
 
 from .config import settings
 from .hosts import HostError, secret_plain, set_host_status, set_pin
@@ -58,18 +59,23 @@ def _ip_forbidden(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return False
 
 
+def _address_key(address: str) -> str:
+    ip = ipaddress.ip_address(address)
+    return str(getattr(ip, "ipv4_mapped", None) or ip)
+
+
 @functools.lru_cache(maxsize=1)
 def _self_addresses() -> frozenset[str]:
     """This server's own addresses: SSH back into Fuse's host stays refused
     even where the address is public (or private and ALLOW_PRIVATE_HOSTS)."""
     names = {socket.gethostname(), socket.getfqdn()}
-    base = (settings.public_base_url or "").split("://", 1)[-1].split("/", 1)[0].rsplit(":", 1)[0].strip("[]")
+    base = urlsplit(settings.public_base_url or "").hostname
     if base:
         names.add(base)
     out: set[str] = set()
     for name in names:
         try:
-            out.update(info[4][0] for info in socket.getaddrinfo(name, None))
+            out.update(_address_key(info[4][0]) for info in socket.getaddrinfo(name, None))
         except OSError:
             continue
     return frozenset(out)
@@ -99,7 +105,7 @@ def resolve_public(hostname: str, port: int) -> list[str]:
             continue
         if _ip_forbidden(ip):
             raise SshError("host resolves to a blocked address")
-        if ip_s in self_addrs:
+        if _address_key(ip_s) in self_addrs:
             raise SshError("host is this Fuse server")
         if ip_s not in addrs:
             addrs.append(ip_s)
