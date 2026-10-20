@@ -143,7 +143,7 @@ def _force_terminal(run_id, status, message):
             }
             msg_raw = chat_tx.dumps(stored)
         conn.execute(
-            "UPDATE chat_runs SET message=?,request=?,status=?,updated_at=? WHERE id=?",
+            "UPDATE chat_runs SET message=?,request=?,status=?,activity=NULL,updated_at=? WHERE id=?",
             (msg_raw, req_raw, status, db.now(), run_id),
         )
         try:
@@ -386,7 +386,7 @@ def _requeue_for_resume(row, messages, allowed=None, *, by_user=False):
         req = chat_images.store_request(conn, row["thread_id"], row["user_id"], req)
         sealed = req["messages"]
         conn.execute(
-            f"""UPDATE chat_runs SET status='queued', request=?, message=?, {db.set_provider_sql(conn)},
+            f"""UPDATE chat_runs SET status='queued', request=?, message=?, activity=NULL, {db.set_provider_sql(conn)},
                cancel_requested=0, cancel_requested_at='', resume_count=?, updated_at=? WHERE id=?""",
             (chat_tx.dumps(req), chat_tx.dumps(message), chat_tx.dumps(sealed), resume_count, ts, row["id"]),
         )

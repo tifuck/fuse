@@ -896,22 +896,44 @@ def run_work_fields(run_id, agent, message) -> dict:
     }
 
 
+def _json_field(value):
+    """A json_extract() result: JSON text on MariaDB, the bare value for
+    SQLite strings."""
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return value
+
+
 def list_thread_agents(user_id, thread_id, limit=100):
     """Child runs (subagents) of a thread, newest first, with spawned-child counts."""
-    rows = db.fetchall(
-        """SELECT id, status, request, message, created_at, updated_at, cancel_requested, cancel_requested_at,
+    # Only agent and model from each request: a subagent's request also
+    # carries its display seed and frozen prompt, hundreds of KB per row.
+    # MariaDB's JSON_EXTRACT returns objects (the translator would emit
+    # JSON_VALUE, which returns NULL for them), so it goes out natively.
+    sql = """SELECT id, status, {agent} AS agent_json, {model} AS model_json,
+                  message, activity, created_at, updated_at, cancel_requested, cancel_requested_at,
                   resume_count, (provider_messages IS NOT NULL) AS has_transcript, parent_run_id, root_run_id, agent_depth
            FROM chat_runs
-           WHERE user_id=? AND thread_id=? AND parent_run_id IS NOT NULL
+           WHERE user_id={p} AND thread_id={p} AND parent_run_id IS NOT NULL
              AND (status IN ('queued','running') OR id IN (
                  SELECT id FROM (SELECT id FROM chat_runs
-                   WHERE user_id=? AND thread_id=? AND parent_run_id IS NOT NULL
+                   WHERE user_id={p} AND thread_id={p} AND parent_run_id IS NOT NULL
                      AND status NOT IN ('queued','running')
-                   ORDER BY updated_at DESC, id DESC LIMIT ?) recent
+                   ORDER BY updated_at DESC, id DESC LIMIT {p}) recent
              ))
-           ORDER BY created_at DESC, id DESC""",
-        (user_id, thread_id, user_id, thread_id, max(1, min(int(limit), 200))),
-    )
+           ORDER BY created_at DESC, id DESC"""
+    args = (user_id, thread_id, user_id, thread_id, max(1, min(int(limit), 200)))
+    with db.tx() as conn:
+        native = getattr(conn, "native", None)
+        if native is not None:
+            rows = native(sql.format(agent="JSON_EXTRACT(request, '$.agent')", model="JSON_EXTRACT(request, '$.model')", p="%s"),
+                          args).fetchall()
+        else:
+            rows = conn.execute(sql.format(agent="json_extract(request, '$.agent')", model="json_extract(request, '$.model')", p="?"),
+                                args).fetchall()
     counts: dict[str, int] = {}
     root = thread_root_run(user_id, thread_id) if rows else None
     stopped_at = str(root.get("stopped_at") or "") if root else ""
@@ -925,11 +947,7 @@ def list_thread_agents(user_id, thread_id, limit=100):
             counts[item["pid"]] = int(item["c"])
     out = []
     for row in rows:
-        try:
-            req = json.loads(row["request"])
-        except (json.JSONDecodeError, TypeError):
-            req = {}
-        req = req if isinstance(req, dict) else {}
+        req = chat_views.with_activity({"agent": _json_field(row["agent_json"]), "model": _json_field(row["model_json"])}, row)
         agent = req.get("agent") if isinstance(req.get("agent"), dict) else {}
         try:
             message = json.loads(row["message"])
@@ -1049,7 +1067,7 @@ def finish_run(run_id, message, status):
             agent["usage_before"] = message.get("usage") or {}
             request["agent"] = agent
             message.update(error="", stopped=False)
-            conn.execute("UPDATE chat_runs SET status='queued',request=?,message=?,updated_at=? WHERE id=?",
+            conn.execute("UPDATE chat_runs SET status='queued',request=?,message=?,activity=NULL,updated_at=? WHERE id=?",
                          (chat_tx.dumps(request), chat_tx.dumps(message), db.now(), run_id))
             chat_tx.event(conn, row["user_id"], "run.resumed", row["thread_id"],
                   {"run_id": run_id, "message_id": row["message_id"], "reason": "pending_steer"})
@@ -1062,13 +1080,15 @@ def finish_run(run_id, message, status):
             _append_notice(message, "A queued message was not delivered this turn; it will be included with your next message.")
         if not child:
             request.pop("messages", None)
-        if isinstance(request.get("agent"), dict):
-            request["agent"]["activity"] = {"phase": "idle", "status": status}
-        conn.execute("UPDATE chat_runs SET message=?,request=?,status=?,updated_at=? WHERE id=?", (chat_tx.dumps(message), chat_tx.dumps(request), status, db.now(), run_id))
+        if not isinstance(request.get("agent"), dict):
+            request["agent"] = {}  # checkpoints keep activity in its own column
+        request["agent"]["activity"] = {"phase": "idle", "status": status}
+        conn.execute("UPDATE chat_runs SET message=?,request=?,status=?,activity=NULL,updated_at=? WHERE id=?", (chat_tx.dumps(message), chat_tx.dumps(request), status, db.now(), run_id))
         chat_checkpoint._state_write_at.pop(run_id, None)
         chat_checkpoint._forget_state_cursor(run_id)
         chat_checkpoint._state_dirty.discard(run_id)
         chat_checkpoint._request_cache.pop(run_id, None)
+        chat_checkpoint._state_sizes.pop(run_id, None)
         try:
             from .schedules import sync_run_status
 

@@ -355,7 +355,7 @@ def continue_child_with_followups(run_id: str, followups: list) -> bool:
             strict=True,
         )[0]
         updated = conn.execute(
-            f"""UPDATE chat_runs SET status='queued', request=?, message=?, {db.set_provider_sql(conn)},
+            f"""UPDATE chat_runs SET status='queued', request=?, message=?, activity=NULL, {db.set_provider_sql(conn)},
                cancel_requested=0, updated_at=? WHERE id=? AND status='completed'""",
             (chat_tx.dumps(req), chat_tx.dumps(assistant), chat_tx.dumps(sealed), db.now(), run_id),
         )
@@ -1243,7 +1243,7 @@ def _start_child_run(
             # continuation is a fresh leg for crash recovery, so the
             # auto-resume budget resets.
             conn.execute(
-                f"""UPDATE chat_runs SET status='queued', request=?, message=?, cancel_requested=0,
+                f"""UPDATE chat_runs SET status='queued', request=?, message=?, activity=NULL, cancel_requested=0,
                    {db.set_provider_sql(conn)}, loaded_tools=?, parent_run_id=?, root_run_id=?, agent_depth=?,
                    resume_count=0, updated_at=? WHERE id=? AND user_id=?""",
                 (

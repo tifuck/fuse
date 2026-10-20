@@ -106,25 +106,26 @@ def checkpoint(run_id, message, events=None, durable=True, future=None):
     stored_request, guard = _checkpoint_request(run_id, row)
     request = _mutable_request(stored_request)
     request_changed = False
+    # The activity lives in its own column: in request.agent every phase
+    # change rewrote the whole request (a subagent's carries its seed).
+    stored_activity = _stored_activity(row, stored_request)
+    activity = stored_activity
     for item in events or []:
-        activity = item.get("fuse") or {}
-        if activity.get("event") == "activity" and activity.get("phase") in ("model", "calling", "tools"):
-            request.setdefault("agent", {})["activity"] = dict(activity)
-            request_changed = True
-        elif activity.get("event") == "tool" and activity.get("status") == "running":
-            request.setdefault("agent", {})["activity"] = {"phase": "tools", "tool_id": activity.get("id")}
-            request_changed = True
-        elif activity.get("event") == "heartbeat":
-            agent = request.setdefault("agent", {})
-            act = agent.get("activity") if isinstance(agent.get("activity"), dict) else {}
+        event = item.get("fuse") or {}
+        if event.get("event") == "activity" and event.get("phase") in ("model", "calling", "tools"):
+            activity = dict(event)
+        elif event.get("event") == "tool" and event.get("status") == "running":
+            activity = {"phase": "tools", "tool_id": event.get("id")}
+        elif event.get("event") == "heartbeat":
+            act = activity if isinstance(activity, dict) else {}
             if act.get("phase") in ("tools", "model", "calling"):
-                agent["activity"] = {**act, "heartbeat": True}
+                activity = {**act, "heartbeat": True}
             else:
-                agent["activity"] = {"phase": "waiting", "heartbeat": True}
-            request_changed = True
-        elif activity.get("event") == "context" and activity.get("phase") == "compacted":
+                activity = {"phase": "waiting", "heartbeat": True}
+        elif event.get("event") == "context" and event.get("phase") == "compacted":
             request.setdefault("agent", {})["history_output_floor"] = len(message.get("content") or "")
             request_changed = True
+    activity_changed = activity != stored_activity
     if row["parent_run_id"]:
         if "display_seed" not in request and isinstance(request.get("messages"), list):
             # Once provider_messages is saved, request.messages is gone and
@@ -145,7 +146,7 @@ def checkpoint(run_id, message, events=None, durable=True, future=None):
         request_changed = True
     payload = {"run_id": run_id, "message_id": row["message_id"]}
     if row["parent_run_id"]:
-        payload["current"] = chat_views.agent_current_activity(message, (request.get("agent") or {}).get("activity"))
+        payload["current"] = chat_views.agent_current_activity(message, activity)
     projected = chat_views.display_messages(request, message, row["message_id"], live=True)
     materialize_thread = False
     if (request.get("agent") or {}).get("display_parts"):
@@ -195,7 +196,7 @@ def checkpoint(run_id, message, events=None, durable=True, future=None):
     )
     if not force_state:
         last = _state_write_at.get(run_id)
-        force_state = last is None or now - last >= STATE_WRITE_SECONDS
+        force_state = last is None or now - last >= _state_interval(run_id)
         if len(_state_write_at) > 4096:
             cutoff = now - 600.0
             for ident, stamp in list(_state_write_at.items()):
@@ -204,6 +205,7 @@ def checkpoint(run_id, message, events=None, durable=True, future=None):
                     _state_cursors.pop(ident, None)
                     _state_dirty.discard(ident)
                     _request_cache.pop(ident, None)
+                    _state_sizes.pop(ident, None)
     if request_changed and request == stored_request:
         # e.g. a repeated heartbeat: rewriting identical bytes is pure cost.
         request_changed = False
@@ -218,18 +220,22 @@ def checkpoint(run_id, message, events=None, durable=True, future=None):
             # snapshot is simply skipped.
             # Lock order matches finish_run: chat_runs before chat_threads
             # before the event cursor.
+            # Only changed columns travel: a token flush leaves the request
+            # alone, a heartbeat or phase change the message too.
+            changes = {}
+            message_json = chat_tx.dumps(message)
+            if _message_changed(row, message_json):
+                changes["message"] = message_json
             if request_changed:
-                cur = conn.execute(
-                    "UPDATE chat_runs SET message=?,request=?,status='running',updated_at=? WHERE id=? AND status IN ('queued','running') AND " + _request_guard_sql(guard),
-                    (chat_tx.dumps(message), chat_tx.dumps(request), db.now(), run_id, guard),
-                )
-            else:
-                # Token-only flush: the request blob is byte-identical to the
-                # guarded value, so skip transporting and rewriting it.
-                cur = conn.execute(
-                    "UPDATE chat_runs SET message=?,status='running',updated_at=? WHERE id=? AND status IN ('queued','running') AND " + _request_guard_sql(guard),
-                    (chat_tx.dumps(message), db.now(), run_id, guard),
-                )
+                changes["request"] = chat_tx.dumps(request)
+            if activity_changed:
+                changes["activity"] = chat_tx.dumps(activity) if activity is not None else None
+            cur = conn.execute(
+                f"UPDATE chat_runs SET {''.join(f'{column}=?,' for column in changes)}status='running',updated_at=? "
+                "WHERE id=? AND status IN ('queued','running') AND " + _request_guard_sql(guard),
+                (*changes.values(), db.now(), run_id, guard),
+            )
+            _state_sizes[run_id] = len(message_json)
             _remember_request(conn, run_id, request if request_changed else stored_request, cur, guard, request_changed)
             if materialize_thread and getattr(cur, "rowcount", 1):
                 thread = chat_tx.lock_thread(conn, row["thread_id"], row["user_id"])
@@ -285,14 +291,18 @@ def flush_pending_state(run_id, message, future=None):
         return
     message = chat_views._message(message, row["message_id"])
     stored_request, guard = _checkpoint_request(run_id, row)
+    message_json = chat_tx.dumps(message)
+    changes = {"message": message_json} if _message_changed(row, message_json) else {}
     with chat_tx.transaction() as conn:
         cur = conn.execute(
-            "UPDATE chat_runs SET message=?,status='running',updated_at=? WHERE id=? AND status IN ('queued','running') AND " + _request_guard_sql(guard),
-            (chat_tx.dumps(message), db.now(), run_id, guard),
+            f"UPDATE chat_runs SET {''.join(f'{column}=?,' for column in changes)}status='running',updated_at=? "
+            "WHERE id=? AND status IN ('queued','running') AND " + _request_guard_sql(guard),
+            (*changes.values(), db.now(), run_id, guard),
         )
         _remember_request(conn, run_id, stored_request, cur, guard, False)
         wrote = bool(getattr(cur, "rowcount", 1))
     _state_write_at[run_id] = time.monotonic()
+    _state_sizes[run_id] = len(message_json)
     if wrote:
         stamp_state_cursor(run_id, row["user_id"])
         _state_dirty.discard(run_id)
@@ -366,11 +376,12 @@ def remember_request_text(run_id, text, digest=None) -> None:
 def _checkpoint_row(run_id):
     if not _has_request_digest():
         return db.fetchone(
-            "SELECT id,status,message_id,user_id,thread_id,parent_run_id,root_run_id,request,message,updated_at FROM chat_runs WHERE id=?",
+            "SELECT id,status,message_id,user_id,thread_id,parent_run_id,root_run_id,request,message,activity,updated_at FROM chat_runs WHERE id=?",
             (run_id,),
         )
     row = db.fetchone(
-        "SELECT id,status,message_id,user_id,thread_id,parent_run_id,root_run_id,request_digest,updated_at FROM chat_runs WHERE id=?",
+        "SELECT id,status,message_id,user_id,thread_id,parent_run_id,root_run_id,request_digest,activity,"
+        "MD5(message) AS message_digest,updated_at FROM chat_runs WHERE id=?",
         (run_id,),
     )
     if row is None or row["status"] not in chat_tx.ACTIVE:
@@ -403,6 +414,37 @@ def _checkpoint_message(run_id, row):
         return json.loads(row["message"] or "{}")
     fresh = db.fetchone("SELECT message FROM chat_runs WHERE id=?", (run_id,))
     return json.loads((fresh["message"] if fresh else "") or "{}")
+
+
+def _message_changed(row, message_json) -> bool:
+    """Whether the live message differs from the stored one. A large message
+    (every tool's output) is rewritten whole, and heartbeats and phase
+    changes leave it untouched."""
+    if "message_digest" in row.keys():
+        return row["message_digest"] != hashlib.md5(message_json.encode("ascii")).hexdigest()
+    return row["message"] != message_json
+
+
+def _stored_activity(row, request):
+    raw = row["activity"] if "activity" in row.keys() else None
+    if raw:
+        try:
+            value = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            value = None
+        if isinstance(value, dict):
+            return value
+    agent = request.get("agent") if isinstance(request.get("agent"), dict) else {}
+    return agent.get("activity") if isinstance(agent.get("activity"), dict) else None
+
+
+# Throttled (token) state writes of a large message come further apart: up to
+# 10 s at 640 KB. Events still publish at once; snapshots replay the gap.
+_state_sizes: dict[str, int] = {}
+
+
+def _state_interval(run_id) -> float:
+    return min(10.0, max(STATE_WRITE_SECONDS, _state_sizes.get(run_id, 0) / (64 * 1024)))
 
 
 def _mutable_request(request):

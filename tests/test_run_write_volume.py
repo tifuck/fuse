@@ -226,3 +226,28 @@ def test_hot_readers_reuse_unchanged_request_and_thread_text(thread):
 
     store.queue_steer(run["id"], "s3", "new instruction")
     assert [item["id"] for item in store.take_steers(run["id"])] == ["s3"]  # a changed request is re-read
+
+
+def test_checkpoints_write_only_changed_columns_and_keep_activity_apart(thread):
+    run = start(thread)
+    message = dict(run["message"])
+    store.checkpoint(run["id"], message, events=[])
+    with Statements() as seen:
+        store.checkpoint(run["id"], message, events=[{"fuse": {"event": "tool", "id": "t1", "status": "running", "name": "grep"}}])
+        store.checkpoint(run["id"], message, events=[{"fuse": {"event": "heartbeat"}}])
+    updates = seen.run_updates()
+    # A phase change or heartbeat moves only the small activity column.
+    assert updates and all("`activity` = %s" in s for s in updates)
+    assert not [s for s in updates if "`message` = %s" in s or "`request` = %s" in s]
+    live = store.get_run(1, run["id"])
+    assert live["request"]["agent"]["activity"] == {"phase": "tools", "tool_id": "t1", "heartbeat": True}
+    assert "activity" not in (stored_request(run).get("agent") or {})
+
+    with Statements() as seen:
+        store.checkpoint(run["id"], {**message, "content": "found it"}, events=[])
+    assert any("`message` = %s" in s for s in seen.run_updates())
+
+    store.finish_run(run["id"], {"content": "found it", "reasoning": ""}, "completed")
+    done = db.fetchone("SELECT activity FROM chat_runs WHERE id=?", (run["id"],))
+    assert done["activity"] is None
+    assert store.get_run(1, run["id"])["request"]["agent"]["activity"]["phase"] == "idle"

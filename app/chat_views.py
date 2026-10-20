@@ -15,11 +15,29 @@ logger = logging.getLogger(__name__)
 
 
 
+def with_activity(request, row):
+    """Fold a run's activity column back into request.agent.activity.
+
+    Checkpoints keep a live run's activity in its own small column so a
+    phase change does not rewrite the request; NULL (older rows, and the
+    terminal/requeue writers that reset it) leaves the request's value."""
+    raw = row["activity"] if "activity" in row.keys() else None
+    if raw and isinstance(request, dict):
+        try:
+            value = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            value = None
+        if isinstance(value, dict):
+            agent = request.get("agent") if isinstance(request.get("agent"), dict) else {}
+            request["agent"] = {**agent, "activity": value}
+    return request
+
+
 def run_view(row):
     if row is None:
         return None
     result = dict(row)
-    result["request"] = json.loads(row["request"])
+    result["request"] = with_activity(json.loads(row["request"]), row)
     result["message"] = json.loads(row["message"])
     result["cancel_requested"] = bool(row["cancel_requested"])
     return result

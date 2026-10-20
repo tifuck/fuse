@@ -163,6 +163,7 @@ def _ensure_agent_run_columns(conn):
     db._ensure_column(conn, "chat_runs", "provider_messages", "TEXT")
     db._ensure_column(conn, "chat_runs", "resume_count", "INTEGER NOT NULL DEFAULT 0")
     db._ensure_column(conn, "chat_runs", "cancel_requested_at", "TEXT NOT NULL DEFAULT ''")
+    db._ensure_column(conn, "chat_runs", "activity", "TEXT")
     conn.execute("UPDATE chat_runs SET root_run_id=id WHERE root_run_id IS NULL OR root_run_id=''")
     conn.execute(
         """CREATE UNIQUE INDEX IF NOT EXISTS chat_runs_active_parent

@@ -237,6 +237,7 @@ CREATE TABLE `chat_runs` (
   `request_digest` char(32) CHARACTER SET ascii COLLATE ascii_bin GENERATED ALWAYS AS (md5(`request`)) STORED,
   `provider_tail` longtext INVISIBLE DEFAULT NULL,
   `provider_messages` longtext GENERATED ALWAYS AS (case when `provider_tail` is null then `provider_base` when `provider_base` is null or `provider_base` = '[]' then `provider_tail` when `provider_tail` = '[]' then `provider_base` else concat(left(`provider_base`,char_length(`provider_base`) - 1),',',substr(`provider_tail`,2)) end) VIRTUAL,
+  `activity` text DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `chat_runs_active_parent` (`active_parent_thread`),
   KEY `chat_runs_user_message` (`user_id`,`message_id`(191)),

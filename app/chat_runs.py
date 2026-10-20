@@ -965,8 +965,13 @@ async def _run(request, user, run):
                     fuse_event = fuse.get("event") if fuse else None
                     tool_status = fuse_event == "tool" and fuse.get("status")
                     got_usage = (not had_usage) and isinstance(output.message.get("usage"), dict)
-                    if tool_status in ("running", "done", "error", "interrupted") or fuse_event in ("context", "activity", "permission", "heartbeat") or got_usage:
+                    if tool_status in ("running", "done", "error", "interrupted") or fuse_event in ("context", "activity", "permission") or got_usage:
                         await flush()
+                    elif fuse_event == "heartbeat":
+                        # Publish now; the row write is throttled (liveness has
+                        # updated_at touches, and a quiet heartbeat changes
+                        # nothing else a snapshot needs at once).
+                        await flush(durable=False)
                     elif len(pending) >= 128 or pending_bytes >= 64_000:
                         await flush()
                     await asyncio.sleep(0)

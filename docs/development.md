@@ -83,6 +83,9 @@ change: each pool merges its live catalog into its seed list.
   Read `provider_messages` as before, but never write it: store a whole
   transcript with `db.set_provider_sql()` (UPDATE) or `db.provider_column()`
   (INSERT), which also work on the legacy single-column layout.
+- A live run's activity is the small `chat_runs.activity` column, not
+  `request.agent.activity`; `chat_views.run_view`/`with_activity` fold it
+  back for readers. Checkpoints write only the columns that changed.
 
 ## Tests
 
