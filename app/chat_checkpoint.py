@@ -1,6 +1,7 @@
 """Durable state snapshots (checkpoint cadence) and compaction/meter persistence."""
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import random
@@ -124,13 +125,14 @@ def checkpoint(run_id, message, events=None, durable=True, future=None):
             request.setdefault("agent", {})["history_output_floor"] = len(message.get("content") or "")
             request_changed = True
     if row["parent_run_id"]:
-        seed = request.get("messages") or []
-        if "display_seed" not in request:
-            request["display_seed"] = seed
+        if "display_seed" not in request and isinstance(request.get("messages"), list):
+            # Once provider_messages is saved, request.messages is gone and
+            # the panel projects the transcript itself (no seed needed).
+            request["display_seed"] = request["messages"]
             request_changed = True
         if any(s.get("type") == "marker" and s.get("kind") == "compaction" and s.get("summary") for s in message.get("segments") or []):
             # The live handoff marker owns the post-compaction projection.
-            if request["display_seed"] != []:
+            if request.get("display_seed") != []:
                 request["display_seed"] = []
                 request_changed = True
     if row["status"] == "queued" and isinstance(request.get("agent"), dict):
@@ -752,6 +754,7 @@ def save_turn_progress(run_id, messages, loaded_tools=None, extra=None):
     # inline on every save.
     messages, images = chat_images.canonical(messages)
     payload = chat_tx.dumps(messages)
+    digest = hashlib.md5(payload.encode("ascii")).hexdigest()
     scan = payload
     tools_json = None
     if loaded_tools is not None:
@@ -760,7 +763,8 @@ def save_turn_progress(run_id, messages, loaded_tools=None, extra=None):
         tools_json = chat_tx.dumps([str(name)[:64] for name in loaded_tools[:64] if isinstance(name, str)])
     with chat_tx.transaction() as conn:
         row = conn.execute(
-            "SELECT id,status,request,user_id,thread_id FROM chat_runs WHERE id=?",
+            f"SELECT id,status,request,user_id,thread_id,{db.md5_of(conn, 'provider_messages')} AS provider_digest "
+            "FROM chat_runs WHERE id=?",
             (run_id,),
         ).fetchone()
         if row is None or row["status"] not in chat_tx.ACTIVE:
@@ -769,6 +773,13 @@ def save_turn_progress(run_id, messages, loaded_tools=None, extra=None):
         # Written back below: a request from before image references sheds
         # its inline copies on its first save.
         req = chat_images.store_request(conn, row["thread_id"], row["user_id"], json.loads(row["request"]))
+        if messages:
+            # provider_messages now holds this leg's transcript, and every
+            # reader takes it over request.messages (requeues rebuild them
+            # from it; finishing a root run drops them anyway). Keeping the
+            # copy made each heartbeat, counter or queue update rewrite the
+            # whole replayed history, megabytes per tool round.
+            req.pop("messages", None)
         agent = req.get("agent") if isinstance(req.get("agent"), dict) else {}
         extra = extra if isinstance(extra, dict) else {}
         receipt_ids = extra.get("command_delivery_ids") or []
@@ -854,16 +865,22 @@ def save_turn_progress(run_id, messages, loaded_tools=None, extra=None):
                 if chat_views.followup_text(item) and not chat_views._followup_delivered(item, scan)
             ]
         req["agent"] = agent
-        if tools_json is None:
-            conn.execute(
-                "UPDATE chat_runs SET provider_messages=?, request=?, updated_at=? WHERE id=?",
-                (payload, chat_tx.dumps(req), db.now(), run_id),
-            )
-        else:
-            conn.execute(
-                "UPDATE chat_runs SET provider_messages=?, loaded_tools=?, request=?, updated_at=? WHERE id=?",
-                (payload, tools_json, chat_tx.dumps(req), db.now(), run_id),
-            )
+        # The runtime saves at every tool boundary and most saves repeat the
+        # previous transcript: send only what changed. Each repeat was a
+        # multi-MB statement to transfer, parse and digest.
+        changes = {}
+        if row["provider_digest"] != digest:
+            changes["provider_messages"] = payload
+        if tools_json is not None:
+            changes["loaded_tools"] = tools_json
+        stored_request = chat_tx.dumps(req)
+        if stored_request != row["request"]:
+            changes["request"] = stored_request
+        changes["updated_at"] = db.now()
+        conn.execute(
+            f"UPDATE chat_runs SET {', '.join(f'{column}=?' for column in changes)} WHERE id=?",
+            (*changes.values(), run_id),
+        )
         for cid in delivered_children:
             if not cid:
                 continue

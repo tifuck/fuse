@@ -116,6 +116,15 @@ def drop_pending_child_result(parent_run_id: str, child_id: str) -> None:
         )
 
 
+def _provider_text(run_id: str) -> str:
+    """The run's stored provider transcript, read only once a queue has
+    entries to check against it: it can be megabytes, and the inbox peeks
+    every queue at every tool boundary. A read after the request read can
+    only be newer, which at worst shows an entry as already delivered."""
+    row = db.fetchone("SELECT provider_messages FROM chat_runs WHERE id=?", (run_id,))
+    return (row["provider_messages"] if row else "") or ""
+
+
 def take_child_results(parent_run_id: str) -> list[str]:
     """Peek injected background-subagent results for the live parent turn.
 
@@ -126,7 +135,7 @@ def take_child_results(parent_run_id: str) -> list[str]:
     """
     if not parent_run_id:
         return []
-    row = db.fetchone("SELECT id,status,request,provider_messages FROM chat_runs WHERE id=?", (parent_run_id,))
+    row = db.fetchone("SELECT id,status,request FROM chat_runs WHERE id=?", (parent_run_id,))
     if row is None or row["status"] not in chat_tx.ACTIVE:
         return []
     try:
@@ -139,7 +148,7 @@ def take_child_results(parent_run_id: str) -> list[str]:
     pending = agent.get("pending_child_results")
     if not isinstance(pending, list) or not pending:
         return []
-    transcript = row["provider_messages"] or ""
+    transcript = _provider_text(parent_run_id)
     ids = [str(item.get("id") or "") for item in pending if isinstance(item, dict) and item.get("id")]
     generations = {}
     if ids:
@@ -218,7 +227,7 @@ def take_followups(run_id: str) -> list[str]:
     continuation or unconsumed report commits."""
     if not run_id:
         return []
-    row = db.fetchone("SELECT id,status,request,provider_messages FROM chat_runs WHERE id=?", (run_id,))
+    row = db.fetchone("SELECT id,status,request FROM chat_runs WHERE id=?", (run_id,))
     if row is None:
         return []
     try:
@@ -231,7 +240,7 @@ def take_followups(run_id: str) -> list[str]:
     pending = agent.get("pending_followups")
     if not isinstance(pending, list) or not pending:
         return []
-    transcript = row["provider_messages"] or ""
+    transcript = _provider_text(run_id)
     leftover = [
         chat_views.followup_text(item) for item in pending
         if chat_views.followup_text(item) and not chat_views._followup_delivered(item, transcript)
@@ -551,7 +560,7 @@ def take_steers(run_id: str) -> list[dict]:
     """
     if not run_id:
         return []
-    row = db.fetchone("SELECT id,status,request,provider_messages FROM chat_runs WHERE id=?", (run_id,))
+    row = db.fetchone("SELECT id,status,request FROM chat_runs WHERE id=?", (run_id,))
     if row is None or row["status"] not in chat_tx.ACTIVE:
         return []
     try:
@@ -564,7 +573,7 @@ def take_steers(run_id: str) -> list[dict]:
     pending = agent.get("pending_steers")
     if not isinstance(pending, list) or not pending:
         return []
-    transcript = row["provider_messages"] or ""
+    transcript = _provider_text(run_id)
     out = []
     for item in pending:
         if isinstance(item, dict) and (str(item.get("text") or "").strip() or item.get("attachments")):
@@ -592,13 +601,16 @@ def close_steer_window(run_id):
 
 def steer_display_deliveries(run_id):
     """Unsealed deliveries, including recovery after persistence but before flush."""
-    row = db.fetchone("SELECT request,provider_messages FROM chat_runs WHERE id=?", (run_id,))
+    row = db.fetchone("SELECT request FROM chat_runs WHERE id=?", (run_id,))
     if row is None:
         return []
     request = json.loads(row["request"] or "{}")
-    return [part["steer_id"] for part in (request.get("agent") or {}).get("display_parts") or []
-            if part.get("awaiting_delivery") and part.get("steer_id")
-            and chat_tx._json_needle(f"(steer:{part['steer_id']})") in (row["provider_messages"] or "")]
+    awaiting = [part["steer_id"] for part in (request.get("agent") or {}).get("display_parts") or []
+                if part.get("awaiting_delivery") and part.get("steer_id")]
+    if not awaiting:
+        return []  # checked every round: skip the transcript read
+    transcript = _provider_text(run_id)
+    return [ident for ident in awaiting if chat_tx._json_needle(f"(steer:{ident})") in transcript]
 
 
 def seal_steer_display(run_id, steer_ids):
@@ -649,8 +661,10 @@ def followup_display_deliveries(run_id: str) -> list[str]:
     write would otherwise leave that leg permanently in the old render order."""
     if not run_id:
         return []
-    row = db.fetchone("SELECT request,provider_messages FROM chat_runs WHERE id=?", (run_id,))
-    if row is None:
+    # Checked every round of every subagent: read the transcript only when it
+    # holds a follow-up envelope at all.
+    row = db.fetchone("SELECT request,INSTR(provider_messages,'(followup:') AS envelopes FROM chat_runs WHERE id=?", (run_id,))
+    if row is None or not row["envelopes"]:
         return []
     try:
         req = json.loads(row["request"] or "{}")
@@ -669,8 +683,8 @@ def followup_display_deliveries(run_id: str) -> list[str]:
     # User rows already covered by the seed belong to earlier legs, whose
     # marks were cleared on requeue; only current-leg envelopes recover.
     skip_users = sum(1 for m in seed if isinstance(m, dict) and m.get("role") == "user")
-    raw_pm = row["provider_messages"]
-    transcript = raw_pm if isinstance(raw_pm, list) else []
+    raw_pm = _provider_text(run_id)
+    transcript = []
     if isinstance(raw_pm, str) and raw_pm.strip():
         try:
             parsed = json.loads(raw_pm)

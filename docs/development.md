@@ -70,6 +70,13 @@ change: each pool merges its live catalog into its seed list.
   (`chat_images.canonical_row`/`canonical_content`).
 - Those rows can be tens of MB: never `SELECT *` from `chat_runs` or
   `chat_threads` on a hot path; name the columns.
+- A live run writes its row several times per tool round, and MariaDB
+  rewrites a changed `LONGTEXT` whole. Keep small, frequently changing state
+  out of columns that hold large data: once a leg's `provider_messages` is
+  saved, `save_turn_progress` drops `request.messages` (readers take
+  `provider_messages` first; requeues rebuild `request.messages` from it),
+  and it sends only the columns that changed. Read `provider_messages` only
+  when a check actually needs it.
 
 ## Tests
 

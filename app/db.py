@@ -163,6 +163,14 @@ def for_update(conn) -> str:
     return "" if isinstance(conn, sqlite3.Connection) else " FOR UPDATE"
 
 
+def md5_of(conn, column: str) -> str:
+    """Select expression digesting a column inside MariaDB, so a writer can
+    skip rewriting an identical multi-MB value without reading it back.
+    Legacy SQLite test connections have no MD5(); NULL never matches there,
+    so they always rewrite."""
+    return "NULL" if isinstance(conn, sqlite3.Connection) else f"MD5({column})"
+
+
 def last_id(conn) -> int:
     sql = "SELECT last_insert_rowid()" if isinstance(conn, sqlite3.Connection) else "SELECT LAST_INSERT_ID()"
     row = conn.execute(sql).fetchone()
