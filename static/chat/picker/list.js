@@ -35,8 +35,12 @@ export function createList(ctx) {
     return efforts[0] || "medium";
   }
 
+    // The open chat's effort wins; the per-model pick is only the default
+    // for a chat that has none for this model yet.
     function currentEffort() {
     const efforts = modelEfforts();
+    const chat = S.threadEffort;
+    if (chat && chat.model === S.modelId && efforts.includes(chat.value)) return chat.value;
     const stored = S.effortByModel[S.modelId];
     if (stored && efforts.includes(stored)) return stored;
     return defaultEffort();
@@ -51,10 +55,10 @@ export function createList(ctx) {
     function setEffort(value) {
     const efforts = modelEfforts();
     if (!efforts.includes(value)) return;
+    const changed = value !== currentEffort();
     S.effortByModel[S.modelId] = value;
-    try {
-      localStorage.setItem(S.STORE_EFFORT, JSON.stringify(S.effortByModel));
-    } catch (_) {}
+    S.threadEffort = { model: S.modelId, value };
+    if (changed) composer.persist();
     const model = context.currentModel();
     const label = effortLabel(value);
     const small = S.pickerHost.querySelector(".chat-picker-btn small");

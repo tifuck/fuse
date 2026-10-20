@@ -71,6 +71,7 @@ export function createPersist(ctx) {
     };
     if (S.transcriptDirty && !S.streaming) payload.messages = traces.serialMessages();
     if (targetId) {
+      payload.reasoning_effort = picker.currentEffort();
       payload.expected_revision = S.serverRevision;
       if (!S.pendingSave || S.pendingSave.id !== targetId || S.pendingSave.revision !== S.serverRevision) {
         S.pendingSave = { id: targetId, revision: S.serverRevision, command_id: newSession() };

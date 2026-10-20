@@ -697,7 +697,7 @@ async def chat_thread_patch(request: Request, thread_id: str):
     if err:
         return err
     raw = await _json_object(request)
-    if set(raw) - {"title", "model", "archived", "pinned", "messages", "context", "tools", "expected_revision", "command_id", "bypass_permissions", "auto_permissions"}:
+    if set(raw) - {"title", "model", "archived", "pinned", "messages", "context", "tools", "expected_revision", "command_id", "bypass_permissions", "auto_permissions", "reasoning_effort"}:
         raise HTTPException(422, "Unsupported chat fields")
     kwargs = {"expected_revision": _chat_revision(raw), "command_id": raw.get("command_id")}
     if "bypass_permissions" in raw:
@@ -734,6 +734,10 @@ async def chat_thread_patch(request: Request, thread_id: str):
         kwargs["context"] = raw["context"]
     if "tools" in raw:
         kwargs["tools"] = raw["tools"]
+    if "reasoning_effort" in raw:
+        if not isinstance(raw["reasoning_effort"], str):
+            raise HTTPException(400, "Invalid reasoning_effort")
+        kwargs["reasoning_effort"] = raw["reasoning_effort"]
     try:
         thread = await asyncio.to_thread(chats.update_thread, user["id"], thread_id, **kwargs)
     except chats.ChatValidationError as exc:

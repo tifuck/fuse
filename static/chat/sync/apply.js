@@ -180,7 +180,11 @@ export function createApply(ctx) {
       S.threadContext = data.context || "";
       S.searchOn = data.tools?.includes("web_search") ?? true;
       const listed = resolveListedModel(data.model);
-      if (listed && S.modelId !== listed) { S.modelId = listed; picker.renderPickerButton(); }
+      const effort = data.reasoning_effort ? { model: listed || S.modelId, value: data.reasoning_effort } : null;
+      const effortChanged = (effort && effort.value) !== (S.threadEffort && S.threadEffort.value) ||
+        (effort && effort.model) !== (S.threadEffort && S.threadEffort.model);
+      S.threadEffort = effort;
+      if ((listed && S.modelId !== listed) || effortChanged) { if (listed) S.modelId = listed; picker.renderPickerButton(); }
     }
     context.acceptCacheProbe(data.compaction?.cache);
     if (data.compaction && data.compaction.meter) context.acceptMeter(data.compaction.meter);

@@ -440,6 +440,25 @@ class ChatStoreTest(unittest.TestCase):
             self.assertNotIn("context", summary)
             self.assertNotIn("tools", summary)
 
+    def test_reasoning_effort_is_per_thread_and_feeds_wake_turns(self):
+        # Two chats on one model: effort set on one must not leak to the
+        # other (a different effort re-sends the conversation uncached).
+        first = chats.create_thread(1, model="offline")
+        second = chats.create_thread(1, model="offline")
+        first = chats.update_thread(1, first["id"], reasoning_effort="xhigh", expected_revision=first["revision"])
+        self.assertEqual(first["reasoning_effort"], "xhigh")
+        self.assertEqual(chats.get_thread(1, first["id"])["reasoning_effort"], "xhigh")
+        self.assertEqual(chats.get_thread(1, second["id"])["reasoning_effort"], "")
+        with self.assertRaises(chats.ChatValidationError):
+            chats.update_thread(1, first["id"], reasoning_effort="bogus", expected_revision=first["revision"])
+        # A wake turn without an effort runs at the chat's saved one.
+        wake = store.start_turn(1, first["id"], "wake", first["revision"], "wake", auto=True)
+        self.assertEqual(wake["run"]["request"]["reasoning_effort"], "xhigh")
+        # Another model has no saved effort yet.
+        other = chats.update_thread(1, second["id"], model="other", reasoning_effort="low", expected_revision=second["revision"])
+        other = chats.update_thread(1, second["id"], model="offline", expected_revision=other["revision"])
+        self.assertEqual(other["reasoning_effort"], "")
+
     def test_list_and_search_report_running_for_active_turns(self):
         idle = chats.create_thread(1, title="idle chat")
         live = chats.create_thread(1, title="live chat")

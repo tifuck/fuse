@@ -952,6 +952,7 @@ import { createBoot } from './chat/boot.js';
     S.threadRecaps = [];
     sidebar.resetHistoryStacks();
     S.currentId = null;
+    S.threadEffort = null;
     S.serverRevision = 0;
     S.viewCursor = 0;
     S.threadWatermark = 0;

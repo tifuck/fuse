@@ -25,6 +25,7 @@ from .chat_schema import (
     new_public_id,
     UNREADABLE_TRANSCRIPT,
     parse_messages,
+    parse_reasoning_effort,
     parse_thread_tools,
     stored_messages,
 )
@@ -279,6 +280,8 @@ def _view(row, *, include_messages: bool = False, coding: bool = False, conn=Non
         meter = rebuilt
         meter["history_info"] = history_info
         state["meter"] = meter
+        effort = state.get("effort") if isinstance(state.get("effort"), dict) else {}
+        data["reasoning_effort"] = (effort.get("value") or "") if effort.get("model") == model else ""
         data["compaction"] = {
             "meter": meter,
             "strategy": state.get("strategy"),
@@ -512,6 +515,7 @@ def update_thread(
     command_id=None,
     bypass_permissions: bool | None = None,
     auto_permissions: bool | None = None,
+    reasoning_effort: str | None = None,
 ) -> dict | None:
     from . import chat_store as store
 
@@ -522,8 +526,10 @@ def update_thread(
             raise ChatValidationError("auto-approve needs an OpenRouter key on /sources", 409)
 
     with store.transaction() as conn:
-        fingerprint, previous = store.command(conn, user_id, command_id,
-            ["update", thread_id, title, model, archived, pinned, messages, context, tools, expected_revision, bypass_permissions, auto_permissions])
+        request = ["update", thread_id, title, model, archived, pinned, messages, context, tools, expected_revision, bypass_permissions, auto_permissions]
+        if reasoning_effort is not None:
+            request.append(reasoning_effort)
+        fingerprint, previous = store.command(conn, user_id, command_id, request)
         if previous is not None:
             return previous
         pk = resolve_thread_pk(user_id, thread_id, conn)
@@ -537,7 +543,8 @@ def update_thread(
             raise ChatValidationError("cannot replace messages during an active run", 409)
         # After the chat_runs read: finalization locks run before thread.
         _lock_revision(conn, "chat_threads", "revision", row["revision"], "id=? AND user_id=?", (pk, user_id))
-        _update_thread(conn, row, title=title, model=model, archived=archived, pinned=pinned, messages=messages, context=context, tools=tools)
+        _update_thread(conn, row, title=title, model=model, archived=archived, pinned=pinned, messages=messages, context=context, tools=tools,
+                       reasoning_effort=reasoning_effort)
         if bypass_permissions is not None and bool(bypass_permissions) != bool(row["bypass_permissions"] if "bypass_permissions" in row.keys() else 0):
             from . import permissions as permissions_mod
 
@@ -702,7 +709,7 @@ def _rebase_saved_rows(conn, row, stored: list[dict], messages) -> list[dict]:
     return msgs
 
 
-def _update_thread(conn, row, *, title, model, archived, pinned, messages, context, tools):
+def _update_thread(conn, row, *, title, model, archived, pinned, messages, context, tools, reasoning_effort=None):
     if not row:
         return None
     if archived is not None and not isinstance(archived, bool):
@@ -744,16 +751,25 @@ def _update_thread(conn, row, *, title, model, archived, pinned, messages, conte
         tool_json = json.dumps(parse_thread_tools(tools, strict=True), separators=(",", ":"))
     else:
         tool_json = row["tools"] if "tools" in row.keys() and row["tools"] is not None else json.dumps(DEFAULT_TOOLS)
-    pin_only = pinned is not None and all(value is None for value in (title, model, archived, messages, context, tools))
+    pin_only = pinned is not None and all(value is None for value in (title, model, archived, messages, context, tools, reasoning_effort))
     ts = row["updated_at"] if pin_only else db.now()
     compaction_json = None
+    from . import context_compact as ctxmod
+
+    state = ctxmod.parse_state(row["compaction"] if "compaction" in row.keys() else None)
+    if reasoning_effort is not None:
+        # The picker's effort is the chat's, like its model: the next turn (and
+        # wakes, which reuse it) sends it, and every device shows it.
+        effort = {"model": new_model or "", "value": parse_reasoning_effort(reasoning_effort, strict=True) or ""}
+        if state.get("effort") != effort:
+            state["effort"] = effort
+            compaction_json = ctxmod.dump_state(state)
     if messages is not None:
         # Recompute the meter from the new transcript in the same transaction:
         # a second UPDATE would race concurrent compaction writes (e.g. a
         # prune from an in-flight run) and ship without a revision bump.
-        from . import context_compact as ctxmod, hosts, context_meter
+        from . import hosts, context_meter
 
-        state = ctxmod.parse_state(row["compaction"] if "compaction" in row.keys() else None)
         state = ctxmod.invalidate_edited_checkpoints(state, stored_msgs, msgs)
         previous = state.get("meter") or {}
         from . import chat_history

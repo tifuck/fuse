@@ -156,6 +156,8 @@ function initState() {
     S.effortByModel = {};
   }
   S.modelId = pickInitialModel();
+  // The open chat's saved effort ({model, value}), or null.
+  S.threadEffort = null;
   S.sessionId = newSession();
   S.messages = [];
   S.threadRecaps = [];

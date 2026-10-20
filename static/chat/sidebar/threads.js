@@ -288,10 +288,9 @@ export function createThreads(ctx) {
     S.currentId = data.id;
     S.sessionId = "thread-" + data.id;
     const listed = resolveListedModel(data.model);
-    if (listed) {
-      S.modelId = listed;
-      picker.renderPickerButton();
-    }
+    S.threadEffort = data.reasoning_effort ? { model: listed || S.modelId, value: data.reasoning_effort } : null;
+    if (listed) S.modelId = listed;
+    picker.renderPickerButton();
     S.contextCut = data.context_cut || null;
     S.threadRecaps = transcript.visibleRecaps(data);
     S.messages = (data.messages || []).map(openedMessage);
