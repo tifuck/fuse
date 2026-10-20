@@ -5,7 +5,7 @@ import json
 import logging
 from uuid import uuid4
 
-from . import db, chat_schema, chat_tx, chat_views, chat_checkpoint
+from . import db, chat_images, chat_schema, chat_tx, chat_views, chat_checkpoint
 from .chat_run_state import (
     DEFAULT_REMAINING_SECONDS,
     INTERRUPT_NOTICE,
@@ -383,6 +383,8 @@ def _requeue_for_resume(row, messages, allowed=None, *, by_user=False):
         from . import chat_history
         sealed = chat_history.upgrade_legacy_run(conn, row, req, sealed)
         req["messages"] = sealed
+        req = chat_images.store_request(conn, row["thread_id"], row["user_id"], req)
+        sealed = req["messages"]
         conn.execute(
             """UPDATE chat_runs SET status='queued', request=?, message=?, provider_messages=?,
                cancel_requested=0, cancel_requested_at='', resume_count=?, updated_at=? WHERE id=?""",
@@ -586,10 +588,16 @@ def recover_runs():
     """
     seen = set()
     while True:
-        rows = db.fetchall("SELECT * FROM chat_runs WHERE status IN ('queued','running') LIMIT 256")
-        batch = [row for row in rows if row["id"] not in seen]
-        if not batch:
+        # Ids first: no index serves this filter, and selecting every column
+        # made InnoDB read each run's transcript blobs (gigabytes, minutes on
+        # a cold start) only to discard the inactive ones.
+        ids = [row["id"] for row in db.fetchall("SELECT id FROM chat_runs WHERE status IN ('queued','running') LIMIT 256")]
+        fresh = [ident for ident in ids if ident not in seen]
+        if not fresh:
             break
+        seen.update(fresh)
+        batch = [row for row in (db.fetchone("SELECT * FROM chat_runs WHERE id=?", (ident,)) for ident in fresh)
+                 if row is not None and row["status"] in ("queued", "running")]
         resumable = [
             row for row in batch
             if row["provider_messages"]
@@ -598,7 +606,6 @@ def recover_runs():
         ]
         resumable_ids = {row["id"] for row in sorted(resumable, key=lambda r: str(r["created_at"]))[:BOOT_RESUME_BATCH]}
         for row in batch:
-            seen.add(row["id"])
             recover_one(row, allow_resume=row["id"] in resumable_ids)
     from . import permissions as permissions_mod
 

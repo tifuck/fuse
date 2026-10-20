@@ -10,6 +10,9 @@ services:
       MARIADB_USER: fuse
       MARIADB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
       MARIADB_RANDOM_ROOT_PASSWORD: "1"
+      # Hand freed per-connection buffers (tens of MB per chat transcript)
+      # back to the OS instead of keeping them in glibc arenas.
+      GLIBC_TUNABLES: glibc.malloc.arena_max=2:glibc.malloc.mmap_threshold=1048576
     volumes:
       - db:/var/lib/mysql
     healthcheck:

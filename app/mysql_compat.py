@@ -127,6 +127,11 @@ def _rewrite(sql: str, lock_rows: bool = False) -> str:
 # approach max_allowed_packet (16 MiB) keeps ordinary escaping.
 _HEX_MIN_CHARS = 65536
 _HEX_STATEMENT_MAX = 12 * 1024 * 1024
+# MariaDB grows a connection's packet buffer to the largest statement it
+# receives and keeps it until the connection closes, so a pool that once sent
+# a 30 MB transcript holds that much per connection for good. The pool
+# reconnects a connection that sent a statement this large instead.
+_RECYCLE_STATEMENT_CHARS = 4 * 1024 * 1024
 
 
 class _Utf8Hex:
@@ -170,14 +175,22 @@ class Conn:
         # that catches the error and carries on would commit a fragment, so
         # the transaction refuses further statements and its commit.
         self._aborted = None
+        # Sent a statement past _RECYCLE_STATEMENT_CHARS: Pool.release reconnects.
+        self.oversized = False
         raw.encoders[_Utf8Hex] = _escape_hex
 
     def _check_open(self):
         if self._aborted is not None:
             raise TransactionAborted("transaction aborted by an earlier database error") from self._aborted
 
+    def _note_size(self, args):
+        if not self.oversized and isinstance(args, (list, tuple)) and sum(
+                len(arg) for arg in args if isinstance(arg, (str, bytes))) >= _RECYCLE_STATEMENT_CHARS:
+            self.oversized = True
+
     def native(self, sql, args=()):
         self._check_open()
+        self._note_size(args)
         try:
             with self._raw.cursor() as cursor:
                 cursor.execute(sql, _hex_args(sql, args))
@@ -241,6 +254,8 @@ class Conn:
             return Cursor(rowcount=total, lastrowid=last)
         rendered = _rewrite(text, self._write_transaction)
         self._check_open()
+        for values in rows:
+            self._note_size(values)
         try:
             with self._raw.cursor() as cursor:
                 if re.match(r"(?:INSERT|REPLACE)\b", rendered, re.I):
@@ -287,7 +302,11 @@ class Conn:
             self._aborted = None
 
     def close(self):
-        self._raw.close()
+        # A connection a failed rollback already discarded is closed; closing
+        # it again raised and masked the error that brought shutdown on.
+        if self._raw.open:
+            self._raw.close()
+        self.oversized = False
 
 
 def connect(url, *, max_connections=1):
@@ -339,6 +358,13 @@ class Pool:
         return conn
 
     def release(self, conn):
+        if conn.oversized:
+            # checkout's ping(reconnect=True) opens a fresh session, without
+            # the packet buffer this one grew.
+            try:
+                conn.close()
+            except Exception:
+                pass
         self._idle.put(conn)
 
     def execute(self, sql, args=()):

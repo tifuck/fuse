@@ -7,7 +7,7 @@ import random
 import re
 import time
 
-from . import db, chat_schema, chat_tx, chat_pub, chat_views
+from . import db, chat_images, chat_schema, chat_tx, chat_pub, chat_views
 
 logger = logging.getLogger(__name__)
 
@@ -394,13 +394,16 @@ def _remember_request(conn, run_id, request, cur, guard, rewritten):
         _request_cache[run_id] = (row["request_digest"], request)
 
 
-def _compaction_row(conn, user_id, thread_id):
+def _compaction_row(conn, user_id, thread_id, columns="id,revision,model,messages,compaction"):
+    """The thread fields compaction and meter writers read. Never SELECT *:
+    retained_history alone can be megabytes, and the meter writes several
+    times per tool round."""
     from . import chats
 
     pk = chats.resolve_thread_pk(user_id, thread_id, conn)
     if pk is None:
         return None, None
-    row = conn.execute("SELECT * FROM chat_threads WHERE id=? AND user_id=?", (pk, user_id)).fetchone()
+    row = conn.execute(f"SELECT {columns} FROM chat_threads WHERE id=? AND user_id=?", (pk, user_id)).fetchone()
     return pk, row
 
 
@@ -467,7 +470,7 @@ def save_meter(user_id, thread_id, meter):
     if not isinstance(meter, dict):
         return
     with chat_tx.transaction() as conn:
-        pk, row = _compaction_row(conn, user_id, thread_id)
+        pk, row = _compaction_row(conn, user_id, thread_id, "id,revision,model,compaction")
         if row is None:
             return
         keys = row.keys() if hasattr(row, "keys") else []
@@ -490,7 +493,8 @@ def save_meter(user_id, thread_id, meter):
             # moves, or get_thread's unchanged short-circuit serves stale data.
             chat_tx.thread_event(conn, user_id, pk)
             return
-        messages = chats.parse_messages(row["messages"])
+        stored = conn.execute("SELECT messages FROM chat_threads WHERE id=? AND user_id=?", (pk, user_id)).fetchone()
+        messages = chats.parse_messages(stored["messages"] if stored else "[]")
         run = conn.execute(
             "SELECT message_id,message FROM chat_runs WHERE thread_id=? AND parent_run_id IS NULL AND status IN ('queued','running')",
             (pk,),
@@ -601,6 +605,7 @@ def finish_compact(user_id, thread_id, checkpoint, *, command_id, fingerprint, e
         from . import chat_history
         if replay is not None:
             rebuilt = [*ctxmod.continuation(checkpoint["summary"]), *ctxmod.retained_skill_rows(replay or [])]
+            rebuilt = chat_images.store(conn, pk, user_id, rebuilt)
             conn.execute("UPDATE chat_threads SET retained_history=? WHERE id=? AND user_id=?",
                 (chat_history.envelope(messages, rebuilt, state, info=history_info), pk, user_id))
         projected, _info = chat_history.build(conn, user_id, pk, messages, state)
@@ -718,7 +723,7 @@ def read_file_image(user_id, run_id: str, event_id: str):
             if not isinstance(image, dict) or image.get("type") != "image_url":
                 continue
             image_url = image.get("image_url")
-            url = image_url.get("url") if isinstance(image_url, dict) else None
+            url = chat_images.resolve(user_id, image_url.get("url") if isinstance(image_url, dict) else None)
             if not isinstance(url, str) or len(url) > 7 * 1024 * 1024:
                 continue
             header, separator, data = url.partition(",")
@@ -743,6 +748,9 @@ def save_turn_progress(run_id, messages, loaded_tools=None, extra=None):
         return
     # This is recovery/context state, not a UI preview. Only explicit runtime
     # compaction may shorten it; storage tail limits silently lost history.
+    # Large images are stored once per thread (chat_images), not rewritten
+    # inline on every save.
+    messages, images = chat_images.canonical(messages)
     payload = chat_tx.dumps(messages)
     scan = payload
     tools_json = None
@@ -757,7 +765,10 @@ def save_turn_progress(run_id, messages, loaded_tools=None, extra=None):
         ).fetchone()
         if row is None or row["status"] not in chat_tx.ACTIVE:
             return
-        req = json.loads(row["request"])
+        chat_images.save(conn, row["thread_id"], row["user_id"], images)
+        # Written back below: a request from before image references sheds
+        # its inline copies on its first save.
+        req = chat_images.store_request(conn, row["thread_id"], row["user_id"], json.loads(row["request"]))
         agent = req.get("agent") if isinstance(req.get("agent"), dict) else {}
         extra = extra if isinstance(extra, dict) else {}
         receipt_ids = extra.get("command_delivery_ids") or []

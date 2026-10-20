@@ -126,6 +126,19 @@ CREATE TABLE `chat_events` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!40101 SET character_set_client = utf8mb4 */;
+CREATE TABLE `chat_images` (
+  `thread_id` bigint(20) NOT NULL,
+  `sha` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `user_id` bigint(20) NOT NULL,
+  `url` longtext NOT NULL,
+  `created_at` varchar(32) NOT NULL,
+  PRIMARY KEY (`thread_id`,`sha`),
+  KEY `chat_images_user_sha` (`user_id`,`sha`),
+  CONSTRAINT `fk_chat_images_0` FOREIGN KEY (`thread_id`) REFERENCES `chat_threads` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_nopad_bin ROW_FORMAT=DYNAMIC;
+/*!40101 SET character_set_client = @saved_cs_client */;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8mb4 */;
 CREATE TABLE `chat_permission_asks` (
   `id` varchar(191) NOT NULL,
   `user_id` bigint(20) NOT NULL,

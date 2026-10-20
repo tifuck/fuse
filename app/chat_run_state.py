@@ -9,7 +9,7 @@ import json
 import time
 from uuid import uuid4
 
-from . import db, chat_schema, chat_tx, chat_views, chat_checkpoint, chat_scratch, run_inbox
+from . import db, chat_images, chat_schema, chat_tx, chat_views, chat_checkpoint, chat_scratch, run_inbox
 
 logger = logging.getLogger(__name__)
 
@@ -316,6 +316,9 @@ def _start_turn(user_id, thread_id, text, expected_revision, command_id, model=N
         from . import chat_history
         history_cutoffs = []
         request_messages, history_info = chat_history.build(conn, user_id, thread_id, messages, state, cutoffs_out=history_cutoffs)
+        # The request is stored and re-read on every progress save: large
+        # images go to chat_images once instead of riding along inline.
+        request_messages = chat_images.store(conn, thread_id, user_id, request_messages)
         prompt_snapshot = history_info.pop("prompt_snapshot", None)
         state["meter"] = context_meter.standing_meter(chat_history.for_model(request_messages, send_model), model=send_model, type_id=send_type_id,
             override=state.get("window_override") or ((prior_meter or {}).get("limit") if send_type_id is None and (prior_meter or {}).get("model") == send_model else None),

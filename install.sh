@@ -220,6 +220,13 @@ provision_local_mariadb() {
     ask "MariaDB is not installed. Install mariadb-server with apt? [Y/n] " \
       || die "Fuse needs MariaDB; install it or pass --database-url"
     apt_install mariadb-server || die "could not install mariadb-server; install MariaDB 10.11+ and re-run"
+    # glibc otherwise keeps each connection thread's freed packet and blob
+    # buffers (tens of MB per chat transcript) resident until MariaDB restarts.
+    mkdir -p /etc/systemd/system/mariadb.service.d
+    printf '[Service]\nEnvironment=GLIBC_TUNABLES=glibc.malloc.arena_max=2:glibc.malloc.mmap_threshold=1048576\n' \
+      > /etc/systemd/system/mariadb.service.d/malloc.conf
+    systemctl daemon-reload
+    systemctl restart mariadb >/dev/null 2>&1 || true
     systemctl enable --now mariadb >/dev/null 2>&1 || true
   fi
   mariadb -e 'SELECT 1' >/dev/null 2>&1 \

@@ -59,6 +59,18 @@ change: each pool merges its live catalog into its seed list.
 - `static/app.css` is an ordered import list; keep its order (cascade).
   Design tokens live in `static/styles/tokens/root.css`.
 
+## Stored transcripts
+
+- Large inline images in `chat_runs.provider_messages`/`request` and
+  `chat_threads.retained_history` are kept once per thread in `chat_images`
+  (`app/chat_images.py`); the stored JSON carries `fuse-image:<sha256>`.
+  Writers go through `chat_images.store`/`store_request`; `api._invoke_chat`
+  puts the original bytes back before a request reaches a provider. Code that
+  hashes or compares provider rows uses the canonical form
+  (`chat_images.canonical_row`/`canonical_content`).
+- Those rows can be tens of MB: never `SELECT *` from `chat_runs` or
+  `chat_threads` on a hot path; name the columns.
+
 ## Tests
 
 Install the test tooling: `pip install pytest` and `npm install playwright`

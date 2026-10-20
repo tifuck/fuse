@@ -38,6 +38,8 @@ import json
 import re
 import time
 
+from .. import chat_images
+
 # Cache lifetime by source type. Anthropic's 5-minute default is raised to
 # 1 hour by Fuse's Claude payload (ttl "1h"), and OpenRouter gets the same
 # directive for anthropic/ models. OpenAI keeps GPT-5.6 and later prompts for
@@ -98,6 +100,9 @@ def fingerprint(messages, tools=None, effort=None) -> dict:
     parts = [{"tools": tools or [], "effort": effort or ""}, *(messages or [])][:MAX_PARTS]
     hashes, weights = [], []
     for part in parts:
+        # An image read this turn is inline; replayed later it is a stored
+        # reference. The provider gets the same bytes, so hash one form.
+        part = chat_images.canonical_row(part) if isinstance(part, dict) else part
         text = _json(part)
         hashes.append(hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[:_PART])
         weights.append(_weight(part, text))

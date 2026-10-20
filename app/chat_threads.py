@@ -10,7 +10,7 @@ import json
 import re
 from uuid import uuid4
 
-from . import db
+from . import chat_images, db
 from .chat_tools import AVAILABLE, DEFAULT_TOOLS
 from .chat_schema import (
     CONTEXT_MAX,
@@ -1042,6 +1042,8 @@ def fork_thread(user_id: int, thread_id, *, expected_revision=None, command_id=N
                 f"INSERT INTO chat_runs ({','.join(names)}) VALUES ({','.join('?' * len(names))})",
                 values,
             )
+        # The copied runs and history keep the source's image references.
+        chat_images.copy_thread(conn, pk, tid)
         for job in jobs:
             names = job_columns
             values = []

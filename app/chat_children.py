@@ -9,7 +9,7 @@ import time
 from uuid import uuid4
 import threading
 
-from . import db, chat_tx, chat_views, chat_run_state, run_inbox
+from . import db, chat_images, chat_tx, chat_views, chat_run_state, run_inbox
 from .chat_scratch import _scratch_of, _stored_request
 from .database_errors import is_lock_conflict
 
@@ -332,6 +332,8 @@ def continue_child_with_followups(run_id: str, followups: list) -> bool:
         agent["wake_sent"] = False
         agent["wake_attempts"] = 0
         req["agent"] = agent
+        req = chat_images.store_request(conn, row["thread_id"], row["user_id"], req)
+        sealed = req["messages"]
         assistant = chats.parse_messages(
             [{
                 "id": row["message_id"],
@@ -1160,6 +1162,8 @@ def _start_child_run(
             seed = [*resume_messages, {"role": "user", "content": prompt}]
         else:
             seed = [{"role": "user", "content": prompt}]
+        # Stored three times below (messages, display_seed, provider_messages).
+        seed = chat_images.store(conn, thread_id, user_id, seed)
         if retype:
             # The persisted toolset belongs to the old kind; seed the new kind's
             # defaults instead of carrying a restricted (or unrestricted) set over.

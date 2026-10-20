@@ -794,6 +794,15 @@ def _ensure_push_table(conn: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL,
             PRIMARY KEY (user_id, draft_key)
         );
+        CREATE TABLE IF NOT EXISTS chat_images (
+            thread_id INTEGER NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+            sha TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
+            url TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (thread_id, sha)
+        );
+        CREATE INDEX IF NOT EXISTS chat_images_user_sha ON chat_images (user_id, sha);
         """
     )
 

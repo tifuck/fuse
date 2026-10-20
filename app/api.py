@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from . import accounts, db, model_caps, opencode as opencode_mod
+from . import accounts, chat_images, db, model_caps, opencode as opencode_mod
 from .config import settings
 from .proxy import merge_usage, scrub_secrets, usage_from_obj
 from .security import client_ip, limiter
@@ -529,6 +529,10 @@ async def _invoke_chat(request: Request, user, body: dict, *, cheap_reasoning: b
     model = body.get("model") or ""
     if not isinstance(model, str) or len(model) > 200:
         raise HTTPException(400, "Invalid model")
+    if chat_images.has_refs(body.get("messages")):
+        # Stored transcripts keep large images once per thread; providers get
+        # the same inline bytes as the first time. Lookups are this user's own.
+        body = {**body, "messages": await asyncio.to_thread(chat_images.rehydrate, user["id"], body["messages"])}
     _validate_messages(body.get("messages"), retained=bool(request.scope.get("fuse_retained_history")))
     body = dict(body)
     body.pop("prompt_snapshot", None)

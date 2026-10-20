@@ -9,6 +9,8 @@ from __future__ import annotations
 import hashlib
 import json
 
+from . import chat_images
+
 
 def _json(value):
     return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
@@ -123,8 +125,14 @@ def _matches_user(candidate, expected):
         return candidate == expected or (
             candidate.startswith("[Fuse context —") and candidate.endswith("\n\n" + expected))
     if isinstance(expected, list) and isinstance(candidate, list):
-        return candidate == expected
+        # Saved rows keep large images as references; display rows inline.
+        return chat_images.canonical_content(candidate) == chat_images.canonical_content(expected)
     return False
+
+
+def _row_hash(row):
+    """A provider row's identity, whichever form its images are stored in."""
+    return hashlib.sha256(_json(chat_images.canonical_row(row)).encode()).hexdigest()
 
 
 def _trace_rows(message):
@@ -349,7 +357,8 @@ def finalize(conn, run, request, display, message):
     input_hashes = request.get("history_input_hashes") or []
     boundary = 0
     for row, digest in zip(source, input_hashes):
-        if hashlib.sha256(_json(row).encode()).hexdigest() != digest:
+        # Runs created before image references hashed the inline row.
+        if digest not in (_row_hash(row), hashlib.sha256(_json(row).encode()).hexdigest()):
             break
         boundary += 1
     visible = message.get("content") or ""
@@ -417,13 +426,14 @@ def finalize(conn, run, request, display, message):
     row = conn.execute("SELECT compaction FROM chat_threads WHERE id=? AND user_id=?", (run["thread_id"], run["user_id"])).fetchone()
     if row:
         state = context.parse_state(row[0])
+        source = chat_images.store(conn, run["thread_id"], run["user_id"], source)
         conn.execute("UPDATE chat_threads SET retained_history=? WHERE id=? AND user_id=?",
             (envelope(display, source, state, info=request.get("history_info"), cutoffs=cutoffs,
                       prompt_snapshot=request.get("prompt_snapshot")), run["thread_id"], run["user_id"]))
 
 
 def input_hashes(messages):
-    return [hashlib.sha256(_json(row).encode()).hexdigest() for row in _clean(messages)]
+    return [_row_hash(row) for row in _clean(messages)]
 
 
 def upgrade_legacy_run(conn, run, request, source):
