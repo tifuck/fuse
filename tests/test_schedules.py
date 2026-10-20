@@ -242,6 +242,40 @@ class FireStatusPropagationTest(unittest.TestCase):
         self.assertEqual(db.fetchone("SELECT status FROM schedule_fires WHERE schedule_id=? AND slot_key=?",
                                      (item["id"], slot))["status"], "completed")
 
+    def test_vault_locked_once_stays_retryable_after_capacity_skip(self):
+        import asyncio
+
+        now = datetime(2026, 10, 20, 12, tzinfo=timezone.utc)
+        slot = "2026-10-20T05:00:00Z"
+        item = schedules.create_schedule(self.uid, {
+            "name": "vault-capacity", "target": "chat", "prompt": "hi", "model": "offline",
+            "timezone": "UTC", "recur_kind": "once", "once_at": slot,
+        })
+        db.execute(
+            """INSERT INTO schedule_fires(schedule_id, user_id, trigger, status, slot_key, fire_id, started_at)
+               VALUES(?,?, 'scheduled', 'vault_locked', ?, 'fire-vault-capacity', ?)""",
+            (item["id"], self.uid, slot, iso_utc(now - timedelta(minutes=2))),
+        )
+        fire = {"slot_key": slot, "fire_id": "fire-vault-capacity", "status": "vault_locked", "run_id": None}
+        with patch.object(schedules, "utcnow", return_value=now), \
+                patch.object(db, "fetchone", return_value={"n": schedules.MAX_CONCURRENT_USER}), \
+                patch("app.sources.pick", new=AsyncMock()) as pick:
+            asyncio.run(schedules._fire(item, fire, consume_slot=True))
+        pick.assert_not_awaited()
+        stored = dict(db.fetchone("SELECT * FROM schedule_fires WHERE schedule_id=?", (item["id"],)))
+        self.assertEqual(stored["status"], "vault_locked")
+        self.assertEqual(stored["error"], "capacity")
+        with patch.object(schedules, "utcnow", return_value=now):
+            self.assertTrue(schedules.fire_row_retryable(stored, item))
+            with patch.object(schedules, "_fire", new=AsyncMock()) as retry:
+                asyncio.run(schedules.tick())
+        claimed = [call for call in retry.await_args_list if call.args[0]["id"] == item["id"]]
+        self.assertEqual(len(claimed), 1)
+        self.assertEqual(claimed[0].args[1]["status"], "vault_locked")
+        row = db.fetchone("SELECT enabled, next_fire_at FROM chat_schedules WHERE id=?", (item["id"],))
+        self.assertTrue(row["enabled"])
+        self.assertEqual(row["next_fire_at"], slot)
+
     def test_finish_run_updates_fire_and_schedule(self):
         item = self._schedule()
         run = self._scheduled_run()
@@ -355,10 +389,13 @@ class FinishFireConfigTest(unittest.TestCase):
 
     def test_catchup_skip_jumps_past_every_missed_slot(self):
         item = self._schedule()
-        stale = iso_utc(utcnow() - timedelta(hours=24))
-        schedules._finish_fire(item, {"slot_key": stale}, "skipped_catchup", "missed fire window", None, None, consume=True)
-        row = db.fetchone("SELECT next_fire_at FROM chat_schedules WHERE id=?", (item["id"],))
-        self.assertGreater(row["next_fire_at"], iso_utc(utcnow()))
+        stale = "2026-10-20T00:00:00Z"
+        for minute in (0, 10):
+            now = datetime(2026, 10, 20, 2, minute, tzinfo=timezone.utc)
+            with self.subTest(minute=minute), patch.object(schedules, "utcnow", return_value=now):
+                schedules._finish_fire(item, {"slot_key": stale}, "skipped_catchup", "missed fire window", None, None, consume=True)
+            row = db.fetchone("SELECT next_fire_at FROM chat_schedules WHERE id=?", (item["id"],))
+            self.assertEqual(row["next_fire_at"], "2026-10-20T03:00:00Z")
 
     def test_finish_fire_does_not_reenable_disabled_schedule(self):
         item = self._schedule()

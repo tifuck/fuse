@@ -1043,6 +1043,8 @@ def _finish_fire(schedule, fire, status, error, thread_id, run_id, *, consume: b
     err = sanitize_schedule_error(error)
     slot = fire["slot_key"]
     manual = slot.startswith("manual:")
+    if status == "skipped_capacity" and schedule["recur_kind"] == "once" and fire.get("status") == "vault_locked":
+        status = "vault_locked"
     with db.tx() as conn:
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(
@@ -1070,7 +1072,13 @@ def _finish_fire(schedule, fire, status, error, thread_id, run_id, *, consume: b
                 if status == "skipped_catchup":
                     # Skip every missed slot at once: stepping one period per
                     # tick wrote a junk fire row for each slot of the outage.
-                    base = max(base, utcnow())
+                    latest = max(base, utcnow())
+                    seconds = int(schedule.get("every_seconds") or 0)
+                    if schedule["recur_kind"] == "every" and seconds > 0:
+                        interval = timedelta(seconds=seconds)
+                        base += ((latest - base) // interval) * interval
+                    else:
+                        base = latest
                 nxt = _next_after(schedule, base)
                 next_at = iso_utc(nxt) if nxt else None
         conn.execute(
