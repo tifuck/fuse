@@ -132,6 +132,13 @@ def persist_tree(user_id: int, slug: str, files: dict[str, bytes], *, commit=Non
     if not NAME_RE.fullmatch(slug or ""):
         raise SkillError("invalid skill name")
     validate_files(files)
+    canonical = {}
+    for rel, blob in files.items():
+        safe = _safe_rel(rel)
+        if safe in canonical:
+            raise SkillError("duplicate skill path")
+        canonical[safe] = blob
+    files = canonical
     digest = content_hash(files)
     parent = user_dir(user_id)
     dest = parent / slug

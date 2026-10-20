@@ -85,6 +85,20 @@ class ParserTest(unittest.TestCase):
         parsed = parse_skill_md(_md(extra="disable-model-invocation: manual\n"))
         self.assertTrue(parsed["disable_model_invocation"])
 
+    def test_plain_scalar_continuations_strip_comments_per_line(self):
+        for description in (
+            "Use # comment\n  when deploying",
+            "Use\n  # a comment\n  when deploying # another comment",
+        ):
+            with self.subTest(description=description):
+                parsed = parse_skill_md(_md(desc=description, extra="license: MIT\n"))
+                self.assertEqual(parsed["description"], "Use when deploying")
+                self.assertEqual(parsed["license"], "MIT")
+        parsed = parse_skill_md(_md(desc='"Use #123 when deploying"'))
+        self.assertEqual(parsed["description"], "Use #123 when deploying")
+        parsed = parse_skill_md(_md(desc="Use\n\n  when deploying"))
+        self.assertEqual(parsed["description"], "Use\nwhen deploying")
+
     def test_folded_description(self):
         text = (
             "---\n"
@@ -129,6 +143,28 @@ class ParserTest(unittest.TestCase):
         parsed = parse_skill_md(f"---\nname: demo\ndescription: Use when testing.\njunk:\n{nested}\n---\nbody\n")
         self.assertEqual(parsed["name"], "demo")
         self.assertLess(len(str(parsed)), 4096)
+
+
+class SkillCatalogTest(unittest.TestCase):
+    def test_search_pack_truncates_entries_without_breaking_json(self):
+        rows = [
+            {"slug": f"skill-{i}", "description": "x" * 1024, "origin": "chat",
+             "enabled": True, "disable_model_invocation": False}
+            for i in range(8)
+        ]
+        with patch.object(skills, "list_bundle", return_value={"skills": rows}):
+            packed = skills.search_pack(1)
+        payload = json.loads(packed)
+        self.assertLessEqual(len(packed), 8000)
+        self.assertGreater(len(payload["skills"]), 0)
+        self.assertGreater(payload["omitted"], 0)
+        self.assertEqual(len(payload["skills"]) + payload["omitted"], len(rows))
+        self.assertEqual(
+            [item["slug"] for item in payload["skills"]],
+            [item["slug"] for item in rows[:len(payload["skills"])]],
+        )
+        with patch.object(skills, "list_bundle", return_value={"skills": []}):
+            self.assertEqual(json.loads(skills.search_pack(1))["skills"], [])
 
 
 class SkillsDbTest(unittest.TestCase):
@@ -214,6 +250,37 @@ class SkillsDbTest(unittest.TestCase):
         self.assertIn("invalid skill path", skills.load(1, "pack", file="../etc/passwd"))
         self.assertIn("invalid skill path", skills.load(1, "pack", file="/etc/passwd"))
         self.assertIn("invalid skill path", skills.load(1, "pack", file="..\\x"))
+
+    def test_skill_md_file_aliases_only_resolve_the_root(self):
+        files = {
+            "SKILL.md": _md(name="pack", body="Root body.\n").encode(),
+            "references/SKILL.md": b"Nested document.\n",
+        }
+        skills.install_files(1, files, origin="upload", slug="pack")
+        for path in ("SKILL.md", "./SKILL.md"):
+            self.assertIn("Root body.", skills.load(1, "pack", file=path))
+        nested = skills.load(1, "pack", file="references/SKILL.md")
+        self.assertIn("Nested document.", nested)
+        self.assertNotIn("Root body.", nested)
+        for path in ("missing/SKILL.md", "../SKILL.md", "/SKILL.md"):
+            self.assertTrue(skills.load(1, "pack", file=path).startswith(skills.FILE_ERROR))
+
+    def test_supporting_paths_are_persisted_canonically(self):
+        files = {
+            "SKILL.md": _md(name="pack").encode(),
+            "references\\guide.md": b"Reference content.\n",
+        }
+        skills.install_files(1, files, origin="chat", slug="pack")
+        root = skill_dir(1, "pack")
+        self.assertEqual((root / "references/guide.md").read_bytes(), b"Reference content.\n")
+        self.assertFalse((root / "references\\guide.md").exists())
+        for path in ("references/guide.md", "references\\guide.md"):
+            self.assertIn("Reference content.", skills.load(1, "pack", file=path))
+        with self.assertRaisesRegex(SkillError, "duplicate skill path"):
+            skills.install_files(
+                1, {**files, "references/guide.md": b"Other content."}, origin="chat", slug="pack"
+            )
+        self.assertIn("Reference content.", skills.load(1, "pack", file="references/guide.md"))
 
     def test_install_refuses_overwrite_without_replace(self):
         self._install("demo", body="Original body.\n")

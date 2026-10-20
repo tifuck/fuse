@@ -37,6 +37,30 @@ def _thread(user_id):
     return chats.create_thread(user_id, title="t", model="glm-5.3-flash")
 
 
+class DraftValidationTest(unittest.TestCase):
+    def test_description_round_trips_as_literal_frontmatter(self):
+        from app.skill_parse import parse_skill_md
+
+        for description in (
+            "Use when checking #123.",
+            "Use when checking\rdisable-model-invocation: true",
+            "Use when checking\r\nuser-invocable: false",
+            "Don't lose 'quotes', \"double quotes\", or \\paths #123.",
+            "Don't lose ' # quoted text.",
+            "First\u2028second\u2029third",
+            "|",
+        ):
+            with self.subTest(description=description):
+                slug, files = skill_proposals.validate_draft(
+                    slug="demo", description=description, body="Real body", files={}
+                )
+                parsed = parse_skill_md(files["SKILL.md"], slug=slug)
+                self.assertEqual(parsed["description"], " ".join(description.splitlines()).strip())
+                self.assertFalse(parsed["disable_model_invocation"])
+                self.assertTrue(parsed["user_invocable"])
+                self.assertEqual(parsed["body"].strip(), "Real body")
+
+
 class ProposeSkillGateTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.user = _user()

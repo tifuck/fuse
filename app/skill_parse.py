@@ -42,7 +42,7 @@ def _unquote(raw: str) -> str:
     return text
 
 
-_QUOTED = re.compile(r"""^(["'])(.*?)\1\s*(?:#.*)?$""", re.S)
+_QUOTED = re.compile(r"""^(?:'((?:[^']|'')*)'|"(.*?)")\s*(?:#.*)?$""", re.S)
 
 
 def _scalar(raw: str) -> str:
@@ -50,7 +50,8 @@ def _scalar(raw: str) -> str:
     text = raw.strip()
     quoted = _QUOTED.match(text)
     if quoted:
-        return quoted.group(2)
+        single = quoted.group(1)
+        return single.replace("''", "'") if single is not None else quoted.group(2)
     return re.split(r"\s#", text, maxsplit=1)[0].rstrip()
 
 
@@ -196,14 +197,18 @@ def _parse_yaml_subset(block: str) -> dict:
         more = i + 1
         while more < len(lines) and (not lines[more].strip() or lines[more].startswith(" ")):
             more += 1
-        tail = [line.strip() for line in lines[i + 1:more]]
+        tail = [line.strip() for line in lines[i + 1:more] if not line.lstrip().startswith("#")]
+        plain = not rest.startswith(("'", '"'))
+        if plain:
+            rest = _scalar(rest)
+            tail = [re.split(r"\s#", line, maxsplit=1)[0].rstrip() for line in tail]
         while tail and not tail[-1]:
             tail.pop()
         if tail:
             paragraphs = re.split(r"\n\s*\n", "\n".join([rest, *tail]))
             rest = "\n".join(" ".join(p.split()) for p in paragraphs)
             i = more - 1
-        value = _scalar(rest)
+        value = rest if plain else _scalar(rest)
         if key in _BOOL_KEYS:
             flag = _as_bool(value)
             data[key] = value if flag is None else flag

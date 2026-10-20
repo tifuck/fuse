@@ -118,7 +118,7 @@ def get_proposal(user_id: int, proposal_id: str, conn=None) -> dict | None:
 
 
 def _synthetic_md(slug: str, description: str, body: str, hint: str = "") -> str:
-    desc = (description or "").replace("\n", " ").strip()
+    desc = "'" + " ".join((description or "").splitlines()).strip().replace("'", "''") + "'"
     hint = " ".join((hint or "").split())
     # The saved skill reads its hint back from this frontmatter only.
     quote = "'" if '"' in hint else '"'
