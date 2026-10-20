@@ -54,6 +54,9 @@ REPORT = {
                                "(SELECT 1 FROM provider_usage p WHERE p.user_id=a.user_id AND p.provider=a.provider)"),
     "usage_hourly": (f"SELECT COUNT(*) FROM usage_hourly h LEFT JOIN ({HOURLY_AGG}) a ON a.user_id=h.user_id AND a.hour=h.hour "
                      f"AND a.source_id=h.source_id AND a.model=h.model WHERE {_differs(CRED_COLS, 'h', 'a')}"),
+    "usage_hourly missing": (f"SELECT COUNT(*) FROM ({HOURLY_AGG}) a WHERE NOT EXISTS "
+                             "(SELECT 1 FROM usage_hourly h WHERE h.user_id=a.user_id AND h.hour=a.hour "
+                             "AND h.source_id=a.source_id AND h.model=a.model)"),
 }
 
 

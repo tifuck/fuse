@@ -431,6 +431,15 @@ class RecordUsageTest(unittest.TestCase):
         view = stats.fuse_view(row)
         self.assertEqual(view["cost_micros"], 2600)
         self.assertEqual(view["cost_label"], "$0.0026")
+        db.execute("UPDATE usage_events SET estimated_cost_micros=0, pricing_known=0 WHERE credential_id=901")
+        view = stats.fuse_view(row)
+        self.assertEqual(view["cost_label"], "")
+        self.assertTrue(view["cost_unavailable"])
+        self.assertFalse(view["cost_partial"])
+        db.execute("UPDATE usage_events SET pricing_known=1 WHERE credential_id=901")
+        view = stats.fuse_view(row)
+        self.assertEqual(view["cost_label"], "$0.00")
+        self.assertFalse(view["cost_unavailable"])
 
 
 class SessionScopingTest(unittest.TestCase):

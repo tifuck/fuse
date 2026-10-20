@@ -88,8 +88,10 @@ def test_apply_rebuilds_drifted_rollups():
         db.execute("UPDATE provider_usage SET total_tokens=1")
         db.execute("UPDATE usage_hourly SET requests=99")
         db.execute("DELETE FROM provider_usage WHERE user_id=1")
+        db.execute("DELETE FROM usage_hourly WHERE user_id=1")
         drift = _report()
         assert drift["credentials"] and drift["provider_usage"] and drift["provider_usage missing"] and drift["usage_hourly"]
+        assert drift["usage_hourly missing"] == 1
         conn = connect(settings.database_url, max_connections=1)
         try:
             rebuild.apply(conn)

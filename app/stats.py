@@ -418,7 +418,7 @@ def _cache_savings(models: list[dict]) -> tuple[int, bool]:
 
 
 _METRICS = ("tokens", "requests", "prompt", "completion", "output", "reasoning", "cached", "cache_write",
-            "failed", "cancelled", "cost", "estimated_cost", "priced")
+            "failed", "cancelled", "cost", "estimated_cost", "priced", "unpriced_events")
 _EVENT_SUMS = """COALESCE(SUM(CASE WHEN e.total_tokens>0 THEN e.total_tokens
                                      ELSE e.prompt_tokens+e.output_tokens END), 0) AS tokens,
                    COALESCE(SUM(e.count_request), 0) AS requests,
@@ -434,7 +434,10 @@ _EVENT_SUMS = """COALESCE(SUM(CASE WHEN e.total_tokens>0 THEN e.total_tokens
                    COALESCE(SUM(e.estimated_cost_micros), 0) AS estimated_cost,
                    COALESCE(SUM(CASE WHEN e.count_request=1 AND
                                           (e.reported_cost_micros IS NOT NULL OR e.pricing_known=1)
-                                     THEN 1 ELSE 0 END), 0) AS priced"""
+                                     THEN 1 ELSE 0 END), 0) AS priced,
+                   COALESCE(SUM(CASE WHEN (e.total_tokens>0 OR e.prompt_tokens+e.output_tokens>0)
+                                           AND e.reported_cost_micros IS NULL AND e.pricing_known=0
+                                     THEN 1 ELSE 0 END), 0) AS unpriced_events"""
 _HEATMAP_MIN = timedelta(days=7)
 
 
@@ -522,6 +525,7 @@ def usage_analytics(
                 "cached": 0,
                 "failed": 0,
                 "priced": 0,
+                "unpriced_events": 0,
             },
         )
         user_item = user_totals.setdefault(
@@ -531,9 +535,9 @@ def usage_analytics(
         for target in (model_item, provider_item, user_item):
             for metric in ("tokens", "requests", "cost"):
                 target[metric] += item[metric]
-        for metric in ("prompt", "completion", "output", "reasoning", "cached", "cache_write", "failed", "cancelled", "priced"):
+        for metric in ("prompt", "completion", "output", "reasoning", "cached", "cache_write", "failed", "cancelled", "priced", "unpriced_events"):
             model_item[metric] += item[metric]
-        for metric in ("prompt", "cached", "failed", "priced"):
+        for metric in ("prompt", "cached", "failed", "priced", "unpriced_events"):
             provider_item[metric] += item[metric]
         user_item["providers"][item["provider"]] = user_item["providers"].get(item["provider"], 0) + item["tokens"]
 
@@ -600,7 +604,7 @@ def usage_analytics(
         pid = key.split("\x1f", 1)[0]
         prev_provider_tokens[pid] = prev_provider_tokens.get(pid, 0) + tokens
     for model in ranked_models:
-        model["cost_known"] = model["priced"] >= model["requests"] and model["requests"] > 0
+        model["cost_known"] = model["priced"] >= model["requests"] and model["requests"] > 0 and not model["unpriced_events"]
         model["cost_tracked"] = model["provider"] != "openrouter"
         prev_tokens = prev_model_tokens.get(model["id"], 0)
         model["token_change"] = _change(model["tokens"], prev_tokens)
@@ -617,7 +621,7 @@ def usage_analytics(
         row["is_new"] = bool(row["tokens"] and not prev_tokens)
         row["cache_hit"] = _hit_rate(row["cached"], row["prompt"])
         row["error_rate"] = _rate(row["failed"], row["requests"])
-        row["cost_known"] = row["priced"] >= row["requests"] and row["requests"] > 0
+        row["cost_known"] = row["priced"] >= row["requests"] and row["requests"] > 0 and not row["unpriced_events"]
     available = db.fetchall(
         """SELECT DISTINCT provider FROM (
                SELECT type AS provider FROM sources
@@ -853,9 +857,9 @@ def fuse_view(row, *, week: str | None = None) -> dict:
         """SELECT
              COALESCE(SUM(estimated_cost_micros), 0) AS api_equiv,
              COALESCE(SUM(CASE WHEN total_tokens > 0 AND pricing_known=0
-                               AND reported_cost_micros IS NULL THEN 1 ELSE 0 END), 0) AS unpriced,
-             COALESCE(SUM(CASE WHEN total_tokens > 0 AND (pricing_known=1
-                               OR reported_cost_micros IS NOT NULL) THEN 1 ELSE 0 END), 0) AS priced
+                               THEN 1 ELSE 0 END), 0) AS unpriced,
+             COALESCE(SUM(CASE WHEN total_tokens > 0 AND pricing_known=1
+                               THEN 1 ELSE 0 END), 0) AS priced
            FROM usage_events WHERE credential_id=?""",
         (row["id"],),
     )

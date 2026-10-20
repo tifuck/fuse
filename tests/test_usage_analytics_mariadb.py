@@ -117,6 +117,29 @@ def test_rates_use_priced_traffic_and_openrouter_is_not_unpriced():
         assert models["openrouter"]["cost_tracked"] is False and models["zai"]["cost_tracked"] is True
 
 
+def test_unpriced_retry_makes_model_and_provider_cost_incomplete():
+    with isolated_database():
+        _seed()
+        db.record_usage(1, None, None, "unpriced-model", {"prompt_tokens": 9000},
+                        at=_ago(hours=2), provider="zai", request_status="failed", count_request=False)
+        db.record_usage(1, None, None, "unpriced-model", {"prompt_tokens": 1000, "cost_micros": 2000},
+                        at=_ago(hours=1), provider="zai")
+        data = stats.usage_analytics(1, range_id="24h")
+        model = data["models"][0]
+        assert (model["tokens"], model["requests"], model["cost"]) == (10000, 1, 2000)
+        assert not model["cost_known"] and model["per_million"] is None
+        assert not data["providers"][0]["cost_known"]
+        db.execute("UPDATE usage_events SET reported_cost_micros=0 WHERE count_request=0")
+        data = stats.usage_analytics(1, range_id="24h")
+        assert data["models"][0]["cost_known"]
+        assert data["models"][0]["per_million"] == 200000
+        assert data["providers"][0]["cost_known"]
+        db.execute("UPDATE usage_events SET reported_cost_micros=NULL, prompt_tokens=0, total_tokens=0 WHERE count_request=0")
+        data = stats.usage_analytics(1, range_id="24h")
+        assert data["models"][0]["cost_known"]
+        assert data["models"][0]["per_million"] == 2000000
+
+
 def test_events_without_a_user_row_stay_in_series_and_summary():
     with isolated_database():
         _seed()
