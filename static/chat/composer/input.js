@@ -24,7 +24,7 @@ export function createInput(ctx) {
   const { net, overlays, transcript } = ctx;
     // Composer popovers (model, permissions, context) share one placement:
   // rise from the top of the whole composer, line up with the button's left
-  // edge (or its right edge when that runs out of room), and clamp to the
+  // edge (or its right edge when pinned or out of room), and clamp to the
   // viewport. The origin is measured rather than assumed, because a chat
   // backdrop gives .chat-box a backdrop-filter, which makes it the containing
   // block for even position:fixed children.
@@ -46,8 +46,7 @@ export function createInput(ctx) {
     const width = menu.offsetWidth;
     const vw = document.documentElement.clientWidth;
     let left = b.left;
-    if (pinRight && !overlays.overlayIsMobile()) left = (box ? box.getBoundingClientRect().right : b.right) - width;
-    else if (left + width > vw - gutter) left = b.right - width;
+    if ((pinRight && !overlays.overlayIsMobile()) || left + width > vw - gutter) left = b.right - width;
     left = Math.max(gutter, Math.min(left, vw - gutter - width));
     menu.style.left = Math.round(left - origin.left) + "px";
     menu.style.bottom = Math.round(origin.bottom - top) + "px";
@@ -59,7 +58,7 @@ export function createInput(ctx) {
     // composer's single-row layout on narrow screens.
     const ph = S.input.placeholder;
     if (!S.input.dataset.placeholder) S.input.dataset.placeholder = ph;
-    const wanted = S.pickerSheetQuery.matches ? "Message" : S.input.dataset.placeholder;
+    const wanted = S.pickerSheetQuery.matches ? "Ask or type /" : S.input.dataset.placeholder;
     if (ph !== wanted) S.input.placeholder = wanted;
     S.input.placeholder = "";
     const followGap = S.thread ? S.thread.scrollHeight - S.thread.scrollTop - S.thread.clientHeight : Infinity;

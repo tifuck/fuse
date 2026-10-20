@@ -303,7 +303,8 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       console.log('PASS send during streaming queues with its hint and lands exactly once');
     }
 
-    // 7. Drafts live in memory: thread round trips keep them, reload clears.
+    // 7. Drafts: thread round trips keep them, and since drafts sync to the
+    // server (0d995b08) a reload brings the unsent one back, with no stale send.
     {
       const p = await make(1440);
       await boot(p);
@@ -333,16 +334,15 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
 
       await p.reload();
       await live(p);
-      const cleared = await sendState(p);
-      assert.equal(cleared.input, '', 'drafts are in-memory by design: a reload clears the box');
-      assert.equal(cleared.disabled, true);
-      assert.equal(cleared.pending, 0, 'no stale Sending… row');
+      await p.waitForFunction(text => document.querySelector('[data-chat-input]').value === text, draft);
+      const restored = await sendState(p);
+      assert.equal(restored.disabled, false, 'the restored draft can be sent');
+      assert.equal(restored.pending, 0, 'no stale Sending… row');
       assert.equal(await p.evaluate(() => sessionStorage.getItem('fuse.chat.pendingTurn')), null, 'no stale send survives the reload');
       const blank = await emptyState(p);
       assert.equal(blank.rows, 0, 'no ghost rows after the reload');
-      assert.equal(await p.locator('[data-draft]').count(), 0, 'no draft row after the reload');
+      assert.equal(await p.locator('[data-draft=""]').count(), 1, 'the unsent chat keeps its draft row');
       await input(p).fill('Fresh send after reload');
-      await p.waitForFunction(() => document.querySelectorAll('[data-draft]').length === 1);
       await sendClick(p);
       await p.waitForFunction(() => document.querySelector('[data-chat-log]').textContent.includes('Synchronized answer: Fresh send after reload'));
       await settle(p);
@@ -350,7 +350,7 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       const sent = await p.locator('.is-user').allTextContents();
       assert.equal(sent.filter(text => text.includes('Fresh send after reload')).length, 1, 'the clean state sends normally');
       await p.context().close();
-      console.log('PASS drafts survive thread switches and clear cleanly on reload');
+      console.log('PASS drafts survive thread switches and a reload, and clear once sent');
     }
 
     // 8a. A down /chat/sync shows Disconnected, never a blank page, and the

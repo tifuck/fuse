@@ -1,0 +1,163 @@
+/* Chat chrome around the transcript: sidebar, header, menus and sheets.
+   Imported last, so it settles the older page stylesheets for these parts.
+   The composer itself lives in design-007-composer.css. */
+
+/* —— Type: one rule for labels ——
+   Section labels are lowercase muted mono; controls and menu items keep
+   sentence case; names (projects, hosts, providers) keep their own case. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(
+  .chat-history-kicker, .chat-history-group, .chat-history-draft, .chat-brand-caption,
+  .user-dock-label, .user-dock-copy em,
+  .chat-slash-kicker, .chat-rewind-head p, .chat-queue-kicker,
+  .chat-picker-thinking-label, .chat-context-pop-kicker,
+  .chat-perms-here, .chat-perms-tag, .chat-perms-mode-label,
+  .chat-memory-field > span, .chat-skills .hosts-field > span, .skills-origin, .chat-code-head
+) {
+  text-transform: lowercase;
+  letter-spacing: 0;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-history-project-head, .chat-picker-group > p, .chat-perms-group > p) {
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-history-kicker, .chat-history-group, .chat-history-project-head, .user-dock-label) {
+  font-size: 0.6875rem;
+}
+
+/* —— One selected state for every segmented control —— */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-history-tab[aria-selected="true"], .chat-context-tab.is-on, .chat-perms-modes button.is-on) {
+  color: var(--mist);
+  background: color-mix(in srgb, var(--mist) 11%, var(--panel));
+  box-shadow: none;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-context-tab, .chat-perms-modes button) { font-family: var(--mono); }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-perms-menu:not(.is-sheet) .chat-perms-modes button { font-size: 0.75rem; }
+
+/* —— Sidebar —— */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-brand-caption { display: none; }
+
+/* Kickers inside the list line up with the one above it. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-history-list > .chat-history-kicker { padding-inline: 0.625rem; }
+
+/* Native dropdown triangles become the account row's chevron. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-history-filters select {
+  -webkit-appearance: none;
+  appearance: none;
+  padding-right: 1.5rem;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4.2 6.2L8 10l3.8-3.8' fill='none' stroke='%23888' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.45rem center;
+  background-size: 0.75rem;
+}
+
+/* The search field has its own close button; drop the browser's clear. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-history-search input[type="search"]::-webkit-search-cancel-button { -webkit-appearance: none; display: none; }
+
+/* A hovered row makes room for its menu button on the title line only, so
+   the project and host line under it stays put. */
+@media (hover: hover) and (min-width: 801px) {
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-history-item:is(:hover, :focus-within, .is-menu) > button.open { padding-right: 0.625rem; }
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-history-item:is(:hover, :focus-within, .is-menu) .chat-history-name { padding-right: 1.4rem; }
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-history-item:is(.has-snip, .is-project) > button.more { top: 0.25rem; transform: none; }
+}
+
+/* The Archived toggle turns into a way back while it is on. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-history-foot-back,
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-history-foot[aria-pressed="true"] .chat-history-foot-icon { display: none; }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-history-foot[aria-pressed="true"] .chat-history-foot-back { display: block; }
+
+@media (min-width: 801px) {
+  /* Tabs, new, search and the filters share one 28px control height. */
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-history-tab { height: 1.5rem; }
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-history-bar :is(.chat-new, .chat-history-iconbtn) { width: 1.75rem; height: 1.75rem; }
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-history-search, .chat-history-filters select) { height: 1.75rem; }
+
+  /* Footer: a hairline, then a compact Archived row over the account row. */
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-history-list { padding-bottom: 0.25rem; }
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-history-footer {
+    padding: 0.25rem 0.5rem 0.5rem;
+    border-top: 1px solid var(--line);
+  }
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-history-foot { min-height: 1.625rem; font-size: 0.75rem; }
+
+  /* The account menu fits a laptop screen without hiding Settings. */
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .user-dock-menu { max-height: calc(100dvh - 4.5rem); }
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.user-dock-nav a, .user-dock-out button) { min-height: 1.75rem; }
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .user-dock-label { margin: 0.5rem 0.625rem 0.15rem; }
+}
+
+/* —— Header —— */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-project-chip { font-size: 0.75rem; }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-todo-badge { top: calc(50% - 0.7rem); }
+
+/* —— Transcript edges —— */
+/* Under the agent list the transcript fades in instead of showing a cut line. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-work::after {
+  content: "";
+  position: absolute;
+  top: calc(100% + 1px);
+  left: 0;
+  right: var(--chat-scroll-gutter, 0px);
+  height: 0.75rem;
+  background: linear-gradient(180deg, var(--ink), transparent);
+  pointer-events: none;
+}
+html[data-chat-backdrop]:not([data-chat-backdrop="none"])[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-work::after {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--ink) 32%, transparent), transparent);
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-stage:has(> .chat-work:not([hidden])) > .chat-thread { padding-top: 0.75rem; }
+
+/* Viewing a subagent, the main row reads as the way back. */
+html[data-chat-console="true"] body.is-chat .chat.is-agent-view[data-view="console"] .chat-agents-row.is-main .chat-agents-name::before {
+  content: "\2190  ";
+  color: var(--mute);
+  font-weight: 400;
+}
+
+
+/* —— Sheets —— */
+/* Appearance switches match the Skills switches: square, brass when on. */
+html[data-chat-console="true"] body.is-chat .chat-view-menu .ap-switch input[type="checkbox"],
+html[data-chat-console="true"] body.is-chat .chat-view-menu .ap-switch input[type="checkbox"]::after { border-radius: 0; }
+html[data-chat-console="true"] body.is-chat .chat-view-menu .ap-switch input[type="checkbox"] { width: 2rem; height: 1.1rem; background: var(--ink); }
+html[data-chat-console="true"] body.is-chat .chat-view-menu .ap-switch input[type="checkbox"]::after { left: 0.15rem; width: 0.62rem; height: 0.62rem; background: var(--mute); }
+html[data-chat-console="true"] body.is-chat .chat-view-menu .ap-switch input[type="checkbox"]:checked { background: color-mix(in srgb, var(--brass) 22%, var(--ink)); }
+html[data-chat-console="true"] body.is-chat .chat-view-menu .ap-switch input[type="checkbox"]:checked::after { background: var(--brass); }
+
+/* Cards in a row share a height; their text starts at the top, not centred. */
+html[data-chat-console="true"] body.is-chat .chat-view-menu :is(.ap-theme, .ap-backdrop, .ap-font) { align-content: start; }
+
+/* Sheet editors: the border is the focus mark, not a second outline inside it. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-sheet textarea:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--brass) 70%, var(--line));
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-context-eg { color: color-mix(in srgb, var(--mute) 72%, var(--ink)); }
+
+/* Skills: each form is one row, field then a quiet button. */
+@media (min-width: 801px) {
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-skills :is(.skills-search, .skills-upload) { flex-direction: row; align-items: flex-end; }
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-skills :is(.skills-search, .skills-upload) .hosts-field { flex: 1 1 auto; min-width: 0; }
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-skills :is(.skills-search, .skills-upload) .btn {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--mist);
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-skills :is(.skills-search, .skills-upload) .btn:hover { border-color: var(--brass); color: var(--brass); }
+
+/* —— Empty chat: a quiet greeting above the prompt, terminal style —— */
+html[data-chat-console="true"] body.is-chat .chat.is-empty[data-view="console"] :is(.chat-welcome, .chat-welcome-note) {
+  display: block;
+  max-height: none;
+  margin: 0;
+  padding-left: 0.5rem;
+  text-align: left;
+  letter-spacing: 0;
+}
+html[data-chat-console="true"] body.is-chat .chat.is-empty[data-view="console"] .chat-welcome { color: var(--mist); font: 500 0.875rem/1.5 var(--mono); }
+html[data-chat-console="true"] body.is-chat .chat.is-empty[data-view="console"] .chat-welcome-note { margin-bottom: 0.75rem; color: var(--mute); font: 0.8125rem/1.5 var(--mono); }
+body.is-chat.is-keyboard .chat.is-empty[data-view="console"] :is(.chat-welcome, .chat-welcome-note) { display: none; }

@@ -237,7 +237,6 @@ export function createRender(ctx) {
     if (!searching) return "";
     if (item.archived) return '<span class="chat-history-chip">Archived</span>';
     if (item.pinned) return '<span class="chat-history-chip">Pinned</span>';
-    if (item.kind === "project") return '<span class="chat-history-chip">Project</span>';
     return "";
   }
 

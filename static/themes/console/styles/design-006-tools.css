@@ -214,8 +214,7 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-bar
 }
 
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-bar-title {
-  font: 0.72rem/1.3 var(--mono);
-  letter-spacing: 0.01em;
+  font: 0.8125rem/1.3 var(--mono);
 }
 
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-dock,
@@ -230,39 +229,5 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"].is-empty 
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"]:not(.is-empty) .chat-dock {
   left: auto;
   width: min(100%, var(--chat-col));
-}
-
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box {
-  margin: 0 0 0.55rem;
-  padding: 0.42rem 0.65rem 0.42rem 0.55rem;
-  border: 1px solid color-mix(in srgb, var(--brass) 55%, var(--line));
-  border-width: 1px;
-  background: color-mix(in srgb, var(--ink) 88%, var(--panel));
-  box-shadow: none;
-}
-
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box:focus-within {
-  border-color: var(--brass);
-  box-shadow: none;
-}
-
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box::before {
-  content: "❯";
-  font: 500 0.82rem/1.55rem var(--mono);
-  color: var(--brass);
-}
-
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box:focus-within::before {
-  color: var(--mist);
-  text-shadow: none;
-}
-
-html[data-chat-console="true"] body.is-chat .chat.is-composer-expanded[data-view="console"] .chat-box::before {
-  content: none;
-}
-
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box textarea {
-  font: 0.82rem/1.75rem var(--mono);
-  max-height: min(11rem, 34dvh);
 }
 

@@ -91,7 +91,7 @@ export function createSpinners(ctx) {
     function runSpinMarkup(stamp) {
     {
       return `<span class="chat-run-spin" data-run-spin="${escapeHtml(String(stamp))}" data-spin-set="console-glyph" aria-hidden="true">` +
-        `<span class="chat-console-spin">${ui.consoleSpinGlyph()}</span></span>`;
+        `<span class="chat-console-spin">${ui.consoleSpinGlyph(true)}</span></span>`;
     }
 
   }

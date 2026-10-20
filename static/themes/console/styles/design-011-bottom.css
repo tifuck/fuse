@@ -21,11 +21,6 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-sen
   color: var(--fault);
 }
 
-/* Composer: the prompt glyph keeps a space before the text on phones too. */
-@media (max-width: 800px) {
-  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box::before { margin-right: 0.2rem; }
-}
-
 /* Todo list: the header's todo button opens it; its page starts with a thin
    head line (title, count, dismiss). */
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-todo-head {

@@ -35,14 +35,6 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-perm-act.is-spli
 html[data-chat-console="true"] .chat[data-view="console"] .chat-perm-card-cmd,
 html[data-chat-console="true"] .chat[data-view="console"] .chat-perm-card-grant { border-radius: 0; }
 
-@media (max-width: 800px) {
-  html[data-chat-console="true"] .chat:not(.is-composer-expanded)[data-view="console"] .chat-picker-btn > :is(span, small) { display: none; }
-}
-
-@media (max-width: 800px) {
-  html[data-chat-console="true"] .chat:not(.is-composer-expanded)[data-view="console"] .chat-picker-btn .provider-logo { display: block; width: 1rem; height: 1rem; }
-}
-
 .chat .chat-console-lines {
   display: grid;
   grid-template-columns: minmax(max-content, 1fr);

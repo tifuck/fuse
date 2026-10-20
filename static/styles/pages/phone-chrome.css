@@ -59,7 +59,7 @@
   background: color-mix(in srgb, var(--panel) 94%, var(--mist) 6%);
   border: 1px solid color-mix(in srgb, var(--mist) 24%, transparent);
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
-  opacity: 0.72;
+  opacity: 0.6;
   touch-action: none;
   transition: opacity 180ms ease, background-color 180ms ease, color 180ms ease, transform 180ms ease;
   -webkit-tap-highlight-color: transparent;

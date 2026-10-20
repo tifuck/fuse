@@ -227,6 +227,15 @@ class HistoryTest(unittest.TestCase):
         self.assertIn("NEEDLE_RESULT", hits[0]["snippet"])
         self.assertEqual(chats.search_threads(1, "absent-needle"), [])
 
+    def test_search_snippet_skips_automated_delivery_turns(self):
+        from app import chat_threads
+
+        raw = json.dumps([
+            {"role": "user", "auto": True, "content": '<command_result id="needle01">ok</command_result>'},
+            {"role": "assistant", "content": "the needle is here"},
+        ])
+        self.assertEqual(chat_threads._snippet(raw, "needle"), "the needle is here")
+
     def test_wake_candidates_only_surface_unwoken_background_children(self):
         run = self.start("go")
         thread_id = run["thread_id"]

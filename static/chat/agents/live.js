@@ -229,9 +229,12 @@ export function createLive(ctx) {
       S.agentsListEl._shown = viewing;
       const current = S.agentsListEl.querySelector('[aria-current="true"]');
       if (current && S.agentsListEl.scrollHeight > S.agentsListEl.clientHeight) {
+        // The main row (always first) stays pinned over the top of the list.
+        const main = S.agentsListEl.firstElementChild;
+        const pinned = main && main !== current ? main.offsetHeight : 0;
         const top = current.offsetTop - S.agentsListEl.offsetTop;
-        if (top < S.agentsListEl.scrollTop || top + current.offsetHeight > S.agentsListEl.scrollTop + S.agentsListEl.clientHeight) {
-          S.agentsListEl.scrollTop = Math.max(0, top - current.offsetHeight);
+        if (top < S.agentsListEl.scrollTop + pinned || top + current.offsetHeight > S.agentsListEl.scrollTop + S.agentsListEl.clientHeight) {
+          S.agentsListEl.scrollTop = Math.max(0, top - pinned - current.offsetHeight);
         }
       }
     }

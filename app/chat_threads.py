@@ -330,7 +330,8 @@ def _snippet(raw: str, needle: str) -> str:
     except Exception:
         return ""
     for msg in msgs:
-        if not isinstance(msg, dict):
+        # Automated turns (background results handed back) are internal markup, not a preview.
+        if not isinstance(msg, dict) or msg.get("auto"):
             continue
         content = msg.get("content") or ""
         idx = content.lower().find(needle)

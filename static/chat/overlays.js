@@ -171,13 +171,15 @@ export function createOverlays(ctx) {
     S.pop = document.createElement("div");
     S.pop.className = "chat-pop";
     S.pop.setAttribute("role", "menu");
-    items.forEach((item) => {
-      if (item.sep) {
+    items.forEach((item, index) => {
+      // A destructive item always stands apart from the ones above it.
+      const prev = items[index - 1];
+      if (item.sep || (item.danger && prev && !prev.sep && !prev.danger)) {
         const rule = document.createElement("div");
         rule.className = "chat-pop-sep";
         rule.setAttribute("role", "separator");
         S.pop.appendChild(rule);
-        return;
+        if (item.sep) return;
       }
       const btn = document.createElement("button");
       btn.type = "button";

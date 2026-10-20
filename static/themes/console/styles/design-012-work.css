@@ -40,6 +40,23 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-age
   width: 2px;
   background: var(--brass);
 }
+/* Main stays pinned while its subagents scroll under it, and the scrollbar
+   starts below it instead of running beside it. Its fills are opaque so no
+   row shows through. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-work-agents > .chat-agents-row.is-main {
+  --work-bg: color-mix(in srgb, var(--ink) 92%, var(--panel));
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--work-bg);
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-work-agents > .chat-agents-row.is-main:hover {
+  background: color-mix(in srgb, var(--mist) 5%, var(--work-bg));
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-work-agents > .chat-agents-row.is-main[aria-current="true"] {
+  background: color-mix(in srgb, var(--brass) 9%, var(--work-bg));
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-work-agents::-webkit-scrollbar-track { margin-top: var(--work-main); }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-agents-name {
   max-width: min(62%, 48ch);
   color: color-mix(in srgb, var(--mist) 86%, var(--ink));

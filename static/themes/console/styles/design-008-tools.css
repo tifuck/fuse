@@ -77,40 +77,6 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-liv
   color: color-mix(in srgb, var(--mist) 70%, var(--ink));
 }
 
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box {
-  margin: 0;
-  padding: 0.28rem 0.15rem 0.2rem;
-  border: 0;
-  border-top: 1px solid color-mix(in srgb, var(--mist) 22%, var(--ink));
-  border-radius: 0;
-  box-shadow: none;
-}
-
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box,
-html[data-chat-backdrop]:not([data-chat-backdrop="none"])[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box {
-  background: color-mix(in srgb, var(--ink) 92%, var(--panel));
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
-}
-
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-dock .chat-box {
-  width: calc(100% + 2 * var(--console-gutter));
-  max-width: none;
-  margin-inline: calc(-1 * var(--console-gutter));
-  padding-inline: calc(var(--console-gutter) + 0.15rem);
-}
-
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box:focus-within {
-  border-color: color-mix(in srgb, var(--mist) 38%, var(--ink));
-  box-shadow: none;
-}
-
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box::before {
-  content: ">";
-  color: color-mix(in srgb, var(--mist) 70%, var(--ink));
-  font: 500 0.9rem/1.75rem var(--mono);
-}
-
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-call .chat-step-label {
   white-space: nowrap;
   overflow: hidden;

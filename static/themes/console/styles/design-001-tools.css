@@ -68,10 +68,6 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] {
     inset 0 -1px 0 rgb(0 0 0 / 18%);
 }
 
-.chat[data-view="console"] .chat-box:focus-within {
-  border-color: color-mix(in srgb, var(--brass) 30%, var(--glass-line, var(--line)));
-}
-
 .chat[data-view="console"] :is(.chat-step, .chat-query, .chat-step-main, .chat-step-head) { min-width: 0; max-width: 100%; }
 
 .chat[data-view="console"] :is(.chat-step-toggle, .chat-step-static) {

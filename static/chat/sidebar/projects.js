@@ -67,9 +67,7 @@ export function createProjects(ctx) {
     const path = item.remote_path
       ? `<span class="chat-history-meta"><span class="chat-history-project">${escapeHtml(item.remote_path)}</span>${hostLabel}</span>`
       : "";
-    const chip = item.archived
-      ? '<span class="chat-history-chip">Archived</span>'
-      : S.historyQuery.trim() ? '<span class="chat-history-chip">Project</span>' : "";
+    const chip = item.archived && !S.showArchived ? '<span class="chat-history-chip">Archived</span>' : "";
     const threadAttr = item.thread_id ? ` data-thread="${escapeHtml(String(item.thread_id))}"` : "";
     const lead =
       (running ? spinners.runSpinMarkup("p-" + item.host_id + "-" + item.id) : spinners.ageChip(item)) +

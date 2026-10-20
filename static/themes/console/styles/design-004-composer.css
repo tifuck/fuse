@@ -72,29 +72,6 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-send:hover:not(:
 
 html[data-chat-console="true"] .chat[data-view="console"] .chat-send:active { transform: none; }
 
-html[data-chat-console="true"] .chat.is-composer-expanded[data-view="console"] .chat-box .chat-compose {
-  flex: 1 1 100%;
-  width: 100%;
-  order: -1;
-}
-
-html[data-chat-console="true"] .chat.is-composer-expanded[data-view="console"] .chat-box::before {
-  content: none;
-}
-
-html[data-chat-console="true"] .chat.is-composer-expanded[data-view="console"] .chat-box .chat-attach-btn {
-  order: 1;
-}
-
-html[data-chat-console="true"] .chat.is-composer-expanded[data-view="console"] .chat-box :is(.chat-context-wrap:not([hidden]), .chat-context-wrap[hidden] + .chat-send) {
-  margin-left: auto;
-}
-
-html[data-chat-console="true"] .chat[data-view="console"] .chat-box.is-drop {
-  border-color: var(--brass);
-  box-shadow: 0 0.85rem 1.1rem -0.9rem color-mix(in srgb, var(--brass) 50%, transparent);
-}
-
 /* The repeated class keeps the specificity of the old body:has(.chat[data-view])
    anchor; a :has() on body re-ran over the whole page on every DOM change. */
 html[data-chat-console="true"] body.is-chat.is-chat.is-chat :is(.chat-pop, .chat-picker-menu, .chat-context-pop, .chat-perms-menu) { border-radius: 0; box-shadow: none; background: var(--ink); }

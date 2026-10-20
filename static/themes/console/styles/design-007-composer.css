@@ -3,17 +3,127 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box
   color: color-mix(in srgb, var(--mute) 78%, var(--ink));
 }
 
+/* Composer: one grid for every state.
+     +  >  [attachments …]
+     +  >  text …            model  web  perms  context  send
+   The +/> gutter sits on the first text line and the tools on the last, so
+   typing, wrapping or attaching never moves either; only a phone drops the
+   tools under long text instead of squeezing it. The top rule keeps one
+   colour: focus shows in the prompt glyph and the caret. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box {
+  --composer-row: 1.75rem;
+  --composer-line: 1.25rem;
+  display: grid;
+  grid-template-columns: var(--composer-row) auto minmax(10rem, 1fr) minmax(0, max-content) repeat(4, auto);
+  align-items: start;
+  gap: 0;
+  margin: 0;
+  padding: 0.3rem 0.15rem;
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--mist) 22%, var(--ink));
+  border-radius: 0;
+  box-shadow: none;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box,
+html[data-chat-backdrop]:not([data-chat-backdrop="none"])[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box {
+  background: color-mix(in srgb, var(--ink) 92%, var(--panel));
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-dock .chat-box {
+  width: calc(100% + 2 * var(--console-gutter));
+  max-width: none;
+  margin-inline: calc(-1 * var(--console-gutter));
+  padding-inline: calc(var(--console-gutter) + 0.15rem);
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box.is-drop { border-top-color: var(--brass); }
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box::before {
+  content: ">";
+  grid-area: 2 / 2;
+  margin: 0 0.5rem 0 0.15rem;
+  color: color-mix(in srgb, var(--mist) 55%, var(--ink));
+  font: 500 0.9rem/var(--composer-row) var(--mono);
+  text-shadow: none;
+  transition: color var(--dur-1) ease;
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box:focus-within::before { color: var(--brass); }
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box > .chat-attach-list { grid-area: 1 / 3 / 2 / -1; }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-attach-btn { grid-area: 2 / 1; }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-compose { grid-area: 2 / 3; }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-model { grid-area: 2 / 4; min-width: 0; max-width: 18rem; margin-left: 0.75rem; }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-search-btn { grid-area: 2 / 5; }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-perm-host { grid-area: 2 / 6; }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-context-wrap { grid-area: 2 / 7; }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-send { grid-area: 2 / 8; }
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-model, .chat-search-btn, .chat-perm-host, .chat-context-wrap, .chat-send) { align-self: end; }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-search-btn, .chat-perm-host, .chat-context-wrap, .chat-send) { margin-left: 0.3rem; }
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-attach-btn, .chat-search-btn, .chat-perm-btn, .chat-context, .chat-send) {
+  width: var(--composer-row);
+  height: var(--composer-row);
+  min-width: 0;
+  min-height: 0;
+}
+
+/* One stroke for the whole tool row, and no glow on the on-states. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-attach-btn, .chat-search-btn, .chat-perm-btn, .chat-send) svg :is(path, circle, ellipse) { stroke-width: 1.4; }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-search-btn, .chat-perm-btn, .chat-search-btn:hover, .chat-perm-btn:hover) { filter: none; }
+
+/* An empty meter reads as a closed ring, not a spinner's tick. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-context svg { width: 1.1rem; height: 1.1rem; }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-context-track { stroke: color-mix(in srgb, var(--mist) 20%, var(--ink)); }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-context-fill { stroke-linecap: butt; }
+
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-picker-btn {
-  height: 1.55rem;
-  min-height: 1.55rem;
-  font: 0.68rem/1.55rem var(--mono);
+  max-width: 100%;
+  height: var(--composer-row);
+  min-height: var(--composer-row);
+  gap: 0.4rem;
+  font: 0.75rem/var(--composer-row) var(--mono);
   color: var(--mute);
 }
 
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-attach-btn, .chat-search-btn, .chat-context, .chat-send) {
-  width: 1.55rem;
-  height: 1.55rem;
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-picker-btn > small {
+  color: color-mix(in srgb, var(--mute) 75%, var(--ink));
+  font-size: inherit;
+  letter-spacing: 0;
+  text-transform: none;
 }
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box textarea {
+  font: 0.8125rem/var(--composer-line) var(--mono);
+  padding-block: calc((var(--composer-row) - var(--composer-line)) / 2);
+  max-height: min(11rem, 34dvh);
+}
+
+/* Scrolled text fades under the rule instead of showing a cut line. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box textarea.is-scrolled {
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 0.85rem);
+  mask-image: linear-gradient(to bottom, transparent, #000 0.85rem);
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box .chat-attach-list:not([hidden]) { gap: 0.35rem; margin: 0 0 0.3rem; padding: 0.15rem 0 0; }
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box .chat-attach-chip {
+  gap: 0.45rem;
+  height: var(--composer-row);
+  max-width: 14rem;
+  padding: 0 0.2rem;
+  border-color: color-mix(in srgb, var(--mist) 16%, var(--ink));
+  background: color-mix(in srgb, var(--mist) 4%, transparent);
+  font: 0.72rem/1 var(--mono);
+}
+
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box .chat-attach-chip img { width: 1.25rem; height: 1.25rem; }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box .chat-attach-icon { justify-content: center; width: 1.25rem; }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box .chat-attach-chip [data-remove-attach] { position: static; flex: 0 0 auto; width: 1.25rem; height: 1.25rem; }
 
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-pop,
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-picker-menu,
@@ -23,6 +133,19 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-con
   background: var(--ink);
   border: 1px solid var(--line);
 }
+
+/* Slash menu: as wide as its rows need, not the whole page; Tab means
+   nothing on a touch keyboard. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-slash { max-width: 42rem; }
+
+@media (hover: none) {
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-slash-kicker span { display: none; }
+}
+
+/* Composer popovers: two widths, and each lines up with its own button. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-picker-menu, .chat-perms-menu):not(.is-sheet) { width: min(22rem, calc(100vw - 1rem)); }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-context-pop { width: min(18rem, calc(100vw - 1rem)); }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-context-pop-note { white-space: normal; }
 
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-foot-meta {
   font-size: calc(0.62rem * var(--chat-text-scale, 1));
@@ -37,20 +160,23 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-foo
 
 @media (max-width: 800px) {
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box {
-    margin-bottom: 0.35rem;
-    padding: 0.32rem 0.45rem;
+    --composer-row: 1.875rem;
+    --composer-line: 1.4rem;
+    grid-template-columns: var(--composer-row) auto minmax(0, 1fr) minmax(0, max-content) repeat(4, auto);
   }
-}
 
-@media (max-width: 800px) {
-  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box::before {
-    font: 500 0.82rem/1.7rem var(--mono);
-  }
-}
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box textarea { font-size: 16px; }
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-model { max-width: none; margin-left: 0.45rem; }
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-search-btn, .chat-perm-host, .chat-context-wrap, .chat-send) { margin-left: 0.15rem; }
 
-@media (max-width: 800px) {
-  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box textarea {
-    font: 16px/1.7rem var(--mono);
+  /* A phone always shows the provider mark, so the chip keeps one shape. */
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-picker-btn > :is(span, small) { display: none; }
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-picker-btn .provider-logo { display: block; width: 1rem; height: 1rem; opacity: 0.7; }
+
+  html[data-chat-console="true"] body.is-chat .chat.is-composer-expanded[data-view="console"] .chat-compose { grid-column: 3 / -1; }
+  html[data-chat-console="true"] body.is-chat .chat.is-composer-expanded[data-view="console"] :is(.chat-model, .chat-search-btn, .chat-perm-host, .chat-context-wrap, .chat-send) {
+    grid-row: 3;
+    margin-top: 0.15rem;
   }
 }
 
@@ -168,7 +294,7 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-md 
 }
 
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-md th {
-  text-align: center;
+  text-align: left;
   font-weight: 600;
 }
 

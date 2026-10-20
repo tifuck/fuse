@@ -216,8 +216,11 @@ function hideLiveDock() {
     deps.syncLatest();
   }
 
-function consoleSpinGlyph() {
-    return deps.reduceMotion.matches ? CONSOLE_SPIN_STILL : CONSOLE_SPIN_FRAMES[deps.consoleSpinFrame];
+// Sidebar marks sit beside the "+" new-chat button, so they skip the
+// plus-shaped frame.
+function consoleSpinGlyph(sidebar) {
+    const glyph = deps.reduceMotion.matches ? CONSOLE_SPIN_STILL : CONSOLE_SPIN_FRAMES[deps.consoleSpinFrame];
+    return sidebar && glyph === "✢" ? "✳" : glyph;
   }
 
 function consoleSpinMarks() {
@@ -243,7 +246,7 @@ function setConsoleSpin(el) {
       mark = document.createElement("span");
       mark.className = "chat-console-spin";
       mark.setAttribute("aria-hidden", "true");
-      mark.textContent = consoleSpinGlyph();
+      mark.textContent = consoleSpinGlyph("runSpin" in el.dataset);
       el.replaceChildren(mark);
     }
     if (deps.consoleSpinTimer || deps.reduceMotion.matches) return;
@@ -254,7 +257,7 @@ function setConsoleSpin(el) {
         return;
       }
       deps.consoleSpinFrame = (deps.consoleSpinFrame + 1) % CONSOLE_SPIN_FRAMES.length;
-      marks.forEach((spin) => { spin.textContent = CONSOLE_SPIN_FRAMES[deps.consoleSpinFrame]; });
+      marks.forEach((spin) => { spin.textContent = consoleSpinGlyph("runSpin" in spin.parentElement.dataset); });
     }, 110);
   }
 

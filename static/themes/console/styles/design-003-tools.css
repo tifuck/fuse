@@ -124,11 +124,6 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-running 
 
 html[data-chat-console="true"] .chat[data-view="console"] .chat-step-chevron { transition: transform var(--dur-1) ease, color var(--dur-1) ease; }
 
-html[data-chat-console="true"] .chat[data-view="console"] .chat-box:focus-within::before {
-  color: var(--mist);
-  text-shadow: 0 0 9px color-mix(in srgb, var(--brass) 50%, transparent);
-}
-
 html[data-chat-console="true"] .chat[data-view="console"] .chat-box {
   display: flex;
   flex-direction: row;
@@ -167,11 +162,6 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-box::before {
 }
 
 html[data-chat-console="true"] .chat[data-view="console"] .chat-box::after { content: none; }
-
-html[data-chat-console="true"] .chat[data-view="console"] .chat-box:focus-within {
-  border-color: var(--brass);
-  box-shadow: 0 0.85rem 1.1rem -0.9rem color-mix(in srgb, var(--brass) 50%, transparent);
-}
 
 html[data-chat-console="true"] .chat[data-view="console"] .chat-compose {
   order: 0;

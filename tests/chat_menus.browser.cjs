@@ -84,7 +84,7 @@ const FAMILIES = [
     // the menu stays put when the button name gets longer.
     {
       assert.equal(await pickerBtn().locator('span').innerText(), 'Grok', 'preferred provider wins when nothing is stored');
-      // The chip uppercases the effort through CSS; the stored label stays "Low".
+      // The chip shows the effort as the picker names it; the stored label is "Low".
       assert.equal(await pickerBtn().locator('small').evaluate(el => el.textContent), 'Low', 'the model default effort shows on the button');
       await pickerBtn().click();
       await picker().waitFor();
@@ -107,7 +107,8 @@ const FAMILIES = [
       await pickerBtn().click();
       await picker().waitFor();
       assert.deepEqual(await optionIds(), ['grok-long', 'grok-short', 'offline'], 'reopening pins the model selected last time');
-      await page.locator('[data-chat-thread]').click({ position: { x: 8, y: 8 } });
+      // x clears the collapsed sidebar's 12px peek edge (c8211a5e).
+      await page.locator('[data-chat-thread]').click({ position: { x: 40, y: 8 } });
       await picker().waitFor({ state: 'hidden' });
     }
 
@@ -165,7 +166,7 @@ const FAMILIES = [
       assert.equal(await page.evaluate(() => document.activeElement.dataset.permsMode), 'ask', 'ArrowLeft moves to Ask, past disabled Auto');
       await page.keyboard.press('ArrowRight');
       await page.waitForFunction(() => document.querySelector('[data-perms-mode="bypass"]').getAttribute('aria-checked') === 'true');
-      await page.locator('[data-chat-thread]').click({ position: { x: 8, y: 8 } });
+      await page.locator('[data-chat-thread]').click({ position: { x: 40, y: 8 } });
       await menu.waitFor({ state: 'hidden' });
 
       const second = await page.evaluate(async () => (await fuseToolFixture.api('/chat/threads', {

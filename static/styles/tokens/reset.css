@@ -13,6 +13,15 @@ html {
   scrollbar-width: thin;
   scrollbar-color: var(--scroll-thumb) transparent;
 }
+/* Chromium 121+ drops every ::-webkit-scrollbar style below on an element
+   with either standard property set (scrollbar-color also inherits), and
+   Windows then draws arrow buttons. Mouse-driven screens keep these styles;
+   touch screens keep their overlay scrollbars. */
+@media (pointer: fine) {
+  @supports selector(::-webkit-scrollbar) {
+    * { scrollbar-width: auto !important; scrollbar-color: auto !important; }
+  }
+}
 ::-webkit-scrollbar { width: 0.7rem; height: 0.7rem; }
 ::-webkit-scrollbar-track,
 ::-webkit-scrollbar-corner { background: transparent; }
