@@ -1410,20 +1410,27 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     err_msg = f"Fuse could not process the provider reply ({type(exc).__name__})"
                 if _is_idle_timeout(err_msg):
                     idle_stalls += 1
+                src_name = src_type or src_type_guess or ""
+                raw_err = {"error": {"message": err_msg, "code": 502}}
+                if upstream_fault:
+                    raw_err, _info = provider_errors.annotate(src_name, 502, raw_err)
                 if (
                     upstream_fault
-                    and _should_resume(502, err_msg, resumes_left=resumes_left, idle_stalls=idle_stalls)
+                    and _should_resume(502, err_msg, resumes_left=resumes_left, idle_stalls=idle_stalls,
+                                       kind=provider_errors.kind_of(raw_err))
                     and not await request.is_disconnected()
                 ):
                     resumes_left -= 1
                     attempt_no = MAX_RESUME_RETRIES - resumes_left
                     delay = _resume_delay(attempt_no)
+                    reason = (provider_errors.retry_reason(src_name, 502, raw_err)
+                              if provider_errors.kind_of(raw_err) else "Provider stream interrupted")
                     yield _sse(
                         {
                             "fuse": {
                                 "event": "notice",
                                 "message": (
-                                    "Provider stream interrupted — resuming in "
+                                    f"{reason} — resuming in "
                                     f"{int(delay)}s (attempt {attempt_no} of {MAX_RESUME_RETRIES})."
                                 ),
                             }
@@ -1438,7 +1445,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     current_messages = transcript
                     await persist_jobs()
                     continue
-                yield _sse(_exhausted_provider_error(is_child, {"error": {"message": err_msg, "code": 502}}, attempts=MAX_RESUME_RETRIES - resumes_left,
+                yield _sse(_exhausted_provider_error(is_child, raw_err, attempts=MAX_RESUME_RETRIES - resumes_left,
                                                     provider=src_type if upstream_fault else ""))
                 _snap = _live_meter(); yield _sse(context_meter.context_event(_snap, phase="end")); await _persist_meter(_snap)
                 yield b"data: [DONE]\n\n"

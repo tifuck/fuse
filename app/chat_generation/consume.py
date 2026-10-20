@@ -26,6 +26,7 @@ from .stream import (
     CHUNK_GAP_TIMEOUT_S,
     IDLE_TIMEOUT_S,
     PROVIDER_BEAT_S,
+    StreamStalled,
     _client_obj,
     _paced_chunks,
     _parse_sse_line,
@@ -33,6 +34,26 @@ from .stream import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+_STALL_PHASES = {
+    "waiting": "before the first output",
+    "thinking": "while thinking",
+    "tool": "while writing a tool call",
+    "text": "mid-reply",
+}
+
+
+def _stall_message(exc: TimeoutError) -> str:
+    """The detail of a stall the pacer called: how long, in which phase.
+    Keeps "idle timeout" for the resume policy's stall counter."""
+    if not isinstance(exc, StreamStalled):
+        return "upstream timeout (idle)"
+    minutes, seconds = divmod(int(round(exc.quiet_s)), 60)
+    span = f"{minutes}m {seconds}s" if minutes and seconds else f"{minutes}m" if minutes else f"{seconds}s"
+    where = _STALL_PHASES.get(exc.phase, "")
+    kept = ", though keep-alives kept arriving" if exc.quiet_s - exc.unheard_s > 1.0 else ""
+    return f"No output for {span} {where}{kept} (idle timeout).".replace("  ", " ")
 
 
 def _calling_name(calls: dict, hints) -> str:
@@ -235,13 +256,15 @@ async def consume_round(result, user, src, upstream: str, requested: str, *, cod
                 break
     except asyncio.CancelledError:
         raise
-    except TimeoutError:
+    except TimeoutError as exc:
         if not error:
-            error = _error_obj(502, {"error": {"message": "upstream timeout (idle)"}})
+            error = _error_obj(502, {"error": {"message": _stall_message(exc), "fuse_kind": "stalled"}})
     except Exception as exc:
         logger.warning("Upstream stream read failed: %s", type(exc).__name__)
         if not error:
-            error = _error_obj(502, {"error": {"message": f"upstream stream failed ({type(exc).__name__})"}})
+            # A socket read timeout is a silent stream; anything else broke it.
+            kind = "stalled" if "Timeout" in type(exc).__name__ else "interrupted"
+            error = _error_obj(502, {"error": {"message": f"upstream stream failed ({type(exc).__name__})", "fuse_kind": kind}})
     finally:
         close = getattr(tapped, "aclose", None)
         if close:
@@ -253,7 +276,7 @@ async def consume_round(result, user, src, upstream: str, requested: str, *, cod
         if isinstance(extra, dict):
             usage = merge_usage(usage, extra)
     if not terminal and not finish and not error:
-        error = _error_obj(502, {"error": {"message": "Upstream stream ended without a terminal frame."}})
+        error = _error_obj(502, {"error": {"message": "Upstream stream ended without a terminal frame.", "fuse_kind": "interrupted"}})
     content, reasoning, native, finish = _finalize_assistant_payload(
         content, reasoning, [calls[i] for i in sorted(calls)], finish, coding=coding
     )

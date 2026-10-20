@@ -9,6 +9,11 @@ from typing import Any, AsyncIterator, Protocol
 # the block ends). OpenAI-style clients ignore comments; the dashboard's
 # provider pacer and status line read it.
 THINKING_MARK = b": fuse-thinking"
+# SSE comment a source writes for a keep-alive the provider sends only while
+# it is still working on this request (Anthropic's `ping`). Generic proxy
+# keep-alives must not use it: they can outlive a hung upstream. The pacer
+# reads it as "silent, not dead".
+ALIVE_MARK = b": fuse-alive"
 
 
 @dataclass

@@ -300,6 +300,12 @@ def build_messages_payload(body: dict, model: str) -> dict:
                 "name": name[:64],
                 "description": str(fn.get("description") or "")[:4096],
                 "input_schema": schema,
+                # Without it Anthropic holds each argument until it is
+                # complete: a large write_file body was minutes of silence
+                # on the stream. Claude Code sends it too. Arguments are no
+                # longer validated upstream; calls_incomplete catches
+                # invalid JSON.
+                "eager_input_streaming": True,
             }
         )
     if tools:

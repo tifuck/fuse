@@ -23,6 +23,8 @@ const SUMMARIES = {
   "overloaded": "fault",
   "server error": "fault",
   "timed out": "fault",
+  "stopped responding": "fault",
+  "connection lost": "fault",
 };
 const SHAPE = /^([A-Za-z][\w.() -]{0,30}): ([a-z0-9][^;.]*?)(?:; ((?:retry|resets) in [^.]*?))?\.(?:\s+([\s\S]*))?$/;
 // A subagent's failure wraps the provider's sentence for the parent model.

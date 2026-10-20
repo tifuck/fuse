@@ -278,6 +278,9 @@ class ClaudeParseTest(unittest.TestCase):
         self.assertEqual(payload["system"][1]["text"], "be brief")
         self.assertEqual(payload["system"][1]["cache_control"], {"type": "ephemeral", "ttl": "1h"})
         self.assertEqual(payload["tools"][-1]["cache_control"], {"type": "ephemeral", "ttl": "1h"})
+        # Arguments stream as written, as in Claude Code; buffered, a large
+        # write_file body was minutes of silence the pacer called a stall.
+        self.assertTrue(all(tool["eager_input_streaming"] is True for tool in payload["tools"]))
         self.assertEqual(payload["messages"][-1]["content"][-1]["cache_control"], {"type": "ephemeral", "ttl": "1h"})
         self.assertNotIn("cache_control", payload["messages"][-2]["content"][-1])
         self.assertEqual(payload["output_config"], {"effort": "high"})
@@ -584,6 +587,22 @@ class ClaudeStreamTest(unittest.IsolatedAsyncioTestCase):
                 if line.startswith("data: {") and "usage" in json.loads(line[6:]):
                     usage = json.loads(line[6:])["usage"]
                     self.assertLess(len(json.dumps(usage, separators=(",", ":"))), USAGE_MAX)
+
+    async def test_ping_becomes_alive_mark(self):
+        # Anthropic pings only while the message is in progress; the pacer
+        # reads the mark as "silent, not dead".
+        events = [
+            {"type": "message_start", "message": {"id": "msg_p", "usage": {"input_tokens": 1}}},
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "toolu_0", "name": "write_file"}},
+            {"type": "ping"},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{}"}},
+            {"type": "content_block_stop", "index": 0},
+            {"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {"output_tokens": 1}},
+            {"type": "message_stop"},
+        ]
+        chunks = [piece async for piece in claude_mod._translated_stream(_FakeResp(events), AsyncMock(), "claude-opus-5-5", {})]
+        self.assertIn(b": fuse-alive\n\n", chunks)
+        self.assertLess(chunks.index(b": fuse-alive\n\n"), next(i for i, c in enumerate(chunks) if b'"arguments":"{}"' in c))
 
     async def test_empty_tool_arguments_become_object(self):
         events = [

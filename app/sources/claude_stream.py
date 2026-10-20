@@ -13,7 +13,7 @@ import time
 
 import httpx
 
-from .base import THINKING_MARK
+from .base import ALIVE_MARK, THINKING_MARK
 from .claude_catalog import fuse_id
 
 
@@ -247,7 +247,9 @@ class _Translator:
                 self.error_type = str(err["type"])
             return b"__ERROR__"
         if etype == "ping":
-            return None
+            # Anthropic pings only while it is still producing this message
+            # (a 568s silent think stayed under the 300s read timeout).
+            return ALIVE_MARK + b"\n\n"
         return None
 
     def finish_reason(self) -> str:

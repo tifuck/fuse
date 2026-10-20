@@ -177,3 +177,30 @@ def test_retry_reason_names_provider_and_kind():
     busy, _ = pe.annotate("claude", 529, {"error": {"type": "overloaded_error", "message": "Overloaded"}})
     assert pe.retry_reason("claude", 529, busy) == "Claude: overloaded"
     assert pe.retry_reason("claude", 503, {"error": {"message": "?"}}) == "Provider error (503)"
+
+
+@pytest.mark.parametrize("provider,message,kind", [
+    ("claude", "upstream timeout (idle)", "stalled"),
+    ("claude", "No output for 5m while writing a tool call (idle timeout).", "stalled"),
+    ("chatgpt", "upstream stream failed (ReadTimeout)", "stalled"),
+    ("claude", "upstream stream failed (RemoteProtocolError)", "interrupted"),
+    ("zai", "Upstream stream ended without a terminal frame.", "interrupted"),
+    ("cursor", "Cursor stream ended before the turn finished", "interrupted"),
+    ("devin", "Devin transport failure (ReadError)", "interrupted"),
+])
+def test_fuse_stream_failures_are_not_provider_server_errors(provider, message, kind):
+    # Thread 596: Fuse's own idle stall rode on a 502 and read as
+    # "Claude: server error" while Claude was still writing a tool call.
+    body, info = pe.annotate(provider, 502, {"error": {"message": message, "type": "api_error"}})
+    assert info["kind"] == kind and pe.kind_of(body) == kind
+    assert kind in pe.TRANSIENT and policy._resumable_failure(502, message, kind)
+    summary = {"stalled": "stopped responding", "interrupted": "connection lost"}[kind]
+    assert pe.retry_reason(provider, 502, body).endswith(f": {summary}")
+    frame = policy._exhausted_provider_error(False, body, 502, attempts=4, provider=provider)
+    assert "server error" not in frame["error"]["message"] and summary in frame["error"]["message"]
+
+
+def test_stall_already_tagged_keeps_its_detail():
+    raw = policy._error_obj(502, {"error": {"message": "No output for 5m mid-reply (idle timeout).", "fuse_kind": "stalled"}})
+    frame = policy._exhausted_provider_error(False, raw, 502, attempts=4, provider="claude")
+    assert frame["error"]["message"] == "Claude: stopped responding. No output for 5m mid-reply (idle timeout)."

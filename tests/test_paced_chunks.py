@@ -174,15 +174,111 @@ class PacedChunksTest(unittest.IsolatedAsyncioTestCase):
             b'data: {"choices":[],"usage":{"prompt_tokens":3}}\n'
             b'data: {"choices":[{"delta":{"reasoning_content":"r"}}]}\n'
             b'data: {"choices":[{"delta":{"content":"c"}}]}\n'
+            b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{"}}]}}]}\n'
+            b": fuse-alive\n\n"
             b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n'
             b'data: {"x":1}\n'
             b"data: [DONE]\n"
         )
         self.assertEqual(
             _sse_progress(carry, frames),
-            ["thinking", "envelope", "envelope", "reasoning", "output", "output", "output", "output"],
+            ["thinking", "envelope", "envelope", "reasoning", "output", "tool", "alive", "output", "output", "output"],
         )
-        self.assertEqual(_sse_progress(bytearray(), b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n', classify=False), ["output"])
+        # A tool-call line past the carry bound keeps its head: still a tool frame.
+        huge = b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"' + b"x" * 100_000 + b'"}}]}}]}\n'
+        carry = bytearray()
+        self.assertEqual(_sse_progress(carry, huge[:70_000]) + _sse_progress(carry, huge[70_000:]), ["tool"])
+
+    async def test_open_tool_call_keeps_patience(self):
+        # Incident (thread 596): Claude wrote "Now writing the scene", opened a
+        # write_file call, and Anthropic held the file body until it was
+        # complete. The 120s mid-reply gap killed the live call five times.
+        text = b'data: {"choices":[{"delta":{"content":"Writing the scene."}}]}\n\n'
+        head = b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"t","function":{"name":"write_file","arguments":""}}]}}]}\n\n'
+        body = b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}\n\n'
+        done = b'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n'
+        out = [item async for item in _paced_chunks(
+            _stream([text, head, body, done], delays=[0.0, 0.0, 0.35, 0.0]), 30.0, 0.15, 30.0)]
+        self.assertEqual([p for k, p in out if k == "chunk"], [text, head, body, done])
+
+    async def test_tool_call_silence_still_bounded_by_first_budget(self):
+        from app.chat_generation.stream import StreamStalled
+
+        head = b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"write_file"}}]}}]}\n\n'
+        with self.assertRaises(StreamStalled) as caught:
+            async for _item in _paced_chunks(_stream([head, b"data: x\n\n"], delays=[0.0, 1.0]), 0.2, 0.05, 30.0):
+                pass
+        self.assertEqual(caught.exception.phase, "tool")
+
+    async def test_reply_text_after_tool_call_returns_to_gap_budget(self):
+        from app.chat_generation.stream import StreamStalled
+
+        head = b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"x"}}]}}]}\n\n'
+        text = b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+        with self.assertRaises(StreamStalled) as caught:
+            async for _item in _paced_chunks(_stream([head, text, text], delays=[0.0, 0.0, 0.5]), 30.0, 0.15, 30.0):
+                pass
+        self.assertEqual(caught.exception.phase, "text")
+
+    async def test_alive_mark_restarts_budget_without_counting_as_output(self):
+        # Anthropic's ping only comes while the message is still in progress:
+        # a mid-reply silence longer than the gap survives while it arrives.
+        text = b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+        alive = b": fuse-alive\n\n"
+        out = [item async for item in _paced_chunks(
+            _stream([text, alive, alive, alive, text], delays=[0.0, 0.1, 0.1, 0.1, 0.1]), 30.0, 0.15, 0.05)]
+        self.assertEqual([p for k, p in out if k == "chunk"][-1], text)
+        # Beats count from the last output, not from the last keep-alive.
+        beats = [p for k, p in out if k == "beat"]
+        self.assertTrue(beats and max(beats) > 0.15)
+
+    async def test_alive_marks_cannot_outlast_the_ceiling(self):
+        from app.chat_generation.stream import StreamStalled
+
+        text = b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+        alive = b": fuse-alive\n\n"
+        with self.assertRaises(StreamStalled) as caught:
+            async for _item in _paced_chunks(
+                _stream([text, *[alive] * 20], delays=[0.0, *[0.05] * 20]), 30.0, 0.15, 30.0, ceiling_s=0.3
+            ):
+                pass
+        self.assertGreaterEqual(caught.exception.quiet_s, 0.3)
+        self.assertLess(caught.exception.unheard_s, 0.15)
+
+    async def test_alive_marks_stopping_aborts_one_budget_after_the_last(self):
+        from app.chat_generation.stream import StreamStalled
+
+        text = b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+        alive = b": fuse-alive\n\n"
+        with self.assertRaises(StreamStalled) as caught:
+            async for _item in _paced_chunks(
+                _stream([text, alive, alive, text], delays=[0.0, 0.1, 0.1, 2.0]), 30.0, 0.15, 30.0
+            ):
+                pass
+        self.assertEqual(caught.exception.phase, "text")
+        self.assertGreaterEqual(caught.exception.unheard_s, 0.15)
+        self.assertGreater(caught.exception.quiet_s, 0.3)
+
+    def test_budgets(self):
+        # Mid-reply silence was 120s, which killed live tool calls; the
+        # providers' socket read timeout (300s) already catches a dead wire.
+        self.assertEqual(IDLE_TIMEOUT_S, 600.0)
+        self.assertEqual(CHUNK_GAP_TIMEOUT_S, 300.0)
+
+
+class StallMessageTest(unittest.TestCase):
+    def test_stall_names_phase_and_span(self):
+        from app.chat_generation.consume import _stall_message
+        from app.chat_generation.stream import StreamStalled
+        from app.chat_runtime import _is_idle_timeout
+
+        msg = _stall_message(StreamStalled("tool", 600.4, 600.4))
+        self.assertEqual(msg, "No output for 10m while writing a tool call (idle timeout).")
+        self.assertTrue(_is_idle_timeout(msg))
+        kept = _stall_message(StreamStalled("thinking", 1805.0, 3.0))
+        self.assertEqual(kept, "No output for 30m 5s while thinking, though keep-alives kept arriving (idle timeout).")
+        self.assertEqual(_stall_message(TimeoutError()), "upstream timeout (idle)")
+
 
 class ConsumeRoundBeatTest(unittest.IsolatedAsyncioTestCase):
     async def test_beats_and_frames_flow_through_consume_round(self):
@@ -237,6 +333,31 @@ class ConsumeRoundBeatTest(unittest.IsolatedAsyncioTestCase):
         fuse = [p["fuse"] for k, p in events if k == "out" and "fuse" in p]
         self.assertEqual(fuse, [{"event": "activity", "phase": "model", "thinking": True}])
         self.assertEqual(events[-1][1]["content"], "done")
+
+
+class ConsumeRoundStallTest(unittest.IsolatedAsyncioTestCase):
+    async def test_stall_is_reported_as_stalled_not_server_error(self):
+        from types import SimpleNamespace
+
+        from app import chat_runtime as rt, provider_errors
+
+        async def gen():
+            yield b'data: {"choices":[{"delta":{"content":"Writing."}}]}\n\n'
+            yield b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"t","function":{"name":"write_file","arguments":""}}]}}]}\n\n'
+            await asyncio.sleep(5)
+
+        result = SimpleNamespace(status=200, body={}, stream=gen(), usage={}, credential_id=None, attempts=[])
+        src = SimpleNamespace(source_id=1, type_id="claude")
+        with unittest.mock.patch("app.chat_generation.consume.IDLE_TIMEOUT_S", 0.2), unittest.mock.patch.object(
+            rt.api, "_safe_record_usage", lambda *a, **k: None
+        ), unittest.mock.patch.object(rt.api, "_tap", side_effect=lambda s, *a, **k: s):
+            events = [item async for item in rt._consume_round(result, {"id": 1, "key_id": None}, src, "m", "m")]
+        error = events[-1][1]["error"]
+        self.assertEqual(provider_errors.kind_of(error), "stalled")
+        self.assertIn("while writing a tool call (idle timeout)", error["error"]["message"])
+        self.assertEqual(provider_errors.retry_reason("claude", 502, error), "Claude: stopped responding")
+        self.assertTrue(rt._should_resume(502, error["error"]["message"], resumes_left=4, idle_stalls=1,
+                                          kind=provider_errors.kind_of(error)))
 
 
 class IdleResumeCapTest(unittest.TestCase):

@@ -41,6 +41,11 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       assert.deepEqual(await card('llama.cpp: conversation too long for this model. request (9000 tokens) exceeds the available context size'),
         { tone: 'fault', title: 'llama.cpp · Conversation too long for this model', reset: '', detail: 'request (9000 tokens) exceeds the available context size' });
       assert.deepEqual(await card('Devin: server error.'), { tone: 'fault', title: 'Devin · Server error', reset: '', detail: '' });
+      // Fuse's own stall / broken-stream kinds get the provider card, not "Request failed".
+      assert.deepEqual(await card('Claude: stopped responding. No output for 10m while writing a tool call (idle timeout).'),
+        { tone: 'fault', title: 'Claude · Stopped responding', reset: '', detail: 'No output for 10m while writing a tool call (idle timeout).' });
+      assert.deepEqual(await card('Claude: connection lost. upstream stream failed (RemoteProtocolError)'),
+        { tone: 'fault', title: 'Claude · Connection lost', reset: '', detail: 'upstream stream failed (RemoteProtocolError)' });
       assert.deepEqual(await card('Error: something odd happened.'), { tone: 'fault', title: 'Request failed', reset: '', detail: 'Error: something odd happened.' });
       assert.deepEqual(await card('<b>x</b>: server error. <i>y</i>'), { tone: 'fault', title: 'Request failed', reset: '', detail: '<b>x</b>: server error. <i>y</i>' }, 'text is escaped, never markup');
       // Provider retries are Fuse status lines in the timeline, never tool rows.

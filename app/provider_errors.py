@@ -29,7 +29,9 @@ TERMINAL = frozenset({
     "usage_exhausted", "insufficient_balance", "plan_required", "credentials", "permission",
     "invalid_request", "context_length", "content_filter", "model_not_found",
 })
-TRANSIENT = frozenset({"rate_limit", "overloaded", "server_error", "timeout"})
+# stalled / interrupted are what Fuse saw on the provider's stream (no output
+# for the pacer's budget, or the connection broke), not what it reported.
+TRANSIENT = frozenset({"rate_limit", "overloaded", "server_error", "timeout", "stalled", "interrupted"})
 KINDS = TERMINAL | TRANSIENT
 
 # Upstream headers worth keeping for classification (reset times, which
@@ -59,6 +61,8 @@ _SUMMARY = {
     "overloaded": "overloaded",
     "server_error": "server error",
     "timeout": "timed out",
+    "stalled": "stopped responding",
+    "interrupted": "connection lost",
 }
 
 # Provider-specific code/type values (error.code, error.type, top-level code,
@@ -273,6 +277,15 @@ _PATTERNS = [
 ]
 
 _FUSE_AUTH = re.compile(r"rejected (?:the configured|this account)", re.I)
+
+# Fuse's own sentences for a provider stream it watched fail. Without these
+# the 502 they ride on read as the provider's "server error".
+_FUSE_STREAM = [
+    ("stalled", re.compile(r"idle timeout|timeout \(idle\)|(?:stream failed|transport failure) \(\w*Timeout\)", re.I)),
+    ("interrupted", re.compile(
+        r"^(?:upstream|cursor|devin) (?:stream failed|transport failure) \(\w+\)$"
+        r"|stream ended (?:without|before)", re.I)),
+]
 
 _STATUS = {
     400: "invalid_request", 401: "credentials", 402: "insufficient_balance", 403: "permission",
@@ -509,6 +522,8 @@ def classify(provider: str, status: int, body, headers=None, *, now: float | Non
     err, code, etype, message, meta = _parts(body)
     h = _headers(headers, body)
     kind = _structured(provider, err, code, etype, meta, h, message)
+    if kind is None:
+        kind = next((name for name, pattern in _FUSE_STREAM if pattern.search(message)), None)
     known = kind is not None
     if kind is None:
         kind = _from_message(provider, message, status)
