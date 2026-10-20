@@ -121,6 +121,31 @@ def _trace_from_tool_call(call: dict, result: dict | None = None) -> dict:
     return trace
 
 
+_IMAGE_ENVELOPE = "[Fuse: untrusted read_file image output,"
+_IMAGE_INFO = re.compile(r"Image: (\w+), \d+×\d+; displayed (\d+)×(\d+)\.")
+
+
+def _image_events(item) -> dict | None:
+    """{call_id: event_id} for the user row carrying read_file pixels
+    (tool_jobs._tool_images), None for any other row."""
+    content = item.get("content") if isinstance(item, dict) and item.get("role") == "user" else None
+    if not (isinstance(content, list) and content and isinstance(content[0], dict)
+            and str(content[0].get("text") or "").startswith(_IMAGE_ENVELOPE)):
+        return None
+    found = {}
+    for part in content:
+        text = part.get("text") if isinstance(part, dict) else None
+        if not isinstance(text, str) or not text.startswith(_IMAGE_ENVELOPE):
+            continue
+        try:
+            label = json.loads(text.split("\n", 1)[1])
+        except (IndexError, TypeError, ValueError):
+            continue
+        if isinstance(label, dict) and label.get("call_id") and label.get("event_id"):
+            found[str(label["call_id"])] = str(label["event_id"])
+    return found
+
+
 def handoff_display_cut(transcript: list) -> int | None:
     """Index of the latest compaction handoff, or None.
 
@@ -212,7 +237,7 @@ def _child_display(run: dict, *, include_current: bool = False) -> tuple[list[di
                 continue
             if skip_users:
                 skip_users -= 1
-            elif not ctxmod.is_compact_preamble(_provider_text(item.get("content"))):
+            elif _image_events(item) is None and not ctxmod.is_compact_preamble(_provider_text(item.get("content"))):
                 followups.append(item)
         transcript = [*display_seed, *followups]
         cut = handoff_display_cut(transcript)
@@ -234,7 +259,9 @@ def _child_display(run: dict, *, include_current: bool = False) -> tuple[list[di
     current_tools = current.get("tools") if isinstance(current.get("tools"), list) else []
     live = str(run.get("status") or "") in chat_tx.ACTIVE
     results_by_id: dict[str, dict] = {}
+    image_events: dict[str, str] = {}
     for item in transcript:
+        image_events.update(_image_events(item) or {})
         if not isinstance(item, dict) or item.get("role") != "tool":
             continue
         cid = str(item.get("tool_call_id") or "")
@@ -244,14 +271,23 @@ def _child_display(run: dict, *, include_current: bool = False) -> tuple[list[di
     pending_calls: list[dict] = []
     n = 0
 
+    def _trace(call: dict) -> dict:
+        trace = _trace_from_tool_call(call, results_by_id.get(str(call.get("id") or "")))
+        event = image_events.get(trace["id"])
+        if event and trace["name"] == "read_file" and run.get("id"):
+            # mime only gates the preview; the image route serves the real type.
+            image = {"mime": "image/png", "preview_url": f"/chat/runs/{run['id']}/images/{event}"}
+            info = _IMAGE_INFO.search(trace["output"])
+            if info:
+                image.update(format=info[1], width=int(info[2]), height=int(info[3]))
+            trace["image"] = chats_mod.tool_image_metadata(image)
+        return trace
+
     def flush_pending() -> None:
         nonlocal n, pending_calls
         if not pending_calls:
             return
-        traces = [
-            _trace_from_tool_call(call, results_by_id.get(str(call.get("id") or "")))
-            for call in pending_calls
-        ]
+        traces = [_trace(call) for call in pending_calls]
         pending_calls = []
         n += 1
         out.append({
@@ -293,10 +329,7 @@ def _child_display(run: dict, *, include_current: bool = False) -> tuple[list[di
             if ctxmod.is_compact_ack(text) and not item.get("tool_calls"):
                 pending_calls = []
                 continue
-            traces = [
-                _trace_from_tool_call(call, results_by_id.get(str(call.get("id") or "")))
-                for call in pending_calls
-            ]
+            traces = [_trace(call) for call in pending_calls]
             pending_calls = []
             text = _provider_text(item.get("content")).strip()
             if not text and not traces:
@@ -311,7 +344,7 @@ def _child_display(run: dict, *, include_current: bool = False) -> tuple[list[di
                 "noActions": True,
             })
             continue
-        if role != "user":
+        if role != "user" or _image_events(item) is not None:
             continue
         from .chat_generation.messages import SESSION_TAIL_MARK
 
@@ -360,10 +393,7 @@ def _child_display(run: dict, *, include_current: bool = False) -> tuple[list[di
         if include_current and (live or current_tools):
             pending_calls = []
         else:
-            traces = [
-                _trace_from_tool_call(call, results_by_id.get(str(call.get("id") or "")))
-                for call in pending_calls
-            ]
+            traces = [_trace(call) for call in pending_calls]
             n += 1
             out.append({
                 "id": f"agent-hist-{n}",
