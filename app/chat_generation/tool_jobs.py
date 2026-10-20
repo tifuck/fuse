@@ -258,6 +258,8 @@ def fold_preload_skill(messages: list[dict]) -> list[dict]:
             content = rewritten.get("content")
             if isinstance(content, str):
                 rewritten["content"] = label + content
+            elif isinstance(content, list):
+                rewritten["content"] = [{"type": "text", "text": label}, *content]
             else:
                 rewritten["content"] = label + _text_of(content)
             out.append(rewritten)

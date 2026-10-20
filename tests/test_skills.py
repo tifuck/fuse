@@ -429,6 +429,25 @@ class SkillsDbTest(unittest.TestCase):
         self.assertIn("BODY", folded[0]["content"])
         self.assertIn("demo", folded[0]["content"])
 
+    def test_fold_preload_keeps_multimodal_parts(self):
+        parts = [
+            {"type": "text", "text": "describe this"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+            {"type": "file", "file": {"filename": "a.txt", "file_data": "data:text/plain;base64,QQ=="}},
+        ]
+        messages = [
+            {"role": "user", "content": parts},
+            {"role": "assistant", "tool_calls": [
+                {"id": "skill_abc", "function": {"name": "load_skill", "arguments": '{"name":"demo"}'}}
+            ]},
+            {"role": "tool", "tool_call_id": "skill_abc", "content": "BODY"},
+        ]
+        folded = fold_preload_skill(messages)
+        self.assertEqual(folded[0]["content"][0], {"type": "text", "text": "[Skill `demo` instructions]\nBODY\n\n"})
+        self.assertEqual(folded[0]["content"][1:], parts)
+        self.assertIs(messages[0]["content"], parts)
+        self.assertEqual(len(parts), 3)
+
     def test_fold_preload_keeps_every_skill(self):
         messages = [
             {"role": "user", "content": "task"},

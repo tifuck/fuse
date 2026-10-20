@@ -66,6 +66,14 @@ class TakeCallsTest(unittest.TestCase):
         args = json.loads(bucket[0]["function"]["arguments"])
         self.assertEqual(args["query"], "abcd")
 
+    def test_split_name_keeps_a_fragment_matching_its_prefix(self):
+        bucket = {}
+        for name in ("run_te", "r", "minal_command"):
+            _take_calls(bucket, [{"index": 0, "function": {"name": name}}])
+        self.assertEqual(bucket[0]["function"]["name"], "run_terminal_command")
+        _take_calls(bucket, [{"index": 0, "function": {"name": "run_terminal_command"}}])
+        self.assertEqual(bucket[0]["function"]["name"], "run_terminal_command")
+
     def test_dict_args(self):
         bucket = {}
         _take_calls(bucket, [{"index": 0, "function": {"name": "web_search", "arguments": {"query": "x"}}}])
@@ -145,6 +153,31 @@ class SpecialTokenAndXmlTest(unittest.TestCase):
         self.assertEqual(calls[0]["function"]["name"], "web_search")
         self.assertEqual(json.loads(calls[0]["function"]["arguments"])["query"], "brent oil")
 
+    def test_backticks_inside_tool_arguments_do_not_quote_the_call(self):
+        for value in ("meaning of `foo`", "```python\nprint('x')\n```", "``code with ` inside``"):
+            args = {"query": value}
+            raw = '<tool_call>' + json.dumps({"name": "web_search", "arguments": args}) + '</tool_call>'
+            for body in (raw, f"<tool_call><function=web_search><parameter=query>{value}</parameter></function></tool_call>"):
+                text, calls = extract_text_tool_calls(body)
+                self.assertEqual(text, "")
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(json.loads(calls[0]["function"]["arguments"]), args)
+                self.assertEqual(drop_tool_xml(body), ("", ""))
+
+    def test_quoted_fences_close_only_on_a_fence_line(self):
+        example = '<tool_call>{"name":"web_search","arguments":{"query":"quoted"}}</tool_call>'
+        live = '<tool_call>{"name":"web_search","arguments":{"query":"live"}}</tool_call>'
+        for quoted in (
+            f'```python\ns = "```"\n{example}\n````',
+            f'~~~text\ns = "~~~"\n{example}\n  ~~~~',
+            f'````markdown\n```\n{example}\n```\n````',
+            f'``code with ` then {example} end``',
+        ):
+            text, calls = extract_text_tool_calls(quoted + "\n" + live)
+            self.assertEqual(text, quoted)
+            self.assertEqual([json.loads(c["function"]["arguments"]) for c in calls], [{"query": "live"}])
+            self.assertEqual(drop_tool_xml(quoted + "\n" + live), (quoted + "\n", ""))
+
     def test_quoted_tool_call_examples_never_execute(self):
         example = '<tool_call>{"name": "run_terminal_command", "arguments": {"command": "rm -rf build"}}</tool_call>'
         for raw in (
@@ -176,6 +209,17 @@ class SpecialTokenAndXmlTest(unittest.TestCase):
         self.assertEqual(finish, "tool_calls")
         self.assertEqual(calls[0]["function"]["name"], "web_search")
         self.assertEqual(reasoning, "")
+
+    def test_finalize_preserves_special_tokens_inside_tool_arguments(self):
+        args = {"path": "x.html", "content": "<s>old</s><|eos|>"}
+        raw = '<tool_call>' + json.dumps({"name": "write_file", "arguments": args}) + '</tool_call>'
+        content, reasoning, calls, finish = _finalize_assistant_payload(
+            "Before<|eos|>\n" + raw + "\nAfter</s>", "plan<|eos|>", [], "stop", coding=True,
+        )
+        self.assertEqual(content, "Before\n\nAfter")
+        self.assertEqual(reasoning, "plan")
+        self.assertEqual(json.loads(calls[0]["function"]["arguments"]), args)
+        self.assertEqual(finish, "tool_calls")
 
     def test_finalize_keeps_nameless_calls_alongside_extracted_xml(self):
         content, reasoning, calls, finish = _finalize_assistant_payload(

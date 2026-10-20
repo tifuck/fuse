@@ -227,18 +227,13 @@ def _calls_from_xml_body(body: str, *, coding: bool, start: int = 0) -> list[dic
 
 # Markdown code (fenced blocks, inline spans) is quoted text: a tool call shown
 # as an example there must never execute.
-# A fence closes only on a run of its own length (a ```` block may quote ```).
-_MD_CODE = re.compile(r"(`{3,}|~{3,})[\s\S]*?(?:\1|$)|`[^`\n]+`")
-
-
-def _md_split(content: str) -> list[str]:
-    """Alternate plain text (even) and markdown code (odd), like re.split."""
-    parts, pos = [], 0
-    for match in _MD_CODE.finditer(content):
-        parts += [content[pos:match.start()], match.group(0)]
-        pos = match.end()
-    parts.append(content[pos:])
-    return parts
+# A closing fence is a line with at least as many of the opening character.
+_MD_CODE = re.compile(
+    r"^[ \t]{0,3}(`{3,})(?!`)[^\n]*(?:\n|\Z)[\s\S]*?(?:^[ \t]{0,3}\1`*[ \t]*(?=\n|$)|\Z)"
+    r"|^[ \t]{0,3}(~{3,})(?!~)[^\n]*(?:\n|\Z)[\s\S]*?(?:^[ \t]{0,3}\2~*[ \t]*(?=\n|$)|\Z)"
+    r"|(?<!`)(`+)(?!`)[\s\S]+?(?<!`)\3(?!`)",
+    re.M,
+)
 
 
 def extract_text_tool_calls(content: str, *, coding: bool = False) -> tuple[str, list[dict]]:
@@ -248,59 +243,44 @@ def extract_text_tool_calls(content: str, *, coding: bool = False) -> tuple[str,
     lowered = content.lower()
     if "<tool" not in lowered and "<function" not in lowered and "<invoke" not in lowered:
         return content, []
-    parts = _md_split(content)
-    if len(parts) == 1:
-        return _extract_plain_tool_calls(content, coding=coding)
-    calls: list[dict] = []
-    out = []
-    for i, part in enumerate(parts):
-        if i % 2 == 0 and part:
-            part, found = _extract_plain_tool_calls(part, coding=coding, start=len(calls), strip=False)
-            calls.extend(found)
-        out.append(part)
-    return "".join(out).strip(), calls
+    code = [match.span() for match in _MD_CODE.finditer(content)]
 
+    def quoted(index: int) -> bool:
+        return any(lo <= index < hi for lo, hi in code)
 
-def _extract_plain_tool_calls(content: str, *, coding: bool, start: int = 0, strip: bool = True) -> tuple[str, list[dict]]:
-    if not content:
-        return content, []
-    lowered = content.lower()
-    if "<tool" not in lowered and "<function" not in lowered and "<invoke" not in lowered:
-        return content, []
     calls: list[dict] = []
-    cleaned = content
 
     def _replace(match: re.Match) -> str:
-        extracted = _calls_from_xml_body(match.group(0), coding=coding, start=start + len(calls))
+        if quoted(match.start()):
+            return match.group(0)
+        extracted = _calls_from_xml_body(match.group(0), coding=coding, start=len(calls))
         if not extracted:
             # Inner body without the outer tags, in case the regex included them.
             inner = match.group(0)
             inner = re.sub(r"^</?tool_calls?\b[^>]*>|</tool_calls?>$", "", inner, flags=re.I | re.S)
-            extracted = _calls_from_xml_body(inner, coding=coding, start=start + len(calls))
+            extracted = _calls_from_xml_body(inner, coding=coding, start=len(calls))
         if extracted:
             calls.extend(extracted)
             return ""
         return match.group(0)
 
-    cleaned = _TOOL_XML_BLOCK.sub(_replace, cleaned)
+    cleaned = _TOOL_XML_BLOCK.sub(_replace, content)
     if not calls:
-        opener = _TOOL_XML_OPEN.search(cleaned)
+        opener = next((m for m in _TOOL_XML_OPEN.finditer(content) if not quoted(m.start())), None)
         if opener:
-            extracted = _calls_from_xml_body(cleaned[opener.end() :], coding=coding, start=start)
+            extracted = _calls_from_xml_body(content[opener.end() :], coding=coding)
             if extracted:
                 calls.extend(extracted)
                 cleaned = cleaned[: opener.start()]
     if not calls:
-        extracted = _calls_from_xml_body(cleaned, coding=coding, start=start)
-        if extracted:
-            calls.extend(extracted)
-            cleaned = _FUNCTION_XML.sub("", cleaned)
-            cleaned = _INVOKE_XML.sub("", cleaned)
-    return (cleaned.strip() if strip else cleaned), calls
+        cleaned = _FUNCTION_XML.sub(_replace, content)
+    if not calls:
+        cleaned = _INVOKE_XML.sub(_replace, content)
+    return cleaned.strip(), calls
 
 
 def _finalize_assistant_payload(content, reasoning, calls, finish, *, coding: bool = False):
-    content = strip_special_tokens(content or "")
+    content = content or ""
     reasoning = strip_special_tokens(reasoning or "")
     allc = [c for c in (calls or []) if isinstance(c, dict)]
     named = [c for c in allc if (c.get("function") or {}).get("name")]
@@ -308,6 +288,7 @@ def _finalize_assistant_payload(content, reasoning, calls, finish, *, coding: bo
     # malformed calls; execution filters them again before tools run.
     native = allc
     content, extracted = extract_text_tool_calls(content, coding=coding)
+    content = strip_special_tokens(content)
     if not named and extracted:
         # Keep the nameless entries too: the round loop logs them as
         # malformed calls; the extracted XML calls carry the real work.
@@ -390,7 +371,7 @@ def _take_calls(bucket: dict, raw) -> None:
             cur = rec["function"]["name"]
             if not cur or name.startswith(cur):
                 rec["function"]["name"] = name[:64]
-            elif not cur.startswith(name):
+            else:
                 rec["function"]["name"] = (cur + name)[:64]
         args = fn.get("arguments")
         if rec["function"]["arguments"] == _ARG_OVERFLOW:
