@@ -318,7 +318,7 @@ def load(user_id: int, name: str, file: str | None = None) -> str:
     )
     if file:
         rel = (file or "").replace("\\", "/").strip()
-        if rel in ("SKILL.md", "./SKILL.md"):
+        if rel.lower() in ("skill.md", "./skill.md"):
             return guidance + _clip_body(parsed["body"])
         try:
             target = _safe_file(root, rel)
