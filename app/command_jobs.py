@@ -28,7 +28,6 @@ logger = logging.getLogger(__name__)
 
 TERMINAL = ("completed", "timed_out", "cancelled", "interrupted", "lost")
 JOB_CAP = 64
-PER_HOST_CAP = 8
 WS_MONITOR_CAP = 8
 WAKE_COMMAND_LIMIT = 4
 WAKE_MONITOR_LIMIT = 4
@@ -211,16 +210,6 @@ def _admit(kind: str, host_id: int, source: str) -> None:
         )
         if ws_running >= WS_MONITOR_CAP:
             raise ValueError("too many running websocket monitors")
-    elif int(host_id):
-        per_host = sum(
-            1
-            for v in live
-            if v.get("host_id") == int(host_id)
-            and v.get("status") not in TERMINAL
-            and v.get("source") != "ws"
-        )
-        if per_host >= PER_HOST_CAP:
-            raise ValueError("too many running commands on this host")
 
 
 def clean_description(value) -> str:
