@@ -127,6 +127,56 @@ class CursorUnitTest(unittest.TestCase):
         self.assertEqual(history[3]["content"][0], {"type": "tool-call", "toolCallId": "c1", "toolName": "get_weather", "args": {"city": "Osaka"}})
         self.assertEqual(history[4]["content"][0]["result"], "sunny")
 
+    def test_kept_conversation_rejects_edited_calls_and_images(self):
+        messages = [
+            {"role": "user", "content": [
+                {"type": "text", "text": "inspect"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
+            ]},
+            {"role": "assistant", "tool_calls": [
+                {"id": "c1", "function": {"name": "read_file", "arguments": '{"path":"a"}'}},
+            ]},
+            {"role": "tool", "tool_call_id": "c1", "content": [
+                {"type": "image_url", "image_url": "data:image/png;base64,AAA"},
+            ]},
+            {"role": "assistant", "content": "done"},
+        ]
+        conv = agent.Conversation(user_id=1, cred_id=1)
+        conv.transcript = [agent.canon(m) for m in messages]
+        conv.checkpoint = b"checkpoint"
+        tail = [{"role": "user", "content": "next"}]
+        with patch.object(agent, "_conversations", {conv.conversation_id: conv}):
+            self.assertEqual(agent.match(1, messages + tail)[:2], (conv, "followup"))
+            for edit in ("arguments", "user_image", "tool_image"):
+                with self.subTest(edit=edit):
+                    changed = json.loads(json.dumps(messages))
+                    if edit == "arguments":
+                        changed[1]["tool_calls"][0]["function"]["arguments"] = '{"path":"b"}'
+                    elif edit == "user_image":
+                        changed[0]["content"][1]["image_url"]["url"] = "data:image/png;base64,BBB"
+                    else:
+                        changed[2]["content"][0]["image_url"] = "data:image/png;base64,BBB"
+                    self.assertEqual(agent.match(1, changed + tail), (None, "", []))
+        image = {"role": "user", "content": [{"type": "image_bytes", "mime": "image/png", "data": b"a"}]}
+        changed = {"role": "user", "content": [{"type": "image_bytes", "mime": "image/png", "data": b"b"}]}
+        self.assertNotEqual(agent.canon(image), agent.canon(changed))
+
+    def test_final_round_usage_reports_exact_nonnegative_residuals(self):
+        for prompt, completion, output, expected in ((150, 20, 0, (50, 13)), (150, 20, 99, (50, 13)), (50, 3, 0, (0, 0))):
+            with self.subTest(prompt=prompt, completion=completion, output=output):
+                run = object.__new__(agent.CursorRun)
+                run.used_tokens = 107
+                run.ended = False
+                run.turn_usage = {}
+                run.reported_prompt = run.reported_output = 0
+                first = run._round_usage(7)
+                self.assertEqual((first["prompt_tokens"], first["completion_tokens"]), (100, 7))
+                run.ended = True
+                run.turn_usage = {"input_tokens": prompt, "output_tokens": completion}
+                final = run._round_usage(output)
+                self.assertEqual((final["prompt_tokens"], final["completion_tokens"]), expected)
+                self.assertEqual(final["total_tokens"], sum(expected))
+
     def test_first_turn_state_is_never_empty(self):
         state = agent.encode_state([])
         self.assertTrue(state)

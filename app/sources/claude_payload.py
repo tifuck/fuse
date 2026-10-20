@@ -66,7 +66,7 @@ def _user_blocks(content) -> list[dict]:
             if not isinstance(part, dict):
                 continue
             kind = part.get("type")
-            if kind in ("text", "input_text"):
+            if kind in ("text", "input_text", "output_text"):
                 text = str(part.get("text") or "")
                 if text:
                     blocks.append({"type": "text", "text": text})
@@ -108,8 +108,8 @@ def _tool_id(raw) -> str:
     whole request. The mapping is a pure function of the id, so the call and
     its result stay paired and every later request replays the same bytes.
     """
-    ident = str(raw or "")[:128]
-    if not ident or _TOOL_ID.fullmatch(ident):
+    ident = str(raw or "")
+    if not ident or (len(ident) <= 128 and _TOOL_ID.fullmatch(ident)):
         return ident
     return "toolu_" + hashlib.sha256(str(raw).encode()).hexdigest()[:24]
 
@@ -251,11 +251,12 @@ def build_messages_payload(body: dict, model: str) -> dict:
             call_id = str(msg.get("tool_call_id") or "").strip()
             if not call_id:
                 continue
+            content = msg.get("content")
             pending_results.append(
                 {
                     "type": "tool_result",
                     "tool_use_id": _tool_id(call_id),
-                    "content": _text_of(msg.get("content")) or "",
+                    "content": _user_blocks(content) if isinstance(content, list) else _text_of(content),
                 }
             )
     flush_results()

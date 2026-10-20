@@ -144,7 +144,7 @@ class ClaudeParseTest(unittest.TestCase):
         # History from Kimi/Devin/gpt-oss carries ids Anthropic rejects
         # (^[a-zA-Z0-9_-]+$); a switch to Claude must still replay it, with
         # each call paired to its result and the same bytes every request.
-        ids = ["functions.grep:0", "call_ab#cd", "toolu_ok-1"]
+        ids = ["functions.grep:0", "call_ab#cd", "toolu_ok-1", "a" * 128 + "X", "a" * 128 + "Y", "a" * 128, "a" * 128 + ":"]
         body = {
             "messages": [
                 {"role": "user", "content": "go"},
@@ -159,10 +159,43 @@ class ClaudeParseTest(unittest.TestCase):
         results = [block["tool_use_id"] for block in first["messages"][2]["content"]]
         self.assertEqual(uses, results)
         self.assertEqual(uses[2], "toolu_ok-1")
-        self.assertEqual(len(set(uses)), 3)
+        self.assertEqual(len(set(uses)), len(ids))
+        self.assertEqual(uses[5], ids[5])
         for ident in uses:
             self.assertRegex(ident, r"^[a-zA-Z0-9_-]+$")
+            self.assertLessEqual(len(ident), 128)
         self.assertEqual(first["messages"], second["messages"])
+
+    def test_tool_results_preserve_text_and_images(self):
+        contents = [
+            [{"type": "text", "text": "screenshot"},
+             {"type": "image_url", "image_url": {"url": "data:image/png;base64,QQ=="}},
+             {"type": "output_text", "text": "caption"}],
+            [{"type": "image_url", "image_url": "https://example.com/shot.png"}],
+            "plain text",
+            None,
+        ]
+        body = {"messages": [
+            {"role": "assistant", "tool_calls": [
+                {"id": f"c{i}", "function": {"name": "shot", "arguments": "{}"}} for i in range(len(contents))
+            ]},
+            *({"role": "tool", "tool_call_id": f"c{i}", "content": content} for i, content in enumerate(contents)),
+        ]}
+        original = json.dumps(body)
+        payload = claude_mod.build_messages_payload(body, "claude-sonnet-4-6")
+        results = payload["messages"][-1]["content"]
+        self.assertEqual([r["tool_use_id"] for r in results], [f"c{i}" for i in range(len(contents))])
+        self.assertEqual(results[0]["content"], [
+            {"type": "text", "text": "screenshot"},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "QQ=="}},
+            {"type": "text", "text": "caption"},
+        ])
+        self.assertEqual(results[1]["content"], [
+            {"type": "image", "source": {"type": "url", "url": "https://example.com/shot.png"}},
+        ])
+        self.assertEqual(results[2]["content"], "plain text")
+        self.assertEqual(results[3]["content"], "")
+        self.assertEqual(json.dumps(body), original)
 
     def test_breakpoint_walks_back_inside_a_block_array(self):
         payload = claude_mod.build_messages_payload(

@@ -7,6 +7,8 @@ payload carries only `input` items, tools (`strict: false` like Codex sends),
 """
 from __future__ import annotations
 
+import json
+
 from .chatgpt_catalog import base_slug, is_fast
 
 
@@ -89,12 +91,15 @@ def build_responses_payload(body: dict, model: str, session_id: str | None = Non
                 if not isinstance(tc, dict):
                     continue
                 fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+                arguments = fn.get("arguments")
+                if not isinstance(arguments, str):
+                    arguments = json.dumps(arguments if arguments is not None else {})
                 input_items.append(
                     {
                         "type": "function_call",
                         "call_id": str(tc.get("id") or fn.get("name") or ""),
                         "name": str(fn.get("name") or ""),
-                        "arguments": str(fn.get("arguments") or "{}"),
+                        "arguments": arguments or "{}",
                     }
                 )
         elif role == "tool":

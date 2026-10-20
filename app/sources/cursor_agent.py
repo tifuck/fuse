@@ -701,8 +701,8 @@ class CursorRun:
         estimate = max(self.used_tokens - output, 0)
         totals = self.turn_usage if self.ended else {}
         if "input_tokens" in totals or "output_tokens" in totals:
-            prompt = max(int(totals.get("input_tokens", 0)) - self.reported_prompt, estimate)
-            completion = max(int(totals.get("output_tokens", 0)) - self.reported_output, output)
+            prompt = max(int(totals["input_tokens"]) - self.reported_prompt, 0) if "input_tokens" in totals else estimate
+            completion = max(int(totals["output_tokens"]) - self.reported_output, 0) if "output_tokens" in totals else output
             cached = min(max(int(totals.get("cache_read_tokens", 0)), 0), prompt)
             written = min(max(int(totals.get("cache_write_tokens", 0)), 0), prompt - cached)
             usage = {
@@ -771,11 +771,21 @@ def canon(msg: dict) -> tuple:
         if cut >= 0:
             text = text[:cut]
     calls = tuple(
-        (str(c.get("id") or ""), str((c.get("function") or {}).get("name") or ""))
+        (str(c.get("id") or ""), str((c.get("function") or {}).get("name") or ""),
+         json.dumps(_args((c.get("function") or {}).get("arguments")), sort_keys=True, ensure_ascii=False))
         for c in (msg.get("tool_calls") or [])
         if isinstance(c, dict)
     )
-    return (role, text.strip(), calls, str(msg.get("tool_call_id") or ""))
+    images = []
+    content = msg.get("content")
+    for part in content if isinstance(content, list) else []:
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") == "image_url":
+            images.append(hashlib.sha256(json.dumps(part, sort_keys=True, ensure_ascii=False).encode()).hexdigest())
+        elif part.get("type") == "image_bytes":
+            images.append((part.get("mime"), hashlib.sha256(part["data"]).hexdigest()))
+    return (role, text.strip(), calls, str(msg.get("tool_call_id") or ""), tuple(images))
 
 
 class Conversation:

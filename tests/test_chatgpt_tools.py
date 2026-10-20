@@ -19,6 +19,20 @@ from app.sources.chatgpt_stream import _aggregate, _translated_stream
 
 
 class ChatgptToolsTest(unittest.TestCase):
+    def test_dictionary_tool_arguments_are_serialized_as_json(self):
+        arguments = {"pattern": "café", "n": 1, "enabled": True, "optional": None}
+        for raw in (arguments, {}, json.dumps(arguments), None):
+            with self.subTest(arguments=raw):
+                payload = build_responses_payload({"messages": [
+                    {"role": "assistant", "content": None, "tool_calls": [
+                        {"id": "c1", "function": {"name": "grep", "arguments": raw}},
+                    ]},
+                ]}, "gpt-5")
+                result = payload["input"][0]["arguments"]
+                self.assertEqual(json.loads(result), arguments if raw else {})
+                if isinstance(raw, str):
+                    self.assertEqual(result, raw)
+
     def test_function_call_pairing(self):
         payload = build_responses_payload(
             {
