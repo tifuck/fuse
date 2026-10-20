@@ -125,6 +125,7 @@ function initState() {
   S.agentLiveLabel = S.root.querySelector("[data-agent-live-label]");
   S.STORE_MODEL = "fuse.chat.model";
   S.STORE_EFFORT = "fuse.chat.effort";
+  S.STORE_EFFORT_CACHE_WARN = "fuse.chat.effortCacheWarn";
   S.STORE_TAB = "fuse.chat.historyTab";
   S.STORE_HISTORY_WIDTH = "fuse.chat.historyWidth";
   S.STORE_PROJECT_SORT = "fuse.chat.projectSort";

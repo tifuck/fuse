@@ -169,7 +169,7 @@ def public(raw) -> dict | None:
     if probe is None:
         return None
     return {"at": probe["at"], "prompt": probe["prompt"], "model": probe["model"],
-            "ttl": ttl_for(probe["source"], probe["model"]), "hit": probe["hit"]}
+            "ttl": ttl_for(probe["source"], probe["model"]), "hit": probe["hit"], "effort": probe["effort"]}
 
 
 def warned(prior, run_id) -> bool:

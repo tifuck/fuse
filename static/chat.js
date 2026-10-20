@@ -264,7 +264,7 @@ import { createBoot } from './chat/boot.js';
 
   const context = createContext({
     net,
-    picker: { effortLabel: (...args) => picker.effortLabel(...args), holdHint: (...args) => picker.holdHint(...args), pinHint: (...args) => picker.pinHint(...args), releaseHint: (...args) => picker.releaseHint(...args), setHint: (...args) => picker.setHint(...args) },
+    picker: { effortLabel: (...args) => picker.effortLabel(...args), holdHint: (...args) => picker.holdHint(...args), pinHint: (...args) => picker.pinHint(...args), releaseHint: (...args) => picker.releaseHint(...args), setHint: (...args) => picker.setHint(...args), unpinHint: (...args) => picker.unpinHint(...args) },
     sync: { acceptThread: (...args) => sync.acceptThread(...args), showFailure: (...args) => sync.showFailure(...args) },
     traces,
     ui,
@@ -1508,6 +1508,16 @@ import { createBoot } from './chat/boot.js';
     if (thinkingToggle) {
       thinkingToggle.checked = S.showThinking;
       thinkingToggle.addEventListener("change", () => panels.setShowThinking(thinkingToggle.checked));
+    }
+    const effortWarnToggle = S.viewMenu.querySelector("[data-effort-cache-warn-toggle]");
+    if (effortWarnToggle) {
+      // Read when the sheet opens: the toast's "Don't warn again" sets it too.
+      const read = () => { try { effortWarnToggle.checked = localStorage.getItem(S.STORE_EFFORT_CACHE_WARN) !== "off"; } catch (_) {} };
+      read();
+      S.viewToggle.addEventListener("click", read);
+      effortWarnToggle.addEventListener("change", () => {
+        try { localStorage.setItem(S.STORE_EFFORT_CACHE_WARN, effortWarnToggle.checked ? "on" : "off"); } catch (_) {}
+      });
     }
     ;
     S.viewBackdrop?.addEventListener("click", () => panels.setViewMenuOpen(false));

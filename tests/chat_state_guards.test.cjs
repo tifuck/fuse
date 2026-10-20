@@ -138,6 +138,40 @@ test('a compaction that finishes after its chat was left leaves the open chat al
   assert.match(hints.at(-1), /Context compacted · 50/);
 });
 
+test('an effort change warns only while a cache built at another effort is warm', () => {
+  const pins = [];
+  const store = new Map();
+  global.localStorage = { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, v) };
+  const opus = { id: 'claude-opus', type: 'claude' };
+  const glm = { id: 'glm-5', type: 'zai' };
+  Object.assign(S, { modelsById: new Map([[opus.id, opus], [glm.id, glm]]), modelId: opus.id });
+  const context = createContext({
+    net: stub(), sync: stub(), traces: stub(), ui: stub(),
+    picker: stub({ effortLabel: (e) => e, pinHint: (key, text, action) => pins.push({ key, text, action }),
+      unpinHint: (key) => pins.push({ key, gone: true }) }),
+  });
+  const warm = (extra) => context.acceptCacheProbe({ at: Date.now() / 1000, prompt: 80_000, model: opus.id, ttl: 3600, hit: true, effort: 'xhigh', ...extra });
+  warm();
+  pins.length = 0;
+  context.warnEffortCacheReset('low');
+  assert.match(pins.at(-1).text, /New effort, cold cache .* xhigh keeps the cache/);
+  context.warnEffortCacheReset('xhigh');
+  assert.deepEqual(pins.at(-1), { key: 'effort-cache', gone: true }, 'going back to the cached effort clears it');
+  warm({ hit: false });
+  pins.length = 0;
+  context.warnEffortCacheReset('low');
+  assert.equal(pins.some((p) => p.text), false, 'a cold cache has nothing to lose');
+  S.modelId = glm.id;
+  warm({ model: glm.id, at: Date.now() / 1000 + 1 });
+  context.warnEffortCacheReset('none');
+  assert.match(pins.at(-1).text, /may reset/, 'undocumented providers get a softer warning');
+  pins.at(-1).action.run();
+  pins.length = 0;
+  context.warnEffortCacheReset('none');
+  assert.equal(pins.some((p) => p.text), false, "Don't warn again sticks");
+  delete global.localStorage;
+});
+
 test('project reads that land after another chat opened are dropped', async () => {
   let reply;
   const api = () => (reply = deferred()).promise;

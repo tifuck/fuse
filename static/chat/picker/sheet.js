@@ -86,9 +86,10 @@ export function createSheet(ctx) {
   }
 
     // A toast that stays until the user closes it (or the chat changes). A
-  // passing hint may cover it; it comes back when that hint ends.
-    function pinHint(key, text) {
-    S.pinnedHint = { key, text };
+  // passing hint may cover it; it comes back when that hint ends. An action
+  // ({label, run}) adds a button that runs it and closes the toast.
+    function pinHint(key, text, action = null) {
+    S.pinnedHint = { key, text, action };
     showPinned();
   }
 
@@ -97,6 +98,14 @@ export function createSheet(ctx) {
     setHint(pin.text, false, 0);
     S.hintKey = pin.key;
     S.hint.classList.add("is-pinned");
+    if (pin.action) {
+      const act = document.createElement("button");
+      act.type = "button";
+      act.className = "chat-toast-action";
+      act.textContent = pin.action.label;
+      act.addEventListener("click", () => { pin.action.run(); unpinHint(pin.key); });
+      S.hint.appendChild(act);
+    }
     const close = document.createElement("button");
     close.type = "button";
     close.className = "chat-toast-close";

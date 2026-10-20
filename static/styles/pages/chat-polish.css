@@ -284,6 +284,22 @@
 }
 .chat-toast-close:hover,
 .chat-toast-close:focus-visible { opacity: 1; background: color-mix(in srgb, var(--mist) 12%, transparent); }
+.chat-toast-action {
+  flex: none;
+  pointer-events: auto;
+  margin-left: 0.35rem;
+  padding: 0.05rem 0.5rem;
+  border: 1px solid color-mix(in srgb, var(--brass) 45%, var(--line));
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.8rem;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.chat-toast-action:hover,
+.chat-toast-action:focus-visible { background: color-mix(in srgb, var(--mist) 12%, transparent); }
 
 @media (prefers-reduced-motion: reduce) {
   .chat-toast { transition: none; transform: translateX(-50%); }

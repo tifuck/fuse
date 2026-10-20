@@ -177,7 +177,10 @@ class CacheWatchTest(unittest.TestCase):
 
     def test_public_view_hides_the_account(self):
         view = watch.public(self.warm)
-        self.assertEqual(view, {"at": 1000.0, "prompt": 50_000, "model": "m", "ttl": watch.DEFAULT_TTL_S, "hit": True})
+        self.assertEqual(view, {"at": 1000.0, "prompt": 50_000, "model": "m", "ttl": watch.DEFAULT_TTL_S, "hit": True, "effort": None})
+        # The effort the cache was built at, so the picker can warn before a change.
+        warm = probe(50_000, 45_000, request=sent(user("q"), effort="xhigh"))
+        self.assertEqual(watch.public(warm)["effort"], "xhigh")
 
     def test_probe_survives_compaction_state_and_a_checkpoint_clears_it(self):
         state = context.parse_state(context.dump_state({"cache": self.warm}))

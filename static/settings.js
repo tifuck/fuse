@@ -144,6 +144,14 @@
       try { localStorage.setItem(STORE_THINKING, thinking.checked ? "shown" : "hidden"); } catch (_) {}
     });
   }
+  const effortWarn = root.querySelector("[data-effort-cache-warn-toggle]");
+  if (effortWarn) {
+    const STORE_EFFORT_CACHE_WARN = "fuse.chat.effortCacheWarn";
+    try { effortWarn.checked = localStorage.getItem(STORE_EFFORT_CACHE_WARN) !== "off"; } catch (_) {}
+    effortWarn.addEventListener("change", () => {
+      try { localStorage.setItem(STORE_EFFORT_CACHE_WARN, effortWarn.checked ? "on" : "off"); } catch (_) {}
+    });
+  }
 
   const bell = root.querySelector("[data-notif-toggle]");
   const state = root.querySelector("[data-notif-state]");

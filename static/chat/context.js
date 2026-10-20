@@ -6,6 +6,10 @@ import { newSession } from './state.js';
 // Below this many prompt tokens a lost cache is not worth mentioning
 // (matches cache_watch.MIN_TOKENS).
 const CACHE_MIN_TOKENS = 4096;
+// Where a new reasoning effort is documented to drop the cached conversation:
+// these sources, or a model from these vendors behind any other source.
+const EFFORT_RESETS_TYPES = new Set(["claude", "chatgpt", "kimi"]);
+const EFFORT_RESETS_ID = /anthropic|claude|opus|sonnet|haiku|openai|gpt|codex|kimi|moonshot/i;
 
 const TOOL_FAMILIES = {
   web_search: "web search",
@@ -276,7 +280,10 @@ export function createContext(ctx) {
   // (app/chat_generation/cache_watch.py). Warm while that request is inside
   // the provider's cache lifetime and the chat was being served from cache.
     function acceptCacheProbe(probe) {
+    const before = S.cacheProbe && S.cacheProbe.at;
     S.cacheProbe = probe && typeof probe === "object" && Number(probe.at) > 0 ? probe : null;
+    // A newer request was sent at the new effort: the warning has played out.
+    if (S.cacheProbe && S.cacheProbe.at !== before) picker.unpinHint("effort-cache");
   }
 
     function warmCache() {
@@ -309,6 +316,31 @@ export function createContext(ctx) {
     const warm = warmCache();
     if (!warm || warm.model === nextId) return;
     picker.setHint(`New model, cold cache · next reply sends ${formatTokens(warm.prompt)} tokens uncached`);
+  }
+
+    // The effort switch warning. Anthropic, OpenAI and Kimi document that a
+  // new effort drops the cached conversation, also behind Cursor, OpenRouter
+  // and NanoGPT; nobody documents the opposite, so other providers "may".
+  // Only a warm cache built at another effort has anything to lose, and going
+  // back to that effort takes the warning away.
+    function warnEffortCacheReset(next) {
+    const key = "effort-cache";
+    const warm = warmCache();
+    const model = currentModel();
+    if (!warm || !model || warm.model !== model.id || !warm.effort || warm.effort === next) {
+      picker.unpinHint(key);
+      return;
+    }
+    try { if (localStorage.getItem(S.STORE_EFFORT_CACHE_WARN) === "off") return; } catch (_) {}
+    const known = EFFORT_RESETS_TYPES.has(model.type) || EFFORT_RESETS_ID.test(model.id);
+    const tokens = formatTokens(warm.prompt);
+    const text = known
+      ? `New effort, cold cache · next reply sends ${tokens} tokens uncached. ${picker.effortLabel(warm.effort)} keeps the cache.`
+      : `New effort may reset the cache · up to ${tokens} tokens uncached. ${picker.effortLabel(warm.effort)} keeps it.`;
+    picker.pinHint(key, text, {
+      label: "Don't warn again",
+      run: () => { try { localStorage.setItem(S.STORE_EFFORT_CACHE_WARN, "off"); } catch (_) {} },
+    });
   }
 
     function acceptMeter(meter) {
@@ -558,6 +590,7 @@ export function createContext(ctx) {
     noteCacheMiss,
     warmCache,
     warnModelCacheReset,
+    warnEffortCacheReset,
     closeContextPop,
     contextSnapshot,
     currentModel,

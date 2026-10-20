@@ -58,7 +58,10 @@ export function createList(ctx) {
     const changed = value !== currentEffort();
     S.effortByModel[S.modelId] = value;
     S.threadEffort = { model: S.modelId, value };
-    if (changed) composer.persist();
+    if (changed) {
+      context.warnEffortCacheReset(value);
+      composer.persist();
+    }
     const model = context.currentModel();
     const label = effortLabel(value);
     const small = S.pickerHost.querySelector(".chat-picker-btn small");
@@ -189,6 +192,7 @@ export function createList(ctx) {
     if (id !== S.modelId && !net.requireLive()) return;
     if (id !== S.modelId) context.warnModelCacheReset(id);
     S.modelId = id;
+    context.warnEffortCacheReset(currentEffort());
     S.pickerIndex = Math.max(0, filteredModels().findIndex((model) => model.id === id));
     composer.persist();
     if (dismiss || !S.pickerOpen) {
