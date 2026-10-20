@@ -84,4 +84,4 @@ class WikipediaProvider:
                     query=query,
                 )
             )
-        return ProviderResponse(hits=hits, status=200, error=None, last_timeout=last_timeout)
+        return ProviderResponse(hits=hits, status=200, error=None if hits else "empty", last_timeout=last_timeout)

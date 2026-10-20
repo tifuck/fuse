@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html as html_lib
 import itertools
 import json
 import logging
@@ -723,7 +724,7 @@ def _is_layout_table(table, rows: list) -> bool:
     if (table.attributes.get("role") or "").lower() in ("presentation", "none"):
         return True
     # css() matches the node itself too, so a nested table means two hits.
-    if len(rows) < 2 or len(table.css("table")) > 1 or table.css_first("pre") is not None:
+    if len(table.css("table")) > 1 or table.css_first("pre") is not None:
         return True
     widths = [len(_cells(row)) for row in rows]
     if max(widths, default=0) < 2:
@@ -743,7 +744,7 @@ def _render_table(table, ctx: _Ctx, depth: int) -> list[str]:
             for cell in _cells(row):
                 parts = _render_children(cell, ctx, depth + 1)
                 text = "\n\n".join(parts).strip()
-                if text and not re.fullmatch(r"[\d\s]+", text):
+                if text:
                     rendered.append(text)
             if not rendered:
                 continue
@@ -946,14 +947,13 @@ def _feed_text(raw: str) -> str:
             return ""
         value = next((g for g in match.groups() if g), "")
         value = re.sub(r"(?is)^<!\[CDATA\[(.*)\]\]>$", r"\1", value.strip())
-        if "<" in value or "&" in value:
-            value = _clean_fragment(value) if "<" in value else _norm_inline(value)
+        value = _clean_fragment(value) if "<" in value else html_lib.unescape(value)
         return value.strip()
 
     lines: list[str] = []
-    channel = _feed_field("title", raw[:4000])
+    channel = field_of("title", raw[:4000])
     if channel:
-        lines.append("# " + _norm_inline(re.sub(r"(?is)<!\[CDATA\[(.*)\]\]>", r"\1", channel.group(1))))
+        lines.append("# " + _norm_inline(channel))
     for index, block in enumerate(_feed_items(raw)):
         if index >= FEED_MAX_ITEMS:
             lines.append(f"(… more feed items not shown)")

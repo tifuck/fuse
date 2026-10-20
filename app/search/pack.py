@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from .extract import PageExtract
 from .providers.base import QueryResult, SearchHit, canonical_url, source_id
 
@@ -222,6 +224,12 @@ def pack_page(url: str, extract: PageExtract) -> str:
     if extract.paged and extract.total_chars and not text and extract.offset >= extract.total_chars:
         text = f"(offset {extract.offset} is past the end; the extracted text has {extract.total_chars} characters)"
     if len(text) > room:
+        if extract.paged:
+            text = text[:room]
+            return pack_page(url, replace(
+                extract, text=text, chars_out=len(text), truncated=True,
+                next_offset=extract.offset + len(text),
+            ))
         marker = "\n[extract truncated]"
         text = text[: max(0, room - len(marker))].rstrip() + marker
     lines.append(text)

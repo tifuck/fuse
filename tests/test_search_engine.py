@@ -417,6 +417,34 @@ class EngineAsyncTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(brave_calls[0][2]["timeout"], TIMEOUT_BRAVE)
         self.assertEqual(brave_calls[0][2]["params"].get("freshness"), "pd")
 
+    async def test_successful_empty_api_providers_are_not_search_failures(self):
+        from app.search import engine
+
+        client = FakeClient()
+
+        async def get(url, kwargs):
+            if url == "https://en.wikipedia.org/w/api.php":
+                return FakeResp(200, {"query": {"search": []}})
+            self.assertEqual(url, "https://api.search.brave.com/res/v1/web/search")
+            return FakeResp(200, {"web": {"results": []}})
+
+        client.get_impl = get
+        empty = ProviderResponse(hits=[], status=200, error="empty")
+        with (
+            patch.object(engine, "get_client", return_value=client),
+            patch.object(engine, "_brave_key", return_value="k"),
+            patch.object(engine, "brave_auth_failed", return_value=False),
+            patch.object(engine, "_allow", return_value=True),
+            patch.object(engine._ddg, "search", AsyncMock(return_value=empty)),
+            patch.object(engine._bing, "search", AsyncMock(return_value=empty)),
+            patch.object(engine._yahoo, "search", AsyncMock(return_value=empty)),
+            patch.object(engine._hn, "search", AsyncMock(return_value=empty)),
+        ):
+            out = await search_bulk(["how to decode nonexistent format"], user_id=1)
+        self.assertEqual(out[0].kind, "empty")
+        self.assertEqual(out[0].error, "No results.")
+        self.assertEqual(len(client.calls), 2)
+
     async def test_brave_429_is_error_not_empty(self):
         client = FakeClient()
 
@@ -929,6 +957,61 @@ class SearchQualityTest(unittest.TestCase):
         self.assertLessEqual(len(packed), RESULT_CHARS)
         for i in range(6):
             self.assertIn(f"## Q{i + 1}: query {i}", packed)
+
+    def test_pack_page_continuation_preserves_text_when_metadata_fills_budget(self):
+        import re
+        from dataclasses import replace
+
+        from app.search.engine import _with_find
+        from app.search.extract import FETCH_CHARS, extract_page
+        from app.search.pack import PAGE_BUDGET, pack_page
+
+        body = "".join(
+            f"<h2>{i} {'H' * 110}</h2><p><a href='https://links.example/{i}/{'u' * 95}'>"
+            f"{'L' * 70}{i}</a></p>" for i in range(40)
+        ) + f"<p>{'x' * 30000}</p>"
+        url = "https://docs.example/" + "path" * 40
+        base = extract_page(body, url=url)
+        for size, budget in ((FETCH_CHARS - 1, 25000), (len(base.full_text), PAGE_BUDGET)):
+            with self.subTest(size=size), patch("app.search.pack.PAGE_BUDGET", budget):
+                full = base.full_text[:size]
+                page = replace(base, full_text=full, total_chars=size, text=full[:FETCH_CHARS],
+                               next_offset=FETCH_CHARS if size > FETCH_CHARS else None)
+                packed = pack_page(url, page)
+                self.assertLessEqual(len(packed), budget)
+                end = int(re.search(r"Call read_url again with offset=(\d+)", packed).group(1))
+                self.assertLess(end, min(FETCH_CHARS, size))
+                self.assertIn("\n" + full[:end] + "\n(Showing characters", packed)
+                later = _with_find(page, None, offset=end)
+                self.assertEqual(full[:end] + later.text, full)
+                self.assertEqual(page.text, full[:FETCH_CHARS])
+
+    def test_small_and_layout_tables_preserve_numeric_values(self):
+        from app.search.extract import _html_extract
+
+        for table in (
+            "<table><tr><td>Revenue USD</td><td>12345</td></tr></table>",
+            "<table role='presentation'><tr><td>Revenue USD</td><td>12345</td></tr></table>",
+            "<table><tr><td>12345</td></tr><tr><td>67890</td></tr></table>",
+        ):
+            with self.subTest(table=table):
+                text = _html_extract(table, "")[1]
+                self.assertIn("12345", text)
+                if "Revenue" in table:
+                    self.assertIn("Revenue USD", text)
+                else:
+                    self.assertIn("67890", text)
+
+    def test_feed_fields_decode_entities_without_losing_literal_comparisons(self):
+        from app.search.extract import extract_page
+
+        feed = (
+            "<rss><channel><title>Prices &amp; News</title><item>"
+            "<title>Profit &amp; loss</title><link>https://example.com/?a=1&amp;b=2</link>"
+            "<description>A &lt; B</description></item></channel></rss>"
+        )
+        page = extract_page(feed, content_type="application/rss+xml")
+        self.assertEqual(page.text, "# Prices & News\n- Profit & loss\n  https://example.com/?a=1&b=2\n  A < B")
 
     def test_pack_page_has_outline_and_only_this_windows_links(self):
         from app.search.extract import FETCH_CHARS, extract_page
