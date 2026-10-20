@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from .. import accounts, db
+from .. import accounts, db, provider_errors
 from ..config import settings
 from ..crypto import encrypt
 from ..proxy import UsageStream, openai_chat
@@ -699,7 +699,10 @@ class ZaiSource:
                         await refresh_quota(cred, force=True)
                     except Exception:
                         pass
-                    note_failure(cred["id"], cooldown_seconds=60)
+                    # 1308/1310/1316-1321 name a 5-hour/weekly reset: hold the
+                    # spent key out until then, not 60s.
+                    info = provider_errors.classify("zai", status, obj, response_headers)
+                    note_failure(cred["id"], cooldown_seconds=provider_errors.cooldown(info, 60))
                     last.response_headers = response_headers
                     # Quota may have been consumed even though the attempt
                     # failed; record whatever usage the attempt reported.

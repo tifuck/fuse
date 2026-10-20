@@ -270,19 +270,33 @@ def merge_usage(parsed: dict, extra: dict | None) -> dict:
     return merged
 
 
-def _error_object(status: int, raw: bytes) -> dict:
+def _error_object(status: int, raw: bytes, headers=None) -> dict:
     """Upstream error body as an error object. Keeps the upstream status: an
-    HTML 413/400 page is still the request's fault, not a retryable 502."""
+    HTML 413/400 page is still the request's fault, not a retryable 502.
+    Rate-limit/reset headers ride along under `_fuse_headers` for
+    provider_errors; api.invoke_chat strips them before anything is relayed."""
     try:
         obj = json.loads(raw)
     except (ValueError, RecursionError):
         obj = None
     if isinstance(obj, dict):
+        kept = _rate_headers(headers)
+        if kept:
+            obj["_fuse_headers"] = kept
         return obj
     text = raw.decode("utf-8", errors="replace").strip() if isinstance(raw, (bytes, bytearray)) else ""
     if text.lstrip().startswith("<"):
         text = ""
     return {"error": {"message": scrub_secrets(text)[:500] or f"upstream returned HTTP {status}"}}
+
+
+def _rate_headers(headers) -> dict:
+    from .provider_errors import keep_headers
+
+    # Retry-After already travels in the returned response headers.
+    kept = keep_headers(headers) if headers is not None else {}
+    kept.pop("retry-after", None)
+    return kept
 
 
 def _chat_failure(status: int, message: str, phase: str, usage: dict | None = None) -> tuple:
@@ -338,7 +352,7 @@ async def openai_chat(
                 await resp.aclose()
                 if close_client:
                     await client.aclose()
-            return resp.status_code, _error_object(resp.status_code, err), None, {}, safe_headers
+            return resp.status_code, _error_object(resp.status_code, err, resp.headers), None, {}, safe_headers
 
         collected: dict = {}
 
@@ -409,7 +423,7 @@ async def openai_chat(
             safe_headers = {}
             if resp.headers.get("retry-after"):
                 safe_headers["Retry-After"] = resp.headers["retry-after"][:128]
-            return resp.status_code, _error_object(resp.status_code, resp.content), None, {}, safe_headers
+            return resp.status_code, _error_object(resp.status_code, resp.content, resp.headers), None, {}, safe_headers
         try:
             obj = resp.json()
         except ValueError:

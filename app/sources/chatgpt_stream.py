@@ -212,6 +212,7 @@ class _Translator:
         self.book = _CallBook()
         self.usage: dict = {}
         self.error: str = ""
+        self.error_code: str = ""
 
     def _chunk(self, delta: dict | None = None, finish: str | None = None) -> bytes:
         obj = {
@@ -232,6 +233,10 @@ class _Translator:
             "choices": [],
             "error": {"message": message, "type": "api_error"},
         }
+        if self.error_code:
+            # usage_limit_reached, context_length_exceeded, cyber_policy...:
+            # provider_errors classifies on it.
+            obj["error"]["code"] = self.error_code
         return _sse(obj)
 
     def _settle(self, rec: dict, final) -> bytes | None:
@@ -335,10 +340,13 @@ class _Translator:
                 self.usage = _usage_from_response(usage)
             err = response.get("error") if isinstance(response.get("error"), dict) else {}
             self.error = str(err.get("message") or ("upstream response incomplete" if etype == "response.incomplete" else "upstream response failed"))
+            incomplete = response.get("incomplete_details") if isinstance(response.get("incomplete_details"), dict) else {}
+            self.error_code = str(err.get("code") or err.get("type") or incomplete.get("reason") or "")
             return b"__ERROR__"
         if etype == "error":
             err = event.get("error") if isinstance(event.get("error"), dict) else {}
             self.error = str(err.get("message") or event.get("message") or "upstream error")
+            self.error_code = str(err.get("code") or err.get("type") or event.get("code") or "")
             return b"__ERROR__"
         return None
 

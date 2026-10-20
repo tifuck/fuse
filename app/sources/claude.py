@@ -22,7 +22,7 @@ from urllib.parse import urlencode
 
 import httpx
 
-from .. import accounts, db
+from .. import accounts, db, provider_errors
 from ..async_work import durable_call
 from ..config import settings
 from ..crypto import encrypt
@@ -68,6 +68,7 @@ from .claude_payload import (
 from .claude_stream import (
     UpstreamProtocolError,
     _aggregate,
+    _error_fields,
     _error_message,
     _signature_retryable,
     _sse,
@@ -823,15 +824,21 @@ class ClaudeSource:
                     # Retry-After: the chat loop backs off on it and the user
                     # sees why the request failed, not just a status code.
                     try:
-                        detail = _error_message((await resp.aread()).decode("utf-8", errors="replace"))
+                        raw = (await resp.aread()).decode("utf-8", errors="replace")
                     except Exception:
-                        detail = ""
+                        raw = ""
+                    detail = _error_message(raw)
                     retry_after = str(resp.headers.get("retry-after") or "").strip()
                     await resp.aclose()
                     await client.aclose()
+                    # error.type / details.error_code and the unified
+                    # subscription headers tell a 5-hour or weekly cap from a
+                    # per-minute limit; provider_errors reads them.
+                    error = {"message": f"Claude request failed ({status})" + (f": {detail[:300]}" if detail else "")}
+                    error.update(_error_fields(raw))
                     last = ChatResult(
                         status=status,
-                        body={"error": {"message": f"Claude request failed ({status})" + (f": {detail[:300]}" if detail else "")}},
+                        body={"error": error, "_fuse_headers": provider_errors.keep_headers(getattr(resp, "headers", None))},
                         credential_id=cred["id"],
                         model=fuse_id(upstream),
                         response_headers={"Retry-After": retry_after} if retry_after else {},
@@ -848,7 +855,8 @@ class ClaudeSource:
                         status in (500, 502, 503, 529) and failover.server_error(cred["id"], status, 15)
                     ):
                         if status == 429:
-                            note_failure(cred["id"], cooldown_seconds=60)
+                            info = provider_errors.classify("claude", status, last.body)
+                            note_failure(cred["id"], cooldown_seconds=provider_errors.cooldown(info, 60))
                         attempts.append({"credential_id": cred["id"], "status": status, "usage": {}})
                         last.attempts = attempts
                         continue

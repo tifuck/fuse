@@ -789,7 +789,10 @@ class DevinSource:
                     # A quota-exhausted account is spent for the whole daily
                     # window; cool it well past the generic failure blip so
                     # the pool stops hammering it turn after turn.
-                    quota_hit = "quota" in str((collected or {}).get("trailer_error") or "").lower()
+                    # resource_exhausted is Connect's quota code; Devin's
+                    # message does not always say "quota".
+                    quota_hit = ("quota" in str((collected or {}).get("trailer_error") or "").lower()
+                                 or (collected or {}).get("trailer_code") == "resource_exhausted")
                     limited = (collected or {}).get("trailer_status") == 429
                     note_failure(
                         cid,

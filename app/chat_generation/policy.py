@@ -11,6 +11,8 @@ from __future__ import annotations
 import re
 import time
 
+from .. import provider_errors
+
 
 _TOOLS_UNSUPPORTED = re.compile(
     r"does not support (tools|function.?call)"
@@ -147,31 +149,39 @@ def _error_obj(status: int, body) -> dict:
     if status == 401:
         status = 502
     msg = api._error_message(body) or "upstream error"
-    err_type = "access_denied" if status in (401, 402, 403) else "api_error"
-    return {"error": {"message": msg, "type": err_type, "code": status if 400 <= status <= 599 else 502}}
+    err_type = provider_errors.kind_of(body) or ("access_denied" if status in (401, 402, 403) else "api_error")
+    err = {"message": msg, "type": err_type, "code": status if 400 <= status <= 599 else 502}
+    if provider_errors.kind_of(body):
+        err["fuse_kind"] = err_type
+    return {"error": err}
 
 
-def _resumable_failure(code: int, message: str) -> bool:
+def _resumable_failure(code: int, message: str, kind: str = "") -> bool:
     """True when a failed round is worth re-running with the same context.
 
     Transient upstream conditions (429, 5xx, dropped streams, timeouts, key
     pools that were briefly exhausted) are resumable. Definitive rejections —
-    auth, plan gating, context overflow, malformed requests — are not: the
-    retry would burn quota and fail identically.
+    auth, plan gating, spent plan usage or credits, context overflow,
+    malformed requests — are not: the retry would burn quota and fail
+    identically. `kind` is provider_errors' classification when known.
     """
     if _TERMINAL_MESSAGE.search(message or ""):
         return False
     if _LOCAL_ADAPTER_FAILURE.match((message or "").strip()):
         return False
+    if kind in provider_errors.TERMINAL:
+        return False
+    if kind in provider_errors.TRANSIENT:
+        return True
     if isinstance(code, int) and (code == 429 or 500 <= code <= 599):
         return True
     return bool(_RESUMABLE_MESSAGE.search(message or ""))
 
 
-def _should_resume(code: int, message: str, *, resumes_left: int, idle_stalls: int) -> bool:
+def _should_resume(code: int, message: str, *, resumes_left: int, idle_stalls: int, kind: str = "") -> bool:
     if resumes_left <= 0:
         return False
-    if not _resumable_failure(code, message):
+    if not _resumable_failure(code, message, kind):
         return False
     if _is_idle_timeout(message) and idle_stalls > IDLE_STALL_RETRIES:
         return False
@@ -227,12 +237,7 @@ def _header_retry_after(headers) -> float:
     if not isinstance(headers, dict):
         return 0.0
     raw = headers.get("Retry-After") or headers.get("retry-after")
-    if not raw:
-        return 0.0
-    try:
-        return max(0.0, float(str(raw).strip()))
-    except (TypeError, ValueError):
-        return 0.0
+    return provider_errors.retry_after_seconds(raw) or 0.0
 
 
 def _resume_delay(attempt_no: int, retry_after: float = 0.0, backoff=_RESUME_BACKOFF) -> float:
@@ -245,7 +250,7 @@ def _resume_delay(attempt_no: int, retry_after: float = 0.0, backoff=_RESUME_BAC
 
 def _as_error_frame(raw, fallback_status: int = 502) -> dict:
     code, msg = _error_code_and_message(raw)
-    return _error_obj(code or fallback_status, {"error": {"message": msg or "upstream error"}})
+    return _error_obj(code or fallback_status, {"error": {"message": msg or "upstream error", "fuse_kind": provider_errors.kind_of(raw)}})
 
 
 def _exhausted_provider_error(is_child: bool, raw, fallback_status: int = 502, *, attempts: int | None = None) -> dict:
@@ -263,7 +268,7 @@ def _exhausted_provider_error(is_child: bool, raw, fallback_status: int = 502, *
     tried = MAX_RESUME_RETRIES if attempts is None else max(0, int(attempts))
     wrapped = _CHILD_PROVIDER_FAILURE.format(
         attempts=f" after {tried} {'retry' if tried == 1 else 'retries'}" if tried else "", detail=detail)
-    return _error_obj(_code or fallback_status or 503, {"error": {"message": wrapped}})
+    return _error_obj(_code or fallback_status or 503, {"error": {"message": wrapped, "fuse_kind": provider_errors.kind_of(frame)}})
 
 
 def _promote_provider_content_error(summary: dict) -> dict:

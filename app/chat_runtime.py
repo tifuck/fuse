@@ -13,7 +13,7 @@ import httpx
 from fastapi import HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from . import api, artifacts, chats, context_compact as ctxmod, context_meter
+from . import api, artifacts, chats, context_compact as ctxmod, context_meter, provider_errors
 from .chat_generation import inbox, metadata, policy, tool_runner
 from .chat_tools import execute_tool, openai_tools, parse_tool_names
 from .proxy import merge_usage, usage_from_obj
@@ -1333,7 +1333,8 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 if _is_idle_timeout(err_msg):
                     idle_stalls += 1
                 if (
-                    _should_resume(result.status, err_msg, resumes_left=resumes_left, idle_stalls=idle_stalls)
+                    _should_resume(result.status, err_msg, resumes_left=resumes_left, idle_stalls=idle_stalls,
+                                   kind=provider_errors.kind_of(result.body))
                     and not await request.is_disconnected()
                 ):
                     resumes_left -= 1
@@ -1475,10 +1476,13 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             await _persist_meter({**round_meter, "cache_probe": probe} if probe else round_meter)
             if summary.get("error"):
                 raw_err = summary["error"] if isinstance(summary["error"], dict) else {"error": {"message": str(summary["error"])}}
+                err_code, _msg = _error_code_and_message(raw_err)
+                raw_err, _info = provider_errors.annotate(src_type or src_type_guess or "", err_code, raw_err)
                 err_code, err_msg = _error_code_and_message(raw_err)
                 if _is_idle_timeout(err_msg):
                     idle_stalls += 1
-                if _should_resume(err_code, err_msg, resumes_left=resumes_left, idle_stalls=idle_stalls) and not await request.is_disconnected():
+                if _should_resume(err_code, err_msg, resumes_left=resumes_left, idle_stalls=idle_stalls,
+                                  kind=provider_errors.kind_of(raw_err)) and not await request.is_disconnected():
                     resumes_left -= 1
                     attempt_no = MAX_RESUME_RETRIES - resumes_left
                     delay = _resume_delay(

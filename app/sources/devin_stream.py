@@ -271,6 +271,14 @@ _TRANSIENT_CODES = {"unavailable", "unauthenticated", "permission_denied", "reso
                     "deadline_exceeded", "canceled", "aborted"}
 
 
+def _trailer_code(payload: bytes) -> str:
+    try:
+        error = json.loads(payload).get("error")
+    except (ValueError, UnicodeDecodeError, AttributeError):
+        return ""
+    return str(error.get("code") or "").lower() if isinstance(error, dict) else ""
+
+
 def _trailer_status(payload: bytes, message: str) -> int | None:
     """The HTTP status a trailer error stands for when it is the account's
     or Devin's condition, so the chat loop fails over instead of ending the
@@ -325,11 +333,14 @@ async def _stream_sse(resp, client, collected: dict, model: str, uid: str = "", 
                         if kind:
                             note_sku_failure(uid, kind)
                         status = _trailer_status(payload, error)
+                        # The Connect code (resource_exhausted, permission_denied,
+                        # unavailable...) is what provider_errors classifies on.
+                        frame = {"message": error, "type": _trailer_code(payload)}
+                        collected["trailer_code"] = frame["type"]
                         if status:
                             collected["trailer_status"] = status
-                            yield _sse({"error": {"message": error, "code": status}})
-                        else:
-                            yield _sse({"error": {"message": error}})
+                            frame["code"] = status
+                        yield _sse({"error": {k: v for k, v in frame.items() if v}})
                         return
                     continue
                 msg = proto.decode_get_chat_message(payload)

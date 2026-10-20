@@ -82,6 +82,7 @@ class _Translator:
         self.completion_id = "chatcmpl-claude"
         self.usage: dict = {}
         self.error = ""
+        self.error_type = ""
         self.blocks: dict[int, dict] = {}
         self.tool_order: list[int] = []
         self.thinking: list[dict] = []
@@ -111,7 +112,7 @@ class _Translator:
                 "created": self.created,
                 "model": self.model,
                 "choices": [],
-                "error": {"message": message, "type": "api_error"},
+                "error": {"message": message, "type": self.error_type or "api_error"},
             }
         )
 
@@ -240,6 +241,10 @@ class _Translator:
         if etype == "error":
             err = event.get("error") if isinstance(event.get("error"), dict) else event
             self.error = str((err or {}).get("message") or event.get("message") or "upstream error")
+            # overloaded_error vs rate_limit_error vs invalid_request_error:
+            # provider_errors classifies on it.
+            if (err or {}).get("type") not in (None, "error"):
+                self.error_type = str(err["type"])
             return b"__ERROR__"
         if etype == "ping":
             return None
@@ -353,7 +358,7 @@ async def _aggregate(resp: httpx.Response, client: httpx.AsyncClient, model: str
     if not terminal and not translator.error:
         translator.error = "upstream stream ended before a terminal response"
     if translator.error:
-        return {"error": {"message": translator.error, "type": "api_error", "code": 502}, "_fuse_usage": translator.usage}
+        return {"error": {"message": translator.error, "type": translator.error_type or "api_error", "code": 502}, "_fuse_usage": translator.usage}
     message: dict = {"role": "assistant", "content": "".join(text_parts)}
     if reasoning_parts:
         message["reasoning_content"] = "".join(reasoning_parts)
@@ -372,6 +377,18 @@ async def _aggregate(resp: httpx.Response, client: httpx.AsyncClient, model: str
     if translator.usage:
         body["usage"] = dict(translator.usage)
     return body
+
+
+def _error_fields(raw: str) -> dict:
+    """Anthropic's error.type and error.details, for classification."""
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    err = data.get("error") if isinstance(data, dict) else None
+    if not isinstance(err, dict):
+        return {}
+    return {k: err[k] for k in ("type", "details") if err.get(k)}
 
 
 def _error_message(raw: str) -> str:

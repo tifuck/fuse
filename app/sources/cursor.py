@@ -29,7 +29,7 @@ from urllib.parse import urlencode
 
 import httpx
 
-from .. import accounts, db, file_images
+from .. import accounts, db, file_images, provider_errors
 from ..async_work import durable_call
 from ..config import settings
 from ..crypto import encrypt
@@ -942,7 +942,7 @@ async def _stream(rnd: _Round, collected: dict, model: str):
             event = await rnd.events.__anext__()
     except TurnError as exc:
         collected["stream_status"] = "failed"
-        yield _sse({"error": {"message": exc.message, "code": exc.status}})
+        yield _sse({"error": {"message": exc.message, "code": exc.status, "type": exc.code}})
     except Exception:
         collected["stream_status"] = "failed"
         raise
@@ -1126,7 +1126,8 @@ class CursorSource:
                     plan = ("fresh", None, [])
                     tried.discard(cid)
                     continue
-                last = ChatResult(status=exc.status, body={"error": {"message": exc.message}}, credential_id=cid, model=sel["slug"])
+                last = ChatResult(status=exc.status, body={"error": {"message": exc.message, "type": exc.code}},
+                                  credential_id=cid, model=sel["slug"])
                 attempts.append({"credential_id": cid, "status": exc.status, "usage": {}})
                 if exc.status == 401:
                     if cid not in refreshed and await refresh_one(cred):
@@ -1149,7 +1150,10 @@ class CursorSource:
                         await refresh_quota(cred, force=True)
                     except Exception:
                         pass
-                    note_failure(cid, cooldown_seconds=60)
+                    # ERROR_*_USAGE_LIMIT holds the account out for longer
+                    # than a short ERROR_*_RATE_LIMIT_EXCEEDED.
+                    info = provider_errors.classify("cursor", exc.status, last.body)
+                    note_failure(cid, cooldown_seconds=provider_errors.cooldown(info, 60))
                     continue
                 if exc.status >= 500 and failover.server_error(cid, exc.status, 15):
                     continue
@@ -1164,7 +1168,8 @@ class CursorSource:
             try:
                 obj, usage = await _collect(rnd, model)
             except TurnError as exc:
-                last = ChatResult(status=exc.status, body={"error": {"message": exc.message}}, credential_id=cid, model=sel["slug"])
+                last = ChatResult(status=exc.status, body={"error": {"message": exc.message, "type": exc.code}},
+                                  credential_id=cid, model=sel["slug"])
                 last.attempts = attempts
                 return last
             finally:

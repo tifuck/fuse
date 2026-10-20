@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from .. import accounts, db
+from .. import accounts, db, provider_errors
 from ..async_work import durable_call
 from ..config import settings
 from ..crypto import encrypt
@@ -839,6 +839,9 @@ class ChatGPTSource:
                         resp = await self._post(token, account_id, for_account(payload, cred["id"]), client)
                 if resp.status_code != 200:
                     obj = await _error_body(resp)
+                    kept = provider_errors.keep_headers(getattr(resp, "headers", None))
+                    if kept:
+                        obj["_fuse_headers"] = kept
                     status = resp.status_code
                     await resp.aclose()
                     await client.aclose()
@@ -873,7 +876,10 @@ class ChatGPTSource:
                         last.status = status
                         last.body = {"error": {"message": "ChatGPT rejected the configured account"}}
                     if status in (402, 429) or rejected:
-                        note_failure(cred["id"], cooldown_seconds=30)
+                        # usage_limit_reached carries resets_at: keep a spent
+                        # plan out until then instead of re-trying it in 30s.
+                        info = None if rejected else provider_errors.classify("chatgpt", status, obj)
+                        note_failure(cred["id"], cooldown_seconds=provider_errors.cooldown(info, 30))
                         attempts.append({"credential_id": cred["id"], "status": status, "usage": {}})
                         continue
                     if status >= 500 and failover.server_error(cred["id"], status, 30):

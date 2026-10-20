@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from .. import accounts, db
+from .. import accounts, db, provider_errors
 from ..async_work import durable_call
 from ..config import settings
 from ..crypto import encrypt
@@ -486,7 +486,10 @@ def _capability_denial(data) -> bool:
     if not isinstance(data, dict):
         return False
     err = data.get("error")
-    words = ("capability", "entitlement", "membership", "not included", "does not include", "plan does not")
+    # Live Code wording: "Your current subscription does not have access to
+    # k3", "Your current plan supports only k3 up to 256K context".
+    words = ("capability", "entitlement", "membership", "not included", "does not include", "plan does not",
+             "does not have access to", "supports only", "higher-tier")
     if isinstance(err, dict):
         code = str(err.get("code") or err.get("type") or "").strip().lower()
         if code:
@@ -1114,7 +1117,10 @@ class KimiSource:
                         await refresh_quota(cred, force=True)
                     except Exception:
                         pass
-                    note_failure(cred["id"], cooldown_seconds=60)
+                    # 403 is both the 5-hour/weekly/monthly quota and the
+                    # concurrency cap; only a spent quota earns a long hold.
+                    info = provider_errors.classify("kimi", status, obj, response_headers)
+                    note_failure(cred["id"], cooldown_seconds=provider_errors.cooldown(info, 60))
                     last.response_headers = response_headers
                     attempts.append({"credential_id": cred["id"], "status": status, "usage": usage or {}})
                     last.attempts = attempts

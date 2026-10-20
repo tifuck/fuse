@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from . import accounts, chat_images, db, model_caps, opencode as opencode_mod
+from . import accounts, chat_images, db, model_caps, opencode as opencode_mod, provider_errors
 from .config import settings
 from .proxy import merge_usage, scrub_secrets, usage_from_obj
 from .security import client_ip, limiter
@@ -104,7 +104,7 @@ def _error_message(body) -> str:
 def _upstream_error(status: int, body=None):
     code = 502 if status == 401 else status if 400 <= status <= 599 else 502
     msg = _error_message(body) or "upstream error"
-    err_type = "access_denied" if code in (401, 402, 403) else "api_error"
+    err_type = provider_errors.kind_of(body) or ("access_denied" if code in (401, 402, 403) else "api_error")
     return JSONResponse(
         {"error": {"message": msg, "type": err_type, "code": code}},
         status_code=code,
@@ -665,6 +665,11 @@ async def _invoke_chat(request: Request, user, body: dict, *, cheap_reasoning: b
                                                        user_id=user["id"], snapshot=images)
         if prepared is not None:
             await prepared()
+    if result.status != 200:
+        result.body, info = provider_errors.annotate(src.type_id, result.status, result.body, result.response_headers)
+        wait = info["retry_after"] if info and info["kind"] in provider_errors.TRANSIENT else None
+        if wait and not any(k.lower() == "retry-after" for k in result.response_headers):
+            result.response_headers = {**result.response_headers, "Retry-After": str(math.ceil(wait))}
     headers = {}
     if omitted:
         headers["X-Fuse-Images-Omitted"] = str(omitted)
@@ -695,7 +700,7 @@ async def dispatch_chat(request: Request, user, body: dict):
             msg = _error_message(result.body)
             if msg:
                 return JSONResponse(
-                    {"error": {"message": msg, "type": "access_denied", "code": result.status}},
+                    {"error": {"message": msg, "type": provider_errors.kind_of(result.body) or "access_denied", "code": result.status}},
                     status_code=result.status,
                     headers=result.response_headers,
                 )

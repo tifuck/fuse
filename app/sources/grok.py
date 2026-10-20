@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from .. import accounts, db
+from .. import accounts, db, provider_errors
 from ..async_work import durable_call
 from ..config import settings
 from ..crypto import encrypt
@@ -606,15 +606,20 @@ class GrokSource:
                         credential_id=cred["id"],
                         model=model,
                     )
+                info = provider_errors.classify("grok", status, obj, response_headers) if status in (402, 403, 429) else None
+                # api.x.ai sends personal-team-blocked:spending-limit as 403 too.
+                spent = status == 402 or (status == 403 and info and info["kind"] in ("insufficient_balance", "plan_required"))
                 if status == 429 or rejected:
-                    note_failure(cred["id"], cooldown_seconds=30)
-                elif status == 402:
+                    # subscription:free-usage-exhausted is a rolling 24h window.
+                    note_failure(cred["id"], cooldown_seconds=provider_errors.cooldown(info, 30))
+                elif spent:
                     # Out of plan or credits: without a cooldown every request
                     # paid a round trip to this account before failing over.
                     note_failure(cred["id"], cooldown_seconds=300)
                 last.response_headers = response_headers
                 if (
                     status in (402, 429)
+                    or spent
                     or rejected
                     or (status >= 500 and failover.server_error(cred["id"], status, 30))
                 ):

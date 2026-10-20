@@ -59,10 +59,12 @@ _CODE_STATUS = {
 
 
 class TurnError(Exception):
-    def __init__(self, status: int, message: str):
+    def __init__(self, status: int, message: str, code: str = ""):
         super().__init__(message)
         self.status = status
         self.message = message
+        # ErrorDetails enum or Connect code, for provider_errors.
+        self.code = code
 
 
 # --- OpenAI messages -> Cursor history ---------------------------------------
@@ -492,6 +494,19 @@ def error_info(obj) -> tuple[str, str]:
     return code, message[:500]
 
 
+def error_code(obj) -> str:
+    """The ErrorDetails enum (ERROR_PRO_USER_USAGE_LIMIT...) when Cursor sent
+    one, else the Connect code."""
+    if not isinstance(obj, dict):
+        return ""
+    err = obj.get("error") if isinstance(obj.get("error"), dict) else obj
+    for detail in err.get("details") or []:
+        debug = detail.get("debug") if isinstance(detail, dict) else None
+        if isinstance(debug, dict) and isinstance(debug.get("error"), str) and debug["error"]:
+            return debug["error"].lower()
+    return str(err.get("code") or "").lower()
+
+
 def status_for(code: str, fallback: int = 502) -> int:
     return _CODE_STATUS.get(code, fallback)
 
@@ -553,10 +568,12 @@ class CursorRun:
                 raise TurnError(502, f"Cursor transport failure ({type(exc).__name__})") from None
         if r.status_code != 200:
             try:
-                code, message = error_info(r.json())
+                obj = r.json()
             except ValueError:
-                code, message = "", ""
-            raise TurnError(status_for(code, r.status_code if r.status_code >= 400 else 502), message or f"Cursor HTTP {r.status_code}")
+                obj = None
+            code, message = error_info(obj)
+            raise TurnError(status_for(code, r.status_code if r.status_code >= 400 else 502),
+                            message or f"Cursor HTTP {r.status_code}", error_code(obj))
 
     async def start(self, run_request: bytes) -> None:
         bidi_id = ProtoEncoder()
@@ -582,10 +599,12 @@ class CursorRun:
             if self._resp.status_code != 200:
                 raw = await self._resp.aread()
                 try:
-                    code, message = error_info(json.loads(raw))
+                    obj = json.loads(raw)
                 except ValueError:
-                    code, message = "", ""
-                raise TurnError(status_for(code, self._resp.status_code), message or f"Cursor HTTP {self._resp.status_code}")
+                    obj = None
+                code, message = error_info(obj)
+                raise TurnError(status_for(code, self._resp.status_code),
+                                message or f"Cursor HTTP {self._resp.status_code}", error_code(obj))
             await self.append(run_request)
         except BaseException:
             await self.aclose()
@@ -609,10 +628,12 @@ class CursorRun:
                 for flag, payload in frames:
                     if flag & CONNECT_END_STREAM:
                         try:
-                            code, message = error_info(json.loads(payload or b"{}"))
+                            obj = json.loads(payload or b"{}")
+                            code, message = error_info(obj)
                         except ValueError:
-                            code, message = "unknown", "invalid Cursor trailer"
-                        self.queue.put_nowait(("error", TurnError(status_for(code), message or code)) if code else ("closed",))
+                            obj, code, message = None, "unknown", "invalid Cursor trailer"
+                        self.queue.put_nowait(("error", TurnError(status_for(code), message or code, error_code(obj) or code))
+                                              if code else ("closed",))
                         return
                     try:
                         event = decode_server_message(payload)
