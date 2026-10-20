@@ -663,7 +663,7 @@ def _summary_span(text: str, cap: int) -> str:
 def compact_result_body(text: str) -> str:
     """The <summary> block of a compaction reply; the <analysis> scratchpad is dropped."""
     body = (text or "").strip()
-    cut = body.lower().rfind("</analysis>")
+    cut = body.lower().find("</analysis>") if body.lower().startswith("<analysis>") else -1
     if cut >= 0:
         body = body[cut + len("</analysis>"):].strip()
     # Greedy: the summary may quote <details><summary>…</summary> markup.
@@ -830,41 +830,38 @@ def retained_skill_rows(messages: list | None) -> list[dict]:
     the handoff. `skill_` call ids keep them out of the tool gate and let
     fold_preload_skill reuse them when a backend rejects tools.
     """
-    slugs: dict[str, str] = {}
-    arguments: dict[str, str] = {}
-    bodies: dict[str, str] = {}
+    pending: dict[str, list[str | None]] = {}
+    kept: dict[tuple[str, str], tuple[str, str]] = {}
     for msg in messages or []:
         if not isinstance(msg, dict):
             continue
         if msg.get("role") == "assistant":
+            pending.clear()
             for call in msg.get("tool_calls") or []:
                 if not isinstance(call, dict):
                     continue
                 fn = call.get("function") if isinstance(call.get("function"), dict) else {}
-                if fn.get("name") != "load_skill":
-                    continue
                 ident = str(call.get("id") or "")
-                if ident and ident not in arguments:
-                    arguments[ident] = str(fn.get("arguments") or "{}")
-                    try:
-                        parsed = json.loads(arguments[ident] or "{}")
-                    except (json.JSONDecodeError, ValueError, RecursionError):
-                        parsed = {}
-                    slugs[ident] = str(parsed.get("name") or "") if isinstance(parsed, dict) else ""
+                if ident:
+                    args = str(fn.get("arguments") or "{}") if fn.get("name") == "load_skill" else None
+                    pending.setdefault(ident, []).append(args)
         elif msg.get("role") == "tool":
-            ident = str(msg.get("tool_call_id") or "")
-            if ident in arguments and ident not in bodies:
-                bodies[ident] = str(msg.get("content") or "")
-    kept: dict[tuple[str, str], tuple[str, str]] = {}
-    for ident, args_json in arguments.items():
-        if ident not in bodies or not slugs.get(ident):
-            continue
-        try:
-            parsed = json.loads(args_json or "{}")
-        except (json.JSONDecodeError, ValueError, RecursionError):
-            parsed = {}
-        key = (slugs[ident], str(parsed.get("file") or "") if isinstance(parsed, dict) else "")
-        kept[key] = (args_json, bodies[ident])
+            calls = pending.get(str(msg.get("tool_call_id") or ""))
+            if not calls:
+                continue
+            args_json = calls.pop(0)
+            if args_json is None:
+                continue
+            try:
+                parsed = json.loads(args_json or "{}")
+            except (json.JSONDecodeError, ValueError, RecursionError):
+                parsed = {}
+            if not isinstance(parsed, dict) or not parsed.get("name"):
+                continue
+            key = (str(parsed["name"]), str(parsed.get("file") or ""))
+            kept[key] = (args_json, str(msg.get("content") or ""))
+        else:
+            pending.clear()
     rows: list[dict] = []
     for index, (args_json, content) in enumerate(kept.values()):
         call_id = f"skill_keep_{index}"

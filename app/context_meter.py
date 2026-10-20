@@ -804,13 +804,14 @@ def next_request_meter(
     limit = window_for(model, type_id, catalog=catalog, override=override)
     extra = estimate_messages(added or [])
     target = max(0, int(anchor_prompt or 0)) + extra
-    parts = _fit_parts(occupancy_parts(messages, tools=tools), target)
+    raw = occupancy_parts(messages, tools=tools)
+    parts = _fit_parts(raw, target)
     snap = meter(
         used=target,
         limit=limit,
         model=model,
         estimated=bool(extra),
-        extra={"parts": parts, "basis": "provider_prompt", "source_type": type_id or ""},
+        extra={"parts": parts, "raw_parts": raw, "basis": "provider_prompt", "source_type": type_id or ""},
     )
     snap["basis"] = "provider_prompt"
     if calibration:

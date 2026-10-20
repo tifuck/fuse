@@ -726,6 +726,21 @@ class MeterTest(unittest.TestCase):
         smaller = context_meter.standing_meter([{"role": "user", "content": "short handoff"}], model="glm-5.3", prior=prior)
         self.assertLess(smaller["used"], prior["used"])
 
+    def test_anchored_calibration_preserves_raw_overhead_on_reload(self):
+        rows = [{"role": "system", "content": "s" * 400}, {"role": "user", "content": "x" * 400}]
+        tools = [{"type": "function", "function": {"name": "read", "parameters": {}}}]
+        raw = context_meter.occupancy_parts(rows, tools=tools)
+        cal = context_meter.prompt_calibration({"prompt_tokens": raw["total"] * 2}, raw["total"],
+            model="glm-5.3", type_id="zai")
+        prior = context_meter.next_request_meter(rows, model="glm-5.3", tools=tools,
+            anchor_prompt=raw["total"] * 2, calibration=cal)
+        self.assertEqual(prior["used"], raw["total"] * 2)
+        for _ in range(4):
+            prior = context_meter.standing_meter(rows[1:], model="glm-5.3", prior=prior)
+            self.assertEqual(prior["used"], raw["total"] * 2)
+            self.assertEqual(prior["raw_parts"]["system"], raw["system"])
+            self.assertEqual(prior["raw_parts"]["tools"], raw["tools"])
+
     def test_public_config_and_meter(self):
         cfg = context_meter.public_config()
         self.assertEqual(cfg["auto_ratio"], 0.9)
@@ -1104,6 +1119,24 @@ class RetainedSkillRowsTest(unittest.TestCase):
         bodies = {rows[i + 1]["content"] for i in range(0, len(rows), 2)}
         self.assertEqual(bodies, {"new body", "debug body", "root body"})
 
+    def test_recycled_call_ids_keep_each_skill_and_newest_body(self):
+        first = self._pair("call_0", "first", "FIRST BODY")
+        second = self._pair("call_0", "second", "SECOND BODY")
+        messages = [*first, *second, *self._pair("call_0", "first", "NEW FIRST BODY")]
+        messages += [{"role": "assistant", "content": "", "tool_calls": [
+            first[0]["tool_calls"][0], second[0]["tool_calls"][0]]},
+            first[1], {**second[1], "content": "PARALLEL SECOND BODY"}]
+        messages += self._pair("call_0", "first", "NEWEST FIRST BODY")
+        messages += [{"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_0", "function": {"name": "grep", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_0", "content": "grep output"}]
+        rows = context_compact.retained_skill_rows(messages)
+        self.assertEqual(len(rows), 4)
+        self.assertEqual([row["content"] for row in rows if row["role"] == "tool"],
+                         ["NEWEST FIRST BODY", "PARALLEL SECOND BODY"])
+        for index in range(0, len(rows), 2):
+            self.assertEqual(rows[index]["tool_calls"][0]["id"], rows[index + 1]["tool_call_id"])
+
     def test_ignores_unpaired_and_foreign_rows(self):
         self.assertEqual(context_compact.retained_skill_rows([]), [])
         self.assertEqual(context_compact.retained_skill_rows([
@@ -1221,6 +1254,13 @@ class SubagentHandoffTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("thinking out loud", context_compact.compact_result_body(reply))
         self.assertEqual(context_compact.compact_result_body("plain fallback"), "plain fallback")
         self.assertEqual(context_compact.compact_result_body("<analysis>\nplan\n</analysis>\nbody only"), "body only")
+
+    def test_compact_result_body_keeps_quoted_analysis_close(self):
+        summary = "CRITICAL: read-only. Parser fixture: `</analysis>`. Next: inspect x.py."
+        for prefix in ("<analysis>plan</analysis>\n", ""):
+            with self.subTest(prefix=prefix):
+                reply = prefix + "<summary>" + summary + "</summary>"
+                self.assertEqual(context_compact.compact_result_body(reply), summary)
 
     def test_compact_result_body_keeps_quoted_details_summary(self):
         reply = ("<analysis>\nThe user wants <summary> tags kept.\n</analysis>\n<summary>\n## Current Work\n"
