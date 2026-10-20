@@ -90,6 +90,32 @@ class MonitorHelpers(unittest.TestCase):
         self.assertTrue(seen)
         self.assertLessEqual(max(len(line) for line in seen), monitor.MAX_LINE_CHARS + 1)
 
+    def test_long_logical_lines_are_independent_of_chunk_boundaries(self):
+        async def run(chunks, pattern):
+            seen = []
+            batcher = monitor.LineBatcher(
+                {"_pattern": monitor.compile_pattern(pattern)},
+                lambda lines, overflow=0: seen.extend(lines),
+            )
+            for chunk in chunks:
+                batcher.feed(chunk)
+                self.assertLessEqual(len(batcher.buf), monitor.MAX_MATCH_LINE_CHARS)
+            await batcher.close()
+            return seen
+
+        cases = [
+            ("x" * 1998 + "READY\n", "READY", 1),
+            ("x" * 2000 + "READY\n", "^READY$", 0),
+            ("x" * 100_000 + "\n", "", 1),
+            ("x" * 100_000 + "\n", "^x+$", 0),
+        ]
+        for line, pattern, expected in cases:
+            with self.subTest(pattern=pattern, length=len(line)):
+                whole = asyncio.run(run([line], pattern))
+                for chunks in ([line[:2001], line[2001:]], [line[:-1], "\n"]):
+                    self.assertEqual(asyncio.run(run(chunks, pattern)), whole)
+                self.assertEqual(sum(not monitor.is_batch_note(row) for row in whole), expected)
+
     def test_slow_pattern_has_one_budget_per_feed(self):
         # Each line can burn the full per-line timeout; one feed must not.
         import time as _time

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import sys
@@ -106,18 +107,22 @@ class AgentsLoadingTest(unittest.IsolatedAsyncioTestCase):
     async def test_full_budget_and_paging_on_both_transports(self):
         for agent in (False, True):
             for source in ("x" * 9000, "rule\n" * 500, "x" * 12001, "rule\n" * 2000, "rule\n" * 3000, "x" * 32000,
-                           "x" * 32001, "rule\n" * 7000):
+                           "x" * 32001, "rule\n" * 7000, ("漢" * 30 + "\n") * 1000,
+                           ("漢" * 30 + "\n") * 720 + "\n" + ("漢" * 30 + "\n") * 279):
                 with self.subTest(agent=agent, length=len(source)):
                     workspace._agents_cache.clear()
                     async def agent_read(_uid, _hid, _op, args, _timeout):
                         lines = source.splitlines(keepends=True)
                         start = args["offset"] - 1
-                        return {"ok": True, "out": "".join(lines[start:start + min(args["limit"], 2000)])}
+                        out = "".join(lines[start:start + min(args["limit"], 2000)])
+                        if len(out.encode()) > 65536:
+                            return {"ok": False, "error": "read output exceeds 65536 bytes"}
+                        return {"ok": True, "out": out}
 
                     handle = MagicMock()
                     handle.__aenter__.return_value = handle
                     def reset_handle():
-                        handle.read = AsyncMock(side_effect=[source.encode(), b""])
+                        handle.read = AsyncMock(side_effect=io.BytesIO(source.encode()).read)
                         return handle
                     handle.__aenter__.side_effect = reset_handle
                     sftp = MagicMock()

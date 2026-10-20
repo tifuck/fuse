@@ -2075,6 +2075,12 @@ async def _read(user_id, host_id, alias, args, root, *, windows: bool = False, m
             result = await _image_read(user_id, host_id, alias, path, args, probe=True)
             if result is not None:
                 return result
+        chunk = source.split("\n")
+        if chunk and chunk[-1] == "":
+            chunk.pop()
+        chunk = [line.removesuffix("\r") for line in chunk]
+        if not chunk and offset > 1:
+            raise WorkspaceError(f"offset {offset} is beyond the end of the file")
         if raw:
             body = source[:chars]
             return _label(alias, body), {
@@ -2083,13 +2089,8 @@ async def _read(user_id, host_id, alias, args, root, *, windows: bool = False, m
                 "host": alias,
                 "path": path,
                 "preview": body[:800],
+                "next_offset": offset + len(chunk) if len(chunk) >= got_limit else None,
             }
-        chunk = source.split("\n")
-        if chunk and chunk[-1] == "":
-            chunk.pop()
-        chunk = [line.removesuffix("\r") for line in chunk]
-        if not chunk and offset > 1:
-            raise WorkspaceError(f"offset {offset} is beyond the end of the file")
         more = False
         total = None
         if len(chunk) >= got_limit:
@@ -2155,13 +2156,14 @@ async def _read(user_id, host_id, alias, args, root, *, windows: bool = False, m
     total = offset - 1 + len(lines) if not bytes_truncated else None
     more = len(chunk) < len(lines) or bytes_truncated
     if raw:
-        body = "\n".join(chunk)[:chars]
+        body = ("\n".join(chunk) + ("\n" if chunk and (more or text.endswith("\n")) else ""))[:chars]
         return _label(alias, body), {
             "name": "read_file",
             "status": "done",
             "host": alias,
             "path": path,
             "preview": body[:800],
+            "next_offset": offset + len(chunk) if more else None,
         }
     body = _read_render(chunk, offset, total=total, more=more, max_chars=chars)
     return _label(alias, body), {
@@ -2720,7 +2722,7 @@ async def _replace(user_id, host_id, alias, args, root, *, windows: bool = False
                         {
                             "path": path,
                             "old": old.replace("\n", "\r\n"),
-                            "new": new.replace("\n", "\r\n"),
+                            "new": new.replace("\r\n", "\n").replace("\n", "\r\n"),
                             "replace_all": replace_all,
                         },
                         45,
@@ -2944,9 +2946,10 @@ async def load_project_agents(user_id, bound_host_id, bound_cwd: str = "", repor
             if body and chunk and not body.endswith("\n"):
                 body += "\n"
             body += chunk
-            if len(chunk.splitlines()) < _READ_MAX_LINES:
+            next_offset = rec.get("next_offset") if isinstance(rec, dict) else None
+            if next_offset is None:
                 break
-            offset += _READ_MAX_LINES
+            offset = next_offset
     except Exception as exc:
         reason = "locked" if isinstance(exc, VaultLocked) or "vault" in str(exc).lower() else "host"
         if report is not None:

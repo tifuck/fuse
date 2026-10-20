@@ -277,7 +277,7 @@ def _post_edit_snippet(text: str, new: str) -> tuple[str, int | None]:
     if at < 0 and "\r\n" in text and "\r" not in used:
         used = used.replace("\n", "\r\n")
         at = text.find(used)
-    if at < 0:
+    if at < 0 or text.find(used, at + 1) >= 0:
         return "", None
     first = text.count("\n", 0, at) + 1
     lines = text.replace("\r\n", "\n").split("\n")

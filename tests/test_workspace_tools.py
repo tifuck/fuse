@@ -896,6 +896,46 @@ class AgentPathTest(unittest.TestCase):
         self.assertEqual(retry_args["old"], "alpha\r\nbeta")
         self.assertEqual(retry_args["new"], "one\r\ntwo")
 
+    def test_replace_crlf_retry_preserves_existing_crlf(self):
+        text = "alpha\r\nbeta\r\n"
+
+        async def call(_uid, _hid, op, args, _timeout):
+            nonlocal text
+            if op == "read":
+                return {"ok": True, "out": text}
+            if args["old"] not in text:
+                return {"ok": False, "error": "old_string not found"}
+            text = text.replace(args["old"], args["new"])
+            return {"ok": True, "out": "1 replacement(s)"}
+
+        with patch.object(workspace, "_is_agent", return_value=True), patch.object(
+            workspace, "_agent_call", call
+        ):
+            self._run(workspace._replace(
+                1, 2, "box",
+                {"path": "/tmp/x.py", "old_string": "alpha\nbeta", "new_string": "one\r\ntwo"},
+                "/tmp",
+            ))
+        self.assertEqual(text, "one\r\ntwo\r\n")
+
+    def test_replace_duplicate_new_text_omits_line_anchor(self):
+        async def call(_uid, _hid, op, args, _timeout):
+            if op == "read":
+                return {"ok": True, "out": "new\nunchanged\nnew\n"}
+            return {"ok": True, "out": "1 replacement(s)"}
+
+        with patch.object(workspace, "_is_agent", return_value=True), patch.object(
+            workspace, "_agent_call", call
+        ):
+            text, rec = self._run(workspace._replace(
+                1, 2, "box", {"path": "/tmp/x.py", "old_string": "old", "new_string": "new"}, "/tmp",
+            ))
+        self.assertNotIn("1: new", text)
+        self.assertNotIn("@@", rec["preview"])
+        self.assertIn("-old", text)
+        self.assertIn("+new", text)
+        self.assertEqual(workspace._post_edit_snippet("aaa", "aa"), ("", None))
+
     def test_replace_returns_real_line_numbers(self):
         def replace_op(args):
             return {"ok": True, "exit": 0, "out": "1 replacement(s)", "err": "", "error": ""}

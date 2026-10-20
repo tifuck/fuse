@@ -32,9 +32,9 @@ MAX_BATCH_LINES = 40
 FIREHOSE_WINDOW_S = 2.0
 FIREHOSE_MAX = 8
 ERR_TAIL_CHARS = 4_000
-# One logical line (and each newline-free buffer slice) is capped so a single
-# huge line cannot exhaust memory through the batcher or event envelopes.
+# Displayed lines and buffered logical lines have separate bounds.
 MAX_LINE_CHARS = 2_000
+MAX_MATCH_LINE_CHARS = 65_536
 _WS_SCHEMES = ("ws", "wss")
 EVENT_ID_RE = re.compile(r'<monitor_event id="([^"]+)" seq="(\d+)"')
 RESULT_ID_RE = re.compile(r'<(?:command_result|monitor_result) id="([^"]+)"')
@@ -67,7 +67,7 @@ def max_events(raw) -> int:
 
 
 _BATCH_NOTE = re.compile(
-    r"… \d+ (?:more lines in this batch omitted|lines not checked: the pattern was too slow for this output)"
+    r"… \d+ (?:more lines in this batch omitted|lines not checked: (?:the pattern was too slow for this output|line or pattern exceeded processing limits))"
 )
 
 
@@ -193,6 +193,8 @@ class LineBatcher:
         self.rec = rec
         self.on_batch = on_batch
         self.buf = ""
+        self.overlong = False
+        self.nonempty = False
         self.pending: list[str] = []
         self.task: asyncio.Task | None = None
         self.pattern = rec.get("_pattern")
@@ -204,23 +206,27 @@ class LineBatcher:
     def feed(self, text: str) -> None:
         if self.closed or not text:
             return
-        self.buf += text
         budget_end = time.monotonic() + FEED_MATCH_BUDGET_S
-        while "\n" in self.buf:
-            line, self.buf = self.buf.split("\n", 1)
-            self._add(line.rstrip("\r"), budget_end)
-        # A stream that never breaks a line must not grow buf without limit.
-        while len(self.buf) > MAX_LINE_CHARS:
-            self._add(self.buf[:MAX_LINE_CHARS], budget_end)
-            self.buf = self.buf[MAX_LINE_CHARS:]
+        parts = text.split("\n")
+        for i, part in enumerate(parts):
+            room = MAX_MATCH_LINE_CHARS - len(self.buf)
+            self.buf += part[:room]
+            self.overlong |= len(part) > room
+            self.nonempty |= bool(part.strip())
+            if i < len(parts) - 1:
+                if self.nonempty:
+                    self._add(self.buf.rstrip("\r"), budget_end, overlong=self.overlong)
+                self.buf = ""
+                self.overlong = self.nonempty = False
         if (self.pending or self.skipped) and self.task is None and not self.closed:
             self.task = asyncio.create_task(self._flush())
 
-    def _add(self, line: str, budget_end: float | None = None) -> None:
-        if self.pattern is not None and budget_end is not None and time.monotonic() > budget_end:
-            if line.strip():
-                self.skipped += 1
+    def _add(self, line: str, budget_end: float | None = None, *, overlong: bool = False) -> None:
+        if self.pattern is not None and (overlong or (budget_end is not None and time.monotonic() > budget_end)):
+            self.skipped += 1
             return
+        if overlong:
+            line += "…"
         # Match the whole line (match_line has its own timeout); only the
         # kept copy is cut, or a match past the cut is never seen.
         if match_line(line, self.pattern):
@@ -256,7 +262,7 @@ class LineBatcher:
         if overflow > 0:
             lines.append(f"… {overflow} more lines in this batch omitted")
         if skipped > 0:
-            lines.append(f"… {skipped} lines not checked: the pattern was too slow for this output")
+            lines.append(f"… {skipped} lines not checked: line or pattern exceeded processing limits")
         self.stamps.append(time.monotonic())
         try:
             self.on_batch(lines, overflow)
@@ -280,8 +286,8 @@ class LineBatcher:
                 await task
             except (asyncio.CancelledError, Exception):
                 pass
-        if self.buf:
-            self._add(self.buf.rstrip("\r"))
+        if self.nonempty:
+            self._add(self.buf.rstrip("\r"), overlong=self.overlong)
         self.buf = ""
         self._emit()
 
