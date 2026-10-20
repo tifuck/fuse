@@ -46,6 +46,8 @@ def test_summary_reliability_sources_and_models():
         s = data["summary"]
         assert (s["requests"], s["ok_requests"], s["failed"], s["cancelled"]) == (3, 1, 1, 1)
         assert s["success_rate"] == 33.3
+        assert sum(point["cancelled"] for point in data["series"]) == 1
+        assert sum(point["requests"] - point["failed"] - point["cancelled"] for point in data["series"]) == s["ok_requests"]
         assert s["per_request"] == 1200
         # 1800 cached tokens at (1.00 - 0.10) $/M.
         assert s["cache_saved"] == 1620 and s["cache_saved_known"]

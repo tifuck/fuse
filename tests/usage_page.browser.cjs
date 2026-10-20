@@ -87,6 +87,13 @@ function payload(range, { empty = false, huge = false, slow = false } = {}) {
         slow: url.searchParams.get('range') === '6h',
       });
       const slow = body._slow;
+      if (body.range.id === '3d') {
+        Object.assign(body.summary, { failed: 0, cancelled: 1, ok_requests: 2 });
+        body.series = [
+          { ...body.series[0], requests: 1, failed: 0, cancelled: 0 },
+          { ...body.series[0], requests: 2, failed: 0, cancelled: 1 },
+        ];
+      }
       delete body._slow;
       const send = () => route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
       if (slow) return setTimeout(send, 700);
@@ -170,6 +177,11 @@ function payload(range, { empty = false, huge = false, slow = false } = {}) {
     assert.equal(await page.locator('[data-recent] tr').count(), 12, 'show all reveals every row');
     assert.equal(await overflow(), true, '1440: page does not scroll sideways');
 
+    await page.locator('[data-range="3d"]').click();
+    await settled();
+    assert.match(await kpi('success').innerText(), /66\.7%/);
+    assert.equal(await page.locator('[data-kpi="success"] path.line').getAttribute('d'), 'M0.0 2.0 L120.0 27.0', 'cancelled requests lower the success spark from 100% to 50%');
+
     // Huge counts compact, and a long model id truncates with its full name as a title.
     await page.locator('[data-range="30d"]').click();
     await settled();
@@ -203,6 +215,9 @@ function payload(range, { empty = false, huge = false, slow = false } = {}) {
     assert.match(await kpi('tokens').innerText(), /—/, `a 500 clears the token total, got ${await kpi('tokens').innerText()}`);
     assert.match(await page.locator('[data-kpi="tokens"] [data-kpi-delta]').innerText(), /Load failed/);
     assert.equal(await page.locator('[data-plot]').getAttribute('aria-busy'), null, 'a 500 clears the busy flag');
+    await page.locator('[data-mode="tokens"]').click();
+    assert.match(await page.locator('[data-plot]').innerText(), /could not be loaded/, 'changing mode after a failure cannot redraw the previous range');
+    assert.equal(await page.locator('[data-plot] svg').count(), 0);
 
     // 390: the range control and a stacked model card stay inside the viewport.
     await page.setViewportSize({ width: 390, height: 844 });

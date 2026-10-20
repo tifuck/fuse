@@ -92,6 +92,19 @@ test('markdown links are not double-wrapped', () => {
   assert.match(html, />Example<\/a>/);
 });
 
+test('emphasis never changes link destinations', () => {
+  for (const url of ['https://example.com/a__b__c', 'https://example.com/a**b**c', 'https://example.com/a?x=~~secret~~']) {
+    for (const src of [`[**go**](${url})`, url, `![box](${url})`]) {
+      const html = md(src);
+      assert.match(html, new RegExp('href="' + url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '"'));
+      assert.equal((html.match(/<a /g) || []).length, 1);
+      if (src === url) assert.ok(html.includes('>' + url + '</a>'));
+    }
+  }
+  assert.match(md('[**go**](https://example.com/a__b__c)'), /<strong>go<\/strong><\/a>/);
+  assert.match(md('[`go`](https://example.com/a__b__c)'), /<code>go<\/code><\/a>/);
+});
+
 test('images render as links (remote images are CSP-blocked)', () => {
   const ok = md('![box](https://example.com/red.png)');
   const bad = md('![box](javascript:alert(1))');
@@ -128,6 +141,16 @@ test('diff fences keep a code block', () => {
   assert.match(html, /class="chat-code"/);
   assert.match(html, /- old/);
   assert.match(html, /\+ new/);
+});
+
+test('backticks inside source lines do not close a code fence', () => {
+  const src = '```js\nconst fence = "```";\nconst keep = 1;\n```\nAFTER';
+  for (const streaming of [false, true]) {
+    const html = ctx.renderMarkdown(src, streaming, []);
+    assert.equal((html.match(/class="chat-code"/g) || []).length, 1);
+    assert.match(html, /<pre><code>const fence = &quot;```&quot;;\nconst keep = 1;<\/code><\/pre>/);
+    assert.match(html, /<p>AFTER<\/p>$/);
+  }
 });
 
 test('ansi sgr becomes color spans', () => {

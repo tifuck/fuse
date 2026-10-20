@@ -560,6 +560,7 @@ def usage_analytics(
             "tokens": 0,
             "requests": 0,
             "failed": 0,
+            "cancelled": 0,
             "cost": 0,
             "prompt": 0,
             "cached": 0,
@@ -570,7 +571,7 @@ def usage_analytics(
         bucket_models: dict[str, int] = {}
         for item in bucket_rows:
             key = f"{item['provider']}\x1f{item['model']}"
-            for metric in ("tokens", "requests", "failed", "cost", "prompt", "cached"):
+            for metric in ("tokens", "requests", "failed", "cancelled", "cost", "prompt", "cached"):
                 point[metric] += item[metric]
             bucket_models[key] = bucket_models.get(key, 0) + item["tokens"]
             if key in segments:

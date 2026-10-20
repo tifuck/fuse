@@ -363,6 +363,31 @@ test('a multi-file diff names each file so its hunks cannot read as one out-of-o
   assert.match(html, /is-file"><span class="chat-console-nbody">b\.js</, 'second file is named');
 });
 
+test('header-like changed lines retain their counts and hunk line numbers', () => {
+  const c = vm.createContext({ escapeHtml: (v) => String(v ?? '') });
+  for (const name of ['consoleDiffHtml', 'consoleDiffCounts']) load(name, c);
+  const diff = '--- a/a.txt\n+++ b/a.txt\n@@ -1,3 +1,3 @@\n--- option\n-old\n+++ option\n+new\n end\n';
+  const counts = c.consoleDiffCounts(diff);
+  assert.equal(counts.added, 2);
+  assert.equal(counts.removed, 2);
+  const rows = [...c.consoleDiffHtml(diff).matchAll(/is-(del|add|ctx)"><span class="chat-console-n">(\d+)<\/span>.*?<span class="chat-console-nbody">([^<]*)<\/span>/g)]
+    .map((m) => [m[1], Number(m[2]), m[3]]);
+  assert.deepEqual(rows, [['del', 1, '-- option'], ['del', 2, 'old'], ['add', 1, '++ option'], ['add', 2, 'new'], ['ctx', 3, 'end']]);
+  const next = diff + '--- a/b.txt\n+++ b/b.txt\n@@ -0,0 +1 @@\n+++ b/not-a-header\n';
+  assert.equal(c.consoleDiffCounts(next).added, 3);
+  assert.match(c.consoleDiffHtml(next), /is-file"><span class="chat-console-nbody">b\.txt</);
+  assert.match(c.consoleDiffHtml(next), /chat-console-nbody">\+\+ b\/not-a-header</);
+});
+
+test('output cleanup only shortens leading paths, never matched text', () => {
+  const c = world();
+  load('cleanToolOutput', c);
+  for (const name of ['grep', 'glob', 'list_dir']) {
+    assert.equal(c.cleanToolOutput({ name, project_root: '/project' }, "From host box:\n/project/main.py:1:ROOT='/project/data'\n/project/next.py\nother:2:/project/data"), "main.py:1:ROOT='/project/data'\nnext.py\nother:2:/project/data");
+  }
+  assert.equal(c.cleanToolOutput({ name: 'run_terminal_command', cwd: '/project' }, '/project/main.py'), '/project/main.py');
+});
+
 test('output caps cut on character boundaries and say which slice survived', () => {
   const c = vm.createContext({});
   c.escapeHtml = (v) => String(v ?? '');

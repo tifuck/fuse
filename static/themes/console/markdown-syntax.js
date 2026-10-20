@@ -94,11 +94,20 @@ function renderInline(text) {
       return linkHtml(url, label);
     });
     src = autolinkHtml(src);
-    src = src.replace(/~~([^~]+)~~/g, "<del>$1</del>");
-    src = src.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    src = src.replace(/__([^_]+)__/g, "<strong>$1</strong>");
-    src = src.replace(/(^|[^\w])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
-    src = src.replace(/(^|[^\w])_([^_\n]+)_(?!_)/g, "$1<em>$2</em>");
+    const emphasis = (value) => value
+      .replace(/~~([^~]+)~~/g, "<del>$1</del>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/__([^_]+)__/g, "<strong>$1</strong>")
+      .replace(/(^|[^\w])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>")
+      .replace(/(^|[^\w])_([^_\n]+)_(?!_)/g, "$1<em>$2</em>");
+    const links = [];
+    src = src.replace(/(<a\b[^>]*>)([\s\S]*?)<\/a>/gi, (_, opening, label) => {
+      const href = (opening.match(/\bhref="([^"]*)"/) || [])[1];
+      links.push(opening + (label === href ? label : emphasis(label)) + "</a>");
+      return `\uE000L${links.length - 1}\uE001`;
+    });
+    src = emphasis(src);
+    src = src.replace(/\uE000L(\d+)\uE001/g, (_, i) => links[Number(i)] || "");
     src = src.replace(/\uE000C(\d+)\uE001/g, (_, i) => `<code>${deps.escapeHtml(codes[Number(i)] || "")}</code>`);
     return src;
   }
@@ -310,12 +319,15 @@ function renderFencedMarkdown(text, catalog, streaming) {
       const nl = src.indexOf("\n", start + 3);
       const lang = (nl === -1 ? src.slice(start + 3) : src.slice(start + 3, nl)).trim();
       const bodyStart = nl === -1 ? src.length : nl + 1;
-      const end = src.indexOf("```", bodyStart);
+      const closing = /^ {0,3}`{3,}[ \t]*(?:\r?$)/gm;
+      closing.lastIndex = bodyStart;
+      const close = closing.exec(src);
+      const end = close ? close.index : -1;
       if (!isFenceLang(lang)) {
         const inner = (lang ? lang + "\n" : "") + src.slice(bodyStart, end === -1 ? src.length : end);
         html += deps.renderBlocks(inner.replace(/```\s*$/, ""), catalog, streaming);
         if (end === -1) break;
-        i = end + 3;
+        i = end + close[0].length;
         if (src[i] === "\n") i += 1;
         continue;
       }
@@ -324,7 +336,7 @@ function renderFencedMarkdown(text, catalog, streaming) {
         break;
       }
       html += renderFence(lang, src.slice(bodyStart, end));
-      i = end + 3;
+      i = end + close[0].length;
       if (src[i] === "\n") i += 1;
     }
     return html;

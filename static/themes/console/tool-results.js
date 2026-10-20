@@ -1,40 +1,51 @@
 // tool-results presentation. Dependencies are live getters supplied by index.js.
 export function create(deps) {
-function consoleDiffHtml(text, { limit, numbers = true } = {}) {
+function consoleDiffRows(text) {
     // A trailing newline is the end of the last line, not an empty row.
     const lines = String(text || "").replace(/\n+$/, "").split("\n");
     // A multi-file diff names each file as it changes; without the labels the
     // stacked hunks read as one file with out-of-order line numbers.
     const fileName = (line) => (line.match(/^diff --git a\/\S+ b\/(.+)$/) || line.match(/^\+\+\+ b\/(.+)$/) || [])[1];
-    const multi = new Set(lines.map(fileName).filter((name) => name && name !== "/dev/null")).size > 1;
     let oldN = 0;
     let newN = 0;
+    let oldLeft = 0;
+    let newLeft = 0;
     let file = "";
     const rows = [];
     lines.forEach((line) => {
-      const named = fileName(line);
+      const inHunk = oldLeft > 0 || newLeft > 0;
+      const named = !inHunk && fileName(line);
       if (named && named !== "/dev/null") {
-        if (multi && named !== file) rows.push({ kind: "file", text: named });
+        if (named !== file) rows.push({ kind: "file", text: named });
         file = named;
         return;
       }
-      const hunk = line.match(/^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)/);
+      const hunk = line.match(/^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?/);
       if (hunk) {
         oldN = Number(hunk[1]);
-        newN = Number(hunk[2]);
+        newN = Number(hunk[3]);
+        oldLeft = Number(hunk[2] ?? 1);
+        newLeft = Number(hunk[4] ?? 1);
         return;
       }
-      if (/^(--- |\+\+\+ |diff |index |\\ )/.test(line)) return;
+      if (/^(diff |index |\\ )/.test(line) || (!inHunk && /^(--- |\+\+\+ )/.test(line))) return;
       // Blank lines carry no change worth reading: they keep their place in
       // the numbering but print no row. Removed lines are numbered in the old
       // file; added and unchanged lines in the new one, as Claude Code does.
       const kind = line.startsWith("-") ? "del" : line.startsWith("+") ? "add" : "ctx";
       const text = kind === "ctx" && !line.startsWith(" ") ? line : line.slice(1);
       const n = kind === "del" ? oldN : newN;
-      if (kind !== "add") oldN += 1;
-      if (kind !== "del") newN += 1;
-      if (text.trim()) rows.push({ n, kind, text });
+      if (kind !== "add") { oldN += 1; oldLeft = Math.max(0, oldLeft - 1); }
+      if (kind !== "del") { newN += 1; newLeft = Math.max(0, newLeft - 1); }
+      rows.push({ n, kind, text });
     });
+    return rows;
+  }
+
+function consoleDiffHtml(text, { limit, numbers = true } = {}) {
+    const parsed = consoleDiffRows(text);
+    const multi = new Set(parsed.filter((row) => row.kind === "file").map((row) => row.text)).size > 1;
+    const rows = parsed.filter((row) => row.kind === "file" ? multi : row.text.trim());
     if (!rows.length) return "";
     const cap = Number.isFinite(limit) ? Math.min(limit, rows.length) : rows.length;
     const width = String(Math.max(1, ...rows.filter((row) => row.kind !== "file").map((row) => row.n))).length;
@@ -77,10 +88,10 @@ function consoleChangeText(added, removed) {
   }
 
 function consoleDiffCounts(diff) {
-    const lines = String(diff || "").split("\n");
+    const rows = consoleDiffRows(diff);
     return {
-      added: lines.filter((line) => line.startsWith("+") && !line.startsWith("+++")).length,
-      removed: lines.filter((line) => line.startsWith("-") && !line.startsWith("---")).length,
+      added: rows.filter((row) => row.kind === "add").length,
+      removed: rows.filter((row) => row.kind === "del").length,
     };
   }
 

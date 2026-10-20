@@ -173,7 +173,8 @@ function cleanToolOutput(trace, text) {
     let out = String(text || "").replace(/^From host [^\n]*:\n/, "");
     const root = String((trace && (trace.project_root || trace.cwd)) || "").replace(/\/+$/, "");
     if (root.length > 1 && root !== "~" && ["grep", "glob", "list_dir"].includes(trace && trace.name)) {
-      out = out.split(root + "/").join("");
+      const prefix = root + "/";
+      out = out.split("\n").map((line) => line.startsWith(prefix) ? line.slice(prefix.length) : line).join("\n");
     }
     return out;
   }

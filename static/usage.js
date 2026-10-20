@@ -252,7 +252,7 @@
       "success",
       s.success_rate === null ? "—" : pct(s.success_rate),
       empty ? none : delta(s.success_change, { unit: " pts", good: "up" }),
-      series.map((p) => (p.requests ? (p.requests - p.failed) / p.requests : null)),
+      series.map((p) => (p.requests ? (p.requests - p.failed - (p.cancelled || 0)) / p.requests : null)),
       { floor: "min", note: s.failed ? `${intFmt.format(s.failed)} failed` : "" }
     );
     setKpi(
@@ -729,6 +729,7 @@
   }
 
   function fail() {
+    data = null;
     const msg = "Usage data could not be loaded. Try again shortly.";
     $("[data-plot]").innerHTML = `<p class="uz-empty">${msg}</p>`;
     root.querySelectorAll("[data-kpi-value]").forEach((el) => (el.textContent = "—"));
