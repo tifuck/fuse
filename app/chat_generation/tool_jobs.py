@@ -9,6 +9,7 @@ here too."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from dataclasses import dataclass, field
@@ -69,12 +70,19 @@ class ToolJob:
 
 def jobs_from_calls(calls: list[dict], completion_i: int) -> list[ToolJob]:
     jobs = []
+    seen = set()
     for i, call in enumerate(calls):
         fn = call.get("function") if isinstance(call.get("function"), dict) else {}
+        call_id = str(call.get("id") or f"call_{i}")[:128]
+        if call_id in seen:
+            call_id = "fuse_" + hashlib.sha256(f"{i}:{call_id}".encode()).hexdigest()[:32]
+            while call_id in seen:
+                call_id = "fuse_" + hashlib.sha256(call_id.encode()).hexdigest()[:32]
+        seen.add(call_id)
         jobs.append(
             ToolJob(
                 orig_index=i,
-                call_id=str(call.get("id") or f"call_{i}")[:128],
+                call_id=call_id,
                 name=str(fn.get("name") or ""),
                 arguments=str(fn.get("arguments") or "{}"),
                 event_id=f"ts_{completion_i}_{i}",

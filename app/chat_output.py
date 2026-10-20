@@ -339,6 +339,9 @@ class Output:
                 ident = str(event.get("id") or "")[:64]
                 if ident:
                     if str(event.get("kind") or "") == "tool_permission":
+                        perms = msg.setdefault("permissions", [])
+                        old = next((p for p in perms if p.get("id") == ident), None)
+                        event = {**(old or {}), **event}
                         rec = {
                             "id": ident,
                             "kind": "tool_permission",
@@ -360,10 +363,7 @@ class Output:
                             rec["grant_kind"] = event.get("grant_kind")
                         if event.get("grant_value"):
                             rec["grant_value"] = str(event.get("grant_value"))[:400]
-                        perms = msg.setdefault("permissions", [])
-                        old = next((p for p in perms if p.get("id") == ident), None)
-                        # Status updates carry only the id; keep the label.
-                        description = event.get("description") or (old or {}).get("description")
+                        description = event.get("description")
                         if description:
                             rec["description"] = str(description)[:200]
                         clean = chats._parse_permissions([rec])

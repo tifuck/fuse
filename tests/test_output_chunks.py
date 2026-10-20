@@ -4,6 +4,30 @@ from app.chat_runs import Output
 
 
 class OutputChunkTests(unittest.TestCase):
+    def test_permission_status_updates_preserve_omitted_metadata(self):
+        output = Output({"message": {}})
+        output.apply({"fuse": {
+            "event": "permission", "kind": "tool_permission", "id": "p1", "status": "pending",
+            "tool": "read_file", "host": "box", "path": "/etc/hosts", "cwd": "/srv",
+            "command": "inspect", "secret": True, "requester_label": "Audit worker",
+            "description": "Inspect host file", "reasons": ["outside project"],
+            "expires_at": "2099-01-01T00:00:00Z", "grant_kind": "file", "grant_value": "/etc/hosts",
+        }})
+        pending = dict(output.stored()["permissions"][0])
+        output.apply({"fuse": {
+            "event": "permission", "kind": "tool_permission", "id": "p1", "status": "allowed",
+            "grant_scope": "allow_session",
+        }})
+        self.assertEqual(output.stored()["permissions"], [
+            {**pending, "status": "allowed", "grant_scope": "allow_session"}])
+        output.apply({"fuse": {
+            "event": "permission", "kind": "tool_permission", "id": "p1", "status": "allowed",
+            "secret": False, "host": "", "reasons": [], "requester_label": "Main agent",
+        }})
+        self.assertEqual(output.stored()["permissions"], [
+            {**pending, "status": "allowed", "grant_scope": "allow_session",
+             "secret": False, "host": "", "reasons": [], "requester": "Main agent"}])
+
     def test_tool_markup_is_hidden_at_every_split_boundary(self):
         source = 'Visible <tool_call>hidden argument</tool_call> answer'
         reference = Output({"message": {}})

@@ -595,6 +595,32 @@ class LoopTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(_completion_start_index({"resumed": True}, history, 2), 1)
         self.assertEqual(STALL_FAIL_CALLS, 20)
 
+    def test_duplicate_call_ids_keep_partial_results_with_the_right_tool(self):
+        from app import chat_history, chat_run_state
+        from app.chat_generation.tool_jobs import jobs_from_calls
+
+        calls = [
+            {"id": "same", "function": {"name": name, "arguments": "{}"}}
+            for name in ("read_file", "grep")
+        ]
+        original = json.loads(json.dumps(calls))
+        jobs = jobs_from_calls(calls, 0)
+        jobs[1].done = True
+        jobs[1].text = "GREP_RESULT"
+        snapshot = _provider_snapshot([], jobs)
+        sealed = chat_run_state.seal_provider_messages(snapshot)
+        wire = chat_history.for_model(sealed, "glm-5.3")
+        ids = [call["id"] for call in wire[0]["tool_calls"]]
+        self.assertEqual(len(set(ids)), 2)
+        results = {row["tool_call_id"]: row["content"] for row in wire[1:]}
+        self.assertIn("interrupted", results[ids[0]])
+        self.assertEqual(results[ids[1]], "GREP_RESULT")
+        self.assertEqual(calls, original)
+        self.assertEqual([job.call_id for job in jobs_from_calls(calls, 9)], ids)
+        projected = chat_history.for_model([
+            {"role": "assistant", "tool_calls": original}], "glm-5.3")
+        self.assertEqual(ids, [call["id"] for call in projected[0]["tool_calls"]])
+
     def test_provider_snapshot_omits_in_flight_results(self):
         messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
         jobs = [
