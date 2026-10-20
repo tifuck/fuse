@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import re
+import threading
 from datetime import datetime, timedelta, timezone
 
 from . import db, chat_tx
@@ -1033,6 +1034,17 @@ def settle_command_traces(conn, user_id, thread_id, messages):
 _SETTLED_TRACE = ("done", "error", "interrupted")
 
 
+_thread_job_ids: dict[tuple, tuple[str, tuple]] = {}
+_thread_job_ids_lock = threading.Lock()
+
+
+def _unsettled_job_ids(messages) -> list:
+    return [t.get("job_id") or t.get("child_id")
+            for m in messages if isinstance(m, dict) for t in m.get("tools") or []
+            if isinstance(t, dict) and t.get("name") in COMMAND_TOOLS and (t.get("job_id") or t.get("child_id"))
+            and (t.get("status") not in _SETTLED_TRACE or t.get("execution_status") in ("running", "cancelling", "queued"))]
+
+
 def historical_command_jobs(user_id, thread_id):
     """Referenced jobs whose saved trace is still unsettled, including old
     foreground jobs, for reconciliation.
@@ -1049,25 +1061,35 @@ def historical_command_jobs(user_id, thread_id):
     deadlocked spawns and new turns inserting a run row.
     """
     with chat_tx.transaction(immediate=False) as conn:
-        row = conn.execute("SELECT messages FROM chat_threads WHERE user_id=? AND id=?", (user_id, thread_id)).fetchone()
+        # The stored transcript (often megabytes) rarely changes between
+        # polls: MariaDB digests it in place and it is re-read only on change.
+        row = conn.execute(f"SELECT {db.md5_of(conn, 'messages')} AS digest FROM chat_threads WHERE user_id=? AND id=?",
+                           (user_id, thread_id)).fetchone()
         if row is None:
             return []
-        sources = []
-        try:
-            sources.extend(json.loads(row["messages"] or "[]"))
-        except (json.JSONDecodeError, TypeError):
-            pass
+        key = (user_id, thread_id)
+        cached = _thread_job_ids.get(key)
+        if row["digest"] is not None and cached is not None and cached[0] == row["digest"]:
+            ids = list(cached[1])
+        else:
+            stored = conn.execute("SELECT messages FROM chat_threads WHERE user_id=? AND id=?", (user_id, thread_id)).fetchone()
+            try:
+                ids = _unsettled_job_ids(json.loads((stored["messages"] if stored else None) or "[]"))
+            except (json.JSONDecodeError, TypeError):
+                ids = []
+            if row["digest"] is not None:
+                with _thread_job_ids_lock:
+                    _thread_job_ids.pop(key, None)
+                    _thread_job_ids[key] = (row["digest"], tuple(ids))
+                    while len(_thread_job_ids) > 256:
+                        _thread_job_ids.pop(next(iter(_thread_job_ids)))
         for run in conn.execute(
             """SELECT message FROM chat_runs WHERE thread_id=? AND user_id=? AND status IN ('queued','running')
                AND parent_run_id IS NULL""", (thread_id, user_id)):
             try:
-                sources.append(json.loads(run["message"] or "{}"))
+                ids += _unsettled_job_ids([json.loads(run["message"] or "{}")])
             except (json.JSONDecodeError, TypeError):
                 pass
-        ids = [t.get("job_id") or t.get("child_id")
-               for m in sources if isinstance(m, dict) for t in m.get("tools") or []
-               if isinstance(t, dict) and t.get("name") in COMMAND_TOOLS and (t.get("job_id") or t.get("child_id"))
-               and (t.get("status") not in _SETTLED_TRACE or t.get("execution_status") in ("running", "cancelling", "queued"))]
         return [{**command_trace(row), "id": row["id"], "state": row["status"]}
                 for row in command_rows(conn, user_id, thread_id, ids).values()
                 if row["status"] not in ("running", "cancelling")]

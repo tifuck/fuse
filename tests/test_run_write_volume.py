@@ -30,6 +30,9 @@ def thread():
         store.invalidate_committed_cursors()
 
 
+TRANSCRIPT = re.compile(r"`provider_(messages|base|tail)` = %s")
+
+
 def start(thread, text="inspect"):
     view = chats.get_thread(1, thread["id"])
     return store.start_turn(1, thread["id"], text, view["revision"], f"cmd-{thread['id']}-{view['revision']}")["run"]
@@ -83,7 +86,7 @@ def test_progress_saves_drop_the_history_copy_and_skip_repeats(thread):
     assert request["model"] == "glm-offline" and isinstance(request["agent"], dict)
     saved = db.fetchone("SELECT provider_messages FROM chat_runs WHERE id=?", (run["id"],))["provider_messages"]
     assert json.loads(saved) and len(json.loads(saved)) == len(rows)
-    assert any("`provider_messages` = %s" in s and "`request` = %s" in s for s in seen.run_updates())
+    assert any(TRANSCRIPT.search(s) and "`request` = %s" in s for s in seen.run_updates())
 
     with Statements() as seen:
         store.save_turn_progress(run["id"], rows)
@@ -93,7 +96,7 @@ def test_progress_saves_drop_the_history_copy_and_skip_repeats(thread):
 
     with Statements() as seen:
         store.save_turn_progress(run["id"], [*rows, {"role": "assistant", "content": "done"}])
-    assert any("`provider_messages` = %s" in s and "`request` = %s" not in s for s in seen.run_updates())
+    assert any(TRANSCRIPT.search(s) and "`request` = %s" not in s for s in seen.run_updates())
 
 
 def test_an_empty_transcript_keeps_the_request_history(thread):
@@ -145,3 +148,81 @@ def test_inbox_peeks_leave_the_transcript_alone_until_a_queue_has_entries(thread
     store.save_turn_progress(run["id"], [*rows, steer])
     # Delivery is read from the durable transcript and acknowledged with it.
     assert store.take_steers(run["id"]) == []
+
+
+def columns(run):
+    return db.fetchone("SELECT provider_base AS base, provider_tail AS tail, provider_messages AS full FROM chat_runs WHERE id=?",
+                       (run["id"],))
+
+
+def test_transcript_saves_append_only_the_rows_after_the_base(thread):
+    assert db.provider_split(), "scripts/sql/2026-10-20-provider-tail.sql is not applied to the fixture source"
+    run = start(thread)
+    rows = [*run["request"]["messages"], *chat_runtime._tool_messages([job(i) for i in range(3)])]
+    store.save_turn_progress(run["id"], rows)
+    first = columns(run)
+    assert first["tail"] is None and json.loads(first["base"]) == json.loads(first["full"]) == rows
+
+    grown = [*rows, {"role": "assistant", "content": "next"}, {"role": "user", "content": "more"}]
+    with Statements() as seen:
+        store.save_turn_progress(run["id"], grown)
+    update = next(s for s in seen.run_updates() if TRANSCRIPT.search(s))
+    # Only the appended rows travel; the base is not part of the statement.
+    assert "`provider_tail` = %s" in update and "`provider_base`" not in update
+    after = columns(run)
+    assert after["base"] == first["base"] and json.loads(after["tail"]) == grown[len(rows):]
+    assert json.loads(after["full"]) == grown == json.loads(store.get_run(1, run["id"])["provider_messages"])
+
+    # A shorter transcript (compaction) is not an extension: the base is rewritten.
+    compacted = [{"role": "user", "content": "summary of earlier work"}, grown[-1]]
+    store.save_turn_progress(run["id"], compacted)
+    rebased = columns(run)
+    assert rebased["tail"] is None and json.loads(rebased["full"]) == compacted
+
+    # A tail past an eighth of the base (and 64 KiB) folds back into the base.
+    big = [*compacted, *({"role": "assistant", "content": "x" * 30000} for _ in range(3))]
+    store.save_turn_progress(run["id"], big)
+    folded = columns(run)
+    assert folded["tail"] is None and json.loads(folded["full"]) == big
+
+
+def test_requeues_and_forks_store_the_whole_transcript(thread):
+    run = start(thread)
+    rows = [*run["request"]["messages"], *chat_runtime._tool_messages([job()])]
+    store.save_turn_progress(run["id"], rows)
+    store.save_turn_progress(run["id"], [*rows, {"role": "assistant", "content": "partial"}])
+    assert columns(run)["tail"] is not None
+    db.execute("UPDATE chat_runs SET status='running', updated_at=? WHERE id=?", (db.now(), run["id"]))
+    store.recover_runs()
+    requeued = columns(run)
+    # The sealed transcript replaces base and tail together.
+    assert requeued["tail"] is None and requeued["full"] == requeued["base"]
+    assert json.loads(requeued["full"]) == stored_request(run)["messages"]
+
+    store.finish_run(run["id"], {"content": "done", "reasoning": ""}, "completed")
+    fork = chats.fork_thread(1, thread["id"])
+    copied = db.fetchone("SELECT provider_messages FROM chat_runs WHERE thread_id=(SELECT id FROM chat_threads WHERE public_id=?)",
+                         (fork["id"],))["provider_messages"]
+    assert copied and json.loads(copied)[:len(rows)] == json.loads(requeued["full"])[:len(rows)]
+
+
+def test_hot_readers_reuse_unchanged_request_and_thread_text(thread):
+    from app import chat_views
+
+    run = start(thread)
+    store.save_turn_progress(run["id"], [*run["request"]["messages"], *chat_runtime._tool_messages([job()])])
+    pk = chats.resolve_thread_pk(1, thread["id"])
+    store.take_steers(run["id"])
+    chat_views.historical_command_jobs(1, pk)
+    with Statements() as seen:
+        assert store.take_steers(run["id"]) == []
+        assert store.take_followups(run["id"]) == []
+        assert store.take_child_results(run["id"]) == []
+        assert store.steer_display_deliveries(run["id"]) == []
+        assert chat_views.historical_command_jobs(1, pk) == []
+    selects = [re.sub(r"MD5\(`\w+`\)", "", s.split(" FROM ")[0]) for s in seen.sql if s.startswith("SELECT")]
+    # Digests only: neither the run request nor the stored transcript moved.
+    assert selects and not [s for s in selects if re.search(r"`request`(?!_digest)|`messages`", s)]
+
+    store.queue_steer(run["id"], "s3", "new instruction")
+    assert [item["id"] for item in store.take_steers(run["id"])] == ["s3"]  # a changed request is re-read

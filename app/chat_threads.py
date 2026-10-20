@@ -1021,12 +1021,17 @@ def fork_thread(user_id: int, thread_id, *, expected_revision=None, command_id=N
         )
         mapped = {"id", "thread_id", "parent_run_id", "root_run_id", "message_id", "request", "message", "provider_messages"}
         run_columns = _copyable_columns(conn, "chat_runs", runs[0].keys()) if runs else []
+        if runs and "provider_messages" in runs[0].keys() and "provider_messages" not in run_columns:
+            # The transcript is virtual (provider_base + provider_tail): the
+            # copy stores the whole of it as its base.
+            run_columns = [*run_columns, db.provider_column(conn)]
+            mapped.add(db.provider_column(conn))
         job_columns = _copyable_columns(conn, "command_jobs", jobs[0].keys()) if jobs else []
         for run in runs:
             names = run_columns
             values = []
             for name in names:
-                value = run[name]
+                value = run["provider_messages"] if name == "provider_base" else run[name]
                 if name == "id":
                     value = id_map[str(value)]
                 elif name == "thread_id":

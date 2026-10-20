@@ -50,6 +50,10 @@ def _request(value, images):
     return out if out is not value else None
 
 
+def _split(conn):
+    return any(column[1] == "provider_tail" for column in conn.execute("PRAGMA table_info(chat_runs)").fetchall())
+
+
 def _runs(conn, apply, pause, totals):
     ids = [row["id"] for row in conn.execute(
         "SELECT id FROM chat_runs WHERE status NOT IN ('queued','running') ORDER BY thread_id, id").fetchall()]
@@ -83,8 +87,10 @@ def _runs(conn, apply, pause, totals):
         totals["after"] += len(provider_json or "") + len(request_json or "")
         if apply:
             chat_images.save(conn, row["thread_id"], row["user_id"], images)
+            # provider_messages is virtual once split (provider_base + provider_tail).
+            column = "provider_base=?, provider_tail=NULL" if _split(conn) else "provider_messages=?"
             cur = conn.execute(
-                "UPDATE chat_runs SET provider_messages=?, request=? WHERE id=? AND request_digest=? "
+                f"UPDATE chat_runs SET {column}, request=? WHERE id=? AND request_digest=? "
                 "AND MD5(COALESCE(provider_messages,''))=? AND status NOT IN ('queued','running')",
                 (provider_json, request_json, ident, _md5(row["request"]), _md5(row["provider_messages"])))
             if not cur.rowcount:

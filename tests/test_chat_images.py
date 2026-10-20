@@ -213,7 +213,7 @@ def test_mariadb_store_backfill_cascade_and_recycle():
 
         # A row written before references: inline in the run and the history.
         legacy = json.dumps(rows)
-        db.execute("UPDATE chat_runs SET provider_messages=? WHERE id=?", (legacy, run["id"]))
+        db.execute(f"UPDATE chat_runs SET {db.set_provider_sql()} WHERE id=?", (legacy, run["id"]))
         db.execute("DELETE FROM chat_images WHERE thread_id=?", (pk,))
         retained = json.loads(db.fetchone("SELECT retained_history FROM chat_threads WHERE id=?", (pk,))[0])
         retained["messages"] = rows

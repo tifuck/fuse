@@ -6,6 +6,7 @@ import json
 import logging
 import random
 import re
+import threading
 import time
 
 from . import db, chat_images, chat_schema, chat_tx, chat_pub, chat_views
@@ -318,6 +319,50 @@ def _has_request_digest() -> bool:
     return _digest_column[1]
 
 
+_request_texts: dict[str, tuple[str, str]] = {}
+_request_texts_lock = threading.Lock()
+
+
+def request_column() -> str:
+    """What a hot reader selects for the run request: the stored digest where
+    the column exists (request_text resolves it), else the request itself."""
+    return "request_digest" if _has_request_digest() else "request"
+
+
+def request_text(conn, run_id, row) -> str:
+    """The stored request of a row read with request_column().
+
+    A live run's request is read some twenty times a tool round, and its
+    frozen system prompt and tool schemas alone are ~60 KB: the text is
+    fetched again only when the stored digest moved. conn=None reads outside
+    a transaction."""
+    if "request" in row.keys():
+        return row["request"] or ""
+    cached = _request_texts.get(run_id)
+    if cached is not None and cached[0] == row["request_digest"]:
+        return cached[1]
+    sql = "SELECT request,request_digest FROM chat_runs WHERE id=?"
+    fresh = (conn.execute(sql, (run_id,)).fetchone() if conn is not None else db.fetchone(sql, (run_id,)))
+    if fresh is None:
+        return ""
+    remember_request_text(run_id, fresh["request"] or "", fresh["request_digest"])
+    return fresh["request"] or ""
+
+
+def remember_request_text(run_id, text, digest=None) -> None:
+    """Cache a request this process read or wrote. A write that then rolls
+    back leaves a digest no row holds, which simply never matches."""
+    if not _has_request_digest():
+        return
+    if digest is None:
+        digest = hashlib.md5(text.encode("utf-8", "surrogateescape")).hexdigest()
+    with _request_texts_lock:
+        _request_texts.pop(run_id, None)
+        _request_texts[run_id] = (digest, text)
+        while len(_request_texts) > 512:
+            _request_texts.pop(next(iter(_request_texts)))
+
+
 def _checkpoint_row(run_id):
     if not _has_request_digest():
         return db.fetchone(
@@ -497,9 +542,11 @@ def save_meter(user_id, thread_id, meter):
             return
         stored = conn.execute("SELECT messages FROM chat_threads WHERE id=? AND user_id=?", (pk, user_id)).fetchone()
         messages = chats.parse_messages(stored["messages"] if stored else "[]")
+        # user_id lets MariaDB find active runs by (user_id, status): by thread
+        # alone it fetched the message blob of every run the thread ever had.
         run = conn.execute(
-            "SELECT message_id,message FROM chat_runs WHERE thread_id=? AND parent_run_id IS NULL AND status IN ('queued','running')",
-            (pk,),
+            "SELECT message_id,message FROM chat_runs WHERE thread_id=? AND user_id=? AND parent_run_id IS NULL AND status IN ('queued','running')",
+            (pk, user_id),
         ).fetchone()
         if run:
             current = json.loads(run["message"])
@@ -740,6 +787,40 @@ def read_file_image(user_id, run_id: str, event_id: str):
     return None
 
 
+# A save that extends the stored transcript writes only the rows after its
+# base until they pass an eighth of it (at least 64 KiB); then one base
+# rewrite costs less than resending the growing tail on every later save.
+TAIL_MIN_CHARS = 64 * 1024
+
+
+def _provider_state_columns(conn) -> str:
+    columns = f",{db.md5_of(conn, 'provider_messages')} AS provider_digest"
+    if db.provider_split(conn):
+        columns += ",CHAR_LENGTH(provider_base) AS base_len,MD5(provider_base) AS base_digest"
+    return columns
+
+
+def _provider_changes(conn, row, payload, digest) -> dict:
+    """Columns that store a new provider transcript: none when it is the
+    stored one; with the split layout only the rows after the base while the
+    transcript extends it. MariaDB rewrites a changed LONGTEXT whole, so
+    rewriting a megabyte transcript to append one tool result cost a megabyte
+    of redo and page writes, twice a tool round."""
+    if row["provider_digest"] == digest:
+        return {}
+    if not db.provider_split(conn):
+        return {"provider_messages": payload}
+    base_len = row["base_len"] or 0
+    # dumps() is compact ASCII: a list extending the base serializes as the
+    # base without its "]", then "," and the new rows.
+    if (base_len > 2 and len(payload) > base_len and payload[base_len - 1] == ","
+            and hashlib.md5((payload[:base_len - 1] + "]").encode("ascii")).hexdigest() == row["base_digest"]):
+        tail = "[" + payload[base_len:]
+        if len(tail) <= max(TAIL_MIN_CHARS, base_len // 8):
+            return {"provider_tail": tail}
+    return {"provider_base": payload, "provider_tail": None}
+
+
 def save_turn_progress(run_id, messages, loaded_tools=None, extra=None):
     """Persist the provider transcript (and optional loaded catalog) without a WS event.
 
@@ -761,18 +842,19 @@ def save_turn_progress(run_id, messages, loaded_tools=None, extra=None):
         if not isinstance(loaded_tools, list):
             loaded_tools = []
         tools_json = chat_tx.dumps([str(name)[:64] for name in loaded_tools[:64] if isinstance(name, str)])
+    request_col = request_column()  # may look the schema up: not inside the transaction
     with chat_tx.transaction() as conn:
         row = conn.execute(
-            f"SELECT id,status,request,user_id,thread_id,{db.md5_of(conn, 'provider_messages')} AS provider_digest "
-            "FROM chat_runs WHERE id=?",
+            f"SELECT id,status,{request_col},user_id,thread_id{_provider_state_columns(conn)} FROM chat_runs WHERE id=?",
             (run_id,),
         ).fetchone()
         if row is None or row["status"] not in chat_tx.ACTIVE:
             return
+        raw_request = request_text(conn, run_id, row)
         chat_images.save(conn, row["thread_id"], row["user_id"], images)
         # Written back below: a request from before image references sheds
         # its inline copies on its first save.
-        req = chat_images.store_request(conn, row["thread_id"], row["user_id"], json.loads(row["request"]))
+        req = chat_images.store_request(conn, row["thread_id"], row["user_id"], json.loads(raw_request))
         if messages:
             # provider_messages now holds this leg's transcript, and every
             # reader takes it over request.messages (requeues rebuild them
@@ -868,14 +950,13 @@ def save_turn_progress(run_id, messages, loaded_tools=None, extra=None):
         # The runtime saves at every tool boundary and most saves repeat the
         # previous transcript: send only what changed. Each repeat was a
         # multi-MB statement to transfer, parse and digest.
-        changes = {}
-        if row["provider_digest"] != digest:
-            changes["provider_messages"] = payload
+        changes = _provider_changes(conn, row, payload, digest)
         if tools_json is not None:
             changes["loaded_tools"] = tools_json
         stored_request = chat_tx.dumps(req)
-        if stored_request != row["request"]:
+        if stored_request != raw_request:
             changes["request"] = stored_request
+            remember_request_text(run_id, stored_request)
         changes["updated_at"] = db.now()
         conn.execute(
             f"UPDATE chat_runs SET {', '.join(f'{column}=?' for column in changes)} WHERE id=?",

@@ -255,7 +255,7 @@ async def sidebar_transcript(run_id: str):
             if row is None:
                 raise HTTPException(404, "no run")
             conn.execute(
-                "UPDATE chat_runs SET provider_messages=? WHERE id=?",
+                f"UPDATE chat_runs SET {db.set_provider_sql(conn)} WHERE id=?",
                 (json.dumps([{"role": "user", "content": "resume me"}]), run_id),
             )
         return {"ok": True, "status": row["status"]}

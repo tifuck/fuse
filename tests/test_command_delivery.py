@@ -256,7 +256,7 @@ class CommandDeliveryTest(unittest.IsolatedAsyncioTestCase):
         child = store.start_child_run(
             user_id=1, thread_id=thread["id"], parent_run_id=parent["id"], prompt="bg", description="bg", background=True,
         )
-        db.execute("UPDATE chat_runs SET provider_messages=? WHERE id=?",
+        db.execute(f"UPDATE chat_runs SET {db.set_provider_sql()} WHERE id=?",
                    (store.dumps([{"role": "user", "content": "bg"}]), child["id"]))
         store.finish_run(child["id"], {"content": "", "tools": []}, "cancelled")
         store.finish_run(parent["id"], {"content": "stopped", "tools": []}, "cancelled")

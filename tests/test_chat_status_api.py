@@ -100,7 +100,7 @@ def _stamp_run(run_id, status, *, message=None, transcript=None, parent=None, de
         sets.append("message=?")
         args.append(_json(message))
     if transcript is not None:
-        sets.append("provider_messages=?")
+        sets.append(db.set_provider_sql())
         args.append(_json(transcript))
     if parent is not None:
         sets.append("parent_run_id=?")
@@ -236,9 +236,9 @@ def test_run_snapshot_keeps_child_lineage_and_unicode_message(client):
     child_request = {"model": "offline", "agent": {"description": "looks at " + text, "subagent_type": "explore"}}
     child = "child-lineage"
     db.execute(
-        """INSERT INTO chat_runs(id,thread_id,user_id,status,request,message_id,message,created_at,updated_at,
-               parent_run_id,root_run_id,agent_depth,provider_messages,resume_count)
-           VALUES(?,?,?,'interrupted',?,'m-child','{}',?,?,?,?,1,?,0)""",
+        f"""INSERT INTO chat_runs(id,thread_id,user_id,status,request,message_id,message,created_at,updated_at,
+               parent_run_id,root_run_id,agent_depth,{db.provider_column()},resume_count)
+           VALUES(?,?,?,'interrupted',?,'m-child','{{}}',?,?,?,?,1,?,0)""",
         (child, pk, uid, _json(child_request), db.now(), db.now(), root["id"], root["id"],
          _json([{"role": "assistant", "content": text}])),
     )
@@ -482,9 +482,9 @@ def test_snapshot_spawn_traces_follow_child_status(client):
     tools = []
     for ident, status, _ui, content in cases:
         db.execute(
-            """INSERT INTO chat_runs(id,thread_id,user_id,status,request,message_id,message,created_at,updated_at,
-                   parent_run_id,root_run_id,agent_depth,provider_messages)
-               VALUES(?,?,?,?,?,'m','{}',?,?,?,?,1,?)""",
+            f"""INSERT INTO chat_runs(id,thread_id,user_id,status,request,message_id,message,created_at,updated_at,
+                   parent_run_id,root_run_id,agent_depth,{db.provider_column()})
+               VALUES(?,?,?,?,?,'m','{{}}',?,?,?,?,1,?)""",
             (ident, pk, uid, status, _json({"agent": {"description": ident}}),
              db.now(), db.now(), root["id"], root["id"],
              _json([{"role": "assistant", "content": content}]) if content else None),
@@ -529,8 +529,8 @@ def test_agents_list_child_statuses_including_resumable(client):
     for ident, status, error, resumes, resumable in specs:
         message = {"content": "report " + ident, "error": error or ""}
         db.execute(
-            """INSERT INTO chat_runs(id,thread_id,user_id,status,request,message_id,message,created_at,updated_at,
-                   parent_run_id,root_run_id,agent_depth,provider_messages,resume_count)
+            f"""INSERT INTO chat_runs(id,thread_id,user_id,status,request,message_id,message,created_at,updated_at,
+                   parent_run_id,root_run_id,agent_depth,{db.provider_column()},resume_count)
                VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?,?)""",
             (ident, pk, uid, status,
              _json({"model": "offline", "agent": {"description": "child " + ident, "background": True}}),

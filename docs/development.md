@@ -77,6 +77,12 @@ change: each pool merges its live catalog into its seed list.
   `provider_messages` first; requeues rebuild `request.messages` from it),
   and it sends only the columns that changed. Read `provider_messages` only
   when a check actually needs it.
+- `chat_runs.provider_messages` is a virtual column over the invisible
+  `provider_base` and `provider_tail`: a save that extends the transcript
+  writes only the rows after the base (`chat_checkpoint._provider_changes`).
+  Read `provider_messages` as before, but never write it: store a whole
+  transcript with `db.set_provider_sql()` (UPDATE) or `db.provider_column()`
+  (INSERT), which also work on the legacy single-column layout.
 
 ## Tests
 

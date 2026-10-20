@@ -386,7 +386,7 @@ def _requeue_for_resume(row, messages, allowed=None, *, by_user=False):
         req = chat_images.store_request(conn, row["thread_id"], row["user_id"], req)
         sealed = req["messages"]
         conn.execute(
-            """UPDATE chat_runs SET status='queued', request=?, message=?, provider_messages=?,
+            f"""UPDATE chat_runs SET status='queued', request=?, message=?, {db.set_provider_sql(conn)},
                cancel_requested=0, cancel_requested_at='', resume_count=?, updated_at=? WHERE id=?""",
             (chat_tx.dumps(req), chat_tx.dumps(message), chat_tx.dumps(sealed), resume_count, ts, row["id"]),
         )

@@ -171,6 +171,37 @@ def md5_of(conn, column: str) -> str:
     return "NULL" if isinstance(conn, sqlite3.Connection) else f"MD5({column})"
 
 
+_provider_layout: tuple[object, bool] | None = None
+
+
+def provider_split(conn=None) -> bool:
+    """Whether chat_runs keeps the provider transcript as provider_base plus
+    provider_tail behind a virtual provider_messages, so a save can write
+    only the rows added since the base (scripts/sql/2026-10-20-*). Legacy
+    SQLite test schemas keep the one plain column. Inside a transaction pass
+    its conn: the first check must not wait for a second connection."""
+    global _provider_layout
+    pool = connect()
+    if _provider_layout is None or _provider_layout[0] is not pool:
+        if isinstance(pool, sqlite3.Connection):
+            present = False
+        else:
+            rows = conn.execute("PRAGMA table_info(chat_runs)").fetchall() if conn is not None else fetchall("PRAGMA table_info(chat_runs)")
+            present = any(column[1] == "provider_tail" for column in rows)
+        _provider_layout = (pool, present)
+    return _provider_layout[1]
+
+
+def provider_column(conn=None) -> str:
+    """Column that stores a whole provider transcript on INSERT."""
+    return "provider_base" if provider_split(conn) else "provider_messages"
+
+
+def set_provider_sql(conn=None) -> str:
+    """SET fragment storing a whole provider transcript (one parameter)."""
+    return "provider_base=?, provider_tail=NULL" if provider_split(conn) else "provider_messages=?"
+
+
 def last_id(conn) -> int:
     sql = "SELECT last_insert_rowid()" if isinstance(conn, sqlite3.Connection) else "SELECT LAST_INSERT_ID()"
     row = conn.execute(sql).fetchone()

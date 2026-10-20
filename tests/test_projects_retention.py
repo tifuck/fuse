@@ -194,8 +194,8 @@ class ProjectsRetentionTest(unittest.TestCase):
         child = "11111111-2222-4333-8444-555555555555"
         job = "abcdef123456"
         db.execute(
-            """INSERT INTO chat_runs(id,user_id,thread_id,status,request,message_id,message,created_at,updated_at,
-                   parent_run_id,root_run_id,agent_depth,provider_messages)
+            f"""INSERT INTO chat_runs(id,user_id,thread_id,status,request,message_id,message,created_at,updated_at,
+                   parent_run_id,root_run_id,agent_depth,{db.provider_column()})
                VALUES(?,1,?,'completed',?,?,?,?,?,?,?,1,?)""",
             (child, pk, json.dumps({"thread_id": pk, "run_id": child, "agent": {"description": "tests"}}),
              "99999999-2222-4333-8444-555555555555", json.dumps({"content": "All green", "tools": []}),
