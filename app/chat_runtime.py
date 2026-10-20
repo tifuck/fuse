@@ -1345,7 +1345,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                             "fuse": {
                                 "event": "notice",
                                 "message": (
-                                    f"Provider error ({result.status}) — retrying this step in "
+                                    f"{provider_errors.retry_reason(src.type_id, result.status, result.body)} — retrying this step in "
                                     f"{int(delay)}s (attempt {attempt_no} of {MAX_RESUME_RETRIES})."
                                 ),
                             }
@@ -1354,7 +1354,8 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     async for frame in _heartbeat_sleep(delay):
                         yield frame
                     continue
-                yield _sse(_exhausted_provider_error(is_child, result.body, result.status, attempts=MAX_RESUME_RETRIES - resumes_left))
+                yield _sse(_exhausted_provider_error(is_child, result.body, result.status, attempts=MAX_RESUME_RETRIES - resumes_left,
+                                                    provider=src.type_id))
                 _snap = _live_meter(); yield _sse(context_meter.context_event(_snap, phase="end")); await _persist_meter(_snap)
                 yield b"data: [DONE]\n\n"
                 return
@@ -1437,7 +1438,8 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     current_messages = transcript
                     await persist_jobs()
                     continue
-                yield _sse(_exhausted_provider_error(is_child, {"error": {"message": err_msg, "code": 502}}, attempts=MAX_RESUME_RETRIES - resumes_left))
+                yield _sse(_exhausted_provider_error(is_child, {"error": {"message": err_msg, "code": 502}}, attempts=MAX_RESUME_RETRIES - resumes_left,
+                                                    provider=src_type if upstream_fault else ""))
                 _snap = _live_meter(); yield _sse(context_meter.context_event(_snap, phase="end")); await _persist_meter(_snap)
                 yield b"data: [DONE]\n\n"
                 return
@@ -1488,12 +1490,14 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     delay = _resume_delay(
                         attempt_no, _header_retry_after(getattr(result, "response_headers", None))
                     )
+                    reason = (provider_errors.retry_reason(src_type or src_type_guess or "", err_code, raw_err)
+                              if provider_errors.kind_of(raw_err) else "Provider stream interrupted")
                     yield _sse(
                         {
                             "fuse": {
                                 "event": "notice",
                                 "message": (
-                                    "Provider stream interrupted — resuming in "
+                                    f"{reason} — resuming in "
                                     f"{int(delay)}s (attempt {attempt_no} of {MAX_RESUME_RETRIES})."
                                 ),
                             }
@@ -1516,7 +1520,8 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                     current_messages = transcript
                     await persist_jobs()
                     continue
-                yield _sse(_exhausted_provider_error(is_child, raw_err, attempts=MAX_RESUME_RETRIES - resumes_left))
+                yield _sse(_exhausted_provider_error(is_child, raw_err, attempts=MAX_RESUME_RETRIES - resumes_left,
+                                                    provider=src_type or src_type_guess or ""))
                 _snap = _live_meter(); yield _sse(context_meter.context_event(_snap, phase="end")); await _persist_meter(_snap)
                 yield b"data: [DONE]\n\n"
                 return

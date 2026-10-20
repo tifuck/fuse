@@ -381,9 +381,14 @@ function updateAssistant(article, msg, live) {
     const errDup = Boolean(errText && toolFailKeys.includes(deps.normErr(errText)));
     if (errText && !errDup) {
       err.hidden = false;
-      err.textContent = errText;
+      if (err._text !== errText) {
+        err._text = errText;
+        err.dataset.tone = deps.parseProviderError(errText).tone;
+        err.innerHTML = deps.providerErrorHtml(errText);
+      }
     } else {
       err.hidden = true;
+      err._text = "";
       err.textContent = "";
     }
     syncNotices(article, noticeLines, live);

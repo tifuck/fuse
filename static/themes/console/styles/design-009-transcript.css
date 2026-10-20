@@ -365,6 +365,49 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-not
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-notice-line.is-current {
   color: var(--mist);
 }
+/* A provider failure, one card for every provider: "<Provider> · <what
+   happened>" with its reset beside it, then the provider's own words dimmed.
+   Limits (spent usage, credits, plan, rate) are brass: nothing broke, the
+   account needs time or money. Faults are red. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-error {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0.6rem 0.85rem;
+  border: 1px solid color-mix(in srgb, var(--fault) 32%, var(--line));
+  border-left-width: 3px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--fault) 5%, transparent);
+  color: var(--fault);
+  font: var(--console-type)/var(--console-leading) var(--mono);
+  overflow-wrap: anywhere;
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-error[data-tone="limit"] {
+  border-color: color-mix(in srgb, var(--brass) 38%, var(--line));
+  background: color-mix(in srgb, var(--brass) 6%, transparent);
+  color: var(--brass);
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-error-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.9rem;
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-error-title {
+  font-weight: 600;
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-error-sep {
+  opacity: 0.55;
+  font-weight: 400;
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-error-reset {
+  color: var(--mist);
+  font-size: 0.92em;
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-error-detail {
+  color: color-mix(in srgb, var(--mist) 62%, var(--ink));
+  font-size: 0.92em;
+}
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-notice + .chat-error:not([hidden]) {
   margin-top: 0.45rem;
 }

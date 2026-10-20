@@ -26,7 +26,7 @@ from .proxy import scrub_secrets
 
 # A retry with the same context and account fails the same way.
 TERMINAL = frozenset({
-    "usage_exhausted", "insufficient_balance", "plan_required", "auth", "permission",
+    "usage_exhausted", "insufficient_balance", "plan_required", "credentials", "permission",
     "invalid_request", "context_length", "content_filter", "model_not_found",
 })
 TRANSIENT = frozenset({"rate_limit", "overloaded", "server_error", "timeout"})
@@ -43,18 +43,20 @@ _LABELS = {
     "nanogpt": "NanoGPT", "mimo": "MiMo", "llama": "llama.cpp", "explabs": "Experiential Labs",
 }
 
+# Message headlines. The chat UI keys its card off these exact phrases
+# (static/themes/console/provider-error.js SUMMARIES): change both together.
 _SUMMARY = {
-    "rate_limit": "rate limit reached",
-    "usage_exhausted": "usage limit reached for this plan",
-    "insufficient_balance": "out of credits or balance",
-    "plan_required": "this model or feature is not included in the plan",
-    "auth": "the account credentials were rejected",
-    "permission": "access denied for this account",
-    "invalid_request": "the request was rejected",
-    "context_length": "the conversation is too long for this model",
-    "content_filter": "blocked by the provider's content policy",
+    "rate_limit": "rate limited",
+    "usage_exhausted": "plan usage limit reached",
+    "insufficient_balance": "out of credits",
+    "plan_required": "not included in this plan",
+    "credentials": "account sign-in rejected",
+    "permission": "access denied",
+    "invalid_request": "request rejected",
+    "context_length": "conversation too long for this model",
+    "content_filter": "blocked by content policy",
     "model_not_found": "model not available",
-    "overloaded": "temporarily overloaded",
+    "overloaded": "overloaded",
     "server_error": "server error",
     "timeout": "timed out",
 }
@@ -79,7 +81,7 @@ _CODES = {
     "flex_unavailable": "overloaded",
     "context_length_exceeded": "context_length",
     "invalid_prompt": "invalid_request",
-    "invalid_api_key": "auth",
+    "invalid_api_key": "credentials",
     "model_not_found": "model_not_found",
     "cyber_policy": "content_filter",
     "bio_policy": "content_filter",
@@ -97,8 +99,8 @@ _CODES = {
     "rate_limit_reached_error": "rate_limit",
     "engine_overloaded_error": "overloaded",
     "resource_not_found_error": "model_not_found",
-    "invalid_authentication_error": "auth",
-    "incorrect_api_key_error": "auth",
+    "invalid_authentication_error": "credentials",
+    "incorrect_api_key_error": "credentials",
     "permission_denied_error": "permission",
     # xAI (flat {code, error})
     "subscription:free-usage-exhausted": "usage_exhausted",
@@ -124,7 +126,7 @@ _CODES = {
     "max_tokens_exceeded": "invalid_request",
     "token_limit_exceeded": "context_length",
     # Experiential Labs
-    "invalid_key": "auth",
+    "invalid_key": "credentials",
     "model_not_granted": "model_not_found",
     "model_location_not_supported": "permission",
     "uncensored_requires_retention": "permission",
@@ -158,13 +160,13 @@ _CODES = {
     "error_gpt_4_vision_preview_rate_limit": "rate_limit",
     "error_debounced": "rate_limit",
     "error_pro_user_only": "plan_required",
-    "error_not_logged_in": "auth",
-    "error_auth_token_expired": "auth",
-    "error_auth_token_not_found": "auth",
-    "error_bad_api_key": "auth",
-    "error_bad_user_api_key": "auth",
-    "error_invalid_auth_id": "auth",
-    "error_unauthorized": "auth",
+    "error_not_logged_in": "credentials",
+    "error_auth_token_expired": "credentials",
+    "error_auth_token_not_found": "credentials",
+    "error_bad_api_key": "credentials",
+    "error_bad_user_api_key": "credentials",
+    "error_invalid_auth_id": "credentials",
+    "error_unauthorized": "credentials",
     "error_not_high_enough_permissions": "permission",
     "error_max_tokens": "context_length",
     "error_bad_model_name": "model_not_found",
@@ -176,8 +178,8 @@ _CODES = {
 # invalid_request_error), so they rank below the message patterns.
 _TYPES = {
     "invalid_request_error": "invalid_request",
-    "authentication_error": "auth",
-    "authentication": "auth",
+    "authentication_error": "credentials",
+    "authentication": "credentials",
     "permission_error": "permission",
     "permission_denied": "permission",
     "not_found_error": "model_not_found",
@@ -189,7 +191,7 @@ _TYPES = {
 # Z.AI business codes (docs.z.ai/api-reference/api-code). Every interesting
 # one arrives as HTTP 429, so the status says nothing.
 _ZAI = {
-    "1000": "auth", "1001": "auth", "1003": "auth", "1005": "auth",
+    "1000": "credentials", "1001": "credentials", "1003": "credentials", "1005": "credentials",
     "1113": "insufficient_balance",
     "1200": "server_error", "1230": "server_error", "1234": "server_error",
     "1210": "invalid_request", "1212": "invalid_request", "1213": "invalid_request",
@@ -203,11 +205,11 @@ _ZAI = {
 }
 
 # MiMo puts its business code in error.code as a string.
-_MIMO = {"421": "content_filter", "441": "content_filter", "402": "insufficient_balance", "401": "auth"}
+_MIMO = {"421": "content_filter", "441": "content_filter", "402": "insufficient_balance", "401": "credentials"}
 
 # Connect-RPC codes (Devin and Cursor trailers / unary errors).
 _CONNECT = {
-    "unavailable": "overloaded", "deadline_exceeded": "timeout", "unauthenticated": "auth",
+    "unavailable": "overloaded", "deadline_exceeded": "timeout", "unauthenticated": "credentials",
     "permission_denied": "permission", "invalid_argument": "invalid_request",
     "failed_precondition": "invalid_request", "out_of_range": "invalid_request",
     "unimplemented": "invalid_request", "not_found": "model_not_found",
@@ -242,7 +244,7 @@ _EXPLABS_KINDS = {
 # "reached your concurrent request limit" is a rate limit, not usage; Kimi's
 # quota sentences also say "upgrade your plan".
 _PATTERNS = [
-    ("auth", re.compile(r"rejected (?:the configured|this account)|invalid api key|incorrect api key|api key appears to be invalid", re.I)),
+    ("credentials", re.compile(r"rejected (?:the configured|this account)|invalid api key|incorrect api key|api key appears to be invalid", re.I)),
     ("context_length", re.compile(
         r"context (?:length|window|size)|prompt is too long|prompt too long|input token length too long"
         r"|exceeded model token limit|total message size \d+ exceeds|larger than the max context"
@@ -273,7 +275,7 @@ _PATTERNS = [
 _FUSE_AUTH = re.compile(r"rejected (?:the configured|this account)", re.I)
 
 _STATUS = {
-    400: "invalid_request", 401: "auth", 402: "insufficient_balance", 403: "permission",
+    400: "invalid_request", 401: "credentials", 402: "insufficient_balance", 403: "permission",
     404: "model_not_found", 405: "invalid_request", 408: "timeout", 413: "invalid_request",
     415: "invalid_request", 422: "invalid_request", 429: "rate_limit", 500: "server_error",
     502: "server_error", 503: "overloaded", 504: "timeout", 529: "overloaded",
@@ -571,6 +573,28 @@ def annotate(provider: str, status: int, body, headers=None, *, now: float | Non
         inner["resets_at"] = int(info["reset_at"])
     out["error"] = inner
     return out, info
+
+
+def display_message(provider: str, status: int, message: str, kind: str = "") -> str:
+    """A final failure in the "<Provider>: <summary>. <detail>" shape the chat
+    card reads, so an unclassified provider failure looks like every other one
+    instead of a bare "Internal Server Error". Already-shaped text passes."""
+    label = _LABELS.get(provider, "Provider")
+    text = (message or "").strip()
+    if not provider or text.startswith(f"{label}: "):
+        return text
+    if kind not in _SUMMARY:
+        kind = _STATUS.get(status) or "server_error"
+    head = f"{label}: {_SUMMARY[kind]}."
+    return f"{head} {text}" if text and text.lower() != "upstream error" else head
+
+
+def retry_reason(provider: str, status: int, body) -> str:
+    """What a retry notice names: "Claude: overloaded", or the status alone."""
+    kind = kind_of(body)
+    if kind in _SUMMARY:
+        return f"{_LABELS.get(provider, 'Provider')}: {_SUMMARY[kind]}"
+    return f"Provider error ({status})"
 
 
 def kind_of(body) -> str:

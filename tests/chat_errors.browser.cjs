@@ -23,6 +23,26 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       });
       assert.equal(await page.locator('[data-err]:visible').count(), 1, 'final failure is visible');
       assert.equal(await page.locator('[data-continue]:visible').count(), 1, 'a failed final turn offers Continue');
+      // Every provider's failure is one card: "<Provider> · <what happened>", its reset,
+      // the provider's own words. Limits are brass, faults red; other text is a generic fault.
+      const card = async (error) => {
+        await page.evaluate((e) => fuseToolFixture.mountThread([failedRows[0], { ...failedRows[1], error: e }]), error);
+        const el = page.locator('[data-err]:visible');
+        return { tone: await el.getAttribute('data-tone'), title: await el.locator('.chat-error-title').textContent(),
+          reset: await el.locator('.chat-error-reset').count() ? await el.locator('.chat-error-reset').textContent() : '',
+          detail: await el.locator('.chat-error-detail').count() ? await el.locator('.chat-error-detail').textContent() : '' };
+      };
+      assert.deepEqual(await card('ChatGPT: 5-hour usage limit reached; resets in 2h 10m (22:53 UTC). The usage limit has been reached'),
+        { tone: 'limit', title: 'ChatGPT · 5-hour usage limit reached', reset: 'Resets 22:53 UTC', detail: 'The usage limit has been reached' });
+      assert.deepEqual(await card('Z.AI: out of credits. Insufficient balance or no resource package.'),
+        { tone: 'limit', title: 'Z.AI · Out of credits', reset: '', detail: 'Insufficient balance or no resource package.' });
+      assert.deepEqual(await card('Provider: rate limited; retry in 12s. Slow down.'),
+        { tone: 'limit', title: 'Provider · Rate limited', reset: 'Retry in 12s', detail: 'Slow down.' });
+      assert.deepEqual(await card('llama.cpp: conversation too long for this model. request (9000 tokens) exceeds the available context size'),
+        { tone: 'fault', title: 'llama.cpp · Conversation too long for this model', reset: '', detail: 'request (9000 tokens) exceeds the available context size' });
+      assert.deepEqual(await card('Devin: server error.'), { tone: 'fault', title: 'Devin · Server error', reset: '', detail: '' });
+      assert.deepEqual(await card('Error: something odd happened.'), { tone: 'fault', title: 'Request failed', reset: '', detail: 'Error: something odd happened.' });
+      assert.deepEqual(await card('<b>x</b>: server error. <i>y</i>'), { tone: 'fault', title: 'Request failed', reset: '', detail: '<b>x</b>: server error. <i>y</i>' }, 'text is escaped, never markup');
       // Provider retries are Fuse status lines in the timeline, never tool rows.
       await page.evaluate(() => {
         window.retryNotices = [1, 2].map(n => ({ type: 'marker', kind: 'notice', text: `Provider error (503) — retrying this step in ${n * 2}s (attempt ${n} of 4).` }));
@@ -59,7 +79,7 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
           { role: 'user', content: 'Next request' }, { role: 'assistant', error: 'Latest provider failure' },
         ]);
       });
-      assert.equal(await page.locator('[data-err]:visible').textContent(), 'Latest provider failure', 'only current failure is visible');
+      assert.equal(await page.locator('[data-err]:visible .chat-error-detail').textContent(), 'Latest provider failure', 'only current failure is visible');
       assert.equal(await page.locator('[data-content-block]').textContent(), 'Partial output', 'partial output is preserved');
       assert.equal(await page.locator('[data-tool="read_file"][data-state="error"]').count(), 1, 'historical tool failures are preserved');
       await page.evaluate(() => fuseToolFixture.repaint());

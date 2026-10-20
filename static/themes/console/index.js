@@ -20,10 +20,14 @@ import { create as createCallProgress } from './call-progress.js';
 import { create as createActivityGroups } from './activity-groups.js';
 import { create as createTranscript } from './transcript.js';
 import { create as createWorkPanels } from './work-panels.js';
+import { create as createProviderError } from './provider-error.js';
 
 // Each renderer sees only its declared callbacks/state; nothing is published globally.
 export function createConsoleTheme(runtime) {
   const theme = {};
+  Object.assign(theme, createProviderError({
+    get escapeHtml() { return runtime.escapeHtml; },
+  }));
   Object.assign(theme, createMarkdownSyntax({
     get detailProbe() { return runtime.detailProbe; },
     get escapeHtml() { return runtime.escapeHtml; },
@@ -184,6 +188,7 @@ export function createConsoleTheme(runtime) {
     get toolPresentation() { return runtime.toolPresentation; },
   }));
   Object.assign(theme, createToolResults({
+    get providerErrorLine() { return theme.providerErrorLine; },
     get agentSubject() { return theme.agentSubject; },
     get ccAgentLastCall() { return theme.ccAgentLastCall; },
     get ccBytes() { return theme.ccBytes; },
@@ -309,6 +314,7 @@ export function createConsoleTheme(runtime) {
     get displayCommand() { return theme.displayCommand; },
   }));
   Object.assign(theme, createCallSemantics({
+    get providerErrorLine() { return theme.providerErrorLine; },
     get CC_CHAIN() { return theme.CC_CHAIN; },
     get CC_CHAIN_STOP() { return theme.CC_CHAIN_STOP; },
     get CC_CVC() { return theme.CC_CVC; },
@@ -323,6 +329,7 @@ export function createConsoleTheme(runtime) {
     get runPhase() { return runtime.runPhase; },
   }));
   Object.assign(theme, createCallProgress({
+    get providerErrorLine() { return theme.providerErrorLine; },
     get agentLive() { return runtime.agentLive; },
     get agentSubject() { return theme.agentSubject; },
     get agentsRows() { return runtime.agentsRows; },
@@ -394,6 +401,8 @@ export function createConsoleTheme(runtime) {
     get toolStepHtml() { return theme.toolStepHtml; },
   }));
   Object.assign(theme, createTranscript({
+    get parseProviderError() { return theme.parseProviderError; },
+    get providerErrorHtml() { return theme.providerErrorHtml; },
     get activityKind() { return theme.activityKind; },
     get activityLabel() { return theme.activityLabel; },
     get activitySeq() { return runtime.activitySeq; },

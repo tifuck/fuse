@@ -253,14 +253,21 @@ def _as_error_frame(raw, fallback_status: int = 502) -> dict:
     return _error_obj(code or fallback_status, {"error": {"message": msg or "upstream error", "fuse_kind": provider_errors.kind_of(raw)}})
 
 
-def _exhausted_provider_error(is_child: bool, raw, fallback_status: int = 502, *, attempts: int | None = None) -> dict:
+def _exhausted_provider_error(is_child: bool, raw, fallback_status: int = 502, *, attempts: int | None = None,
+                              provider: str = "") -> dict:
     """Wire error after the resume budget is spent, or for a definitive failure.
 
     `attempts` is how many retries this step actually made; a definitive
     failure (auth, plan gating) made none and must not claim otherwise.
-    Children get a parent-facing wrap.
+    `provider` (the source type) words the message in the shape every
+    provider's failure shares in the chat; Fuse's own adapter failures keep
+    their text. Children get a parent-facing wrap.
     """
     frame = _as_error_frame(raw, fallback_status)
+    code, msg = _error_code_and_message(frame)
+    if provider and not _LOCAL_ADAPTER_FAILURE.match(msg):
+        frame["error"]["message"] = provider_errors.display_message(
+            provider, code, msg, provider_errors.kind_of(frame))
     if not is_child:
         return frame
     _code, msg = _error_code_and_message(frame)

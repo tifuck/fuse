@@ -184,6 +184,8 @@ function ccBytes(n) {
 function ccErrorFold(lines) {
     const all = lines.map((line) => String(line ?? ""));
     if (!all.length) all.push("failed");
+    // A provider failure (a subagent's model call) reads like the chat's error card.
+    all[0] = deps.providerErrorLine(all[0]);
     if (!/^(Error|Cancelled): /.test(all[0])) all[0] = `Error: ${all[0]}`;
     const show = all.slice(0, 10);
     const hidden = all.length - show.length;

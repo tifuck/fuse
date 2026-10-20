@@ -340,7 +340,7 @@ function consoleAgentNoticeHtml(trace, key) {
     const stopped = trace.status === "interrupted";
     const failed = trace.status === "error";
     const head = stopped ? `Agent "${label}" was stopped`
-      : failed ? `Agent "${label}" failed: ${deps.ccClip(deps.ccFlat(trace.error).replace(/^Subagent failed:\s*/i, "") || "Unknown error", 160)}`
+      : failed ? `Agent "${label}" failed: ${deps.ccClip(deps.providerErrorLine(deps.ccFlat(trace.error)).replace(/^Subagent failed:\s*/i, "") || "Unknown error", 160)}`
       : `Agent "${label}" finished`;
     const tone = stopped ? "gold" : failed ? "red" : "green";
     const body = failed ? "" : String(trace.summary || "").replace(/\r\n?/g, "\n").replace(/^\s*\n|\s+$/g, "");

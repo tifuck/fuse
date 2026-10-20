@@ -154,4 +154,26 @@ def test_error_frames_keep_kind():
     frame = policy._exhausted_provider_error(False, spent, 429, attempts=0)
     assert frame["error"]["type"] == "usage_exhausted"
     child = policy._exhausted_provider_error(True, spent, 429, attempts=0)
-    assert child["error"]["type"] == "usage_exhausted" and "Grok: usage limit" in child["error"]["message"]
+    assert child["error"]["type"] == "usage_exhausted" and "Grok: plan usage limit reached" in child["error"]["message"]
+
+
+def test_final_failures_share_one_shape():
+    # The chat card reads "<Provider>: <summary>. <detail>" for every provider.
+    unknown, _ = pe.annotate("openrouter", 500, {"error": {"message": "Internal Server Error"}})
+    frame = policy._exhausted_provider_error(False, unknown, 500, attempts=0, provider="openrouter")
+    assert frame["error"]["message"] == "OpenRouter: server error. Internal Server Error"
+    empty = policy._exhausted_provider_error(False, {"error": {"message": ""}}, 502, attempts=0, provider="devin")
+    assert empty["error"]["message"] == "Devin: server error."
+    spent, _ = pe.annotate("zai", 429, {"error": {"code": "1310", "message": "Weekly/Monthly Limit Exhausted."}})
+    shaped = policy._exhausted_provider_error(False, spent, 429, attempts=0, provider="zai")
+    assert shaped["error"]["message"] == spent["error"]["message"]  # already shaped: unchanged
+    # Fuse's own adapter failure is not blamed on the provider.
+    local = policy._exhausted_provider_error(False, {"error": {"message": "upstream request failed (TypeError)"}}, 502,
+                                            attempts=0, provider="zai")
+    assert local["error"]["message"] == "upstream request failed (TypeError)"
+
+
+def test_retry_reason_names_provider_and_kind():
+    busy, _ = pe.annotate("claude", 529, {"error": {"type": "overloaded_error", "message": "Overloaded"}})
+    assert pe.retry_reason("claude", 529, busy) == "Claude: overloaded"
+    assert pe.retry_reason("claude", 503, {"error": {"message": "?"}}) == "Provider error (503)"
