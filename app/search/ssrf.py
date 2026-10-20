@@ -72,7 +72,7 @@ def public_http_url(raw: str, *, https_only: bool = False) -> str:
     path = parsed.path or "/"
     if parsed.params:
         path += ";" + parsed.params
-    query = (parsed.query or "")[:800]
+    query = parsed.query or ""
     netloc = _netloc(host, port, parsed.scheme)
     return urlunparse((parsed.scheme, netloc, path, "", query, ""))
 

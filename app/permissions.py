@@ -279,7 +279,7 @@ def _in_roots(resolved: str, roots: list[str], windows: bool) -> bool:
     return False
 
 
-def _resolve_for_scope(target: str, base: str, windows: bool) -> str:
+def _resolve_for_scope(target: str, base: str, windows: bool, *, normalize: bool = True) -> str:
     """Resolve a tool path the same way execution will: relative joins the base
     (project root / cwd), empty base means home. Dots collapse lexically."""
     raw = expand_temp(str(target or ""), windows)
@@ -298,13 +298,13 @@ def _resolve_for_scope(target: str, base: str, windows: bool) -> str:
             joined = raw
         else:
             joined = ntpath.join(base2, raw)
-        return ntpath.normpath(joined)
+        return ntpath.normpath(joined) if normalize else joined
     if raw.startswith("~") or raw.startswith("/"):
         joined = raw
     else:
         base2 = base if base and not _is_home_marker(base) else "~"
         joined = posixpath.join(base2, raw)
-    return posixpath.normpath(joined)
+    return posixpath.normpath(joined) if normalize else joined
 
 
 def scope_allows(target: str, base: str, roots: list[str], windows: bool) -> tuple[bool, str]:
@@ -1274,6 +1274,7 @@ async def review(*, tool: str, args: dict, user_id: int,
     # workspace confinement must be relaxed or it rejects what the gate
     # just allowed.
     outside_work = False
+    paths_resolved = True
     # Why a shell command needs approval regardless of the paths it names.
     restricted_why: list[str] = []
     secret_target = ""
@@ -1338,7 +1339,7 @@ async def review(*, tool: str, args: dict, user_id: int,
                     secret_target = secret_target or resolved_cand
                     reasons.append("credential directory")
                 if ok:
-                    probe.append((resolved_cand, is_dir))
+                    probe.append((_resolve_for_scope(cand, base, windows, normalize=False), is_dir))
                     continue
                 reasons.append(f"{resolved_cand} is outside the allowed roots")
                 out_of_root = True
@@ -1402,15 +1403,16 @@ async def review(*, tool: str, args: dict, user_id: int,
                 secret = True
                 reasons.append("secret-named file")
                 grant_kind, grant_value = "file", resolved
-        if realpath is not None and in_roots and not windows:
-            reals = await realpath([resolved, *roots])
+        if realpath is not None and not windows:
+            reals = list(await realpath([resolved, *roots]) or [])
             real = reals[0] if reals else None
             real_roots = list(reals[1:])
             # Fail closed when the target or any root did not resolve (probe
             # error or timeout included): an unresolved target may sit behind
             # a symlink out of the roots, and a root that is itself a symlink
             # must be judged by its real location.
-            if not real or not all(real_roots):
+            if not real or len(real_roots) != len(roots) or not all(real_roots):
+                paths_resolved = False
                 in_roots = False
                 out_of_root = True
                 reasons.append(f"cannot resolve where {resolved} points")
@@ -1444,7 +1446,7 @@ async def review(*, tool: str, args: dict, user_id: int,
 
     needed = shell_grants if perm_kind == "shell" else [(grant_kind, grant_value)]
     covered = False
-    if grant_value and not (perm_kind == "shell" and (restricted_shell or secret or compound)):
+    if paths_resolved and grant_value and not (perm_kind == "shell" and (restricted_shell or secret or compound)):
         covered = True
         for kind, value in needed:
             if not await asyncio.to_thread(grant_covers, gate.user_id, gate.thread_id, host_id, kind, value, windows):

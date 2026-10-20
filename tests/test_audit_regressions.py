@@ -63,6 +63,23 @@ def test_out_of_scope_secret_reaches_auto_judge():
     ask.assert_not_called()
 
 
+def test_verification_url_rejects_ambiguous_authorities():
+    for url in (
+        "https://evil.example\\@grok.com/",
+        "https://user@grok.com/",
+        "https://user:password@grok.com/",
+        "https://@grok.com/",
+    ):
+        assert security.safe_verify_url(url) == ""
+    assert security.safe_verify_url("https://grok.com/verify?code=x") == "https://grok.com/verify?code=x"
+
+
+def test_nanogpt_verification_url_is_allowed():
+    url = "https://nano-gpt.com/cli-login?code=x"
+    assert security.safe_verify_url(url) == url
+    assert security.safe_verify_url("https://nano-gpt.com.evil.example/cli-login") == ""
+
+
 def test_cleanup_preserves_hourly_bucket():
     limiter = security.RateLimiter()
     with patch.object(security.time, "monotonic", return_value=0):

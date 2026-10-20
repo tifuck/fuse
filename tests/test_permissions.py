@@ -517,6 +517,20 @@ class ReviewTest(PermSchemaTest):
 
         self.assertTrue(asyncio.run(self._shell("cat a/b/etc/shadow", same)).allowed)
 
+    def test_shell_symlink_dotdot_probes_the_original_operand(self):
+        for operand in ("link/../etc/passwd", "./link/../etc/passwd", "/srv/app/link/../etc/passwd"):
+            probed = []
+
+            async def realpath(paths):
+                probed.extend(paths)
+                return ["/outside/etc/passwd" if "link/../" in p else p for p in paths]
+
+            with self.subTest(operand=operand):
+                res = asyncio.run(self._shell("cat " + operand, realpath))
+                self.assertFalse(res.allowed)
+                self.assertIn("/outside/etc/passwd", res.detail)
+                self.assertTrue(any("link/../" in p for p in probed))
+
     def test_shell_unresolvable_target_fails_closed(self):
         async def realpath(paths):
             return [None if p.startswith("/srv/app/link") else p for p in paths]
@@ -563,6 +577,28 @@ class ReviewTest(PermSchemaTest):
 
         res = asyncio.run(run())
         self.assertFalse(res.allowed)
+
+    def test_granted_directory_symlink_requires_an_authorized_destination(self):
+        permissions.add_grant(1, 1, 7, "dir", "/srv/shared")
+
+        async def run(tool, destination):
+            async def realpath(paths):
+                return [destination if p == "/srv/shared/link" else p for p in paths]
+
+            return await permissions.review(
+                tool=tool, args={"path": "/srv/shared/link"}, user_id=1, host_id=7, host_alias="prod",
+                root="/srv/app", windows=False, gate=_gate(unattended=True), realpath=realpath,
+            )
+
+        for tool in ("read_file", "grep", "write_file", "search_replace"):
+            for destination, allowed in (
+                ("/etc/shadow", False), ("/elsewhere/note.txt", False), (None, False),
+                ("/srv/shared/note.txt", True), ("/srv/app/note.txt", True),
+            ):
+                with self.subTest(tool=tool, destination=destination):
+                    self.assertEqual(asyncio.run(run(tool, destination)).allowed, allowed)
+        permissions.add_grant(1, 1, 7, "dir", "/elsewhere")
+        self.assertTrue(asyncio.run(run("read_file", "/elsewhere/note.txt")).allowed)
 
     def test_unresolvable_target_fails_closed(self):
         # /srv/app/link -> /outside with a missing intermediate dir: readlink

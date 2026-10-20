@@ -182,13 +182,13 @@ def allowed_base_url(url: str) -> bool:
 
 def safe_verify_url(url: str) -> str:
     url = (url or "").strip()
-    if not url or len(url) > 2048:
+    if not url or len(url) > 2048 or "\\" in url:
         return ""
     try:
         p = urlparse(url)
     except Exception:
         return ""
-    if p.scheme != "https":
+    if p.scheme != "https" or p.username is not None or p.password is not None:
         return ""
     host = (p.hostname or "").lower().rstrip(".")
     if host in ("grok.com", "x.ai") or host.endswith(".grok.com") or host.endswith(".x.ai"):
@@ -202,5 +202,7 @@ def safe_verify_url(url: str) -> str:
     if host in ("claude.ai", "claude.com", "platform.claude.com") or host.endswith(".claude.ai") or host.endswith(".claude.com"):
         return url
     if host == "cursor.com" or host.endswith(".cursor.com"):
+        return url
+    if host == "nano-gpt.com" or host.endswith(".nano-gpt.com"):
         return url
     return ""

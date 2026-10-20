@@ -105,6 +105,15 @@ class FakeClient:
 
 
 class SsrfTest(unittest.TestCase):
+    def test_public_url_preserves_long_query(self):
+        from app.search.ssrf import public_http_url
+
+        url = "https://example.com/?q=" + "a" * 800 + "&page=2"
+        self.assertEqual(public_http_url(url), url)
+        maximal = "https://example.com/?q=" + "a" * (2000 - len("https://example.com/?q="))
+        self.assertEqual(public_http_url(maximal), maximal)
+        self.assertEqual(public_http_url(maximal + "a"), "")
+
     def test_public_ips_rejects_mixed_public_private_dns(self):
         from app.search.ssrf import public_ips
 
