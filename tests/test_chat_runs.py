@@ -30,6 +30,10 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         self.conn.row_factory = sqlite3.Row
         db._init(self.conn)
         self.addCleanup(self.conn.close)
+        # Runs first (cleanups are LIFO): a wake or sweep task can still be in
+        # a worker thread querying this connection, and closing it under that
+        # thread segfaulted the whole pytest process.
+        self.addAsyncCleanup(self._drain_background)
         patcher = patch.object(db, "connect", return_value=self.conn)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -49,6 +53,15 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
 
     async def disconnected(self):
         raise AssertionError("Original browser receive must never be used")
+
+    async def _drain_background(self):
+        current = asyncio.current_task()
+        pending = [task for task in asyncio.all_tasks() if task is not current]
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        # Cancelling an awaited to_thread call leaves its thread running.
+        await asyncio.get_running_loop().shutdown_default_executor()
 
     async def test_wake_batches_whole_reports_and_only_selected_command_receipts(self):
         from app import command_jobs
