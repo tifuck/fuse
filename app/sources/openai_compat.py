@@ -70,7 +70,11 @@ class OpenAICompatSource:
         if not self.creds:
             return []
         # Keys cooling after a failed request go last (stable: rotation kept).
-        pool = sorted((c for c in self.creds if c["id"] not in exclude), key=lambda c: cooling_down(c["id"]))
+        ready, cooling = [], []
+        for cred in self.creds:
+            if cred["id"] not in exclude:
+                (cooling if cooling_down(cred["id"]) else ready).append(cred)
+        pool = ready + cooling
         if not pool:
             return []
         if prefer_id is not None:
@@ -78,10 +82,9 @@ class OpenAICompatSource:
             if preferred:
                 return preferred + [c for c in pool if c["id"] != prefer_id]
         if self.rotation in ("every_request", "round_robin"):
-            start = _advance(self.source_id, len(pool))
-            # Rotate, then sort again: rotating the sorted list could put a
-            # cooling key back in front.
-            return sorted(pool[start:] + pool[:start], key=lambda c: cooling_down(c["id"]))
+            rotating = ready or cooling
+            start = _advance(self.source_id, len(rotating))
+            return rotating[start:] + rotating[:start] + (cooling if ready else [])
         return pool
 
     async def models(self) -> list[str]:

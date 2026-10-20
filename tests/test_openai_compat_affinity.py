@@ -96,6 +96,24 @@ def test_unscoped_calls_keep_rotation_without_pins(upstream):
     assert all("prompt_cache_key" not in body for _, body in seen)
 
 
+@pytest.mark.parametrize("mode", ["every_request", "round_robin"])
+@pytest.mark.parametrize("cooling_ids", [set(), {3, 4, 5, 6}, {1, 2, 3, 4, 5, 6}])
+def test_rotation_spreads_requests_across_healthy_keys(monkeypatch, mode, cooling_ids):
+    monkeypatch.setattr(compat, "_cursors", {})
+    monkeypatch.setattr(compat, "cooling_down", lambda cid: cid in cooling_ids)
+    source = compat.OpenAICompatSource(
+        {"id": 71, "name": "test"}, {"rotation": mode},
+        [{"id": cid} for cid in range(1, 7)],
+    )
+    eligible = [cid for cid in range(1, 7) if cid not in cooling_ids] or list(range(1, 7))
+    orders = [[cred["id"] for cred in source._next_creds()] for _ in range(12)]
+    assert [order[0] for order in orders] == eligible * (12 // len(eligible))
+    for order in orders:
+        assert sorted(order) == list(range(1, 7))
+        if len(cooling_ids) < 6:
+            assert order[len(eligible):] == sorted(cooling_ids)
+
+
 @pytest.mark.parametrize("ending", ["complete", "truncated", "error", "malformed"])
 def test_stream_binds_only_after_successful_completion(upstream, ending):
     source, pins, seen, replies, mode = upstream

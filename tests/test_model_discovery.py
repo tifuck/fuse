@@ -95,8 +95,13 @@ def test_pick_keeps_new_codex_model_on_the_pool(fresh_chatgpt_cache):
         picked = asyncio.run(sources.pick("gpt-6.1-sol", allow_chatgpt=True, user_id=7))
         fast = asyncio.run(sources.pick("gpt-6.1-sol-fast", allow_chatgpt=True, user_id=7))
     assert picked is not None and picked[0].type_id == "chatgpt" and picked[1] == "gpt-6.1-sol"
-    # The fast picker id stays on the pool but upstream sees the base slug.
-    assert fast is not None and fast[1] == "gpt-6.1-sol"
+    assert fast is not None and fast[1] == "gpt-6.1-sol-fast"
+    body = {"model": fast[1], "messages": [{"role": "user", "content": "hi"}]}
+    payload = chatgpt.build_responses_payload(body, body["model"])
+    assert payload["model"] == "gpt-6.1-sol"
+    assert payload["service_tier"] == "fast"
+    assert not chatgpt.chatgpt_allows_model("free", fast[1])
+    assert chatgpt.chatgpt_allows_model("plus", fast[1])
     # A guessed suffix for a model that never advertised fast is not a pool model.
     assert not chatgpt.is_chatgpt_model("gpt-5.4-fast")
 
