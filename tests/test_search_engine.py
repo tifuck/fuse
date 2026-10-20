@@ -1001,6 +1001,8 @@ class SearchQualityTest(unittest.TestCase):
                     self.assertIn("Revenue USD", text)
                 else:
                     self.assertIn("67890", text)
+        gutter = _html_extract("<table><tr><td>1<br>2</td><td><pre>a\nb</pre></td></tr></table>", "")[1]
+        self.assertNotIn("1", gutter)
 
     def test_feed_fields_decode_entities_without_losing_literal_comparisons(self):
         from app.search.extract import extract_page

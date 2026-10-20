@@ -739,12 +739,14 @@ def _render_table(table, ctx: _Ctx, depth: int) -> list[str]:
         return _render_children(table, ctx, depth)
     if _is_layout_table(table, rows):
         blocks: list[str] = []
+        # Numbers beside code are a line-number gutter, not content.
+        gutter = table.css_first("pre, code") is not None
         for row in rows:
             rendered = []
             for cell in _cells(row):
                 parts = _render_children(cell, ctx, depth + 1)
                 text = "\n\n".join(parts).strip()
-                if text:
+                if text and not (gutter and re.fullmatch(r"[\d\s]+", text)):
                     rendered.append(text)
             if not rendered:
                 continue
