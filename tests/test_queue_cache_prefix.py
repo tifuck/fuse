@@ -89,6 +89,36 @@ class QueueCachePrefixTest(unittest.TestCase):
     def provider_messages(self):
         return json.loads(db.fetchone("SELECT provider_messages FROM chat_runs WHERE id=?", (self.run["id"],))["provider_messages"] or "[]")
 
+    def test_live_child_followup_appends_after_the_latest_exchange(self):
+        child = store.start_child_run(
+            user_id=1, thread_id=self.thread["id"], parent_run_id=self.run["id"],
+            prompt="Inspect the parser", description="Parser audit",
+        )
+        payloads = []
+
+        def behavior(n, user):
+            if n == 1:
+                self.assertTrue(store.queue_followup(child["id"], "Check its tests too"))
+                result = ok_result("Before steer", SEARCH_CALL)
+            else:
+                result = ok_result("After steer")
+            return user, SimpleNamespace(type_id="llama", source_id=1), "offline", "offline", result
+
+        with patch.object(runtime, "execute_tool", AsyncMock(return_value=("hits", {"name": "web_search", "status": "done"}))):
+            self.worker(child, self.capturing(payloads, behavior))
+        self.assertEqual(len(payloads), 2)
+        first, second = [payload["messages"] for payload in payloads]
+        self.assertEqual(second[:len(first)], first)
+        suffix = second[len(first):]
+        self.assertEqual([row["role"] for row in suffix], ["assistant", "tool", "user"])
+        self.assertEqual(suffix[0]["content"], "Before steer")
+        self.assertIn("Follow-up from the parent", suffix[-1]["content"])
+        self.assertIn("Check its tests too", suffix[-1]["content"])
+        finished = store.get_run(1, child["id"])
+        self.assertEqual(finished["status"], "completed")
+        self.assertEqual(len(finished["request"]["agent"]["followup_marks"]), 1)
+        self.assertEqual(finished["request"]["agent"]["followup_marks"][0]["end"]["content"], len("Before steer"))
+
     def test_steer_requeue_failure_race_replays_sent_prefix(self):
         failed_round, accepted = [], {"done": False}
 

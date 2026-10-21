@@ -357,8 +357,10 @@ class AgentChildrenTest(AgentCapsBase):
             prompt="inspect",
             description="d",
         )
+        store.checkpoint(child["id"], {"content": "x", "tools": []})
         store.save_turn_progress(child["id"], [
             {"role": "user", "content": "inspect"},
+            {"role": "assistant", "content": "x"},
             {"role": "user", "content": "[Fuse] Follow-up from the parent — not written by the end user. "
                                         "Stay in the assigned task and host/cwd unless this follow-up changes them:\n\n"
                                         "(followup:abc123def456) also tests"},
@@ -366,6 +368,9 @@ class AgentChildrenTest(AgentCapsBase):
         # Envelope durable, mark lost (crash between persist and seal): the
         # scan must re-offer it so the next boundary re-emits the event.
         self.assertEqual(store.followup_display_deliveries(child["id"]), ["abc123def456"])
+        before = store.get_run(1, child["id"])
+        self.assertEqual([row["content"] for row in store.child_display_messages(before)], ["inspect", "also tests"])
+        cursor = store.cursor(1)
         store.mark_followup_display(child["id"], ["abc123def456"], {"content": "x", "tools": []})
         self.assertEqual(store.followup_display_deliveries(child["id"]), [])
         # A duplicate seal (recovery racing the original frame) adds nothing.
@@ -373,13 +378,13 @@ class AgentChildrenTest(AgentCapsBase):
         view = store.get_run(1, child["id"])
         marks = ((view.get("request") or {}).get("agent") or {}).get("followup_marks") or []
         self.assertEqual(len(marks), 1)
-        # The mark is a second write after the envelope's own transaction; the
-        # event it posts is what makes an open panel leave the pre-mark render
-        # (follow-up above the whole leg) instead of holding it until a reload.
-        event = db.fetchone(
-            "SELECT payload FROM chat_events WHERE type='agent.followup' ORDER BY id DESC LIMIT 1"
-        )
-        self.assertEqual(json.loads(event["payload"])["child_id"], child["id"])
+        self.assertEqual([row["content"] for row in store.child_display_messages(view)], ["inspect", "x", "also tests"])
+        self.assertEqual(view["provider_messages"], before["provider_messages"])
+        events = store.events_after(1, cursor)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["type"], "agent.followup")
+        self.assertEqual(events[0]["thread_id"], thread["id"])
+        self.assertEqual(events[0]["payload"], {"run_id": child["id"], "child_id": child["id"], "status": view["status"]})
 
     def test_child_display_resume_keeps_prior_tools_before_prompt(self):
         view = {

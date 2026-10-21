@@ -421,6 +421,46 @@ function bump(id, patch) {
     assert.ok(ui.overflow <= 0, `a long path does not widen the page (${ui.overflow}px)`);
     console.log('PASS long path wraps at 390');
 
+    // A delivered follow-up changes the history split, not the cumulative
+    // message. Its lifecycle event must refetch even when the durable message
+    // cursor is one event behind the notification (no new tokens yet).
+    await back();
+    child('steered', {
+      thread_id: THREAD, description: 'Steered worker', event_cursor: 1000000,
+      messages: [
+        { id: 'steer-task', role: 'user', content: 'STEER_TASK' },
+        { id: 'steer-note', role: 'user', content: 'STEER_NOTE', fromParent: true },
+      ],
+      message: { role: 'assistant', content: 'STEER_BEFORE', tools: [], segments: [{ type: 'content', text: 'STEER_BEFORE' }] },
+    });
+    agents = [{ id: 'steered', status: 'running', description: 'Steered worker', work_ms: 4000, work_live: true, created_at: NOW }];
+    await open('steered');
+    await page.locator('[data-agent-current]').getByText('STEER_BEFORE').waitFor();
+    const beforeMark = await pane();
+    assert.ok(beforeMark.text.indexOf('STEER_NOTE') < beforeMark.text.indexOf('STEER_BEFORE'), 'reproduce the pre-mark snapshot');
+
+    const steered = runs.get('steered');
+    steered.messages.splice(1, 0, {
+      id: 'steer-prefix', role: 'assistant', content: 'STEER_BEFORE', tools: [],
+      segments: [{ type: 'content', text: 'STEER_BEFORE' }],
+    });
+    steered.live_start = { content: 'STEER_BEFORE'.length, reasoning: 0, tools: 0, permissions: 0, segments: 1, tail: 'STEER_BEFORE'.length };
+    const refreshed = page.waitForResponse((response) => new URL(response.url()).pathname === '/chat/runs/steered');
+    await page.evaluate((thread) => fuseToolFixture.event({
+      id: 1000001, type: 'agent.followup', thread_id: thread,
+      payload: { run_id: 'steered', child_id: 'steered', status: 'running' },
+    }), THREAD);
+    await refreshed;
+    await page.waitForFunction(() => {
+      const body = document.querySelector('[data-agent-log-body]')?.textContent || '';
+      return body.indexOf('STEER_BEFORE') >= 0 && body.indexOf('STEER_BEFORE') < body.indexOf('STEER_NOTE');
+    }, null, { timeout: 5000 });
+    const afterMark = await pane();
+    assert.equal(afterMark.text.split('STEER_BEFORE').length - 1, 1, 'pre-steer output is not duplicated');
+    assert.equal(afterMark.text.split('STEER_NOTE').length - 1, 1, 'follow-up is not duplicated');
+    assert.doesNotMatch(afterMark.report, /STEER_BEFORE/, 'the live bubble starts after the follow-up');
+    console.log('PASS follow-up delivery refreshes the split with a conservative snapshot cursor');
+
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }
 })().catch((error) => { console.error(error); process.exitCode = 1; });

@@ -652,11 +652,7 @@ def mark_followup_display(run_id, followup_ids, message):
         agent.setdefault("followup_marks", []).append(
             {"ids": ids, "end": chat_views._display_mark(message)})
         conn.execute("UPDATE chat_runs SET request=? WHERE id=?", (chat_tx.dumps(request), run_id))
-        # The mark is a second write after the transaction that persisted the
-        # envelope and cleared pending_followups (save_turn_progress posts no
-        # event). A panel that refetched between the two shows the follow-up
-        # above the whole leg, and a healthy socket never refetches the row
-        # list on its own: agent.progress only patches the live message.
+        # Progress patches do not refresh history rows or the live-leg split.
         chat_tx.event(
             conn,
             row["user_id"],

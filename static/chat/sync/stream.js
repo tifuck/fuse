@@ -138,7 +138,9 @@ export function createStream(ctx) {
       }
       if (S.agentsOpen && S.agentViewId && cid === S.agentViewId && event.type !== "agent.progress") {
         if (S.agentRun && event.id > (S.agentRun.event_cursor || 0)) {
-          S.agentRun.event_cursor = event.id;
+          // Follow-ups change the history split, not the cumulative message.
+          // Its durable cursor can lag this notification; accept that refetch.
+          if (event.type !== "agent.followup") S.agentRun.event_cursor = event.id;
           if (payload.status) S.agentRun.status = payload.status;
           else if (event.type === "agent.resumed" || event.type === "agent.started") S.agentRun.status = "queued";
           if (payload.cancel_requested != null) S.agentRun.cancel_requested = payload.cancel_requested;
