@@ -43,15 +43,15 @@ async function checkGroup(page,scope){
     for (const width of [1280,390]) {
       await page.setViewportSize({width,height:900});
       await page.evaluate(()=>{
-        const f=fuseToolFixture;f.mount([{id:'thinking-live',reasoning:'First thought',tools:[],segments:[{type:'reasoning',text:'First thought'}]}],true);
+        const f=fuseToolFixture;f.thinking(false);f.mount([{id:'thinking-live',reasoning:'First thought',tools:[],segments:[{type:'reasoning',text:'First thought'}]}],true);
       });
       {
-        // A thought prints only once it lands (Claude Code style): the
-        // live dock carries it while it streams, then a "Thought for" line.
+        // Hidden thinking stays in the dock. Showing the settled thought
+        // exposes its expandable "Thought for" summary line.
         assert.equal(await page.locator('.chat-log :is([data-reason-preview], .chat-console-thought)').count(),0,`an unfinished thought prints no row`);
         await page.evaluate(()=>fuseToolFixture.stream(0,{reasoning:'First thought and next thought',segments:[{type:'reasoning',text:'First thought and next thought'}]}));
         assert.equal(await page.locator('.chat-log .chat-console-thought').count(),0,`streamed thinking text alone repaints nothing`);
-        await page.evaluate(()=>fuseToolFixture.mount([{id:'thinking-console',reasoning:'First thought and next thought',tools:[],segments:[{type:'reasoning',text:'First thought and next thought'}]}],false));
+        await page.evaluate(()=>{fuseToolFixture.thinking(true);fuseToolFixture.mount([{id:'thinking-console',reasoning:'First thought and next thought',tools:[],segments:[{type:'reasoning',text:'First thought and next thought'}]}],false)});
         const line=page.locator('.chat-log .is-console-group').first();
         assert.match(await line.locator(':scope > .chat-step-main > .chat-step-head .chat-step-label').textContent(),/^Thought for /,`landed thought reads as a summary line`);
         await line.locator('[data-step-toggle]').first().click();
@@ -115,9 +115,9 @@ async function checkGroup(page,scope){
     {
       run.event_cursor++;
       run.status='running';run.messages=[];run.message={content:'',reasoning:'Child thinking',tools:[],segments:[{type:'reasoning',text:'Child thinking'}]};
-      await page.evaluate(()=>fuseToolFixture.pollAgent());
+      await page.evaluate(()=>{fuseToolFixture.thinking(false);return fuseToolFixture.pollAgent()});
       await frames(page);
-      // A child's thought prints once it lands, like the main log.
+      // With thinking hidden, a child's live thought stays in the dock.
       assert.equal(await page.locator('[data-agent-current] :is([data-reason-preview], .chat-console-thought)').count(),0,`child thinking`);
       run.event_cursor++;
       run.message={content:'',reasoning:'',tools:Array.from({length:5},(_,i)=>({id:'s'+i,name:'run_terminal_command',status:'done',state:'completed',command:'pwd',output:'fixture\n'.repeat(8),exit_code:0}))};
