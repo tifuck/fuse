@@ -635,7 +635,7 @@ def mark_followup_display(run_id, followup_ids, message):
     if not followup_ids:
         return
     with chat_tx.transaction() as conn:
-        row = conn.execute("SELECT request,status FROM chat_runs WHERE id=?", (run_id,)).fetchone()
+        row = conn.execute("SELECT request,status,user_id,thread_id FROM chat_runs WHERE id=?", (run_id,)).fetchone()
         if row is None or row["status"] not in chat_tx.ACTIVE:
             return
         request = json.loads(row["request"] or "{}")
@@ -652,6 +652,18 @@ def mark_followup_display(run_id, followup_ids, message):
         agent.setdefault("followup_marks", []).append(
             {"ids": ids, "end": chat_views._display_mark(message)})
         conn.execute("UPDATE chat_runs SET request=? WHERE id=?", (chat_tx.dumps(request), run_id))
+        # The mark is a second write after the transaction that persisted the
+        # envelope and cleared pending_followups (save_turn_progress posts no
+        # event). A panel that refetched between the two shows the follow-up
+        # above the whole leg, and a healthy socket never refetches the row
+        # list on its own: agent.progress only patches the live message.
+        chat_tx.event(
+            conn,
+            row["user_id"],
+            "agent.followup",
+            row["thread_id"],
+            {"run_id": run_id, "child_id": run_id, "status": row["status"]},
+        )
 
 
 def followup_display_deliveries(run_id: str) -> list[str]:

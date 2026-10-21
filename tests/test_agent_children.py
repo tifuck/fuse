@@ -373,6 +373,13 @@ class AgentChildrenTest(AgentCapsBase):
         view = store.get_run(1, child["id"])
         marks = ((view.get("request") or {}).get("agent") or {}).get("followup_marks") or []
         self.assertEqual(len(marks), 1)
+        # The mark is a second write after the envelope's own transaction; the
+        # event it posts is what makes an open panel leave the pre-mark render
+        # (follow-up above the whole leg) instead of holding it until a reload.
+        event = db.fetchone(
+            "SELECT payload FROM chat_events WHERE type='agent.followup' ORDER BY id DESC LIMIT 1"
+        )
+        self.assertEqual(json.loads(event["payload"])["child_id"], child["id"])
 
     def test_child_display_resume_keeps_prior_tools_before_prompt(self):
         view = {
