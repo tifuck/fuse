@@ -371,6 +371,28 @@ class ProjectsRetentionTest(unittest.TestCase):
         self.assertEqual(retention.sweep_user(1)["archived_projects"], 0)
         self.assertFalse(chats.get_thread(1, thread["id"])["archived"])
 
+    def test_sweep_never_archives_or_deletes_pinned_chats(self):
+        retention.set_settings(1, {"archive_hours": 24, "delete_days": 30})
+        pinned = chats.create_thread(1, model="offline")
+        chats.update_thread(1, pinned["id"], pinned=True)
+        db.execute("UPDATE chat_threads SET active_at=?, updated_at=?, created_at=? WHERE public_id=?",
+                   (ago(days=5), ago(days=5), ago(days=5), pinned["id"]))
+        made = self.project()
+        session, pk = self.session(made)
+        chats.update_thread(1, session["id"], pinned=True)
+        db.execute("UPDATE user_projects SET created_at=?, updated_at=? WHERE id=?", (ago(days=5), ago(days=5), made["id"]))
+        db.execute("UPDATE chat_threads SET active_at=?, updated_at=?, created_at=? WHERE id=?", (ago(days=5), ago(days=5), ago(days=5), pk))
+        stats = retention.sweep_user(1)
+        self.assertEqual((stats["archived_chats"], stats["archived_projects"]), (0, 0))
+        self.assertFalse(chats.get_thread(1, pinned["id"])["archived"])
+        self.assertFalse(chats.get_thread(1, session["id"])["archived"])
+        self.assertFalse(hosts.get_project(1, 7, made["id"])["archived"])
+        # A pinned chat stays put even once archived and past the delete window.
+        chats.update_thread(1, pinned["id"], archived=True)
+        db.execute("UPDATE chat_threads SET archived_at=? WHERE public_id=?", (ago(days=31), pinned["id"]))
+        self.assertEqual(retention.sweep_user(1)["deleted_chats"], 0)
+        self.assertIsNotNone(chats.get_thread(1, pinned["id"]))
+
     def test_sweep_never_deletes_an_archived_scheduled_chat(self):
         retention.set_settings(1, {"archive_hours": 24, "delete_days": 30})
         owned = chats.create_thread(1, model="offline")

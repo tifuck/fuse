@@ -2,9 +2,10 @@
 
 A chat (project sessions included) is inactive once nothing has happened in
 it for the user's window: no message, no run, no restore. Running work,
-live background commands and scheduled-task threads are never touched.
-Projects archive when neither they nor any of their sessions changed in the
-window, and take their open sessions with them (restoring brings those back).
+live background commands, scheduled-task threads and pinned chats are never
+touched. Projects archive when neither they nor any of their sessions changed
+in the window (a pinned session keeps its project out), and take their open
+sessions with them (restoring brings those back).
 Deletion only ever removes items that are already archived, counted from
 when they were archived. Instance-wide ceilings (RETENTION_FORCE_*) apply
 on top of what users choose and can only shorten it.
@@ -129,7 +130,7 @@ def _latest(*values) -> str:
 def _thread_activity(conn, user_id: int) -> tuple[list[dict], set[int]]:
     rows = conn.execute(
         """SELECT id, kind, project_id, archived, archived_at, archived_by_project, schedule_id,
-                  created_at, updated_at, active_at, revision
+                  created_at, updated_at, active_at, revision, pinned
            FROM chat_threads WHERE user_id=?""",
         (user_id,),
     ).fetchall()
@@ -211,8 +212,8 @@ def sweep_user(user_id: int, prefs: dict | None = None, *, now: datetime | None 
                     continue
                 sessions = by_project.get(int(p["id"]), [])
                 # Archiving a project archives its sessions: one that a
-                # schedule owns keeps the whole project out of cleanup.
-                if any(t["id"] in busy or t["schedule_id"] is not None for t in sessions):
+                # schedule owns or that is pinned keeps the whole project out.
+                if any(t["id"] in busy or t["schedule_id"] is not None or t["pinned"] for t in sessions):
                     continue
                 last = _latest(p["updated_at"], p["created_at"], *(t["last_active"] for t in sessions))
                 if last and last < cutoff:
@@ -230,7 +231,7 @@ def sweep_user(user_id: int, prefs: dict | None = None, *, now: datetime | None 
                         t["archived_at"] = archived_now
         if archive_chats:
             for t in threads:
-                if t["archived"] or t["schedule_id"] is not None or t["id"] in busy:
+                if t["archived"] or t["pinned"] or t["schedule_id"] is not None or t["id"] in busy:
                     continue
                 if not t["last_active"] or t["last_active"] >= cutoff:
                     continue
@@ -260,7 +261,7 @@ def sweep_user(user_id: int, prefs: dict | None = None, *, now: datetime | None 
             )
             if int(open_sessions["n"] if open_sessions else 0):
                 continue
-            if any(t["id"] in busy or t["schedule_id"] is not None
+            if any(t["id"] in busy or t["schedule_id"] is not None or t["pinned"]
                    for t in threads if t.get("project_id") == p["id"]):
                 continue
             # The snapshot is from the start of the sweep: a project restored
@@ -282,7 +283,7 @@ def sweep_user(user_id: int, prefs: dict | None = None, *, now: datetime | None 
             except hosts.HostError:
                 continue
         for t in threads:
-            if not t["archived"] or t["schedule_id"] is not None or t["id"] in busy:
+            if not t["archived"] or t["pinned"] or t["schedule_id"] is not None or t["id"] in busy:
                 continue
             since = t["archived_at"] or t["updated_at"]
             if not since or since >= delete_cutoff:

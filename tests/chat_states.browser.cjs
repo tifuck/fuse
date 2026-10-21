@@ -318,6 +318,16 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       const draftRow = p.locator('[data-draft=""]');
       assert.equal(await draftRow.count(), 1, 'the unsent new chat stays in the sidebar');
       assert.match(await draftRow.innerText(), /^draft\s*Draft that must outlive/i, 'marked as a draft, titled by its text');
+      // Pinned chats outrank drafts; drafts outrank every dated row.
+      await p.evaluate(async ({ id, revision }) => fuseToolFixture.api('/chat/threads/' + id, {
+        method: 'PATCH', body: JSON.stringify({ pinned: true, expected_revision: revision, command_id: crypto.randomUUID() }),
+      }), { id: b.id, revision: b.revision });
+      await p.waitForFunction(tid => document.querySelector('[data-history-list] .chat-history-item')?.getAttribute('data-thread') === tid, b.id);
+      const order = await p.evaluate(() => [...document.querySelectorAll('[data-history-list] .chat-history-item')]
+        .map(el => el.getAttribute('data-thread') ?? `draft:${el.getAttribute('data-draft')}`));
+      assert.equal(order[0], b.id, 'the pinned chat leads');
+      assert.equal(order[1], 'draft:', 'the draft sits directly under the pinned section');
+      assert.ok(order.indexOf(a.id) > 1, 'dated rows follow the draft');
       await input(p).fill('Thread A draft');
       await openRow(p, b.id);
       assert.equal(await input(p).inputValue(), '');

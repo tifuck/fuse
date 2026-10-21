@@ -336,7 +336,9 @@ export function createRender(ctx) {
       let html = "";
       if (pinned.length) html += `<p class="chat-history-kicker">Pinned</p>` + pinned.map((item) => historyRow(item)).join("") + (rest.length ? PINNED_SEP : "");
       if (S.projectSort === "project") {
-        projects.groupedProjectSessions(rest).forEach((group) => {
+        // Drafts sit directly under the pinned section, above every group.
+        html += rest.filter((item) => item.draft !== undefined).map((item) => sessionRow(item)).join("");
+        projects.groupedProjectSessions(rest.filter((item) => item.draft === undefined)).forEach((group) => {
           html +=
             `<div class="chat-history-project-head">` +
             projects.projectIcon(group.icon) +
@@ -360,8 +362,11 @@ export function createRender(ctx) {
       S.historyList.innerHTML = `<p class="chat-history-empty">No chats yet.</p>`;
     } else {
       const { pinned, rest } = splitPinned(items);
-      S.historyList.innerHTML = drafts +
-        (pinned.length ? `<p class="chat-history-kicker">Pinned</p>` + pinned.map((item) => historyRow(item)).join("") + (rest.length ? PINNED_SEP : "") : "") +
+      // Pinned first, then drafts (they out-sort every dated row), then the
+      // timeline: a newly updated chat never climbs above a draft.
+      S.historyList.innerHTML =
+        (pinned.length ? `<p class="chat-history-kicker">Pinned</p>` + pinned.map((item) => historyRow(item)).join("") + (rest.length || drafts ? PINNED_SEP : "") : "") +
+        drafts +
         rest.map((item) => historyRow(item)).join("");
     }
     syncHistoryFooter();
