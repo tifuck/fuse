@@ -25,7 +25,9 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
         endings.forEach((_, i) => f.append({id: `spawn-${i}`, name: 'spawn_subagent', child_id: `child-${i}`,
           status: 'done', execution_status: 'running', background: true, description: `Lifecycle child ${i}`}, true));
         f.append({id: 'wait', name: 'get_subagent_output', child_id: 'child-0', status: 'running'}, true);
-        const before = f.activity(f.snapshot()[0], null, true).label;
+        const pending = f.snapshot()[0].tools.filter(t => t.name === 'spawn_subagent');
+        const before = { label: f.activity(f.snapshot()[0], null, true).label,
+          states: pending.map(t => f.state(t, true).state), background: pending.filter(t => t.background).length };
         endings.forEach(([status, error], i) => f.agents([{id: `child-${i}`, status,
           message: {content: status === 'completed' ? 'COMPLETED_REPORT' : 'PARTIAL_MUST_NOT_DELIVER', error,
             tools: [{name: 'read_file', preview: 'TOOL_MUST_NOT_DELIVER'}]}}]));
@@ -35,7 +37,9 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
         return {before, children: traces.filter(t => t.name === 'spawn_subagent').map(t => ({summary:t.summary, state:f.state(t, true).state})),
           wait:f.state(traces.find(t => t.id === 'wait'), true).state};
       });
-      assert.match(result.before, /5 active \/ 5 background/);
+      assert.equal(result.before.label, 'awaiting task');
+      assert.deepEqual(result.before.states, Array(5).fill('running'));
+      assert.equal(result.before.background, 5);
       assert.deepEqual(result.children.map(t => t.state), ['done', 'interrupted', 'interrupted', 'error', 'error']);
       assert.equal(result.children[0].summary, 'COMPLETED_REPORT');
       for (const child of result.children.slice(1)) {
