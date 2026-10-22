@@ -15,8 +15,10 @@ def test_metadata_effort_per_provider():
     assert metadata_effort("zai", "glm-5.3") == "none"
     assert metadata_effort("mimo", "mimo-v2.6-flash") == "none"
     # Unknown levels (the generic picker list): send no effort at all.
-    for type_id in ("chatgpt", "openai", "openrouter", "llama"):
+    for type_id in ("openai", "openrouter", "llama"):
         assert metadata_effort(type_id, "m") is None
+    # Codex's levels start at low (an unread model falls back to low..high).
+    assert metadata_effort("chatgpt", "m") == "low"
 
 
 def test_invoke_chat_replaces_effort_for_the_resolved_route(monkeypatch):
@@ -47,7 +49,7 @@ def test_invoke_chat_replaces_effort_for_the_resolved_route(monkeypatch):
         return list(sent)
 
     assert run("grok", cheap_reasoning=True) == [("grok", "low")]
-    assert run("chatgpt", cheap_reasoning=True) == [("chatgpt", None)]
+    assert run("chatgpt", cheap_reasoning=True) == [("chatgpt", "low")]
     # A failed pool attempt is not retried on another route.
     assert run("zai", 503, cheap_reasoning=True) == [("zai", "none")]
     # Ordinary chat keeps the caller's effort.

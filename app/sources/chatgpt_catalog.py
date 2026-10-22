@@ -10,6 +10,7 @@ from __future__ import annotations
 import time
 
 from .. import model_caps
+from .base import EFFORTS
 
 CHATGPT_MODELS = [
     "gpt-6-astra",
@@ -25,8 +26,14 @@ CHATGPT_MODELS = [
 # Codex Fast mode is a service tier on the base slug, not its own model.
 # The catalog advertises it as service_tiers id "fast" (older catalogs: "priority").
 _FAST_TIER_IDS = frozenset({"fast", "priority"})
+# Picker levels for a slug whose catalog row has not been read: the ones every
+# current Codex row lists (none offers none or minimal; newer ones add xhigh, max).
+FALLBACK_EFFORTS = ("low", "medium", "high")
 
 _models_cache: tuple[float, list[str]] | None = None
+# slug -> (supported_reasoning_levels, default_reasoning_level) in Fuse's level
+# names. Codex-only levels (ultra) are left out.
+_levels: dict[str, tuple[tuple[str, ...], str]] = {}
 
 
 def fast_id(slug: str) -> str:
@@ -74,6 +81,10 @@ def parse_catalog_payload(data) -> list[str]:
         if not slug or slug in names:
             continue
         names.append(slug)
+        levels = row.get("supported_reasoning_levels")
+        if isinstance(levels, list):
+            offered = {level.get("effort") for level in levels if isinstance(level, dict)}
+            _levels[slug] = (tuple(e for e in EFFORTS if e in offered), str(row.get("default_reasoning_level") or ""))
         inputs = row.get("input_modalities")
         if isinstance(inputs, list):
             model_caps.remember("chatgpt", slug, "image" in inputs)
@@ -84,6 +95,22 @@ def parse_catalog_payload(data) -> list[str]:
                 if isinstance(inputs, list):
                     model_caps.remember("chatgpt", fid, "image" in inputs)
     return names
+
+
+def catalog_efforts(model: str | None) -> tuple[str, ...] | None:
+    """The levels Codex lists for this model; None while its row is unread."""
+    row = _levels.get(base_slug(model or ""))
+    return row[0] if row else None
+
+
+def efforts_for(model: str | None) -> tuple[str, ...]:
+    known = catalog_efforts(model)
+    return FALLBACK_EFFORTS if known is None else known
+
+
+def default_effort(model: str | None) -> str:
+    efforts, default = _levels.get(base_slug(model or ""), ((), ""))
+    return default if default in efforts else ""
 
 
 def is_chatgpt_model(model: str) -> bool:

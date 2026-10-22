@@ -15,6 +15,23 @@ THINKING_MARK = b": fuse-thinking"
 # reads it as "silent, not dead".
 ALIVE_MARK = b": fuse-alive"
 
+# Reasoning levels, lowest first.
+EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+
+
+def map_effort(effort, efforts) -> str | None:
+    """The model's own level nearest the requested one (higher on a tie).
+    A level other than none never maps onto none: that would turn thinking off."""
+    if not efforts or effort not in EFFORTS:
+        return None
+    if effort in efforts:
+        return effort
+    choices = [e for e in efforts if e != "none"]
+    if effort == "none" or not choices:
+        return None
+    want = EFFORTS.index(effort)
+    return min(choices, key=lambda e: (abs(EFFORTS.index(e) - want), -EFFORTS.index(e)))
+
 
 @dataclass
 class ChatResult:

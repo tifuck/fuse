@@ -37,6 +37,8 @@ def _reasoning_default(type_id: str, model: str | None = None, user_id: int | No
         return claude_mod.default_effort(model)
     if type_id == "cursor":
         return cursor_mod.default_effort(model)
+    if type_id == "chatgpt" and chatgpt_catalog_mod.default_effort(model):
+        return chatgpt_catalog_mod.default_effort(model)
     efforts = _reasoning_efforts(type_id, model, user_id)
     if not efforts:
         return ""

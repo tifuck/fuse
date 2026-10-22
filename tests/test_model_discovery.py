@@ -70,6 +70,55 @@ def test_fast_picker_id_sends_base_slug_at_fast_tier():
     assert "service_tier" not in plain
 
 
+@pytest.fixture
+def fresh_codex_levels():
+    saved = dict(chatgpt_catalog._levels)
+    chatgpt_catalog._levels.clear()
+    try:
+        yield
+    finally:
+        chatgpt_catalog._levels.clear()
+        chatgpt_catalog._levels.update(saved)
+
+
+def test_codex_catalog_sets_each_models_effort_levels(fresh_codex_levels):
+    """The picker offers the levels Codex lists per model, not the generic
+    guess (Codex has no Off or Minimal), and requests carry only those levels."""
+    from app.sources import reasoning_efforts
+    from app.sources.chatgpt import build_responses_payload
+    from app.web.models import _reasoning_default
+
+    def levels(*names):
+        return [{"effort": name, "description": name} for name in names]
+
+    chatgpt.parse_catalog_payload({"models": [
+        {"slug": "gpt-new", "visibility": "list", "additional_speed_tiers": ["fast"], "default_reasoning_level": "low",
+         "supported_reasoning_levels": levels("low", "medium", "high", "xhigh", "max", "ultra")},
+        {"slug": "gpt-old", "visibility": "list", "default_reasoning_level": "medium",
+         "supported_reasoning_levels": levels("high", "low", "medium")},
+        {"slug": "gpt-plain", "visibility": "list", "supported_reasoning_levels": []},
+    ]})
+    # Codex's own "ultra" has no Fuse level; order is lowest first.
+    assert reasoning_efforts("chatgpt", "gpt-new") == ("low", "medium", "high", "xhigh", "max")
+    assert reasoning_efforts("chatgpt", "gpt-new-fast") == ("low", "medium", "high", "xhigh", "max")
+    assert reasoning_efforts("chatgpt", "gpt-old") == ("low", "medium", "high")
+    assert reasoning_efforts("chatgpt", "gpt-plain") == ()
+    assert reasoning_efforts("chatgpt", "gpt-unread") == chatgpt_catalog.FALLBACK_EFFORTS
+    assert _reasoning_default("chatgpt", "gpt-new") == "low"
+    assert _reasoning_default("chatgpt", "gpt-unread") == "medium"
+
+    def sent(model, effort):
+        payload = build_responses_payload({"messages": [{"role": "user", "content": "hi"}], "reasoning_effort": effort}, model)
+        return (payload.get("reasoning") or {}).get("effort")
+
+    assert sent("gpt-new", "max") == "max"
+    assert sent("gpt-old", "max") == "high"
+    assert sent("gpt-old", "minimal") == "low"
+    assert sent("gpt-old", "none") is None, "off on a model without it sends no effort, not a 400"
+    assert sent("gpt-plain", "high") is None
+    assert sent("gpt-unread", "max") == "max", "an unread row is not second-guessed"
+
+
 def test_codex_catalog_url_is_the_codex_backend():
     assert chatgpt._models_url() == chatgpt.settings.openai_chatgpt_base.rstrip("/") + "/models"
 

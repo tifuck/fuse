@@ -37,7 +37,7 @@ from ..config import settings
 from ..crypto import DecryptionError, encrypt
 from ..proxy import UsageStream, openai_chat
 from . import pool_policy
-from .base import ChatResult
+from .base import EFFORTS, ChatResult, map_effort
 from .grok import apply_usage_guard, is_held
 from .pool_pick import Failover, auth_failure_confirmed, note_failure, pick_account, release, reserve
 from .pool_session import bind, drop_cache_routing_fields, lookup
@@ -51,7 +51,6 @@ PROVIDERS_TTL = 3600.0
 MAX_PAID_MODELS = 500
 MAX_PINNED_MODELS = 200
 MAX_PINS = 50
-EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 # Chat Completions fields a request on someone else's key may carry. Anything
 # else (provider, billing_mode, prompt_caching, cache_control, caching,
 # web_search, memory, advisor, service_tier, …) can move it to pay-as-you-go
@@ -190,20 +189,6 @@ async def refresh_due() -> None:
 def efforts_for(model: str | None) -> tuple[str, ...]:
     rec = catalog_record(model or "") or {}
     return tuple(rec.get("reasoning_efforts") or ())
-
-
-def map_effort(effort, efforts) -> str | None:
-    """The model's own level nearest the requested one (higher on a tie).
-    A level other than none never maps onto none: that would turn thinking off."""
-    if not efforts or effort not in EFFORTS:
-        return None
-    if effort in efforts:
-        return effort
-    choices = [e for e in efforts if e != "none"]
-    if effort == "none" or not choices:
-        return None
-    want = EFFORTS.index(effort)
-    return min(choices, key=lambda e: (abs(EFFORTS.index(e) - want), -EFFORTS.index(e)))
 
 
 # --- Per-user model list (users.pool_prefs["nanogpt"]["models"]) ------------

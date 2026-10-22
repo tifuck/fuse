@@ -297,7 +297,7 @@ GENERIC_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 
 def reasoning_efforts(type_id: str, model: str | None = None, user_id: int | None = None) -> tuple[str, ...]:
-    from . import claude as claude_mod, devin as devin_mod, explabs as explabs_mod, kimi as kimi_mod
+    from . import chatgpt_catalog, claude as claude_mod, devin as devin_mod, explabs as explabs_mod, kimi as kimi_mod
 
     if type_id == "explabs":
         catalog = explabs_mod.cached_catalog(user_id) or {}
@@ -307,6 +307,8 @@ def reasoning_efforts(type_id: str, model: str | None = None, user_id: int | Non
         return devin_mod.efforts_for(model) if model else devin_mod.SEEDED_EFFORTS
     if type_id == "grok":
         return ("low", "medium", "high", "xhigh")
+    if type_id == "chatgpt":
+        return chatgpt_catalog.efforts_for(model)
     if type_id == "zai":
         return ("none", "high")
     if type_id == "kimi":

@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import json
 
-from .chatgpt_catalog import base_slug, is_fast
+from .base import map_effort
+from .chatgpt_catalog import base_slug, catalog_efforts, is_fast
 
 
 def _text_of(content) -> str:
@@ -169,6 +170,12 @@ def build_responses_payload(body: dict, model: str, session_id: str | None = Non
     if isinstance(reasoning, dict):
         payload["reasoning"] = dict(reasoning)
     effort = body.get("reasoning_effort")
+    levels = catalog_efforts(model)
+    if isinstance(effort, str) and levels is not None:
+        # Only levels the model lists (Codex answered none with a 400): a chat
+        # saved at Off, a wake reusing it or an API client gets the nearest
+        # level, and off gets no effort at all (the model's default).
+        effort = map_effort(effort, levels)
     if isinstance(effort, str):
         payload.setdefault("reasoning", {})["effort"] = effort
         payload["reasoning"].setdefault("summary", "auto")
