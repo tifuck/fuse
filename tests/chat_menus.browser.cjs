@@ -152,6 +152,18 @@ const FAMILIES = [
       await menu.waitFor();
       inside(await box('.chat-perms-menu'), 'desktop permissions menu');
       assert.equal(await chip.evaluate(el => String(el.classList.contains('is-bypass'))), 'false', 'ask keeps the blue shield');
+      // Writes answer slowly here, so each pick below is made while the one
+      // before it is still saving. The server must still end on the last pick.
+      const answers = [];
+      const onAnswer = res => {
+        if (res.request().method() === 'PATCH' && new URL(res.url()).pathname === '/chat/threads/' + first) answers.push(res.status());
+      };
+      const slow = async route => {
+        if (route.request().method() === 'PATCH') await new Promise(resolve => setTimeout(resolve, 200));
+        await route.continue();
+      };
+      page.on('response', onAnswer);
+      await page.route('**/chat/threads/' + first, slow);
       await menu.locator('[data-perms-mode="bypass"]').click();
       await page.waitForFunction(() => document.querySelector('[data-perm-chip]').classList.contains('is-on'));
       assert.equal(await chip.evaluate(el => String(el.classList.contains('is-bypass'))), 'true', 'bypass greys the shield');
@@ -166,6 +178,16 @@ const FAMILIES = [
       assert.equal(await page.evaluate(() => document.activeElement.dataset.permsMode), 'ask', 'ArrowLeft moves to Ask, past disabled Auto');
       await page.keyboard.press('ArrowRight');
       await page.waitForFunction(() => document.querySelector('[data-perms-mode="bypass"]').getAttribute('aria-checked') === 'true');
+      // Three picks, three writes: wait for every answer.
+      for (let waited = 0; answers.length < 3; waited += 25) {
+        assert.ok(waited < 15000, `three mode writes answered: ${answers}`);
+        await page.waitForTimeout(25);
+      }
+      await page.unroute('**/chat/threads/' + first, slow);
+      page.off('response', onAnswer);
+      assert.deepEqual(answers, [200, 200, 200], 'no pick is refused as stale');
+      assert.equal(await page.evaluate(async id => (await fuseToolFixture.api('/chat/threads/' + id + '/permissions')).bypass, first), true, 'the server keeps the last pick');
+      assert.equal(await menu.locator('[data-perms-mode="bypass"]').getAttribute('aria-checked'), 'true', 'and the menu still shows it');
       await page.locator('[data-chat-thread]').click({ position: { x: 40, y: 8 } });
       await menu.waitFor({ state: 'hidden' });
 

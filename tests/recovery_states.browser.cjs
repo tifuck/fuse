@@ -297,7 +297,12 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
       assert.match(await auto.getAttribute('title'), /OpenRouter key/);
       assert.equal(await auto.getAttribute('aria-checked'), 'false');
       assert.match(await menu.locator('[data-perms-hint]').innerText(), /OpenRouter key/);
-      await menu.locator('[data-perms-mode="bypass"]').click();
+      // The chip turns at the click; the server has it once the write lands.
+      const [saved] = await Promise.all([
+        desktop.waitForResponse(res => res.request().method() === 'PATCH' && new URL(res.url()).pathname === '/chat/threads/' + created.id),
+        menu.locator('[data-perms-mode="bypass"]').click(),
+      ]);
+      assert.equal(saved.status(), 200);
       await desktop.waitForFunction(() => document.querySelector('[data-perm-chip]').classList.contains('is-on'));
       assert.match(await chip.getAttribute('aria-label'), /Bypass on/);
       const mode = await desktop.evaluate(async id => (await fuseToolFixture.api('/chat/threads/' + id + '/permissions')).bypass, created.id);

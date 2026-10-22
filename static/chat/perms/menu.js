@@ -283,6 +283,9 @@ export function createMenu(ctx) {
     }
   }
 
+    // Picks made while an earlier one is still saving; only the newest shows.
+    let modeSeq = 0;
+
     async function setPermMode(mode) {
     if (mode === permMode()) return;
     if (mode === "auto" && !autoAvailable) return;
@@ -292,33 +295,41 @@ export function createMenu(ctx) {
       queue.syncPermChip();
       return;
     }
-    const body = { expected_revision: S.serverRevision };
-    if (mode === "bypass") body.bypass_permissions = true;
-    else {
-      if (S.threadBypass) body.bypass_permissions = false;
-      if (S.threadAuto !== (mode === "auto")) body.auto_permissions = mode === "auto";
-    }
+    // The whole mode, not a change from the one on screen, which may be an
+    // earlier pick that is not saved yet.
+    const body = mode === "bypass" ? { bypass_permissions: true } : { bypass_permissions: false, auto_permissions: mode === "auto" };
     const id = S.currentId;
-    const prev = [S.threadBypass, S.threadAuto];
+    const seq = ++modeSeq;
     S.threadBypass = mode === "bypass";
     if (mode !== "bypass") S.threadAuto = mode === "auto";
     queue.syncPermChip();
-    try {
+    // One write at a time, behind any chat save, at the revision the last
+    // one left. Sent side by side, a quick Bypass, Ask, Bypass reused a
+    // revision: the last was refused (409) and the server kept Ask.
+    const task = S.saveChain.then(async () => {
       const data = await net.api(`/chat/threads/${encodeURIComponent(id)}`, {
         method: "PATCH",
-        body: JSON.stringify(body),
+        body: JSON.stringify({ ...body, expected_revision: S.serverRevision }),
       });
-      // Another chat opened meanwhile: this revision and mode are not its own.
-      if (id !== S.currentId) return;
+      if (id === S.currentId && data && data.revision != null) S.serverRevision = data.revision;
+      return data;
+    });
+    S.saveChain = task.catch(() => {});
+    try {
+      const data = await task;
+      // Another chat opened meanwhile, or a newer pick is still saving: this
+      // answer's mode is not the one to show.
+      if (id !== S.currentId || seq !== modeSeq) return;
       if (data && Object.prototype.hasOwnProperty.call(data, "bypass_permissions")) S.threadBypass = Boolean(data.bypass_permissions);
       if (data && Object.prototype.hasOwnProperty.call(data, "auto_permissions")) S.threadAuto = Boolean(data.auto_permissions);
-      if (data && data.revision != null) S.serverRevision = data.revision;
       if (S.threadBypass) {
         S.permCards.clear();
         queue.renderPermQueue();
       }
     } catch (error) {
-      if (id === S.currentId) [S.threadBypass, S.threadAuto] = prev;
+      // Show what the server kept: the mode before this pick may never have
+      // been saved either.
+      if (id === S.currentId && seq === modeSeq) refreshPerms();
       sync.showFailure("Could not change permission mode", error);
     }
     queue.syncPermChip();
