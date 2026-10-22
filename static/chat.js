@@ -984,6 +984,8 @@ import { createBoot } from './chat/boot.js';
     sync.setThreadUrl(null, { stay: stayOnList });
     transcript.paint();
     sidebar.renderHistory();
+    // The chip showed the left chat's effort; the empty chat has its own.
+    picker.renderPickerButton();
     picker.defaultHint();
     panels.syncMemoryUi();
     if (!stayOnList) sidebar.setHistoryOpen(false);

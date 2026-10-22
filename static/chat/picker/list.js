@@ -32,7 +32,8 @@ export function createList(ctx) {
     const wanted = (model && model.reasoningDefault) || "";
     if (wanted && efforts.includes(wanted)) return wanted;
     if (efforts.includes("medium")) return "medium";
-    return efforts[0] || "medium";
+    // A model without levels has no effort to show or send.
+    return efforts[0] || "";
   }
 
     // The open chat's effort wins; the per-model pick is only the default
@@ -210,7 +211,7 @@ export function createList(ctx) {
       if (btn) {
         btn.querySelector("span").textContent = model.name;
         btn.querySelector("small").textContent = effortLabel(effort);
-        btn.title = model.id + " · " + effortLabel(effort);
+        btn.title = effort ? model.id + " · " + effortLabel(effort) : model.id;
       }
       const search = S.pickerMenuEl && S.pickerMenuEl.querySelector(".chat-picker-search");
       if (search) search.value = "";

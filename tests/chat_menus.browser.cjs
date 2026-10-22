@@ -299,6 +299,43 @@ const FAMILIES = [
       }
     }
 
+    // A chat keeps its own effort. A new chat started from it shows the new
+    // chat's effort (this browser's pick for the model, else the model
+    // default), and the button, the slider, the first send and the saved
+    // chat all agree on it.
+    {
+      const high = await page.evaluate(async () => {
+        const created = await fuseToolFixture.api('/chat/threads', {
+          method: 'POST', body: JSON.stringify({ model: 'offline', tools: [], title: 'High effort', command_id: crypto.randomUUID(), messages: [] }),
+        });
+        await fuseToolFixture.api('/chat/threads/' + created.id, {
+          method: 'PATCH', body: JSON.stringify({ reasoning_effort: 'high', expected_revision: created.revision, command_id: crypto.randomUUID() }),
+        });
+        return created.id;
+      });
+      await page.goto(origin + '/chat?t=' + high);
+      await live();
+      await page.waitForFunction(() => document.querySelector('.chat-picker-btn small')?.textContent === 'High');
+      await page.evaluate(() => document.querySelector('[data-chat-new]').click());
+      await page.waitForFunction(() => !new URL(location.href).searchParams.has('t'));
+      assert.equal(await pickerBtn().locator('small').evaluate(el => el.textContent), 'Medium', "a new chat shows its own effort, not the last chat's");
+      await pickerBtn().click();
+      assert.equal(await page.locator('[data-effort-slider]').getAttribute('aria-valuetext'), 'Medium', 'the slider agrees with the button');
+      await page.keyboard.press('Escape');
+      await page.locator('[data-chat-input]').fill('First message at the default effort');
+      const [turn] = await Promise.all([
+        page.waitForResponse(res => res.request().method() === 'POST' && /^\/chat\/threads\/[^/]+\/turns$/.test(new URL(res.url()).pathname)),
+        page.locator('[data-chat-send]').click(),
+      ]);
+      assert.equal(turn.status(), 200);
+      assert.equal(turn.request().postDataJSON().reasoning_effort, 'medium', 'the first send carries the effort the button showed');
+      const fresh = (await turn.json()).thread.id;
+      assert.notEqual(fresh, high);
+      assert.equal((await page.evaluate(t => fuseToolFixture.api('/chat/threads/' + t), fresh)).reasoning_effort, 'medium', 'the server keeps the effort the chat ran at');
+      await page.waitForFunction(() => !document.body.classList.contains('is-streaming') && !fuseToolFixture.runInfo(), null, { timeout: 30000 });
+      assert.equal(await pickerBtn().locator('small').evaluate(el => el.textContent), 'Medium');
+    }
+
     assert.deepEqual(errors, []);
     await context.close();
 

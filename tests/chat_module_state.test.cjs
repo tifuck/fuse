@@ -27,6 +27,24 @@ test('composed composer exposes its live resize lock', () => {
   delete global.window;
 });
 
+test('picker effort: the chat wins, then this browser pick, then the model default; no levels means none', () => {
+  const { createList } = require('../static/chat/picker/list.js');
+  const models = {
+    opus: { id: 'opus', type: 'claude', reasoning: ['low', 'medium', 'high', 'max'], reasoningDefault: 'medium' },
+    haiku: { id: 'haiku', type: 'claude', reasoning: [], reasoningDefault: '' },
+  };
+  const list = createList({ context: { currentModel: () => models[S.modelId] } });
+  Object.assign(S, { modelId: 'opus', threadEffort: null, effortByModel: {} });
+  assert.equal(list.currentEffort(), 'medium');
+  S.effortByModel = { opus: 'high' };
+  assert.equal(list.currentEffort(), 'high');
+  S.threadEffort = { model: 'opus', value: 'max' };
+  assert.equal(list.currentEffort(), 'max');
+  S.modelId = 'haiku';
+  assert.equal(list.currentEffort(), '', 'a model without levels shows and sends no effort');
+  assert.equal(list.effortLabel(list.currentEffort()), '');
+});
+
 test('composed transcript flushes the newest queued paint exactly once', () => {
   Object.assign(S, { pendingFullPaint: false, pendingAgentPaint: false, pendingAgentListPaint: false });
   const calls = [];

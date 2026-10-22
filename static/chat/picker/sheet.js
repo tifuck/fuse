@@ -200,7 +200,7 @@ export function createSheet(ctx) {
     btn.innerHTML = `${sidebar.providerLogo(model.type)}<span></span><small></small>${PICKER_CHEV}`;
     btn.querySelector("span").textContent = model.name;
     btn.querySelector("small").textContent = think;
-    btn.title = model.id + " · " + think;
+    btn.title = think ? model.id + " · " + think : model.id;
     btn.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
