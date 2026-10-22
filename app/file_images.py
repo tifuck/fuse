@@ -11,6 +11,8 @@ import weakref
 
 MAX_SOURCE = 20 * 1024 * 1024
 MAX_OUTPUT = 5 * 1024 * 1024
+# An opaque PNG past this size is also tried as JPEG (see _decode).
+JPEG_FROM = 256 * 1024
 MAX_PIXELS = 40_000_000
 DECODE_CONCURRENCY = 3
 EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".ico", ".apng"}
@@ -93,6 +95,16 @@ def _decode(data: bytes, frame: int, max_side: int = 2048, max_bytes: int = MAX_
         output = io.BytesIO()
         clean.save(output, format="PNG")
         mime = "image/png"
+        # Rendered art and photos barely compress as PNG (a 1280×720 game
+        # frame is ~1.5 MB) and the transcript resends every image each tool
+        # round. Pixels, not bytes, set a model's image tokens, so a JPEG
+        # without chroma subsampling costs the same for a quarter of the
+        # bytes. Flat UI and text stay PNG, which is smaller there anyway.
+        if output.tell() > JPEG_FROM and (mode == "RGB" or clean.getchannel("A").getextrema()[0] == 255):
+            jpeg = io.BytesIO()
+            clean.convert("RGB").save(jpeg, format="JPEG", quality=90, subsampling=0)
+            if jpeg.tell() * 2 <= output.tell():
+                output, mime = jpeg, "image/jpeg"
         if output.tell() > max_bytes:
             background = Image.new("RGB", clean.size, "white")
             background.paste(clean, mask=clean.getchannel("A") if mode == "RGBA" else None)

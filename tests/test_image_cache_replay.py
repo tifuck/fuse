@@ -154,6 +154,33 @@ def test_provider_image_refusal_sheds_oldest_and_retries(routed, monkeypatch, st
     assert sent[0]["messages"][:10] == final  # the shed decision stays frozen
 
 
+def test_image_data_ceiling_sheds_oldest_instead_of_failing(routed, monkeypatch):
+    """Base64 bytes are not context: forty screenshots fit a 1M window but not
+    Fuse's image-data ceiling, which must shed like a refusal, not end the run."""
+    _, sent = routed
+    checkpoints = []
+
+    async def persist():
+        checkpoints.append(len(sent))
+
+    rows = [image(str(i)) for i in range(10)]
+    per_image = model_caps.inline_image_chars([rows[0]])
+    monkeypatch.setattr(api, "_MAX_IMAGE_CHARS", per_image * 5)
+    monkeypatch.setattr(api, "_MAX_RETAINED_CHARS", 16)  # text only: the image bytes do not count
+    snapshot = {}
+    *_, result = invoke(rows, snapshot, persist)
+    assert result.status == 200 and checkpoints == [0]  # shed before anything is sent, then saved
+    final = sent[0]["messages"]
+    assert [isinstance(m["content"], list) for m in final] == [False] * 5 + [True] * 5
+    assert model_caps.SIZE_OMITTED in final[0]["content"]
+    assert model_caps.inline_image_chars(final) == per_image * 5
+    assert result.response_headers["X-Fuse-Images-Shed"] == "5"
+    sent.clear()
+    *_, result = invoke(rows, snapshot)
+    assert sent[0]["messages"] == final  # frozen: the next round keeps the same prefix
+    assert "X-Fuse-Images-Shed" not in result.response_headers
+
+
 def test_unrelated_refusal_and_text_only_request_do_not_retry(routed, monkeypatch):
     _, sent = routed
 

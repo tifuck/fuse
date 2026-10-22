@@ -139,6 +139,11 @@ def test_image_validation_rejects_malformed_payloads():
 
     api._validate_messages(_turn())
     api._validate_messages(_turn("https://example.test/a.png"))
+    # Image data is not text: it is bounded per route by _MAX_IMAGE_CHARS.
+    large = "data:image/png;base64," + "QUFB" * (api._MAX_MESSAGE_CHARS // 4 + 1)
+    api._validate_messages(_turn(large))
+    with pytest.raises(HTTPException, match="messages too large"):
+        api._validate_messages([{"role": "user", "content": "x" * (api._MAX_MESSAGE_CHARS + 1)}])
     for url in ("", "data:image/png,hello", "data:image/png;base64,???", "data:text/plain;base64,QQ==", "file:///tmp/a.png"):
         with pytest.raises(HTTPException) as exc:
             api._validate_messages(_turn(url))

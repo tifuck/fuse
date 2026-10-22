@@ -51,6 +51,54 @@ def test_frames(fmt):
         asyncio.run(file_images.decode_image(out.getvalue(), 2))
 
 
+def rendered(size=(800, 600), mode="RGB", alpha=255):
+    """Smooth, detailed art (a game frame): PNG ~3.5x the size of a q90 JPEG."""
+    channels = [Image.effect_noise((size[0] // 8, size[1] // 8), 64).resize(size, Image.Resampling.BICUBIC)
+                for _ in range(3)]
+    if mode == "RGBA":
+        channels.append(Image.new("L", size, alpha))
+    out = io.BytesIO()
+    Image.merge(mode, channels).save(out, format="PNG")
+    return out.getvalue()
+
+
+def sharp(size=(640, 480)):
+    """Pixel-level detail: JPEG saves too little to give up lossless PNG."""
+    gradient = Image.linear_gradient("L").resize(size)
+    out = io.BytesIO()
+    Image.merge("RGB", (gradient, Image.effect_noise(size, 18), gradient.transpose(Image.Transpose.FLIP_LEFT_RIGHT))).save(out, format="PNG")
+    return out.getvalue()
+
+
+@pytest.mark.parametrize("source,mime", [
+    (rendered, "image/jpeg"),
+    (lambda: rendered(mode="RGBA"), "image/jpeg"),  # an opaque alpha channel loses nothing
+    (lambda: rendered(mode="RGBA", alpha=128), "image/png"),  # real transparency stays lossless
+    (lambda: rendered((400, 300)), "image/png"),  # under JPEG_FROM: small enough as is
+    (sharp, "image/png"),
+], ids=["rendered", "opaque-alpha", "transparent", "small", "sharp"])
+def test_bloated_opaque_png_becomes_jpeg(source, mime):
+    data = source()
+    result = asyncio.run(file_images.decode_image(data))
+    assert result["mime"] == mime and result["format"] == "PNG"
+    pixels = base64.b64decode(result["data"])
+    with Image.open(io.BytesIO(pixels)) as image:
+        assert image.format == mime.split("/")[1].upper()
+        assert image.size == (result["width"], result["height"]) == (result["original_width"], result["original_height"])
+    if mime == "image/jpeg":
+        assert len(pixels) * 2 <= len(data)
+
+
+@pytest.mark.parametrize("fmt,mime,note", [("PNG", "image/jpeg", True), ("PNG", "image/png", False), ("JPEG", "image/jpeg", False)])
+def test_read_file_says_when_pixels_were_reencoded(fmt, mime, note):
+    decoded = {"mime": mime, "data": "", "width": 8, "height": 8, "original_width": 8, "original_height": 8,
+               "format": fmt, "frame": 0, "frames": 1}
+    with patch.object(workspace, "_is_agent", return_value=True), patch.object(workspace, "_agent_call", AsyncMock(return_value=response(raster()))), patch.object(file_images, "decode_image", AsyncMock(return_value=decoded)):
+        text, rec = asyncio.run(workspace._read(1, 2, "box", {"path": "a.png"}, "/work"))
+    assert f"Image: {fmt}, 8×8; displayed 8×8." in text  # chat_views._IMAGE_INFO still parses it
+    assert ("Re-encoded as JPEG" in text) is note
+
+
 def test_invalid_and_limits():
     for data in (b"%PDF-1.7", b"<svg></svg>", b"xxxxftypavif", b"\x89PNG\r\n\x1a\ninvalid"):
         with pytest.raises(ValueError):

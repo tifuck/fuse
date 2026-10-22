@@ -45,6 +45,12 @@ _MAX_MESSAGES = 1_000
 _MAX_MESSAGE_CHARS = 1_500_000
 _MAX_RETAINED_MESSAGES = 32_768
 _MAX_RETAINED_CHARS = 48_000_000
+# Inline image data (base64 chars) one outgoing request may carry. Images are
+# not text: the limits above count text, and the context meter counts each
+# image as ~1,500 tokens however many bytes its PNG takes. Past this the
+# older half of the images is left out (frozen, like a provider refusal)
+# instead of failing the run.
+_MAX_IMAGE_CHARS = 48_000_000
 _REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 logger = logging.getLogger(__name__)
 
@@ -171,6 +177,8 @@ def _validate_messages(messages, *, retained=False) -> None:
                     raise HTTPException(
                         400, f"messages[{index}].content[{part_index}].image_url.url must be a string"
                     )
+                # Image data is not counted here: _MAX_IMAGE_CHARS bounds it
+                # once the route is known and older images can be left out.
                 if part.get("type") in ("image_url", "input_image"):
                     url = image.get("url") if isinstance(image, dict) else image
                     if not isinstance(url, str) or not url:
@@ -187,10 +195,6 @@ def _validate_messages(messages, *, retained=False) -> None:
                             raise HTTPException(400, "Invalid base64 image data") from None
                     elif not url.startswith(("https://", "http://")):
                         raise HTTPException(400, "Images must use an HTTP(S) URL or base64 data URI")
-                if isinstance(image, str):
-                    total += len(image)
-                elif isinstance(image, dict):
-                    total += len(image["url"])
                 if part.get("type") in ("file", "input_file"):
                     file = part.get("file")
                     file = file if isinstance(file, dict) else part
@@ -623,6 +627,16 @@ async def _invoke_chat(request: Request, user, body: dict, *, cheap_reasoning: b
     images = image_snapshot if image_snapshot is not None else {}
     body["messages"], omitted = model_caps.prepare(original, src.type_id, upstream,
                                                    user_id=user["id"], snapshot=images)
+    shed_total = 0
+    while model_caps.inline_image_chars(body["messages"]) > _MAX_IMAGE_CHARS:
+        shed = model_caps.shed(images, src.type_id, upstream, reason="size")
+        if not shed:
+            break
+        shed_total += shed
+        logger.warning("Request image data over %s chars provider=%s model=%s; dropped %s older image(s)",
+                       _MAX_IMAGE_CHARS, src.type_id, upstream, shed)
+        body["messages"], omitted = model_caps.prepare(original, src.type_id, upstream,
+                                                       user_id=user["id"], snapshot=images)
     if prepared is not None:
         await prepared()
     session_id = None
@@ -634,7 +648,6 @@ async def _invoke_chat(request: Request, user, body: dict, *, cheap_reasoning: b
         # never client input) so its first request can start where the parent
         # already cached the shared tools and system prompt.
         affinity_id = related_session_id(request.scope.get("fuse_cache_parent"), user_id=user["id"], model=upstream)
-    shed_total = 0
     while True:
         try:
             result = await _run_chat(src, body, user["id"], session_id=session_id, affinity_id=affinity_id)
@@ -650,8 +663,8 @@ async def _invoke_chat(request: Request, user, body: dict, *, cheap_reasoning: b
         await asyncio.to_thread(_record_attempts, result, user, src, upstream, requested)
         if result.status == 200 or not model_caps.image_refusal(result.status, _error_message(result.body)):
             break
-        # The provider refused this many images (Fuse sets no cap): drop the
-        # older half, freeze that in the snapshot, and retry until it fits.
+        # The provider refused this many images or bytes: drop the older
+        # half, freeze that in the snapshot, and retry until it fits.
         shed = model_caps.shed(images, src.type_id, upstream)
         if not shed:
             break

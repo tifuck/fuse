@@ -1227,8 +1227,8 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
                 shed = (getattr(result, "response_headers", None) or {}).get("X-Fuse-Images-Shed")
                 if shed:
                     yield _sse({"fuse": {"event": "notice", "message": (
-                        f"The provider refused this many images, so {shed} older image(s) were left out "
-                        "of this request. They remain in the chat.")}})
+                        f"This request carried more images than fit, so {shed} older image(s) were left out "
+                        "of it. They remain in the chat.")}})
                 src_type = src.type_id
                 if not (src_type in ("llama", "ollama", "openai") and src_type == src_type_guess
                         and resolved_window and not context_meter.cached_window(src_type, upstream or model)):

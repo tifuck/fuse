@@ -2046,6 +2046,8 @@ async def _image_read_bounded(user_id, host_id, alias, path, args, *, probe=Fals
     body = (f"Image: {image['format']}, {image['original_width']}×{image['original_height']}; "
             f"displayed {image['width']}×{image['height']}. "
             f"Frame {image['frame']} (zero-based) of {image['frames']}; only this frame is shown.")
+    if image["mime"] == "image/jpeg" and image["format"] != "JPEG":
+        body += " Re-encoded as JPEG to keep requests small; fine detail may show compression artifacts."
     return _label(alias, body), {"name": "read_file", "status": "done", "host": alias,
                                  "path": path, "preview": body, "image": image}
 

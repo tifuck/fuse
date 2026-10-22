@@ -4,8 +4,9 @@ True / False come from the provider's own catalog when it reports them
 (OpenRouter, Codex, Kimi, llama.cpp /props), else from the rules below.
 None means unknown: images are sent. False strips them only from the outgoing
 copy, so saved chats keep every image and a later switch back to an image
-model sees them again. Fuse sets no image budget of its own; images leave a
-request only when the provider itself refuses it (see `shed`).
+model sees them again. Images leave a request only when the provider refuses
+it, or when its inline image data passes Fuse's per-request ceiling (see
+`shed`); there is no image count budget.
 """
 from __future__ import annotations
 
@@ -16,6 +17,9 @@ import re
 OMITTED = "[Image omitted: this model cannot view images. It stays in the chat for image-capable models.]"
 LIMIT_OMITTED = ("[Image omitted: the provider refused a request carrying this many images. "
                  "Newer images were kept. Pixels remain in saved history.]")
+SIZE_OMITTED = ("[Image omitted: the request carried more image data than Fuse sends at once. "
+                "Newer images were kept. Pixels remain in saved history.]")
+_NOTES = {"capability": OMITTED, "limit": LIMIT_OMITTED, "size": SIZE_OMITTED}
 # Provider refusals that name images or the request size. Dropping the oldest
 # images is the only change that can make such a request acceptable.
 _IMAGE_REFUSAL = re.compile(
@@ -144,7 +148,7 @@ def prepare(messages, type_id: str, model: str, *, user_id: int | None = None, s
                 parts.append(part)
             elif admitted[mi, pi] != "admit":
                 omitted += 1
-                parts.append({"type": "text", "text": OMITTED if admitted[mi, pi] == "capability" else LIMIT_OMITTED})
+                parts.append({"type": "text", "text": _NOTES.get(admitted[mi, pi], LIMIT_OMITTED)})
             elif part["type"] == "input_image":
                 image = part.get("image_url")
                 image = image if isinstance(image, dict) else {"url": image}
@@ -166,10 +170,26 @@ def image_refusal(status: int, message: str) -> bool:
     return status == 413 or (400 <= status < 500 and bool(_IMAGE_REFUSAL.search(message or "")))
 
 
-def shed(snapshot: dict, type_id: str, model: str) -> int:
-    """After a provider refusal, drop the older half of the images this route
-    admitted. The decision is frozen in the snapshot like any other, so later
-    rounds keep the same prefix. Returns how many images were dropped."""
+def inline_image_chars(messages) -> int:
+    """Base64 characters of the data-URL images a prepared request carries.
+    Bytes, not tokens: a screenshot is ~1,500 tokens but often >1M chars."""
+    total = 0
+    for msg in messages if isinstance(messages, list) else ():
+        content = msg.get("content") if isinstance(msg, dict) else None
+        for part in content if isinstance(content, list) else ():
+            if _image_part(part):
+                image = part.get("image_url")
+                url = image.get("url") if isinstance(image, dict) else image
+                if isinstance(url, str) and url.startswith("data:"):
+                    total += len(url)
+    return total
+
+
+def shed(snapshot: dict, type_id: str, model: str, reason: str = "limit") -> int:
+    """After a provider refusal ("limit") or past Fuse's own image-data ceiling
+    ("size"), drop the older half of the images this route admitted. The
+    decision is frozen in the snapshot like any other, so later rounds keep
+    the same prefix. Returns how many images were dropped."""
     route = json.dumps([type_id, model], separators=(",", ":"))
     decisions = snapshot.get(route) or {}
 
@@ -180,5 +200,5 @@ def shed(snapshot: dict, type_id: str, model: str) -> int:
     kept = sorted((k for k, v in decisions.items() if v == "admit"), key=order)
     drop = kept[:(len(kept) + 1) // 2]
     for key in drop:
-        decisions[key] = "limit"
+        decisions[key] = reason
     return len(drop)
