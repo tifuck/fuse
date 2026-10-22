@@ -288,7 +288,8 @@ export function createThreads(ctx) {
     S.currentId = data.id;
     S.sessionId = "thread-" + data.id;
     const listed = resolveListedModel(data.model);
-    S.threadEffort = data.reasoning_effort ? { model: listed || S.modelId, value: data.reasoning_effort } : null;
+    // Saved for the chat's own model: another model keeps its own effort.
+    S.threadEffort = data.reasoning_effort && listed ? { model: listed, value: data.reasoning_effort } : null;
     if (listed) S.modelId = listed;
     picker.renderPickerButton();
     S.contextCut = data.context_cut || null;

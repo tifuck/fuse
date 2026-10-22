@@ -180,7 +180,7 @@ export function createApply(ctx) {
       S.threadContext = data.context || "";
       S.searchOn = data.tools?.includes("web_search") ?? true;
       const listed = resolveListedModel(data.model);
-      const effort = data.reasoning_effort ? { model: listed || S.modelId, value: data.reasoning_effort } : null;
+      const effort = data.reasoning_effort && listed ? { model: listed, value: data.reasoning_effort } : null;
       const effortChanged = (effort && effort.value) !== (S.threadEffort && S.threadEffort.value) ||
         (effort && effort.model) !== (S.threadEffort && S.threadEffort.model);
       S.threadEffort = effort;
