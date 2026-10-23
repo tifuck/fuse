@@ -210,9 +210,11 @@
   letter-spacing: 0.09em;
   text-transform: uppercase;
 }
+/* Wide enough for "Extra high" with its tracking: a label that widens this
+   column narrows the slider, and the thumb moves under a dragging pointer. */
 .chat-picker-thinking-value {
   flex-shrink: 0;
-  min-width: 10ch;
+  min-width: 11ch;
   color: var(--brass);
   font: 0.66rem/1 var(--mono);
   letter-spacing: 0.03em;

@@ -235,7 +235,9 @@
   padding: 0 0.45rem;
   border: 0;
   border-radius: 6px;
-  background-color: color-mix(in srgb, var(--mist) 5%, transparent);
+  /* Opaque: the browser paints the dropdown list from this color, and a
+     see-through one lands on white, so light text on a dark theme vanishes. */
+  background-color: color-mix(in srgb, var(--mist) 5%, var(--ink));
   color: var(--mist);
   font-size: 0.75rem;
 }

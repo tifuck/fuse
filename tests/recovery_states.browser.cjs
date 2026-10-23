@@ -319,7 +319,6 @@ assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
         const btn = document.querySelector('.chat-picker-btn');
         btn.querySelector('span').textContent = name;
       }, longName);
-      await desktop.evaluate(() => window.dispatchEvent(new Event('resize')));
       const long = await box(desktop, '.chat-picker-menu');
       assert.ok(Math.abs(long.right - short.right) <= 1, `picker stays right-pinned: ${short.right} -> ${long.right}`);
       assert.ok(long.left >= 0 && long.right <= long.width, 'a long model name cannot push the picker off screen');

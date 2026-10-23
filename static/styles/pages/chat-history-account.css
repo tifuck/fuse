@@ -273,7 +273,7 @@ body.is-pin-dragging .chat-history-item:hover { background: none; }
   .chat.is-history .user-dock-out { padding-bottom: max(0.85rem, var(--safe-bottom)); }
   .chat-history-top { padding-top: 0.375rem; }
   .chat-history-bar :is(.chat-new, .chat-history-iconbtn) { width: 2.75rem; height: 2.75rem; }
-  .chat-history-tabs { height: 2.75rem; }
+  .chat-history-tabs { height: 2.25rem; }
   .chat-history-tab { height: 100%; font-size: 0.875rem; }
   .chat-history-search { height: 2.75rem; }
   .chat-history-search input[type="search"] { font-size: 16px; }

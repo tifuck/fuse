@@ -185,6 +185,39 @@ const NOW = '2026-10-05T00:00:00Z';
       assert.equal(await page.locator('[data-chat-new-label]').textContent(), 'New project', 'the new action renames per tab');
       assert.equal(await page.locator('[data-chat-new]').getAttribute('aria-label'), 'New project session');
       assert.equal(await page.locator('[data-project-filters]').isHidden(), false, 'project filters show on the Projects tab');
+      // The browser paints a select's dropdown list from the select's own
+      // background and text color. A see-through background landed on white,
+      // so a dark theme got near-white options on a white list.
+      const readable = await page.locator('[data-project-filters] select').first().evaluate(select => {
+        const root = document.documentElement;
+        const canvas = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+        const pixel = css => {
+          canvas.clearRect(0, 0, 1, 1);
+          canvas.fillStyle = 'rgba(0, 0, 0, 0)';
+          canvas.fillStyle = css;
+          canvas.fillRect(0, 0, 1, 1);
+          return canvas.getImageData(0, 0, 1, 1).data;
+        };
+        const luminance = ([r, g, b]) => [r, g, b].reduce((sum, v, i) => {
+          const c = v / 255;
+          return sum + [0.2126, 0.7152, 0.0722][i] * (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+        }, 0);
+        const was = root.dataset.chatTheme;
+        const themes = {};
+        for (const theme of ['fuse', 'void', 'midnight', 'paper', 'sand']) {
+          root.dataset.chatTheme = theme;
+          const style = getComputedStyle(select);
+          const bg = pixel(style.backgroundColor);
+          const [hi, lo] = [luminance(bg), luminance(pixel(style.color))].sort((a, b) => b - a);
+          themes[theme] = { alpha: bg[3], contrast: (hi + 0.05) / (lo + 0.05) };
+        }
+        root.dataset.chatTheme = was;
+        return themes;
+      });
+      for (const [theme, { alpha, contrast }] of Object.entries(readable)) {
+        assert.equal(alpha, 255, `${theme}: the project filters paint an opaque background`);
+        assert.ok(contrast >= 7, `${theme}: the filter text reads against its background (${contrast.toFixed(1)}:1)`);
+      }
       await page.locator('[data-history-tab="chats"]').click();
       assert.equal(await page.locator('[data-chat-new-label]').textContent(), 'New chat');
       assert.equal(await page.locator('[data-chat-new]').getAttribute('aria-label'), 'New chat');
@@ -298,6 +331,8 @@ const NOW = '2026-10-05T00:00:00Z';
       const rowBox = await page.locator(`[data-thread="${b.id}"]`).boundingBox();
       assert.ok(rowBox.x >= box.x - 1 && rowBox.x + rowBox.width <= box.x + box.width + 1, `rows sit inside the drawer: ${JSON.stringify(rowBox)}`);
       assert.equal(await page.locator(`[data-thread="${b.id}"] button.open`).evaluate(el => el.getBoundingClientRect().height >= 44), true, 'rows are tap-sized');
+      const tabHeights = await page.locator('[data-history-tab]').evaluateAll(els => els.map(el => el.getBoundingClientRect().height));
+      assert.ok(tabHeights.every(h => h >= 28 && h <= 36), `the Chats and Projects tabs are compact buttons, not 44px slabs: ${tabHeights}`);
 
       await page.locator('.chat-history-head [data-history-toggle]').click();
       await page.waitForFunction(() => !document.querySelector('[data-chat]').classList.contains('is-history'));

@@ -35,9 +35,13 @@ export function createInput(ctx) {
     menu.style.right = "auto";
     menu.style.left = "0px";
     menu.style.bottom = "0px";
-    // The open animation translates the box; measure it at rest.
+    // The open animation translates the box; measure it at rest, from both
+    // edges of its containing block.
     menu.style.setProperty("transform", "none", "important");
     const origin = menu.getBoundingClientRect();
+    menu.style.left = "auto";
+    menu.style.right = "0px";
+    const originRight = menu.getBoundingClientRect().right;
     menu.style.removeProperty("transform");
     const b = anchor.getBoundingClientRect();
     const box = anchor.closest(".chat-box");
@@ -46,9 +50,17 @@ export function createInput(ctx) {
     const width = menu.offsetWidth;
     const vw = document.documentElement.clientWidth;
     let left = b.left;
-    if ((pinRight && !overlays.overlayIsMobile()) || left + width > vw - gutter) left = b.right - width;
+    const toRight = (pinRight && !overlays.overlayIsMobile()) || left + width > vw - gutter;
+    if (toRight) left = b.right - width;
     left = Math.max(gutter, Math.min(left, vw - gutter - width));
-    menu.style.left = Math.round(left - origin.left) + "px";
+    // Lined up with the right edge, the menu is offset from that edge: the
+    // button changes width while the menu is open (a new effort or model
+    // name), which moves its left edge but not its right.
+    if (toRight) menu.style.right = Math.round(originRight - (left + width)) + "px";
+    else {
+      menu.style.right = "auto";
+      menu.style.left = Math.round(left - origin.left) + "px";
+    }
     menu.style.bottom = Math.round(origin.bottom - top) + "px";
   }
 

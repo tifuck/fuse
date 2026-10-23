@@ -21,7 +21,7 @@ const FAMILIES = [
     { id: 'grok-long', name: 'Grok Long', reasoning: ['none', 'high'], reasoning_default: 'none' },
   ] },
   { type: 'llama', title: 'Test', models: [
-    { id: 'offline', name: 'Offline fixture', reasoning: ['none', 'low', 'medium', 'high'], reasoning_default: 'medium' },
+    { id: 'offline', name: 'Offline fixture', reasoning: ['none', 'low', 'medium', 'high', 'xhigh'], reasoning_default: 'medium' },
   ] },
 ];
 
@@ -99,9 +99,11 @@ const FAMILIES = [
       // checks in place instead of jumping the list under the pointer.
       assert.deepEqual(await optionIds(), ['grok-short', 'grok-long', 'offline'], 'order stays pinned to the model that was current at open');
       assert.equal(await page.locator('.chat-picker-list [data-id="grok-long"]').getAttribute('aria-selected'), 'true');
-      // A long name wraps the composer, so the menu follows the button. What
-      // must hold is that it stays inside the viewport either way.
-      inside(await box('.chat-picker-menu'), 'picker after a long name');
+      // A longer name widens the button leftwards. The menu stays on the
+      // button's right edge, inside the viewport.
+      const longer = await box('.chat-picker-menu');
+      inside(longer, 'picker after a long name');
+      assert.ok(Math.abs(longer.right - placed.right) <= 0.5, `the menu does not follow the button when its name changes: ${placed.right} -> ${longer.right}`);
       await page.keyboard.press('Escape');
       await picker().waitFor({ state: 'hidden' });
       await pickerBtn().click();
@@ -131,6 +133,48 @@ const FAMILIES = [
       await page.waitForFunction(() => document.querySelector('.chat-picker-btn small').textContent === 'Low');
       assert.equal(await page.locator('[data-effort-slider]').getAttribute('aria-valuetext'), 'Low', 'the short model keeps its own effort');
       await page.keyboard.press('Escape');
+    }
+
+    // The open menu holds still while its button changes width. The button
+    // follows the effort label and the model name; a menu tied to its left
+    // edge slid with it, and under a dragging pointer that moved the slider
+    // out from under it and flipped the value back and forth.
+    {
+      await pickerBtn().click();
+      await picker().waitFor();
+      const geometry = () => page.evaluate(() => {
+        const rect = selector => {
+          const r = document.querySelector(selector).getBoundingClientRect();
+          return { left: r.left, right: r.right, top: r.top, bottom: r.bottom };
+        };
+        return { menu: rect('.chat-picker-menu'), slider: rect('[data-effort-slider]'), button: rect('.chat-picker-btn') };
+      });
+      const still = (now, was, label) => {
+        for (const part of ['menu', 'slider']) {
+          for (const edge of ['left', 'right', 'top', 'bottom']) {
+            assert.ok(Math.abs(now[part][edge] - was[part][edge]) <= 0.5, `${label}: the ${part} ${edge} moved ${was[part][edge]} -> ${now[part][edge]}`);
+          }
+        }
+      };
+      const rest = await geometry();
+      await page.locator('.chat-picker-list [data-id="offline"]').click();
+      await page.waitForFunction(() => document.querySelector('.chat-picker-btn span').textContent === 'Offline fixture');
+      still(await geometry(), rest, 'a longer model name');
+      const slider = page.locator('[data-effort-slider]');
+      const widths = new Set();
+      // Ends on Medium, the model's default, so the blocks below start unchanged.
+      for (const [index, label] of [[0, 'Off'], [1, 'Low'], [3, 'High'], [4, 'Extra high'], [2, 'Medium']]) {
+        await slider.fill(String(index));
+        await page.waitForFunction(text => document.querySelector('.chat-picker-btn small').textContent === text, label);
+        const now = await geometry();
+        widths.add(Math.round((now.button.right - now.button.left) * 10));
+        still(now, rest, `thinking ${label}`);
+      }
+      assert.ok(widths.size > 1, 'the button changes width with its label, so a menu that followed it would fail here');
+      await page.locator('.chat-picker-list [data-id="grok-short"]').click();
+      await page.waitForFunction(() => document.querySelector('.chat-picker-btn span').textContent === 'Grok');
+      await page.keyboard.press('Escape');
+      await picker().waitFor({ state: 'hidden' });
     }
 
     // Ask / Bypass labels, and the mode follows the thread across a switch.
@@ -424,6 +468,17 @@ const FAMILIES = [
       assert.equal(sheet.sheet, true, 'a phone picker is a sheet');
       assert.equal(await p.evaluate(() => document.activeElement === document.querySelector('.chat-picker-menu')), true, 'the phone sheet itself takes focus, no keyboard');
       phoneInside(sheet, 'phone model sheet');
+      // The slider keeps one width whatever the value label says: a wider
+      // "Extra high" narrowed it and moved the thumb under a dragging finger.
+      await p.locator('.chat-picker-list [data-id="offline"]').click();
+      const slider = p.locator('[data-effort-slider]');
+      const tracks = [];
+      for (const [index, label] of [[0, 'Off'], [1, 'Low'], [2, 'Medium'], [3, 'High'], [4, 'Extra high']]) {
+        await slider.fill(String(index));
+        await p.waitForFunction(text => document.querySelector('.chat-picker-thinking-value').textContent === text, label);
+        tracks.push(await slider.evaluate(el => { const r = el.getBoundingClientRect(); return [r.left, r.width].map(n => Math.round(n * 10) / 10).join('+'); }));
+      }
+      assert.equal(new Set(tracks).size, 1, `the thinking slider keeps one position and width across every label: ${tracks}`);
       await p.locator('[data-picker-close]').click();
       await p.locator('.chat-picker-menu').waitFor({ state: 'hidden' });
       await p.locator('[data-perm-chip]').click();

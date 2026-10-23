@@ -671,8 +671,6 @@ html[data-chat-theme="ivory"] .chat .chat-code { border-color: var(--line); }
      reads as padding above and below the top row; the rest of the page keeps
      the touch size. */
   .chat .chat-bar :is(.chat-bar-btn, .chat-history-toggle) { min-width: 2rem; min-height: 2rem; }
-  .chat .chat-history-bar .chat-history-tabs { min-height: 44px; height: auto; }
-  .chat .chat-history-tab,
   .chat .chat-history-item > button.open,
   .chat :is(.chat-picker-btn),
   body.is-chat :is(.chat-pop button, .chat-picker-list button) { min-height: 44px; }
