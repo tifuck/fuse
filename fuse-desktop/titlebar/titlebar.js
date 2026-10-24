@@ -52,6 +52,31 @@ function applyTheme(theme) {
   if (theme.steel) root.style.setProperty("--logo-dot", legible(theme.steel, ink, mist));
   root.style.colorScheme = theme.scheme === "light" ? "light" : "dark";
   root.dataset.scheme = theme.scheme === "light" ? "light" : "dark";
+  const css = getComputedStyle(root);
+  sendIcon(ink, css.getPropertyValue("--logo").trim(), css.getPropertyValue("--logo-dot").trim());
+}
+
+// build/icon.png redrawn in the theme's colours (same 512-unit geometry).
+let lastIcon = "";
+function sendIcon(ink, logo, dot) {
+  const key = [ink, logo, dot].join();
+  if (key === lastIcon) return;
+  lastIcon = key;
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 256;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(0.5, 0.5);
+  ctx.fillStyle = ink;
+  ctx.fillRect(0, 0, 512, 512);
+  ctx.fillStyle = logo;
+  ctx.beginPath();
+  for (const [x, y, w, h] of [[168, 136, 66, 240], [168, 136, 196, 66], [168, 252, 152, 58]]) ctx.roundRect(x, y, w, h, 16);
+  ctx.fill();
+  ctx.fillStyle = dot;
+  ctx.beginPath();
+  ctx.arc(398, 164, 22, 0, 2 * Math.PI);
+  ctx.fill();
+  frame.icon(canvas.toDataURL("image/png"));
 }
 
 frame.onState(({ maximized, focused, theme }) => {

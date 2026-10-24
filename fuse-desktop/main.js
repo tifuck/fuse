@@ -1,4 +1,4 @@
-const { app, BaseWindow, WebContentsView, dialog, ipcMain, shell } = require("electron");
+const { app, BaseWindow, WebContentsView, dialog, ipcMain, nativeImage, shell } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } = require("fs");
 const path = require("path");
@@ -99,6 +99,7 @@ async function syncFrameTheme() {
     return;
   }
   if (!theme || !HEX.test(theme.ink) || !win) return;
+  if (JSON.stringify(theme) === JSON.stringify(frameTheme)) return;
   frameTheme = theme;
   win.setBackgroundColor(theme.ink);
   site.setBackgroundColor(theme.ink);
@@ -207,6 +208,7 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      preload: path.join(__dirname, "site-preload.js"),
     },
   });
   site.setBackgroundColor(background);
@@ -295,6 +297,19 @@ ipcMain.on("titlebar", (event, action) => {
   if (action === "minimize") win.minimize();
   else if (action === "maximize") win.isMaximized() ? win.unmaximize() : win.maximize();
   else if (action === "close") win.close();
+});
+
+ipcMain.on("site-theme", (event) => {
+  if (site && event.sender === site.webContents) syncFrameTheme();
+});
+
+// The title bar draws the logo in the theme's colours. Windows' taskbar and
+// X11 window lists show it; GNOME's dock always shows the .desktop icon.
+ipcMain.on("titlebar-icon", (event, url) => {
+  if (!win || !bar || event.sender !== bar.webContents) return;
+  if (typeof url !== "string" || !url.startsWith("data:image/png;base64,")) return;
+  const image = nativeImage.createFromDataURL(url);
+  if (!image.isEmpty()) win.setIcon(image);
 });
 
 // A single launch-time check with install-on-quit never updated a .deb install

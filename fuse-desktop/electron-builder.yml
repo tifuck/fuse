@@ -12,6 +12,7 @@ afterPack: scripts/after-pack.js
 
 files:
   - main.js
+  - site-preload.js
   - package.json
   - build/icon.png
   - titlebar/**
