@@ -135,17 +135,20 @@ class StaleModelCacheTest(unittest.IsolatedAsyncioTestCase):
         refresh.assert_awaited_once()
         self.assertNotIn((97, None), sources_mod._model_cache)
 
-    async def test_warm_catalogs_starts_pool_fetches_only(self):
+    async def test_warm_catalogs_starts_every_shared_catalog(self):
         from types import SimpleNamespace
 
         pool = SimpleNamespace(type_id="chatgpt", source_id=11)
         local = SimpleNamespace(type_id="llama", source_id=12)
+        cloud = SimpleNamespace(type_id="ollama", source_id=13)
+        per_user = SimpleNamespace(type_id="openrouter", source_id=14)
+        private = SimpleNamespace(type_id="explabs", source_id=15)
         with (
-            patch.object(sources_mod, "all_enabled", return_value=[pool, local]),
+            patch.object(sources_mod, "all_enabled", return_value=[pool, local, cloud, per_user, private]),
             patch.object(sources_mod, "_schedule_model_refresh") as schedule,
         ):
             sources_mod.warm_catalogs()
-        schedule.assert_called_once_with(pool, None)
+        self.assertEqual([call.args for call in schedule.call_args_list], [(pool, None), (local, None), (cloud, None)])
 
     async def test_fresh_hit_does_not_refresh(self):
         from types import SimpleNamespace

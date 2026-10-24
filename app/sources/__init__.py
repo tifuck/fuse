@@ -686,10 +686,13 @@ def start_pools() -> None:
 
 
 def warm_catalogs() -> None:
-    """Start each pool's first live catalog fetch at boot. Otherwise the first
-    /chat, /models or /docs after a restart waits on it (up to _FIRST_FETCH_WAIT)."""
+    """Start every shared catalog fetch at boot. Otherwise the first /chat,
+    /models or /docs after a restart waits on them: pools up to
+    _FIRST_FETCH_WAIT, llama and Ollama Cloud (tags plus one show per model)
+    for as long as they take. OpenRouter lists per user and Experiential Labs
+    catalogs are private, so neither has a shared list to warm."""
     for s in all_enabled():
-        if s.type_id in POOL_TYPES:
+        if s.type_id not in ("openrouter", "explabs"):
             _schedule_model_refresh(s, None)
 
 
