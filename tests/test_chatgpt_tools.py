@@ -305,7 +305,7 @@ class ChatgptReasoningReplayTest(unittest.IsolatedAsyncioTestCase):
         ok.status_code = 200
         sent = []
 
-        async def post(token, account_id, payload, client):
+        async def post(token, account_id, payload, client, turn_state=None):
             sent.append(payload)
             return _ErrResp() if len(sent) == 1 else ok
 

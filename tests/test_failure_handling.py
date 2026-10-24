@@ -146,6 +146,32 @@ class ChatGPTCacheAffinityTest(unittest.TestCase):
         self.assertNotIn("session-id", request.headers)
         self.assertNotIn("prompt_cache_key", json.loads(request.content))
 
+    def test_turn_state_is_replayed_within_a_turn_only(self):
+        # Codex contract: echo the first response's x-codex-turn-state on every
+        # later request of the same turn, never into the next turn.
+        chatgpt_mod._turn_states.clear()
+        self.addCleanup(chatgpt_mod._turn_states.clear)
+        seen: list[httpx.Request] = []
+
+        def handler(_cid, request):
+            seen.append(request)
+            return httpx.Response(200, content=_responses_completed(),
+                                  headers={"x-codex-turn-state": f"ts-{len(seen)}"})
+
+        turn = [{"role": "user", "content": "hi"}]
+        rounds = [
+            turn,
+            [*turn, {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]},
+             {"role": "tool", "tool_call_id": "c1", "content": "out"}],
+            [*turn, {"role": "assistant", "content": "done"}, {"role": "user", "content": "next"}],
+        ]
+        for session, messages in [("fx:a", m) for m in rounds] + [("fx:b", turn)]:
+            harness = _ChatGPTHarness(1, handler)
+            self.assertEqual(harness.run({"model": "gpt-6-sol", "messages": messages}, session_id=session).status, 200)
+        sent = [r.headers.get("x-codex-turn-state") for r in seen]
+        self.assertEqual(sent, [None, "ts-1", None, None])
+
 
 class FailoverGuardTest(unittest.TestCase):
     def setUp(self):

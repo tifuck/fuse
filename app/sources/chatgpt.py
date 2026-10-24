@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import math
+import time
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -75,6 +77,43 @@ from .chatgpt_stream import (
 logger = logging.getLogger(__name__)
 REFRESH_WINDOW = timedelta(minutes=5)
 _refresh_locks: dict[int, asyncio.Lock] = {}
+# Codex's sticky-routing contract: the first response of a turn carries
+# x-codex-turn-state, every later request of that turn on that account sends
+# it back unchanged, and another turn or account must not. Without it a
+# mid-turn request can land on a server that never saw the prefix.
+_turn_states: dict[tuple[int, str], tuple[float, str]] = {}
+TURN_STATE_TTL = 3600
+
+
+def _turn_key(session_id: str | None, payload: dict) -> str | None:
+    """One turn = one session up to and including its latest user item."""
+    if not session_id:
+        return None
+    users = [item for item in payload.get("input") or [] if isinstance(item, dict) and item.get("role") == "user"]
+    if not users:
+        return None
+    last = json.dumps(users[-1], sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(f"{session_id}|{len(users)}|{last}".encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def _turn_state(cred_id: int, key: str | None) -> str | None:
+    hit = _turn_states.get((cred_id, key)) if key else None
+    if not hit or time.time() - hit[0] > TURN_STATE_TTL:
+        return None
+    _turn_states[(cred_id, key)] = (time.time(), hit[1])
+    return hit[1]
+
+
+def _remember_turn_state(cred_id: int, key: str | None, headers) -> None:
+    value = str((headers or {}).get("x-codex-turn-state") or "") if key else ""
+    if not value or len(value) > 4096 or not (value.isascii() and value.isprintable()):
+        return
+    if _turn_state(cred_id, key):
+        return  # set once per turn
+    now = time.time()
+    for stale in [k for k, (stamp, _) in _turn_states.items() if now - stamp > TURN_STATE_TTL]:
+        _turn_states.pop(stale, None)
+    _turn_states[(cred_id, key)] = (now, value)
 
 
 def _auth_base() -> str:
@@ -104,7 +143,7 @@ def _auth_headers() -> dict:
     }
 
 
-def _chat_headers(token: str, account_id: str | None, session_id: str | None = None) -> dict:
+def _chat_headers(token: str, account_id: str | None, session_id: str | None = None, turn_state: str | None = None) -> dict:
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -121,6 +160,8 @@ def _chat_headers(token: str, account_id: str | None, session_id: str | None = N
         headers["session-id"] = session_id
         headers["thread-id"] = session_id
         headers["x-client-request-id"] = session_id
+    if turn_state:
+        headers["x-codex-turn-state"] = turn_state
     return headers
 
 
@@ -738,7 +779,7 @@ class ChatGPTSource:
         note_free_models(free)
         return _remember_models(paid + [name for name in free if name not in paid])
 
-    async def _post(self, token: str, account_id: str | None, payload: dict, client: httpx.AsyncClient):
+    async def _post(self, token: str, account_id: str | None, payload: dict, client: httpx.AsyncClient, turn_state: str | None = None):
         # Streaming send: the body stays unread until the translator iterates
         # it, so a cancelled downstream request stops upstream generation
         # promptly instead of buffering the whole response first.
@@ -746,7 +787,7 @@ class ChatGPTSource:
             "POST",
             _backend_base() + "/responses",
             json=payload,
-            headers=_chat_headers(token, account_id, payload.get("prompt_cache_key")),
+            headers=_chat_headers(token, account_id, payload.get("prompt_cache_key"), turn_state),
         )
         return await client.send(req, stream=True)
 
@@ -777,6 +818,7 @@ class ChatGPTSource:
         )
         model = body.get("model") or CHATGPT_MODELS[0]
         payload = build_responses_payload(body, model, session_id=session_id)
+        turn_key = _turn_key(session_id, payload)
         wants_stream = bool(body.get("stream"))
         tried: set[int] = set()
         attempts: list[dict] = []
@@ -802,7 +844,8 @@ class ChatGPTSource:
             try:
                 reserve(cred["id"])
                 try:
-                    resp = await self._post(token, account_id, for_account(payload, cred["id"]), client)
+                    resp = await self._post(token, account_id, for_account(payload, cred["id"]), client,
+                                            _turn_state(cred["id"], turn_key))
                 except httpx.TimeoutException as exc:
                     await client.aclose()
                     last = ChatResult(
@@ -836,7 +879,8 @@ class ChatGPTSource:
                             extra = accounts.cred_extra(row)
                             token = extra.get("access_token") or accounts.cred_secret(row)
                             account_id = extra.get("account_id") or None
-                        resp = await self._post(token, account_id, for_account(payload, cred["id"]), client)
+                        resp = await self._post(token, account_id, for_account(payload, cred["id"]), client,
+                                                _turn_state(cred["id"], turn_key))
                 if resp.status_code != 200:
                     obj = await _error_body(resp)
                     kept = provider_errors.keep_headers(getattr(resp, "headers", None))
@@ -890,6 +934,7 @@ class ChatGPTSource:
                     # handful of bad requests disable the whole pool.
                     last.attempts = attempts
                     return last
+                _remember_turn_state(cred["id"], turn_key, getattr(resp, "headers", None))
                 if wants_stream:
                     collected: dict = {}
                     inner = _translated_stream(resp, client, model, collected, account=cred["id"])
