@@ -20,7 +20,7 @@ from . import accounts, db, chat_store, chat_runs, chat_events, chat_recaps, cha
 from .api import http_errors, router as api_router
 from .web import router as web_router
 from .agent_http import router as agent_http_router
-from .sources import bootstrap, start_pools
+from .sources import bootstrap, start_pools, warm_catalogs
 from .sources.chatgpt import refresh_due as chatgpt_refresh_due
 from .sources.grok import refresh_due
 from .sources.grok_version import refresh_due as grok_version_refresh_due
@@ -221,6 +221,7 @@ async def lifespan(app: FastAPI):
         chat_store.start_publisher()
         await bootstrap()
         start_pools()
+        warm_catalogs()
         from . import agent_hub
 
         # Before resuming runs: their first tool call lands before any

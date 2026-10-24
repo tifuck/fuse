@@ -61,6 +61,20 @@ def test_summary_reliability_sources_and_models():
         assert data["series_models"][0]["provider_label"]
 
 
+def test_previous_window_changes_and_provider_options():
+    with isolated_database():
+        _seed()
+        db.record_usage(1, None, None, "glm-5.3", {"prompt_tokens": 1000}, at=_ago(hours=1), provider="zai")
+        db.record_usage(1, None, None, "glm-5.3", {"prompt_tokens": 500}, at=_ago(hours=30), provider="zai")
+        db.record_usage(1, None, None, "grok-4.5", {"prompt_tokens": 400}, at=_ago(hours=30), provider="grok")
+        data = stats.usage_analytics(1, range_id="24h")
+        assert (data["previous"]["tokens"], data["previous"]["requests"]) == (900, 2)
+        assert data["summary"]["token_change"] == 11.1
+        assert data["models"][0]["token_change"] == 100.0 and not data["models"][0]["is_new"]
+        assert data["providers"][0]["token_change"] == 100.0
+        assert {"grok", "zai"} <= {row["id"] for row in data["provider_options"]}
+
+
 def test_bucket_boundary_truncates_instead_of_rounding():
     # 1800s into a 3600s bucket is still that bucket. CAST(a/b AS SIGNED)
     # rounds it into the next one; integer division must not.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 from . import accounts, db
@@ -313,11 +314,17 @@ def _window_filters(
 
 
 def _event_summary(
-    user_id: int, start: str, end: str, provider: str, all_users: bool, *, subject_id: int | None = None
+    user_id: int, start: str, end: str, provider: str, all_users: bool, *, subject_id: int | None = None,
+    model_tokens: dict | None = None,
 ) -> dict:
+    """Window totals. With model_tokens, the same scan also fills it with
+    tokens per provider and model (one pass instead of two)."""
     where, args = _window_filters(user_id, start, end, provider, all_users, subject_id=subject_id)
-    row = db.fetchone(
-        f"""SELECT COALESCE(SUM(CASE WHEN e.total_tokens>0 THEN e.total_tokens
+    by_model = model_tokens is not None
+    group_cols = ("""COALESCE(NULLIF(e.source_type, ''), s.type, 'unknown') AS provider,
+                    COALESCE(NULLIF(e.model, ''), 'Unknown') AS model, """ if by_model else "")
+    rows = db.fetchall(
+        f"""SELECT {group_cols}COALESCE(SUM(CASE WHEN e.total_tokens>0 THEN e.total_tokens
                                       ELSE e.prompt_tokens+e.output_tokens END), 0) AS tokens,
                     COALESCE(SUM(e.count_request), 0) AS requests,
                     COALESCE(SUM(e.prompt_tokens), 0) AS prompt,
@@ -342,10 +349,21 @@ def _event_summary(
                                            COALESCE(NULLIF(e.source_type, ''), s.type, 'unknown')='openrouter'
                                       THEN 1 ELSE 0 END), 0) AS untracked
              FROM usage_events e LEFT JOIN sources s ON s.id=e.source_id
-             WHERE {where}""",
+             WHERE {where}{" GROUP BY provider, model" if by_model else ""}""",
         tuple(args),
     )
-    return {key: int(row[key] or 0) for key in row.keys()}
+    totals = dict.fromkeys(_SUMMARY_KEYS, 0)
+    for row in rows:
+        for key in _SUMMARY_KEYS:
+            totals[key] += int(row[key] or 0)
+        if by_model:
+            model_tokens[f"{row['provider']}\x1f{row['model']}"] = int(row["tokens"] or 0)
+    return totals
+
+
+_SUMMARY_KEYS = ("tokens", "requests", "prompt", "completion", "output", "reasoning", "cached", "cache_write",
+                 "ok_requests", "failed", "cancelled", "cost", "estimated_cost", "priced", "priced_tokens",
+                 "untracked")
 
 
 def _hit_rate(cached: int, prompt: int) -> float | None:
@@ -460,40 +478,74 @@ def usage_analytics(
     end = end_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     prev_start = previous_start.strftime("%Y-%m-%dT%H:%M:%SZ")
     where, args = _window_filters(user_id, start, end, provider, all_users, subject_id=subject_id)
-    # users is a LEFT JOIN: usage_events can outlive their user row, and
-    # _event_summary counts those rows, so the series and tables must not
-    # drop them (an INNER JOIN made the charts disagree with the summary).
-    rows = db.fetchall(
-        f"""SELECT (CAST(strftime('%s', e.created_at) AS INTEGER) / ?) * ? AS bucket,
-                   e.user_id, u.email,
-                   COALESCE(NULLIF(e.source_type, ''), s.type, 'unknown') AS provider,
-                   COALESCE(NULLIF(e.model, ''), 'Unknown') AS model,
-                   {_EVENT_SUMS}
-            FROM usage_events e
-            LEFT JOIN sources s ON s.id=e.source_id
-            LEFT JOIN users u ON u.id=e.user_id
-            WHERE {where}
-            GROUP BY bucket, e.user_id, provider, model
-            ORDER BY bucket""",
-        (bucket_seconds, bucket_seconds, *args),
+    # A weekday x hour pattern needs a week of history even when the chosen
+    # range is shorter, so the heatmap window is never under seven days.
+    heat_start_dt = min(start_dt, end_dt - _HEATMAP_MIN)
+    heat_where, heat_args = _window_filters(
+        user_id, heat_start_dt.strftime("%Y-%m-%dT%H:%M:%SZ"), end, provider, all_users, subject_id=subject_id,
     )
-
-    summary = _event_summary(user_id, start, end, provider, all_users, subject_id=subject_id)
-    previous = _event_summary(user_id, prev_start, start, provider, all_users, subject_id=subject_id)
-    prev_where, prev_args = _window_filters(user_id, prev_start, start, provider, all_users, subject_id=subject_id)
-    prev_model_rows = db.fetchall(
-        f"""SELECT COALESCE(NULLIF(e.source_type, ''), s.type, 'unknown') AS provider,
-                   COALESCE(NULLIF(e.model, ''), 'Unknown') AS model,
-                   COALESCE(SUM(CASE WHEN e.total_tokens>0 THEN e.total_tokens
-                                     ELSE e.prompt_tokens+e.output_tokens END), 0) AS tokens
-            FROM usage_events e LEFT JOIN sources s ON s.id=e.source_id
-            WHERE {prev_where}
-            GROUP BY provider, model""",
-        tuple(prev_args),
-    )
-    prev_model_tokens = {
-        f"{row['provider']}\x1f{row['model']}": int(row["tokens"] or 0) for row in prev_model_rows
-    }
+    prev_model_tokens: dict[str, int] = {}
+    # Five independent scans of usage_events. Each takes its own pool
+    # connection, so the request waits for the slowest instead of their sum.
+    with ThreadPoolExecutor(max_workers=5) as scans:
+        # users is a LEFT JOIN: usage_events can outlive their user row, and
+        # _event_summary counts those rows, so the series and tables must not
+        # drop them (an INNER JOIN made the charts disagree with the summary).
+        rows_job = scans.submit(
+            db.fetchall,
+            f"""SELECT (CAST(strftime('%s', e.created_at) AS INTEGER) / ?) * ? AS bucket,
+                       e.user_id, u.email,
+                       COALESCE(NULLIF(e.source_type, ''), s.type, 'unknown') AS provider,
+                       COALESCE(NULLIF(e.model, ''), 'Unknown') AS model,
+                       {_EVENT_SUMS}
+                FROM usage_events e
+                LEFT JOIN sources s ON s.id=e.source_id
+                LEFT JOIN users u ON u.id=e.user_id
+                WHERE {where}
+                GROUP BY bucket, e.user_id, provider, model
+                ORDER BY bucket""",
+            (bucket_seconds, bucket_seconds, *args),
+        )
+        summary_job = scans.submit(_event_summary, user_id, start, end, provider, all_users, subject_id=subject_id)
+        previous_job = scans.submit(
+            _event_summary, user_id, prev_start, start, provider, all_users,
+            subject_id=subject_id, model_tokens=prev_model_tokens,
+        )
+        # NULL api_key_id is traffic from Fuse itself (dashboard chat, agents, tasks).
+        keys_job = scans.submit(
+            db.fetchall,
+            f"""SELECT e.api_key_id AS id,
+                       MAX(k.name) AS name,
+                       MAX(k.prefix) AS prefix,
+                       COALESCE(SUM(CASE WHEN e.total_tokens>0 THEN e.total_tokens
+                                         ELSE e.prompt_tokens+e.output_tokens END), 0) AS tokens,
+                       COALESCE(SUM(e.count_request), 0) AS requests,
+                       COALESCE(SUM(CASE WHEN e.count_request=1 AND e.request_status='failed' THEN 1 ELSE 0 END), 0) AS failed,
+                       COALESCE(SUM(COALESCE(e.reported_cost_micros, e.estimated_cost_micros, 0)), 0) AS cost,
+                       MAX(e.created_at) AS last_at
+                FROM usage_events e
+                LEFT JOIN api_keys k ON k.id=e.api_key_id
+                LEFT JOIN sources s ON s.id=e.source_id
+                WHERE {where}
+                GROUP BY e.api_key_id
+                ORDER BY tokens DESC
+                LIMIT 10""",
+            tuple(args),
+        )
+        heat_job = scans.submit(
+            db.fetchall,
+            f"""SELECT (CAST(strftime('%s', e.created_at) AS INTEGER) / 3600) * 3600 AS hour,
+                       COALESCE(SUM(CASE WHEN e.total_tokens>0 THEN e.total_tokens
+                                         ELSE e.prompt_tokens+e.output_tokens END), 0) AS tokens,
+                       COALESCE(SUM(e.count_request), 0) AS requests
+                FROM usage_events e LEFT JOIN sources s ON s.id=e.source_id
+                WHERE {heat_where}
+                GROUP BY hour""",
+            tuple(heat_args),
+        )
+    rows = rows_job.result()
+    summary = summary_job.result()
+    previous = previous_job.result()
     model_totals: dict[str, dict] = {}
     provider_totals: dict[str, dict] = {}
     user_totals: dict[int, dict] = {}
@@ -623,32 +675,15 @@ def usage_analytics(
         row["cache_hit"] = _hit_rate(row["cached"], row["prompt"])
         row["error_rate"] = _rate(row["failed"], row["requests"])
         row["cost_known"] = row["priced"] >= row["requests"] and row["requests"] > 0 and not row["unpriced_events"]
+    # provider_usage gains a row for every provider an event records, so it
+    # lists the same providers as usage_events without scanning the events.
     available = db.fetchall(
         """SELECT DISTINCT provider FROM (
                SELECT type AS provider FROM sources
-               UNION SELECT source_type AS provider FROM usage_events WHERE source_type<>''
+               UNION SELECT provider FROM provider_usage
            ) AS available_providers WHERE provider<>'' ORDER BY provider"""
     )
-    # NULL api_key_id is traffic from Fuse itself (dashboard chat, agents, tasks).
-    key_rows = db.fetchall(
-        f"""SELECT e.api_key_id AS id,
-                   MAX(k.name) AS name,
-                   MAX(k.prefix) AS prefix,
-                   COALESCE(SUM(CASE WHEN e.total_tokens>0 THEN e.total_tokens
-                                     ELSE e.prompt_tokens+e.output_tokens END), 0) AS tokens,
-                   COALESCE(SUM(e.count_request), 0) AS requests,
-                   COALESCE(SUM(CASE WHEN e.count_request=1 AND e.request_status='failed' THEN 1 ELSE 0 END), 0) AS failed,
-                   COALESCE(SUM(COALESCE(e.reported_cost_micros, e.estimated_cost_micros, 0)), 0) AS cost,
-                   MAX(e.created_at) AS last_at
-            FROM usage_events e
-            LEFT JOIN api_keys k ON k.id=e.api_key_id
-            LEFT JOIN sources s ON s.id=e.source_id
-            WHERE {where}
-            GROUP BY e.api_key_id
-            ORDER BY tokens DESC
-            LIMIT 10""",
-        tuple(args),
-    )
+    key_rows = keys_job.result()
     keys = [
         {
             "id": int(row["id"] or 0),
@@ -698,24 +733,9 @@ def usage_analytics(
         }
         for row in recent_rows
     ]
-    # A weekday x hour pattern needs a week of history even when the chosen
-    # range is shorter, so the heatmap window is never under seven days.
-    heat_start_dt = min(start_dt, end_dt - _HEATMAP_MIN)
-    heat_where, heat_args = _window_filters(
-        user_id, heat_start_dt.strftime("%Y-%m-%dT%H:%M:%SZ"), end, provider, all_users, subject_id=subject_id,
-    )
     activity = [
         [int(row["hour"]), int(row["tokens"] or 0), int(row["requests"] or 0)]
-        for row in db.fetchall(
-            f"""SELECT (CAST(strftime('%s', e.created_at) AS INTEGER) / 3600) * 3600 AS hour,
-                       COALESCE(SUM(CASE WHEN e.total_tokens>0 THEN e.total_tokens
-                                         ELSE e.prompt_tokens+e.output_tokens END), 0) AS tokens,
-                       COALESCE(SUM(e.count_request), 0) AS requests
-                FROM usage_events e LEFT JOIN sources s ON s.id=e.source_id
-                WHERE {heat_where}
-                GROUP BY hour""",
-            tuple(heat_args),
-        )
+        for row in heat_job.result()
     ]
     cache_hit = _hit_rate(summary["cached"], summary["prompt"])
     prev_hit = _hit_rate(previous["cached"], previous["prompt"])

@@ -139,7 +139,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers.setdefault(
             "Content-Security-Policy",
             "default-src 'self'; "
-            "script-src 'self'; "
+            # Inline <script type="speculationrules"> only (nav prefetch), not inline JS.
+            "script-src 'self' 'inline-speculation-rules'; "
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
             "font-src https://fonts.gstatic.com; "
             "img-src 'self' data:; "

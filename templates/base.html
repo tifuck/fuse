@@ -31,6 +31,11 @@
   <link rel="stylesheet" href="{{ asset('themes/console/styles/design.css') }}">
   {% endif %}
   {% block head_extra %}{% endblock %}
+  {% if user %}
+  {#- Prefetch a settings page's HTML on hover (pointerdown on touch), so the
+      click renders from memory; every asset it needs is already cached. -#}
+  <script type="speculationrules">{"prefetch": [{"where": {"selector_matches": ".app-rail-nav a[href], .user-dock-nav a[href], a.chat-brand[href]"}, "eagerness": "moderate"}]}</script>
+  {% endif %}
 </head>
 <body class="{% if is_artifact %}is-artifact-page{% elif user %}is-app{% else %}is-auth{% endif %}{% if is_chat %} is-chat{% endif %}{% if is_settings %} is-settings{% endif %}">
   {% if user and not is_artifact %}

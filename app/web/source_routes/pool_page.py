@@ -89,7 +89,9 @@ async def pool_redirect(request: Request):
 
 
 @router.get("/sources", response_class=HTMLResponse)
-async def user_sources(request: Request):
+def user_sources(request: Request):
+    # Plain def: FastAPI runs it in a worker thread. Hundreds of queries
+    # (one board per pool) must not hold the event loop.
     user, redir = require_user(request)
     if redir:
         return redir

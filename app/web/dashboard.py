@@ -117,17 +117,17 @@ async def usage_json(request: Request):
         else:
             if subject_id < 1 or db.fetchone("SELECT id FROM users WHERE id=?", (subject_id,)) is None:
                 return JSONResponse({"error": "user"}, status_code=404)
-    return JSONResponse(
-        stats.usage_analytics(
-            user["id"],
-            range_id=range_id,
-            provider=provider,
-            all_users=all_users,
-            subject_id=subject_id,
-            include_accounts=bool(user["is_admin"]),
-        ),
-        headers={"Cache-Control": "no-store"},
+    # Several window scans over usage_events: never on the event loop.
+    data = await asyncio.to_thread(
+        stats.usage_analytics,
+        user["id"],
+        range_id=range_id,
+        provider=provider,
+        all_users=all_users,
+        subject_id=subject_id,
+        include_accounts=bool(user["is_admin"]),
     )
+    return JSONResponse(data, headers={"Cache-Control": "no-store"})
 
 
 @router.get("/admin/tool-failures")

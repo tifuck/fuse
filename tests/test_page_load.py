@@ -1,6 +1,7 @@
 """Dashboard pages must not wait on live provider HTTP."""
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -20,6 +21,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app import accounts, db, sources as sources_mod
 from app.config import settings
+from app.security import SecurityHeadersMiddleware
 from app.sources import grok as grok_mod
 from app.sources import openrouter as or_mod
 from app.web import router as web_router
@@ -48,6 +50,7 @@ class SourcesPageDoesNotProbeTest(unittest.TestCase):
             donated_by=self.user["id"],
         )
         app = FastAPI()
+        app.add_middleware(SecurityHeadersMiddleware)
         app.add_middleware(
             SessionMiddleware,
             secret_key=settings.app_secret,
@@ -88,6 +91,17 @@ class SourcesPageDoesNotProbeTest(unittest.TestCase):
         or_key.assert_not_called()
         catalog.assert_not_called()
 
+    def test_signed_in_pages_prefetch_nav_links(self):
+        page = self.client.get("/usage")
+        self.assertEqual(page.status_code, 200)
+        raw = page.text.split('<script type="speculationrules">', 1)[1].split("</script>", 1)[0]
+        rule = json.loads(raw)["prefetch"][0]
+        self.assertIn(".app-rail-nav a[href]", rule["where"]["selector_matches"])
+        self.assertIn(".user-dock-nav a[href]", rule["where"]["selector_matches"])
+        self.assertEqual(rule["eagerness"], "moderate")
+        # Without the keyword, CSP silently drops the inline rules.
+        self.assertIn("'inline-speculation-rules'", page.headers["content-security-policy"])
+
 
 class StaleModelCacheTest(unittest.IsolatedAsyncioTestCase):
     async def test_stale_hit_returns_immediately_and_schedules_refresh(self):
@@ -120,6 +134,18 @@ class StaleModelCacheTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(names, ["rotated-model"])
         refresh.assert_awaited_once()
         self.assertNotIn((97, None), sources_mod._model_cache)
+
+    async def test_warm_catalogs_starts_pool_fetches_only(self):
+        from types import SimpleNamespace
+
+        pool = SimpleNamespace(type_id="chatgpt", source_id=11)
+        local = SimpleNamespace(type_id="llama", source_id=12)
+        with (
+            patch.object(sources_mod, "all_enabled", return_value=[pool, local]),
+            patch.object(sources_mod, "_schedule_model_refresh") as schedule,
+        ):
+            sources_mod.warm_catalogs()
+        schedule.assert_called_once_with(pool, None)
 
     async def test_fresh_hit_does_not_refresh(self):
         from types import SimpleNamespace
