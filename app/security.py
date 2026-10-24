@@ -142,7 +142,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             # Inline <script type="speculationrules"> only (nav prefetch), not inline JS.
             "script-src 'self' 'inline-speculation-rules'; "
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-            "font-src https://fonts.gstatic.com; "
+            # 'self' for the bundled faces; gstatic for fonts picked in Appearance.
+            "font-src 'self' https://fonts.gstatic.com; "
             "img-src 'self' data:; "
             "connect-src 'self'; "
             "frame-ancestors 'none'; "

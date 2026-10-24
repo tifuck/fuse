@@ -19,9 +19,10 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Fuse">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,700&family=Red+Hat+Mono:ital,wght@0,400;0,500;1,400&display=swap" rel="stylesheet">
+  {#- Self-hosted (static/fonts, @import'ed by app.css): no render-blocking
+      third-party stylesheet, and the files cache as immutable. -#}
+  <link rel="preload" href="{{ asset('fonts/bricolage-grotesque-latin.woff2') }}" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="{{ asset('fonts/red-hat-mono-latin.woff2') }}" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="{{ asset('app.css') }}">
   <link rel="stylesheet" href="{{ asset('projects-ui.css') }}">
   {% if is_settings %}

@@ -144,3 +144,12 @@ def test_templates_use_content_versions():
     # the modules it imports moved on; asset() derives it from content.
     for path in (ROOT / "templates").rglob("*.html"):
         assert not re.search(r"/static/[^\"'?\s]+\?v=\d+", path.read_text()), path
+
+
+def test_bundled_fonts_are_self_hosted_and_preloads_match_the_stylesheet():
+    # A preload whose URL differs from the stylesheet's url() downloads the font twice.
+    base = (ROOT / "templates" / "base.html").read_text()
+    assert "fonts.googleapis.com" not in base
+    _, body = static_assets.rewritten("app.css")
+    for rel in re.findall(r"asset\('(fonts/[^']+\.woff2)'\)", base):
+        assert static_assets.asset_url(rel).encode() in body, rel
