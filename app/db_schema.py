@@ -255,7 +255,11 @@ def _init(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS usage_events_created ON usage_events (created_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS usage_events_provider_created ON usage_events (source_type, created_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS usage_events_model_created ON usage_events (model, created_at)")
-    conn.execute("CREATE INDEX IF NOT EXISTS usage_events_credential ON usage_events (credential_id)")
+    # Covers the per-account totals /sources sums (scripts/sql/2026-10-24-usage-credential-cover.sql).
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS usage_events_credential"
+        " ON usage_events (credential_id, pricing_known, total_tokens, estimated_cost_micros)"
+    )
     conn.execute("CREATE INDEX IF NOT EXISTS pool_sessions_updated ON pool_sessions (updated_at)")
     _backfill_canonical_usage(conn)
     _backfill_hourly(conn)

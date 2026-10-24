@@ -682,11 +682,11 @@ CREATE TABLE `usage_events` (
   `provider_request_id` longtext NOT NULL DEFAULT '',
   `count_request` bigint(20) NOT NULL DEFAULT 1,
   PRIMARY KEY (`id`),
-  KEY `usage_events_credential` (`credential_id`),
   KEY `usage_events_model_created` (`model`(191),`created_at`(191)),
   KEY `usage_events_provider_created` (`source_type`(191),`created_at`(191)),
   KEY `usage_events_created` (`created_at`(191)),
-  KEY `usage_events_user_created` (`user_id`,`created_at`(191))
+  KEY `usage_events_user_created` (`user_id`,`created_at`(191)),
+  KEY `usage_events_credential` (`credential_id`,`pricing_known`,`total_tokens`,`estimated_cost_micros`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_nopad_bin ROW_FORMAT=DYNAMIC;
 /*!40101 SET character_set_client = @saved_cs_client */;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
