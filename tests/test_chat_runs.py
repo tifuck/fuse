@@ -439,8 +439,8 @@ class RunsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(store.get_run(1, run["id"])["status"], "cancelled")
 
     async def test_send_now_interrupt_ends_the_reply_but_keeps_its_subagents(self):
-        # Send now used Stop's tree cancel, which ended every subagent in the
-        # chat with "Subagent stopped by cancellation".
+        # Send now once used Stop's cancel, which then ended every subagent in
+        # the chat with "Subagent stopped by cancellation".
         first = self.turn()
         earlier = store.start_child_run(
             user_id=1, thread_id=first["thread_id"], parent_run_id=first["id"],

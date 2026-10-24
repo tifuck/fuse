@@ -283,12 +283,6 @@ def cancel(run_id, jobs=True):
         _cancelled.discard(run_id)
 
 
-def cancel_tree(run_id):
-    cancel(run_id)
-    for ident in chat_store.descendant_ids(run_id):
-        cancel(ident)
-
-
 async def _await_tasks(ids, timeout):
     tasks = [_tasks[ident] for ident in ids if ident in _tasks and not _tasks[ident].done()]
     if not tasks:
@@ -300,27 +294,30 @@ async def _await_tasks(ids, timeout):
     await asyncio.wait(tasks, timeout=max(0.0, timeout))
 
 
-async def cancel_wait(user_id, run_id, *, tree=True, force=False, by_user=False):
+async def cancel_wait(user_id, run_id, *, tree=True, force=False, by_user=False, agents=False):
     """Cancel and wait briefly; force-finish anything still active.
 
-    force skips the graceful drain entirely (user-explicit "force stop" on a
-    subagent wedged in stopping). by_user (the Stop button) marks a subagent
-    stopped on its own so its report never wakes the main agent.
+    tree (the main Stop) ends the turn and the foreground subagents it waits
+    on. Background subagents, this turn's or earlier ones', keep running, as
+    after Claude Code's Esc: each has its own Stop in the agents pane, and the
+    stopped root holds their reports for the user's next message. agents
+    (Stop all) stops every live subagent in the chat too. force skips the
+    graceful drain entirely (user-explicit "force stop" on a subagent wedged
+    in stopping). by_user (the agents-pane Stop) marks a subagent stopped on
+    its own so its report never wakes the main agent.
     """
     if tree:
         await durable_call(chat_store.request_cancel, user_id, run_id)
-        ids = [run_id, *await asyncio.to_thread(chat_store.descendant_ids, run_id)]
-        cancel_tree(run_id)
-        if by_user:
-            # Earlier turns' background subagents live in their own trees.
+        foreground = await durable_call(chat_store.request_cancel_descendants, user_id, run_id, skip_background=True)
+        live = set(await asyncio.to_thread(chat_store.descendant_ids, run_id)) if foreground else set()
+        ids = [run_id, *(ident for ident in foreground if ident in live)]
+        if agents:
             others = await durable_call(chat_store.request_cancel_thread_agents, user_id, run_id)
-            for ident in others:
-                cancel(ident)
             ids.extend(ident for ident in others if ident not in ids)
     else:
         ids = await durable_call(chat_store.request_cancel_self, user_id, run_id, by_user)
-        for ident in ids:
-            cancel(ident)
+    for ident in ids:
+        cancel(ident)
     await _await_tasks(ids, 0.0 if force else CANCEL_GRACE_SECONDS)
     for ident in ids:
         row = await asyncio.to_thread(chat_store.get_run, user_id, ident)
@@ -331,12 +328,12 @@ async def cancel_wait(user_id, run_id, *, tree=True, force=False, by_user=False)
 async def interrupt_wait(user_id, run_id):
     """Send now: stop a root run's reply but not the work it started.
 
-    Stop (cancel_wait) ends the whole tree and the thread's other subagents.
-    Here only the root is cancelled. Its live children are handed to the
-    background first, so its finalizer (which cancels foreground descendants)
-    leaves them running and their reports reach the next turn; its background
-    commands keep going too. A worker still wedged after the grace window is
-    force-finished like Stop.
+    Stop (cancel_wait) also ends the foreground subagents the reply waits on
+    and its background commands. Here only the root is cancelled. Its live
+    children are handed to the background first, so its finalizer (which
+    cancels foreground descendants) leaves them running and their reports
+    reach the next turn; its background commands keep going too. A worker
+    still wedged after the grace window is force-finished like Stop.
     """
     children = await durable_call(chat_store.request_interrupt, user_id, run_id)
     if children is None:

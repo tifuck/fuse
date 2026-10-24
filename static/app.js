@@ -64,6 +64,61 @@ function fuseConfirm(message, opts) {
   return window.fuseConfirm(message, opts);
 }
 
+// The same dialog with several answers ({label, value, danger}) in place of
+// Cancel/Confirm, and a corner X. Resolves the chosen value, or null when it
+// is closed (X, Esc, backdrop).
+window.fuseChoose = function fuseChoose(message, choices) {
+  const dialog = document.querySelector("dialog.modal[data-confirm]");
+  const text = dialog && dialog.querySelector("[data-confirm-text]");
+  const actions = dialog && dialog.querySelector(".modal-actions");
+  const close = dialog && dialog.querySelector("[data-confirm-x]");
+  if (!dialog || !text || !actions || !close || typeof dialog.showModal !== "function" || dialog._fuseConfirmBusy) {
+    return Promise.resolve(null);
+  }
+  const standard = [...actions.children];
+  dialog._fuseConfirmBusy = new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      dialog.removeEventListener("cancel", onCancel);
+      dialog.removeEventListener("click", onClick);
+      dialog.removeEventListener("close", onClose);
+      actions.replaceChildren(...standard);
+      close.hidden = true;
+      dialog._fuseConfirmBusy = null;
+      if (dialog.open) dialog.close();
+      resolve(value);
+    };
+    const onCancel = (event) => {
+      event.preventDefault();
+      finish(null);
+    };
+    const onClick = (event) => {
+      const pick = event.target.closest("[data-choice]");
+      if (pick) finish(choices[Number(pick.dataset.choice)].value);
+      else if (event.target === dialog || event.target.closest("[data-confirm-x]")) finish(null);
+    };
+    const onClose = () => finish(null);
+    text.textContent = message;
+    actions.replaceChildren(...choices.map((choice, index) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = choice.danger ? "btn sm danger" : "btn sm";
+      button.dataset.choice = String(index);
+      button.textContent = choice.label;
+      return button;
+    }));
+    close.hidden = false;
+    dialog.addEventListener("cancel", onCancel);
+    dialog.addEventListener("click", onClick);
+    dialog.addEventListener("close", onClose, { once: true });
+    if (!dialog.open) dialog.showModal();
+    actions.querySelector("button").focus();
+  });
+  return dialog._fuseConfirmBusy;
+};
+
 // Screen-reader announcements through the page's two standing live regions
 // (base.html). Clearing first lets a repeated message be read again.
 window.fuseAnnounce = function fuseAnnounce(text, assertive) {

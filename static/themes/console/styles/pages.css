@@ -258,6 +258,9 @@ html[data-chat-console="true"] body:is(.is-settings, .is-chat) dialog.modal .mod
 html[data-chat-console="true"] body:is(.is-settings, .is-chat) dialog.modal .modal-head .metric-label { color: var(--mute); font: 0.62rem/1.3 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; margin: 0; }
 html[data-chat-console="true"] body:is(.is-settings, .is-chat) dialog.modal-confirm .modal-shell > .aside { margin-top: 1.1rem; }
 html[data-chat-console="true"] body:is(.is-settings, .is-chat) dialog.modal .modal-actions { justify-content: flex-end; }
+/* Inset by the margins above: the phone layout's full-width actions would
+   otherwise run past the dialog's right edge. */
+html[data-chat-console="true"] body:is(.is-settings, .is-chat) dialog.modal .modal-shell > .modal-actions { width: auto; }
 
 /* —— Account menu (rail footer) —— */
 html[data-chat-console="true"] body.is-settings .user-dock-menu { background: var(--ink); border: 1px solid var(--line); box-shadow: none; }

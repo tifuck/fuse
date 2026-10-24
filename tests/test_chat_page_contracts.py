@@ -39,10 +39,11 @@ _SIDEBAR_FIELDS = ("id", "title", "model", "archived", "created_at", "updated_at
 # _chat_public_run: the run receipt embedded in thread payloads (acceptThread).
 _RUN_RECEIPT_KEYS = {"id", "thread_id", "message_id", "status", "created_at", "updated_at",
                      "cancel_requested", "resume_count", "activity"}
-# agentRowHtml/agentStatusText/agentActivitySummary reads beyond the status fields.
+# agentRowHtml/agentStatusText/agentActivitySummary reads beyond the status fields,
+# and the Stop prompt counts background rows.
 _AGENT_WORK_FIELDS = ("children", "tool_counts", "recent", "current", "quiet_s", "wake_state",
                       "context", "work_ms", "work_live", "created_at", "updated_at",
-                      "description", "subagent_type", "depth", "model")
+                      "description", "subagent_type", "depth", "model", "background")
 _WAKE_STATES = {"", "delivered", "held", "dropped", "retrying"}
 # chats.search_threads/search_projects bound every search at 50 rows.
 _SEARCH_CAP = 50

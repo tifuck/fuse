@@ -307,8 +307,9 @@ def test_cancel_scope_self_spares_a_sibling(client):
 
 
 def test_cancel_scope_reply_stops_only_the_main_reply(client):
-    """Send now: the root's reply ends and its subagents keep running (a
-    plain root cancel is Stop, which ends every subagent in the chat)."""
+    """Send now: the root's reply ends and its subagents keep running, even
+    the foreground ones it waits on (a plain root cancel is Stop, which ends
+    those)."""
     _login(client)
     thread, pk = _thread(client, "reply-create")
     uid = _uid()
@@ -328,6 +329,34 @@ def test_cancel_scope_reply_stops_only_the_main_reply(client):
         assert kid["status"] == "running" and not kid["cancel_requested"]
         # Handed to the background, so its report reaches the next turn.
         assert kid["request"]["agent"]["background"] is True
+
+
+def test_cancel_scope_all_stops_the_main_agent_and_every_subagent(client):
+    """Stop's prompt: a plain Stop leaves background subagents running; Stop
+    all ends them too, an earlier turn's included, held for the next message."""
+    _login(client)
+    thread, pk = _thread(client, "all-create")
+    uid = _uid()
+    root = chat_store.start_turn(uid, pk, "hello", thread["revision"], "all-turn")["run"]
+    background = _json({"agent": {"background": True}})
+    for ident, parent in (("bg-earlier", "earlier-root"), ("bg-now", root["id"])):
+        db.execute(
+            """INSERT INTO chat_runs(id,thread_id,user_id,status,request,message_id,message,created_at,updated_at,
+                   parent_run_id,root_run_id,agent_depth)
+               VALUES(?,?,?,'running',?,?,'{}',?,?,?,?,1)""",
+            (ident, pk, uid, background, "m-" + ident, db.now(), db.now(), parent, parent),
+        )
+    assert client.post(f"/chat/runs/{root['id']}/cancel").json()["run"]["status"] == "cancelled"
+    for ident in ("bg-earlier", "bg-now"):
+        kid = chat_store.get_run(uid, ident)
+        assert kid["status"] == "running" and not kid["cancel_requested"]
+
+    # The main agent already finished while the user chose: Stop all still applies.
+    got = client.post(f"/chat/runs/{root['id']}/cancel?scope=all")
+    assert got.status_code == 200 and got.json()["run"]["status"] == "cancelled"
+    for ident in ("bg-earlier", "bg-now"):
+        kid = db.fetchone("SELECT status, cancel_requested FROM chat_runs WHERE id=?", (ident,))
+        assert (kid["status"], kid["cancel_requested"]) == ("cancelled", chat_store.USER_STOPPED)
 
 
 # --- steer ----------------------------------------------------------------

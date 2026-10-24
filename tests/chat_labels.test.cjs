@@ -303,6 +303,16 @@ test('background task counts pluralize each kind', () => {
   assert.equal(c.ccStillRunningText(), '');
 });
 
+test('agent rows say stopping only while the stopped agent is still live', () => {
+  const live = LivePure.createLive({ ui: { formatActivityClock: (secs) => `${Math.round(secs)}s` } });
+  const ago = (secs) => new Date(Date.now() - secs * 1000).toISOString();
+  assert.equal(live.agentStatusText({ status: 'running', cancel_requested: true, cancel_requested_at: ago(1) }), 'stopping');
+  assert.equal(live.agentStatusText({ status: 'running', cancel_requested: true, cancel_requested_at: ago(40) }), 'wedged — force stop');
+  // The flag outlives the run: a finished row reads as what it became.
+  assert.equal(live.agentStatusText({ status: 'cancelled', cancel_requested: true, cancel_requested_at: ago(40) }), 'cancelled');
+  assert.equal(live.agentStatusText({ status: 'completed', cancel_requested: true, cancel_requested_at: ago(40) }), 'completed');
+});
+
 test('the turn line says done, interrupted, or failed', () => {
   const c = vm.createContext({ jobsRows: [], agentsRows: [] });
   for (const name of ['escapeHtml', 'ccDuration', 'ccTurnVerb', 'ccDoneAt', 'agentLive', 'ccStillRunningCount', 'ccStillRunningText', 'ccTurnLineHtml']) load(name, c);

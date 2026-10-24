@@ -112,8 +112,9 @@ export function createSend(ctx) {
     host.appendChild(button);
   }
 
-    async function stopActiveRun(scope) {
-    const id = S.activeRun?.id;
+    async function stopActiveRun(scope, runId) {
+    // Stop all still stops the subagents when the reply ended meanwhile.
+    const id = S.activeRun?.id || (scope === "all" ? runId : "");
     if (!id) return;
     // Hold before the request: its reconcile must not drain the queue.
     queue.holdQueueForStop(id);
@@ -134,6 +135,21 @@ export function createSend(ctx) {
       }
     }
     await sync.reconcileThread().catch(() => {});
+  }
+
+    // Stop ends the main agent's turn; background subagents keep running, as
+    // after Claude Code's Esc. While some run, ask whether they stop too.
+    async function requestStop() {
+    const id = S.activeRun?.id;
+    const running = S.agentsRows.filter((row) => row.background && !row.cancel_requested && ["queued", "running"].includes(row.status)).length;
+    if (!id || !running || typeof window.fuseChoose !== "function") return stopActiveRun();
+    const one = running === 1;
+    const choice = await window.fuseChoose(
+      `Stop the main agent?\n${running} background subagent${one ? " is" : "s are"} still running. ` +
+      `${one ? "It keeps" : "They keep"} working unless you choose Stop all.`,
+      [{ label: "Stop main agent", value: "main" }, { label: "Stop all", value: "all", danger: true }],
+    );
+    if (choice) await stopActiveRun(choice === "all" ? "all" : "", id);
   }
 
     async function send() {
@@ -157,7 +173,7 @@ export function createSend(ctx) {
       if (window.FuseComposerSpell) FuseComposerSpell.close();
       composer.closeSlash();
       composer.restoreEnterKeyHint();
-      await stopActiveRun();
+      await requestStop();
       return;
     }
     if (window.FuseComposerSpell && FuseComposerSpell.isOpen()) return;
@@ -355,6 +371,7 @@ export function createSend(ctx) {
     continueAssistant,
     retryAssistant,
     retryLastTurn,
+    requestStop,
     send,
     stopActiveRun,
     syncEmptyReplyRetry,

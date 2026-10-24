@@ -202,7 +202,7 @@ async def sidebar_scheduled(thread_id: str):
 
 
 @app.post("/__fixture/sidebar/child")
-async def sidebar_child():
+async def sidebar_child(background: bool = False):
     """Leave one subagent running after the newest thread's root turn ends."""
     from uuid import uuid4
 
@@ -223,7 +223,7 @@ async def sidebar_child():
                 """INSERT INTO chat_runs(id,thread_id,user_id,status,request,message_id,message,created_at,updated_at,
                        parent_run_id,root_run_id,agent_depth)
                    VALUES(?,? ,1,'running',?,?,?,?,?,?,?,1)""",
-                (child, thread_id, json.dumps({"agent": {"description": "sidebar fixture child"}}),
+                (child, thread_id, json.dumps({"agent": {"description": "sidebar fixture child", "background": background}}),
                  "child-message", "{}", now, now, root["id"], root["id"]),
             )
             return child

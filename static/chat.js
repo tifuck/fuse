@@ -1610,7 +1610,7 @@ import { createBoot } from './chat/boot.js';
     },
     run(action) {
       if (action === "retry") {
-        if (traces.runIsActive(S.activeRun) || S.sending) turns.stopActiveRun().catch((error) => sync.showFailure("Could not stop", error));
+        if (traces.runIsActive(S.activeRun) || S.sending) turns.requestStop().catch((error) => sync.showFailure("Could not stop", error));
         else turns.retryLastTurn();
       } else if (action === "undo") sidebar.undoConversation();
       else if (action === "redo") sidebar.redoConversation();

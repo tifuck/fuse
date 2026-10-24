@@ -101,7 +101,8 @@ function compactionMarkerText(line) {
 export function createLive(ctx) {
   const { composer, jobs, net, overlays, perms, picker, sidebar, traces, transcript, ui, view } = ctx;
     function agentStatusText(row) {
-    if (row.cancel_requested) {
+    // cancel_requested stays set on the finished row: only a live one is stopping.
+    if (row.cancel_requested && agentLive(row.status)) {
       const stamp = Date.parse(row.cancel_requested_at || "");
       const secs = Number.isFinite(stamp) ? Math.max(0, (Date.now() - stamp) / 1000) : 0;
       if (secs >= 30) return "wedged — force stop";

@@ -67,5 +67,25 @@
   white-space: pre-wrap;
 }
 .modal-confirm .modal-actions { justify-content: flex-end; }
+/* Corner close for a confirm with several answers (fuseChoose); the same
+   button as the project dialog's. */
+.modal-x {
+  position: absolute;
+  top: 0.6rem;
+  right: 0.6rem;
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--mute);
+  cursor: pointer;
+}
+.modal-x:hover { background: var(--raise); color: var(--mist); }
+.modal-x[hidden] { display: none; }
+.modal-x:not([hidden]) ~ .modal-shell .aside { padding-right: 2rem; }
 .device-modal .poll-status { margin: 0.85rem 0 0; }
 

@@ -307,10 +307,11 @@ export function createQueue(ctx) {
     if (!item || inFlight.has(item.id)) return;
     // Send now interrupts: the running reply is stopped outright (a wedged
     // worker is force-finished after the grace window), then this message
-    // starts a new turn. Unlike Stop, the reply's subagents and background
-    // commands keep running and report to that turn. Steering kept the old
-    // request streaming until its next tool boundary, so the session the user
-    // just replaced went on producing tokens and late tool calls.
+    // starts a new turn. Unlike Stop, even the subagents the reply waits on
+    // and its background commands keep running and report to that turn.
+    // Steering kept the old request streaming until its next tool boundary,
+    // so the session the user just replaced went on producing tokens and late
+    // tool calls.
     item.immediate = true;
     item.priority = Date.now();
     S.queuedTurns = [item, ...S.queuedTurns.filter((entry) => entry.id !== item.id)];

@@ -985,6 +985,8 @@ def list_thread_agents(user_id, thread_id, limit=100):
             ),
             "description": str(agent.get("description") or "")[:200],
             "subagent_type": str(agent.get("subagent_type") or "general-purpose"),
+            # Background agents outlive a main Stop; the Stop prompt counts them.
+            "background": bool(agent.get("background")),
             "depth": int(row["agent_depth"] or 0),
             "model": str(req.get("model") or ""),
             "parent_run_id": row["parent_run_id"],
@@ -1172,6 +1174,9 @@ def request_cancel(user_id, run_id):
             )
             if flagged and row["status"] in chat_tx.ACTIVE:
                 chat_tx.event(conn, user_id, "run.cancel_requested", row["thread_id"], _cancel_event_payload(row))
+            # Only the turn stops: chat_runs.cancel_wait flags the foreground
+            # subagents it waits on, and background subagents keep running.
+            return True
         targets = conn.execute(
             "SELECT * FROM chat_runs WHERE user_id=? AND status IN ('queued','running') AND (id=? OR root_run_id=?)",
             (user_id, run_id, root),
@@ -1188,8 +1193,8 @@ def request_cancel(user_id, run_id):
 def request_interrupt(user_id, run_id):
     """Send now: flag one active root run to stop its reply, nothing else.
 
-    Unlike a root Stop (request_cancel), its subagents, the thread's other
-    subagents and its schedules are left alone. Returns the root's live
+    Unlike a root Stop (request_cancel), the foreground subagents it waits on
+    and its schedules are left alone. Returns the root's live
     children that are not already stopping, or None when run_id is not an
     active root. The root row is locked until commit and a stopping parent
     admits no new child, so the list is complete."""
@@ -1210,20 +1215,17 @@ def request_interrupt(user_id, run_id):
 
 
 def request_cancel_thread_agents(user_id, run_id):
-    """Stop of a main run also stops the thread's other live subagents.
-
-    Background subagents launched by earlier turns belong to those turns'
-    trees, so the tree cancel misses them; after Stop nothing in the
-    conversation may keep generating. Returns the ids flagged. Background
-    commands and monitors are left alone (they never generate)."""
+    """Stop all: flag every live subagent in a main run's chat, whichever
+    turn spawned it, as stopped by the user, so their reports wait for the
+    user's next message. Returns their ids. Background commands and monitors
+    are left alone (they never generate)."""
     row = db.fetchone("SELECT thread_id, parent_run_id FROM chat_runs WHERE id=? AND user_id=?", (run_id, user_id))
     if row is None or row["parent_run_id"]:
         return []
     live = db.fetchall(
-        """SELECT id, parent_run_id, message_id, thread_id, status, cancel_requested FROM chat_runs
-           WHERE user_id=? AND thread_id=? AND parent_run_id IS NOT NULL AND root_run_id<>?
-             AND status IN ('queued','running')""",
-        (user_id, row["thread_id"], run_id),
+        """SELECT id, parent_run_id, message_id, thread_id, status FROM chat_runs
+           WHERE user_id=? AND thread_id=? AND parent_run_id IS NOT NULL AND status IN ('queued','running')""",
+        (user_id, row["thread_id"]),
     )
     if not live:
         return []
@@ -1231,8 +1233,8 @@ def request_cancel_thread_agents(user_id, run_id):
     with chat_tx.transaction() as conn:
         for item in live:
             cur = conn.execute(
-                "UPDATE chat_runs SET cancel_requested=1,cancel_requested_at=?,updated_at=? WHERE id=? AND status IN ('queued','running') AND cancel_requested=0",
-                (ts, ts, item["id"]),
+                "UPDATE chat_runs SET cancel_requested=?,cancel_requested_at=?,updated_at=? WHERE id=? AND status IN ('queued','running') AND cancel_requested=0",
+                (USER_STOPPED, ts, ts, item["id"]),
             )
             if getattr(cur, "rowcount", 1):
                 chat_tx.event(conn, user_id, "agent.cancel_requested", item["thread_id"], _cancel_event_payload(item))

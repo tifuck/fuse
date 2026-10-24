@@ -309,8 +309,11 @@ async def chat_cancel(request: Request, run_id: str):
     run = chat_store.get_run(user["id"], run_id)
     if not run:
         raise HTTPException(404, "Run not found")
-    if run["status"] in chat_store.ACTIVE:
-        scope = (request.query_params.get("scope") or "").strip().lower()
+    scope = (request.query_params.get("scope") or "").strip().lower()
+    # Stop all: the main agent and every running subagent. It still applies
+    # when the main agent finished while the user was choosing.
+    stop_all = scope == "all" and not run.get("parent_run_id")
+    if run["status"] in chat_store.ACTIVE or stop_all:
         force = (request.query_params.get("force") or "").strip().lower() in ("1", "true", "yes")
         if scope == "reply" and not run.get("parent_run_id"):
             # Send now: stop the main agent's reply only; its subagents and
@@ -320,7 +323,7 @@ async def chat_cancel(request: Request, run_id: str):
             # Child runs default to self: stopping one subagent must not kill the
             # parent turn and its siblings. Root runs keep the tree default.
             tree = scope == "tree" if run.get("parent_run_id") else scope != "self"
-            await chat_runs.cancel_wait(user["id"], run_id, tree=tree, force=force, by_user=True)
+            await chat_runs.cancel_wait(user["id"], run_id, tree=tree, force=force, by_user=True, agents=stop_all)
         run = chat_store.get_run(user["id"], run_id) or run
     return JSONResponse({"ok": True, "run": _chat_public_run(run)}, headers={"Cache-Control": "no-store"})
 

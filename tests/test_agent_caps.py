@@ -1011,27 +1011,41 @@ class AgentCapsTest(AgentCapsBase):
         roots = db.fetchall("SELECT id FROM chat_runs WHERE thread_id=? AND parent_run_id IS NULL", (parent["thread_id"],))
         self.assertEqual(len(roots), 2)
 
-    def test_main_stop_also_stops_earlier_turns_live_subagents(self):
+    def test_main_stop_ends_the_turn_but_not_background_subagents(self):
+        """Stop is Claude Code's Esc: the turn and the foreground subagent it
+        waits on end. Background subagents, an earlier turn's or this one's,
+        keep running (a Stop used to cancel them, and their held "cancelled"
+        reports surfaced on the user's next message as if it killed them)."""
         from app import chat_runs as runs
 
         thread, first = self._parent()
-        child = store.start_child_run(user_id=1, thread_id=thread["id"], parent_run_id=first["id"],
-                                      prompt="bg", description="bg", background=True)
-        other = store.start_child_run(user_id=1, thread_id=thread["id"], parent_run_id=first["id"],
-                                      prompt="bg2", description="bg2", background=True)
+        earlier = store.start_child_run(user_id=1, thread_id=thread["id"], parent_run_id=first["id"],
+                                        prompt="bg", description="bg", background=True)
         store.finish_run(first["id"], {"content": "ok", "tools": []}, "completed")
         second = store.start_turn(1, thread["id"], "next", chats.get_thread(1, thread["id"])["revision"], "turn-2")["run"]
-        # A tree cancel without the user (internal callers) leaves other turns alone.
-        with patch.object(runs, "cancel"):
-            asyncio.run(runs.cancel_wait(1, second["id"], force=True))
-        self.assertIn(store.get_run(1, child["id"])["status"], ("queued", "running"))
-        third = store.start_turn(1, thread["id"], "again", chats.get_thread(1, thread["id"])["revision"], "turn-3")["run"]
+        background = store.start_child_run(user_id=1, thread_id=thread["id"], parent_run_id=second["id"],
+                                           prompt="bg2", description="bg2", background=True)
+        foreground = store.start_child_run(user_id=1, thread_id=thread["id"], parent_run_id=second["id"],
+                                           prompt="fg", description="fg")
         cancelled = []
         with patch.object(runs, "cancel", side_effect=cancelled.append):
-            asyncio.run(runs.cancel_wait(1, third["id"], force=True, by_user=True))
-        self.assertTrue({child["id"], other["id"]} <= set(cancelled))
-        for ident in (child["id"], other["id"], third["id"]):
+            asyncio.run(runs.cancel_wait(1, second["id"], force=True, by_user=True))
+        self.assertCountEqual(cancelled, [second["id"], foreground["id"]])
+        for ident in (second["id"], foreground["id"]):
             self.assertEqual(store.get_run(1, ident)["status"], "cancelled")
+        for ident in (earlier["id"], background["id"]):
+            row = store.get_run(1, ident)
+            self.assertIn(row["status"], ("queued", "running"))
+            self.assertFalse(row["cancel_requested"])
+        # A report that lands after the Stop waits for the user's next message.
+        store.finish_run(background["id"], {"content": "report", "tools": []}, "completed")
+        held = {row["id"]: row for row in store.list_thread_agents(1, second["thread_id"])}
+        self.assertEqual(held[background["id"]]["wake_state"], "held")
+        # Stop all (the Stop prompt's other choice) ends every live subagent.
+        with patch.object(runs, "cancel"):
+            asyncio.run(runs.cancel_wait(1, second["id"], force=True, by_user=True, agents=True))
+        row = db.fetchone("SELECT status, cancel_requested FROM chat_runs WHERE id=?", (earlier["id"],))
+        self.assertEqual((row["status"], row["cancel_requested"]), ("cancelled", store.USER_STOPPED))
 
     def test_stop_gate_reads_the_latest_root_within_one_second(self):
         """Two roots started in the same second (a turn failing at once, then
