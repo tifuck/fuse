@@ -314,9 +314,11 @@ class ResumeTest(unittest.IsolatedAsyncioTestCase):
         async def fake_invoke(request, user, body, **_kwargs):
             nonlocal count
             count += 1
-            cached = 28000 if count == 1 else second_cached
-            usage = {"prompt_tokens": 30000 + count, "completion_tokens": 5,
-                "prompt_tokens_details": {"cached_tokens": cached}, "total_tokens": 30005 + count}
+            # Above cache_watch.PROVIDER_MIN_SHARED: smaller implicit-cache
+            # provider misses are quiet by design.
+            cached = 98000 if count == 1 else second_cached
+            usage = {"prompt_tokens": 100000 + count, "completion_tokens": 5,
+                "prompt_tokens_details": {"cached_tokens": cached}, "total_tokens": 100005 + count}
             if count == 1:
                 return user, src(), "m", "m", stream_result([
                     frame({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1",
@@ -343,7 +345,7 @@ class ResumeTest(unittest.IsolatedAsyncioTestCase):
     async def test_a_round_that_loses_the_cache_reports_one_miss(self):
         misses, rounds = await self.cache_turn(0)
         self.assertEqual(len(misses), 1)
-        self.assertEqual((misses[0]["state"], misses[0]["prompt"], misses[0]["cached"]), ("miss", 30002, 0))
+        self.assertEqual((misses[0]["state"], misses[0]["prompt"], misses[0]["cached"]), ("miss", 100002, 0))
         # Round 2 resent round 1's request plus the tool exchange, so the
         # loss is the provider's, not an edit or a settings change.
         self.assertEqual(misses[0]["reason"], "provider")
@@ -352,7 +354,7 @@ class ResumeTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("cred", rounds[-1]["cache"])
 
     async def test_a_round_served_from_cache_reports_nothing(self):
-        misses, _rounds = await self.cache_turn(29000)
+        misses, _rounds = await self.cache_turn(99000)
         self.assertEqual(misses, [])
 
     async def test_cache_lifetime_counts_from_each_request_send(self):

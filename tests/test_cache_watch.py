@@ -115,15 +115,31 @@ class CacheWatchTest(unittest.TestCase):
 
     def test_resending_the_same_prefix_blames_the_provider(self):
         first = sent(user("question"))
-        warm = probe(50_000, 45_000, request=first)
+        warm = probe(150_000, 145_000, request=first)
         # A later round extends the request it follows...
         grown = sent(user("question"), {"role": "assistant", "content": "answer"}, user("more"))
-        event = watch.miss(warm, probe(52_000, 128, at=1100, prior=warm, request=grown))
+        event = watch.miss(warm, probe(152_000, 128, at=1100, prior=warm, request=grown))
         self.assertEqual(event["reason"], "provider")
         # ...and a retry resends a prefix of it.
-        retry = probe(30_000, 0, at=1100, prior=probe(50_000, 45_000, request=grown), request=first)
+        retry = probe(100_000, 0, at=1100, prior=probe(150_000, 145_000, request=grown), request=first)
         self.assertEqual(retry["changed"], "")
-        self.assertEqual(watch.miss(probe(50_000, 45_000, request=grown), retry)["reason"], "provider")
+        self.assertEqual(watch.miss(probe(150_000, 145_000, request=grown), retry)["reason"], "provider")
+
+    def test_small_implicit_cache_provider_misses_stay_quiet(self):
+        # Grok, ChatGPT and Z.AI move small contexts between servers; with the
+        # same prefix resent, Fuse can do nothing about it.
+        first = sent(user("question"))
+        grown = sent(user("question"), {"role": "assistant", "content": "answer"}, user("more"))
+        for source in ("zai", "grok", "chatgpt"):
+            warm = probe(24_000, 23_000, request=first, source=source)
+            self.assertIsNone(watch.miss(warm, probe(24_300, 0, at=1100, prior=warm, request=grown, source=source)))
+        # Explicit breakpoints (Claude) make any resent-prefix miss notable.
+        warm = probe(24_000, 23_000, request=first, source="claude")
+        self.assertEqual(watch.miss(warm, probe(24_300, 0, at=1100, prior=warm, request=grown, source="claude"))["reason"], "provider")
+        # A Fuse-side cause is still named at any size.
+        warm = probe(24_000, 23_000, request=first)
+        changed = probe(24_300, 0, at=1100, prior=warm, request=sent(user("question"), tools=[]))
+        self.assertEqual(watch.miss(warm, changed)["reason"], "settings")
 
     def test_an_edit_that_explains_the_loss_names_the_history(self):
         long = "x" * 4000
@@ -138,9 +154,10 @@ class CacheWatchTest(unittest.TestCase):
         # Only the newest message changed: the provider should still have
         # served the rest, so a cold request is the provider's miss.
         late = sent(user("first " + long), {"role": "assistant", "content": long}, user("SECOND " + long))
-        cold = probe(50_000, 128, at=1100, prior=warm, request=late)
+        big = probe(150_000, 145_000, request=before)
+        cold = probe(150_000, 128, at=1100, prior=big, request=late)
         self.assertEqual(cold["changed"], "history")
-        self.assertEqual(watch.miss(warm, cold)["reason"], "provider")
+        self.assertEqual(watch.miss(big, cold)["reason"], "provider")
 
     def test_tools_or_system_changes_are_settings(self):
         warm = probe(50_000, 45_000, request=sent(user("q")))

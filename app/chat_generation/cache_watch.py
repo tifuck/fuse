@@ -52,6 +52,12 @@ DEFAULT_TTL_S = 300
 _IN_MEMORY_GPT = re.compile(r"^gpt-5(?:\.[0-5])?(?:-|$)")
 # A miss below this many uncached prompt tokens is not worth a toast.
 MIN_TOKENS = 4096
+# Implicit-cache backends (all but Anthropic's explicit breakpoints) route a
+# small context to whichever server is free, often one without its prefix:
+# in production every turn-start cold miss on Grok, ChatGPT and Z.AI shared
+# under ~80k tokens, with the same prefix resent. Fuse cannot prevent those,
+# so a "provider" miss below this shared size is not worth a toast.
+PROVIDER_MIN_SHARED = 65_536
 # Fewer cached tokens than this is not evidence that the chat was ever
 # served from cache (cold Grok prompts report 128).
 HIT_MIN_TOKENS = 1024
@@ -246,5 +252,8 @@ def miss(prior, current, *, settings_changed: bool = False) -> dict | None:
         reason = "provider"
     else:
         reason = ""
+    explicit = current["source"] == "claude" or (current["source"] == "openrouter" and "anthropic/" in current["model"])
+    if reason == "provider" and shared < PROVIDER_MIN_SHARED and not explicit:
+        return None
     return {"event": "cache", "state": "miss", "prompt": current["prompt"],
             "cached": current["cached"], "idle_s": int(idle), "reason": reason, **effort}
