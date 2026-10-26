@@ -83,6 +83,17 @@ class AgentPairTest(unittest.TestCase):
         self.assertEqual(len(hosts.list_bundle(1)["hosts"]), 1)
         self.assertEqual(again["auth_type"], "agent")
 
+    def test_undo_pairing_reopens_the_code_with_the_delete(self):
+        # Whatever fails after the host delete commits, the code is reopened by
+        # that same commit: it can never be burned with its host gone.
+        pairing = hosts.mint_pairing(1)
+        view, _token = hosts.redeem_pairing(pairing["code"], {"hostname": "laptop.local"})
+        with patch.object(hosts, "_evict_pool", side_effect=RuntimeError("after commit")):
+            with self.assertRaises(RuntimeError):
+                hosts.undo_pairing(1, view["id"], pairing["code"])
+        again, _ = hosts.redeem_pairing(pairing["code"], {"hostname": "laptop.local"})
+        self.assertEqual(again["auth_type"], "agent")
+
     def test_redeem_stores_windows_os(self):
         pairing = hosts.mint_pairing(1)
         view, _token = hosts.redeem_pairing(

@@ -202,9 +202,19 @@ def _restore_aside(old: Path, dest: Path) -> None:
         )
 
 
-def sweep_partial_swaps(base_dir=None) -> list[str]:
+def _tree_hash(root: Path) -> str:
+    return content_hash({p.relative_to(root).as_posix(): p.read_bytes() for p in root.rglob("*") if p.is_file()})
+
+
+def sweep_partial_swaps(base_dir=None, row_hash=None) -> list[str]:
     """Recover from a crash mid-swap: restore the newest .old-* when the live
-    dir is missing, and clear stale .tmp-* staging dirs. Returns recovered slugs."""
+    dir is missing, and clear stale .tmp-* staging dirs. Returns recovered slugs.
+
+    row_hash(user_id, slug) gives the committed user_skills.content_hash (falsy
+    without a row). With it, a crash between moving a directory and committing
+    its row rolls the files back to what the row says: an install whose row
+    never committed gets the previous tree back, a delete whose row is still
+    there gets its tree back."""
     root = Path(base_dir) if base_dir else data_dir()
     recovered: list[str] = []
     if not root.is_dir():
@@ -212,19 +222,37 @@ def sweep_partial_swaps(base_dir=None) -> list[str]:
     for user_path in root.iterdir():
         if not user_path.is_dir():
             continue
+        uid = int(user_path.name) if user_path.name.isdigit() else None
+        committed = (lambda slug: row_hash(uid, slug)) if row_hash and uid is not None else (lambda slug: None)
         by_slug: dict[str, list[Path]] = {}
+        deleting: dict[str, Path] = {}
         for entry in user_path.iterdir():
             if not entry.is_dir():
                 continue
             name = entry.name
-            if name.startswith(".tmp-"):
+            if name.startswith(".tmp-del-"):
+                slug = name[len(".tmp-del-"):].rsplit("-", 1)[0]
+                if slug in deleting:
+                    shutil.rmtree(deleting[slug], ignore_errors=True)
+                deleting[slug] = entry
+            elif name.startswith(".tmp-"):
                 shutil.rmtree(entry, ignore_errors=True)
             elif name.startswith(".old-"):
                 by_slug.setdefault(name[len(".old-"):].rsplit("-", 1)[0], []).append(entry)
+        for slug, trash in deleting.items():
+            if not (user_path / slug).exists() and committed(slug):
+                _restore_aside(trash, user_path / slug)
+                recovered.append(f"{user_path.name}/{slug}")
+            else:
+                shutil.rmtree(trash, ignore_errors=True)
         for slug, olds in by_slug.items():
-            if not (user_path / slug).exists():
-                newest = max(olds, key=lambda p: p.stat().st_mtime)
-                _restore_aside(newest, user_path / slug)
+            live = user_path / slug
+            newest = max(olds, key=lambda p: p.stat().st_mtime)
+            stored = committed(slug) if live.exists() else None
+            if stored and stored != _tree_hash(live) and stored == _tree_hash(newest):
+                shutil.rmtree(live, ignore_errors=True)
+            if not live.exists():
+                _restore_aside(newest, live)
                 recovered.append(f"{user_path.name}/{slug}")
                 olds.remove(newest)
             for stale in olds:

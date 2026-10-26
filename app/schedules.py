@@ -954,7 +954,7 @@ async def _fire(schedule: dict, fire: dict, *, consume_slot: bool) -> None:
                 model=schedule["model"], tools=schedule["tools"],
                 reasoning_effort=schedule["reasoning_effort"] or None,
                 auto_title=False, auto=True, scheduled=True, coding_override=coding_override,
-                schedule_id=schedule["id"], schedule_manual=slot.startswith("manual:"),
+                schedule_id=schedule["id"], schedule_manual=slot.startswith("manual:"), schedule_slot=fire["slot_key"],
             )
         except chats.ChatValidationError as exc:
             if exc.status_code == 409:
@@ -969,13 +969,6 @@ async def _fire(schedule: dict, fire: dict, *, consume_slot: bool) -> None:
             raise ScheduleError(str(exc.detail), exc.status_code) from exc
         run = result.get("run") or {}
         run_id = run.get("id")
-        # Record the run on the fire before anything else can interleave: a
-        # queued fire with a run_id is never retryable, so a crash between the
-        # run insert and the final _finish_fire cannot double-execute the slot.
-        db.execute(
-            "UPDATE schedule_fires SET run_id=? WHERE schedule_id=? AND slot_key=?",
-            (str(run_id or ""), schedule["id"], fire["slot_key"]),
-        )
         if coding_override:
             try:
                 get_dek(user_id)

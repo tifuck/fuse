@@ -189,7 +189,7 @@ def start_turn(*args, **kwargs):
 def _start_turn(user_id, thread_id, text, expected_revision, command_id, model=None, tools=None, context=None,
                 attachments=None, reasoning_effort=None, auto_title=False, invoke_skill=None, auto=False,
                 scheduled=False, coding_override=None, command_receipt_ids=None, replace_from=None,
-                schedule_id=None, schedule_manual=False, auto_resumed_at="", wake=None, _pinned=None):
+                schedule_id=None, schedule_manual=False, schedule_slot=None, auto_resumed_at="", wake=None, _pinned=None):
     from . import chats
 
     text = chats._text(text if text is not None else "", "text", chats.AUTO_CONTENT_MAX if auto else chats.CONTENT_MAX)
@@ -476,6 +476,12 @@ def _start_turn(user_id, thread_id, text, expected_revision, command_id, model=N
                VALUES(?,?,?,'queued',?,?,?,?,?,NULL,?,0)""",
             (run_id, thread_id, user_id, chat_tx.dumps(request), assistant["id"], chat_tx.dumps(assistant), ts, ts, run_id),
         )
+        if scheduled and schedule_id is not None and schedule_slot is not None:
+            # The fire learns its run in the run's own commit: written after,
+            # a crash in between left a live run whose fire recovery closed as
+            # "no run started" for good.
+            conn.execute("UPDATE schedule_fires SET run_id=? WHERE schedule_id=? AND slot_key=?",
+                         (run_id, schedule_id, schedule_slot))
         conn.execute("""UPDATE chat_threads SET messages=?,title=?,model=?,tools=?,context=?,compaction=?,revision=revision+1,updated_at=? WHERE id=?""",
                      (chat_tx.dumps(messages), title, request["model"], chat_tx.dumps(request["tools"]), request["thread_context"], ctxmod.dump_state(state), ts, thread_id))
         chats.unarchive_on_activity(conn, row, ts)

@@ -26,6 +26,7 @@ async def zai_add(request: Request, api_key: str = Form(""), label: str = Form("
     if err or not cred_id:
         _pool_flash[user["id"]] = ("err", err or "Could not add that key.", "zai")
         return RedirectResponse("/sources", status_code=303)
+    invalidate_model_cache("zai")
     _pool_flash[user["id"]] = ("ok", "Z.AI Coding Plan key added to the pool.", "zai")
     return RedirectResponse("/sources", status_code=303)
 

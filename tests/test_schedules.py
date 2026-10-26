@@ -242,6 +242,24 @@ class FireStatusPropagationTest(unittest.TestCase):
         self.assertEqual(db.fetchone("SELECT status FROM schedule_fires WHERE schedule_id=? AND slot_key=?",
                                      (item["id"], slot))["status"], "completed")
 
+    def test_fire_learns_its_run_in_the_run_commit(self):
+        # A crash right after the run commits must not leave a running fire
+        # without its run_id: reconcile would close it while the run resumes.
+        item = self._schedule()
+        thread = chats.create_thread(self.uid, title="s", model="glm-5.3-flash")
+        db.execute("UPDATE chat_runs SET status='completed' WHERE status IN ('queued','running')")
+        slot = iso_utc(utcnow())
+        db.execute(
+            """INSERT INTO schedule_fires(schedule_id, user_id, trigger, status, slot_key, fire_id, started_at)
+               VALUES(?,?, 'scheduled', 'running', ?, 'fire-crash', ?)""",
+            (item["id"], self.uid, slot, db.now()),
+        )
+        run = start_turn(self.uid, thread["id"], "hello", None, None, auto=True, scheduled=True,
+                         schedule_id=item["id"], schedule_slot=slot)["run"]
+        schedules.reconcile()
+        row = db.fetchone("SELECT status, run_id FROM schedule_fires WHERE schedule_id=? AND slot_key=?", (item["id"], slot))
+        self.assertEqual((row["status"], row["run_id"]), ("running", run["id"]))
+
     def test_vault_locked_once_stays_retryable_after_capacity_skip(self):
         import asyncio
 

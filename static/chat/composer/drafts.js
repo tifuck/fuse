@@ -23,6 +23,7 @@ export function createDrafts(ctx) {
   const origin = S.draftOrigin = newSession();
   const pending = new Map();
   const timers = new Map();
+  const sends = new Map();
 
   function flushDraft(wire, keepalive = false) {
     window.clearTimeout(timers.get(wire));
@@ -30,9 +31,12 @@ export function createDrafts(ctx) {
     if (!pending.has(wire)) return;
     const text = pending.get(wire);
     pending.delete(wire);
+    const send = (sends.get(wire) || 0) + 1;
+    sends.set(wire, send);
     net.api("/chat/drafts", { method: "PUT", keepalive, body: JSON.stringify({ key: wire, text, origin }) }).catch(() => {
-      // Offline or refused: retry unless newer text is already queued.
-      if (pending.has(wire)) return;
+      // Offline or refused: retry unless newer text is queued or was sent
+      // since; resending this older text would overwrite it.
+      if (pending.has(wire) || sends.get(wire) !== send) return;
       pending.set(wire, text);
       timers.set(wire, window.setTimeout(() => flushDraft(wire), 5000));
     });

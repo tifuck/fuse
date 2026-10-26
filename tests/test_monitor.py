@@ -241,6 +241,16 @@ class MonitorJobs(unittest.IsolatedAsyncioTestCase):
         self.assertIn("<monitor_result", env)
         self.assertIn("events:", env)
 
+    async def test_late_count_write_never_rewinds_the_terminal_count(self):
+        db.execute(
+            """INSERT INTO command_jobs(id,user_id,host_id,command,timeout_ms,status,created_at,kind,event_count)
+               VALUES('mon-late',1,2,'watch',1000,'completed',?,'monitor',5)""",
+            (db.now(),),
+        )
+        command_jobs._persist_monitor_count({"id": "mon-late", "event_count": 3})
+        row = db.fetchone("SELECT event_count FROM command_jobs WHERE id='mon-late'")
+        self.assertEqual(int(row["event_count"]), 5)
+
     async def test_default_max_events_completes_after_one_line(self):
         async def runner(sink):
             sink("hit\n")

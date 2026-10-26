@@ -96,6 +96,9 @@ def _rewrite(sql: str, lock_rows: bool = False) -> str:
         statement.set("alternative", None)
         statement.set("ignore", alternative == "IGNORE")
     rendered = statement.sql(dialect="mysql", identify=True, unsupported_level=sqlglot.ErrorLevel.RAISE)
+    if rendered.endswith(" FOR SHARE"):
+        # sqlglot renders a shared lock in MySQL 8 syntax; MariaDB rejects it.
+        rendered = rendered[: -len(" FOR SHARE")] + " LOCK IN SHARE MODE"
     if alternative == "REPLACE":
         rendered = "REPLACE" + rendered[len("INSERT"):]
     if conflict:

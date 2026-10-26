@@ -476,9 +476,12 @@ def _persist_monitor_count(rec: dict) -> None:
     ensure_schema()
     try:
         with db.tx() as conn:
+            # Only forward: this runs in a worker thread and can land after the
+            # terminal write, which already stored a later count.
+            count = int(rec.get("event_count") or 0)
             conn.execute(
-                "UPDATE command_jobs SET event_count=? WHERE id=?",
-                (int(rec.get("event_count") or 0), rec["id"]),
+                "UPDATE command_jobs SET event_count=? WHERE id=? AND event_count<?",
+                (count, rec["id"], count),
             )
     except Exception:
         logger.exception("Failed to persist monitor event count %s", rec["id"])

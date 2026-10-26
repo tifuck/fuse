@@ -1,11 +1,13 @@
 """Usage rollups stay equal to SUM(usage_events) in a disposable MariaDB schema."""
 import os
+import threading
+import time
 
 import pytest
 
 from app import accounts, db
 from app.config import settings
-from app.mysql_compat import connect
+from app.mysql_compat import _rewrite, connect
 from scripts import rebuild_usage_rollups as rebuild
 from tests.mariadb_fixture import isolated_database
 
@@ -73,9 +75,69 @@ def test_reprice_pages_history_by_id_window(monkeypatch):
         assert db.fetchone("SELECT COUNT(*) AS n FROM usage_events WHERE pricing_known=1")["n"] == 0
 
 
+def test_shared_lock_renders_in_mariadb_syntax():
+    assert _rewrite("SELECT 1 FROM t WHERE a=? LOCK IN SHARE MODE").endswith(" LOCK IN SHARE MODE")
+
+
+def test_price_save_waits_for_a_usage_event_priced_at_the_old_rate(monkeypatch):
+    with isolated_database():
+        source_id, cred = _seed()
+        db.save_model_price("zai", "glm-x", 1_000_000, None, 2_000_000, None)
+        priced, release = threading.Event(), threading.Event()
+        estimate = db._estimated_cost
+
+        def held_estimate(*args):
+            priced.set()
+            release.wait(5)
+            return estimate(*args)
+
+        monkeypatch.setattr(db, "_estimated_cost", held_estimate)
+        usage = threading.Thread(target=db.record_usage, args=(1, source_id, cred, "glm-x", dict(USAGE)),
+                                 kwargs={"provider": "zai"})
+        usage.start()
+        assert priced.wait(5)
+        monkeypatch.setattr(db, "_estimated_cost", estimate)
+        save = threading.Thread(target=db.save_model_price, args=("zai", "glm-x", 3_000_000, None, 2_000_000, None))
+        save.start()
+        time.sleep(0.5)
+        assert save.is_alive()  # waiting for the in-flight event to commit
+        release.set()
+        usage.join(10)
+        save.join(10)
+        assert _report() == _clean()
+        assert db.fetchone("SELECT COUNT(DISTINCT estimated_cost_micros) AS n FROM usage_events")["n"] == 1
+
+
+def test_apply_refuses_while_the_service_holds_connections(monkeypatch):
+    with isolated_database():
+        _seed()
+        monkeypatch.setattr("sys.argv", ["rebuild_usage_rollups", "--apply"])
+        with pytest.raises(SystemExit, match="refused"):
+            rebuild.main()
+
+
 def test_delete_user_takes_their_events_out_of_credential_rollups():
     with isolated_database():
         _seed()
+        accounts.delete_user(2, actor_id=1)
+        assert _report() == _clean()
+        assert int(db.fetchone("SELECT requests FROM credentials")["requests"]) == 1
+
+
+def test_delete_user_counts_an_event_recorded_after_its_snapshot(monkeypatch):
+    with isolated_database():
+        source_id, cred = _seed()
+        admins = accounts._admins_locked
+
+        def admins_then_usage(conn):
+            rows = admins(conn)
+            late = threading.Thread(target=db.record_usage, args=(2, source_id, cred, "glm-x", dict(USAGE)),
+                                    kwargs={"key_id": 7, "provider": "zai"})
+            late.start()
+            late.join(10)
+            return rows
+
+        monkeypatch.setattr(accounts, "_admins_locked", admins_then_usage)
         accounts.delete_user(2, actor_id=1)
         assert _report() == _clean()
         assert int(db.fetchone("SELECT requests FROM credentials")["requests"]) == 1

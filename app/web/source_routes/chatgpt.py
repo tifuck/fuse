@@ -85,6 +85,7 @@ async def chatgpt_poll(request: Request):
                 await chatgpt_mod.refresh_usage(row, force=True)
             except Exception:
                 logger.warning("ChatGPT usage refresh failed after OAuth", exc_info=True)
+        invalidate_model_cache("chatgpt")
         return JSONResponse({"ok": True})
     if result.get("status") == "pending":
         return JSONResponse({"pending": True})

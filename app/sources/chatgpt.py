@@ -412,6 +412,25 @@ def store_tokens(source_id: int, tokens: dict, donated_by: int | None, label: st
         "account_id": account_from_tokens(tokens) or "",
     }
     apply_profile(extra, tokens)
+    # A repeat sign-in of the same login refreshes its row instead of adding
+    # a second pool member. A Team workspace id is shared by its seats, so
+    # the email must match too.
+    if extra["account_id"] and extra.get("email"):
+        with db.tx() as conn:
+            for row in conn.execute(
+                "SELECT id, extra FROM credentials WHERE source_id=? AND donated_by IS ? ORDER BY disabled, id"
+                + db.for_update(conn),
+                (source_id, donated_by),
+            ).fetchall():
+                current = accounts.cred_extra(row)
+                if current.get("account_id") != extra["account_id"] or account_email(current) != extra["email"]:
+                    continue
+                current.update(extra)
+                conn.execute(
+                    "UPDATE credentials SET secret=?, extra=?, disabled=0 WHERE id=?",
+                    (encrypt(tokens["access_token"]), encrypt(json.dumps(current)), row["id"]),
+                )
+                return int(row["id"])
     return accounts.add_credential(
         source_id,
         label or extra.get("email") or "ChatGPT account",

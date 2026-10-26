@@ -724,6 +724,11 @@ async def add_plan_key(source_id: int, raw: str, donated_by: int, *, label: str 
     parsed, region, err = await probe_key(key)
     if err or parsed is None:
         return None, err or "Could not validate this key."
+    # Re-check after the probe's await: a concurrent add of the same key may
+    # have committed meanwhile. Nothing below awaits before the write.
+    existing = _find_key(source_id, key)
+    if existing and not existing["disabled"]:
+        return None, "That key is already in the pool."
     if existing:
         name = (label or "").strip()[:80] or existing["label"] or "Kimi account"
         extra = accounts.cred_extra(existing)

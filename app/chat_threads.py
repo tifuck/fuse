@@ -1212,7 +1212,7 @@ def promote_working_session(user_id: int, thread_id, *, host_id=None, cwd: str =
     existing_only binds only to a project the user already has at that path,
     never creates one: used for writes the permission gate did not mark
     promotable (absolute paths from a home root, approved writes, subagents)."""
-    from . import chat_store as store
+    from . import chat_store as store, chat_tx
 
     if tool and tool not in _FILE_PROMOTE_TOOLS:
         return None
@@ -1227,7 +1227,16 @@ def promote_working_session(user_id: int, thread_id, *, host_id=None, cwd: str =
         pk = resolve_thread_pk(user_id, thread_id, conn)
         if pk is None:
             return None
-        row = conn.execute("SELECT * FROM chat_threads WHERE id=? AND user_id=?", (pk, user_id)).fetchone()
+        # Run before thread: finalization locks the run row first, so locking
+        # the thread here and then the run would deadlock against it.
+        run = conn.execute(
+            """SELECT id, request FROM chat_runs
+               WHERE thread_id=? AND user_id=? AND status IN ('queued','running') AND parent_run_id IS NULL""",
+            (pk, user_id),
+        ).fetchone()
+        # Locked: parallel writes of one tool round promote concurrently, and
+        # each would otherwise see the chat unpromoted and add a project.
+        row = chat_tx.lock_thread(conn, pk, user_id)
         if row is None:
             return None
         keys = row.keys()
@@ -1264,13 +1273,6 @@ def promote_working_session(user_id: int, thread_id, *, host_id=None, cwd: str =
             )
             pid = db.last_id(conn)
             proj = conn.execute("SELECT * FROM user_projects WHERE id=?", (pid,)).fetchone()
-        # Run before thread: finalization locks the run row first, so locking
-        # the thread here and then the run would deadlock against it.
-        run = conn.execute(
-            """SELECT id, request FROM chat_runs
-               WHERE thread_id=? AND user_id=? AND status IN ('queued','running') AND parent_run_id IS NULL""",
-            (pk, user_id),
-        ).fetchone()
         conn.execute(
             """UPDATE chat_threads
                SET kind='project', host_id=?, project_id=?, updated_at=?, revision=revision+1

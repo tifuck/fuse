@@ -340,8 +340,10 @@ async def sync_openrouter_prices() -> dict:
                     # it as synced.
                     if provider == "openrouter":
                         manual_ids.add(model)
-            for (provider, model), values in staged.items():
-                db.save_model_price(provider, model, conn=conn, **values)
+        # One transaction per model: a save reprices the history its snapshot
+        # sees, so the snapshot must start after its own price-row lock.
+        for (provider, model), values in staged.items():
+            db.save_model_price(provider, model, **values)
         return manual_ids
 
     # Every save reprices that model's history: run it off the event loop.

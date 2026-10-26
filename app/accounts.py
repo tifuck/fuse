@@ -288,11 +288,15 @@ def delete_user(user_id: int, *, actor_id: int) -> str:
             (user_id,),
         )
         # Credential rollups are SUM(usage_events); the user's events go below.
+        # A locking read: the snapshot predates this point, so a plain SUM
+        # would miss an event recorded since, which the DELETE then removes
+        # without its rollup share. The lock also holds new ones off.
         spent = conn.execute(
             f"""SELECT credential_id, {", ".join(f"COALESCE(SUM({col}), 0) AS {col}" for col in _CRED_ROLLUP_EVENT_COLS)},
                        COALESCE(SUM(count_request), 0) AS requests,
                        COALESCE(SUM(COALESCE(reported_cost_micros, estimated_cost_micros)), 0) AS cost_micros
-                FROM usage_events WHERE user_id=? AND credential_id IS NOT NULL GROUP BY credential_id""",
+                FROM usage_events WHERE user_id=? AND credential_id IS NOT NULL GROUP BY credential_id"""
+            + db.for_update(conn),
             (user_id,),
         ).fetchall()
         rollup_cols = (*_CRED_ROLLUP_EVENT_COLS, "requests", "cost_micros")

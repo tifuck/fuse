@@ -39,6 +39,31 @@ class ProjectsRetentionTest(unittest.TestCase):
         thread = chats.create_thread(1, model="offline", kind="project", host_id=7, project_id=project["id"])
         return thread, chats.resolve_thread_pk(1, thread["id"])
 
+    def test_parallel_writes_promote_a_chat_into_one_project(self):
+        import threading
+
+        thread = chats.create_thread(1, model="offline")
+        match = chat_threads._match_project_row
+
+        def slow_match(*args):
+            time.sleep(0.5)  # hold the first promotion open while the second starts
+            return match(*args)
+
+        results = []
+
+        def promote(root):
+            results.append(chats.promote_working_session(1, thread["id"], host_id=7, cwd=root, tool="write_file"))
+
+        with patch.object(chat_threads, "_match_project_row", slow_match):
+            workers = [threading.Thread(target=promote, args=(root,)) for root in ("/srv/one", "/srv/two")]
+            workers[0].start()
+            time.sleep(0.1)
+            workers[1].start()
+            for worker in workers:
+                worker.join(10)
+        self.assertEqual(sum(1 for item in results if item), 1)
+        self.assertEqual(db.fetchone("SELECT COUNT(*) AS n FROM user_projects WHERE user_id=1")["n"], 1)
+
     # -- colors and logos -------------------------------------------------
 
     def test_new_projects_pick_a_palette_color_and_keep_an_edit(self):

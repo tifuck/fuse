@@ -346,6 +346,15 @@ class ReviewTest(PermSchemaTest):
         self.assertTrue(res.allowed)
         self.assertEqual(res.root, "")
 
+    def test_host_grant_is_stored_once_and_revoke_removes_it(self):
+        permissions.add_grant(1, None, 7, "dir", "/var/www")
+        permissions.add_grant(1, None, 7, "dir", "/var/www")
+        grants = permissions.grants_for(1, 1)
+        self.assertEqual(len(grants), 1)
+        self.assertTrue(permissions.revoke_grant(1, grants[0]["id"]))
+        res = asyncio.run(self._review(_gate(unattended=True), args={"path": "/var/www/app/config.yml"}))
+        self.assertFalse(res.allowed)
+
     def test_grant_other_host_does_not_cover(self):
         permissions.add_grant(1, 1, 8, "dir", "/var/www")
         res = asyncio.run(self._review(_gate(unattended=True), args={"path": "/var/www/app/config.yml"}))

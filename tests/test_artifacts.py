@@ -6,8 +6,11 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -107,6 +110,44 @@ class ArtifactStoreTest(unittest.TestCase):
         self.assertEqual(updated["versions"], [1, 2])
         v1 = artifacts.view(artifacts.get_owned(self.owner, art["identifier"]), include_html=True, version=1)
         self.assertIn("v1", v1["html"])
+
+    def test_visibility_change_survives_a_concurrent_html_update(self):
+        owner = self.owner
+        art = artifacts.create(owner, title="Race", html="<html><body>v1</body></html>")
+        real_tx = db.tx
+        worker = []
+
+        @contextmanager
+        def tx():
+            with real_tx() as conn:
+                if worker:
+                    yield conn
+                    return
+
+                class Interleave:
+                    def __getattr__(_, name):
+                        return getattr(conn, name)
+
+                    def execute(_, sql, args=()):
+                        cur = conn.execute(sql, args)
+                        if sql.lstrip().startswith("SELECT title, visibility") and not worker:
+                            # The model's HTML update lands between this read
+                            # and the write (it waits instead once the read locks).
+                            thread = threading.Thread(target=artifacts.update, args=(owner, art["identifier"]),
+                                                      kwargs={"html": "<html><body>v2</body></html>"})
+                            worker.append(thread)
+                            thread.start()
+                            thread.join(1)
+                        return cur
+
+                yield Interleave()
+
+        with patch.object(artifacts.db, "tx", tx):
+            artifacts.set_visibility(self.owner, art["identifier"], "public")
+        worker[0].join(10)
+        row = artifacts.get_owned(self.owner, art["identifier"])
+        self.assertEqual(row["visibility"], "public")
+        self.assertEqual(int(row["current_version"]), 2)
 
     def test_size_reject(self):
         with self.assertRaises(artifacts.ArtifactError) as ctx:

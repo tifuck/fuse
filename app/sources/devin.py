@@ -329,6 +329,18 @@ def _find_key(source_id: int, key: str):
     return None
 
 
+def _find_account(source_id: int, donated_by: int, email: str):
+    """The donor's row for this Devin account: each login mints a new session
+    token, so a token match alone would add the account again."""
+    for row in db.fetchall("SELECT * FROM credentials WHERE source_id=? AND donated_by=? ORDER BY disabled, id", (source_id, donated_by)):
+        try:
+            if accounts.cred_extra(row).get("email") == email:
+                return row
+        except Exception:
+            continue
+    return None
+
+
 def _store_billing(cred_id: int, parsed: dict, *, error: str = "") -> dict:
     row = db.fetchone("SELECT * FROM credentials WHERE id=?", (cred_id,))
     extra = accounts.cred_extra(row) if row else {}
@@ -475,6 +487,8 @@ async def add_session_token(source_id: int, raw: str, donated_by: int, *, label:
     existing = _find_key(source_id, key)
     if existing and not existing["disabled"]:
         return None, "That Devin account is already in the pool."
+    if existing is None and info.get("email"):
+        existing = _find_account(source_id, donated_by, info["email"])
     name = (label or "").strip()[:80] or info.get("email") or info.get("name") or "Devin account"
     extra = {
         "api_key": key,

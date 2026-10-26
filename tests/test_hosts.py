@@ -439,10 +439,12 @@ class PromotionBindingTest(unittest.TestCase):
         for project_path, candidate in (("/srv/api", "/srv/api/src"), (r"C:\repo", "C:/repo/src")):
             with self.subTest(project_path=project_path):
                 conn = MagicMock()
+                # Read order: run row, then the thread under its lock (the
+                # finalization lock order), then the host.
                 conn.execute.return_value.fetchone.side_effect = [
+                    {"id": 8, "request": json.dumps({"agent": {"keep": True}})},
                     {"kind": "chat", "project_id": None},
                     {"id": 4, "alias": "prod", "default_cwd": ""},
-                    {"id": 8, "request": json.dumps({"agent": {"keep": True}})},
                 ]
                 with patch.object(store, "transaction") as transaction, patch.object(
                     chat_threads, "resolve_thread_pk", return_value=7

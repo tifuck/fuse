@@ -90,6 +90,7 @@ async def grok_poll(request: Request):
                 await refresh_billing(row, force=True)
             except Exception:
                 logger.warning("Grok billing refresh failed after OAuth", exc_info=True)
+        invalidate_model_cache("grok")
         return JSONResponse({"ok": True})
     err = data.get("error")
     if err == "slow_down":

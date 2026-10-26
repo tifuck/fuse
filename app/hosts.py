@@ -536,7 +536,7 @@ def patch_host(user_id: int, host_id: int, raw: dict) -> dict:
     return public
 
 
-def delete_host(user_id: int, host_id: int) -> bool:
+def delete_host(user_id: int, host_id: int, *, reopen_pairing: str | None = None) -> bool:
     from . import chat_store as store
 
     with store.transaction() as conn:
@@ -558,6 +558,11 @@ def delete_host(user_id: int, host_id: int) -> bool:
             (host_id, user_id, user_id, host_id, host_id, user_id),
         )
         conn.execute("DELETE FROM user_hosts WHERE id=? AND user_id=?", (host_id, user_id))
+        if reopen_pairing is not None:
+            conn.execute(
+                "UPDATE host_pairings SET used_at=NULL WHERE code_hash=? AND user_id=?",
+                (token_hash(reopen_pairing.strip()), int(user_id)),
+            )
         for tid in tids:
             store.thread_event(conn, user_id, tid)
         projects_changed(conn, user_id)
@@ -612,8 +617,10 @@ def patch_project(user_id: int, host_id: int, project_id: int, raw: dict) -> dic
     # A chat transaction: archive/restore emits thread events, and only this
     # one wakes other tabs and moves the watermarks after commit.
     with store.transaction() as conn:
+        # Row-locked: the archive decision below compares against this read,
+        # and a retention sweep may archive the project concurrently.
         row = conn.execute(
-            "SELECT * FROM user_projects WHERE id=? AND user_id=? AND host_id=?",
+            "SELECT * FROM user_projects WHERE id=? AND user_id=? AND host_id=?" + db.for_update(conn),
             (project_id, user_id, host_id),
         ).fetchone()
         if row is None:
@@ -1324,12 +1331,10 @@ def _agent_username(raw) -> str:
 
 def undo_pairing(user_id: int, host_id: int, code: str) -> None:
     """The device token never reached the connector (hello_ok send failed):
-    forget the new host and let the same install code be redeemed again."""
-    delete_host(user_id, host_id)
-    db.execute(
-        "UPDATE host_pairings SET used_at=NULL WHERE code_hash=? AND user_id=?",
-        (token_hash((code or "").strip()), int(user_id)),
-    )
+    forget the new host and let the same install code be redeemed again.
+    One transaction: apart, a crash between left the code burned and the
+    host gone."""
+    delete_host(user_id, host_id, reopen_pairing=code or "")
 
 
 def redeem_pairing(code: str, meta: dict | None = None) -> tuple[dict, str]:

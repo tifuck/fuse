@@ -337,11 +337,12 @@ def update(
     ts = db.now()
     new_html = _check_html(html) if html is not None else None
     with db.tx() as conn:
-        # Authoritative read inside the write transaction: a concurrent
-        # update (e.g. model tool call racing a UI toggle) commits fully
-        # before this one starts, so current_version can never regress.
+        # Authoritative read inside the write transaction, row-locked: a
+        # concurrent update (e.g. model tool call racing a UI toggle) commits
+        # fully before this one reads, so neither is lost and current_version
+        # can never regress. A plain read would be a snapshot that misses it.
         fresh = conn.execute(
-            "SELECT title, visibility, current_version FROM artifacts WHERE id=? AND user_id=?",
+            "SELECT title, visibility, current_version FROM artifacts WHERE id=? AND user_id=?" + db.for_update(conn),
             (row["id"], user_id),
         ).fetchone()
         if fresh is None:

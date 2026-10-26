@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from ... import accounts, db
 from ...crypto import encrypt
 from ...security import allowed_base_url, limiter
-from ...sources import TYPES
+from ...sources import TYPES, invalidate_model_cache
 from ...sources import openrouter as openrouter_mod
 from ...sources import pool_policy
 from ...sources.ollama import DEFAULT_BASE as OLLAMA_BASE
@@ -156,6 +156,7 @@ async def admin_llama_save(
                    VALUES (?,?,?,?,?,?,?)""",
                 (sid, "llama", encrypt(key), encrypt("{}"), db.iso_week_start(), None, db.now()),
             )
+    invalidate_model_cache("llama")
     _notices[user["id"]] = "Local llama saved."
     return RedirectResponse("/admin/sources", status_code=303)
 
@@ -232,6 +233,7 @@ async def admin_ollama_save(
             **_admin_sources_ctx(error=str(exc)),
             status_code=400,
         )
+    invalidate_model_cache("ollama")
     _notices[user["id"]] = f"Ollama Cloud saved.{f' Added {added} key(s).' if added else ''}"
     return RedirectResponse("/admin/sources", status_code=303)
 

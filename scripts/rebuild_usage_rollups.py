@@ -6,8 +6,9 @@ Run from the tree whose schema you mean (/root/fuse is fuse_live, /root/fuse-dev
 is fuse_dev). Without --apply it only reports how many rollup rows disagree
 with their events. --apply rewrites credentials, api_keys, provider_usage and
 usage_hourly in one transaction; stop the service first, since every request
-writes the same rows. Credential week counters (week_tokens/week_requests)
-are left alone: they restart each ISO week. Uses one connection, not a pool.
+writes the same rows (--apply refuses while another connection uses the
+schema: rows a live request writes during the rebuild would be lost).
+Credential week counters (week_tokens/week_requests) are left alone: they restart each ISO week. Uses one connection, not a pool.
 """
 from __future__ import annotations
 
@@ -98,6 +99,11 @@ def main():
         conn.commit()
         if not args.apply:
             return
+        others = int(conn.native(
+            "SELECT COUNT(*) FROM information_schema.processlist WHERE db=DATABASE() AND id<>CONNECTION_ID()"
+        ).fetchone()[0])
+        if others:
+            raise SystemExit(f"--apply refused: {others} other connection(s) use this schema; stop the service first")
         apply(conn)
         conn.commit()
         for name, count in report(conn).items():

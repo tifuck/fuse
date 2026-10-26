@@ -2,7 +2,7 @@ import json
 import logging
 import sqlite3
 import threading
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 from .config import settings
@@ -163,6 +163,12 @@ def for_update(conn) -> str:
     return "" if isinstance(conn, sqlite3.Connection) else " FOR UPDATE"
 
 
+def for_share(conn) -> str:
+    """Shared-lock suffix: the read waits for, and then blocks, a writer of
+    the same rows (or of the gap where an absent row would go)."""
+    return "" if isinstance(conn, sqlite3.Connection) else " LOCK IN SHARE MODE"
+
+
 def md5_of(conn, column: str) -> str:
     """Select expression digesting a column inside MariaDB, so a writer can
     skip rewriting an identical multi-MB value without reading it back.
@@ -267,9 +273,12 @@ def record_usage(
         # alike), so tokens are counted but cost is not. Cost views must only
         # reflect what the shared pool/site accounts actually burn.
         track_cost = provider != "openrouter"
+        # Shared lock: a price save/delete for this model reprices only the
+        # events its snapshot can see, so one priced at the old rate must not
+        # commit after it starts. Each side now waits for the other.
         price = (
             conn.execute(
-                "SELECT * FROM model_prices WHERE provider=? AND model=?",
+                "SELECT * FROM model_prices WHERE provider=? AND model=?" + for_share(conn),
                 (provider, model),
             ).fetchone()
             if track_cost
@@ -482,7 +491,6 @@ def save_model_price(
     long_output_rate: int | None = None,
     origin: str = "manual",
     openrouter_id: str | None = None,
-    conn: sqlite3.Connection | None = None,
 ) -> None:
     """Upsert a price row and reprice matching estimated history.
 
@@ -503,8 +511,11 @@ def save_model_price(
             if isinstance(t, dict) and int(t.get("min_prompt_tokens") or 0) > 0
         ]
     )
-    transaction = tx() if conn is None else nullcontext(conn)
-    with transaction as write_conn:
+    # Own transaction, first read after the upsert: the snapshot that picks
+    # the events to reprice must start after this price-row lock, so every
+    # event priced at the old rate (record_usage holds a shared lock on the
+    # row until it commits) is in it.
+    with tx() as write_conn:
         write_conn.execute(
             """INSERT INTO model_prices
                (provider, model, input_micros_per_million, cached_input_micros_per_million,

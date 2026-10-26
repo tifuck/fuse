@@ -210,9 +210,11 @@ async def lifespan(app: FastAPI):
         from . import command_jobs
 
         command_jobs.recover()
-        from . import skill_install
+        from . import skill_install, skills
 
-        recovered_skills = skill_install.sweep_partial_swaps()
+        recovered_skills = skill_install.sweep_partial_swaps(
+            row_hash=lambda uid, slug: (skills.get_row(uid, slug) or {}).get("content_hash")
+        )
         if recovered_skills:
             logger.warning("Recovered skill directories from partial swaps: %s", recovered_skills)
         chat_runs._stopping = False

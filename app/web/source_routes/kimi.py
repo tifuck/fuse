@@ -76,6 +76,12 @@ async def kimi_poll(request: Request):
                 {"pending": True, "error": str(exc) + " Retrying.", "retry_after": pending.get("interval", 5)},
                 status_code=502,
             )
+        # The token carries no account id; without it store_tokens cannot
+        # find this account's earlier row and a re-login adds a duplicate.
+        if not tokens.get("account_id"):
+            profile = await kimi_mod.fetch_userinfo(tokens["access_token"], region, {"device_id": device_id})
+            if profile.get("account_id"):
+                tokens["account_id"] = profile["account_id"]
         # Cancelled or restarted while Kimi answered: do not donate it.
         if _kimi_pending.get(user["id"]) is not pending:
             return JSONResponse({"error": "That Kimi sign-in was cancelled or replaced."}, status_code=409)
