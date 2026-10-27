@@ -82,6 +82,36 @@ def _same_host(a: str, b: str) -> bool:
     return not a or not b or a == b
 
 
+def _split_host_lists(jobs: list[ToolJob], user_id: int) -> list[ToolJob]:
+    """One job per host for a run_terminal_command host list, so ordering,
+    permissions, command jobs and transcript rows stay per host. The jobs
+    share the call id and keep the call as sent; _tool_messages merges them
+    back into one result. An invalid list stays whole and the executor
+    reports why."""
+    from ..workspace import WorkspaceError, host_list
+
+    out = []
+    for job in jobs:
+        try:
+            args = json.loads(job.arguments or "{}") if job.name == "run_terminal_command" else None
+            aliases = host_list(user_id, args["host"]) if isinstance(args, dict) and isinstance(args.get("host"), list) else []
+        except (ValueError, RecursionError, WorkspaceError):
+            aliases = []
+        if not aliases:
+            out.append(job)
+            continue
+        for k, alias in enumerate(aliases):
+            out.append(ToolJob(
+                orig_index=job.orig_index,
+                call_id=job.call_id,
+                name=job.name,
+                arguments=json.dumps({**args, "host": alias}, ensure_ascii=False),
+                event_id=job.event_id if len(aliases) == 1 else f"{job.event_id}_{k}",
+                call_arguments=job.arguments,
+            ))
+    return out
+
+
 async def _record_failure(
     *,
     job: ToolJob | None,
@@ -161,7 +191,7 @@ async def run_tools(
         "bound_cwd": bound_cwd,
     }
     diag = diag or {}
-    jobs = jobs_from_calls(calls, completion_i)
+    jobs = _split_host_lists(jobs_from_calls(calls, completion_i), user_id)
     queue: asyncio.Queue = asyncio.Queue()
     cancel = asyncio.Event()
     persist_lock = asyncio.Lock()

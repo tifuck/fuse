@@ -66,6 +66,8 @@ class ToolJob:
     trace: dict = field(default_factory=dict)
     done: bool = False
     image: dict | None = None
+    # A host-list call split into one job per host: the call as the model sent it.
+    call_arguments: str = ""
 
 
 def jobs_from_calls(calls: list[dict], completion_i: int) -> list[ToolJob]:
@@ -276,23 +278,43 @@ def fold_preload_skill(messages: list[dict]) -> list[dict]:
     return out
 
 
+def _by_call(jobs: list[ToolJob]) -> list[list[ToolJob]]:
+    """Jobs grouped per model call; only a split host list has several."""
+    groups: dict[str, list[ToolJob]] = {}
+    for j in jobs:
+        groups.setdefault(j.call_id, []).append(j)
+    return list(groups.values())
+
+
+def _call_result(group: list[ToolJob]) -> str:
+    if len(group) == 1:
+        return _tool_result_clip(group[0].name, group[0].text or "")
+    parts = []
+    for j in group:
+        # Only a mid-round checkpoint has unfinished hosts; a resume reads it.
+        text = _tool_result_clip(j.name, j.text or "") if j.done else (
+            "Interrupted before this host finished; check its state before re-running.")
+        if not text.startswith("From host "):
+            text = f"From host {json.loads(j.arguments).get('host')}:\n{text}"
+        parts.append(text)
+    return "\n\n".join(parts)
+
+
 def _tool_messages(jobs: list[ToolJob], content: str = "") -> list[dict]:
+    groups = _by_call(jobs)
     assistant = {
         "role": "assistant",
         "content": content or "",
         "tool_calls": [
             {
-                "id": j.call_id,
+                "id": g[0].call_id,
                 "type": "function",
-                "function": {"name": j.name, "arguments": _redact_tool_args(j.name, j.arguments)},
+                "function": {"name": g[0].name, "arguments": _redact_tool_args(g[0].name, g[0].call_arguments or g[0].arguments)},
             }
-            for j in jobs
+            for g in groups
         ],
     }
-    tools = [
-        {"role": "tool", "tool_call_id": j.call_id, "content": _tool_result_clip(j.name, j.text or "")}
-        for j in jobs
-    ]
+    tools = [{"role": "tool", "tool_call_id": g[0].call_id, "content": _call_result(g)} for g in groups]
     return [assistant, *tools, *_tool_images(jobs)]
 
 
@@ -330,9 +352,9 @@ def _provider_snapshot(messages: list[dict], jobs: list[ToolJob] | None = None, 
     assistant = _tool_messages(jobs, content=content)[0]
     assistant.update(_native_reasoning(reasoning, model, thinking))
     tools = [
-        {"role": "tool", "tool_call_id": j.call_id, "content": _tool_result_clip(j.name, j.text or "")}
-        for j in jobs
-        if j.done
+        {"role": "tool", "tool_call_id": g[0].call_id, "content": _call_result(g)}
+        for g in _by_call(jobs)
+        if any(j.done for j in g)
     ]
     return out + [assistant, *tools, *_tool_images(jobs)]
 

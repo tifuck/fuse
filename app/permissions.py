@@ -42,7 +42,8 @@ ASK_MAX_S = 600
 # dialog. Asks live a minute, so it is kept here instead of in the table.
 _ASK_DESCRIPTIONS: dict[str, str] = {}
 _ASK_DESCRIPTIONS_MAX = 512
-MAX_PENDING_PER_THREAD = 8
+# One run_terminal_command host list asks once per host (workspace.HOST_LIST_MAX).
+MAX_PENDING_PER_THREAD = 32
 _ACTIONS = ("allow", "allow_session", "allow_host", "deny")
 _STATUSES = ("pending", "allowed", "denied", "timeout", "cancelled")
 

@@ -343,7 +343,7 @@ class CodingPromptTest(unittest.TestCase):
         self.assertIn("laptop", text)
         self.assertIn("Pass host=<alias> on every file or shell call", text)
         self.assertIn("work only on hosts the user names", text)
-        self.assertIn("run the same check on every host in parallel", text)
+        self.assertIn("list them all in one run_terminal_command host list (one call per OS)", text)
         self.assertIn("Working in a specific project folder binds this chat to that project", text)
         self.assertIn("`roots:`", text)
         self.assertIn("/tmp/fuse", text)
@@ -363,7 +363,7 @@ class CodingPromptTest(unittest.TestCase):
             bound_label="",
         )
         self.assertIn("prod", text)
-        self.assertIn("once per alias", text)
+        self.assertIn("list them all in one run_terminal_command host list (one call per OS)", text)
         self.assertNotIn("cdn.jsdelivr.net", text)
         self.assertNotIn("(none)", text)
 

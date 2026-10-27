@@ -398,6 +398,32 @@ def resolve_host_row(user_id: int, alias: str | None, bound_host_id: int | None)
     raise WorkspaceError("host is required unless a project is bound")
 
 
+HOST_LIST_MAX = 32
+
+
+def host_list(user_id: int, raw) -> list[str]:
+    """run_terminal_command's host list: 1-32 known aliases, all Windows or
+    all not, since one command only fits one shell."""
+    if (not isinstance(raw, list) or not 0 < len(raw) <= HOST_LIST_MAX
+            or not all(isinstance(a, str) and a.strip() for a in raw)):
+        raise WorkspaceError(f"host must be a list of 1-{HOST_LIST_MAX} host aliases")
+    aliases = list(dict.fromkeys(a.strip().lower() for a in raw))
+    rows = {}
+    for alias in aliases:
+        try:
+            rows[alias] = resolve_host_row(user_id, alias, None)
+        except WorkspaceError as exc:
+            raise WorkspaceError(f"{alias}: {exc.detail}; nothing ran") from None
+    windows = [a for a in aliases if _is_windows_row(rows[a])]
+    if windows and len(windows) < len(aliases):
+        other = [a for a in aliases if a not in windows]
+        raise WorkspaceError(
+            f"host list mixes Windows ({', '.join(windows)}) and Linux ({', '.join(other)}) hosts; "
+            "nothing ran. Make one run_terminal_command call per OS"
+        )
+    return aliases
+
+
 def _row_get(row, key, default=""):
     try:
         val = row[key]
@@ -592,6 +618,17 @@ async def execute(name: str, arguments: str, *, user_id: int, bound_host_id=None
         return msg, _error_rec(name, msg, kind="not_allowed")
     if name == "kill_command":
         return _job_kill(user_id, args, thread_id=thread_id)
+    if args.get("host") is not None and not isinstance(args.get("host"), str):
+        # The tool runner splits a valid run_terminal_command list into one
+        # call per host; whatever reaches here would otherwise fall back to
+        # the bound host.
+        detail = "host must be one host alias"
+        if name == "run_terminal_command":
+            try:
+                host_list(user_id, args.get("host"))
+            except WorkspaceError as exc:
+                detail = exc.detail
+        return detail, _error_rec(name, detail, kind="invalid_arguments")
     try:
         row = resolve_host_row(user_id, args.get("host") if isinstance(args.get("host"), str) else None, bound_host_id)
     except WorkspaceError as exc:

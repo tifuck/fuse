@@ -333,7 +333,7 @@ class ResumeTest(unittest.IsolatedAsyncioTestCase):
             ])
 
         async def fake_tools(*args, **kwargs):
-            yield [SimpleNamespace(orig_index=0, call_id="c1", name="web_search", arguments="{}",
+            yield [runtime.ToolJob(orig_index=0, call_id="c1", name="web_search", arguments="{}",
                 event_id="ts_0_0", text="ok", trace={"id": "ts_0_0", "status": "done"}, done=True)]
 
         with patch.object(runtime, "_run_tools", fake_tools):
@@ -385,7 +385,7 @@ class ResumeTest(unittest.IsolatedAsyncioTestCase):
             ])
 
         async def fake_tools(*args, **kwargs):
-            yield [SimpleNamespace(orig_index=0, call_id="c1", name="web_search", arguments="{}",
+            yield [runtime.ToolJob(orig_index=0, call_id="c1", name="web_search", arguments="{}",
                 event_id="ts_0_0", text="x" * 500000, trace={"id": "ts_0_0", "status": "done"}, done=True)]
 
         async def compact(rows, **kwargs):
@@ -464,7 +464,7 @@ class ResumeTest(unittest.IsolatedAsyncioTestCase):
             return user, src(), "m", "m", ok_result("done")
 
         async def fake_run_tools(*args, **kwargs):
-            yield [SimpleNamespace(
+            yield [runtime.ToolJob(
                 orig_index=0, call_id="c1", name="web_search", arguments="{}",
                 event_id="ts_0_0", text="x" * 600_000, trace={"id": "ts_0_0", "status": "done"}, done=True,
             )]
@@ -576,7 +576,7 @@ class ResumeTest(unittest.IsolatedAsyncioTestCase):
             return user, src(), "offline", "offline", ok_result("answer %d" % len(sent))
 
         async def fake_tools(*args, **kwargs):
-            yield [SimpleNamespace(orig_index=0, call_id="c1", name="web_search", arguments="{\"query\":\"q\"}",
+            yield [runtime.ToolJob(orig_index=0, call_id="c1", name="web_search", arguments="{\"query\":\"q\"}",
                 event_id="ts_0_0", text="result body", trace={"id": "ts_0_0", "status": "done"}, done=True)]
 
         with patch.object(runtime, "_run_tools", fake_tools):
@@ -624,7 +624,7 @@ class ResumeTest(unittest.IsolatedAsyncioTestCase):
             await kwargs["persist"](running)
             checkpoints.append(json.loads(db.fetchone(
                 "SELECT provider_messages FROM chat_runs WHERE id=?", (run["id"],))[0]))
-            yield [SimpleNamespace(orig_index=0, call_id="c1", name="web_search", arguments="{}",
+            yield [runtime.ToolJob(orig_index=0, call_id="c1", name="web_search", arguments="{}",
                 event_id="ts_0_0", text="hits", trace={"id": "ts_0_0", "status": "done"}, done=True)]
 
         with patch.object(runtime, "_run_tools", fake_tools):
@@ -694,7 +694,7 @@ class ResumeTest(unittest.IsolatedAsyncioTestCase):
             return user, src(), "offline", "offline", ok_result()
 
         async def fake_tools(*args, **kwargs):
-            yield [SimpleNamespace(orig_index=0, call_id="c1", name="web_search", arguments="{}",
+            yield [runtime.ToolJob(orig_index=0, call_id="c1", name="web_search", arguments="{}",
                 event_id="ts_0_0", text="large result", trace={"status": "done"}, done=True)]
 
         async def compact(rows, **kwargs):
@@ -753,7 +753,7 @@ class ResumeTest(unittest.IsolatedAsyncioTestCase):
             return user, src(), "m", "m", ok_result("done")
 
         async def fake_run_tools(*args, **kwargs):
-            yield [SimpleNamespace(
+            yield [runtime.ToolJob(
                 orig_index=0, call_id="c1", name="web_search", arguments="{}",
                 event_id="ts_0_0", text="r", trace={"id": "ts_0_0", "status": "done"}, done=True,
             )]

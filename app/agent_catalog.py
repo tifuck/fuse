@@ -572,7 +572,7 @@ SCHEMAS = {
         "function": {
             "name": "run_terminal_command",
             "description": (
-                "Run a shell command on one named or bound host. A denylist is applied, not a safety sandbox. "
+                "Run a shell command on the bound host, or on every host in `host` at once. A denylist is applied, not a safety sandbox. "
                 "Linux hosts run bash (SSH: bash -lc; connectors: bash --noprofile --norc -c); Windows connectors use "
                 "PowerShell -NoProfile — match the host OS. Output keeps its first ~4 KB and last ~12 KB, cut on "
                 "line boundaries with the exact count omitted between; for long output, write it to a log under "
@@ -622,7 +622,18 @@ SCHEMAS = {
                             "watches use monitor."
                         ),
                     },
-                    "host": _HOST,
+                    "host": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "maxItems": 32,
+                        "description": (
+                            "Connected host aliases to run on, e.g. [\"web1\", \"web2\"]; one entry for one host. "
+                            "The command runs on all of them in parallel and the result has one section per host. "
+                            "All hosts in a list must share an OS (all Linux or all Windows): make one call per OS. "
+                            "Omit to use the bound host; required when unbound."
+                        ),
+                    },
                 },
                 "required": ["command"],
                 "additionalProperties": False,

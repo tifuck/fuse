@@ -577,18 +577,21 @@ def session_frame(*, project_session: bool, bound_label: str = "") -> str:
     if project_session and bound_label:
         return (
             f"Project session bound to {bound_label}. Omit host to use that machine; "
-            "pass host=<alias> for a different connected host."
+            "pass host=<alias> for a different connected host. To run the same command on several hosts, "
+            "list them all in one run_terminal_command host list (one call per OS)."
         )
     if project_session:
         return (
             "This project session is not bound to one machine. Pass host=<alias> on every file or shell "
-            "call. To run the same command on every host, call the tool once per alias in the same step."
+            "call. To run the same command on several hosts, list them all in one run_terminal_command "
+            "host list (one call per OS)."
         )
     return (
         "This is a regular chat, not a project session. Pass host=<alias> on every file or shell call; "
         "there is no shared project working directory across hosts. To use home instead of a configured default, "
         "pass cwd=\"~\" — that prompts if home is not a listed root. Always work only on hosts the "
-        "user names, or run the same check on every host in parallel. Working in a specific project "
+        "user names. To run the same command on several hosts, list them all in one run_terminal_command "
+        "host list (one call per OS). Working in a specific project "
         "folder binds this chat to that project. Do not invent file contents, host state, or tool names."
     )
 

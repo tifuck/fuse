@@ -479,21 +479,7 @@ class LoopTest(unittest.IsolatedAsyncioTestCase):
             job.trace = {"name": "web_search", "status": "done"}
             yield {"event": "tool", "id": "ts_0_0", "name": "web_search", "status": "running"}
             yield {"event": "tool", "id": "ts_0_0", "name": "web_search", "status": "done"}
-            yield [
-                type(
-                    "Job",
-                    (),
-                    {
-                        "call_id": "c1",
-                        "name": "web_search",
-                        "arguments": '{"query":"x"}',
-                        "text": "hits",
-                        "trace": {},
-                        "orig_index": 0,
-                        "event_id": "ts_0_0",
-                    },
-                )()
-            ]
+            yield [ToolJob(0, "c1", "web_search", '{"query":"x"}', "ts_0_0", text="hits")]
 
         with patch("app.chat_runtime._run_tools", fake_tools):
             body, _ = await self._run(invoke)

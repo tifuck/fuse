@@ -85,7 +85,7 @@ def result(message, finish="stop"):
 async def fake_tools(calls, **_kw):
     yield {"event": "tool", "id": "ts_0_0", "name": "web_search", "status": "running"}
     yield {"event": "tool", "id": "ts_0_0", "name": "web_search", "status": "done"}
-    yield [SimpleNamespace(call_id=call["id"], name="web_search", arguments=call["function"]["arguments"], text="hits",
+    yield [runtime.ToolJob(call_id=call["id"], name="web_search", arguments=call["function"]["arguments"], text="hits",
                            trace={"name": "web_search", "status": "done"}, orig_index=i, event_id="ts_0_0")
            for i, call in enumerate(calls)]
 

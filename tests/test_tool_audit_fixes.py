@@ -833,6 +833,109 @@ class SameStepOrderingTest(unittest.IsolatedAsyncioTestCase):
                 pass
         self.assertEqual(peak, 4)
 
+    async def test_host_list_runs_once_per_host_and_answers_once(self):
+        seen = []
+        running = 0
+        peak = 0
+
+        async def fake_execute(name, arguments, **kwargs):
+            nonlocal running, peak
+            host = json.loads(arguments)["host"]
+            seen.append(host)
+            running += 1
+            peak = max(peak, running)
+            await asyncio.sleep(0.05)
+            running -= 1
+            if host == "c":
+                return "host is disabled", {"name": name, "status": "error"}
+            return f"From host {host}:\nup", {"name": name, "status": "done", "host": host}
+
+        sent = json.dumps({"command": "uptime", "host": ["a", "B", "c"]})
+        calls = [{"id": "c0", "function": {"name": "run_terminal_command", "arguments": sent}}]
+        out = None
+        with patch("app.chat_runtime.execute_tool", fake_execute), \
+                patch.object(ws, "host_list", lambda user_id, raw: ["a", "b", "c"]):
+            async for item in runtime._run_tools(calls, user_id=1, allowed_urls=set(), request=FakeRequest(),
+                                                 completion_i=0, budgets={}, coding=True):
+                if isinstance(item, list):
+                    out = item
+        self.assertEqual(sorted(seen), ["a", "b", "c"])
+        self.assertEqual(peak, 3)
+        self.assertEqual([j.event_id for j in out], ["ts_0_0_0", "ts_0_0_1", "ts_0_0_2"])
+        msgs = runtime._tool_messages(out)
+        # The provider sees the one call it sent, with one merged result.
+        self.assertEqual(msgs[0]["tool_calls"], [{"id": "c0", "type": "function",
+                                                  "function": {"name": "run_terminal_command", "arguments": sent}}])
+        self.assertEqual(msgs[1:], [{"role": "tool", "tool_call_id": "c0", "content":
+                                     "From host a:\nup\n\nFrom host b:\nup\n\nFrom host c:\nhost is disabled"}])
+
+    async def test_invalid_host_list_stays_one_call(self):
+        seen = []
+
+        async def fake_execute(name, arguments, **kwargs):
+            seen.append(json.loads(arguments)["host"])
+            return "host list mixes", {"name": name, "status": "error"}
+
+        def refuse(user_id, raw):
+            raise ws.WorkspaceError("host list mixes")
+
+        calls = [{"id": "c0", "function": {"name": "run_terminal_command",
+                                           "arguments": json.dumps({"command": "ls", "host": ["a", "w"]})}}]
+        with patch("app.chat_runtime.execute_tool", fake_execute), patch.object(ws, "host_list", refuse):
+            async for _ in runtime._run_tools(calls, user_id=1, allowed_urls=set(), request=FakeRequest(),
+                                              completion_i=0, budgets={}, coding=True):
+                pass
+        self.assertEqual(seen, [["a", "w"]])
+
+
+class HostListTest(unittest.IsolatedAsyncioTestCase):
+    ROWS = {"a": {"agent_os": "linux"}, "b": {"agent_os": ""}, "w1": {"agent_os": "windows"}}
+
+    def _resolve(self, user_id, alias, bound_host_id):
+        if alias not in self.ROWS:
+            raise ws.WorkspaceError("unknown host alias")
+        return self.ROWS[alias]
+
+    def test_dedupes_and_lowercases(self):
+        with patch.object(ws, "resolve_host_row", self._resolve):
+            self.assertEqual(ws.host_list(1, ["A", "a ", " b"]), ["a", "b"])
+            self.assertEqual(ws.host_list(1, ["w1"]), ["w1"])
+
+    def test_refuses_mixed_os_unknown_and_malformed(self):
+        with patch.object(ws, "resolve_host_row", self._resolve):
+            with self.assertRaisesRegex(ws.WorkspaceError, r"mixes Windows \(w1\) and Linux \(a, b\).*one run_terminal_command call per OS"):
+                ws.host_list(1, ["a", "w1", "b"])
+            with self.assertRaisesRegex(ws.WorkspaceError, "zz: unknown host alias; nothing ran"):
+                ws.host_list(1, ["a", "zz"])
+            for raw in ([], "a", [1], [""], ["a"] * 33):
+                with self.assertRaisesRegex(ws.WorkspaceError, "list of 1-32"):
+                    ws.host_list(1, raw)
+
+    async def test_execute_never_falls_back_to_the_bound_host(self):
+        with patch.object(ws.hosts, "settings_for", return_value={}), \
+                patch.object(ws, "resolve_host_row", self._resolve):
+            text, rec = await ws.execute("read_file", json.dumps({"path": "x", "host": ["a"]}), user_id=1, bound_host_id=5)
+            self.assertEqual((text, rec["kind"]), ("host must be one host alias", "invalid_arguments"))
+            text, _ = await ws.execute("run_terminal_command", json.dumps({"command": "ls", "host": ["a", "w1"]}),
+                                       user_id=1, bound_host_id=5)
+            self.assertIn("mixes Windows (w1) and Linux (a)", text)
+
+    def test_checkpoint_keeps_finished_hosts(self):
+        from app.chat_generation.tool_jobs import ToolJob, _provider_snapshot
+
+        sent = json.dumps({"command": "uptime", "host": ["a", "b"]})
+        group = [
+            ToolJob(0, "c0", "run_terminal_command", '{"command": "uptime", "host": "a"}', "ts_0_0_0",
+                    text="From host a:\nup", done=True, call_arguments=sent),
+            ToolJob(0, "c0", "run_terminal_command", '{"command": "uptime", "host": "b"}', "ts_0_0_1",
+                    call_arguments=sent),
+        ]
+        snap = _provider_snapshot([], group)
+        self.assertEqual(len(snap[0]["tool_calls"]), 1)
+        self.assertEqual(snap[1]["content"], "From host a:\nup\n\nFrom host b:\n"
+                         "Interrupted before this host finished; check its state before re-running.")
+        self.assertEqual(_provider_snapshot([], group[1:])[1:], [])
+
 
 # --- SFTP session reuse ------------------------------------------------------------
 
