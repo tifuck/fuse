@@ -9,13 +9,14 @@ donor re-links it.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import json
 import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
-from .. import accounts, db
+from .. import accounts, db, provider_errors
 from ..config import settings
 from ..crypto import encrypt
 
@@ -67,6 +68,70 @@ def log_refresh_failures(what: str, rows, results) -> None:
                 "%s failed for credential %s", what, row["id"],
                 exc_info=(type(result), result, result.__traceback__),
             )
+
+
+# Refresh grants a provider already refused as revoked: credential id ->
+# (sha256 of that refresh token, the provider's reason). Claude, Kimi and
+# ChatGPT refresh before every chat once a token is due, so without this each
+# request re-posted a grant known dead. A re-link stores a new refresh token,
+# which no longer matches.
+_dead_grants: dict[int, tuple[str, str]] = {}
+
+
+def _grant_key(refresh_token) -> str:
+    return hashlib.sha256(str(refresh_token or "").encode()).hexdigest()
+
+
+def dead_grant(cred_id, refresh_token) -> bool:
+    """This credential's refresh token was already refused as revoked."""
+    kept = _dead_grants.get(int(cred_id))
+    return bool(kept) and kept[0] == _grant_key(refresh_token)
+
+
+def _token_live(extra: dict) -> bool:
+    raw = str(extra.get("expires_at") or "")
+    try:
+        when = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when > datetime.now(timezone.utc)
+
+
+def revoked_grant(row, extra: dict, kind: str, disable, reason: str = "") -> None:
+    """The provider refused this credential's refresh grant as revoked.
+
+    Its access token keeps serving until it expires, so the credential stays
+    in the pool until then instead of cutting live sessions short (refresh is
+    due minutes before expiry); the refresh loop rechecks each cycle without
+    re-posting the grant. Once the token has expired the credential is
+    disabled through `disable` (the source's disable_credential).
+    """
+    cid = int(row["id"])
+    key = _grant_key(extra.get("refresh_token"))
+    kept = _dead_grants.get(cid)
+    reason = reason or (kept[1] if kept and kept[0] == key else "") or "revoked"
+    name = provider_errors.label(kind)
+    if _token_live(extra):
+        if not kept or kept[0] != key:
+            _dead_grants[cid] = (key, reason)
+            logger.warning("%s credential %s: token refresh rejected upstream (%s); keeping it until its access token "
+                           "expires at %s. Reconnect the account.", name, cid, reason, extra.get("expires_at"))
+        return
+    _dead_grants.pop(cid, None)
+    logger.warning("%s credential %s disabled: token refresh rejected upstream (%s)", name, cid, reason)
+    disable(cid, extra=row.get("extra"))
+
+
+def oauth_reason(status: int, data) -> str:
+    """The provider's reason for a refused refresh, for the log."""
+    if isinstance(data, dict):
+        err = data.get("error")
+        text = data.get("error_description") or (err.get("message") if isinstance(err, dict) else err)
+        if text:
+            return str(text)[:120]
+    return f"HTTP {status}"
 
 
 _refresh_tasks: set = set()

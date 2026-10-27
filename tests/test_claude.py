@@ -644,10 +644,13 @@ class ClaudeStreamTest(unittest.IsolatedAsyncioTestCase):
 
 
 class _RevokeClient:
-    """httpx.AsyncClient whose token endpoint rejects every refresh as revoked."""
+    """httpx.AsyncClient whose token endpoint rejects every refresh as revoked.
+    `posts` counts token requests across instances (each refresh builds one)."""
+
+    posts = 0
 
     def __init__(self, *args, **kwargs):
-        self.posts = 0
+        pass
 
     async def __aenter__(self):
         return self
@@ -656,7 +659,7 @@ class _RevokeClient:
         return False
 
     async def post(self, *args, **kwargs):
-        self.posts += 1
+        type(self).posts += 1
         return self
 
     @property
@@ -694,12 +697,12 @@ class ClaudePoolTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await pick("claude/claude-sonnet-4-6", allow_claude=False))
 
     async def test_pool_denial_names_the_locked_pool(self):
-        self.assertIsNone(pool_denial("claude/claude-opus-5-5"))
-        self.assertIn(
-            "Connect a Claude account",
-            pool_denial("claude/claude-opus-5-5", allow_claude=False),
+        self.assertIsNone(pool_denial("claude/claude-opus-5-5", self.bob["id"], {"claude": True}))
+        self.assertEqual(
+            pool_denial("claude/claude-opus-5-5", self.bob["id"], {"claude": False}),
+            "Claude: access denied. Connect a Claude account to use Claude models.",
         )
-        self.assertIsNone(pool_denial("definitely-not-a-model", allow_claude=False, allow_grok=False))
+        self.assertIsNone(pool_denial("definitely-not-a-model", self.bob["id"], {"claude": False, "grok": False}))
 
     async def test_locked_pool_reports_reconnect_not_unknown_model(self):
         req = unittest.mock.Mock(scope={})
@@ -708,36 +711,89 @@ class ClaudePoolTest(unittest.IsolatedAsyncioTestCase):
         with pytest.raises(HTTPException) as caught:
             await api._invoke_chat(req, user, body)
         self.assertEqual(caught.value.status_code, 403)
-        self.assertIn("Connect a Claude account", str(caught.value.detail))
+        self.assertTrue(str(caught.value.detail).startswith("Claude: access denied. Connect a Claude account"))
         body["model"] = "definitely-not-a-model"
         with pytest.raises(HTTPException) as caught:
             await api._invoke_chat(req, user, body)
         self.assertEqual(caught.value.status_code, 404)
 
+    async def test_provider_rejected_account_reads_as_sign_in_rejected(self):
+        accounts.add_credential(self.sid, "mine", "tok", extra={"access_token": "tok", "refresh_token": "rt"},
+                                donated_by=self.alice["id"])
+        row = db.fetchone("SELECT * FROM credentials")
+        claude_mod.disable_credential(row["id"], extra=row["extra"])
+        req = unittest.mock.Mock(scope={})
+        body = {"model": "claude/claude-opus-5-5", "messages": [{"role": "user", "content": "hi"}]}
+        with pytest.raises(HTTPException) as caught:
+            await api._invoke_chat(req, {"id": self.alice["id"], "key_id": None}, body)
+        self.assertEqual(caught.value.status_code, 403)
+        self.assertIn("Claude: account sign-in rejected.", str(caught.value.detail))
+        # A user's own Remove is not a rejection: back to "connect an account".
+        db.execute("DELETE FROM credentials")
+        accounts.add_credential(self.sid, "mine", "tok", extra={"access_token": "tok", "refresh_token": "rt"},
+                                donated_by=self.alice["id"])
+        claude_mod.disable_credential(db.fetchone("SELECT id FROM credentials")["id"])
+        with pytest.raises(HTTPException) as caught:
+            await api._invoke_chat(req, {"id": self.alice["id"], "key_id": None}, body)
+        self.assertIn("Claude: access denied.", str(caught.value.detail))
+
     @patch("app.sources.claude.httpx.AsyncClient", _RevokeClient)
-    async def test_revoked_refresh_keeps_live_token_pickable(self):
+    async def test_revoked_refresh_keeps_live_token_and_stops_reposting(self):
         expires = (datetime.now(timezone.utc) + timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        extra = {"access_token": "tok", "refresh_token": "rt", "expires_at": expires}
+        extra = {"access_token": "tok", "refresh_token": "rt-live", "expires_at": expires}
         accounts.add_credential(self.sid, "mine", "tok", extra=extra, donated_by=self.alice["id"])
         row = db.fetchone("SELECT * FROM credentials")
+        _RevokeClient.posts = 0
+        with self.assertLogs("app.sources.token_store", level="WARNING") as site:
+            self.assertFalse(await claude_mod.refresh_one(row))
+        self.assertIn("keeping it until its access token expires", "\n".join(site.output))
+        # Every chat refreshes first once a token is due: the dead grant must
+        # not be posted again.
         self.assertFalse(await claude_mod.refresh_one(row))
-        after = db.fetchone("SELECT * FROM credentials")
-        self.assertFalse(after["disabled"])
+        self.assertEqual(_RevokeClient.posts, 1)
+        self.assertFalse(db.fetchone("SELECT * FROM credentials")["disabled"])
         self.assertTrue(claude_mod.user_has_claude(self.alice["id"]))
 
     @patch("app.sources.claude.httpx.AsyncClient", _RevokeClient)
     async def test_revoked_refresh_disables_expired_token_and_logs(self):
         expires = (datetime.now(timezone.utc) - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        extra = {"access_token": "tok", "refresh_token": "rt", "expires_at": expires}
+        extra = {"access_token": "tok", "refresh_token": "rt-expired", "expires_at": expires}
         accounts.add_credential(self.sid, "mine", "tok", extra=extra, donated_by=self.alice["id"])
         row = db.fetchone("SELECT * FROM credentials")
-        with self.assertLogs("app.sources.claude", level="WARNING") as site, \
+        with self.assertLogs("app.sources.token_store", level="WARNING") as site, \
              self.assertLogs("app.accounts", level="WARNING") as funnel:
             self.assertFalse(await claude_mod.refresh_one(row))
         self.assertTrue(db.fetchone("SELECT * FROM credentials")["disabled"])
         self.assertFalse(claude_mod.user_has_claude(self.alice["id"]))
-        self.assertIn("token refresh rejected", "\n".join(site.output))
+        self.assertIn("Refresh token expired", "\n".join(site.output))
         self.assertIn("Disabled claude credential", "\n".join(funnel.output))
+        self.assertEqual(accounts.cred_extra(db.fetchone("SELECT * FROM credentials"))["disabled_reason"], "rejected")
+
+    @patch("app.sources.claude.note_pool_invoke")
+    @patch("app.sources.claude.refresh_pool_quota", new_callable=AsyncMock)
+    @patch("app.sources.claude.refresh_due", new_callable=AsyncMock)
+    async def test_benched_pool_reports_the_usage_limit_not_no_accounts(self, _due, _quota, _invoke):
+        from app import provider_errors
+        from app.sources import pool_pick
+
+        cid = accounts.add_credential(self.sid, "mine", "tok", extra={"access_token": "tok", "refresh_token": "rt"},
+                                      donated_by=self.alice["id"])
+        reset = int(datetime.now(timezone.utc).timestamp()) + 2 * 3600
+        raw = {"error": {"type": "rate_limit_error", "message": "This request would exceed your account's rate limit."},
+               "_fuse_headers": {"anthropic-ratelimit-unified-status": "rejected",
+                                 "anthropic-ratelimit-unified-representative-claim": "five_hour",
+                                 "anthropic-ratelimit-unified-reset": str(reset)}}
+        _body, info = provider_errors.annotate("claude", 429, raw)
+        pool_pick.remember_error(cid, 429, raw, {}, info)
+        pool_pick.note_failure(cid, cooldown_seconds=provider_errors.cooldown(info, 60))
+        src = claude_mod.ClaudeSource({"id": self.sid, "name": "Claude"}, {}, [])
+        result = await src.chat({"model": "claude/claude-opus-5-5", "messages": [{"role": "user", "content": "hi"}]},
+                                user_id=self.alice["id"])
+        self.assertEqual(result.status, 429)
+        body, info = provider_errors.annotate("claude", result.status, result.body)
+        self.assertEqual(info["kind"], "usage_exhausted")
+        self.assertTrue(body["error"]["message"].startswith("Claude: 5-hour usage limit reached; resets in 2h"))
+        self.assertEqual(body["error"]["resets_at"], reset)
         self.assertIsNone(await pick("devin/claude-sonnet-5", allow_claude=True))
 
     async def test_complete_login_rejects_bad_state(self):

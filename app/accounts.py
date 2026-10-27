@@ -415,25 +415,38 @@ def update_extra(cred_id: int, extra: dict, **columns) -> None:
 def disable_credential(cred_id: int, *, extra: str | None = None) -> None:
     """extra: the stored value the failing call read. A credential re-linked or
     refreshed since keeps the row id but not that value, and must not be
-    disabled for its predecessor's rejection."""
+    disabled for its predecessor's rejection.
+
+    Only a provider rejecting the account (revoked grant, repeated 401,
+    refused key) passes extra; a user's Remove does not. That disable is
+    marked `disabled_reason: rejected` so the model gate can tell the owner
+    their sign-in stopped working instead of "connect an account". A re-link
+    writes a fresh `extra`, which clears it."""
     if extra is None:
         cursor = db.execute("UPDATE credentials SET disabled=1 WHERE id=?", (cred_id,))
     else:
         cursor = db.execute("UPDATE credentials SET disabled=1 WHERE id=? AND extra=?", (cred_id, extra))
     if not cursor.rowcount:
         return
-    # Every pool's revoked-grant and repeated-401 paths land here; without this
-    # line a credential can vanish from the pool with nothing in the journal.
     row = db.fetchone(
-        "SELECT c.label, s.type AS kind FROM credentials c JOIN sources s ON s.id=c.source_id WHERE c.id=?",
+        "SELECT c.*, s.type AS kind FROM credentials c JOIN sources s ON s.id=c.source_id WHERE c.id=?",
         (cred_id,),
     )
+    # Every pool's revoked-grant and repeated-401 paths land here; without this
+    # line a credential can vanish from the pool with nothing in the journal.
     logger.warning(
-        "Disabled %s credential %s (%s)",
+        "Disabled %s credential %s (%s)%s",
         (row and row["kind"]) or "pool",
         cred_id,
         (row and row["label"]) or "no label",
+        ": the provider rejected it" if extra is not None else "",
     )
+    if extra is not None and row is not None:
+        try:
+            current = cred_extra(row)
+        except (DecryptionError, CredentialDataError):
+            return
+        update_extra(cred_id, {**current, "disabled_reason": "rejected"})
 
 
 def delete_credential(cred_id: int) -> None:

@@ -6,9 +6,11 @@ import logging
 import threading
 import time
 import math
+from datetime import datetime, timezone
 
-from .. import accounts, db
+from .. import accounts, db, provider_errors
 from ..crypto import DecryptionError
+from .base import ChatResult
 
 logger = logging.getLogger(__name__)
 _unreadable_logged: set[int] = set()
@@ -29,6 +31,10 @@ _failure_lock = threading.Lock()
 # never be bypassed by affinity.
 _cooldown_until: dict[int, tuple[float, bool]] = {}
 _in_flight: dict[int, int] = {}
+# The classified upstream error that last failed each account: (status, body,
+# reset_at). A request that finds every account benched reports it instead of
+# "no accounts" (a spent plan sits out until its reset, hours away).
+_bench_errors: dict[int, tuple[int, dict, float | None]] = {}
 
 
 def note_failure(cred_id: int, *, cooldown_seconds: float = 30.0, affinity_safe: bool = False) -> None:
@@ -120,12 +126,44 @@ def reset_health() -> None:
         _cooldown_until.clear()
         _in_flight.clear()
         _auth_strikes.clear()
+        _bench_errors.clear()
 
 
 def _cooling_down(cid: int) -> bool:
     with _failure_lock:
         until = _cooldown_until.get(cid, (0.0, True))[0]
     return until > time.time()
+
+
+def _cooldown_end(cid: int) -> float:
+    with _failure_lock:
+        return _cooldown_until.get(cid, (0.0, True))[0]
+
+
+# Kinds that bench an account. Request-specific rejections (context, content,
+# malformed, unknown model) say nothing about the account and are not kept.
+_BENCH_KINDS = frozenset({
+    "usage_exhausted", "insufficient_balance", "plan_required", "credentials", "permission",
+    "rate_limit", "overloaded", "server_error", "timeout",
+})
+
+
+def remember_error(cred_id: int, status: int, body, headers, info: dict | None) -> None:
+    """Keep the raw error that failed this account, for explain_empty. The
+    classifying headers ride along privately (Claude's usage window lives in
+    them); annotate never relays `_fuse_headers`."""
+    if not info or info.get("kind") not in _BENCH_KINDS or not isinstance(body, dict):
+        return
+    kept = provider_errors.keep_headers(headers or {})
+    if isinstance(body.get("_fuse_headers"), dict):
+        kept.update(body["_fuse_headers"])
+    with _failure_lock:
+        _bench_errors[int(cred_id)] = (int(status), {**body, "_fuse_headers": kept}, info.get("reset_at"))
+
+
+def forget_error(cred_id: int) -> None:
+    with _failure_lock:
+        _bench_errors.pop(int(cred_id), None)
 
 
 def cooling_down(cid: int) -> bool:
@@ -345,6 +383,7 @@ def pick_account(
     owner_id: int | None = None,
     hint_id: int | None = None,
     primary_id: int | None = None,
+    why: list | None = None,
 ):
     """The caller's primary account, then their own, then the least-used plan.
 
@@ -377,6 +416,10 @@ def pick_account(
     An account at the in-flight ceiling is skipped unless every candidate is
     saturated, so load spreads instead of dog-piling the freshest account.
 
+    why, when given, collects (cred, reason) for every account skipped as
+    cooling, held, unauthed, plan or unreadable: explain_empty turns it into
+    the error a request with no pickable account reports.
+
     is_held (an off-site usage hold) withholds an account from other users,
     never from its owner: the owner using their own plan elsewhere is the
     reason for the hold, not a reason to lock them out of it.
@@ -401,6 +444,8 @@ def pick_account(
         # wins: affinity never overrides the pool's health signals.
         cooling = _cooling_down(cid)
         if cooling and (cid != prefer_id or _hard_cooldown(cid)):
+            if why is not None:
+                why.append((cred, "cooling"))
             continue
         try:
             extra = accounts.cred_extra(cred)
@@ -409,16 +454,24 @@ def pick_account(
             if cid not in _unreadable_logged:
                 _unreadable_logged.add(cid)
                 logger.error("Pool credential %s cannot be decrypted; skipping it", cid)
+            if why is not None:
+                why.append((cred, "unauthed"))
             continue
         mine = owner is not None and _donor(cred) == owner
         if is_held is not None and not mine and is_held(cred):
+            if why is not None:
+                why.append((cred, "held"))
             continue
         if is_authed is not None and not is_authed(cred, extra):
+            if why is not None:
+                why.append((cred, "unauthed"))
             continue
         rank = 0
         if kind == "chatgpt":
             plan = chatgpt_plan_type(extra)
             if model and not chatgpt_allows_model(plan, model):
+                if why is not None:
+                    why.append((cred, "plan"))
                 continue
             pct = chatgpt_usage_percent(extra)
             rank = chatgpt_plan_rank(plan, model)
@@ -463,3 +516,71 @@ def pick_account(
             if row[5] == int(hint_id) and row[1:3] == best[1:3] and in_flight(row[5]) < MAX_IN_FLIGHT:
                 return row[6], row[7]
     return best[6], best[7]
+
+
+def _held_until(cred) -> float | None:
+    try:
+        raw = str(cred["pool_held_until"] or "")
+    except (KeyError, IndexError, TypeError):
+        return None
+    try:
+        when = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when.timestamp()
+
+
+def _with_reset(body: dict, reset_at: float) -> dict:
+    """The kept error with an absolute reset, so annotate words the wait from
+    now (a stored Retry-After is relative to the original failure)."""
+    inner = body.get("error")
+    inner = dict(inner) if isinstance(inner, dict) else {"message": inner} if isinstance(inner, str) else {}
+    inner.pop("fuse_kind", None)
+    inner["resets_at"] = int(reset_at)
+    return {**body, "error": inner}
+
+
+def explain_empty(kind: str, why: list, *, model: str = "") -> ChatResult:
+    """The result for a request whose first pick found no account: why the
+    accounts this caller can use are out, and when the first one is back.
+
+    `why` is pick_account's skip list. A benched account reports the error
+    that benched it (a spent plan says so, with its reset, for as long as it
+    sits out), not a bare "no accounts" 503 that reads as a transient outage
+    and is retried. The body is raw: api.invoke_chat annotates it like any
+    provider error.
+    """
+    name = provider_errors.label(kind)
+    if not why:
+        return ChatResult(status=403, model=model, body={"error": {
+            "message": f"No {name} account in the pool is available to you.", "type": "permission_error"}})
+    timed = []
+    for cred, reason in why:
+        cid = int(cred["id"])
+        until = _cooldown_end(cid) if reason == "cooling" else _held_until(cred) if reason == "held" else None
+        if until:
+            timed.append((until, cid, reason))
+    if timed:
+        until, cid, reason = min(timed)
+        if reason == "cooling":
+            with _failure_lock:
+                kept = _bench_errors.get(cid)
+            if kept:
+                status, body, reset_at = kept
+                # A kept reset past the cooldown is the truer time (cooldowns are capped).
+                return ChatResult(status=status, body=_with_reset(body, max(reset_at or 0.0, until)), model=model)
+            return ChatResult(status=503, model=model, body={"error": {
+                "message": f"Every {name} account you can use is cooling down after recent errors.",
+                "code": "service_unavailable", "resets_at": int(until)}})
+        return ChatResult(status=429, model=model, body={"error": {
+            "message": f"The {name} accounts you can use are held for their owners, whose plan usage rose outside Fuse.",
+            "code": "usage_limit_reached", "resets_at": int(until)}})
+    if any(reason == "plan" for _, reason in why):
+        return ChatResult(status=403, model=model, body={"error": {
+            "message": f"None of the {name} accounts you can use has a plan that includes {model or 'this model'}.",
+            "code": "usage_not_included"}})
+    return ChatResult(status=401, model=model, body={"error": {
+        "message": f"None of the {name} accounts you can use is signed in; reconnect it on Sources.",
+        "type": "authentication_error"}})

@@ -73,6 +73,10 @@ CASES = [
     ("devin", 0, {"error": {"message": "Permission denied: internal server error: error number 12", "type": "permission_denied"}}, None, "permission"),
     ("cursor", 429, {"error": {"message": "Error", "type": "error_pro_user_usage_limit"}}, None, "usage_exhausted"),
     ("cursor", 429, {"error": {"message": "Error", "type": "error_free_user_rate_limit_exceeded"}}, None, "rate_limit"),
+    # Cursor's free-plan gate rides resource_exhausted: an entitlement, not a rate limit.
+    ("cursor", 429, {"error": {"message": "Free plans can only use Auto. Switch to Auto or upgrade plans to continue.",
+                               "type": "resource_exhausted"}}, None, "plan_required"),
+    ("cursor", 429, {"error": {"message": "Too many requests", "type": "resource_exhausted"}}, None, "rate_limit"),
 ]
 
 
@@ -204,3 +208,80 @@ def test_stall_already_tagged_keeps_its_detail():
     raw = policy._error_obj(502, {"error": {"message": "No output for 5m mid-reply (idle timeout).", "fuse_kind": "stalled"}})
     frame = policy._exhausted_provider_error(False, raw, 502, attempts=4, provider="claude")
     assert frame["error"]["message"] == "Claude: stopped responding. No output for 5m mid-reply (idle timeout)."
+
+
+# A request whose first pick finds no account reports why (pool_pick.explain_empty),
+# not a bare "No X accounts in the pool" 503 that reads as an outage and is retried.
+
+def _explained(kind, why, model=""):
+    from app.sources import pool_pick
+
+    result = pool_pick.explain_empty(kind, why, model=model)
+    body, info = pe.annotate(kind, result.status, result.body)
+    return result.status, body["error"]["message"], info
+
+
+def test_benched_pool_replays_the_error_that_benched_it():
+    from app.sources import pool_pick
+
+    pool_pick.reset_health()
+    try:
+        raw = {"code": "subscription:free-usage-exhausted",
+               "error": "You've used all the included free usage for model grok-4.6 for now."}
+        info = pe.classify("grok", 429, raw)
+        pool_pick.remember_error(7, 429, raw, {}, info)
+        pool_pick.note_failure(7, cooldown_seconds=5 * 3600)
+        status, message, info = _explained("grok", [({"id": 7}, "cooling")])
+        assert status == 429 and info["kind"] == "usage_exhausted"
+        assert message.startswith("Grok: plan usage limit reached; resets in 4h 59m")
+        assert "free usage for model grok-4.6" in message
+        assert not policy._should_resume(status, message, resumes_left=4, idle_stalls=0, kind=info["kind"])
+        # Benched with no kept error: a short, retryable cooldown with its wait.
+        pool_pick.note_failure(8, cooldown_seconds=30)
+        status, message, info = _explained("grok", [({"id": 8}, "cooling"), ({"id": 7}, "cooling")])
+        assert status == 503 and info["kind"] == "overloaded" and 25 < info["retry_after"] <= 30
+        assert message.startswith("Grok: overloaded; retry in ")
+        assert policy._should_resume(status, message, resumes_left=4, idle_stalls=0, kind=info["kind"])
+        # A success clears the kept error.
+        pool_pick.forget_error(7)
+        assert _explained("grok", [({"id": 7}, "cooling")])[0] == 503
+    finally:
+        pool_pick.reset_health()
+
+
+def test_unbenched_reasons_are_terminal_and_named():
+    from datetime import datetime, timedelta, timezone
+
+    held = (datetime.now(timezone.utc) + timedelta(hours=20)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    status, message, info = _explained("claude", [({"id": 1, "pool_held_until": held}, "held")])
+    assert (status, info["kind"]) == (429, "usage_exhausted")
+    assert message.startswith("Claude: plan usage limit reached; resets in 19h 59m") and "held for their owners" in message
+    status, message, info = _explained("chatgpt", [({"id": 2}, "plan")], model="gpt-6-sol")
+    assert (status, info["kind"]) == (403, "plan_required") and "gpt-6-sol" in message
+    status, message, info = _explained("kimi", [({"id": 3}, "unauthed")])
+    assert (status, info["kind"]) == (401, "credentials")
+    assert message.startswith("Kimi: account sign-in rejected.")
+    status, message, info = _explained("devin", [])
+    assert (status, info["kind"]) == (403, "permission")
+    assert message == "Devin: access denied. No Devin account in the pool is available to you."
+
+
+def test_every_ollama_key_out_names_the_soonest_reason():
+    import time
+    from types import SimpleNamespace
+    from app.sources.ollama import _no_key_result
+
+    now = time.time()
+    weekly = SimpleNamespace(available_at=now + 3 * 86400, last_error_type="weekly_quota")
+    blip = SimpleNamespace(available_at=now + 20, last_error_type="server_503")
+    result = _no_key_result(SimpleNamespace(states={"a": weekly}), "m")
+    body, info = pe.annotate("ollama", result.status, result.body)
+    assert (result.status, info["kind"]) == (429, "usage_exhausted")
+    assert body["error"]["message"].startswith("Ollama Cloud: plan usage limit reached; resets in 2d 23h")
+    result = _no_key_result(SimpleNamespace(states={"a": weekly, "b": blip}), "m")
+    _, info = pe.annotate("ollama", result.status, result.body)
+    assert (result.status, info["kind"]) == (503, "overloaded") and 0 < info["retry_after"] <= 20
+    dead = SimpleNamespace(available_at=0.0, last_error_type="auth_failure")
+    result = _no_key_result(SimpleNamespace(states={"a": dead}), "m")
+    _, info = pe.annotate("ollama", result.status, result.body)
+    assert (result.status, info["kind"]) == (401, "credentials")

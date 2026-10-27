@@ -39,7 +39,7 @@ from ..proxy import UsageStream, openai_chat
 from . import pool_policy
 from .base import EFFORTS, ChatResult, map_effort
 from .grok import apply_usage_guard, is_held
-from .pool_pick import Failover, auth_failure_confirmed, note_failure, pick_account, release, reserve
+from .pool_pick import Failover, auth_failure_confirmed, explain_empty, note_failure, pick_account, release, reserve
 from .pool_session import bind, drop_cache_routing_fields, lookup
 from .token_store import log_refresh_failures
 
@@ -856,9 +856,10 @@ class NanoGPTSource:
         prefs = model_prefs(uid)
         tried: set[int] = set()
         attempts: list[dict] = []
+        # A refusal, not an outage: a 503 here read as transient and was retried.
         last = ChatResult(
-            status=503,
-            body={"error": {"message": "No NanoGPT account can serve this model for you."}},
+            status=403,
+            body={"error": {"message": "No NanoGPT account can serve this model for you.", "type": "permission_error"}},
             model=upstream,
         )
         prefer_id = lookup("nanogpt", session_id)
@@ -866,6 +867,7 @@ class NanoGPTSource:
         primary_id = pool_policy.primary_account(uid, "nanogpt")
         failover = Failover()
         now = datetime.now(timezone.utc)
+        why: list = []
         while True:
             picked = pick_account(
                 rows,
@@ -877,8 +879,13 @@ class NanoGPTSource:
                 owner_id=uid,
                 hint_id=hint_id,
                 primary_id=primary_id,
+                why=why,
             )
             if not picked:
+                # `usable` also refuses keys that cannot serve this model, so
+                # only a benched account explains more than the refusal above.
+                if not tried and any(reason in ("cooling", "held") for _, reason in why):
+                    last = explain_empty("nanogpt", why, model=upstream)
                 if attempts and last.credential_id == attempts[-1].get("credential_id"):
                     attempts.pop()
                 last.attempts = attempts

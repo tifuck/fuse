@@ -300,8 +300,9 @@ def test_subscription_model_borrows_only_a_safe_key(backend, network):
     assert str(requests[-1].url) == "https://api.nano-gpt.com/api/v1/chat/completions"
     assert "provider" not in sent and "billing_mode" not in sent
     assert result.usage["provider_request_id"] == "req-1"
-    # A paid model never borrows: no key of the caller's own, no route.
-    assert _chat(src, PAID, c).status == 503
+    # A paid model never borrows: no key of the caller's own, no route. A
+    # refusal (403), not an outage the chat would retry.
+    assert _chat(src, PAID, c).status == 403
 
 
 def test_owner_runs_paid_models_on_their_own_key_first(backend, network):

@@ -16,11 +16,13 @@ from ..config import settings
 from ..crypto import encrypt
 from ..proxy import UsageStream, openai_chat
 from .base import ChatResult
-from .pool_pick import Failover, note_failure, pick_account, release, reserve
+from .pool_pick import Failover, explain_empty, note_failure, pick_account, release, reserve
 from . import pool_policy
 from .grok_version import current_version
 from .pool_session import bind, drop_cache_routing_fields, lookup
-from .token_store import expires_at, log_refresh_failures, persist_rotated, shield_refresh
+from .token_store import (
+    dead_grant, expires_at, log_refresh_failures, oauth_reason, persist_rotated, revoked_grant, shield_refresh,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -500,7 +502,7 @@ class GrokSource:
     def _headers(self, token: str, model: str, conv_id: str | None = None) -> dict:
         return _auth_headers(token, model, conv_id)
 
-    def _pick(self, exclude: set[int] | None = None, prefer_id: int | None = None, owner_id: int | None = None, hint_id: int | None = None, primary_id: int | None = None):
+    def _pick(self, exclude: set[int] | None = None, prefer_id: int | None = None, owner_id: int | None = None, hint_id: int | None = None, primary_id: int | None = None, why: list | None = None):
         now = datetime.now(timezone.utc)
         return pick_account(
             self.creds,
@@ -513,6 +515,7 @@ class GrokSource:
             owner_id=owner_id,
             hint_id=hint_id,
             primary_id=primary_id,
+            why=why,
         )
 
     async def models(self) -> list[str]:
@@ -545,9 +548,12 @@ class GrokSource:
         hint_id = lookup("grok", affinity_id) if prefer_id is None and affinity_id else None
         primary_id = pool_policy.primary_account(user_id, "grok")
         failover = Failover()
+        why: list = []
         while True:
-            picked = self._pick(exclude=tried, prefer_id=prefer_id, owner_id=user_id, hint_id=hint_id, primary_id=primary_id)
+            picked = self._pick(exclude=tried, prefer_id=prefer_id, owner_id=user_id, hint_id=hint_id, primary_id=primary_id, why=why)
             if not picked:
+                if not tried:
+                    last = explain_empty("grok", why)
                 if attempts and last.credential_id == attempts[-1].get("credential_id"):
                     attempts.pop()
                 last.attempts = attempts
@@ -758,6 +764,9 @@ async def _refresh_one_unlocked(cred) -> bool:
     rt = extra.get("refresh_token")
     if not rt:
         return False
+    if dead_grant(row["id"], rt):
+        revoked_grant(row, extra, "grok", disable_credential)
+        return False
     try:
         async with httpx.AsyncClient(timeout=20) as client:
             r = await client.post(
@@ -778,17 +787,7 @@ async def _refresh_one_unlocked(cred) -> bool:
         return False
     if "access_token" not in data:
         if _oauth_revoked(r.status_code, data):
-            expires = _parse_ts(str(extra.get("expires_at") or ""))
-            if expires and expires > datetime.now(timezone.utc):
-                # The grant is dead but the access token still serves; keep the
-                # credential until it actually expires instead of cutting live
-                # sessions short. The refresh loop rechecks every cycle.
-                return False
-            logger.warning(
-                "Grok credential %s disabled: token refresh rejected upstream (HTTP %s)",
-                row["id"], r.status_code,
-            )
-            disable_credential(row["id"], extra=row.get("extra"))
+            revoked_grant(row, extra, "grok", disable_credential, oauth_reason(r.status_code, data))
         else:
             note_failure(row["id"], cooldown_seconds=60 if r.status_code == 429 else 30)
         return False

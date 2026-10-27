@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import math
 import time
 import uuid
 import httpx
@@ -157,6 +156,34 @@ def to_openai_tools(calls: list, include_index=False, *, state: dict | None = No
                 call["function"].pop("name")
         out.append(call)
     return out
+
+
+# key_pool's last error for a key -> (field, value, status, message) the
+# classifier reads. The key back soonest decides how "every key is out" reads:
+# a spent quota is not a blip, and a blip must not read as a spent quota.
+_KEY_OUT = {
+    "weekly_quota": ("code", "usage_limit_reached", 429, "Every Ollama key's usage quota is spent."),
+    "session_quota": ("code", "usage_limit_reached", 429, "Every Ollama key's session quota is spent."),
+    "hourly_quota": ("code", "usage_limit_reached", 429, "Every Ollama key's hourly quota is spent."),
+    "rate_limit": ("code", "rate_limit_exceeded", 429, "Every Ollama key is rate limited."),
+    "account_unavailable": ("type", "permission_error", 403, "Ollama has made every key's account unavailable."),
+}
+
+
+def _no_key_result(pool, model: str) -> ChatResult:
+    """No key can be tried: each one is disabled, until a reset or for good."""
+    now = time.time()
+    back = [state for state in pool.states.values() if state.available_at > now]
+    if not back:
+        return ChatResult(status=401, model=model, body={"error": {
+            "message": "Ollama rejected every configured API key.", "type": "authentication_error"}})
+    soonest = min(back, key=lambda state: state.available_at)
+    field, value, status, message = _KEY_OUT.get(
+        soonest.last_error_type or "",
+        ("code", "service_unavailable", 503, "Every Ollama key is cooling down after recent errors."),
+    )
+    return ChatResult(status=status, model=model, body={"error": {
+        "message": message, field: value, "resets_at": int(soonest.available_at)}})
 
 
 class OllamaSource:
@@ -428,15 +455,9 @@ class OllamaSource:
                 body={"error": {"message": f"upstream timeout ({type(exc).__name__})"}},
                 model=payload["model"],
             )
-        except NoAvailableKeyError as exc:
+        except NoAvailableKeyError:
             await client.aclose()
-            headers = {"Retry-After": str(max(1, math.ceil(exc.retry_after)))} if exc.retry_after else {}
-            return ChatResult(
-                status=503,
-                body={"error": {"message": "Every Ollama key is cooling down or out of usage; try again later."}},
-                model=payload["model"],
-                response_headers=headers,
-            )
+            return _no_key_result(self.pool, payload["model"])
         except (httpx.TransportError, ConnectionError) as exc:
             await client.aclose()
             return ChatResult(

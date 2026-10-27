@@ -690,8 +690,10 @@ class SkuHealthTest(unittest.TestCase):
                 }
             )
         )
-        self.assertEqual(result.status, 503)
-        self.assertEqual(result.body, {"error": "No Devin accounts in the pool"})
+        # The empty pool is a refusal naming the pool (pool_pick.explain_empty),
+        # not the old transient-looking "No Devin accounts in the pool" 503.
+        self.assertEqual(result.status, 403)
+        self.assertEqual(result.body["error"]["message"], "No Devin account in the pool is available to you.")
 
 
 class CatalogMetadataTest(unittest.TestCase):

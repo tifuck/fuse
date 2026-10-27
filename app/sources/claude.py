@@ -16,7 +16,6 @@ import asyncio
 import base64
 import hashlib
 import json
-import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
@@ -30,10 +29,10 @@ from ..crypto import encrypt
 from ..proxy import UsageStream
 from .base import ChatResult
 from .grok import apply_usage_guard, is_held as credential_is_held
-from .pool_pick import Failover, auth_failure_confirmed, note_failure, pick_account, release, reserve
+from .pool_pick import Failover, auth_failure_confirmed, explain_empty, note_failure, pick_account, release, reserve
 from . import pool_policy
 from .pool_session import bind, lookup
-from .token_store import log_refresh_failures, persist_rotated, shield_refresh
+from .token_store import dead_grant, log_refresh_failures, oauth_reason, persist_rotated, revoked_grant, shield_refresh
 
 from .claude_catalog import (
     CLAUDE_MODELS,
@@ -80,7 +79,6 @@ from .claude_stream import (
 
 USAGE_TTL = 300
 REFRESH_WINDOW = timedelta(minutes=5)
-logger = logging.getLogger(__name__)
 _refresh_locks: dict[int, asyncio.Lock] = {}
 
 SCOPES = (
@@ -556,6 +554,9 @@ async def _refresh_one_unlocked(cred) -> bool:
     rt = extra.get("refresh_token")
     if not rt:
         return False
+    if dead_grant(row["id"], rt):
+        revoked_grant(row, extra, "claude", disable_credential)
+        return False
     body = {
         "grant_type": "refresh_token",
         "refresh_token": rt,
@@ -579,21 +580,7 @@ async def _refresh_one_unlocked(cred) -> bool:
         return False
     if not isinstance(data, dict) or r.status_code != 200 or "access_token" not in data:
         if _oauth_revoked(r.status_code, data if isinstance(data, dict) else {}):
-            expires = _parse_ts(str(extra.get("expires_at") or ""))
-            if expires and expires > datetime.now(timezone.utc):
-                # The grant is dead but the access token still serves; keep the
-                # credential until it actually expires instead of cutting live
-                # sessions short. The refresh loop rechecks every cycle.
-                return False
-            reason = ""
-            if isinstance(data, dict):
-                reason = str(data.get("error_description") or data.get("error") or "")[:120]
-            logger.warning(
-                "Claude credential %s disabled: token refresh rejected upstream (%s)",
-                row["id"],
-                reason or f"HTTP {r.status_code}",
-            )
-            disable_credential(row["id"], extra=row.get("extra"))
+            revoked_grant(row, extra, "claude", disable_credential, oauth_reason(r.status_code, data))
         else:
             note_failure(row["id"], cooldown_seconds=60 if r.status_code == 429 else 30)
         return False
@@ -733,7 +720,7 @@ class ClaudeSource:
         self.cfg = cfg
         self.creds = list(creds)
 
-    def _pick(self, exclude: set[int] | None = None, prefer_id: int | None = None, owner_id: int | None = None, hint_id: int | None = None, primary_id: int | None = None):
+    def _pick(self, exclude: set[int] | None = None, prefer_id: int | None = None, owner_id: int | None = None, hint_id: int | None = None, primary_id: int | None = None, why: list | None = None):
         now = datetime.now(timezone.utc)
         return pick_account(
             self.creds,
@@ -745,6 +732,7 @@ class ClaudeSource:
             owner_id=owner_id,
             hint_id=hint_id,
             primary_id=primary_id,
+            why=why,
         )
 
     async def models(self) -> list[str]:
@@ -782,9 +770,12 @@ class ClaudeSource:
         hint_id = lookup("claude", affinity_id) if prefer_id is None and affinity_id else None
         primary_id = pool_policy.primary_account(user_id, "claude")
         failover = Failover()
+        why: list = []
         while True:
-            picked = self._pick(exclude=tried, prefer_id=prefer_id, owner_id=user_id, hint_id=hint_id, primary_id=primary_id)
+            picked = self._pick(exclude=tried, prefer_id=prefer_id, owner_id=user_id, hint_id=hint_id, primary_id=primary_id, why=why)
             if not picked:
+                if not tried:
+                    last = explain_empty("claude", why)
                 if attempts and last.credential_id == attempts[-1].get("credential_id"):
                     attempts.pop()
                 last.attempts = attempts

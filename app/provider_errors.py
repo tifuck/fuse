@@ -299,6 +299,11 @@ _STATUS = {
 _STATUS_REWRITE = frozenset({401, 402, 403, 429})
 
 
+def label(provider: str) -> str:
+    """The provider's name as error messages show it."""
+    return _LABELS.get(provider, "Provider")
+
+
 def _text(value) -> str:
     return value.strip() if isinstance(value, str) else ""
 
@@ -371,9 +376,13 @@ def _structured(provider, err, code, etype, meta, h, message) -> str | None:
         # Connect code, as error.code (unary) or error.type (Fuse's trailer frame).
         connect = next((v for v in (code, etype) if v in _CONNECT or v == "resource_exhausted"), "")
         if connect == "resource_exhausted":
-            # Devin reports a spent daily/weekly allowance this way; Cursor's
-            # enum (checked above) refines it when present.
-            return "usage_exhausted" if provider == "devin" else "rate_limit"
+            # Devin reports a spent daily/weekly allowance this way. Cursor
+            # sends its free-plan gate and spent usage as resource_exhausted
+            # too: its enum (checked above) refines it when present, else the
+            # message does, else it is a rate limit.
+            if provider == "devin":
+                return "usage_exhausted"
+            return _from_message(provider, message, 0) or "rate_limit"
         # Devin's "an internal error occurred" is usually a dead SKU that fails
         # identically on retry (devin_catalog's breaker); leave it unclassified.
         if connect and not (provider == "devin" and connect in ("internal", "unknown")):

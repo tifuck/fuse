@@ -38,7 +38,7 @@ from .base import ChatResult
 from . import cursor_agent as agent
 from .cursor_agent import TurnError
 from .grok import apply_usage_guard, is_held
-from .pool_pick import Failover, auth_failure_confirmed, note_failure, pick_account, release, reserve
+from .pool_pick import Failover, auth_failure_confirmed, explain_empty, note_failure, pick_account, release, reserve
 from . import pool_policy
 from .pool_session import bind, lookup
 from .token_store import log_refresh_failures, persist_rotated, shield_refresh
@@ -97,6 +97,9 @@ def _plan_denied(message: str) -> bool:
     resource_exhausted: an entitlement, not a rate limit."""
     low = message.lower()
     return "free plan" in low or "only use auto" in low
+
+
+_PLAN_DENIED = "This Cursor model needs a paid plan; Free accounts can only use Auto (cursor/auto)."
 
 
 def listable_models(names: list[str], user_id: int | None) -> list[str]:
@@ -995,7 +998,7 @@ class CursorSource:
         self.cfg = cfg
         self.creds = list(creds)
 
-    def _pick(self, exclude: set[int] | None = None, prefer_id: int | None = None, owner_id: int | None = None, hint_id: int | None = None, primary_id: int | None = None):
+    def _pick(self, exclude: set[int] | None = None, prefer_id: int | None = None, owner_id: int | None = None, hint_id: int | None = None, primary_id: int | None = None, why: list | None = None):
         now = datetime.now(timezone.utc)
         return pick_account(
             self.creds,
@@ -1007,6 +1010,7 @@ class CursorSource:
             owner_id=owner_id,
             hint_id=hint_id,
             primary_id=primary_id,
+            why=why,
         )
 
     async def models(self) -> list[str]:
@@ -1099,9 +1103,12 @@ class CursorSource:
         primary_id = pool_policy.primary_account(user_id, "cursor")
         failover = Failover()
         refreshed: set[int] = set()
+        why: list = []
         while True:
-            picked = self._pick(exclude=tried, prefer_id=prefer_id, owner_id=user_id, hint_id=hint_id, primary_id=primary_id)
+            picked = self._pick(exclude=tried, prefer_id=prefer_id, owner_id=user_id, hint_id=hint_id, primary_id=primary_id, why=why)
             if not picked:
+                if not tried:
+                    last = explain_empty("cursor", why)
                 if attempts and last.credential_id == attempts[-1].get("credential_id"):
                     attempts.pop()
                 last.attempts = attempts
@@ -1143,7 +1150,7 @@ class CursorSource:
                 if _plan_denied(exc.message):
                     # Keep the account warm; another account may be paid.
                     last.status = 403
-                    last.body = {"error": {"message": "This Cursor model needs a paid plan; Free accounts can only use Auto (cursor/auto)."}}
+                    last.body = {"error": {"message": _PLAN_DENIED}}
                     continue
                 if exc.status in (403, 429):
                     try:
@@ -1168,7 +1175,12 @@ class CursorSource:
             try:
                 obj, usage = await _collect(rnd, model)
             except TurnError as exc:
-                last = ChatResult(status=exc.status, body={"error": {"message": exc.message, "type": exc.code}},
+                # The plan gate can arrive mid-turn too: the same 403 as at
+                # open, not Cursor's resource_exhausted 429 (a rate limit).
+                denied = _plan_denied(exc.message)
+                last = ChatResult(status=403 if denied else exc.status,
+                                  body={"error": {"message": _PLAN_DENIED}} if denied
+                                  else {"error": {"message": exc.message, "type": exc.code}},
                                   credential_id=cid, model=sel["slug"])
                 last.attempts = attempts
                 return last

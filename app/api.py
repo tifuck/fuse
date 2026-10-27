@@ -21,6 +21,7 @@ from .sources import (
     models_union,
     pick,
     pool_denial,
+    pool_denial_message,
     user_has_chatgpt,
     user_has_devin,
     user_has_grok,
@@ -31,7 +32,7 @@ from .sources import (
     user_has_nanogpt,
     user_has_zai,
 )
-from .sources import pool_policy
+from .sources import pool_pick
 from .sources.base import ChatResult
 from .sources import openrouter as openrouter_mod
 from .sources import explabs as explabs_mod
@@ -571,6 +572,10 @@ async def _invoke_chat(request: Request, user, body: dict, *, cheap_reasoning: b
     claude_ok = user_has_claude(user["id"])
     cursor_ok = user_has_cursor(user["id"])
     nanogpt_ok = user_has_nanogpt(user["id"])
+    access = {
+        "grok": grok_ok, "chatgpt": chatgpt_ok, "zai": zai_ok, "devin": devin_ok, "kimi": kimi_ok,
+        "mimo": mimo_ok, "claude": claude_ok, "cursor": cursor_ok, "nanogpt": nanogpt_ok,
+    }
     if model.startswith("explabs/") and not explabs_mod.user_has_explabs(user["id"]):
         raise HTTPException(403, "Connect an Experiential Labs API key to use its models")
     try:
@@ -597,44 +602,15 @@ async def _invoke_chat(request: Request, user, body: dict, *, cheap_reasoning: b
             raise HTTPException(403, denied)
         if catalog_unavailable_for(model):
             raise HTTPException(503, "Model catalog is temporarily unavailable")
-        denial = pool_denial(
-            model,
-            allow_grok=grok_ok,
-            allow_chatgpt=chatgpt_ok,
-            allow_zai=zai_ok,
-            allow_devin=devin_ok,
-            allow_kimi=kimi_ok,
-            allow_mimo=mimo_ok,
-            allow_claude=claude_ok,
-            allow_cursor=cursor_ok,
-        )
+        # A model of a pool the user lost their account for (e.g. an OAuth
+        # grant revoked upstream) says what to reconnect, not "Unknown model".
+        denial = pool_denial(model, user["id"], access)
         if denial:
-            # The model belongs to a pool whose account the user lost (e.g. an
-            # OAuth grant revoked upstream): say what to reconnect, not
-            # "Unknown model".
             raise HTTPException(403, denial)
         raise HTTPException(404, "Unknown model")
     src, upstream = picked
-    if src.type_id == "grok" and not grok_ok:
-        raise HTTPException(403, "Connect a Grok account with an active subscription to use Grok models")
-    if src.type_id == "chatgpt" and not chatgpt_ok:
-        raise HTTPException(403, "Connect a ChatGPT account to use ChatGPT models")
-    if src.type_id == "zai" and not zai_ok:
-        if pool_policy.uses_shared_pool(user["id"], "zai"):
-            raise HTTPException(403, "Connect a Z.AI key, or share a live x.ai or OpenAI account, to use GLM models")
-        raise HTTPException(403, "Connect a Z.AI key to use GLM models")
-    if src.type_id == "devin" and not devin_ok:
-        raise HTTPException(403, "Connect a Devin account to use Devin models")
-    if src.type_id == "kimi" and not kimi_ok:
-        raise HTTPException(403, "Connect a Kimi membership to use Kimi models")
-    if src.type_id == "mimo" and not mimo_ok:
-        raise HTTPException(403, "Connect a Xiaomi Token Plan to use MiMo models")
-    if src.type_id == "claude" and not claude_ok:
-        raise HTTPException(403, "Connect a Claude account to use Claude models")
-    if src.type_id == "cursor" and not cursor_ok:
-        raise HTTPException(403, "Connect a Cursor account to use Cursor models")
-    if src.type_id == "nanogpt" and not nanogpt_ok:
-        raise HTTPException(403, "Connect a NanoGPT account to use NanoGPT models")
+    if access.get(src.type_id) is False:
+        raise HTTPException(403, pool_denial_message(src.type_id, user["id"]))
     _ensure_encodable(body)
     requested = model
     if cheap_reasoning:
@@ -696,10 +672,17 @@ async def _invoke_chat(request: Request, user, body: dict, *, cheap_reasoning: b
         if prepared is not None:
             await prepared()
     if result.status != 200:
+        raw = result.body
         result.body, info = provider_errors.annotate(src.type_id, result.status, result.body, result.response_headers)
+        if src.type_id in POOL_TYPES and result.credential_id:
+            # What benched this account, so a later request that finds the
+            # whole pool benched reports it (pool_pick.explain_empty).
+            pool_pick.remember_error(result.credential_id, result.status, raw, result.response_headers, info)
         wait = info["retry_after"] if info and info["kind"] in provider_errors.TRANSIENT else None
         if wait and not any(k.lower() == "retry-after" for k in result.response_headers):
             result.response_headers = {**result.response_headers, "Retry-After": str(math.ceil(wait))}
+    elif src.type_id in POOL_TYPES and result.credential_id:
+        pool_pick.forget_error(result.credential_id)
     headers = {}
     if omitted:
         headers["X-Fuse-Images-Omitted"] = str(omitted)

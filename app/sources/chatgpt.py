@@ -30,6 +30,7 @@ from .base import ChatResult
 from .pool_pick import (
     CHATGPT_FREE_PLANS,
     Failover,
+    explain_empty,
     chatgpt_allows_model,
     chatgpt_plan_type,
     note_failure,
@@ -40,7 +41,9 @@ from .pool_pick import (
 )
 from . import pool_policy
 from .pool_session import bind, lookup
-from .token_store import expires_at, log_refresh_failures, persist_rotated, shield_refresh
+from .token_store import (
+    dead_grant, expires_at, log_refresh_failures, oauth_reason, persist_rotated, revoked_grant, shield_refresh,
+)
 
 from .chatgpt_catalog import (
     CHATGPT_MODELS,
@@ -461,6 +464,9 @@ async def _refresh_one_unlocked(cred) -> bool:
     rt = extra.get("refresh_token")
     if not rt:
         return False
+    if dead_grant(row["id"], rt):
+        revoked_grant(row, extra, "chatgpt", disable_credential)
+        return False
     try:
         async with _auth_client() as client:
             r = await client.post(
@@ -482,17 +488,7 @@ async def _refresh_one_unlocked(cred) -> bool:
         return False
     if not isinstance(data, dict) or r.status_code != 200 or "access_token" not in data:
         if _oauth_revoked(r.status_code, data):
-            expires = _parse_ts(str(extra.get("expires_at") or ""))
-            if expires and expires > datetime.now(timezone.utc):
-                # The grant is dead but the access token still serves; keep the
-                # credential until it actually expires instead of cutting live
-                # sessions short. The refresh loop rechecks every cycle.
-                return False
-            logger.warning(
-                "ChatGPT credential %s disabled: token refresh rejected upstream (HTTP %s)",
-                row["id"], r.status_code,
-            )
-            disable_credential(row["id"], extra=row.get("extra"))
+            revoked_grant(row, extra, "chatgpt", disable_credential, oauth_reason(r.status_code, data))
         else:
             note_failure(row["id"], cooldown_seconds=60 if r.status_code == 429 else 30)
         return False
@@ -769,7 +765,7 @@ class ChatGPTSource:
         self.cfg = cfg
         self.creds = list(creds)
 
-    def _pick(self, model: str = "", exclude: set[int] | None = None, prefer_id: int | None = None, owner_id: int | None = None, hint_id: int | None = None, primary_id: int | None = None):
+    def _pick(self, model: str = "", exclude: set[int] | None = None, prefer_id: int | None = None, owner_id: int | None = None, hint_id: int | None = None, primary_id: int | None = None, why: list | None = None):
         return pick_account(
             self.creds,
             kind="chatgpt",
@@ -780,6 +776,7 @@ class ChatGPTSource:
             owner_id=owner_id,
             hint_id=hint_id,
             primary_id=primary_id,
+            why=why,
         )
 
     async def models(self) -> list[str]:
@@ -856,9 +853,12 @@ class ChatGPTSource:
         hint_id = lookup("chatgpt", affinity_id) if prefer_id is None and affinity_id else None
         primary_id = pool_policy.primary_account(user_id, "chatgpt")
         failover = Failover()
+        why: list = []
         while True:
-            picked = self._pick(model, exclude=tried, prefer_id=prefer_id, owner_id=user_id, hint_id=hint_id, primary_id=primary_id)
+            picked = self._pick(model, exclude=tried, prefer_id=prefer_id, owner_id=user_id, hint_id=hint_id, primary_id=primary_id, why=why)
             if not picked:
+                if not tried:
+                    last = explain_empty("chatgpt", why, model=model)
                 if attempts and last.credential_id == attempts[-1].get("credential_id"):
                     attempts.pop()
                 last.attempts = attempts

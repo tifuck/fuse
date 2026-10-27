@@ -324,6 +324,8 @@ class FakeRun:
     """Stands in for agent.CursorRun: a tool round, then the turn's end."""
 
     fail: list = []
+    # TurnError args raised after the round's first event (mid-turn).
+    fail_mid: list = []
     instances: list = []
 
     def __init__(self, **kw):
@@ -342,6 +344,9 @@ class FakeRun:
         self.started = request
 
     async def round(self):
+        if FakeRun.fail_mid:
+            yield ("text", "Hi")
+            raise agent.TurnError(*FakeRun.fail_mid.pop(0))
         if self.resumed is None and b"next" not in (self.started or b""):
             self.pending = {"c1": (1, "x1")}
             yield ("text", "Hi")
@@ -373,6 +378,7 @@ class CursorPoolTest(unittest.IsolatedAsyncioTestCase):
             agent.drop(conv)
         FakeRun.instances = []
         FakeRun.fail = []
+        FakeRun.fail_mid = []
         db.execute("DELETE FROM credentials")
         db.execute("DELETE FROM api_keys")
         db.execute("DELETE FROM users")
@@ -522,6 +528,14 @@ class CursorPoolTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(denied.status, 403)
             self.assertIn("paid plan", json.dumps(denied.body))
             await self._chat([{"role": "user", "content": "hi"}])  # the account is not cooled down
+            # The same gate arriving mid-turn is the same 403, not Cursor's
+            # resource_exhausted 429 (which classified as a rate limit).
+            FakeRun.fail_mid = [(429, "Free plans can only use Auto. Switch to Auto or upgrade plans to continue.",
+                                 "resource_exhausted")]
+            denied = await src.chat({"model": "cursor/grok-4.7", "messages": [{"role": "user", "content": "hi"}]},
+                                    user_id=self.alice["id"])
+            self.assertEqual(denied.status, 403)
+            self.assertIn("paid plan", json.dumps(denied.body))
 
     async def test_tool_images_are_normalized_like_cursors_sdk(self):
         big = _png(3000, 2000, noise=True)

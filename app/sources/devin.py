@@ -28,7 +28,7 @@ from ..crypto import encrypt
 from ..proxy import UsageStream
 from .base import ChatResult
 from . import devin_proto as proto
-from .pool_pick import Failover, auth_failure_confirmed, note_failure, pick_account, release, reserve
+from .pool_pick import Failover, auth_failure_confirmed, explain_empty, note_failure, pick_account, release, reserve
 from . import pool_policy
 from .pool_session import bind, drop_cache_routing_fields, lookup
 
@@ -561,7 +561,7 @@ class DevinSource:
         self.cfg = cfg
         self.creds = list(creds)
 
-    def _pick(self, exclude: set[int] | None = None, prefer_id: int | None = None, owner_id: int | None = None, hint_id: int | None = None, primary_id: int | None = None):
+    def _pick(self, exclude: set[int] | None = None, prefer_id: int | None = None, owner_id: int | None = None, hint_id: int | None = None, primary_id: int | None = None, why: list | None = None):
         now = datetime.now(timezone.utc)
         return pick_account(
             self.creds,
@@ -573,6 +573,7 @@ class DevinSource:
             owner_id=owner_id,
             hint_id=hint_id,
             primary_id=primary_id,
+            why=why,
         )
 
     async def models(self) -> list[str]:
@@ -629,9 +630,12 @@ class DevinSource:
         hint_id = lookup("devin", affinity_id) if prefer_id is None and affinity_id else None
         primary_id = pool_policy.primary_account(user_id, "devin")
         failover = Failover()
+        why: list = []
         while True:
-            picked = self._pick(exclude=tried, prefer_id=prefer_id, owner_id=user_id, hint_id=hint_id, primary_id=primary_id)
+            picked = self._pick(exclude=tried, prefer_id=prefer_id, owner_id=user_id, hint_id=hint_id, primary_id=primary_id, why=why)
             if not picked:
+                if not tried:
+                    last = explain_empty("devin", why)
                 # Parity with grok/chatgpt/kimi/zai/mimo: the final failed
                 # attempt is reported once via the returned result; drop the
                 # duplicate so its usage is not counted twice.

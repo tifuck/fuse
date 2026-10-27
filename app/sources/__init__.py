@@ -625,10 +625,7 @@ async def pick(
     return None
 
 
-# Messages mirror the per-source 403s in the API layer. A pool the caller has
-# no usable account for still owns its model ids, so refusing one must say
-# which account to reconnect instead of "unknown model".
-_POOL_DENIAL_MESSAGES = {
+_POOL_CONNECT = {
     "devin": "Connect a Devin account to use Devin models",
     "kimi": "Connect a Kimi membership to use Kimi models",
     "mimo": "Connect a Xiaomi Token Plan to use MiMo models",
@@ -637,48 +634,77 @@ _POOL_DENIAL_MESSAGES = {
     "grok": "Connect a Grok account with an active subscription to use Grok models",
     "chatgpt": "Connect a ChatGPT account to use ChatGPT models",
     "zai": "Connect a Z.AI key to use GLM models",
+    "nanogpt": "Connect a NanoGPT account to use NanoGPT models",
 }
 
 
-def pool_denial(
-    model: str,
-    *,
-    allow_grok: bool = True,
-    allow_chatgpt: bool = True,
-    allow_zai: bool = True,
-    allow_devin: bool = True,
-    allow_kimi: bool = True,
-    allow_mimo: bool = True,
-    allow_claude: bool = True,
-    allow_cursor: bool = True,
-) -> str | None:
-    """The 403 message when `model` belongs to a configured pool the caller is
-    locked out of, or None. pick() resolves such models to None (a disabled
-    credential must not keep serving), so a user whose account was disabled
-    mid-session otherwise sees "Unknown model" with nothing to reconnect."""
+def _signed_out(type_id: str, user_id: int) -> bool:
+    """The user's own account here was disabled because the provider
+    rejected it (accounts.disable_credential marks those)."""
+    from .. import accounts
+
+    rows = db.fetchall(
+        "SELECT c.* FROM credentials c JOIN sources s ON s.id=c.source_id"
+        " WHERE s.type=? AND c.donated_by=? AND c.disabled=1",
+        (type_id, user_id),
+    )
+    for row in rows:
+        try:
+            if accounts.cred_extra(row).get("disabled_reason") == "rejected":
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def pool_denial_message(type_id: str, user_id: int) -> str:
+    """Why this user may not use a pool, in the "<Provider>: <summary>. <detail>"
+    shape the chat card and provider errors share."""
+    from . import pool_policy
+    from ..provider_errors import label
+
+    name = label(type_id)
+    if _signed_out(type_id, user_id):
+        return (f"{name}: account sign-in rejected. {name} stopped accepting your account's sign-in "
+                "(it expired or was revoked), so Fuse disconnected it. Reconnect it on Sources.")
+    connect = _POOL_CONNECT.get(type_id, f"Connect a {name} account to use its models")
+    if type_id == "zai" and pool_policy.uses_shared_pool(user_id, "zai"):
+        connect = "Connect a Z.AI key, or share a live x.ai or OpenAI account, to use GLM models"
+    return f"{name}: access denied. {connect}."
+
+
+def pool_denial(model: str, user_id: int, access: dict[str, bool]) -> str | None:
+    """The 403 message when `model` belongs to a configured pool the caller
+    has no usable account for (`access[type] is False`), or None.
+
+    pick() resolves such ids to None (a disabled credential must not keep
+    serving), so without this a user whose account was disabled mid-session
+    saw "Unknown model" with nothing to reconnect."""
     from . import chatgpt as chatgpt_mod
     from . import devin as devin_mod
     from . import kimi as kimi_mod
     from . import mimo as mimo_mod
     from . import claude as claude_mod
     from . import cursor as cursor_mod
+    from . import nanogpt as nanogpt_mod
 
     enabled = {s.type_id for s in all_enabled()}
     # Detection order mirrors pick()'s, so an id two pools could claim denies
     # as the one pick would have resolved it to.
     checks = (
-        ("devin", allow_devin, devin_mod.is_devin_model(model)),
-        ("kimi", allow_kimi, kimi_mod.is_kimi_model(model)),
-        ("mimo", allow_mimo, mimo_mod.is_mimo_model(model)),
-        ("claude", allow_claude, claude_mod.is_claude_model(model)),
-        ("cursor", allow_cursor, cursor_mod.is_cursor_model(model)),
-        ("grok", allow_grok, model.startswith("grok")),
-        ("chatgpt", allow_chatgpt, chatgpt_mod.is_chatgpt_model(model)),
-        ("zai", allow_zai, model in ZAI_MODELS or model.startswith("glm-")),
+        ("devin", devin_mod.is_devin_model(model)),
+        ("kimi", kimi_mod.is_kimi_model(model)),
+        ("mimo", mimo_mod.is_mimo_model(model)),
+        ("claude", claude_mod.is_claude_model(model)),
+        ("cursor", cursor_mod.is_cursor_model(model)),
+        ("nanogpt", nanogpt_mod.is_nanogpt_model(model)),
+        ("grok", model.startswith("grok")),
+        ("chatgpt", chatgpt_mod.is_chatgpt_model(model)),
+        ("zai", model in ZAI_MODELS or model.startswith("glm-")),
     )
-    for type_id, allowed, matches in checks:
-        if not allowed and matches and type_id in enabled:
-            return _POOL_DENIAL_MESSAGES[type_id]
+    for type_id, matches in checks:
+        if matches and access.get(type_id) is False and type_id in enabled:
+            return pool_denial_message(type_id, user_id)
     return None
 
 
