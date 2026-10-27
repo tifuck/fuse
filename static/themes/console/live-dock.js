@@ -264,6 +264,11 @@ function setConsoleSpin(el) {
 function syncLiveDock() {
     deps.scheduleTodoSync();
     if (!deps.liveDock) return;
+    // A hidden log is a transcript being replaced (a thread switch): the line
+    // takes the opened thread's state at once. The slide in and the delayed
+    // hide are for a run starting or ending in view; on a switch they left the
+    // last thread's line under the new transcript for a beat, then dropped it.
+    const instant = deps.log.hidden;
     const live = Boolean(deps.streaming || (deps.runIsActive(deps.activeRun) && deps.runIsStopping(deps.activeRun)));
     const msg = live ? deps.activeAssistant() : null;
     const on = Boolean(live && msg && msg.role === "assistant");
@@ -284,7 +289,11 @@ function syncLiveDock() {
       }
       if ((deps.liveDockSpin)) setConsoleSpin(deps.liveDockSpin);
       else if (deps.liveDockSpin) deps.applySpinEl(deps.liveDockSpin, deps.activitySpinSet(msg), "dock", true, msg._spinOrigin);
-      if (!deps.root.classList.contains("is-live-dock") && !deps.liveDockShowFrame) {
+      if (instant) {
+        if (deps.liveDockShowFrame) cancelAnimationFrame(deps.liveDockShowFrame);
+        deps.liveDockShowFrame = 0;
+        deps.root.classList.add("is-live-dock");
+      } else if (!deps.root.classList.contains("is-live-dock") && !deps.liveDockShowFrame) {
         deps.liveDockShowFrame = requestAnimationFrame(() => {
           deps.liveDockShowFrame = 0;
           if (!deps.runIsActive(deps.activeRun)) return;
@@ -296,6 +305,15 @@ function syncLiveDock() {
       return;
     }
     if (!deps.root.classList.contains("is-live-dock") && deps.liveDock.hidden) return;
+    if (instant) {
+      clearTimeout(deps.liveDockHideTimer);
+      deps.liveDockHideTimer = 0;
+      spokenPhase = "";
+      spokenMsg = null;
+      deps.root.classList.remove("is-live-dock");
+      hideLiveDock();
+      return;
+    }
     if (deps.liveDockHideTimer) return;
     speakEnd();
     deps.root.classList.remove("is-live-dock");

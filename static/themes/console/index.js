@@ -135,6 +135,7 @@ export function createConsoleTheme(runtime) {
     get liveDockShowFrame() { return runtime.liveDockShowFrame; },
     set liveDockShowFrame(value) { runtime.liveDockShowFrame = value; },
     get liveDockSpin() { return runtime.liveDockSpin; },
+    get log() { return runtime.log; },
     get reduceMotion() { return runtime.reduceMotion; },
     get root() { return runtime.root; },
     get runIsActive() { return runtime.runIsActive; },
