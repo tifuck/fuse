@@ -16,6 +16,7 @@ import { createAgents } from './chat/agents.js';
 import { createComposer } from './chat/composer.js';
 import { createTurns } from './chat/turns.js';
 import { createBoot } from './chat/boot.js';
+import { createDictation } from './chat/dictation.js';
 
 // Composition root. Everything that remains here is irreducible orchestration:
 // the theme seam (createConsoleTheme destructuring with its fixture anchor),
@@ -408,6 +409,8 @@ import { createBoot } from './chat/boot.js';
     sidebar,
     sync,
   });
+
+  if (S.config.speech) createDictation({ picker });
 
     if (S.viewMenu && S.viewMenu.parentElement !== document.body) document.body.append(S.viewMenu);
 

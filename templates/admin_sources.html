@@ -12,6 +12,7 @@
   <a href="#openrouter">OpenRouter</a>
   <a href="#explabs">Experiential Labs</a>
   <a href="#compat">OpenAI-compatible</a>
+  {% if speech %}<a href="#speech">Speech to text</a>{% endif %}
 </nav>
 
 <section class="panel" id="llama">
@@ -49,6 +50,44 @@
     <button type="submit" class="btn">Save llama</button>
   </form>
 </section>
+
+{% if speech %}
+<section class="panel" id="speech">
+  <div class="account-head">
+    <div>
+      <p class="eyebrow">Dictation</p>
+      <h2>Speech to text</h2>
+    </div>
+    <div class="head-actions">
+      {% if speech.enabled %}<span class="badge on">On</span>{% else %}<span class="badge off">Off</span>{% endif %}
+      <button type="button" class="btn ghost sm probe" data-source="{{ speech.id }}">Test</button>
+    </div>
+  </div>
+  <div class="probe-out hidden" id="probe-{{ speech.id }}"></div>
+  <p class="aside">One OpenAI-compatible <code>/v1/audio/transcriptions</code> server for every account, such as <a href="https://speaches.ai/">Speaches</a> with Parakeet or Whisper. Chat shows a mic while this is on. Audio passes through and is never stored. Test lists the server's models.</p>
+  <form method="post" action="/admin/speech" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Base URL
+      <input name="base_url" value="{{ speech.cfg.get('base_url', '') }}" placeholder="https://stt.example.com:8000/v1">
+    </label>
+    <label>API key
+      <input name="api_key" type="password" autocomplete="off" placeholder="{% if speech.key_set %}Key is set — enter a new one to replace it{% else %}Optional{% endif %}">
+    </label>
+    <label>Model
+      <input name="model" value="{{ speech.cfg.get('model', '') }}" placeholder="istupakov/parakeet-tdt-0.6b-v3-onnx">
+    </label>
+    <label class="check">
+      <input type="checkbox" name="insecure" value="1"{% if not speech.cfg.get('verify', 1) %} checked{% endif %}>
+      Skip TLS verify (self-signed / curl -k)
+    </label>
+    <label class="check">
+      <input type="checkbox" name="enabled" value="1"{% if speech.enabled %} checked{% endif %}>
+      Enabled — show the mic in chat for every user
+    </label>
+    <button type="submit" class="btn">Save speech to text</button>
+  </form>
+</section>
+{% endif %}
 
 <section class="panel" id="ollama">
   <div class="account-head">

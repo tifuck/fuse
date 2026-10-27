@@ -7,7 +7,7 @@ import asyncio
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 
-from .. import artifacts, chat_drafts, chat_events, chat_runtime, chat_runs, chat_recaps, chat_store, chat_titles, chat_tools, chats, context_compact as ctxmod, db, hosts, model_caps, permissions as permissions_mod, skills, vault, context_meter
+from .. import artifacts, speech, chat_drafts, chat_events, chat_runtime, chat_runs, chat_recaps, chat_store, chat_titles, chat_tools, chats, context_compact as ctxmod, db, hosts, model_caps, permissions as permissions_mod, skills, vault, context_meter
 from ..config import settings
 from ..security import limiter
 from ..sources import openrouter as openrouter_mod
@@ -73,6 +73,7 @@ async def chat_page(request: Request):
             "skills": skills.index_for_chat(user["id"]),
             "coding": bool(agent_settings.get("agent_coding")),
             "openrouter": bool(openrouter_mod.user_has_openrouter(user["id"])),
+            "speech": speech.available(),
             "permission_defaults": {
                 "chat": agent_settings["default_chat_permissions"],
                 "project": agent_settings["default_project_permissions"],

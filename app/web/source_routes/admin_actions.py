@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
-from ... import accounts, db
+from ... import accounts, db, speech
 from ...crypto import encrypt
 from ...security import allowed_base_url, limiter
 from ...sources import TYPES, invalidate_model_cache
@@ -330,10 +330,13 @@ async def admin_source_test(request: Request, source_id: int):
             {"ok": False, "error": "Too many tests. Wait a minute.", "checks": []},
             status_code=429,
         )
-    row = db.fetchone("SELECT id FROM sources WHERE id=?", (source_id,))
+    row = db.fetchone("SELECT id, type FROM sources WHERE id=?", (source_id,))
     if not row:
         return JSONResponse({"ok": False, "error": "Unknown source", "checks": []}, status_code=404)
-    result = await probe_source(source_id)
+    if row.get("type") == speech.TYPE:
+        result = await speech.probe()
+    else:
+        result = await probe_source(source_id)
     return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
 

@@ -5,7 +5,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
-from ... import db, stats
+from ... import db, speech, stats
+from ...config import settings
 from ...sources import TYPES
 from ...sources import chatgpt as chatgpt_mod
 from ...sources import devin as devin_mod
@@ -169,6 +170,7 @@ def _admin_sources_ctx(error: str | None = None, notice: str | None = None, olla
         "openrouter_user_count": int(openrouter_user_n["n"] if openrouter_user_n else 0),
         "extras": extras,
         "extra_counts": extra_counts,
+        "speech": speech.admin_view() if settings.speech_enabled else None,
         "error": error,
         "notice": notice,
         "types": TYPES,

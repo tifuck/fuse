@@ -235,6 +235,14 @@
             </button>
             <div class="chat-context-pop" id="chat-context-pop" data-context-pop role="dialog" aria-label="Context usage" hidden></div>
           </div>
+          {% if chat_config.speech %}
+          <button type="button" class="chat-mic-btn" data-chat-mic aria-label="Dictate" aria-pressed="false" title="Dictate">
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+              <rect x="5.6" y="1.8" width="4.8" height="8.2" rx="2.4" fill="none" stroke="currentColor" stroke-width="1.5"/>
+              <path d="M3.4 7.6a4.6 4.6 0 0 0 9.2 0M8 12.2v2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+          </button>
+          {% endif %}
           <button type="submit" class="chat-send" data-chat-send disabled aria-label="Send">
             <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M8 3.2v9.6M4.2 7l3.8-3.8L11.8 7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </button>

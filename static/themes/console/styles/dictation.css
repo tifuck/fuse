@@ -1,0 +1,146 @@
+/* Dictation: the composer mic and the live strip above the composer. */
+html[data-chat-console="true"] .chat[data-view="console"] .chat-mic-btn {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--mute);
+  line-height: 0;
+  cursor: pointer;
+  touch-action: none;
+  transition: color var(--dur-1) ease, scale var(--dur-1) var(--ease-snap);
+}
+html[data-chat-console="true"] .chat[data-view="console"] .chat-mic-btn:hover { color: var(--mist); }
+html[data-chat-console="true"] .chat[data-view="console"] .chat-mic-btn:active { scale: 0.92; }
+html[data-chat-console="true"] .chat[data-view="console"] .chat-mic-btn svg { display: block; }
+html[data-chat-console="true"] .chat[data-view="console"] .chat-mic-btn.is-live { color: var(--brass); }
+html[data-chat-console="true"] .chat[data-view="console"] .chat-mic-btn.is-live::after {
+  content: "";
+  position: absolute;
+  top: 0.2rem;
+  right: 0.2rem;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--brass);
+  animation: dictation-blink 1.2s ease-in-out infinite;
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box.is-dictating::before { color: var(--brass); }
+
+html[data-chat-console="true"] .chat[data-view="console"] .dictation {
+  position: absolute;
+  bottom: calc(100% + 0.7rem);
+  left: 50%;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  height: 2.6rem;
+  padding: 0 0.4rem 0 0.85rem;
+  border: 1px solid color-mix(in srgb, var(--brass) 30%, var(--line));
+  background: color-mix(in srgb, var(--ink) 90%, var(--panel));
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.38), 0 0 0 1px rgba(0, 0, 0, 0.2);
+  color: var(--mist);
+  font: 500 0.75rem/1 var(--mono);
+  transform: translateX(-50%);
+  animation: dictation-in var(--dur-2) var(--ease-snap);
+}
+html[data-chat-console="true"] .chat[data-view="console"] .dictation[hidden] { display: none; }
+
+html[data-chat-console="true"] .chat[data-view="console"] .dictation-dot {
+  position: relative;
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--brass);
+}
+html[data-chat-console="true"] .chat[data-view="console"] .dictation-dot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--brass);
+  animation: dictation-ring 1.6s ease-out infinite;
+}
+html[data-chat-console="true"] .chat[data-view="console"] .dictation:is(.is-starting, .is-finishing) .dictation-dot { background: var(--mute); }
+html[data-chat-console="true"] .chat[data-view="console"] .dictation:is(.is-starting, .is-finishing) .dictation-dot::after { animation: none; opacity: 0; }
+
+html[data-chat-console="true"] .chat[data-view="console"] .dictation-bars {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 1.6rem;
+}
+html[data-chat-console="true"] .chat[data-view="console"] .dictation-bars i {
+  display: block;
+  width: 3px;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--brass);
+  opacity: 0.55;
+  transform: scaleY(0.1);
+  transition: opacity var(--dur-2) ease;
+  will-change: transform;
+}
+html[data-chat-console="true"] .chat[data-view="console"] .dictation.is-voiced .dictation-bars i { opacity: 1; }
+html[data-chat-console="true"] .chat[data-view="console"] .dictation:is(.is-starting, .is-finishing) .dictation-bars i {
+  background: var(--mute);
+  animation: dictation-wait 1.1s ease-in-out infinite;
+  animation-delay: calc(var(--i) * -45ms);
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .dictation-time {
+  min-width: 2.4rem;
+  color: var(--mute);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+html[data-chat-console="true"] .chat[data-view="console"] .dictation-btn {
+  display: grid;
+  place-items: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--mute);
+  line-height: 0;
+  cursor: pointer;
+  transition: color var(--dur-1) ease, background-color var(--dur-1) ease;
+}
+html[data-chat-console="true"] .chat[data-view="console"] .dictation-btn:hover { color: var(--mist); background: color-mix(in srgb, var(--mist) 8%, transparent); }
+html[data-chat-console="true"] .chat[data-view="console"] .dictation-btn.is-done { color: var(--brass); }
+html[data-chat-console="true"] .chat[data-view="console"] .dictation-btn.is-done:hover { color: var(--on-brass, var(--ink)); background: var(--brass); }
+html[data-chat-console="true"] .chat[data-view="console"] .dictation.is-finishing .dictation-btn { pointer-events: none; opacity: 0.35; }
+
+@keyframes dictation-in {
+  from { opacity: 0; transform: translate(-50%, 6px); }
+}
+@keyframes dictation-ring {
+  from { opacity: 0.55; transform: scale(1); }
+  to { opacity: 0; transform: scale(2.6); }
+}
+@keyframes dictation-blink {
+  50% { opacity: 0.25; }
+}
+@keyframes dictation-wait {
+  0%, 100% { transform: scaleY(0.12); }
+  50% { transform: scaleY(0.38); }
+}
+
+@media (max-width: 800px) {
+  html[data-chat-console="true"] .chat[data-view="console"] .dictation { gap: 0.5rem; padding-left: 0.7rem; }
+  html[data-chat-console="true"] .chat[data-view="console"] .dictation-bars { gap: 2px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-chat-console="true"] .chat[data-view="console"] :is(.dictation, .dictation-dot::after, .chat-mic-btn.is-live::after) { animation: none; }
+}

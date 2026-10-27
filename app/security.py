@@ -135,7 +135,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
-        response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        mic = "(self)" if settings.speech_enabled else "()"
+        response.headers.setdefault("Permissions-Policy", f"camera=(), microphone={mic}, geolocation=()")
         response.headers.setdefault(
             "Content-Security-Policy",
             "default-src 'self'; "
