@@ -94,20 +94,6 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-pro
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-todo-badge { top: calc(50% - 0.7rem); }
 
 /* —— Transcript edges —— */
-/* Under the agent list the transcript fades in instead of showing a cut line. */
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-work::after {
-  content: "";
-  position: absolute;
-  top: calc(100% + 1px);
-  left: 0;
-  right: var(--chat-scroll-gutter, 0px);
-  height: 0.75rem;
-  background: linear-gradient(180deg, var(--ink), transparent);
-  pointer-events: none;
-}
-html[data-chat-backdrop]:not([data-chat-backdrop="none"])[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-work::after {
-  background: linear-gradient(180deg, color-mix(in srgb, var(--ink) 32%, transparent), transparent);
-}
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-stage:has(> .chat-work:not([hidden])) > .chat-thread { padding-top: 0.75rem; }
 
 /* Viewing a subagent, the main row reads as the way back. */

@@ -231,20 +231,6 @@ body.is-chat.is-keyboard .chat-dock {
 @media (min-width: 801px) {
   .chat:not(.is-untitled) .chat-bar-title { min-width: 5rem; }
 }
-.chat-edge {
-  position: absolute;
-  left: 0;
-  right: 0;
-  pointer-events: none;
-  z-index: 4;
-}
-.chat-edge-top {
-  top: 0;
-  right: var(--chat-scroll-gutter, 0px);
-  height: calc(var(--chat-bar-h) + 1.35rem);
-  background: linear-gradient(180deg, var(--ink) 0%, var(--ink) calc(100% - 1.35rem), transparent 100%);
-}
-.chat.is-empty .chat-edge { opacity: 0; }
 /* The scroll box starts under the bar, so its scrollbar never runs beneath it. */
 .chat-thread {
   margin-top: var(--chat-bar-h);

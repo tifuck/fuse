@@ -7,8 +7,8 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box
      +  >  [attachments …]
      +  >  text …            model  web  perms  context  send
    The +/> gutter sits on the first text line and the tools on the last, so
-   typing, wrapping or attaching never moves either; only a phone drops the
-   tools under long text instead of squeezing it. The top rule keeps one
+   typing never moves either. Once the text wraps, it takes the full width
+   and the tools drop to their own row under it. The top rule keeps one
    colour: focus shows in the prompt glyph and the caret. */
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box {
   --composer-row: 1.75rem;
@@ -63,6 +63,12 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-con
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-send { grid-area: 2 / 8; }
 
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-model, .chat-search-btn, .chat-perm-host, .chat-context-wrap, .chat-send) { align-self: end; }
+
+html[data-chat-console="true"] body.is-chat .chat.is-composer-expanded[data-view="console"] .chat-compose { grid-column: 3 / -1; }
+html[data-chat-console="true"] body.is-chat .chat.is-composer-expanded[data-view="console"] :is(.chat-model, .chat-search-btn, .chat-perm-host, .chat-context-wrap, .chat-send) {
+  grid-row: 3;
+  margin-top: 0.15rem;
+}
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-search-btn, .chat-perm-host, .chat-context-wrap, .chat-send) { margin-left: 0.3rem; }
 
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-attach-btn, .chat-search-btn, .chat-perm-btn, .chat-context, .chat-send) {
@@ -100,16 +106,20 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-pic
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box textarea {
   font: 0.8125rem/var(--composer-line) var(--mono);
   padding-block: calc((var(--composer-row) - var(--composer-line)) / 2);
-  max-height: min(11rem, 34dvh);
+  max-height: min(24rem, 45dvh);
 }
 
-/* Scrolled text fades under the rule instead of showing a cut line. */
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box textarea.is-scrolled {
-  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 0.85rem);
-  mask-image: linear-gradient(to bottom, transparent, #000 0.85rem);
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box .chat-attach-list:not([hidden]) {
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  margin: 0 0 0.3rem;
+  padding: 0.15rem 0 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
 }
-
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box .chat-attach-list:not([hidden]) { gap: 0.35rem; margin: 0 0 0.3rem; padding: 0.15rem 0 0; }
 
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box .chat-attach-chip {
   gap: 0.45rem;
@@ -118,10 +128,29 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box
   padding: 0 0.2rem;
   border-color: color-mix(in srgb, var(--mist) 16%, var(--ink));
   background: color-mix(in srgb, var(--mist) 4%, transparent);
+  flex: 0 0 auto;
   font: 0.72rem/1 var(--mono);
 }
 
-html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box .chat-attach-chip img { width: 1.25rem; height: 1.25rem; }
+/* An image is its thumbnail: a screenshot's file name says nothing, so it
+   moves to the tooltip and the remove button sits on the corner. */
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box .chat-attach-chip:has(> .chat-attach-thumb) {
+  width: 3rem;
+  height: 3rem;
+  padding: 0;
+  overflow: hidden;
+}
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box .chat-attach-chip:has(> .chat-attach-thumb) > span { display: none; }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box .chat-attach-thumb { width: 100%; height: 100%; }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box .chat-attach-thumb img { width: 100%; height: 100%; border-radius: 0; }
+html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box .chat-attach-chip:has(> .chat-attach-thumb) [data-remove-attach] {
+  position: absolute;
+  top: 0;
+  right: 0;
+  color: var(--mist);
+  background: color-mix(in srgb, var(--ink) 78%, transparent);
+}
+
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box .chat-attach-icon { justify-content: center; width: 1.25rem; }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box .chat-attach-chip [data-remove-attach] { position: static; flex: 0 0 auto; width: 1.25rem; height: 1.25rem; }
 
@@ -162,7 +191,17 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-foo
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box {
     --composer-row: 1.875rem;
     --composer-line: 1.4rem;
-    grid-template-columns: var(--composer-row) auto minmax(0, 1fr) minmax(0, max-content) repeat(4, auto);
+    grid-template-columns: auto auto minmax(0, 1fr) minmax(0, max-content) repeat(4, auto);
+  }
+
+  /* A phone always keeps two rows: the text runs from the left edge and
+     + sits with the tools under it. Spanning into the 1fr column leaves
+     column 1 empty, so it collapses and the > moves to the edge. */
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-compose { grid-column: 3 / -1; }
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-attach-btn { grid-area: 3 / 1 / 4 / 4; justify-self: start; }
+  html[data-chat-console="true"] body.is-chat .chat[data-view="console"] :is(.chat-attach-btn, .chat-model, .chat-search-btn, .chat-perm-host, .chat-context-wrap, .chat-send) {
+    grid-row: 3;
+    margin-top: 0.15rem;
   }
 
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box textarea { font-size: 16px; }
@@ -172,12 +211,6 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-foo
   /* A phone always shows the provider mark, so the chip keeps one shape. */
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-picker-btn > :is(span, small) { display: none; }
   html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-picker-btn .provider-logo { display: block; width: 1rem; height: 1rem; opacity: 0.7; }
-
-  html[data-chat-console="true"] body.is-chat .chat.is-composer-expanded[data-view="console"] .chat-compose { grid-column: 3 / -1; }
-  html[data-chat-console="true"] body.is-chat .chat.is-composer-expanded[data-view="console"] :is(.chat-model, .chat-search-btn, .chat-perm-host, .chat-context-wrap, .chat-send) {
-    grid-row: 3;
-    margin-top: 0.15rem;
-  }
 }
 
 @media (max-width: 800px) {

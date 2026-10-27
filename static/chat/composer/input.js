@@ -253,7 +253,7 @@ export function createInput(ctx) {
   }
 
     // Mobile wraps the bar onto extra rows; publish its measured height so the
-  // thread and top fade clear it. Desktop is a fixed single row.
+  // thread clears it. Desktop is a fixed single row.
   function fitChatBar() {
     const bar = S.root.querySelector(".chat-bar");
     if (!bar) return;

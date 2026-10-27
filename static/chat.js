@@ -1091,8 +1091,6 @@ import { createBoot } from './chat/boot.js';
     if (window.FuseComposerSpell) FuseComposerSpell.debounceCheck();
   });
 
-    S.input.addEventListener("scroll", () => S.input.classList.toggle("is-scrolled", S.input.scrollTop > 0), { passive: true });
-
     S.input.addEventListener("focus", () => {
     document.documentElement.scrollTop = 0;
     document.body.scrollTop = 0;

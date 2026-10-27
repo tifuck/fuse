@@ -86,7 +86,7 @@ export function createAttachments(ctx) {
       .map((att, index) => {
         const thumb =
           att.kind === "image" && att.data
-            ? `<button type="button" class="chat-attach-thumb" data-image-preview="${escapeHtml(att.data)}" data-image-name="${escapeHtml(att.name || "")}" aria-label="Preview ${escapeHtml(att.name || "image")}"><img src="${escapeHtml(att.data)}" alt=""></button>`
+            ? `<button type="button" class="chat-attach-thumb" data-image-preview="${escapeHtml(att.data)}" data-image-name="${escapeHtml(att.name || "")}" title="${escapeHtml(att.name || "")}" aria-label="Preview ${escapeHtml(att.name || "image")}"><img src="${escapeHtml(att.data)}" alt=""></button>`
             : `<span class="chat-attach-icon">${ui.FILE_CHIP_ICON}</span>`;
         return `<div class="chat-attach-chip">${thumb}<span>${escapeHtml(att.name || "File")}</span><button type="button" data-remove-attach="${index}" aria-label="Remove ${escapeHtml(att.name || "file")}">×</button></div>`;
       })

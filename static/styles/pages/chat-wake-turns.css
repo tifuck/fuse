@@ -174,10 +174,6 @@
     padding-bottom: max(0.35rem, var(--safe-bottom));
   }
   .chat-sync { padding: 0 0.1rem 0.1rem 0.55rem; font-size: 0.56rem; }
-  .chat-edge-top {
-    height: calc(var(--chat-bar-h) + 1.05rem);
-    background: linear-gradient(180deg, var(--ink) 0%, var(--ink) calc(100% - 1.05rem), transparent 100%);
-  }
   .chat-latest {
     min-height: 1.7rem;
     padding: 0.22rem 0.7rem;

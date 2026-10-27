@@ -208,11 +208,6 @@ html[data-chat-backdrop="none"] .chat-scene,
 .chat.is-untitled .chat-bar-title {
   display: none;
 }
-.chat .chat-edge-top {
-  top: var(--chat-bar-h);
-  height: 1.25rem;
-  background: linear-gradient(180deg, color-mix(in srgb, var(--ink) 72%, transparent), transparent);
-}
 .chat .chat-bar-title { font-size: 0.95rem; letter-spacing: -0.015em; }
 /* —— Top bar actions: one icon-button system at every width and view.
    Names live in aria-label/title; the inline <span> labels are kept for
@@ -675,13 +670,6 @@ html[data-chat-theme="ivory"] .chat .chat-code { border-color: var(--line); }
   .chat :is(.chat-picker-btn),
   body.is-chat :is(.chat-pop button, .chat-picker-list button) { min-height: 44px; }
   .chat .chat-history-item > button.more { opacity: 1; width: 44px; height: 44px; }
-  /* The wrapped title sits on the bar's bottom edge here, so hold a short
-     solid band under it before the fade; otherwise the next line of the
-     transcript shows through right beneath the title. */
-  .chat .chat-edge-top {
-    height: 1.5rem;
-    background: linear-gradient(180deg, var(--ink) 0, var(--ink) 0.35rem, transparent 100%);
-  }
   .chat .chat-box { padding: 0.7rem 0.55rem 0.55rem 0.45rem; }
   .chat .chat-box-bar { gap: 0.3rem; align-items: center; }
   .chat .chat-box-left { gap: 0.3rem; flex: 1; flex-wrap: nowrap; min-width: 0; justify-content: flex-start; }
@@ -759,11 +747,6 @@ html[data-chat-backdrop]:not([data-chat-backdrop="none"]) body.is-chat .chat .ch
 }
 html[data-chat-backdrop]:not([data-chat-backdrop="none"]) body.is-chat .chat .chat-dock {
   background: transparent;
-}
-html[data-chat-backdrop]:not([data-chat-backdrop="none"]) body.is-chat .chat .chat-edge-top {
-  top: var(--chat-bar-h);
-  height: 1.35rem;
-  background: linear-gradient(180deg, color-mix(in srgb, var(--ink) 32%, transparent) 0%, transparent 100%);
 }
 html[data-chat-backdrop]:not([data-chat-backdrop="none"]) body.is-chat .chat .chat-history {
   background: color-mix(in srgb, var(--panel) 82%, transparent);
