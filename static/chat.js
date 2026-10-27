@@ -410,7 +410,7 @@ import { createDictation } from './chat/dictation.js';
     sync,
   });
 
-  if (S.config.speech) createDictation({ picker });
+  if (S.config.speech) createDictation({ composer, picker });
 
     if (S.viewMenu && S.viewMenu.parentElement !== document.body) document.body.append(S.viewMenu);
 

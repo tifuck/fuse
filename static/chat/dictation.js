@@ -39,7 +39,7 @@ function overlayHtml() {
     + `<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3.6 8.4l2.9 2.9 5.9-6.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`;
 }
 
-export function createDictation({ picker }) {
+export function createDictation({ composer, picker }) {
   const button = S.root.querySelector("[data-chat-mic]");
   if (!button || !S.chatBox) return null;
   const overlay = document.createElement("div");
@@ -225,6 +225,9 @@ export function createDictation({ picker }) {
     r.raf = requestAnimationFrame(frame);
   }
 
+  // Send takes the mic's slot back only after a beat: a quick second click
+  // on the mic must not land on send and post the text just dictated.
+  let holdTimer = 0;
   function end() {
     const r = run;
     run = null;
@@ -232,6 +235,12 @@ export function createDictation({ picker }) {
     r.abort.abort();
     release(r);
     showOverlay(false);
+    S.chatBox.classList.add("is-mic-hold");
+    clearTimeout(holdTimer);
+    holdTimer = setTimeout(() => {
+      S.chatBox.classList.remove("is-mic-hold");
+      composer.syncComposer();
+    }, 600);
   }
 
   // Stop listening and let the last phrases finish decoding into the box.

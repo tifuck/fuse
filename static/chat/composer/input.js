@@ -245,6 +245,12 @@ export function createInput(ctx) {
     S.sendBtn.disabled = S.streaming ? false : S.sending || S.loading || !(hasText || hasAttach) || !S.modelId || !net.isLive();
     S.sendBtn.classList.toggle("is-stop", stop);
     S.sendBtn.setAttribute("aria-label", stop ? "Stop" : "Send");
+    // With dictation on, an empty idle box offers the mic in send's slot. The
+    // slot holds still while dictating and a beat after, so nothing moves
+    // under the pointer: mid-turn, stop stays where it is.
+    if (S.micBtn && !S.chatBox.matches(".is-dictating, .is-mic-hold")) {
+      S.chatBox.classList.toggle("is-mic-slot", !(hasText || hasAttach) && !S.streaming);
+    }
     S.newBtns.forEach((btn) => {
       btn.disabled = S.sending;
     });
