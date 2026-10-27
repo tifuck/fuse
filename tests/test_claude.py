@@ -8,6 +8,7 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -16,12 +17,13 @@ _TMP = tempfile.mkdtemp(prefix="fuse-claude-")
 os.environ.setdefault("DATABASE_PATH", str(Path(_TMP) / "claude.db"))
 os.environ.setdefault("APP_SECRET", "x" * 32)
 
-from app import accounts, db  # noqa: E402
+from app import accounts, api, db  # noqa: E402
 from app.sources import claude as claude_mod  # noqa: E402
-from app.sources import pick  # noqa: E402
+from app.sources import pick, pool_denial  # noqa: E402
 from app.sources.pool_pick import reset_health  # noqa: E402
 
 import pytest
+from fastapi import HTTPException
 
 # Uses the database: a disposable MariaDB schema shared by this module.
 pytestmark = pytest.mark.usefixtures("isolated_db")
@@ -641,6 +643,30 @@ class ClaudeStreamTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["choices"][0]["finish_reason"], "length")
 
 
+class _RevokeClient:
+    """httpx.AsyncClient whose token endpoint rejects every refresh as revoked."""
+
+    def __init__(self, *args, **kwargs):
+        self.posts = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def post(self, *args, **kwargs):
+        self.posts += 1
+        return self
+
+    @property
+    def status_code(self):
+        return 400
+
+    def json(self):
+        return {"error": "invalid_grant", "error_description": "Refresh token expired"}
+
+
 class ClaudePoolTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         reset_health()
@@ -666,6 +692,52 @@ class ClaudePoolTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(src.type_id, "claude")
         self.assertEqual(upstream, "claude-sonnet-4-6")
         self.assertIsNone(await pick("claude/claude-sonnet-4-6", allow_claude=False))
+
+    async def test_pool_denial_names_the_locked_pool(self):
+        self.assertIsNone(pool_denial("claude/claude-opus-5-5"))
+        self.assertIn(
+            "Connect a Claude account",
+            pool_denial("claude/claude-opus-5-5", allow_claude=False),
+        )
+        self.assertIsNone(pool_denial("definitely-not-a-model", allow_claude=False, allow_grok=False))
+
+    async def test_locked_pool_reports_reconnect_not_unknown_model(self):
+        req = unittest.mock.Mock(scope={})
+        body = {"model": "claude/claude-opus-5-5", "messages": [{"role": "user", "content": "hi"}]}
+        user = {"id": self.bob["id"], "key_id": None}
+        with pytest.raises(HTTPException) as caught:
+            await api._invoke_chat(req, user, body)
+        self.assertEqual(caught.value.status_code, 403)
+        self.assertIn("Connect a Claude account", str(caught.value.detail))
+        body["model"] = "definitely-not-a-model"
+        with pytest.raises(HTTPException) as caught:
+            await api._invoke_chat(req, user, body)
+        self.assertEqual(caught.value.status_code, 404)
+
+    @patch("app.sources.claude.httpx.AsyncClient", _RevokeClient)
+    async def test_revoked_refresh_keeps_live_token_pickable(self):
+        expires = (datetime.now(timezone.utc) + timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        extra = {"access_token": "tok", "refresh_token": "rt", "expires_at": expires}
+        accounts.add_credential(self.sid, "mine", "tok", extra=extra, donated_by=self.alice["id"])
+        row = db.fetchone("SELECT * FROM credentials")
+        self.assertFalse(await claude_mod.refresh_one(row))
+        after = db.fetchone("SELECT * FROM credentials")
+        self.assertFalse(after["disabled"])
+        self.assertTrue(claude_mod.user_has_claude(self.alice["id"]))
+
+    @patch("app.sources.claude.httpx.AsyncClient", _RevokeClient)
+    async def test_revoked_refresh_disables_expired_token_and_logs(self):
+        expires = (datetime.now(timezone.utc) - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        extra = {"access_token": "tok", "refresh_token": "rt", "expires_at": expires}
+        accounts.add_credential(self.sid, "mine", "tok", extra=extra, donated_by=self.alice["id"])
+        row = db.fetchone("SELECT * FROM credentials")
+        with self.assertLogs("app.sources.claude", level="WARNING") as site, \
+             self.assertLogs("app.accounts", level="WARNING") as funnel:
+            self.assertFalse(await claude_mod.refresh_one(row))
+        self.assertTrue(db.fetchone("SELECT * FROM credentials")["disabled"])
+        self.assertFalse(claude_mod.user_has_claude(self.alice["id"]))
+        self.assertIn("token refresh rejected", "\n".join(site.output))
+        self.assertIn("Disabled claude credential", "\n".join(funnel.output))
         self.assertIsNone(await pick("devin/claude-sonnet-5", allow_claude=True))
 
     async def test_complete_login_rejects_bad_state(self):

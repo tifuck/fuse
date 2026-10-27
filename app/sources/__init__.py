@@ -625,6 +625,63 @@ async def pick(
     return None
 
 
+# Messages mirror the per-source 403s in the API layer. A pool the caller has
+# no usable account for still owns its model ids, so refusing one must say
+# which account to reconnect instead of "unknown model".
+_POOL_DENIAL_MESSAGES = {
+    "devin": "Connect a Devin account to use Devin models",
+    "kimi": "Connect a Kimi membership to use Kimi models",
+    "mimo": "Connect a Xiaomi Token Plan to use MiMo models",
+    "claude": "Connect a Claude account to use Claude models",
+    "cursor": "Connect a Cursor account to use Cursor models",
+    "grok": "Connect a Grok account with an active subscription to use Grok models",
+    "chatgpt": "Connect a ChatGPT account to use ChatGPT models",
+    "zai": "Connect a Z.AI key to use GLM models",
+}
+
+
+def pool_denial(
+    model: str,
+    *,
+    allow_grok: bool = True,
+    allow_chatgpt: bool = True,
+    allow_zai: bool = True,
+    allow_devin: bool = True,
+    allow_kimi: bool = True,
+    allow_mimo: bool = True,
+    allow_claude: bool = True,
+    allow_cursor: bool = True,
+) -> str | None:
+    """The 403 message when `model` belongs to a configured pool the caller is
+    locked out of, or None. pick() resolves such models to None (a disabled
+    credential must not keep serving), so a user whose account was disabled
+    mid-session otherwise sees "Unknown model" with nothing to reconnect."""
+    from . import chatgpt as chatgpt_mod
+    from . import devin as devin_mod
+    from . import kimi as kimi_mod
+    from . import mimo as mimo_mod
+    from . import claude as claude_mod
+    from . import cursor as cursor_mod
+
+    enabled = {s.type_id for s in all_enabled()}
+    # Detection order mirrors pick()'s, so an id two pools could claim denies
+    # as the one pick would have resolved it to.
+    checks = (
+        ("devin", allow_devin, devin_mod.is_devin_model(model)),
+        ("kimi", allow_kimi, kimi_mod.is_kimi_model(model)),
+        ("mimo", allow_mimo, mimo_mod.is_mimo_model(model)),
+        ("claude", allow_claude, claude_mod.is_claude_model(model)),
+        ("cursor", allow_cursor, cursor_mod.is_cursor_model(model)),
+        ("grok", allow_grok, model.startswith("grok")),
+        ("chatgpt", allow_chatgpt, chatgpt_mod.is_chatgpt_model(model)),
+        ("zai", allow_zai, model in ZAI_MODELS or model.startswith("glm-")),
+    )
+    for type_id, allowed, matches in checks:
+        if not allowed and matches and type_id in enabled:
+            return _POOL_DENIAL_MESSAGES[type_id]
+    return None
+
+
 def _ensure_typed_source(type_id: str, name: str, config: dict) -> int:
     row = db.fetchone("SELECT id FROM sources WHERE type=?", (type_id,))
     if row:

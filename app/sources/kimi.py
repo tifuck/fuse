@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import platform
 import socket
@@ -26,6 +27,7 @@ from .token_store import expires_at, log_refresh_failures, persist_rotated, shie
 
 USAGE_TTL = 300
 HOLD_HOURS = 24
+logger = logging.getLogger(__name__)
 _models_cache: tuple[float, list[str]] | None = None
 _refresh_locks: dict[int, asyncio.Lock] = {}
 
@@ -835,6 +837,16 @@ async def _refresh_one_unlocked(cred) -> bool:
         return False
     if r.status_code != 200 or "access_token" not in data:
         if _oauth_revoked(r.status_code, data):
+            expires = _parse_ts(str(extra.get("expires_at") or ""))
+            if expires and expires > datetime.now(timezone.utc):
+                # The grant is dead but the access token still serves; keep the
+                # credential until it actually expires instead of cutting live
+                # sessions short. The refresh loop rechecks every cycle.
+                return False
+            logger.warning(
+                "Kimi credential %s disabled: token refresh rejected upstream (HTTP %s)",
+                row["id"], r.status_code,
+            )
             disable_credential(row["id"], extra=row.get("extra"))
         else:
             note_failure(row["id"], cooldown_seconds=60 if r.status_code == 429 else 30)

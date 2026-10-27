@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import secrets
 from .database_errors import IntegrityError
 
@@ -7,6 +8,8 @@ from . import db
 from .config import settings
 from .crypto import DecryptionError, decrypt, encrypt, hash_password, verify_password
 from .vault import VaultError, create_wrapped_dek, rewrap as vault_rewrap, unlock as vault_unlock
+
+logger = logging.getLogger(__name__)
 
 _DUMMY_HASH: str | None = None
 _CRYPTO_SENTINEL_KEY = "credential_crypto_sentinel_v1"
@@ -414,9 +417,23 @@ def disable_credential(cred_id: int, *, extra: str | None = None) -> None:
     refreshed since keeps the row id but not that value, and must not be
     disabled for its predecessor's rejection."""
     if extra is None:
-        db.execute("UPDATE credentials SET disabled=1 WHERE id=?", (cred_id,))
+        cursor = db.execute("UPDATE credentials SET disabled=1 WHERE id=?", (cred_id,))
     else:
-        db.execute("UPDATE credentials SET disabled=1 WHERE id=? AND extra=?", (cred_id, extra))
+        cursor = db.execute("UPDATE credentials SET disabled=1 WHERE id=? AND extra=?", (cred_id, extra))
+    if not cursor.rowcount:
+        return
+    # Every pool's revoked-grant and repeated-401 paths land here; without this
+    # line a credential can vanish from the pool with nothing in the journal.
+    row = db.fetchone(
+        "SELECT c.label, s.type AS kind FROM credentials c JOIN sources s ON s.id=c.source_id WHERE c.id=?",
+        (cred_id,),
+    )
+    logger.warning(
+        "Disabled %s credential %s (%s)",
+        (row and row["kind"]) or "pool",
+        cred_id,
+        (row and row["label"]) or "no label",
+    )
 
 
 def delete_credential(cred_id: int) -> None:

@@ -778,6 +778,16 @@ async def _refresh_one_unlocked(cred) -> bool:
         return False
     if "access_token" not in data:
         if _oauth_revoked(r.status_code, data):
+            expires = _parse_ts(str(extra.get("expires_at") or ""))
+            if expires and expires > datetime.now(timezone.utc):
+                # The grant is dead but the access token still serves; keep the
+                # credential until it actually expires instead of cutting live
+                # sessions short. The refresh loop rechecks every cycle.
+                return False
+            logger.warning(
+                "Grok credential %s disabled: token refresh rejected upstream (HTTP %s)",
+                row["id"], r.status_code,
+            )
             disable_credential(row["id"], extra=row.get("extra"))
         else:
             note_failure(row["id"], cooldown_seconds=60 if r.status_code == 429 else 30)

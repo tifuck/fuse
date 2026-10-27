@@ -16,6 +16,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
@@ -79,6 +80,7 @@ from .claude_stream import (
 
 USAGE_TTL = 300
 REFRESH_WINDOW = timedelta(minutes=5)
+logger = logging.getLogger(__name__)
 _refresh_locks: dict[int, asyncio.Lock] = {}
 
 SCOPES = (
@@ -577,6 +579,20 @@ async def _refresh_one_unlocked(cred) -> bool:
         return False
     if not isinstance(data, dict) or r.status_code != 200 or "access_token" not in data:
         if _oauth_revoked(r.status_code, data if isinstance(data, dict) else {}):
+            expires = _parse_ts(str(extra.get("expires_at") or ""))
+            if expires and expires > datetime.now(timezone.utc):
+                # The grant is dead but the access token still serves; keep the
+                # credential until it actually expires instead of cutting live
+                # sessions short. The refresh loop rechecks every cycle.
+                return False
+            reason = ""
+            if isinstance(data, dict):
+                reason = str(data.get("error_description") or data.get("error") or "")[:120]
+            logger.warning(
+                "Claude credential %s disabled: token refresh rejected upstream (%s)",
+                row["id"],
+                reason or f"HTTP {r.status_code}",
+            )
             disable_credential(row["id"], extra=row.get("extra"))
         else:
             note_failure(row["id"], cooldown_seconds=60 if r.status_code == 429 else 30)

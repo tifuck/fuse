@@ -20,6 +20,7 @@ from .sources import (
     metadata_effort,
     models_union,
     pick,
+    pool_denial,
     user_has_chatgpt,
     user_has_devin,
     user_has_grok,
@@ -596,6 +597,22 @@ async def _invoke_chat(request: Request, user, body: dict, *, cheap_reasoning: b
             raise HTTPException(403, denied)
         if catalog_unavailable_for(model):
             raise HTTPException(503, "Model catalog is temporarily unavailable")
+        denial = pool_denial(
+            model,
+            allow_grok=grok_ok,
+            allow_chatgpt=chatgpt_ok,
+            allow_zai=zai_ok,
+            allow_devin=devin_ok,
+            allow_kimi=kimi_ok,
+            allow_mimo=mimo_ok,
+            allow_claude=claude_ok,
+            allow_cursor=cursor_ok,
+        )
+        if denial:
+            # The model belongs to a pool whose account the user lost (e.g. an
+            # OAuth grant revoked upstream): say what to reconnect, not
+            # "Unknown model".
+            raise HTTPException(403, denial)
         raise HTTPException(404, "Unknown model")
     src, upstream = picked
     if src.type_id == "grok" and not grok_ok:
