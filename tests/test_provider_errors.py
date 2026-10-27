@@ -233,7 +233,9 @@ def test_benched_pool_replays_the_error_that_benched_it():
         pool_pick.note_failure(7, cooldown_seconds=5 * 3600)
         status, message, info = _explained("grok", [({"id": 7}, "cooling")])
         assert status == 429 and info["kind"] == "usage_exhausted"
-        assert message.startswith("Grok: plan usage limit reached; resets in 4h 59m")
+        # The wait is a hair under 5h (resets are whole seconds), so it may read 4h 59m or 5h.
+        assert message.startswith("Grok: plan usage limit reached; resets in ")
+        assert 5 * 3600 - 5 < info["retry_after"] <= 5 * 3600
         assert "free usage for model grok-4.6" in message
         assert not policy._should_resume(status, message, resumes_left=4, idle_stalls=0, kind=info["kind"])
         # Benched with no kept error: a short, retryable cooldown with its wait.
@@ -255,7 +257,8 @@ def test_unbenched_reasons_are_terminal_and_named():
     held = (datetime.now(timezone.utc) + timedelta(hours=20)).strftime("%Y-%m-%dT%H:%M:%SZ")
     status, message, info = _explained("claude", [({"id": 1, "pool_held_until": held}, "held")])
     assert (status, info["kind"]) == (429, "usage_exhausted")
-    assert message.startswith("Claude: plan usage limit reached; resets in 19h 59m") and "held for their owners" in message
+    assert message.startswith("Claude: plan usage limit reached; resets in ") and "held for their owners" in message
+    assert 20 * 3600 - 5 < info["retry_after"] <= 20 * 3600
     status, message, info = _explained("chatgpt", [({"id": 2}, "plan")], model="gpt-6-sol")
     assert (status, info["kind"]) == (403, "plan_required") and "gpt-6-sol" in message
     status, message, info = _explained("kimi", [({"id": 3}, "unauthed")])
@@ -277,7 +280,8 @@ def test_every_ollama_key_out_names_the_soonest_reason():
     result = _no_key_result(SimpleNamespace(states={"a": weekly}), "m")
     body, info = pe.annotate("ollama", result.status, result.body)
     assert (result.status, info["kind"]) == (429, "usage_exhausted")
-    assert body["error"]["message"].startswith("Ollama Cloud: plan usage limit reached; resets in 2d 23h")
+    assert body["error"]["message"].startswith("Ollama Cloud: plan usage limit reached; resets in ")
+    assert 3 * 86400 - 5 < info["retry_after"] <= 3 * 86400
     result = _no_key_result(SimpleNamespace(states={"a": weekly, "b": blip}), "m")
     _, info = pe.annotate("ollama", result.status, result.body)
     assert (result.status, info["kind"]) == (503, "overloaded") and 0 < info["retry_after"] <= 20

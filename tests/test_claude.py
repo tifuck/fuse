@@ -792,7 +792,7 @@ class ClaudePoolTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, 429)
         body, info = provider_errors.annotate("claude", result.status, result.body)
         self.assertEqual(info["kind"], "usage_exhausted")
-        self.assertTrue(body["error"]["message"].startswith("Claude: 5-hour usage limit reached; resets in 2h"))
+        self.assertTrue(body["error"]["message"].startswith("Claude: 5-hour usage limit reached; resets in "))
         self.assertEqual(body["error"]["resets_at"], reset)
         self.assertIsNone(await pick("devin/claude-sonnet-5", allow_claude=True))
 
