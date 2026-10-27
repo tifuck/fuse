@@ -282,6 +282,7 @@ export function createRender(ctx) {
       const label = S.archivedBtn.querySelector("[data-history-archived-label]");
       const count = S.archivedBtn.querySelector("[data-history-archived-count]");
       if (label) label.textContent = S.showArchived ? (S.historyTab === "projects" ? "Back to projects" : "Back to chats") : "Archived";
+      if (label) S.archivedBtn.title = label.textContent;
       if (count) count.textContent = S.showArchived ? "" : String(archived.length + archivedProjects().length);
     }
     if (searching) {
