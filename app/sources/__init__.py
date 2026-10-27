@@ -140,6 +140,9 @@ _refreshing: dict[tuple[int, int | None], asyncio.Task] = {}
 _live: set[tuple[int, int | None]] = set()
 # How long a page waits for a pool's first live catalog before showing seeds.
 _FIRST_FETCH_WAIT = 4.0
+# A source with no catalog and no seeds retries a failed fetch this often, in
+# the background, instead of on every page that lists models.
+_FAILED_RETRY_S = 60.0
 
 
 def _cache_key(s: Source, user_id: int | None) -> tuple[int, int | None]:
@@ -191,6 +194,8 @@ async def _refresh_source_models(s: Source, user_id: int | None) -> list[str]:
     except Exception as exc:
         _unavailable_types.add(s.type_id)
         logger.warning("Model catalog unavailable for source id=%s: %s", s.source_id, type(exc).__name__)
+        if not (hit and hit[1]) and not _fallback_models(s):
+            _model_cache[key] = (time.time() - _MODEL_TTL + _FAILED_RETRY_S, [])
         return hit[1] if hit else []
     if stale_only:
         _unavailable_types.add(s.type_id)

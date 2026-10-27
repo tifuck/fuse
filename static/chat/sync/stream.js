@@ -279,7 +279,6 @@ export function createStream(ctx) {
         S.syncInitialized = true;
         S.historyLoaded = true;
         S.threads = data.threads.filter((item) => !item.archived);
-        S.archivedThreads = data.threads.filter((item) => item.archived);
         sidebar.noteServerRunning(data.threads);
         if (Array.isArray(data.projects)) S.projects = data.projects;
         apply.acceptContext(data.context);
@@ -287,8 +286,16 @@ export function createStream(ctx) {
         sidebar.resetSearchLists();
         if (S.historyQuery) sidebar.queueSearch();
         sidebar.renderHistory();
+        // The archive is fetched after the sync answered, so it is never older
+        // than data.cursor, and lands before the socket replays from there.
+        const archive = net.api("/chat/threads?archived=1");
+        archive.catch(() => {});
         await apply.reconcileThread();
         if (epoch !== S.syncEpoch) return;
+        S.archivedThreads = (await archive).archived || [];
+        if (epoch !== S.syncEpoch) return;
+        sidebar.noteServerRunning(S.archivedThreads);
+        sidebar.renderHistory();
         // The socket must not start ahead of the thread snapshot's durable
         // cursor, or patches between the two would never be replayed.
         if (Number.isSafeInteger(S.viewCursor) && S.viewCursor > 0) S.cursor = Math.min(S.cursor, S.viewCursor);

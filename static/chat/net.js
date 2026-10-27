@@ -78,6 +78,14 @@ function takeBootThread(id) {
   return boot && boot.id === id ? boot.response : null;
 }
 
+// chat-boot.js starts the first /chat/sync from <head>; only the first call
+// takes it, every resync after that is a fresh request.
+function takeBootSync() {
+  const boot = window.__fuseBootSync;
+  window.__fuseBootSync = null;
+  return boot || null;
+}
+
 function isTransportError(error) {
   return !error || !error.status;
 }
@@ -115,7 +123,7 @@ export function createNet(ctx) {
     if (opts.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
     let res;
     try {
-      res = await fetch(path, { ...opts, headers });
+      res = (path === "/chat/sync" && await takeBootSync()) || await fetch(path, { ...opts, headers });
     } catch (_) {
       if (!isLive()) markDisconnected();
       const netError = new Error("Can't connect to the backend");

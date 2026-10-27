@@ -238,8 +238,13 @@ def test_sidebar_rows_carry_the_fields_the_history_list_renders(client):
     assert _parse_iso(body["archived"][0]["archived_at"])
     with _quiet_sync():
         sync = client.get("/chat/sync").json()
-    # sync carries both buckets in one list; the UI splits by the archived flag.
-    assert {row["id"]: row["archived"] for row in sync["threads"]} == {first["id"]: True, second["id"]: False}
+    # sync carries only live threads; the archive is its own request, so a
+    # long archive never delays the history drawer.
+    assert {row["id"]: row["archived"] for row in sync["threads"]} == {second["id"]: False}
+    only = client.get("/chat/threads?archived=1").json()
+    assert set(only) == {"archived"}
+    assert [row["id"] for row in only["archived"]] == [first["id"]]
+    _assert_sidebar_row(only["archived"][0])
 
 
 def test_sidebar_order_is_recency_desc_with_a_stable_id_tiebreak(client):

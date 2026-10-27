@@ -98,7 +98,7 @@ async def chat_sync_snapshot(request: Request):
                    LEFT JOIN user_hosts h ON h.id=t.host_id
                    LEFT JOIN user_projects p ON p.id=t.project_id
                    LEFT JOIN chat_schedules s ON s.id=t.schedule_id
-                   WHERE t.user_id=? ORDER BY t.updated_at DESC, t.id DESC""",
+                   WHERE t.user_id=? AND t.archived=0 ORDER BY t.updated_at DESC, t.id DESC""",
                 (user["id"],),
             ).fetchall()
             account = conn.execute("SELECT * FROM users WHERE id=?", (user["id"],)).fetchone()
@@ -397,6 +397,10 @@ async def chat_threads(request: Request):
     q = (request.query_params.get("q") or "").strip()
 
     def build():
+        # The archive alone: /chat/sync omits it, since it is most of a long
+        # account's rows and the history drawer must not wait on it.
+        if request.query_params.get("archived") == "1":
+            return {"archived": chats.list_threads(user["id"], archived=True)}
         if q:
             return {
                 "threads": chats.search_threads(user["id"], q, archived=False),

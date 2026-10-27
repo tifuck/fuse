@@ -162,6 +162,40 @@ class StaleModelCacheTest(unittest.IsolatedAsyncioTestCase):
         schedule.assert_not_called()
         sources_mod._model_cache.pop(key, None)
 
+    async def test_failed_catalog_is_not_refetched_on_every_page(self):
+        # A down (or TLS-rejecting) llama server used to be fetched inline by
+        # every /chat render: a failure left no cache entry behind.
+        from types import SimpleNamespace
+
+        calls = 0
+
+        async def models():
+            nonlocal calls
+            calls += 1
+            raise ConnectionError("down")
+
+        src = SimpleNamespace(type_id="llama", name="Local", source_id=96, models=models)
+        key = (96, None)
+        sources_mod._model_cache.pop(key, None)
+        try:
+            self.assertEqual(await sources_mod._source_models(src, None), [])
+            with patch.object(sources_mod, "_schedule_model_refresh") as schedule:
+                self.assertEqual(await sources_mod._source_models(src, None), [])
+            self.assertEqual(calls, 1)
+            schedule.assert_not_called()
+            # Once the retry window passes, the next page refreshes in the background.
+            stamp = sources_mod._model_cache[key][0]
+            sources_mod._model_cache[key] = (stamp - sources_mod._FAILED_RETRY_S - 1, [])
+            with patch.object(sources_mod, "_schedule_model_refresh") as schedule:
+                self.assertEqual(await sources_mod._source_models(src, None), [])
+            schedule.assert_called_once()
+            # A repeat failure re-arms the window instead of leaving it stale.
+            await sources_mod._refresh_source_models(src, None)
+            self.assertGreater(sources_mod._model_cache[key][0], stamp - 1)
+        finally:
+            sources_mod._model_cache.pop(key, None)
+            sources_mod._unavailable_types.discard("llama")
+
 
 class OpenRouterCachedCatalogTest(unittest.IsolatedAsyncioTestCase):
     async def test_models_uses_cached_catalog(self):
