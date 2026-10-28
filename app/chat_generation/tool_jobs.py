@@ -416,7 +416,8 @@ def _running_event(job: ToolJob) -> dict:
         vis = str(parsed.get("visibility") or "")
         if vis in ("private", "public"):
             event["visibility"] = vis
-        host = str(parsed.get("host") or "")
+        # A host list reaching here was refused (valid ones are split per host).
+        host = parsed.get("host") if isinstance(parsed.get("host"), str) else ""
         if host:
             event["host"] = host[:40]
         path = str(parsed.get("path") or "")

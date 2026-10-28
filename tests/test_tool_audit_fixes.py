@@ -920,6 +920,12 @@ class HostListTest(unittest.IsolatedAsyncioTestCase):
                                        user_id=1, bound_host_id=5)
             self.assertIn("mixes Windows (w1) and Linux (a)", text)
 
+    def test_refused_list_row_names_no_host(self):
+        from app.chat_generation.tool_jobs import ToolJob, _running_event
+
+        job = ToolJob(0, "c0", "run_terminal_command", json.dumps({"command": "ls", "host": ["a", "w1"]}), "ts_0_0")
+        self.assertNotIn("host", _running_event(job))
+
     def test_checkpoint_keeps_finished_hosts(self):
         from app.chat_generation.tool_jobs import ToolJob, _provider_snapshot
 

@@ -824,7 +824,7 @@ html[data-chat-backdrop]:not([data-chat-backdrop="none"]) body.is-chat .chat .ch
 .chat .chat-path-parent { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .chat .chat-path-leaf { flex: 0 0 auto; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .chat .chat-command-prompt { color: var(--brass); }
-.chat .chat-tool-host { flex: 0 1 auto; max-width: 7rem; overflow: hidden; text-overflow: ellipsis; color: var(--mute); font: calc(0.65rem * var(--chat-text-scale, 1))/1.5 var(--mono); }
+.chat .chat-tool-host { flex: 0 1 auto; max-width: 7rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--mute); font: calc(0.65rem * var(--chat-text-scale, 1))/1.5 var(--mono); }
 .chat .chat-tool-host::before { content: "@"; opacity: 0.65; }
 .chat .chat-step-host { display: none; }
 .chat .chat-group-title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font: inherit; }

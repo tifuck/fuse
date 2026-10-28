@@ -185,7 +185,8 @@ function consoleFold(trace, presentation, verbose) {
       const failure = failed ? deps.ccFailure(trace) : null;
       const raw = failure ? failure.output : typeof trace.output === "string" ? deps.cleanToolOutput(trace, trace.output)
         : [trace.preview, trace.summary].find((value) => { const text = String(value || "").trim(); return text && text !== "still running" && text !== "background task started"; }) || "";
-      const lines = String(raw).replace(/\s+$/, "").split("\n");
+      // Leading blank lines too, as ccFailure does (PowerShell tables open with them).
+      const lines = String(raw).replace(/\s+$/, "").replace(/^\s*\n/, "").split("\n");
       const empty = !String(raw).trim();
       const exit = deps.shellExitCode(trace);
       // A non-zero exit prints its code above the output, as Claude Code does.
@@ -276,7 +277,7 @@ function consoleDetailHtml(trace, failed, running) {
       body = body.replace(/\s+(\/(?:home|Users|var|tmp|opt|usr)|[A-Za-z]:\\|\S+:\d+:)/g, "\n$1").trim();
     }
     if (deps.looksLikeDiff(body)) return `<div class="chat-console-out is-diff">${consoleDiffHtml(body)}</div>`;
-    const lines = String(body).replace(/\s+$/, "").split("\n");
+    const lines = String(body).replace(/\s+$/, "").replace(/^\s*\n/, "").split("\n");
     const inner = lines.map((line) => `<div class="chat-console-stdout">${deps.renderAnsi(line) || " "}</div>`).join("");
     return `<pre class="chat-console-out is-stdout${deps.isCodeOutputTool(trace.name) ? " is-code" : ""}">${inner}</pre>`;
   }
