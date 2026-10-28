@@ -147,7 +147,7 @@ span.chat-agents-act { cursor: default; }
 
 /* State is carried by a small square, the console's mark for agents and
    background commands alike (drawn as a pseudo-element so state colours
-   ride on currentColor). queued/running: in flight, pulsing.
+   ride on currentColor). queued/running: in flight, blinking.
    interrupted/cancelled: stopped by the user, solid amber. */
 .chat-agents-dot {
   flex: 0 0 auto;
@@ -164,7 +164,7 @@ span.chat-agents-act { cursor: default; }
 }
 :is(.chat-agents-row:is(.is-queued, .is-running, .is-working), .chat-jobs-row.is-running) .chat-agents-dot {
   color: var(--status-live);
-  animation: chat-agents-pulse 1.6s ease-in-out infinite;
+  animation: chat-agents-blink 2s steps(1, end) infinite;
 }
 .chat-agents-row.is-idle .chat-agents-dot { color: var(--mute); }
 .chat-agents-row.is-idle .chat-agents-dot::before { background: none; box-shadow: inset 0 0 0 1px currentColor; }
@@ -176,10 +176,7 @@ span.chat-agents-act { cursor: default; }
 .chat-agents-row:is(.is-failed, .is-stalled) .chat-agents-state,
 .chat-agents-sum { color: var(--status-fail); }
 .chat-agents-row.is-undelivered .chat-agents-sum { color: var(--brass); }
-@keyframes chat-agents-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
-}
+@keyframes chat-agents-blink { 50% { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) {
   :is(.chat-agents-row, .chat-jobs-row) .chat-agents-dot { animation: none !important; }
   .chat-agents-fold svg { transition: none; }

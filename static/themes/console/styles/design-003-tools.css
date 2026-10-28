@@ -118,10 +118,6 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-step-reveal.is-r
   animation: console-output-reveal var(--dur-1) ease-out;
 }
 
-html[data-chat-console="true"] .chat[data-view="console"] .chat-step.is-running > .chat-step-node {
-  animation: console-running-pulse 1.6s ease-in-out infinite;
-}
-
 html[data-chat-console="true"] .chat[data-view="console"] .chat-step-chevron { transition: transform var(--dur-1) ease, color var(--dur-1) ease; }
 
 html[data-chat-console="true"] .chat[data-view="console"] .chat-box {

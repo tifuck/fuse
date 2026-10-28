@@ -197,13 +197,11 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-ste
 
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-call.is-running > .chat-step-node::after {
   background: var(--call-live);
-  animation: console-call-pulse 1s ease-in-out infinite;
+  animation: console-dot-blink 2s steps(1, end) infinite;
 }
 
-@keyframes console-call-pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.28; transform: scale(0.72); }
-}
+/* A running dot blinks like a terminal cursor: on, then off, no fade. */
+@keyframes console-dot-blink { 50% { opacity: 0; } }
 
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-call > .chat-step-main {
   display: flex;

@@ -130,7 +130,7 @@ html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-ste
   height: var(--console-dot);
   border-radius: 50%;
   background: var(--call-live);
-  animation: console-call-pulse 1s ease-in-out infinite;
+  animation: console-dot-blink 2s steps(1, end) infinite;
 }
 
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-step.is-console-group.is-errored > .chat-step-node::after { background: var(--call-fail); }
