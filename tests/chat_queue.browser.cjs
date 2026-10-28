@@ -66,7 +66,7 @@ const out = process.env.QUEUE_UI_ARTIFACTS || '/tmp/opencode/queue-ui-artifacts'
       page.on('request', request => {
         if (request.method() !== 'POST') return;
         const url = new URL(request.url());
-        if (/\/(steer|cancel|turns)$/.test(url.pathname)) requests.push({ path: url.pathname, scope: url.searchParams.get('scope'), body: request.postDataJSON() });
+        if (/\/(steer|cancel|turns|queue)$/.test(url.pathname)) requests.push({ path: url.pathname, scope: url.searchParams.get('scope'), body: request.postDataJSON() });
       });
       // Gate the stop so the sending state can be observed mid-flight.
       let releaseStop;
@@ -84,8 +84,12 @@ const out = process.env.QUEUE_UI_ARTIFACTS || '/tmp/opencode/queue-ui-artifacts'
       assert.equal(requests.filter(r => r.path.endsWith('/steer')).length, 0, 'Send now no longer steers the live run');
       assert.equal(requests.filter(r => r.path.endsWith('/cancel')).length, 1, 'Send now stops the running reply');
       assert.equal(requests.find(r => r.path.endsWith('/cancel')).scope, 'reply', 'Send now stops only the reply, never its subagents');
-      const sentTurn = requests.filter(r => r.path.endsWith('/turns') && r.body.text === 'Queue fixture send now target');
-      assert.equal(sentTurn.length, 1, 'the queued message goes out as a new turn');
+      // Queued messages go through the server's copy, which starts them when
+      // the run ends with or without this tab; the user message below lands once.
+      assert.equal(requests.filter(r => r.path.endsWith('/turns') && r.body.text === 'Queue fixture send now target').length, 0);
+      const sentTurn = requests.filter(r => r.path.endsWith('/queue') && r.body.text === 'Queue fixture send now target');
+      assert.ok(sentTurn.length >= 1 && sentTurn[0].body.release === true, 'Send now tells the server this item goes first before stopping');
+      assert.ok(requests.indexOf(sentTurn[0]) < requests.findIndex(r => r.path.endsWith('/cancel')), 'the server learns the priority before the run ends');
       assert.equal(sentTurn[0].body.attachments.length, 0);
       const after = await read();
       assert.notEqual(after.run.id, runId, 'Send now starts a new run');
@@ -191,16 +195,35 @@ const out = process.env.QUEUE_UI_ARTIFACTS || '/tmp/opencode/queue-ui-artifacts'
         await send('Queue fixture lost acknowledgment');
         await page.waitForFunction(() => document.body.classList.contains('is-streaming'));
         await send('Survive a lost acknowledgment');
-        await page.route('**/turns', async route => {
+        await page.route('**/queue', async route => {
           await route.fetch();
           await route.abort('failed');
-        }, { times: 1 });
+        }, { times: 2 });
         await page.locator('[data-queue-send]').last().click();
         await page.waitForFunction(() => [...document.querySelectorAll('.is-user')].some(el => el.textContent.includes('Survive a lost acknowledgment')));
         await page.waitForFunction(() => document.querySelectorAll('.chat-queue-item').length === 0);
         assert.equal((await read()).messages.filter(m => m.role === 'user' && m.content === 'Survive a lost acknowledgment').length, 1);
         await page.waitForFunction(() => !document.body.classList.contains('is-streaming'));
         console.log('PASS lost turn acknowledgment still lands exactly once and retires the queue item');
+
+        // A queued message used to wait for its tab to send it, so a hidden,
+        // frozen or closed tab stalled it. The server holds a copy now.
+        await send('Queue fixture closed tab');
+        await page.waitForFunction(() => document.body.classList.contains('is-streaming'));
+        const closedRun = (await read()).run.id;
+        const mirrored = page.waitForResponse(r => r.url().endsWith('/queue') && r.request().postDataJSON()?.text === 'Sent with no tab open');
+        await send('Sent with no tab open');
+        await mirrored;
+        await page.close();
+        let landed = false;
+        for (let i = 0; i < 100 && !landed; i += 1) {
+          await context.request.post(`${origin}/__fixture/finish/${closedRun}`);
+          const thread = await (await context.request.get(`${origin}/chat/threads/${id}`)).json();
+          landed = thread.messages.some(m => m.role === 'user' && m.content === 'Sent with no tab open');
+          if (!landed) await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        assert.ok(landed, 'the queued message sends when the turn ends with its tab closed');
+        console.log('PASS a queued message sends with no tab open');
 
       }
       if (width === 390) {
@@ -209,20 +232,20 @@ const out = process.env.QUEUE_UI_ARTIFACTS || '/tmp/opencode/queue-ui-artifacts'
         const attachmentRun = (await read()).run.id;
         const attachmentRequests = [];
         const recordRequest = request => {
-          if (request.method() === 'POST' && /\/(steer|cancel|turns)$/.test(new URL(request.url()).pathname)) attachmentRequests.push({ url: new URL(request.url()).pathname, body: request.postDataJSON() });
+          if (request.method() === 'POST' && /\/(steer|cancel|turns|queue)$/.test(new URL(request.url()).pathname)) attachmentRequests.push({ url: new URL(request.url()).pathname, body: request.postDataJSON() });
         };
         page.on('request', recordRequest);
         await send('Earlier queued message');
         await page.locator('[data-chat-file]').setInputFiles({ name: 'note.txt', mimeType: 'text/plain', buffer: Buffer.from('Offline attachment contents') });
         await page.locator('.chat-attach-chip').waitFor();
         await send('Attached priority');
-        const priorityTurn = page.waitForResponse(r => r.url().endsWith('/turns') && r.request().method() === 'POST' && r.request().postDataJSON().text === 'Attached priority');
+        const priorityTurn = page.waitForResponse(r => r.url().endsWith('/queue') && r.request().method() === 'POST' && r.request().postDataJSON().release === true && r.request().postDataJSON().text === 'Attached priority');
         await page.locator('[data-queue-send]').last().click();
         await priorityTurn;
         await page.waitForFunction(() => [...document.querySelectorAll('.is-user')].some(el => el.textContent.includes('Attached priority')));
         assert.ok(attachmentRequests.filter(r => r.url.endsWith('/cancel')).length >= 1, 'Send now stops the running reply even with attachments');
         assert.equal(attachmentRequests.filter(r => r.url.endsWith('/steer')).length, 0);
-        const attachmentTurn = attachmentRequests.filter(r => r.url.endsWith('/turns') && r.body.text === 'Attached priority').at(-1);
+        const attachmentTurn = attachmentRequests.filter(r => r.url.endsWith('/queue') && r.body.text === 'Attached priority').at(-1);
         assert.equal(attachmentTurn.body.attachments.length, 1);
         assert.ok(!['queued', 'running'].includes((await runSnapshot(attachmentRun)).status), 'the interrupted attachment run is terminal');
         await page.waitForFunction(() => !document.body.classList.contains('is-streaming') && !document.querySelector('.chat-queue-item'));
@@ -231,12 +254,12 @@ const out = process.env.QUEUE_UI_ARTIFACTS || '/tmp/opencode/queue-ui-artifacts'
         await page.locator('[data-chat-file]').setInputFiles({ name: 'only.txt', mimeType: 'text/plain', buffer: Buffer.from('Attachment-only send') });
         await page.locator('.chat-attach-chip').waitFor();
         await send('');
-        const attachmentOnlyTurn = page.waitForResponse(r => r.url().endsWith('/turns') && r.request().method() === 'POST' && r.request().postDataJSON().text === '');
+        const attachmentOnlyTurn = page.waitForResponse(r => r.url().endsWith('/queue') && r.request().method() === 'POST' && r.request().postDataJSON().release === true && r.request().postDataJSON().text === '');
         await page.locator('[data-queue-send]').first().click();
         await attachmentOnlyTurn;
         await page.waitForFunction(() => document.querySelectorAll('.chat-queue-item').length === 0);
         await page.waitForFunction(() => !document.body.classList.contains('is-streaming'));
-        const attachmentOnly = attachmentRequests.filter(r => r.url.endsWith('/turns')).at(-1).body;
+        const attachmentOnly = attachmentRequests.filter(r => r.url.endsWith('/queue')).at(-1).body;
         assert.equal(attachmentOnly.text, '');
         assert.equal(attachmentOnly.attachments.length, 1);
         assert.ok((await read()).messages.some(m => m.role === 'user' && !(m.content || '').trim() && (m.attachments || []).length === 1), 'the attachment-only message lands as a real user message');

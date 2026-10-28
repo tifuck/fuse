@@ -7,7 +7,7 @@ import asyncio
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 
-from .. import artifacts, speech, chat_drafts, chat_events, chat_runtime, chat_runs, chat_recaps, chat_store, chat_titles, chat_tools, chats, context_compact as ctxmod, db, hosts, model_caps, permissions as permissions_mod, skills, vault, context_meter
+from .. import artifacts, speech, chat_drafts, chat_events, chat_queue, chat_runtime, chat_runs, chat_recaps, chat_store, chat_titles, chat_tools, chats, context_compact as ctxmod, db, hosts, model_caps, permissions as permissions_mod, skills, vault, context_meter
 from ..config import settings
 from ..security import limiter
 from ..sources import openrouter as openrouter_mod
@@ -219,6 +219,38 @@ async def chat_turn(request: Request, thread_id: str):
                          "run": _chat_public_run(result["run"])}, headers={"Cache-Control": "no-store"})
 
 
+@router.post("/chat/threads/{thread_id}/queue")
+async def chat_queue_put(request: Request, thread_id: str):
+    """Hold a queued message on the server. It starts when the running turn
+    ends, whether or not a tab is open; when the chat is idle it starts now."""
+    user, err = _chat_auth(request)
+    if err:
+        return err
+    if not limiter.allow(f"api-user:{user['id']}", settings.api_rate_per_minute, 60):
+        raise HTTPException(429, "Too many requests")
+    raw = await _json_object(request)
+    if set(raw) - {"id", "text", "attachments", "model", "tools", "context", "reasoning_effort", "priority", "created", "release"}:
+        raise HTTPException(422, "Unsupported queue fields")
+    pk = await asyncio.to_thread(_chat_thread_pk, user, thread_id)
+    try:
+        sent, held = await chat_runs.queue_message(user["id"], pk, raw, release=raw.get("release") is True)
+    except chats.ChatValidationError as exc:
+        raise _chat_validation_error(exc) from None
+    thread = await asyncio.to_thread(chats.get_thread, user["id"], pk) if sent else None
+    return JSONResponse({"ok": True, "sent": sent, "held": held,
+                         "thread": _chat_public_thread(thread) if thread else None}, headers={"Cache-Control": "no-store"})
+
+
+@router.delete("/chat/threads/{thread_id}/queue/{item_id}")
+async def chat_queue_delete(request: Request, thread_id: str, item_id: str):
+    user, err = _chat_auth(request)
+    if err:
+        return err
+    pk = await asyncio.to_thread(_chat_thread_pk, user, thread_id)
+    await asyncio.to_thread(chat_queue.delete, user["id"], pk, item_id)
+    return Response(status_code=204)
+
+
 @router.get("/chat/runs/{run_id}/images/{event_id}")
 async def chat_run_image(request: Request, run_id: str, event_id: str):
     user, err = _chat_auth(request)
@@ -321,6 +353,14 @@ async def chat_cancel(request: Request, run_id: str):
             # background commands keep running and report to the next turn.
             await chat_runs.interrupt_wait(user["id"], run_id)
         else:
+            if not run.get("parent_run_id"):
+                # Stop means stop: what was queued by the click waits for Send
+                # now instead of starting when this run ends (the tab holds its
+                # copy too, static/chat/turns/queue.js holdQueueForStop).
+                raw = await _json_object(request) if (await request.body()).strip() else {}
+                before = raw.get("held_before")
+                await asyncio.to_thread(chat_queue.hold, user["id"], run["thread_id"],
+                                        before=before if type(before) is int and before >= 0 else None)
             # Child runs default to self: stopping one subagent must not kill the
             # parent turn and its siblings. Root runs keep the tree default.
             tree = scope == "tree" if run.get("parent_run_id") else scope != "self"

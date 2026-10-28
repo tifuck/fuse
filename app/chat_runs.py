@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 from fastapi import Request
 
-from . import chat_runtime, chat_store, chats, db
+from . import chat_queue, chat_runtime, chat_store, chats, db
 from .async_work import durable_call
 from .chat_output import Output
 
@@ -556,11 +556,16 @@ def sweep_wakes() -> None:
     for row in command_jobs.pending_wake_threads():
         key = (row["user_id"], row["thread_id"])
         threads[key] = max(threads.get(key, ""), row.get("resumed_at") or "")
+    # Queued messages whose start was deferred (capacity, a restart) or whose
+    # run ended while this process was down. A Stop already held its own.
+    queued = {(row["user_id"], row["thread_id"]) for row in chat_queue.pending_threads()}
+    for key in queued:
+        threads.setdefault(key, "")
     for (user_id, thread_id), resumed_at in threads.items():
         root = chat_store.thread_root_run(user_id, thread_id, include_request=False)
         if root is None or root["status"] in chat_store.ACTIVE:
             continue
-        if root.get("stopped_at") and not chat_store.resumed_after_stop(
+        if (user_id, thread_id) not in queued and root.get("stopped_at") and not chat_store.resumed_after_stop(
             {"user_resumed_at": resumed_at}, root["stopped_at"]
         ):
             continue
@@ -589,6 +594,13 @@ async def _wake_parent(user_id: int, thread_id) -> None:
         root = await asyncio.to_thread(chat_store.thread_root_run, user_id, thread_id)
         if root is None or root["status"] in chat_store.ACTIVE:
             return
+        # The user's queued message goes ahead of any automated wake; finished
+        # reports and command results ride with it (chat_generation/inbox.py).
+        try:
+            if await start_queued(user_id, thread_id):
+                return
+        except chats.ChatValidationError:
+            logger.exception("Queued message failed to start for thread %s", thread_id)
         candidates = await asyncio.to_thread(chat_store.wake_candidates, user_id, thread_id)
         if root.get("stopped_at") and not any(
             chat_store.resumed_after_stop(item, root.get("stopped_at") or "") for item in candidates
@@ -707,6 +719,57 @@ async def _wake_parent(user_id: int, thread_id) -> None:
             await start(internal_request(user_id), dict(owner), result["run"])
         except Exception:
             logger.exception("Wake run failed to start for thread %s", thread_id)
+
+
+async def start_queued(user_id: int, thread_id):
+    """Start the thread's next queued message as the user's turn; returns its
+    item id. None when nothing is queued, a run is active, or capacity is full
+    (the next finalize or sweep_wakes retries). A deterministic refusal holds
+    the item for an explicit Send now and raises. Callers hold the wake lock."""
+    from . import accounts, chat_titles
+
+    while not _stopping:
+        root = await asyncio.to_thread(chat_store.thread_root_run, user_id, thread_id, include_request=False)
+        if root is not None and root["status"] in chat_store.ACTIVE:
+            return None
+        item = await asyncio.to_thread(chat_queue.next_item, user_id, thread_id)
+        if item is None:
+            return None
+        try:
+            result = await durable_call(
+                chat_store.start_turn,
+                user_id, thread_id, item["text"], None, chat_queue.command_id(item["id"]),
+                model=item["model"], tools=item["tools"], context=item["context"],
+                attachments=item["attachments"], reasoning_effort=item["reasoning_effort"], auto_title=True,
+            )
+        except chats.ChatValidationError as exc:
+            if int(getattr(exc, "status_code", 0) or 0) in (409, 429):
+                return None
+            await durable_call(chat_queue.hold, user_id, thread_id, item["id"])
+            raise
+        await durable_call(chat_queue.delete, user_id, thread_id, item["id"])
+        if result.get("idempotent"):
+            # Already sent (a tab's /turns, or a crash before the delete).
+            continue
+        run = result.get("run")
+        owner = await asyncio.to_thread(accounts.get_user, user_id)
+        if run and owner is not None:
+            await start(internal_request(user_id), dict(owner), run)
+            chat_titles.notify(thread_id)
+        return item["id"]
+    return None
+
+
+async def queue_message(user_id: int, thread_id, raw: dict, *, release: bool = False):
+    """Hold a composer-queued message here and start it now if the thread is
+    idle. Returns (sent, held): sent when this item's turn was accepted."""
+    async with _thread_wake_lock(user_id, thread_id):
+        held = await durable_call(chat_queue.put, user_id, thread_id, raw, release=release)
+        if held is None:
+            return True, False
+        if held:
+            return False, True
+        return await start_queued(user_id, thread_id) == raw["id"], False
 
 
 async def _run(request, user, run):

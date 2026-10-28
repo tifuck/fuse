@@ -237,7 +237,7 @@ test('a queued item stays in flight when another tab reloads the queue', async (
   baseState({ currentId: 'q' });
   let finish;
   const queue = createQueue({
-    composer: stub(), picker: stub(), transcript: stub(), ui: stub(), sync: stub(), traces: stub({ runIsActive }),
+    composer: stub(), net: stub({ api: async () => ({}) }), panels: stub(), picker: stub(), transcript: stub(), ui: stub(), sync: stub(), traces: stub({ runIsActive }),
     send: stub({ completeTurn: () => new Promise(resolve => { finish = resolve; }) }),
   });
   assert.equal(queue.enqueueTurn('first', []), true);
@@ -259,7 +259,7 @@ test('a queued send that fails after its chat was replaced is not written into t
   baseState({ currentId: 'a' });
   let finish;
   const queue = createQueue({
-    composer: stub(), picker: stub(), transcript: stub(), ui: stub(), sync: stub(), traces: stub({ runIsActive }),
+    composer: stub(), net: stub({ api: async () => ({}) }), panels: stub(), picker: stub(), transcript: stub(), ui: stub(), sync: stub(), traces: stub({ runIsActive }),
     send: stub({ completeTurn: () => new Promise(resolve => { finish = resolve; }) }),
   });
   assert.equal(queue.enqueueTurn('for a', []), true);

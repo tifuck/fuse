@@ -31,7 +31,7 @@ function queueTab() {
   const S = { currentId: 'q', queuedTurns: [], acceptedQueueCommands: new Set(), sendNowRuns: new Set(), locallyStoppedRuns: new Set(), activeRun: { id: 'run' }, SLASH_COMMANDS: [], queueEl: null };
   let q;
   const api = load('static/chat/turns/queue.js', ['createQueue'], { S, localStorage, ...store, escapeHtml: String, newSession: () => String(Math.random()) });
-  q = api.createQueue({ composer: { resizeInput: noop, scheduleFitChatBar: noop }, picker: {}, transcript: {}, ui: {}, sync: { syncStatus: noop }, traces: { runIsActive: run => !!run }, send: { stopActiveRun: async () => q.holdQueueForStop('run'), completeTurn: async () => false } });
+  q = api.createQueue({ composer: { resizeInput: noop, scheduleFitChatBar: noop }, net: { api: async () => ({}) }, panels: { enabledTools: () => [] }, picker: { currentEffort: () => '' }, transcript: {}, ui: {}, sync: { syncStatus: noop }, traces: { runIsActive: run => !!run }, send: { stopActiveRun: async () => q.holdQueueForStop('run'), completeTurn: async () => false } });
   return { S, q };
 }
 (async () => {

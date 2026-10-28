@@ -10,9 +10,56 @@ let queueDraining = false;
 const inFlight = new Set();
 // Held queue item ids per thread, when storage is unavailable.
 const heldMemory = new Map();
+// The server keeps a copy of every item (app/chat_queue.py) and starts it
+// when the running turn ends, so a hidden, asleep or closed tab cannot stall
+// the queue. Writes in flight (by item id), and Cancels not confirmed yet.
+const mirroring = new Map();
+const unsyncedDeletes = new Map();
 
 export function createQueue(ctx) {
-  const { composer, picker, send, sync, traces, transcript, ui } = ctx;
+  const { composer, net, panels, picker, send, sync, traces, transcript, ui } = ctx;
+    // The body the server stores and later sends: this tab's current settings.
+    function queueBody(item, extra) {
+    return { id: item.id, text: item.text, attachments: item.attachments || [], model: S.modelId,
+      tools: panels.enabledTools(), context: S.threadContext, reasoning_effort: picker.currentEffort(),
+      priority: item.priority || 0, created: item.created || 0, ...extra };
+  }
+
+    function mirror(origin, item, extra) {
+    const write = net.api("/chat/threads/" + encodeURIComponent(origin) + "/queue", { method: "POST", body: JSON.stringify(queueBody(item, extra)) })
+      .then((data) => {
+        if (data.held && origin === S.currentId) holdQueued(item.id);
+        if (!data.sent) return;
+        acknowledgeQueuedTurn(origin, item.id);
+        if (origin === S.currentId) sync.reconcileThread().catch(() => {});
+      });
+    mirroring.set(item.id, write);
+    write.catch(() => {}).finally(() => { if (mirroring.get(item.id) === write) mirroring.delete(item.id); });
+    return write;
+  }
+
+    // Stop holds what the server has queued: it must have every item first.
+    function mirrorsSettled() {
+    return Promise.allSettled([...mirroring.values()]);
+  }
+
+    function unmirror(origin, id) {
+    const key = origin + "\n" + id;
+    unsyncedDeletes.set(key, [origin, id]);
+    const done = () => unsyncedDeletes.delete(key);
+    return net.api("/chat/threads/" + encodeURIComponent(origin) + "/queue/" + encodeURIComponent(id), { method: "DELETE" })
+      .then(done, (error) => { if (error.status) done(); });
+  }
+
+    // The server refused to start a held item: show it as held, with Send now.
+    function holdQueued(id) {
+    const ids = heldIds();
+    ids.add(id);
+    heldMemory.set(String(S.currentId), [...ids]);
+    try { localStorage.setItem(queueHoldKey() + '.' + id, '1'); } catch (_) {}
+    renderQueue();
+  }
+
     function parseSlashCommand(text) {
     const match = String(text || "").trim().match(/^\/([a-z][a-z-]*)(?:\s+([\s\S]*))?$/i);
     if (!match) return null;
@@ -131,6 +178,12 @@ export function createQueue(ctx) {
         S.queuedTurns = items.filter((item) => item && typeof item.text === "string");
     } catch (_) {}
     retireAcceptedQueue();
+    // Items queued offline, or before the server kept a copy. A held one
+    // stays local until Send now carries it with its release.
+    const held = heldIds();
+    for (const item of S.queuedTurns) {
+      if (!held.has(item.id) && !mirroring.has(item.id) && !inFlight.has(item.id)) mirror(S.currentId, item).catch(() => {});
+    }
     renderQueue();
   }
 
@@ -229,6 +282,8 @@ export function createQueue(ctx) {
       renderQueue();
       return false;
     }
+    // Offline: the drain sends it through the same route later.
+    mirror(S.currentId, item).catch(() => {});
     renderQueue();
     return true;
   }
@@ -237,6 +292,7 @@ export function createQueue(ctx) {
     if (index < 0 || index >= S.queuedTurns.length) return;
     const [item] = S.queuedTurns.splice(index, 1);
     try { deleteQueueItem(S.currentId, item.id); } catch (_) {}
+    unmirror(S.currentId, item.id);
     renderQueue();
   }
 
@@ -250,7 +306,9 @@ export function createQueue(ctx) {
     queueDraining = true;
     const origin = S.currentId;
     try {
-      const ok = await send.completeTurn(item.text, item.attachments || [], { queueId: item.id, commandId: item.id + ":turn", follow: opts?.follow !== false });
+      // A Cancel the server never saw would still send: confirm it first.
+      if (unsyncedDeletes.size) await Promise.allSettled([...unsyncedDeletes.values()].map(([thread, id]) => unmirror(thread, id)));
+      const ok = await send.completeTurn(item.text, item.attachments || [], { queueId: item.id, queueBody: queueBody(item, { release: Boolean(item.immediate) }), follow: opts?.follow !== false });
       inFlight.delete(item.id);
       if (ok) {
         acknowledgeQueuedTurn(origin, item.id);
@@ -330,7 +388,12 @@ export function createQueue(ctx) {
         S.sendNowRuns.add(S.activeRun.id);
         markCause(S.activeRun.id, 'send-now');
       }
-      try { await send.stopActiveRun("reply"); } finally { inFlight.delete(item.id); }
+      try {
+        // The server starts the next queued item as this run ends: it must
+        // already know this one goes first.
+        await mirror(origin, item, { release: true }).catch(() => {});
+        await send.stopActiveRun("reply");
+      } finally { inFlight.delete(item.id); }
       if (origin !== S.currentId) return;
       renderQueue();
     }
@@ -341,8 +404,10 @@ export function createQueue(ctx) {
     acknowledgeQueuedTurn,
     drainQueue,
     enqueueTurn,
+    holdQueued,
     holdQueueForStop,
     loadQueue,
+    mirrorsSettled,
     queueHeld,
     queueHoldKey,
     parseSlashCommand,

@@ -116,6 +116,7 @@ export function createSend(ctx) {
     // Stop all still stops the subagents when the reply ended meanwhile.
     const id = S.activeRun?.id || (scope === "all" ? runId : "");
     if (!id) return;
+    const stoppedAt = Date.now();
     // Hold before the request: its reconcile must not drain the queue.
     queue.holdQueueForStop(id);
     S.stoppingRunId = id;
@@ -124,7 +125,9 @@ export function createSend(ctx) {
     picker.holdHint("stop:" + id, "Stopping…");
     sync.setRunning();
     try {
-      const data = await net.api("/chat/runs/" + encodeURIComponent(id) + "/cancel" + (scope ? "?scope=" + scope : ""), { method: "POST", body: "{}" });
+      // The Stop holds what the server has queued; let in-flight copies land.
+      await queue.mirrorsSettled();
+      const data = await net.api("/chat/runs/" + encodeURIComponent(id) + "/cancel" + (scope ? "?scope=" + scope : ""), { method: "POST", body: JSON.stringify({ held_before: stoppedAt }) });
       sync.applyCancelResult(data, id);
     } catch (error) {
       sync.showFailure("Stop failed", error);
@@ -278,7 +281,11 @@ export function createSend(ctx) {
       if (S.pendingTurn && (S.pendingTurn.id !== S.currentId || S.pendingTurn.body.text !== text || (opts?.truncatedTo != null && S.pendingTurn.body.replace_from !== opts.truncatedTo))) {
         throw Object.assign(new Error("A previous send is unconfirmed. Retry its original text before sending another message."), { local: true });
       }
-      if (!S.pendingTurn) sync.setPendingTurn({
+      // Queued items go through the server's copy (app/chat_queue.py): one
+      // start path whether or not a tab is open, and the item itself is the
+      // retry state, so it never becomes this tab's unconfirmed send.
+      const queued = opts?.queueBody;
+      if (!queued && !S.pendingTurn) sync.setPendingTurn({
         id: S.currentId,
         undoSnap,
         body: {
@@ -294,12 +301,18 @@ export function createSend(ctx) {
           ...(opts && opts.invoke_skill ? { invoke_skill: opts.invoke_skill } : {}),
         },
       });
-      const request = S.pendingTurn;
-      const data = await net.api("/chat/threads/" + request.id + "/turns", { method: "POST", body: JSON.stringify(request.body) });
+      const request = queued ? { id: S.currentId, body: queued } : S.pendingTurn;
+      const data = await net.api("/chat/threads/" + request.id + (queued ? "/queue" : "/turns"), { method: "POST", body: JSON.stringify(request.body) });
+      if (queued && !data.sent) {
+        // Held there (a Stop elsewhere) or another item went first.
+        if (data.held) queue.holdQueued(opts.queueId);
+        if (gen === S.generation) await sync.reconcileThread().catch(() => {});
+        return false;
+      }
       if (opts?.queueId) queue.acknowledgeQueuedTurn(origin, opts.queueId);
       // Accepted, so no longer unconfirmed, even if the user navigated away
       // meanwhile: cleared by its own thread id, not whichever chat is open.
-      sync.setPendingTurn(null, request.id);
+      if (!queued) sync.setPendingTurn(null, request.id);
       if (gen !== S.generation) return;
       if (usedPending) {
         // Files pasted or dropped while this send was in flight stay queued.
@@ -322,7 +335,8 @@ export function createSend(ctx) {
         composer.resizeInput();
       }
       pending.remove();
-      sync.acceptThread(data.thread);
+      if (data.thread) sync.acceptThread(data.thread);
+      else await sync.reconcileThread().catch(() => {});
       sidebar.rememberUndo(request.undoSnap || undoSnap);
       // The acknowledgment is a consistent snapshot. If the socket already
       // applied later progress of this run, acceptThread keeps that reply.
@@ -342,11 +356,11 @@ export function createSend(ctx) {
       if (error.local) {
         sync.showFailure("Send not confirmed; your draft is retained", error);
       } else if (error.status === 409) {
-        sync.setPendingTurn(null);
+        if (!opts?.queueBody) sync.setPendingTurn(null);
         await sync.reconcileThread().catch(() => {});
         sync.showFailure("Send not confirmed; your draft is retained", error);
       } else if (error.status && error.status < 500) {
-        sync.setPendingTurn(null);
+        if (!opts?.queueBody) sync.setPendingTurn(null);
         sync.showFailure("Send not confirmed; your draft is retained", error);
       } else {
         net.markDisconnected();
