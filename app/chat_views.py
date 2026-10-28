@@ -1164,6 +1164,21 @@ def settle_spawn_traces(conn, user_id, messages):
             f"SELECT id, status, request, message FROM chat_runs WHERE user_id=? AND id IN ({placeholders})",
             (user_id, *batch),
         ))
+    parsed = {}
+
+    def columns(row):
+        # Each child's request and message (often large) are parsed once,
+        # however many traces name it.
+        if row["id"] not in parsed:
+            values = []
+            for key in ("message", "request"):
+                try:
+                    values.append(json.loads(row[key] or "{}") if key in row.keys() else {})
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    values.append({})
+            parsed[row["id"]] = tuple(values)
+        return parsed[row["id"]]
+
     for tool in wanted:
         row = rows.get(tool["child_id"])
         if row is None:
@@ -1185,7 +1200,9 @@ def settle_spawn_traces(conn, user_id, messages):
         if row["status"] in chat_tx.TERMINAL:
             # A background spawn's own call latency is milliseconds; the row
             # shows the child's total active time across all of its legs.
-            tool["agent_work_ms"] = chat_run_state.row_work_ms(row)
+            msg, req = columns(row)
+            tool["agent_work_ms"] = chat_run_state.run_work_ms(
+                row["id"], (req if isinstance(req, dict) else {}).get("agent"), msg if isinstance(msg, dict) else {})
         if row["status"] == "completed":
             tool["status"] = "done"
             tool.pop("error", None)
@@ -1193,14 +1210,7 @@ def settle_spawn_traces(conn, user_id, messages):
             tool["status"] = "interrupted" if row["status"] != "failed" else "error"
         else:
             continue
-        try:
-            msg = json.loads(row["message"] or "{}") if "message" in row.keys() else {}
-        except (json.JSONDecodeError, TypeError):
-            msg = {}
-        try:
-            req = json.loads(row["request"] or "{}")
-        except (json.JSONDecodeError, TypeError):
-            req = {}
+        msg, req = columns(row)
         writeup = child_writeup({"id": row["id"], "status": row["status"], "message": msg, "request": req}, conn)
         if isinstance(msg, dict):
             if tool["status"] == "error":

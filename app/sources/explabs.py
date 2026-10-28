@@ -60,11 +60,11 @@ def user_credential(user_id: int | None, source_id: int | None = None):
     if not user_id:
         return None
     if source_id is None:
-        source = db.fetchone("SELECT id FROM sources WHERE type='explabs' AND enabled=1")
+        source = db.fetchone_memo("SELECT id FROM sources WHERE type='explabs' AND enabled=1")
         if not source:
             return None
         source_id = source["id"]
-    return db.fetchone(
+    return db.fetchone_memo(
         "SELECT * FROM credentials WHERE source_id=? AND donated_by=? AND disabled=0 ORDER BY id LIMIT 1",
         (source_id, user_id),
     )

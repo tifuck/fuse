@@ -64,7 +64,7 @@ DEFAULT_PREF = {"share": "everyone", "use": "pool"}
 
 def _source_cfg(kind: str) -> dict:
     sid = source_id(kind)
-    row = db.fetchone("SELECT config FROM sources WHERE id=?", (sid,))
+    row = db.fetchone_memo("SELECT config FROM sources WHERE id=?", (sid,))
     try:
         data = json.loads((row["config"] if row else None) or "{}")
         return data if isinstance(data, dict) else {}
@@ -221,7 +221,7 @@ def _parse_prefs(raw) -> dict:
 
 
 def user_prefs(user_id: int) -> dict:
-    row = db.fetchone("SELECT pool_prefs FROM users WHERE id=?", (int(user_id),))
+    row = db.fetchone_memo("SELECT pool_prefs FROM users WHERE id=?", (int(user_id),))
     if row is None:
         return {}
     try:

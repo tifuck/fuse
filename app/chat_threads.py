@@ -6,8 +6,11 @@ deliberate chats<->chat_store lazy cycle must not become a module-top import.
 """
 from __future__ import annotations
 
+import copy
 import json
 import re
+import threading
+import time
 from uuid import uuid4
 
 from . import chat_images, db
@@ -203,6 +206,53 @@ def set_user_context(user_id: int, *, instructions=None, profile=None, recaps=No
         store.event(conn, user_id, "context.updated", payload=result)
         store.remember(conn, user_id, command_id, fingerprint, result)
         return result
+# Context meter of a thread view, keyed by the exact stored values it is
+# measured from. Rebuilding the replay re-reads and parses every run
+# transcript the retained history does not cover: tens of milliseconds on a
+# long thread, on every open. The TTL bounds a model window that moved with
+# a catalog refresh.
+_METER_TTL = 120.0
+_METER_MAX = 256
+_meters: dict[tuple, tuple[float, dict, bool]] = {}
+_meters_lock = threading.Lock()
+# The database the entries were measured against (thread ids are per schema).
+_meters_pool = None
+
+
+def _digest(value):
+    return (len(value), hash(value)) if isinstance(value, (str, bytes)) else value
+
+
+def _cached_meter(key):
+    global _meters_pool
+    pool = db.connect()
+    with _meters_lock:
+        if _meters_pool is not pool:
+            _meters.clear()
+            _meters_pool = pool
+        hit = _meters.get(key)
+        if hit is None:
+            return None
+        if time.monotonic() - hit[0] >= _METER_TTL:
+            _meters.pop(key, None)
+            return None
+    return copy.deepcopy(hit[1]), hit[2]
+
+
+def _store_meter(key, meter: dict, preamble: bool) -> None:
+    entry = (time.monotonic(), copy.deepcopy(meter), preamble)
+    pool = db.connect()
+    with _meters_lock:
+        if _meters_pool is not pool:
+            return
+        # One entry per thread: an older key for it can never match again.
+        for old in [k for k in _meters if k[0] == key[0]]:
+            _meters.pop(old, None)
+        _meters[key] = entry
+        while len(_meters) > _METER_MAX:
+            _meters.pop(next(iter(_meters)))
+
+
 def _view(row, *, include_messages: bool = False, coding: bool = False, conn=None) -> dict:
     keys = row.keys() if hasattr(row, "keys") else []
     kind = row["kind"] if "kind" in keys and row["kind"] else "chat"
@@ -251,34 +301,42 @@ def _view(row, *, include_messages: bool = False, coding: bool = False, conn=Non
         model = data.get("model") or ""
         stored = state.get("meter") if isinstance(state.get("meter"), dict) else {}
         type_id = context_meter.source_type_for_model(model, stored)
-        # Measure the validated replay projection, including saved tool pairs,
-        # rather than display previews or summed multi-request billing.
-        from . import chat_history
-        replay, history_info = chat_history.build(conn if conn is not None else db.connect(), row["user_id"], row["id"], data["messages"], state,
-            retained=row["retained_history"] if "retained_history" in keys else "{}", model=model)
-        if any(isinstance(msg, dict) and ctxmod.is_compact_preamble(str(msg.get("content") or "")) for msg in replay):
+        retained = row["retained_history"] if "retained_history" in keys else "{}"
+        meter_key = (row["id"], row["user_id"], model, _digest(row["messages"]), _digest(raw_comp), _digest(retained))
+        cached = _cached_meter(meter_key)
+        if cached is None:
+            # Measure the validated replay projection, including saved tool pairs,
+            # rather than display previews or summed multi-request billing.
+            from . import chat_history
+            replay, history_info = chat_history.build(conn if conn is not None else db.connect(), row["user_id"], row["id"], data["messages"], state,
+                retained=retained, model=model)
+            preamble = any(isinstance(msg, dict) and ctxmod.is_compact_preamble(str(msg.get("content") or "")) for msg in replay)
+            rebuilt = context_meter.standing_meter(
+                chat_history.for_model(replay, model),
+                model=model,
+                type_id=type_id,
+                override=state.get("window_override"),
+                prior=stored if stored.get("model") == model else None,
+            )
+            # Preserve a source-resolved window only for generic model IDs whose
+            # name cannot identify the backend (type_id None, e.g. a local Qwen
+            # model). Named pools resolve to their real window every time.
+            if (
+                type_id is None
+                and stored.get("model") == model
+                and stored.get("limit")
+                and not state.get("window_override")
+            ):
+                rebuilt.update(context_meter.meter(used=rebuilt["used"], limit=stored["limit"], model=model,
+                                           estimated=True))
+            meter = rebuilt
+            meter["history_info"] = history_info
+            _store_meter(meter_key, meter, preamble)
+        else:
+            meter, preamble = cached
+        if preamble:
             from .chat_views import compaction_cut
             data["context_cut"] = compaction_cut(data["messages"], state)
-        rebuilt = context_meter.standing_meter(
-            chat_history.for_model(replay, model),
-            model=model,
-            type_id=type_id,
-            override=state.get("window_override"),
-            prior=stored if stored.get("model") == model else None,
-        )
-        # Preserve a source-resolved window only for generic model IDs whose
-        # name cannot identify the backend (type_id None, e.g. a local Qwen
-        # model). Named pools resolve to their real window every time.
-        if (
-            type_id is None
-            and stored.get("model") == model
-            and stored.get("limit")
-            and not state.get("window_override")
-        ):
-            rebuilt.update(context_meter.meter(used=rebuilt["used"], limit=stored["limit"], model=model,
-                                       estimated=True))
-        meter = rebuilt
-        meter["history_info"] = history_info
         state["meter"] = meter
         effort = state.get("effort") if isinstance(state.get("effort"), dict) else {}
         data["reasoning_effort"] = (effort.get("value") or "") if effort.get("model") == model else ""

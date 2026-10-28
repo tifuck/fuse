@@ -458,7 +458,7 @@ async def _models_page_families(user) -> tuple[list[dict], list[dict]]:
         state = access[type_id]
         if state["ok"] or type_id in have:
             continue
-        row = db.fetchone("SELECT id, name FROM sources WHERE type=? AND enabled=1", (type_id,))
+        row = db.fetchone_memo("SELECT id, name FROM sources WHERE type=? AND enabled=1", (type_id,))
         if not row:
             continue
         names = _pool_catalog(type_id)
@@ -474,7 +474,7 @@ async def _models_page_families(user) -> tuple[list[dict], list[dict]]:
                 "link_label": "Open Sources",
             }
         )
-    or_row = db.fetchone("SELECT id, name FROM sources WHERE type='openrouter' AND enabled=1")
+    or_row = db.fetchone_memo("SELECT id, name FROM sources WHERE type='openrouter' AND enabled=1")
     if or_row and not or_state["user_key"]:
         catalog = catalog or {}
         names = _openrouter_locked_models(catalog)

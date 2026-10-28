@@ -2,7 +2,9 @@ import json
 import logging
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 
 from .config import settings
@@ -112,12 +114,99 @@ def _rollback(conn) -> None:
             pass
 
 
+# Read memo for one unit of work (a GET request): see read_memo().
+_memo: ContextVar[dict | None] = ContextVar("fuse_db_read_memo", default=None)
+READ_MEMO_TTL = 5.0
+
+
+@contextmanager
+def read_memo(ttl: float = READ_MEMO_TTL):
+    """Let fetchone_memo/fetchall_memo reuse identical reads in this block.
+
+    A page that lists models asks for the same pool switches, user prefs and
+    source ids dozens of times, each its own checkout, round trip and commit.
+    Any transaction in this context that writes drops the memo (reads see
+    their own writes); it closes when the block exits, so tasks the block
+    spawned read through again, and it lapses after ttl so a long response
+    never keeps serving a row another request has changed.
+    """
+    store = {"until": time.monotonic() + ttl, "gen": 0, "rows": {}}
+    token = _memo.set(store)
+    try:
+        yield
+    finally:
+        store["until"] = 0.0
+        store["rows"].clear()
+        _memo.reset(token)
+
+
+def _memo_store() -> dict | None:
+    store = _memo.get()
+    if store is None or time.monotonic() >= store["until"]:
+        return None
+    return store
+
+
+def _forget_memo() -> None:
+    store = _memo.get()
+    if store is not None:
+        store["gen"] += 1
+        store["rows"].clear()
+
+
+def _copy_row(row):
+    return row.__class__(row) if isinstance(row, dict) else row
+
+
+_MISS = object()
+
+
+def _memo_read(kind: str, sql: str, args, read):
+    store = _memo_store()
+    if store is None:
+        return read(sql, args)
+    key = (kind, sql, tuple(args))
+    hit = store["rows"].get(key, _MISS)
+    if hit is not _MISS:
+        return hit
+    gen = store["gen"]
+    value = read(sql, args)
+    # A transaction that wrote while this read ran may have changed the row.
+    if value is not None and store["gen"] == gen and time.monotonic() < store["until"]:
+        store["rows"][key] = value
+    return value
+
+
+def fetchone_memo(sql: str, args=()):
+    """fetchone, reused inside read_memo(). For small config rows read many
+    times per request; a missing row is not remembered (callers create it)."""
+    return _copy_row(_memo_read("one", sql, args, lambda s, a: fetchone(s, a)))
+
+
+def fetchall_memo(sql: str, args=()):
+    """fetchall, reused inside read_memo(); see fetchone_memo."""
+    rows = _memo_read("all", sql, args, lambda s, a: list(fetchall(s, a)))
+    return [_copy_row(row) for row in rows]
+
+
+def _reset_wrote(conn) -> None:
+    if hasattr(conn, "wrote"):
+        conn.wrote = False
+
+
+def _after_tx(conn) -> None:
+    # A connection that cannot tell (legacy SQLite) counts as written.
+    if getattr(conn, "wrote", True):
+        _forget_memo()
+
+
 @contextmanager
 def tx():
     conn = connect()
     pooled = hasattr(conn, "checkout")
     if pooled:
         borrowed = conn.checkout()
+        _reset_wrote(borrowed)
         try:
             yield borrowed
             borrowed.commit()
@@ -128,9 +217,11 @@ def tx():
             _rollback(borrowed)
             raise
         finally:
+            _after_tx(borrowed)
             conn.release(borrowed)
         return
     with _lock:
+        _reset_wrote(conn)
         try:
             if hasattr(conn, "ensure_connected"):
                 conn.ensure_connected()
@@ -139,6 +230,8 @@ def tx():
         except BaseException:
             _rollback(conn)
             raise
+        finally:
+            _after_tx(conn)
 
 
 def execute(sql: str, args=()):

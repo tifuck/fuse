@@ -12,6 +12,7 @@ versions through ``asset_url`` and the preload lists through
 """
 from __future__ import annotations
 
+import gzip
 import hashlib
 import posixpath
 import re
@@ -40,12 +41,25 @@ _CSS_URL = re.compile(r"""(url\(\s*)(["']?)([^"')\s]+)\2(\s*\))""")
 # Static files only change on deploy in production; dev edits them in place,
 # so stat results are trusted for this long before a file is re-read.
 STAT_TTL = 1.0
+# Bodies at least this long are served gzipped to clients that accept it.
+GZIP_MIN = 1024
 
 _lock = threading.RLock()
 _files: dict[str, dict] = {}
 _versions: dict[str, str] = {}
 _bodies: dict[str, tuple[str, bytes]] = {}
+_gzipped: dict[str, tuple[str, bytes]] = {}
+_preload_lists: dict[str, list[str]] = {}
 _inlining: set[str] = set()
+# A production process serves the tree it started with (a deploy restarts
+# it): once frozen, nothing is re-stat'ed, so a page render no longer stats
+# every file its entries load. Dev never freezes.
+_frozen = False
+
+
+def freeze() -> None:
+    global _frozen
+    _frozen = True
 
 
 def _norm(rel: str) -> str:
@@ -92,7 +106,7 @@ def _entry(rel: str) -> dict | None:
     stat changes (checked at most once per STAT_TTL)."""
     now = time.monotonic()
     entry = _files.get(rel)
-    if entry and now - entry["checked"] < STAT_TTL:
+    if entry and (_frozen or now - entry["checked"] < STAT_TTL):
         return entry
     try:
         # Request paths reach here before StaticFiles' own lookup; never read
@@ -152,6 +166,9 @@ def version(rel: str) -> str | None:
     it loads (import cycles are fine: it is a set, not a tree)."""
     rel = _norm(rel)
     with _lock:
+        cached = _versions.get(rel)
+        if cached and _frozen:
+            return cached
         if _entry(rel) is None:
             return None
         # Refresh stats of the whole closure (cheap within STAT_TTL); a change
@@ -229,25 +246,51 @@ def rewritten(rel: str) -> tuple[str, bytes] | None:
         return body
 
 
+def served(rel: str, gzip_ok: bool) -> tuple[str, bytes, str | None] | None:
+    """(version, body, content encoding) to send for a script or stylesheet.
+    The gzip body is compressed once per version at the highest level;
+    GZipMiddleware would redo it at level 3 on every request."""
+    found = rewritten(rel)
+    if found is None:
+        return None
+    value, body = found
+    if not gzip_ok or len(body) < GZIP_MIN:
+        return value, body, None
+    rel = _norm(rel)
+    with _lock:
+        hit = _gzipped.get(rel)
+    if not hit or hit[0] != value:
+        hit = (value, gzip.compress(body, compresslevel=9, mtime=0))
+        with _lock:
+            _gzipped[rel] = hit
+    return value, hit[1], "gzip"
+
+
 def preloads(entry: str) -> list[str]:
     """Versioned URLs of everything ``entry`` loads (not the entry itself) of
     the same kind, for <link rel=modulepreload|preload> hints that fetch the
     whole graph in parallel instead of one import level per round trip."""
     entry = _norm(entry)
+    if _frozen and entry in _preload_lists:
+        return list(_preload_lists[entry])
     kind = ".css" if entry.endswith(".css") else (".js", ".mjs")
     with _lock:
         if _entry(entry) is None:
             return []
         members = [rel for rel in _closure(entry) if rel != entry and rel.endswith(kind)]
-    return [asset_url(rel) for rel in sorted(members)]
+    urls = [asset_url(rel) for rel in sorted(members)]
+    if _frozen:
+        _preload_lists[entry] = urls
+    return list(urls)
 
 
-def warm() -> None:
-    """Hash every script and stylesheet once, off the request path."""
+def warm(*, compress: bool = False) -> None:
+    """Hash every script and stylesheet once, off the request path (and
+    gzip it, for a process that will freeze)."""
     for path in ROOT.rglob("*"):
         if path.suffix in _TEXT and path.is_file():
             rel = path.relative_to(ROOT).as_posix()
             try:
-                rewritten(rel)
+                served(rel, compress)
             except OSError:
                 pass

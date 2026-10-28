@@ -169,7 +169,7 @@ def _chat_headers(token: str, account_id: str | None, session_id: str | None = N
 
 
 def ensure_chatgpt_source() -> int:
-    row = db.fetchone("SELECT id FROM sources WHERE type='chatgpt'")
+    row = db.fetchone_memo("SELECT id FROM sources WHERE type='chatgpt'")
     if row:
         return row["id"]
     with db.tx() as conn:
@@ -301,7 +301,7 @@ def credential_is_authed(cred, extra: dict | None = None) -> bool:
 def chatgpt_own_access(user_id: int) -> dict:
     """Access from this user's own donated ChatGPT accounts only."""
     sid = ensure_chatgpt_source()
-    rows = db.fetchall(
+    rows = db.fetchall_memo(
         "SELECT * FROM credentials WHERE source_id=? AND donated_by=? AND disabled=0",
         (sid, user_id),
     )

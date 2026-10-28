@@ -92,30 +92,39 @@ _SEEDED_MODELS = {
 }
 
 
-def _row_source(row) -> Source:
+def _row_source(row, creds=None) -> Source:
     cfg = json.loads(row["config"] or "{}")
     if not isinstance(cfg, dict):
         raise ValueError("source config must be a JSON object")
-    creds = db.fetchall(
-        "SELECT * FROM credentials WHERE source_id=? AND disabled=0", (row["id"],)
-    )
+    if creds is None:
+        creds = db.fetchall(
+            "SELECT * FROM credentials WHERE source_id=? AND disabled=0", (row["id"],)
+        )
     return _BUILDERS[row["type"]](row, cfg, creds)
 
 
 def all_enabled() -> list[Source]:
-    rows = db.fetchall("SELECT * FROM sources WHERE enabled=1 ORDER BY id")
+    rows = [row for row in db.fetchall("SELECT * FROM sources WHERE enabled=1 ORDER BY id") if row["type"] in _BUILDERS]
+    # One credentials read for every source, not one per source: this runs
+    # on every model listing and every routed request.
+    creds: dict[int, list] = {row["id"]: [] for row in rows}
+    if creds:
+        marks = ",".join("?" for _ in creds)
+        for cred in db.fetchall(
+            f"SELECT * FROM credentials WHERE disabled=0 AND source_id IN ({marks}) ORDER BY id", tuple(creds)
+        ):
+            creds[cred["source_id"]].append(cred)
     out = []
     for row in rows:
-        if row["type"] in _BUILDERS:
-            try:
-                out.append(_row_source(row))
-            except Exception as exc:
-                logger.warning(
-                    "Skipping malformed source id=%s type=%s: %s",
-                    row["id"],
-                    row["type"],
-                    type(exc).__name__,
-                )
+        try:
+            out.append(_row_source(row, creds[row["id"]]))
+        except Exception as exc:
+            logger.warning(
+                "Skipping malformed source id=%s type=%s: %s",
+                row["id"],
+                row["type"],
+                type(exc).__name__,
+            )
     return out
 
 
@@ -709,7 +718,7 @@ def pool_denial(model: str, user_id: int, access: dict[str, bool]) -> str | None
 
 
 def _ensure_typed_source(type_id: str, name: str, config: dict) -> int:
-    row = db.fetchone("SELECT id FROM sources WHERE type=?", (type_id,))
+    row = db.fetchone_memo("SELECT id FROM sources WHERE type=?", (type_id,))
     if row:
         return row["id"]
     with db.tx() as conn:

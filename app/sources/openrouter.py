@@ -26,7 +26,7 @@ _catalog_available = False
 
 
 def ensure_openrouter_source() -> int:
-    row = db.fetchone("SELECT id FROM sources WHERE type='openrouter'")
+    row = db.fetchone_memo("SELECT id FROM sources WHERE type='openrouter'")
     if row:
         return row["id"]
     with db.tx() as conn:
@@ -269,7 +269,7 @@ def user_credential(user_id: int, source_id: int | None = None):
     if not user_id:
         return None
     sid = source_id or ensure_openrouter_source()
-    rows = db.fetchall(
+    rows = db.fetchall_memo(
         "SELECT * FROM credentials WHERE source_id=? AND donated_by=? AND disabled=0 ORDER BY id",
         (sid, user_id),
     )

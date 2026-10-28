@@ -136,7 +136,7 @@ async def fetch_userinfo(token: str) -> dict:
 
 
 def ensure_grok_source() -> int:
-    row = db.fetchone("SELECT id FROM sources WHERE type='grok'")
+    row = db.fetchone_memo("SELECT id FROM sources WHERE type='grok'")
     if row:
         return row["id"]
     with db.tx() as conn:
@@ -210,7 +210,7 @@ def credential_is_authed(cred, extra: dict | None = None) -> bool:
 def grok_own_access(user_id: int) -> dict:
     """Access from this user's own donated Grok accounts only."""
     sid = ensure_grok_source()
-    rows = db.fetchall(
+    rows = db.fetchall_memo(
         "SELECT * FROM credentials WHERE source_id=? AND donated_by=? AND disabled=0",
         (sid, user_id),
     )

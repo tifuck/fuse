@@ -77,12 +77,24 @@ class ChatValidationError(ValueError):
 # Lone surrogates cannot be encoded as UTF-8. A compiled character class scans
 # in C; per-character Python loops dominated large transcript loads.
 _SURROGATE_RE = re.compile("[\ud800-\udfff]")
+# Lone surrogates are the only code points strict UTF-8 refuses. isascii() is
+# O(1) in CPython and encode() runs ~3x faster than the scan, so most text
+# never reaches the regex.
+def _utf8_clean(value: str) -> bool:
+    if value.isascii():
+        return True
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
 def _has_surrogate(value: str) -> bool:
-    return _SURROGATE_RE.search(value) is not None
+    return not _utf8_clean(value)
 def _legacy_text(value, limit: int) -> str:
     if not isinstance(value, str):
         return ""
-    return _SURROGATE_RE.sub("\ufffd", value[:limit])
+    value = value[:limit]
+    return value if _utf8_clean(value) else _SURROGATE_RE.sub("\ufffd", value)
 def _text(value, field: str, limit: int, *, strip: bool = False) -> str:
     if not isinstance(value, str):
         raise ChatValidationError(f"{field} must be a string")

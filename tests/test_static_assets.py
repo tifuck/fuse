@@ -1,5 +1,6 @@
 """Content-versioned /static: rewritten imports, transitive versions, CSS inlining."""
 import asyncio
+import gzip
 import re
 from pathlib import Path
 
@@ -17,7 +18,9 @@ def tree(tmp_path, monkeypatch):
     monkeypatch.setattr(static_assets, "ROOT", root)
     monkeypatch.setattr(static_assets, "_ROOT_REAL", root.resolve())
     monkeypatch.setattr(static_assets, "STAT_TTL", 0)
-    for cache in (static_assets._files, static_assets._versions, static_assets._bodies):
+    caches = (static_assets._files, static_assets._versions, static_assets._bodies, static_assets._gzipped,
+              static_assets._preload_lists)
+    for cache in caches:
         cache.clear()
 
     def write(rel, text):
@@ -26,7 +29,7 @@ def tree(tmp_path, monkeypatch):
         path.write_text(text)
 
     yield write
-    for cache in (static_assets._files, static_assets._versions, static_assets._bodies):
+    for cache in caches:
         cache.clear()
 
 
@@ -137,6 +140,43 @@ def test_served_scripts_answer_conditional_requests(tree, monkeypatch):
     assert first.status_code == 200 and first.headers["etag"] == f'"{current}"'
     assert f"./dep.js?v={static_assets.version('dep.js')}" in first.body.decode()
     assert get(f'"{current}"').status_code == 304
+
+
+def test_bodies_are_gzipped_once_per_version(tree, monkeypatch):
+    from app.config import settings
+    from app.main import VersionedStaticFiles
+
+    tree("big.js", "export const a = 1;\n" * 200)
+    tree("tiny.js", "export default 1;\n")
+    value, body, encoding = static_assets.served("big.js", True)
+    assert encoding == "gzip" and gzip.decompress(body) == static_assets.rewritten("big.js")[1]
+    assert static_assets.served("big.js", True)[1] is body
+    assert static_assets.served("big.js", False)[2] is None
+    assert static_assets.served("tiny.js", True)[2] is None
+    tree("big.js", "export const b = 2;\n" * 200)
+    moved, packed, _ = static_assets.served("big.js", True)
+    assert moved != value and gzip.decompress(packed) == static_assets.rewritten("big.js")[1]
+
+    monkeypatch.setattr(settings, "static_immutable", True)
+    files = VersionedStaticFiles(directory=str(static_assets.ROOT))
+    scope = {"type": "http", "method": "GET", "path": "/big.js", "query_string": f"v={moved}".encode(),
+             "headers": [(b"accept-encoding", b"gzip, br")]}
+    response = asyncio.run(files.get_response("big.js", scope))
+    assert response.headers["content-encoding"] == "gzip" and response.headers["vary"] == "Accept-Encoding"
+    assert response.body == packed
+
+
+def test_a_frozen_tree_is_not_rechecked(tree, monkeypatch):
+    tree("main.js", "import './leaf.js';\n")
+    tree("leaf.js", "export default 1;\n")
+    before = static_assets.version("main.js")
+    hints = static_assets.preloads("main.js")
+    monkeypatch.setattr(static_assets, "_frozen", True)
+    tree("leaf.js", "export default 22;\n")  # a production tree only changes with a restart
+    assert static_assets.version("main.js") == before
+    assert static_assets.preloads("main.js") == hints
+    monkeypatch.setattr(static_assets, "_frozen", False)
+    assert static_assets.version("main.js") != before
 
 
 def test_templates_use_content_versions():

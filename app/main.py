@@ -183,8 +183,12 @@ async def lifespan(app: FastAPI):
             thread_name_prefix="fuse-io",
         )
     )
-    # Hash /static once before the first page asks for asset versions.
-    await asyncio.to_thread(static_assets.warm)
+    # Hash /static once before the first page asks for asset versions. With
+    # immutable URLs the tree is the one this process ships (a deploy
+    # restarts it), so nothing needs re-checking per render.
+    await asyncio.to_thread(static_assets.warm, compress=settings.static_immutable)
+    if settings.static_immutable:
+        static_assets.freeze()
     try:
         url = (getattr(settings, "database_url", "") or "").strip()
         if url.startswith("mysql://"):
@@ -335,9 +339,28 @@ async def lifespan(app: FastAPI):
                     worker_lock.close()
 
 
+class ReadMemoMiddleware:
+    """GET and HEAD requests reuse identical config reads (db.read_memo):
+    a model-listing page otherwise re-reads the same pool rows dozens of
+    times."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("method") not in ("GET", "HEAD"):
+            await self.app(scope, receive, send)
+            return
+        with db.read_memo():
+            await self.app(scope, receive, send)
+
+
 app = FastAPI(title="Fuse", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+app.add_middleware(ReadMemoMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
-app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=3)
+# Bodies under 512 KiB compress inline (at most ~5 ms at level 3): a hop to
+# the worker thread held a streamed thread snapshot's first line ~20 ms.
+app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=3, thread_minimum_size=512 * 1024)
 app.add_middleware(MaxBodyMiddleware)
 hosts = [h.strip() for h in settings.trusted_hosts.split(",") if h.strip()]
 if hosts:
@@ -366,9 +389,12 @@ class VersionedStaticFiles(StaticFiles):
         versioned = settings.static_immutable and _VERSIONED.search(scope.get("query_string", b""))
         cache = "public, max-age=31536000, immutable" if versioned else "no-cache"
         if scope.get("method") in ("GET", "HEAD") and path.endswith(static_assets._TEXT):
-            found = await asyncio.to_thread(static_assets.rewritten, path)
+            request_headers = dict(
+                (k.decode("latin-1").lower(), v.decode("latin-1")) for k, v in scope.get("headers") or []
+            )
+            found = await asyncio.to_thread(static_assets.served, path, "gzip" in request_headers.get("accept-encoding", ""))
             if found:
-                version, body = found
+                version, body, encoding = found
                 # Only the current bytes are immutable under their version. A
                 # page rendered before a deploy can still ask for an old ?v=;
                 # it gets today's file, which must not be cached as that URL.
@@ -376,10 +402,11 @@ class VersionedStaticFiles(StaticFiles):
                     cache = "no-cache"
                 etag = f'"{version}"'
                 media = "text/css; charset=utf-8" if path.endswith(".css") else "text/javascript; charset=utf-8"
-                headers = {"ETag": etag, "Cache-Control": cache}
-                match = [tag.strip() for tag in dict(
-                    (k.decode("latin-1").lower(), v.decode("latin-1")) for k, v in scope.get("headers") or []
-                ).get("if-none-match", "").split(",")]
+                headers = {"ETag": etag, "Cache-Control": cache, "Vary": "Accept-Encoding"}
+                if encoding:
+                    # Precompressed: GZipMiddleware passes an encoded body through.
+                    headers["Content-Encoding"] = encoding
+                match = [tag.strip() for tag in request_headers.get("if-none-match", "").split(",")]
                 if etag in match or "*" in match:
                     return Response(status_code=304, headers=headers)
                 if scope.get("method") == "HEAD":

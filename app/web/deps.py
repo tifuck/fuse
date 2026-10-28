@@ -186,7 +186,7 @@ def _validate_json_unicode(value, depth: int = 0) -> None:
     if depth > 50:
         raise RecursionError
     if isinstance(value, str):
-        if _SURROGATE_RE.search(value):
+        if not value.isascii() and _SURROGATE_RE.search(value):
             raise UnicodeError("invalid Unicode surrogate")
     elif isinstance(value, float) and not math.isfinite(value):
         raise ValueError("invalid JSON number")

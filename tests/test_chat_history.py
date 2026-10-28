@@ -81,6 +81,20 @@ class HistoryTest(unittest.TestCase):
         for i in range(3):
             self.assertEqual(sum(f"RESULT_{i}_" in str(m.get("content")) for m in run["request"]["messages"]), 1)
 
+    def test_reopening_reuses_the_meter_until_the_thread_changes(self):
+        self.complete(self.start(), result="RESULT_" + "x" * 4000)
+        first = chats.get_thread(1, self.thread["id"])
+        with patch.object(memory, "build", wraps=memory.build) as build:
+            again = chats.get_thread(1, self.thread["id"])
+            self.assertEqual(build.call_count, 0)
+            self.assertEqual(again["compaction"]["meter"], first["compaction"]["meter"])
+            again["compaction"]["meter"]["used"] = -1  # a caller's edit never reaches the cache
+            self.assertEqual(chats.get_thread(1, self.thread["id"])["compaction"]["meter"], first["compaction"]["meter"])
+            self.complete(self.start("next"), result="MORE_" + "y" * 4000)
+            grown = chats.get_thread(1, self.thread["id"])
+            self.assertGreater(build.call_count, 0)
+        self.assertGreater(grown["compaction"]["meter"]["used"], first["compaction"]["meter"]["used"])
+
     def test_cache_observation_status_survives_saved_message_reload(self):
         run = self.start()
         self.complete(run)

@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 from .database_errors import IntegrityError, TransactionAborted
 import threading
+import time
 from collections import deque
 from functools import lru_cache
 from urllib.parse import unquote, urlsplit
@@ -162,6 +163,7 @@ def _hex_args(sql, args):
 
 
 _CONTROL_STATEMENT_RE = re.compile(r"(?:BEGIN|COMMIT|ROLLBACK|PRAGMA|CREATE)\b", re.I)
+_READ_STATEMENT_RE = re.compile(r"\s*(?:SELECT|SHOW)\b", re.I)
 
 
 def _pymysql_errno(exc: Exception) -> int | None:
@@ -180,6 +182,10 @@ class Conn:
         self._aborted = None
         # Sent a statement past _RECYCLE_STATEMENT_CHARS: Pool.release reconnects.
         self.oversized = False
+        # Ran anything but a read since db.tx() reset it (drops the read memo).
+        self.wrote = False
+        # When Pool.release took it back healthy; None forces a ping.
+        self.released_at = None
         raw.encoders[_Utf8Hex] = _escape_hex
 
     def _check_open(self):
@@ -194,6 +200,8 @@ class Conn:
     def native(self, sql, args=()):
         self._check_open()
         self._note_size(args)
+        if not self.wrote and not _READ_STATEMENT_RE.match(sql):
+            self.wrote = True
         try:
             with self._raw.cursor() as cursor:
                 cursor.execute(sql, _hex_args(sql, args))
@@ -257,6 +265,8 @@ class Conn:
             return Cursor(rowcount=total, lastrowid=last)
         rendered = _rewrite(text, self._write_transaction)
         self._check_open()
+        if not _READ_STATEMENT_RE.match(rendered):
+            self.wrote = True
         for values in rows:
             self._note_size(values)
         try:
@@ -330,6 +340,12 @@ def _raw_connect(parsed):
         init_command="SET SESSION time_zone='+00:00', SESSION tx_isolation='REPEATABLE-READ', SESSION sql_mode='STRICT_ALL_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'")
 
 
+# A connection back from a clean transaction this recently is used without a
+# ping (a round trip before every transaction otherwise). A dropped one fails
+# its next statement, is closed by the rollback, and reconnects at checkout.
+PING_AFTER = 1.0
+
+
 class Pool:
     """One connection per concurrent transaction. Callers never share one."""
 
@@ -353,11 +369,13 @@ class Pool:
             conn = self._idle.get(timeout=timeout)
         except Exception as exc:
             raise TimeoutError("MariaDB connection pool exhausted") from exc
-        try:
-            conn.ensure_connected()
-        except Exception:
-            self._idle.put(conn)
-            raise
+        released, conn.released_at = conn.released_at, None
+        if released is None or time.monotonic() - released >= PING_AFTER or not conn._raw.open:
+            try:
+                conn.ensure_connected()
+            except Exception:
+                self._idle.put(conn)
+                raise
         return conn
 
     def release(self, conn):
@@ -368,6 +386,8 @@ class Pool:
                 conn.close()
             except Exception:
                 pass
+        elif conn._aborted is None and conn._raw.open:
+            conn.released_at = time.monotonic()
         self._idle.put(conn)
 
     def execute(self, sql, args=()):

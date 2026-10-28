@@ -105,7 +105,7 @@ def disable_credential(cred_id: int, *, extra: str | None = None) -> None:
 
 
 def ensure_claude_source() -> int:
-    row = db.fetchone("SELECT id FROM sources WHERE type='claude'")
+    row = db.fetchone_memo("SELECT id FROM sources WHERE type='claude'")
     if row:
         return row["id"]
     with db.tx() as conn:
@@ -664,7 +664,7 @@ async def revoke_remote(cred) -> None:
 
 def claude_own_access(user_id: int) -> dict:
     sid = ensure_claude_source()
-    rows = db.fetchall(
+    rows = db.fetchall_memo(
         "SELECT * FROM credentials WHERE source_id=? AND donated_by=? AND disabled=0",
         (sid, user_id),
     )

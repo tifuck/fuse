@@ -76,7 +76,7 @@ def disable_credential(cred_id: int, *, extra: str | None = None) -> None:
 
 
 def ensure_kimi_source() -> int:
-    row = db.fetchone("SELECT id FROM sources WHERE type='kimi'")
+    row = db.fetchone_memo("SELECT id FROM sources WHERE type='kimi'")
     if row:
         return row["id"]
     with db.tx() as conn:
@@ -418,7 +418,7 @@ def credential_is_authed(cred, extra: dict | None = None) -> bool:
 
 def kimi_own_access(user_id: int) -> dict:
     sid = ensure_kimi_source()
-    rows = db.fetchall(
+    rows = db.fetchall_memo(
         "SELECT * FROM credentials WHERE source_id=? AND donated_by=? AND disabled=0",
         (sid, user_id),
     )

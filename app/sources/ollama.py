@@ -15,6 +15,20 @@ from . import ollama_access
 from .pool_session import bind, lookup
 
 _pools: dict[int, KeyPool] = {}
+# Ciphertext -> key for each source's current credentials. The plaintext keys
+# already live in _pools for the process lifetime; this only spares a Fernet
+# decrypt of every key on each build (every model listing and routed request).
+_plain: dict[int, dict[str, str]] = {}
+
+
+def _plain_keys(source_id: int, creds: list) -> list[str]:
+    known = _plain.get(source_id, {})
+    fresh = {}
+    for c in creds:
+        sealed = c["secret"]
+        fresh[sealed] = known[sealed] if sealed in known else accounts.cred_secret(c)
+    _plain[source_id] = fresh
+    return [fresh[c["secret"]] for c in creds]
 _tags_cache: dict[int, tuple[float, list[str]]] = {}
 _access_tasks: dict[int, asyncio.Task] = {}
 _TAGS_TTL = 300.0
@@ -198,17 +212,18 @@ class OllamaSource:
         self.cfg = cfg
         self.creds = list(creds)
         self.base = (cfg.get("base_url") or DEFAULT_BASE).rstrip("/")
+        keys = _plain_keys(self.source_id, self.creds)
         if self.source_id not in _pools:
             pool = KeyPool(
                 keys_file="",
                 state_file=str(ROOT / "data" / f"ollama-{self.source_id}.json"),
             )
-            pool.load_from_list([accounts.cred_secret(c) for c in creds])
+            pool.load_from_list(keys)
             _pools[self.source_id] = pool
         else:
-            _pools[self.source_id].load_from_list([accounts.cred_secret(c) for c in creds])
+            _pools[self.source_id].load_from_list(keys)
         self.pool = _pools[self.source_id]
-        self._cred_by_key = {accounts.cred_secret(c): c for c in creds}
+        self._cred_by_key = dict(zip(keys, self.creds))
         self._maybe_start_sweeper()
 
     def _maybe_start_sweeper(self) -> None:
