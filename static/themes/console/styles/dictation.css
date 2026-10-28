@@ -32,14 +32,6 @@ html[data-chat-console="true"] .chat[data-view="console"] .chat-mic-btn.is-live:
 }
 html[data-chat-console="true"] body.is-chat .chat[data-view="console"] .chat-box.is-dictating::before { color: var(--brass); }
 
-/* Send and the mic share one slot. An empty, idle box shows the mic where
-   send sits; text, an attachment or a running reply brings send/stop back
-   and the mic steps beside it, quieter, so it is there in every state. */
-html[data-chat-console="true"] .chat[data-view="console"] .chat-box.is-mic-slot .chat-send { display: none; }
-html[data-chat-console="true"] .chat[data-view="console"] .chat-box.is-mic-slot .chat-mic-btn { color: var(--brass); }
-html[data-chat-console="true"] .chat[data-view="console"] .chat-box.is-mic-slot .chat-mic-btn:not(.is-live):hover { color: var(--mist); }
-html[data-chat-console="true"] .chat[data-view="console"] .chat-box:has(.chat-mic-btn) .chat-send { animation: dictation-slot var(--dur-2) var(--ease-snap); }
-
 html[data-chat-console="true"] .chat[data-view="console"] .dictation {
   position: absolute;
   bottom: calc(100% + 0.7rem);
@@ -129,9 +121,6 @@ html[data-chat-console="true"] .chat[data-view="console"] .dictation-btn.is-done
 html[data-chat-console="true"] .chat[data-view="console"] .dictation-btn.is-done:hover { color: var(--on-brass, var(--ink)); background: var(--brass); }
 html[data-chat-console="true"] .chat[data-view="console"] .dictation.is-finishing .dictation-btn { pointer-events: none; opacity: 0.35; }
 
-@keyframes dictation-slot {
-  from { opacity: 0; scale: 0.7; }
-}
 @keyframes dictation-in {
   from { opacity: 0; transform: translate(-50%, 6px); }
 }
@@ -153,7 +142,5 @@ html[data-chat-console="true"] .chat[data-view="console"] .dictation.is-finishin
 }
 
 @media (prefers-reduced-motion: reduce) {
-  html[data-chat-console="true"] .chat[data-view="console"] :is(.dictation, .chat-send),
-  html[data-chat-console="true"] .chat[data-view="console"] .dictation-dot::after,
-  html[data-chat-console="true"] .chat[data-view="console"] .chat-mic-btn.is-live::after { animation: none; }
+  html[data-chat-console="true"] .chat[data-view="console"] :is(.dictation, .dictation-dot::after, .chat-mic-btn.is-live::after) { animation: none; }
 }

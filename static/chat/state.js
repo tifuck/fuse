@@ -35,7 +35,6 @@ function initState() {
   S.form = S.root.querySelector("[data-chat-form]");
   S.input = S.root.querySelector("[data-chat-input]");
   S.sendBtn = S.root.querySelector("[data-chat-send]");
-  S.micBtn = S.root.querySelector("[data-chat-mic]");
   S.newBtns = [...S.root.querySelectorAll("[data-chat-new]")];
   S.hint = S.root.querySelector("[data-chat-hint]");
   S.pickerHost = S.root.querySelector("[data-chat-picker]");
