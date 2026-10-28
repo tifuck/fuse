@@ -142,5 +142,7 @@ html[data-chat-console="true"] .chat[data-view="console"] .dictation.is-finishin
 }
 
 @media (prefers-reduced-motion: reduce) {
-  html[data-chat-console="true"] .chat[data-view="console"] :is(.dictation, .dictation-dot::after, .chat-mic-btn.is-live::after) { animation: none; }
+  html[data-chat-console="true"] .chat[data-view="console"] .dictation,
+  html[data-chat-console="true"] .chat[data-view="console"] .dictation-dot::after,
+  html[data-chat-console="true"] .chat[data-view="console"] .chat-mic-btn.is-live::after { animation: none; }
 }
