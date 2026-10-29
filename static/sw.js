@@ -1,5 +1,5 @@
 /* Fuse service worker: Web Push for finished chats.
-   A notification is suppressed when a visible window is already showing the
+   A notification is suppressed when a focused window is already showing the
    finished thread (the user is watching it on this device). */
 const ICON = "/static/icon-192.png";
 
@@ -15,7 +15,7 @@ async function threadVisible(threadId) {
   if (!threadId) return false;
   const all = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
   return all.some((client) => {
-    if (client.visibilityState !== "visible") return false;
+    if (client.visibilityState !== "visible" || !client.focused) return false;
     try {
       return new URL(client.url).searchParams.get("t") === threadId;
     } catch {

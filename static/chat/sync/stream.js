@@ -38,7 +38,13 @@ export function createStream(ctx) {
       if (S.historyQuery) sidebar.queueSearch();
       if (event.type === "thread.deleted") {
         sidebar.threadGone(payload.id || event.thread_id);
+        globalThis.fusePush?.clear(event.thread_id);
       } else {
+        // Read on any device: its alert leaves this one too. The open thread's
+        // own refetch also reads it, so keep an alert the user has not seen yet.
+        if (payload.unread === false && globalThis.fusePush && (event.thread_id !== S.currentId || document.hasFocus())) {
+          globalThis.fusePush.clear(event.thread_id);
+        }
         const prior = sidebar.threadById(payload.id);
         if (prior && payload.title && payload.title !== prior.title) picker.releaseHint("title:" + payload.id);
         if (!prior || payload.revision >= prior.revision) sidebar.upsertLocal(payload);

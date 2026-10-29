@@ -53,6 +53,53 @@
   let mode = null; // "push" | "local" | null (off)
   let localSub = null;
 
+  // Alerts stay in the OS notification list (and in the dock counter GNOME
+  // derives from it) until closed, and a tag does not replace one on Linux:
+  // each thread keeps one, closed once the thread is read here or elsewhere.
+  const shown = new Map();
+  const tagFor = (threadId) => "fuse-chat-" + (threadId || "x");
+  const viewedThread = () => new URLSearchParams(location.search).get("t") || "";
+  const watching = () => document.visibilityState === "visible" && document.hasFocus();
+
+  // `open` shows the thread in place: a reload would orphan every other alert.
+  function show(threadId, title, body, open) {
+    if (mode !== "local" || Notification.permission !== "granted") return;
+    if (shown.has(threadId)) shown.get(threadId).close();
+    const note = new Notification(title, { body, icon: "/static/icon-192.png", tag: tagFor(threadId) });
+    shown.set(threadId, note);
+    note.onclose = () => {
+      if (shown.get(threadId) === note) shown.delete(threadId);
+    };
+    note.onclick = () => {
+      note.close();
+      window.focus();
+      // window.focus() cannot raise or restore the desktop app's window.
+      window.dispatchEvent(new Event("fuse:raise"));
+      if (threadId && threadId !== viewedThread()) open();
+    };
+  }
+
+  async function clear(threadId) {
+    if (!threadId) return;
+    const note = shown.get(threadId);
+    if (note) {
+      shown.delete(threadId);
+      note.close();
+    }
+    if (mode !== "push") return;
+    const reg = await navigator.serviceWorker.getRegistration("/").catch(() => null);
+    const notes = reg && reg.getNotifications ? await reg.getNotifications({ tag: tagFor(threadId) }).catch(() => []) : [];
+    notes.forEach((item) => item.close());
+  }
+
+  const clearWatched = () => {
+    if (watching()) clear(viewedThread());
+  };
+  window.addEventListener("focus", clearWatched);
+  document.addEventListener("visibilitychange", clearWatched);
+  // A reloaded page cannot reach these alerts again, so they would never clear.
+  window.addEventListener("pagehide", () => shown.forEach((note) => note.close()));
+
   window.fusePush = {
     get push() {
       return mode === "push";
@@ -60,6 +107,8 @@
     get local() {
       return mode === "local";
     },
+    show,
+    clear,
   };
 
   function urlB64ToUint8Array(b64) {

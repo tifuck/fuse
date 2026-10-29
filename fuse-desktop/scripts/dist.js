@@ -24,6 +24,7 @@ const args = [
   `-c.publish.provider=generic`,
   `-c.publish.url=${url}/desktop/`,
   `-c.extraMetadata.fuseUrl=${url}`,
+  `-c.extraMetadata.fuseAppId=${appId}`,
 ];
 const result = spawnSync(bin, args, { stdio: "inherit", cwd: root, shell: process.platform === "win32" });
 process.exit(result.status ?? 1);

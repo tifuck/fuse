@@ -16,6 +16,12 @@ function siteUrl() {
   }
 }
 const APP_URL = siteUrl();
+
+// Windows attributes toasts to the Start-menu shortcut, whose AUMID the NSIS
+// installer sets to appId. Electron's default (electron.app.Fuse) matches no
+// shortcut, so alerts lost the app's name and icon in the Action Center.
+const APP_ID = require("./package.json").fuseAppId;
+if (process.platform === "win32" && APP_ID) app.setAppUserModelId(APP_ID);
 const APP_ORIGIN = new URL(APP_URL).origin;
 const BACKGROUND = "#141615";
 
@@ -301,6 +307,13 @@ ipcMain.on("titlebar", (event, action) => {
 
 ipcMain.on("site-theme", (event) => {
   if (site && event.sender === site.webContents) syncFrameTheme();
+});
+
+ipcMain.on("site-raise", (event) => {
+  if (!win || !site || event.sender !== site.webContents) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
 });
 
 // The title bar draws the logo in the theme's colours. Windows' taskbar and

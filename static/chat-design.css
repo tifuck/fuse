@@ -246,6 +246,10 @@ html[data-chat-backdrop="none"] .chat-scene,
 }
 .chat :is(.chat-bar-btn, .chat-bar .chat-history-toggle):hover { background: color-mix(in srgb, var(--mist) 7%, transparent); color: var(--mist); }
 .chat .chat-bar-btn:is([aria-expanded="true"], [aria-pressed="true"], .is-on) { background: color-mix(in srgb, var(--mist) 11%, transparent); color: var(--mist); }
+/* Alerts is a standing setting, not an open panel: on is a lit bell, not a held-down pill. */
+.chat .chat-bar-btn[data-notif-toggle]:is([aria-pressed="true"], .is-on) { background: transparent; color: var(--brass); }
+.chat .chat-bar-btn[data-notif-toggle]:is([aria-pressed="true"], .is-on):hover { background: color-mix(in srgb, var(--mist) 7%, transparent); }
+.chat .chat-bar-btn[data-notif-toggle]:is([aria-pressed="true"], .is-on) svg path:first-child { fill: currentColor; fill-opacity: 0.3; }
 /* Artifact appears once the thread has one. */
 .chat .chat-bar-btn:is(:disabled, [aria-disabled="true"]) { display: none; }
 /* Badges anchor to the icon's corner (button centre), not the button's, so

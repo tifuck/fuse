@@ -11,3 +11,7 @@ window.addEventListener("DOMContentLoaded", () => {
     timer = setTimeout(() => ipcRenderer.send("site-theme"), 80);
   }).observe(document.documentElement, { attributes: true, attributeFilter: ["style", "data-chat-theme"] });
 });
+
+// A clicked alert asks for the window: the page's window.focus() neither
+// restores a minimized Electron window nor raises it over other apps.
+window.addEventListener("fuse:raise", () => ipcRenderer.send("site-raise"));

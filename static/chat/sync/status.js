@@ -87,20 +87,15 @@ export function createStatus(ctx) {
     try {
       if (type !== "run.completed" && type !== "run.failed") return;
       if (!window.fusePush || !window.fusePush.local) return;
-      if (!("Notification" in window) || Notification.permission !== "granted") return;
-      if (document.visibilityState !== "hidden" && threadId === S.currentId) return;
+      // A visible but unfocused window is not being read (another app is in front).
+      if (threadId === S.currentId && document.visibilityState === "visible" && document.hasFocus()) return;
       const thread = sidebar.threadById(threadId);
       const title = thread && thread.title ? `Fuse · ${thread.title}` : "Fuse";
       let body = "";
       const msg = payload && payload.message;
       if (msg) body = String(msg.error || msg.content || "").trim().slice(0, 160);
-      const note = new Notification(title, { body, icon: "/static/icon-192.png", tag: "fuse-chat-" + (threadId || "x") });
-      note.onclick = () => {
-        try {
-          window.focus();
-          if (threadId && threadId !== S.currentId) location.assign("/chat?t=" + encodeURIComponent(threadId));
-        } catch {}
-      };
+      window.fusePush.show(threadId, title, body || "Reply finished.", () =>
+        sidebar.openThread(threadId).catch((error) => showFailure("Chat could not be opened", error)));
     } catch {}
   }
 
