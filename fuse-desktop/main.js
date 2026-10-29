@@ -1,7 +1,8 @@
-const { app, BaseWindow, WebContentsView, dialog, ipcMain, nativeImage, shell } = require("electron");
+const { app, BaseWindow, WebContentsView, ipcMain, nativeImage, shell } = require("electron");
 const { autoUpdater } = require("electron-updater");
-const { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } = require("fs");
+const { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } = require("fs");
 const path = require("path");
+const { MAX_INSTALL_TRIES, launchNotice } = require("./update-notice");
 
 // The site this build wraps: FUSE_URL at runtime, else the fuseUrl that
 // scripts/dist.js stamps into package.json, else site.json for `npm start`.
@@ -254,6 +255,7 @@ function createWindow() {
   wc.on("before-input-event", handleShortcuts);
   win.on("focus", restoreFocus);
   if (bar) bar.webContents.on("focus", restoreFocus);
+  wc.on("did-finish-load", flushToasts);
   wc.on("dom-ready", () => {
     wc.executeJavaScript(`document.addEventListener("focusin", (ev) => {
       const t = ev.target;
@@ -325,10 +327,44 @@ ipcMain.on("titlebar-icon", (event, url) => {
   if (!image.isEmpty()) win.setIcon(image);
 });
 
+ipcMain.on("site-restart", (event) => {
+  if (site && event.sender === site.webContents && restartToUpdate) restartToUpdate();
+});
+
+// Update notices are the site's own toasts (window.fuseUI.toast, one keyed
+// toast that changes in place). One the page cannot take yet (still loading,
+// or a page without it) waits for the next page load.
+const queuedToasts = [];
+
+function showToast(toast) {
+  const script = `(() => {
+    const ui = window.fuseUI;
+    if (!ui || !ui.toast) return false;
+    const t = ${JSON.stringify({ key: "fuse-desktop-update", ...toast })};
+    if (t.restart) t.onAction = () => window.dispatchEvent(new Event("fuse:restart"));
+    if (t.href) t.onAction = () => { location.href = t.href; };
+    ui.toast(t);
+    return true;
+  })()`;
+  if (!site || site.webContents.isDestroyed()) return queuedToasts.push(toast);
+  site.webContents.executeJavaScript(script).then(
+    (shown) => shown || queuedToasts.push(toast),
+    () => queuedToasts.push(toast),
+  );
+}
+
+function flushToasts() {
+  for (const toast of queuedToasts.splice(0)) showToast(toast);
+}
+
 // A single launch-time check with install-on-quit never updated a .deb install
-// and failed silently, so check every few hours, offer a restart once an
-// update is downloaded, and keep the updater's log in <logs>/updater.log.
+// and failed silently, so check every few hours, download in the background,
+// install when Fuse quits (or on the toast's Restart), and keep the updater's
+// log in <logs>/updater.log. A failed install leaves the running version in
+// place; the next launch says so, and a version that fails MAX_INSTALL_TRIES
+// times stops installing on quit.
 const UPDATE_CHECK_MS = 4 * 60 * 60 * 1000;
+let restartToUpdate = null;
 
 function startUpdater() {
   const dir = app.getPath("logs");
@@ -341,24 +377,74 @@ function startUpdater() {
       appendFileSync(file, `${new Date().toISOString()} ${level} ${args.join(" ")}\n`);
     } catch {}
   };
+
+  const stateFile = path.join(app.getPath("userData"), "update-state.json");
+  let saved = {};
+  try {
+    saved = JSON.parse(readFileSync(stateFile, "utf8")) || {};
+  } catch {}
+  const { state, toast } = launchNotice(saved, app.getVersion(), existsSync(file));
+  const save = () => {
+    try { writeFileSync(stateFile, JSON.stringify(state)); } catch {}
+  };
+  save();
+  // Its own key: the cached update's "ready" toast follows at once and must not replace it.
+  if (toast) showToast({ key: "fuse-desktop-launch", ...toast });
+
   autoUpdater.logger = { info: write("info"), warn: write("warn"), error: write("error"), debug() {} };
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
 
+  let announced = null;
   let offered = null;
-  autoUpdater.on("update-downloaded", async ({ version }) => {
+  let restarting = false;
+  const installing = () => {
+    state.pending.installing = true;
+    save();
+  };
+
+  autoUpdater.on("update-available", ({ version }) => {
+    if (announced === version) return;
+    announced = version;
+    showToast({ title: `Downloading Fuse ${version}`, msg: "In the background. Keep working.", ttl: 6000 });
+  });
+
+  // Runs before electron-updater's own handler, which the download adds.
+  autoUpdater.on("update-downloaded", ({ version }) => {
+    if (!state.pending || state.pending.to !== version) state.pending = { to: version, tries: 0 };
+    const retry = state.pending.tries >= MAX_INSTALL_TRIES;
+    autoUpdater.autoInstallOnAppQuit = !retry;
+    save();
     if (offered === version) return;
     offered = version;
-    const options = {
-      type: "info",
-      buttons: ["Restart now", "Later"],
-      defaultId: 0,
-      cancelId: 1,
-      message: `Fuse ${version} is ready to install`,
-      detail: "Restart Fuse to finish updating. Choosing Later installs it the next time Fuse quits.",
-    };
-    const { response } = await (win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options));
-    if (response === 0) autoUpdater.quitAndInstall(true, true);
+    showToast({
+      kind: "ok",
+      title: `Fuse ${version} is ready`,
+      msg: retry ? "Restart to try installing it again." : "Restart to update now, or it installs when you close Fuse.",
+      actionLabel: "Restart",
+      restart: true,
+    });
+  });
+
+  autoUpdater.on("error", () => {
+    if (!restarting) return;
+    restarting = false;
+    const still = `Still on ${app.getVersion()}.`;
+    showToast(autoUpdater.autoInstallOnAppQuit
+      ? { kind: "err", title: "Update didn't install", msg: `${still} Fuse tries again when it closes.` }
+      : { kind: "err", title: "Update didn't install", msg: `${still} Install it from the Download page.`, actionLabel: "Download", href: "/download" });
+  });
+
+  restartToUpdate = () => {
+    if (!offered || restarting) return;
+    restarting = true;
+    installing();
+    autoUpdater.quitAndInstall(true, true);
+  };
+
+  // Registered before any download, so it runs ahead of the install on quit.
+  app.on("quit", (_event, exitCode) => {
+    if (offered && exitCode === 0 && autoUpdater.autoInstallOnAppQuit) installing();
   });
 
   const check = () => autoUpdater.checkForUpdates().catch(() => {});

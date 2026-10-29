@@ -15,3 +15,6 @@ window.addEventListener("DOMContentLoaded", () => {
 // A clicked alert asks for the window: the page's window.focus() neither
 // restores a minimized Electron window nor raises it over other apps.
 window.addEventListener("fuse:raise", () => ipcRenderer.send("site-raise"));
+
+// The update toast's Restart button; main ignores it until an update is downloaded.
+window.addEventListener("fuse:restart", () => ipcRenderer.send("site-restart"));
