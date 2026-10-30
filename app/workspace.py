@@ -755,6 +755,59 @@ async def execute(name: str, arguments: str, *, user_id: int, bound_host_id=None
     return text, rec
 
 
+async def read_text_file(path: str, *, host: str | None, user_id: int, bound_host_id=None, bound_cwd: str = "",
+                         gate=None, max_chars: int) -> tuple[str, str]:
+    """Whole text of a host file, for publishing it as an artifact: the same
+    permission review as read_file, then raw pages to the end. Returns
+    (text, "alias:path"); errors are WorkspaceError."""
+    try:
+        row = resolve_host_row(user_id, host, bound_host_id)
+    except VaultLocked:
+        raise WorkspaceError("vault locked") from None
+    alias, host_id = _row_alias(row), _row_id(row)
+    root = host_root(row, bound_host_id, bound_cwd)
+    windows = _is_windows_row(row)
+    args = {"path": path}
+    if gate is not None:
+        from . import permissions as permissions_mod
+
+        verdict = await permissions_mod.review(
+            tool="read_file", args=args, user_id=user_id, host_id=host_id, host_alias=alias,
+            root=root, windows=windows, gate=gate, realpath=lambda paths: _realpaths(user_id, host_id, paths),
+        )
+        if not verdict.allowed:
+            raise WorkspaceError(verdict.detail)
+        if verdict.root is not None:
+            _relax_paths(args, root, windows, "read_file")
+            root = verdict.root
+    body, offset, rec = "", 1, {}
+    try:
+        while len(body) <= max_chars:
+            try:
+                labeled, rec = await _read(
+                    user_id, host_id, alias, {"path": args["path"], "offset": offset, "limit": _READ_MAX_LINES}, root,
+                    windows=windows, max_chars=max_chars + 1, raw=True,
+                )
+            except WorkspaceError as exc:
+                # A file of exactly N full pages: the page after it is EOF.
+                if offset > 1 and "beyond the end of the file" in str(exc):
+                    break
+                raise
+            chunk = unlabel_host(alias, labeled)
+            if body and chunk and not body.endswith("\n"):
+                body += "\n"
+            body += chunk
+            next_offset = rec.get("next_offset") if isinstance(rec, dict) else None
+            if next_offset is None:
+                break
+            offset = next_offset
+    except VaultLocked:
+        raise WorkspaceError("vault locked") from None
+    if len(body) > max_chars:
+        raise WorkspaceError(f"file is too large to publish (max {max_chars} bytes)")
+    return body, f"{alias}:{rec.get('path') or path}"
+
+
 def _shell_cwd(args: dict, root: str, *, windows: bool = False) -> str:
     from .permissions import expand_temp
 

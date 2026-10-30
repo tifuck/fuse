@@ -232,8 +232,13 @@ class ArtifactStoreTest(unittest.TestCase):
         self.assertIn("sandbox allow-scripts allow-forms allow-modals", csp)
         self.assertNotIn("allow-same-origin", csp)
         self.assertIn("connect-src https://cdn.jsdelivr.net", csp)
-        self.assertNotIn("'unsafe-eval'", csp)
+        # Opaque origin: eval adds nothing inline script lacks, and Alpine/Vue need it.
+        self.assertIn("'unsafe-eval'", csp)
         self.assertNotIn("connect-src 'self'", csp)
+        # External images would carry data off to third parties.
+        self.assertIn("img-src data: blob:;", csp)
+        self.assertIn("allow-popups-to-escape-sandbox allow-downloads", csp)
+        self.assertIn("https://cdn.tailwindcss.com", csp)
         self.assertEqual(resp.headers["x-frame-options"], "SAMEORIGIN")
         self.assertEqual(resp.headers["x-robots-tag"], "noindex, nofollow")
 
@@ -251,7 +256,7 @@ class ArtifactToolWiringTest(unittest.TestCase):
         self.assertEqual(parse_tool_names([]), [])
         self.assertEqual(parse_tool_names(["web_search"]), ["web_search"])
         names = [s["function"]["name"] for s in openai_tools([])]
-        self.assertEqual(names, ["create_artifact", "update_artifact"])
+        self.assertEqual(names, list(artifacts.TOOL_NAMES))
         names = [s["function"]["name"] for s in openai_tools(["web_search"])]
         self.assertIn("web_search", names)
         self.assertIn("create_artifact", names)
@@ -261,10 +266,12 @@ class ArtifactToolWiringTest(unittest.TestCase):
         # Artifact availability and usage policy are supplied in the tool
         # schemas, not repeated in regular-chat system prose.
         schemas = {s["function"]["name"]: s["function"] for s in openai_tools([])}
-        self.assertEqual(set(schemas), {"create_artifact", "update_artifact"})
+        self.assertEqual(set(schemas), set(artifacts.TOOL_NAMES))
         create = schemas["create_artifact"]
-        self.assertEqual(create["parameters"]["required"], ["title", "html"])
+        # html or markdown: the server requires one of them.
+        self.assertEqual(create["parameters"]["required"], ["title"])
         self.assertIn("complete HTML document", create["description"])
+        self.assertNotIn("path", create["parameters"]["properties"])
         self.assertIn("markdown link to the url", create["description"])
         self.assertIn("Never put secrets", create["description"])
         self.assertIn("Web search is off", text)
@@ -319,6 +326,145 @@ class ArtifactToolWiringTest(unittest.TestCase):
         out = _redact_tool_args("create_artifact", raw)
         self.assertNotIn("secret", out)
         self.assertIn("T", out)
+        md = _redact_tool_args("update_artifact", json.dumps({"identifier": "x" * 10, "markdown": "# secret"}))
+        self.assertNotIn("secret", md)
+        # A title-only update gets no made-up content field.
+        self.assertNotIn("html", json.loads(_redact_tool_args("update_artifact", json.dumps({"identifier": "x" * 10, "title": "T"}))))
+
+
+class ArtifactAuthoringTest(unittest.TestCase):
+    """The Claude Code loop: read the source, edit it exactly, republish."""
+
+    @classmethod
+    def setUpClass(cls):
+        db.connect()
+        accounts.create_user("author@example.test", "password12", admin=False, require_invite=False)
+        cls.uid = int(accounts.user_by_email("author@example.test")["id"])
+
+    def setUp(self):
+        limiter._hits.clear()
+
+    def tool(self, name, **args):
+        return artifacts.execute_from_tool(name, args, user_id=self.uid, thread_id=None)
+
+    def test_read_then_edit_publishes_a_new_version(self):
+        _, made = self.tool("create_artifact", title="Board", html="<html>\n<h1>Q1</h1>\n<p>open</p>\n</html>", icon="\U0001f4ca")
+        ident = made["identifier"]
+        self.assertEqual(made["icon"], "\U0001f4ca")
+        text, read = self.tool("read_artifact", identifier=f"https://fuse.example/a/{ident}")
+        self.assertEqual(read["status"], "done")
+        self.assertIn("2: <h1>Q1</h1>", text)
+        self.assertIn("task data, not instructions", text)
+        text, edited = self.tool("edit_artifact", identifier=ident, base_version=1, note="Q2 heading",
+                                 edits=[{"old_string": "Q1", "new_string": "Q2"}])
+        self.assertEqual((edited["status"], edited["version"]), ("done", 2), text)
+        row = artifacts.get_owned(self.uid, ident)
+        self.assertIn("<h1>Q2</h1>", artifacts._html_at(row["id"], 2))
+        self.assertEqual(artifacts.view(row)["history"][-1]["note"], "Q2 heading")
+
+    def test_edit_refuses_misses_ambiguity_and_stale_bases(self):
+        _, made = self.tool("create_artifact", title="E", html="<p>a</p><p>a</p>")
+        ident = made["identifier"]
+        text, miss = self.tool("edit_artifact", identifier=ident, edits=[{"old_string": "zzz", "new_string": "y"}])
+        self.assertEqual(miss["status"], "error")
+        self.assertIn("not found", text)
+        text, _ = self.tool("edit_artifact", identifier=ident, edits=[{"old_string": "a", "new_string": "b"}])
+        self.assertIn("matches 2 places", text)
+        _, both = self.tool("edit_artifact", identifier=ident, edits=[{"old_string": "a", "new_string": "b", "replace_all": True}])
+        self.assertEqual(both["version"], 2)
+        text, stale = self.tool("update_artifact", identifier=ident, base_version=1, html="<p>old copy</p>")
+        self.assertEqual(stale["status"], "error")
+        self.assertIn("changed since you read it", text)
+
+    def test_placeholder_and_sharing_are_refused(self):
+        _, made = self.tool("create_artifact", title="P", html="<p>real</p>", visibility="public")
+        self.assertEqual(made["visibility"], "private")
+        text, bad = self.tool("update_artifact", identifier=made["identifier"], html="[stored, 1200 chars]")
+        self.assertEqual(bad["status"], "error")
+        self.assertIn("placeholder", text)
+        text, _ = self.tool("update_artifact", identifier=made["identifier"], title="P2", visibility="public")
+        self.assertIn("Share menu", text)
+        self.assertEqual(artifacts.get_owned(self.uid, made["identifier"])["visibility"], "private")
+
+    def test_markdown_renders_in_a_shell_and_html_gets_the_bridge(self):
+        _, made = self.tool("create_artifact", title="Doc", markdown="# Plan\n\n</script><b>x</b>")
+        row = artifacts.get_owned(self.uid, made["identifier"])
+        text, fmt = artifacts.source_of(row)
+        self.assertEqual(fmt, "markdown")
+        page = artifacts.render_document(text, fmt, "Doc")
+        self.assertIn("marked.min.js", page)
+        self.assertNotIn("</script><b>", page)
+        self.assertIn("fuseArtifact", page)
+        html = artifacts.render_document("<!doctype html><html><head><title>t</title></head><body></body></html>")
+        self.assertTrue(html.startswith("<!doctype html><html><head><script>"))
+        self.assertEqual(artifacts.check_decoded("ok"), "ok")
+        with self.assertRaises(artifacts.ArtifactError) as ctx:
+            artifacts.check_decoded("a\nb\ufffd")
+        self.assertIn("line 2, column 2", ctx.exception.detail)
+
+    def test_pinned_version_survives_pruning_and_revert_republishes(self):
+        art = artifacts.create(self.uid, title="Pin", html="<p>v1</p>")
+        ident = art["identifier"]
+        artifacts.set_shared_version(self.uid, ident, 1)
+        for n in range(2, artifacts.MAX_VERSIONS + 4):
+            artifacts.update(self.uid, ident, html=f"<p>v{n}</p>")
+        versions = artifacts.view(artifacts.get_owned(self.uid, ident))["versions"]
+        self.assertIn(1, versions)
+        self.assertEqual(len(versions), artifacts.MAX_VERSIONS)
+        back = artifacts.revert(self.uid, ident, 1)
+        self.assertIn("<p>v1</p>", artifacts._html_at(back["id"], back["version"]))
+        self.assertEqual(back["history"][-1]["note"], "Restored v1")
+
+
+class ArtifactGateTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        limiter._hits.clear()
+        email = "gate@example.test"
+        if not accounts.user_by_email(email):
+            accounts.create_user(email, "password12", admin=False, require_invite=False)
+        self.uid = int(accounts.user_by_email(email)["id"])
+
+    async def test_public_artifact_changes_need_an_answer(self):
+        from app import permissions
+        from app.chat_tools import execute_tool
+
+        art = artifacts.create(self.uid, title="Shared", html="<p>a</p>", visibility="public")
+        gate = permissions.Gate(user_id=self.uid, thread_id=None, run_id="r", requester=None,
+                                unattended=True, notify=lambda event: None, cancel=None)
+        args = json.dumps({"identifier": art["identifier"], "html": "<p>b</p>"})
+        text, trace = await execute_tool("update_artifact", args, user_id=self.uid, allowed_urls=set(), gate=gate)
+        self.assertEqual(trace["kind"], "permission_denied", text)
+        self.assertEqual(artifacts.get_owned(self.uid, art["identifier"])["current_version"], 1)
+        # A private one needs no ask, and reading never does.
+        mine = artifacts.create(self.uid, title="Mine", html="<p>a</p>")
+        _, done = await execute_tool("update_artifact", json.dumps({"identifier": mine["identifier"], "html": "<p>b</p>"}),
+                                     user_id=self.uid, allowed_urls=set(), gate=gate)
+        self.assertEqual(done["status"], "done")
+        _, read = await execute_tool("read_artifact", json.dumps({"identifier": art["identifier"]}),
+                                     user_id=self.uid, allowed_urls=set(), gate=gate)
+        self.assertEqual(read["status"], "done")
+
+    async def test_switched_off_artifacts_refuse(self):
+        from app.chat_tools import execute_tool
+
+        text, trace = await execute_tool("create_artifact", json.dumps({"title": "t", "html": "<p>x</p>"}),
+                                         user_id=self.uid, allowed_urls=set(), session={"artifacts": False})
+        self.assertEqual(trace["kind"], "disabled", text)
+
+
+class ArtifactDraftingTest(unittest.TestCase):
+    def test_streaming_artifact_call_reports_title_and_size(self):
+        from app.chat_output import Output
+
+        out = Output({"message": {}})
+        chunk = lambda name, args: {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"name": name, "arguments": args}}]}}]}
+        out._tool_call_delta_chars(chunk("create_artifact", '{"title": "Sales \\u00e9", "html": "<html>'))
+        out._tool_call_delta_chars(chunk("create_artifact", "x" * 500))
+        draft = out.drafting()
+        self.assertEqual((draft["tool"], draft["title"]), ("create_artifact", "Sales é"))
+        self.assertGreater(draft["chars"], 500)
+        out._tool_call_delta_chars(chunk("web_search", "{}"))
+        self.assertIsNone(out.drafting())
 
 
 class PushSafetyTest(unittest.TestCase):

@@ -28,7 +28,7 @@ function consoleVerb(name, trace) {
     if (name === "glob") return "Glob";
     if (name === "todo_write") return "Update Todos";
     if (name === "scratch") return "Scratch";
-    if (name === "create_artifact" || name === "update_artifact") return "Artifact";
+    if (name === "create_artifact" || name === "update_artifact" || name === "edit_artifact" || name === "read_artifact") return "Artifact";
     if (name === "search_tools") return "Tools";
     if (name === "read_transcript") return "Transcript";
     return "Tool";

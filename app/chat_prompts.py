@@ -216,10 +216,10 @@ _SEARCH_PLAYBOOK = (
     "you have."
 )
 _ARTIFACT_SAFETY = (
-    "Artifact tools (`create_artifact`, `update_artifact`) load via `search_tools` query `artifact`. "
-    "Default visibility is private; publish only if the user asked. Never put secrets, API keys, "
-    "credentials, or other users' data in artifact HTML. After the tool returns, link the url; "
-    "do not dump the HTML into the chat."
+    "Artifact tools (`create_artifact`, `update_artifact`, `read_artifact`, `edit_artifact`) load via "
+    "`search_tools` query `artifact`. Artifacts start private and only the user shares them. Never put "
+    "secrets, API keys, credentials, or other users' data in an artifact. After the tool returns, link the "
+    "url; do not dump the source into the chat."
 )
 # Coding-agent method. Shared by the main agent and general-purpose children;
 # the first bullet differs because a child cannot ask the user anything.
@@ -613,6 +613,7 @@ def build_system_prompt(
     spawn_tools: bool = False,
     subagent: bool = False,
     subagent_type: str = "",
+    artifacts: bool = True,
 ) -> str:
     sources = ["User instructions", "profile notes", "this-chat notes"]
     if project_agents:
@@ -710,7 +711,7 @@ def build_system_prompt(
             parts.append(
                 "No connected hosts. File and shell tools are unavailable until the user adds a host on Hosts."
             )
-        if not read_only and not (
+        if artifacts and not read_only and not (
             "create_artifact" in _loaded or "update_artifact" in _loaded
         ):
             parts.append(_ARTIFACT_SAFETY)

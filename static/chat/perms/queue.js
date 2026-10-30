@@ -42,6 +42,18 @@ function permGrantPath(rec) {
 }
 
 function permCardCopy(rec) {
+  if (rec.perm_kind === "artifact" || /_artifact$/.test(rec.tool || "")) {
+    // A model changing a page anyone with its link can see (permissions.review_artifact).
+    return {
+      action: rec.tool === "create_artifact" ? "Republish shared artifact" : "Change shared artifact",
+      noun: "artifact",
+      path: String(rec.path || "").trim(),
+      why: "Shared publicly",
+      command: "",
+      description: String(rec.description || "").replace(/\s+/g, " ").trim(),
+      host: "",
+    };
+  }
   const kind = permGrantKind(rec);
   const path = permGrantPath(rec);
   const noun = kind === "file" ? "file" : "folder";

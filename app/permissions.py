@@ -1246,6 +1246,56 @@ async def _auto_verdict(gate: Gate, tool: str, action: dict, roots: list[str]) -
     return allowed if allowed is None else bool(allowed)
 
 
+# Chats that already approved changing a shared artifact (user, thread,
+# identifier): Claude Code asks once per conversation.
+# ponytail: in memory, so a restart asks again; persist if that annoys.
+_ARTIFACT_OK: set[tuple[int, int, str]] = set()
+
+
+async def review_artifact(gate: Gate | None, *, tool: str, identifier: str, title: str) -> ReviewResult:
+    """Ask before a model changes an artifact shared publicly."""
+    if gate is None:
+        return ReviewResult(allowed=True)
+    key = (gate.user_id, gate.thread_id or 0, str(identifier))
+    if key in _ARTIFACT_OK:
+        return ReviewResult(allowed=True)
+    label = f"the shared artifact “{title}”"
+    if gate.thread_id is None or gate.unattended:
+        return ReviewResult(
+            allowed=False,
+            detail=(f"Unattended run — permission cannot be requested to change {label}, which anyone with "
+                    "its link can see. Continue without it; the owner can make the change or stop sharing it."),
+            kind="permission_denied",
+        )
+    if not await asyncio.to_thread(bypass_enabled, gate.user_id, gate.thread_id):
+        payload = {
+            "kind": "tool_permission",
+            "perm_kind": "artifact",
+            "tool": tool,
+            "host": "",
+            "host_id": None,
+            "path": str(title)[:400],
+            "cwd": "",
+            "command": "",
+            "secret": False,
+            "reasons": ["shared publicly"],
+            "requester": gate.requester,
+            "requester_label": _requester_label(gate.requester),
+            "grant_kind": "",
+            "grant_value": "",
+            "description": "Everyone with the link sees this change.",
+        }
+        action = await _ask_and_wait(gate, payload)
+        if action == "cancelled":
+            return ReviewResult(allowed=False, detail="Tool interrupted.", kind="interrupted")
+        if action not in ("allow", "allow_session", "allow_host"):
+            return ReviewResult(allowed=False, detail=_deny_detail(label, action), kind="permission_denied")
+    if len(_ARTIFACT_OK) > 4096:
+        _ARTIFACT_OK.clear()
+    _ARTIFACT_OK.add(key)
+    return ReviewResult(allowed=True)
+
+
 async def review(*, tool: str, args: dict, user_id: int,
                  host_id: int, host_alias: str, root: str, windows: bool,
                  gate: Gate | None, deny_reason: str = "", realpath=None) -> ReviewResult:

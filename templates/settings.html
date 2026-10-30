@@ -71,6 +71,12 @@
     </div>
   </div>
   <div class="set-row">
+    <div class="set-label"><strong>Artifacts</strong><span>Let models publish pages, dashboards and documents beside the chat. Off removes the tools; existing artifacts stay.</span></div>
+    <div class="set-control">
+      <label class="check"><input type="checkbox" name="artifacts"{% if context.artifacts %} checked{% endif %}> Models can create and edit artifacts</label>
+    </div>
+  </div>
+  <div class="set-row">
     <div class="set-label"><strong>About you</strong><span>For example: Berlin, CET. Solo dev on a Rails app.</span></div>
     <div class="set-control">
       <label><span class="visually-hidden">About you</span>

@@ -1,46 +1,111 @@
 {% extends "base.html" %}
-{% block title %}{{ item.title }} · Fuse{% endblock %}
+{% block title %}{% if item.icon %}{{ item.icon }} {% endif %}{{ item.title }} · Fuse{% endblock %}
 {% block page_title %}{{ item.title }}{% endblock %}
 {% block body %}
-<div class="artifact-shell" data-artifact-page data-id="{{ item.identifier }}">
+<div class="artifact-shell" data-artifact-page data-id="{{ item.identifier }}" data-meta="{{ item.url }}/meta" data-version="{{ item.version }}" data-pinned="{{ pinned or '' }}">
   <header class="artifact-banner">
     <div class="artifact-banner-copy">
       {% if owner and item.thread_id %}
       <a class="artifact-back" href="/chat?t={{ item.thread_id }}&amp;a={{ item.identifier }}">Chat</a>
+      {% elif owner %}
+      <a class="artifact-back" href="/artifacts">Artifacts</a>
       {% endif %}
-      <h1>{{ item.title }}</h1>
-      {% if not owner %}
+      <h1>{% if item.icon %}<span class="artifact-icon" aria-hidden="true">{{ item.icon }}</span>{% endif %}{{ item.title }}</h1>
+      {% if owner %}
+      <span class="badge{% if public %} on{% endif %}">{{ 'Shared' if public else 'Private' }}</span>
+      {% else %}
       <p class="artifact-banner-note">User-generated and unverified</p>
       {% endif %}
+      <span class="artifact-live" data-artifact-live hidden></span>
     </div>
     {% if owner %}
     <div class="artifact-banner-actions">
-      {% if item.visibility == 'public' %}
-      <button type="button" class="btn ghost sm copy" data-copy="{{ item.share_url }}" title="Copy public link">Share</button>
-      <form method="post" action="{{ item.url }}/visibility">
+      {% if item.history|length > 1 %}
+      <label class="artifact-version"><span class="visually-hidden">Version</span>
+        <select data-artifact-version>
+          {% for h in item.history|reverse %}
+          <option value="{{ h.version }}"{% if h.version == item.version %} selected{% endif %}>v{{ h.version }}{% if loop.first %} (latest){% endif %}{% if public and h.version == (item.shared_version or item.current_version) %} (shared){% endif %}{% if h.note %} · {{ h.note[:48] }}{% endif %}</option>
+          {% endfor %}
+        </select>
+      </label>
+      {% endif %}
+      {% if pinned and pinned < item.current_version %}
+      <form method="post" action="{{ item.url }}/revert">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <input type="hidden" name="visibility" value="private">
-        <button class="btn ghost sm" type="submit">Hide</button>
-      </form>
-      {% else %}
-      <form method="post" action="{{ item.url }}/visibility">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <input type="hidden" name="visibility" value="public">
-        <button class="btn ghost sm" type="submit">Share</button>
+        <input type="hidden" name="version" value="{{ pinned }}">
+        <button class="btn ghost sm" type="submit">Restore v{{ pinned }}</button>
       </form>
       {% endif %}
-      <form method="post" action="{{ item.url }}/delete" data-confirm="Delete “{{ item.title }}”? This cannot be undone.">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button class="btn danger sm" type="submit">Delete</button>
-      </form>
+      <details class="artifact-menu">
+        <summary class="btn ghost sm">Share</summary>
+        <div class="artifact-menu-body">
+          {% if public %}
+          <p>Anyone with the link can view {{ ('v%d only' % item.shared_version) if item.shared_version else 'the latest version' }}.</p>
+          <button type="button" class="btn sm copy" data-copy="{{ item.share_url }}">Copy share link</button>
+          {% if item.history|length > 1 %}
+          <form method="post" action="{{ item.url }}/pin" class="artifact-menu-row">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label><span>Viewers see</span>
+              <select name="version">
+                <option value="latest"{% if not item.shared_version %} selected{% endif %}>Always the latest</option>
+                {% for h in item.history|reverse %}
+                <option value="{{ h.version }}"{% if h.version == item.shared_version %} selected{% endif %}>Only v{{ h.version }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <button class="btn ghost sm" type="submit">Save</button>
+          </form>
+          {% endif %}
+          <form method="post" action="{{ item.url }}/rotate-link" data-confirm="Reset the share link? The current link stops working for everyone.">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="btn ghost sm" type="submit">Reset link</button>
+          </form>
+          <form method="post" action="{{ item.url }}/visibility">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="visibility" value="private">
+            <button class="btn ghost sm" type="submit">Stop sharing</button>
+          </form>
+          {% else %}
+          <p>Only you can open it. Sharing makes a link anyone can view, without signing in.</p>
+          <form method="post" action="{{ item.url }}/visibility">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="visibility" value="public">
+            <button class="btn sm" type="submit">Share with a link</button>
+          </form>
+          {% endif %}
+        </div>
+      </details>
+      <details class="artifact-menu">
+        <summary class="btn ghost sm">More</summary>
+        <div class="artifact-menu-body">
+          <form method="post" action="{{ item.url }}/title" class="artifact-menu-row">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label><span>Title</span><input name="title" maxlength="80" value="{{ item.title }}" required></label>
+            <button class="btn ghost sm" type="submit">Rename</button>
+          </form>
+          <a class="btn ghost sm" href="{{ item.url }}/download{% if pinned %}?v={{ pinned }}{% endif %}">Download</a>
+          <form method="post" action="{{ item.url }}/continue">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="btn ghost sm" type="submit" title="A new chat attached to this artifact">Continue in a new chat</button>
+          </form>
+          <form method="post" action="{{ item.url }}/delete" data-confirm="Delete “{{ item.title }}”? This cannot be undone.">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="btn danger sm" type="submit">Delete</button>
+          </form>
+        </div>
+      </details>
     </div>
     {% endif %}
   </header>
+  {% if error %}<p class="callout fault artifact-callout" role="alert">{{ error }}</p>{% endif %}
+  <p class="callout artifact-callout" data-artifact-error role="alert" hidden></p>
   <iframe
     class="artifact-frame"
     title="{{ item.title }}"
-    sandbox="allow-scripts allow-forms allow-modals"
+    sandbox="{{ sandbox }}"
+    allow="clipboard-write"
     referrerpolicy="no-referrer"
+    data-artifact-frame
     src="{{ item.content_url }}"></iframe>
 </div>
 {% endblock %}

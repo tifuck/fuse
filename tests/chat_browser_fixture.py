@@ -132,6 +132,24 @@ async def finish_fixture(run_id: str):
     return {"ok": bool(gate)}
 
 
+@app.post("/__fixture/artifact")
+async def fixture_artifact(request: Request):
+    """Create (or, with identifier, update) an artifact for the fixture user:
+    only models do that in the app, through the artifact tools."""
+    from app import artifacts
+
+    raw = await request.json()
+
+    def write():
+        artifacts.limiter._hits.clear()
+        if raw.get("identifier"):
+            return artifacts.update(1, raw["identifier"], html=raw.get("html"), note=raw.get("note", ""))
+        return artifacts.create(1, title=raw.get("title", "Fixture"), html=raw["html"], fmt=raw.get("format", "html"), icon=raw.get("icon", ""))
+
+    art = await asyncio.to_thread(write)
+    return {"identifier": art["identifier"], "version": art["version"]}
+
+
 def _open_thread(conn):
     row = conn.execute(
         "SELECT id FROM chat_threads WHERE user_id=1 ORDER BY updated_at DESC, id DESC LIMIT 1"

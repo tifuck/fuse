@@ -14,6 +14,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from . import api, artifacts, chats, context_compact as ctxmod, context_meter, provider_errors
+from .config import settings
 from .chat_generation import inbox, metadata, policy, tool_runner
 from .chat_tools import execute_tool, openai_tools, parse_tool_names
 from .proxy import merge_usage, usage_from_obj
@@ -570,11 +571,17 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
     from .agent_catalog import sanitize_loaded
 
     loaded_tools: list[str] = sanitize_loaded(agent.get("loaded_tools") if isinstance(agent.get("loaded_tools"), list) else [])
-    if coding:
-        from .agent_catalog import ARTIFACT_NAMES, WORKSPACE_NAMES
+    # Site switch and the account's Settings › Chat defaults toggle.
+    artifacts_on = bool(settings.artifacts_enabled) and prefs.get("artifacts", True) is not False
+    from .agent_catalog import ARTIFACT_NAMES
 
-        loaded_tools = sanitize_loaded([*WORKSPACE_NAMES, *ARTIFACT_NAMES, *loaded_tools,
+    if coding:
+        from .agent_catalog import WORKSPACE_NAMES
+
+        loaded_tools = sanitize_loaded([*WORKSPACE_NAMES, *(ARTIFACT_NAMES if artifacts_on else ()), *loaded_tools,
                                         *(["propose_skill"] if not is_child and not agent.get("auto") and not agent.get("scheduled") else [])])
+    if not artifacts_on:
+        loaded_tools[:] = [n for n in loaded_tools if n not in ARTIFACT_NAMES]
     if kind == "explore":
         from .agent_catalog import EXPLORE_TOOLS
 
@@ -601,6 +608,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
             else {"role": "main"}
         ),
         "unattended": bool(agent.get("auto") or agent.get("scheduled")),
+        "artifacts": artifacts_on,
         "allow_skill_author": bool(
             coding
             and not is_child
@@ -654,6 +662,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
         spawn_tools=allow_spawn,
         subagent=is_child,
         subagent_type=kind,
+        artifacts=artifacts_on,
     )
     snapshot = raw.get("prompt_snapshot") if frozen_context is not None else None
     prompt_snapshot = copy.deepcopy(snapshot) if isinstance(snapshot, dict) and isinstance(snapshot.get("system"), str) else {}
@@ -665,7 +674,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
         work = _inject_session_tail(
             work,
             _session_tail_block(
-                _artifact_lines(artifacts.list_for_prompt(user["id"], thread_id)),
+                _artifact_lines(artifacts.list_for_prompt(user["id"], thread_id) if artifacts_on else []),
                 vault_locked=bool(coding and ssh_any and not vault_ok),
             ),
         )
@@ -712,6 +721,7 @@ async def stream_dashboard_chat(request: Request, user, raw: dict, *, frozen_con
         extra=loaded_tools,
         allow_spawn=allow_spawn,
         project_session=project_session,
+        artifacts=artifacts_on,
     )
     prompt_context = {"instructions": prefs["instructions"], "profile": prefs["profile"],
                       "thread_context": thread_context}

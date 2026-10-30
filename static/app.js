@@ -759,12 +759,97 @@ document.querySelectorAll('[role="tablist"]:not(.settings-jump)').forEach((list,
   });
 });
 
-const artifactVersion = document.querySelector("[data-artifact-page] [data-artifact-version]");
-if (artifactVersion) {
-  artifactVersion.addEventListener("change", () => {
+const artGallery = document.querySelector("[data-art-gallery]");
+if (artGallery) {
+  const rel = (iso) => {
+    const t = Date.parse(iso || "");
+    if (!Number.isFinite(t)) return "";
+    const s = Math.max(0, (Date.now() - t) / 1000);
+    const [n, unit] = s < 60 ? [0, ""] : s < 3600 ? [s / 60, "min"] : s < 86400 ? [s / 3600, "h"] : s < 86400 * 30 ? [s / 86400, "d"] : [0, "date"];
+    if (unit === "date") return new Date(t).toLocaleDateString();
+    return unit ? `${Math.floor(n)}${unit === "min" ? " min" : unit} ago` : "just now";
+  };
+  artGallery.querySelectorAll("[data-art-when]").forEach((el) => {
+    const label = rel(el.getAttribute("datetime"));
+    if (label) {
+      el.title = new Date(Date.parse(el.getAttribute("datetime"))).toLocaleString();
+      el.textContent = label;
+    }
+  });
+  const find = artGallery.querySelector("[data-art-find]");
+  const none = artGallery.querySelector("[data-art-none]");
+  const tabs = [...artGallery.querySelectorAll("[data-art-filter]")];
+  let filter = "all";
+  const apply = () => {
+    const q = (find?.value || "").trim().toLowerCase();
+    let shown = 0;
+    artGallery.querySelectorAll("[data-art-row]").forEach((row) => {
+      const ok = (filter === "all" || row.dataset.vis === filter) && (!q || row.dataset.find.includes(q));
+      row.hidden = !ok;
+      if (ok) shown += 1;
+    });
+    if (none) none.hidden = shown > 0;
+  };
+  find?.addEventListener("input", apply);
+  tabs.forEach((tab) => tab.addEventListener("click", () => {
+    filter = tab.dataset.artFilter;
+    tabs.forEach((t) => {
+      t.setAttribute("aria-pressed", t === tab ? "true" : "false");
+      t.classList.toggle("is-on", t === tab);
+    });
+    apply();
+  }));
+}
+
+const artifactPage = document.querySelector("[data-artifact-page]");
+if (artifactPage) {
+  const frame = artifactPage.querySelector("[data-artifact-frame]");
+  const live = artifactPage.querySelector("[data-artifact-live]");
+  const errorBox = artifactPage.querySelector("[data-artifact-error]");
+  const versionSelect = artifactPage.querySelector("[data-artifact-version]");
+  versionSelect?.addEventListener("change", () => {
     const url = new URL(window.location.href);
-    url.searchParams.set("v", artifactVersion.value);
+    url.searchParams.set("v", versionSelect.value);
     window.location.assign(url.toString());
+  });
+  // Open pages update in place when a new version is published (a pinned
+  // ?v= view stays put).
+  let tag = "";
+  let shown = artifactPage.dataset.version || "";
+  const poll = async () => {
+    if (document.hidden || artifactPage.dataset.pinned) return;
+    try {
+      const res = await fetch(artifactPage.dataset.meta, { credentials: "same-origin", headers: tag ? { "If-None-Match": tag } : {} });
+      if (res.status === 304 || !res.ok) return;
+      tag = res.headers.get("ETag") || "";
+      const meta = await res.json();
+      if (shown && String(meta.version) !== shown && frame) {
+        frame.src = frame.getAttribute("src");
+        if (live) {
+          live.hidden = false;
+          live.textContent = `Updated to v${meta.version}`;
+        }
+      }
+      shown = String(meta.version);
+    } catch (_) {}
+  };
+  setInterval(poll, 8000);
+  // The page bridge (app/artifacts.py _BRIDGE): links, copies and errors.
+  window.addEventListener("message", (event) => {
+    if (!frame || event.source !== frame.contentWindow) return;
+    const data = event.data;
+    if (!data || data.fuseArtifact !== 1) return;
+    if (data.type === "open") {
+      let url;
+      try { url = new URL(String(data.url || "")); } catch (_) { return; }
+      if (!/^https?:$/.test(url.protocol) || url.origin === location.origin) return;
+      if (window.confirm(`Open this link from the page in a new tab?\n\n${url.href}`)) window.open(url.href, "_blank", "noopener,noreferrer");
+    } else if (data.type === "copy" || data.type === "compose") {
+      navigator.clipboard?.writeText(String(data.text || "").slice(0, 200000)).catch(() => {});
+    } else if (data.type === "error" && errorBox) {
+      errorBox.hidden = false;
+      errorBox.textContent = `This page reported an error: ${String(data.message || "").slice(0, 300)}`;
+    }
   });
 }
 

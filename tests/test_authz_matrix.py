@@ -217,11 +217,18 @@ def test_artifacts_are_private_to_their_owner(client):
         ("post", f"/a/{ident}/title", 404),          # json={"title": "pwned"}
         ("post", f"/a/{ident}/archive", 404),
         ("post", f"/a/{ident}/continue", 404),
+        ("get", f"/a/{ident}/source", 404),
+        ("get", f"/a/{ident}/diff?from=1", 404),
+        ("post", f"/a/{ident}/pin", 404),
+        ("post", f"/a/{ident}/rotate-link", 404),
+        ("post", f"/a/{ident}/revert", 404),          # json={"version": 1}
+        ("post", f"/a/{ident}/attach", 404),
     ]
     for method, path, expected in blocked:
         json = (
             {"visibility": "public"} if path.endswith("/visibility")
             else {"title": "pwned"} if path.endswith("/title")
+            else {"version": 1} if path.endswith(("/revert", "/pin"))
             else {}
         )
         res = client.request(method.upper(), path, json=json)
@@ -233,12 +240,47 @@ def test_artifacts_are_private_to_their_owner(client):
     assert client.get(f"/a/{public['identifier']}/download").status_code == 404
     locked = client.post(f"/a/{public['identifier']}/visibility", json={"visibility": "private"})
     assert locked.status_code == 404
+    for path in ("source", "diff?from=1"):
+        assert client.get(f"/a/{public['identifier']}/{path}").status_code == 404
+    for path in ("pin", "rotate-link", "revert"):
+        assert client.post(f"/a/{public['identifier']}/{path}", json={"version": 1}).status_code == 404
 
     # Nothing bob did reached alice's rows.
     _login(client, "alice@authz.invalid")
     meta = client.get(f"/a/{ident}/meta").json()
     assert meta["visibility"] == "private" and meta["title"] == "Private" and meta["owner"] is True
     assert client.get(f"/a/{public['identifier']}/meta").json()["visibility"] == "public"
+
+
+def test_artifact_viewers_see_only_the_shared_version(client):
+    alice_id = _uid("alice@authz.invalid")
+    art = artifacts.create(alice_id, title="Shared", html="<p>v1 api-key-123</p>", visibility="public")
+    ident = art["identifier"]
+    artifacts.update(alice_id, ident, html="<p>v2 clean</p>")
+
+    _login(client, "bob@authz.invalid")
+    # An older version must not leak through ?v= or the version list.
+    old = client.get(f"/a/{ident}/content?v=1")
+    assert old.status_code == 200 and "api-key-123" not in old.text and "v2 clean" in old.text
+    meta = client.get(f"/a/{ident}/meta").json()
+    assert meta["versions"] == [2] and "history" not in meta and meta["owner"] is False
+    assert "api-key-123" not in client.get(f"/a/{ident}?v=1").text
+    # Opened as a page of its own, content goes back under the viewer's banner.
+    top = client.get(f"/a/{ident}/content", headers={"Sec-Fetch-Dest": "document"}, follow_redirects=False)
+    assert top.status_code == 303 and top.headers["location"] == f"/a/{ident}"
+    # Unchanged artifacts answer the live-update poll without a body.
+    again = client.get(f"/a/{ident}/meta", headers={"If-None-Match": client.get(f"/a/{ident}/meta").headers["etag"]})
+    assert again.status_code == 304
+
+    # Pinned to v1, viewers see v1 even after newer versions; a reset link
+    # retires the old one for everyone but the owner.
+    artifacts.set_shared_version(alice_id, ident, 1)
+    artifacts.update(alice_id, ident, html="<p>v3 draft</p>")
+    assert "v1 api-key-123" in client.get(f"/a/{ident}/content").text
+    rotated = artifacts.rotate_share(alice_id, ident)
+    assert client.get(f"/a/{ident}").status_code == 404
+    token = rotated["share_url"].rsplit("/", 1)[-1]
+    assert token != ident and client.get(f"/a/{token}/content").status_code == 200
 
 
 def test_threads_and_runs_are_private_to_their_owner(client):

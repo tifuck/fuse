@@ -1,39 +1,59 @@
 {% extends "base.html" %}
 {% block title %}Artifacts · Fuse{% endblock %}
 {% block page_title %}Artifacts{% endblock %}
-{% block page_lead %}<p>Pages, charts and dashboards made in chat. Share gives a secret link; nothing is listed publicly.</p>{% endblock %}
+{% block page_lead %}<p>Pages, dashboards and documents made in chat. Private until you share one; a shared link shows what you choose.</p>{% endblock %}
 {% block body %}
-<div class="art-page">
+<div class="art-page" data-art-gallery>
   {% if error %}<p class="callout fault" role="alert">{{ error }}</p>{% endif %}
   {% if notice %}<p class="callout ok">{{ notice }}</p>{% endif %}
 
   {% if items %}
+  <div class="proj-toolbar art-toolbar">
+    <label class="proj-search">
+      <span class="visually-hidden">Search artifacts</span>
+      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10.4 10.4L13.8 13.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      <input type="search" data-art-find placeholder="Search by title or chat" autocomplete="off">
+    </label>
+    <div class="proj-tabs" role="group" aria-label="Show">
+      <button type="button" class="proj-tab is-on" data-art-filter="all" aria-pressed="true">All <span>{{ items|length }}</span></button>
+      <button type="button" class="proj-tab" data-art-filter="public" aria-pressed="false">Shared <span>{{ items|selectattr('visibility', 'equalto', 'public')|list|length }}</span></button>
+      <button type="button" class="proj-tab" data-art-filter="private" aria-pressed="false">Private</button>
+    </div>
+    <span class="art-quota">{{ items|length + archived|length }} of {{ limit }}</span>
+  </div>
   <ul class="art-list" aria-label="Artifacts">
     <li class="art-row art-head" aria-hidden="true"><span>Artifact</span><span>Access</span><span>Updated</span><span></span></li>
     {% for item in items %}
-    <li class="art-row">
+    <li class="art-row" data-art-row data-vis="{{ item.visibility }}" data-find="{{ (item.title ~ ' ' ~ (item.thread_title or ''))|lower }}">
       <div class="art-name">
-        <a class="artifact-card-title" href="{{ item.url }}">{{ item.title }}</a>
-        <span class="art-meta">v{{ item.version }}{% if item.thread_id %} · <a href="/chat?t={{ item.thread_id }}&amp;a={{ item.identifier }}">open its chat</a>{% endif %}</span>
+        <a class="artifact-card-title" href="{{ item.url }}">{% if item.icon %}<span class="art-icon" aria-hidden="true">{{ item.icon }}</span>{% endif %}{{ item.title }}</a>
+        <span class="art-meta">v{{ item.version }}{% if item.shared_version %} · viewers see v{{ item.shared_version }}{% endif %}{% if item.thread_id %} · <a href="/chat?t={{ item.thread_id }}&amp;a={{ item.identifier }}">{{ item.thread_title or 'open its chat' }}</a>{% endif %}</span>
       </div>
       <span class="art-access">{% if item.visibility == 'public' %}<span class="badge on">Shared</span>{% else %}<span class="badge off">Private</span>{% endif %}</span>
-      <span class="art-when">{{ item.updated_at }}</span>
+      <time class="art-when" datetime="{{ item.updated_at }}" data-art-when>{{ item.updated_at }}</time>
       <div class="row-actions art-actions">
         <a class="btn ghost sm" href="{{ item.url }}">View</a>
         {% if item.visibility == 'public' %}
-        <button type="button" class="btn ghost sm copy" data-copy="{{ item.share_url }}" title="Copy the secret link">Copy link</button>
+        <button type="button" class="btn ghost sm copy" data-copy="{{ item.share_url }}" title="Copy the share link">Copy link</button>
         <form method="post" action="{{ item.url }}/visibility">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <input type="hidden" name="visibility" value="private">
+          <input type="hidden" name="next" value="/artifacts">
           <button class="btn ghost sm" type="submit">Unshare</button>
         </form>
         {% else %}
         <form method="post" action="{{ item.url }}/visibility">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <input type="hidden" name="visibility" value="public">
+          <input type="hidden" name="next" value="/artifacts">
           <button class="btn ghost sm" type="submit">Share</button>
         </form>
         {% endif %}
+        <a class="btn ghost sm" href="{{ item.url }}/download">Download</a>
+        <form method="post" action="{{ item.url }}/continue">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="btn ghost sm" type="submit" title="A new chat attached to this artifact">New chat</button>
+        </form>
         <form method="post" action="{{ item.url }}/archive">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button class="btn ghost sm" type="submit" title="Hide it from everyone until restored">Archive</button>
@@ -46,9 +66,10 @@
     </li>
     {% endfor %}
   </ul>
+  <p class="art-empty-filter" data-art-none hidden>No artifact matches.</p>
   {% else %}
   <div class="art-empty">
-    <p>No artifacts yet. Ask for a chart, a dashboard or an interactive page in chat and it lands here.</p>
+    <p>No artifacts yet. Ask for a chart, a dashboard, a PR walkthrough or a document in chat and it lands here. In chat, <kbd>/artifacts</kbd> lists them.</p>
     <a class="btn sm" href="/chat">Open chat</a>
   </div>
   {% endif %}
@@ -60,11 +81,11 @@
       {% for item in archived %}
       <li class="art-row is-archived">
         <div class="art-name">
-          <span class="artifact-card-title">{{ item.title }}</span>
+          <span class="artifact-card-title">{% if item.icon %}<span class="art-icon" aria-hidden="true">{{ item.icon }}</span>{% endif %}{{ item.title }}</span>
           <span class="art-meta">v{{ item.version }} · was {{ 'shared' if item.visibility == 'public' else 'private' }}</span>
         </div>
         <span class="art-access"><span class="badge held">Archived</span></span>
-        <span class="art-when">{{ item.updated_at }}</span>
+        <time class="art-when" datetime="{{ item.updated_at }}" data-art-when>{{ item.updated_at }}</time>
         <div class="row-actions art-actions">
           <form method="post" action="{{ item.url }}/restore">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

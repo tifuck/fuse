@@ -701,6 +701,12 @@ def _ensure_artifact_tables(conn: sqlite3.Connection) -> None:
         """
     )
     _ensure_column(conn, "artifacts", "archived", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "artifacts", "share_token", "TEXT")
+    _ensure_column(conn, "artifacts", "shared_version", "INTEGER")
+    _ensure_column(conn, "artifacts", "icon", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "artifact_versions", "doc_format", "TEXT NOT NULL DEFAULT 'html'")
+    _ensure_column(conn, "artifact_versions", "note", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "users", "chat_artifacts", "INTEGER NOT NULL DEFAULT 1")
 
 
 def _migrate_users_autoincrement(conn: sqlite3.Connection) -> None:

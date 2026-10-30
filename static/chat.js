@@ -310,6 +310,7 @@ import { createDictation } from './chat/dictation.js';
     panels,
     picker,
     sidebar: { setHistoryOpen: (...args) => sidebar.setHistoryOpen(...args), syncHistory: (...args) => sidebar.syncHistory(...args) },
+    sync: { showFailure: (...args) => sync.showFailure(...args) },
   });
 
   const transcript = createTranscript({
@@ -375,6 +376,7 @@ import { createDictation } from './chat/dictation.js';
   });
 
   const composer = createComposer({
+    artifacts: { openList: (...args) => artifacts.openList(...args) },
     context,
     net,
     overlays,
@@ -738,7 +740,7 @@ import { createDictation } from './chat/dictation.js';
     if (openArt) {
       event.preventDefault();
       event.stopPropagation();
-      artifacts.showArtifact(openArt.getAttribute("data-open-artifact")).catch((error) => sync.showFailure("Could not open artifact", error));
+      artifacts.showArtifact(openArt.getAttribute("data-open-artifact"), null, { explicit: true }).catch((error) => sync.showFailure("Could not open artifact", error));
       return;
     }
     const openAgentEl = event.target.closest("[data-open-agent]");
@@ -1541,49 +1543,7 @@ import { createDictation } from './chat/dictation.js';
     panels.setViewMenuOpen(true);
   }
 
-    if (S.artifactToggle) {
-    S.artifactToggle.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      const last = artifacts.latestArtifact();
-      if (!last && !(S.currentArtifact && S.currentArtifact.building)) return;
-      if (S.artifactOpen) artifacts.setArtifactOpen(false);
-      else if (last) artifacts.showArtifact(last.identifier, last).catch((error) => sync.showFailure("Could not open artifact", error));
-    });
-  }
-
-    if (S.artifactClose) {
-    S.artifactClose.addEventListener("click", (event) => {
-      event.preventDefault();
-      artifacts.setArtifactOpen(false);
-    });
-  }
-
-    if (S.artifactBackdrop) {
-    S.artifactBackdrop.addEventListener("click", () => artifacts.setArtifactOpen(false));
-  }
-
-    S.artifactModeBtns.forEach((btn) => {
-    btn.addEventListener("click", (event) => {
-      event.preventDefault();
-      S.artifactMode = btn.getAttribute("data-artifact-mode") || "preview";
-      artifacts.syncArtifactUi();
-      if (S.artifactMode === "source") {
-        artifacts.loadArtifactSource().catch((error) => sync.showFailure("Could not load source", error));
-      }
-    });
-  });
-
-    if (S.artifactVersionEl) {
-    S.artifactVersionEl.addEventListener("change", () => {
-      if (!S.currentArtifact || !S.currentArtifact.identifier) return;
-      S.currentArtifact.version = Number(S.artifactVersionEl.value) || S.currentArtifact.version;
-      S.artifactSourceLoaded = "";
-      if (S.artifactFrame) S.artifactFrame.src = artifacts.artifactContentUrl(S.currentArtifact.identifier, S.currentArtifact.version);
-      if (S.artifactMode === "source") artifacts.loadArtifactSource().catch((error) => sync.showFailure("Could not load source", error));
-      artifacts.syncArtifactUi();
-    });
-  }
+    artifacts.bind();
 
     [S.memoryInstructions, S.memoryProfile, S.memoryThread].forEach((area) => {
     if (!area) return;

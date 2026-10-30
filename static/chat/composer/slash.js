@@ -367,11 +367,15 @@ export function createSlash(ctx) {
       return;
     }
     if (name === "help") {
-      picker.setHint("/undo, /retry, /redo, /rewind, /title, /recap, /permissions, /compact, /thinking, /init. Skills: type / then a name. Manage on Skills.");
+      picker.setHint("/undo, /retry, /redo, /rewind, /title, /recap, /permissions, /artifacts, /compact, /thinking, /init. Skills: type / then a name. Manage on Skills.");
       return;
     }
     if (name === "permissions") {
       perms.setPermsOpen(true);
+      return;
+    }
+    if (name === "artifacts") {
+      ctx.artifacts?.openList();
       return;
     }
     if (name === "title") {

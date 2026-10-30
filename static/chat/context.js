@@ -26,6 +26,8 @@ const TOOL_FAMILIES = {
   search_replace: "files",
   create_artifact: "artifacts",
   update_artifact: "artifacts",
+  edit_artifact: "artifacts",
+  read_artifact: "artifacts",
   spawn_subagent: "subagents",
   get_subagent_output: "subagents",
   kill_subagent: "subagents",

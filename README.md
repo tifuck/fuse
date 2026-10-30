@@ -18,7 +18,7 @@ One Fuse instance serves many users. The first account registered becomes the ad
 - Streaming chat with tool calls, subagents, background commands and monitors, and live sync across tabs and devices.
 - Built-in web search and page reading, with no search API key needed (an optional Brave key adds a source).
 - Context meter with automatic compaction for long conversations.
-- Artifacts (shareable HTML pages), skills (install from GitHub or skills.sh, or write your own), scheduled runs, and Web Push notifications when a reply finishes.
+- Artifacts (live HTML or Markdown pages beside the chat, versioned, shared by link), skills (install from GitHub or skills.sh, or write your own), scheduled runs, and Web Push notifications when a reply finishes.
 
 **Coding agent on your machines**
 - Connect machines with the `fuse-agent` connector (Linux binary or Windows EXE; outbound HTTPS only) or over SSH.

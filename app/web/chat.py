@@ -1040,7 +1040,7 @@ async def chat_context_put(request: Request):
     if err:
         return err
     raw = await _json_object(request)
-    if set(raw) - {"instructions", "profile", "recaps", "expected_revision", "command_id"}:
+    if set(raw) - {"instructions", "profile", "recaps", "artifacts", "expected_revision", "command_id"}:
         raise HTTPException(422, "Unsupported context fields")
     kwargs = {"expected_revision": _chat_revision(raw), "command_id": raw.get("command_id")}
     if "instructions" in raw:
@@ -1055,6 +1055,10 @@ async def chat_context_put(request: Request):
         if not isinstance(raw["recaps"], bool):
             raise HTTPException(400, "Invalid recaps")
         kwargs["recaps"] = raw["recaps"]
+    if "artifacts" in raw:
+        if not isinstance(raw["artifacts"], bool):
+            raise HTTPException(400, "Invalid artifacts")
+        kwargs["artifacts"] = raw["artifacts"]
     try:
         data = chats.set_user_context(user["id"], **kwargs, strict=True) if kwargs else chats.get_user_context(user["id"])
     except chats.ChatValidationError as exc:

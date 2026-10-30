@@ -390,6 +390,7 @@ function initState() {
     { name: "title", hint: "Regenerate the chat title from this conversation", needs: "messages" },
     { name: "recap", hint: "Summarize the latest work once it settles", needs: "messages" },
     { name: "permissions", hint: "Manage agent permissions and bypass" },
+    { name: "artifacts", hint: "This chat's artifacts, then all of yours: open, attach or copy a link" },
     { name: "init", hint: "Create or update AGENTS.md", needs: "project", args: true },
     { name: "compact", hint: "Compress conversation context", needs: "messages", args: true },
     { name: "thinking", hint: "Show or hide thinking in every view" },

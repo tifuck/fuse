@@ -102,20 +102,21 @@ def _redact_tool_args(name: str, arguments: str) -> str:
         return '{"html":"[redacted]"}'
     if not isinstance(parsed, dict):
         return '{"html":"[redacted]"}'
-    html = parsed.get("html")
-    size = 0
-    if isinstance(html, str):
-        size = len(html)
-    elif isinstance(html, list):
-        size = sum(len(str(item)) for item in html)
-    parsed["html"] = f"[stored, {size} chars]"
+    # Only page text is stored elsewhere (read_artifact returns it); a
+    # title-only update keeps no made-up content field.
+    for key in ("html", "markdown"):
+        value = parsed.get(key)
+        if isinstance(value, str):
+            parsed[key] = f"[stored, {len(value)} chars]"
+        elif isinstance(value, list):
+            parsed[key] = f"[stored, {sum(len(str(item)) for item in value)} chars]"
     return json.dumps(parsed, ensure_ascii=False)
 
 
 def _tool_result_clip(name: str, text: str) -> str:
     if name in _SUBAGENT_RESULT_TOOLS:
         limit = SUBAGENT_RESULT_CHARS
-    elif name == "read_file":
+    elif name in ("read_file", "read_artifact"):
         limit = READ_RESULT_CHARS
     elif name == "read_url":
         limit = WEB_PAGE_RESULT_CHARS

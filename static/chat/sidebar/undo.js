@@ -166,6 +166,7 @@ export function createUndo(ctx) {
     }
     const draft = S.input.value;
     const draftVersion = S.composerVersion;
+    const marks = artifacts.versionMarks();
     let restored;
     S.sending = true;
     composer.syncComposer();
@@ -205,6 +206,7 @@ export function createUndo(ctx) {
         if (removed) restored = removed.content || "";
         picker.setHint(previous.length ? "Undid last turn." : "Conversation cleared.");
       }
+      if (gen === S.generation && origin === S.currentId) artifacts.offerRestore(marks);
     } catch (error) {
       if (gen === S.generation && origin === S.currentId) {
         await sync.reconcileThread().catch(() => {});
@@ -282,12 +284,14 @@ export function createUndo(ctx) {
     }
     if (!net.requireLive()) return false;
     rememberUndo(snapshotMessages());
+    const marks = artifacts.versionMarks();
     fn();
     S.editingIndex = -1;
     composer.persist(true);
     transcript.paint();
     context.recountLocalContext();
     artifacts.rememberLatestArtifact();
+    artifacts.offerRestore(marks);
     if (hint) picker.setHint(hint);
     return true;
   }

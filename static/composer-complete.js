@@ -1,7 +1,7 @@
 /* Trigger parser + ranking for composer @ / path / history palettes. No DOM. */
 (() => {
   const root = typeof window !== "undefined" ? window : globalThis;
-  const SLASH_BUILTINS = /^(undo|retry|redo|rewind|title|init|compact|help)$/;
+  const SLASH_BUILTINS = /^(undo|retry|redo|rewind|title|init|compact|help|artifacts)$/;
 
   function joinPath(base, name) {
     const b = String(base || "").replace(/\/+$/, "");

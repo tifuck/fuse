@@ -38,7 +38,13 @@ function rewriteCites(text, catalog, streaming) {
   }
 
 function linkHtml(url, label, cls) {
-    const art = url.match(/^\/a\/([A-Za-z0-9_-]+)$/);
+    // Relative /a/<id>, or the same page as a full link on this site (a
+    // share URL built from PUBLIC_BASE_URL).
+    let art = url.match(/^\/a\/([A-Za-z0-9_-]+)$/);
+    if (!art && typeof location !== "undefined") {
+      const full = url.match(/^https?:\/\/([^/?#]+)\/a\/([A-Za-z0-9_-]+)$/i);
+      if (full && full[1].toLowerCase() === location.host.toLowerCase()) art = [url, full[2]];
+    }
     if (art) {
       return `<a class="chat-md-artifact" href="${deps.escapeHtml(url)}" data-open-artifact="${deps.escapeHtml(art[1])}">${label}</a>`;
     }

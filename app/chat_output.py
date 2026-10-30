@@ -11,6 +11,11 @@ from . import chat_schema, chats
 
 
 _THINK = re.compile(r"</?(?:think|thinking|thought|reasoning)>", re.I)
+# Artifact writes whose streaming arguments the chat shows as "Writing…"
+# before the call runs (the page itself can take minutes to stream).
+_DRAFT_TOOLS = ("create_artifact", "update_artifact", "edit_artifact")
+_DRAFT_TITLE = re.compile(r'"title"\s*:\s*"((?:[^"\\]|\\.){1,160})"')
+_DRAFT_IDENT = re.compile(r'"identifier"\s*:\s*"([A-Za-z0-9_\-/:.]{8,200})"')
 
 
 def _take(value):
@@ -66,6 +71,7 @@ class Output:
         self._round_reasoning = len(msg.get("reasoning") or "")
         self._round_tool_chars = 0
         self._stream_out = 0
+        self._draft = None
         # Thought timing, as Claude Code measures it: from the transcript's
         # previous event (a tool result, the round starting) to the thought's
         # last delta. Heartbeats and meters are not events.
@@ -207,6 +213,7 @@ class Output:
         self._round_reasoning = 0
         self._round_tool_chars = 0
         self._stream_out = 0
+        self._draft = None
 
     def settle_tool_xml(self):
         """Release text held back as a possible text-format tool call once its
@@ -227,6 +234,36 @@ class Output:
         self._round_reasoning = len(self.message.get("reasoning") or "")
         self._round_tool_chars = 0
         self._stream_out = 0
+        self._draft = None
+
+    def drafting(self) -> dict | None:
+        """The artifact write being streamed this round: name, title, size."""
+        draft = self._draft
+        if not draft:
+            return None
+        head = draft["head"]
+        title = _DRAFT_TITLE.search(head)
+        ident = _DRAFT_IDENT.search(head)
+        out = {"tool": draft["tool"], "chars": draft["chars"]}
+        if title:
+            try:
+                out["title"] = json.loads('"' + title.group(1) + '"')[:80]
+            except ValueError:
+                pass
+        if ident:
+            from . import artifacts
+
+            out["identifier"] = artifacts.normalize_identifier(ident.group(1))[:64]
+        return out
+
+    def _note_draft(self, name, args) -> None:
+        # Some providers repeat the name on every delta: only a new name starts over.
+        if isinstance(name, str) and name and not (self._draft and self._draft["tool"] == name):
+            self._draft = {"tool": name, "chars": 0, "head": ""} if name in _DRAFT_TOOLS else None
+        if self._draft is not None and isinstance(args, str) and args:
+            self._draft["chars"] += len(args)
+            if len(self._draft["head"]) < 2000:
+                self._draft["head"] += args[: 2000 - len(self._draft["head"])]
 
     def _tool_call_delta_chars(self, obj) -> int:
         choice = (obj.get("choices") or [{}])[0] if isinstance(obj.get("choices"), list) else {}
@@ -245,6 +282,7 @@ class Output:
             fn = call.get("function") if isinstance(call.get("function"), dict) else {}
             name = fn.get("name")
             args = fn.get("arguments")
+            self._note_draft(name, args)
             if isinstance(name, str):
                 n += len(name)
             if isinstance(args, str):

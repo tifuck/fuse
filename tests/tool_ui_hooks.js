@@ -47,6 +47,12 @@ window.fuseToolFixture = {
   },
   thinking: panels.setShowThinking,
   slash: composer.runSlash,
+  artifacts,
+  artifactState: () => ({ open: S.artifactOpen, mode: S.artifactMode, current: S.currentArtifact ? structuredClone({ ...S.currentArtifact, previous: undefined }) : null }),
+  patch(event) {
+    const msg = S.messages.at(-1);
+    sync.applyFuseEvent(msg, { event: 'message.patch', content: { from: (msg.content || '').length, text: '' }, reasoning: { from: (msg.reasoning || '').length, text: '' }, ...event });
+  },
   api: net.api,
   runInfo: () => structuredClone(S.activeRun),
   // Stands in for the thread's prompt-cache probe (compaction.cache).

@@ -109,7 +109,7 @@
           <span>Appearance</span>
         </button>
       </div>
-      <button type="button" class="chat-bar-btn" data-artifact-toggle disabled aria-expanded="false" aria-controls="chat-artifact" aria-label="Artifact preview" title="Artifact preview">
+      <button type="button" class="chat-bar-btn" data-artifact-toggle aria-expanded="false" aria-controls="chat-artifact" aria-label="Artifacts" title="Artifacts (Ctrl+])">
         <svg viewBox="0 0 16 16" width="17" height="17" aria-hidden="true"><rect x="2.6" y="3.4" width="10.8" height="9.2" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5 9.2l1.7-2 1.5 1.7 2.2-2.7 2.2 3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
         <span>Artifact</span>
       </button>
@@ -254,11 +254,16 @@
   </div>
   <button type="button" class="chat-artifact-backdrop" data-artifact-backdrop aria-label="Close artifact" tabindex="-1" hidden></button>
   <aside class="chat-artifact" id="chat-artifact" data-chat-artifact hidden role="dialog" aria-labelledby="chat-artifact-title" tabindex="-1">
+    <div class="chat-artifact-resize" data-artifact-resize role="separator" aria-orientation="vertical" aria-label="Resize the artifact pane" tabindex="0"></div>
     <div class="chat-artifact-head">
       <div class="chat-artifact-copy">
-        <p id="chat-artifact-title" data-artifact-title>Artifact</p>
+        <button type="button" class="chat-artifact-pick" data-artifact-list-toggle aria-expanded="false" title="All artifacts (/artifacts)">
+          <span class="chat-artifact-icon" data-artifact-icon aria-hidden="true"></span>
+          <span class="chat-artifact-name" id="chat-artifact-title" data-artifact-title>Artifact</span>
+          <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M4 6.2l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
         <span class="badge" data-artifact-visibility hidden></span>
-        <span class="chat-artifact-building-label" data-artifact-status hidden>Building…</span>
+        <span class="chat-artifact-building-label" data-artifact-status role="status" hidden></span>
       </div>
       <div class="chat-artifact-tools">
         <label class="chat-artifact-version" data-artifact-version-wrap hidden>
@@ -267,18 +272,52 @@
         </label>
         <button type="button" class="chat-artifact-tool" data-artifact-mode="preview" aria-pressed="true">Preview</button>
         <button type="button" class="chat-artifact-tool" data-artifact-mode="source" aria-pressed="false">Source</button>
-         <a class="chat-artifact-tool" data-artifact-open href="#" target="_blank" rel="noopener noreferrer" hidden>Open</a>
-         <button type="button" class="chat-menu-close" data-artifact-close aria-label="Close">
-           <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-         </button>
+        <button type="button" class="chat-artifact-tool is-icon" data-artifact-reload aria-label="Reload" title="Reload" hidden>
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M12.6 6.2A5 5 0 1 0 13 9.4M12.8 2.8v3.6H9.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <a class="chat-artifact-tool is-icon" data-artifact-open href="#" target="_blank" rel="noopener noreferrer" aria-label="Open in a new tab" title="Open in a new tab" hidden>
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M9.2 2.8h4v4M13.2 2.8L7.6 8.4M11.6 9.4v3.8H2.8V4.4h3.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </a>
+        <span class="chat-artifact-more">
+          <button type="button" class="chat-artifact-tool is-icon" data-artifact-menu-toggle aria-haspopup="menu" aria-expanded="false" aria-controls="chat-artifact-menu" aria-label="Share and more" title="Share and more" hidden>
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="3.6" cy="8" r="1.2" fill="currentColor"/><circle cx="8" cy="8" r="1.2" fill="currentColor"/><circle cx="12.4" cy="8" r="1.2" fill="currentColor"/></svg>
+          </button>
+          <div class="chat-pop chat-artifact-menu" id="chat-artifact-menu" data-artifact-menu role="menu" hidden>
+            <button type="button" role="menuitem" data-artifact-act="share">Share with a link</button>
+            <button type="button" role="menuitem" data-artifact-act="copy-link">Copy link</button>
+            <button type="button" role="menuitem" data-artifact-act="pin" hidden>Viewers: only this version</button>
+            <button type="button" role="menuitem" data-artifact-act="rotate" hidden>Reset share link</button>
+            <hr class="chat-pop-sep">
+            <button type="button" role="menuitem" data-artifact-act="copy-source">Copy source</button>
+            <a role="menuitem" data-artifact-act="download" href="#">Download</a>
+            <button type="button" role="menuitem" data-artifact-act="diff" hidden>Changes from the previous version</button>
+            <button type="button" role="menuitem" data-artifact-act="revert" hidden>Restore this version</button>
+            <hr class="chat-pop-sep">
+            <label class="chat-artifact-menu-check"><input type="checkbox" data-artifact-autoopen> Open new artifacts automatically</label>
+          </div>
+        </span>
+        <button type="button" class="chat-artifact-tool is-icon chat-artifact-expand" data-artifact-expand aria-pressed="false" aria-label="Wide pane" title="Wide pane">
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M6.2 3H3v3.2M9.8 3H13v3.2M6.2 13H3V9.8M9.8 13H13V9.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <button type="button" class="chat-menu-close" data-artifact-close aria-label="Close">
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </button>
       </div>
+    </div>
+    <div class="chat-artifact-alert" data-artifact-alert role="alert" hidden>
+      <span data-artifact-alert-text></span>
+      <button type="button" class="btn sm" data-artifact-fix hidden>Fix with model</button>
+      <button type="button" class="chat-artifact-alert-close" data-artifact-alert-close aria-label="Dismiss">
+        <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
     </div>
     <div class="chat-artifact-body">
       <p class="chat-artifact-building" data-artifact-building hidden>Building the page…</p>
-      <iframe class="chat-artifact-frame" data-artifact-frame title="Artifact preview" sandbox="allow-scripts allow-forms allow-modals" referrerpolicy="no-referrer" hidden></iframe>
+      <iframe class="chat-artifact-frame" data-artifact-frame title="Artifact preview" sandbox="allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-downloads" allow="clipboard-write" referrerpolicy="no-referrer" hidden></iframe>
       <pre class="chat-artifact-source" data-artifact-source hidden></pre>
+      <div class="chat-artifact-list" data-artifact-list hidden></div>
     </div>
-    <p class="chat-artifact-note">Runs in a sandbox. Do not put secrets in a public artifact.</p>
+    <p class="chat-artifact-note">Runs in a sandbox and stays private until you share it. <kbd>Ctrl</kbd>+<kbd>]</kbd> reopens it.</p>
   </aside>
   <button type="button" class="chat-sheet-backdrop" data-memory-backdrop aria-label="Close context" tabindex="-1" hidden></button>
   <div class="chat-sheet chat-memory" id="chat-context" data-chat-memory hidden role="dialog" aria-label="Context" aria-modal="true">

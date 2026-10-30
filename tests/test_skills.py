@@ -870,7 +870,7 @@ class ZipUploadTest(unittest.TestCase):
 class FlagOffLockTest(unittest.TestCase):
     def test_openai_tools_unchanged(self):
         names = [s["function"]["name"] for s in openai_tools([])]
-        self.assertEqual(names, ["create_artifact", "update_artifact"])
+        self.assertEqual(names, ["create_artifact", "update_artifact", "read_artifact", "edit_artifact"])
         names = [s["function"]["name"] for s in openai_tools(["web_search"], coding=True, project_session=True)]
         self.assertEqual(
             names,

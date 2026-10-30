@@ -256,10 +256,15 @@ async def run_tools(
                 # and the model kept retrying mid-JSON fragments forever.
                 # Refuse execution and hand the model a corrective signal.
                 if raw_args == _ARG_OVERFLOW:
+                    split = (
+                        "publish a smaller page, then grow it with edit_artifact calls"
+                        if job.name in ARTIFACT_TOOL_IDS
+                        else "write the file in parts"
+                    )
                     job.text = (
                         "[Fuse] This tool call was NOT executed: its arguments exceeded the "
                         f"{_ARG_LIMIT_FILE}-character limit. Do not re-send it unchanged; split the "
-                        "work into smaller calls (for example, write the file in parts)."
+                        f"work into smaller calls (for example, {split})."
                     )
                 else:
                     job.text = (

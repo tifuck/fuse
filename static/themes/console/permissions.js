@@ -46,7 +46,9 @@ function permQueueCardHtml(rec) {
     const frac = left == null ? 1 : Math.max(0, Math.min(1, left / deps.PERM_TOTAL_S));
     // The server clears grant_kind on shell asks no grant could ever cover.
     const shell = rec.tool === "run_terminal_command" || rec.tool === "monitor";
-    const always = shell && !rec.grant_kind ? "" : `
+    // Artifact asks are answered once per chat; there is nothing to grant.
+    const ungrantable = (shell && !rec.grant_kind) || copy.noun === "artifact";
+    const always = ungrantable ? "" : `
             <button type="button" class="chat-perm-act is-split" data-perm-always aria-expanded="false" aria-label="Allow always options">
               <svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"><path d="M3.2 10.2 8 5.4l4.8 4.8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </button>

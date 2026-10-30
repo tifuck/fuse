@@ -221,7 +221,8 @@ const CC_SPINNER_STATES = {
     read_file: "reading", grep: "searching", glob: "searching", list_dir: "listing", search_replace: "editing",
     write_file: "writing file", read_url: "fetching", spawn_subagent: "running agent", get_subagent_output: "waiting for agent",
     kill_subagent: "stopping agent", list_subagents: "listing agents", monitor: "watching",
-    create_artifact: "building artifact", update_artifact: "building artifact", search_models: "finding models",
+    create_artifact: "building artifact", update_artifact: "building artifact", edit_artifact: "editing artifact",
+    read_artifact: "reading artifact", search_models: "finding models",
   };
 
   return { formatActivityClock, formatActivityElapsed, consoleFlow, consoleRoundKey, ensureConsoleRound, formatConsoleCount, consoleDownTokens, consoleUpTokens, ccSpinnerVerb, ccThinkingState, ccSpinnerState, formatConsoleLiveStatus, syncActivityElapsed, activitySpinSet, syncActivitySpin, CC_SPINNER_VERBS, CC_SPINNER_STATES };

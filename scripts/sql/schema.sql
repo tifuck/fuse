@@ -49,6 +49,8 @@ CREATE TABLE `artifact_versions` (
   `version` bigint(20) NOT NULL,
   `html` longtext NOT NULL,
   `created_at` longtext NOT NULL,
+  `doc_format` varchar(16) NOT NULL DEFAULT 'html',
+  `note` varchar(400) NOT NULL DEFAULT '',
   PRIMARY KEY (`id`),
   UNIQUE KEY `sqlite_autoindex_artifact_versions_1` (`artifact_id`,`version`),
   CONSTRAINT `fk_artifact_versions_0` FOREIGN KEY (`artifact_id`) REFERENCES `artifacts` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION
@@ -67,7 +69,11 @@ CREATE TABLE `artifacts` (
   `updated_at` longtext NOT NULL,
   `current_version` bigint(20) NOT NULL DEFAULT 1,
   `archived` bigint(20) NOT NULL DEFAULT 0,
+  `share_token` varchar(64) DEFAULT NULL,
+  `shared_version` bigint(20) DEFAULT NULL,
+  `icon` varchar(32) NOT NULL DEFAULT '',
   PRIMARY KEY (`id`),
+  UNIQUE KEY `artifacts_share_token` (`share_token`),
   UNIQUE KEY `sqlite_autoindex_artifacts_1` (`public_id`) USING HASH,
   KEY `artifacts_thread` (`thread_id`),
   KEY `artifacts_user_updated` (`user_id`,`updated_at`(191)),
@@ -843,6 +849,7 @@ CREATE TABLE `users` (
   `retention_archive_chats` bigint(20) NOT NULL DEFAULT 1,
   `retention_archive_projects` bigint(20) NOT NULL DEFAULT 1,
   `retention_delete_days` bigint(20) NOT NULL DEFAULT 0,
+  `chat_artifacts` bigint(20) NOT NULL DEFAULT 1,
   PRIMARY KEY (`id`),
   UNIQUE KEY `sqlite_autoindex_users_1` (`email`) USING HASH
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_nopad_bin ROW_FORMAT=DYNAMIC;

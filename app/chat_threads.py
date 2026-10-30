@@ -155,7 +155,7 @@ def _session_root(cwd: str = "", path: str = "", *, tool: str = "") -> str:
         return (text.rsplit("/", 1)[0] or "/") if "/" in text else "."
     return text
 def get_user_context(user_id: int) -> dict:
-    row = db.fetchone("SELECT chat_instructions,chat_profile,chat_context_revision,chat_recaps FROM users WHERE id=?", (user_id,))
+    row = db.fetchone("SELECT chat_instructions,chat_profile,chat_context_revision,chat_recaps,chat_artifacts FROM users WHERE id=?", (user_id,))
     return _context_view(row)
 def _context_view(row):
     stored = (row["chat_instructions"] or "") if row else ""
@@ -166,14 +166,15 @@ def _context_view(row):
         "default_instructions": DEFAULT_INSTRUCTIONS,
         "revision": row["chat_context_revision"] if row else 0,
         "recaps": bool(row["chat_recaps"]) if row and "chat_recaps" in row.keys() else True,
+        "artifacts": bool(row["chat_artifacts"]) if row and "chat_artifacts" in row.keys() else True,
     }
-def set_user_context(user_id: int, *, instructions=None, profile=None, recaps=None, strict: bool = False,
+def set_user_context(user_id: int, *, instructions=None, profile=None, recaps=None, artifacts=None, strict: bool = False,
                      expected_revision=None, command_id=None) -> dict:
     from . import chat_store as store
 
     with store.transaction() as conn:
         fingerprint, previous = store.command(conn, user_id, command_id,
-            ["context", instructions, profile, recaps, expected_revision])
+            ["context", instructions, profile, recaps, artifacts, expected_revision])
         if previous is not None:
             return previous
         row = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
@@ -194,10 +195,15 @@ def set_user_context(user_id: int, *, instructions=None, profile=None, recaps=No
             if not isinstance(recaps, bool):
                 raise ChatValidationError("recaps must be true or false")
             stored_recaps = 1 if recaps else 0
+        stored_artifacts = 1 if (row["chat_artifacts"] if "chat_artifacts" in row.keys() else 1) else 0
+        if artifacts is not None:
+            if not isinstance(artifacts, bool):
+                raise ChatValidationError("artifacts must be true or false")
+            stored_artifacts = 1 if artifacts else 0
         conn.execute(
-            """UPDATE users SET chat_instructions=?,chat_profile=?,chat_recaps=?,
+            """UPDATE users SET chat_instructions=?,chat_profile=?,chat_recaps=?,chat_artifacts=?,
                chat_context_revision=chat_context_revision+1 WHERE id=?""",
-            (stored_instructions, stored_profile, stored_recaps, user_id),
+            (stored_instructions, stored_profile, stored_recaps, stored_artifacts, user_id),
         )
         if not stored_recaps:
             from . import chat_recaps

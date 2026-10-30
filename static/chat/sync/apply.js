@@ -380,6 +380,7 @@ export function createApply(ctx) {
       if (Number.isFinite(Number(event.streamOut)) && Number(event.streamOut) >= 0) {
         msg.streamOut = Math.round(Number(event.streamOut));
       }
+      if (!passive && !child && event.drafting && typeof event.drafting === "object") artifacts.noteDrafting(event.drafting);
       return;
     }
     if (event.event === "toast" && event.message) {
@@ -420,10 +421,6 @@ export function createApply(ctx) {
       // marker segments placed by the run worker (chat_runs.Output.apply) and
       // arrive in the message.patch ahead of this event; mirroring them here
       // would fork the segment list from the server's.
-      return;
-    }
-    if (event.event === "artifact" && event.identifier) {
-      if (!passive) artifacts.showArtifact(event.identifier, event).catch(() => {});
       return;
     }
     if (event.event === "permission") {
@@ -506,9 +503,7 @@ export function createApply(ctx) {
       if (Array.isArray(msg.segments) && event.id && !msg.segments.some((part) => part.type === "tool" && part.id === event.id)) {
         msg.segments.push({ type: "tool", id: event.id });
       }
-      if (!passive && (event.name === "create_artifact" || event.name === "update_artifact")) {
-        artifacts.startArtifactBuild(event.title || (event.name === "update_artifact" ? "Updating artifact" : "New artifact"));
-      }
+      if (!passive) artifacts.startArtifactBuild(event);
       return;
     }
     if (traces.mergeSubagentWait(msg, event, event.status || "done")) return;
@@ -518,9 +513,7 @@ export function createApply(ctx) {
     if (Array.isArray(msg.segments) && rec.id && !msg.segments.some((part) => part.type === "tool" && part.id === rec.id)) {
       msg.segments.push({ type: "tool", id: rec.id });
     }
-    if (!passive && (rec.name === "create_artifact" || rec.name === "update_artifact") && rec.identifier && rec.status === "done") {
-      artifacts.showArtifact(rec.identifier, rec).catch(() => {});
-    }
+    if (!passive) artifacts.noteArtifactResult(rec);
   }
 
   return {

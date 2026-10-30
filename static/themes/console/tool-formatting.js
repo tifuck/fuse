@@ -90,7 +90,7 @@ function toolSubject(trace) {
       const n = searchCountFor(trace);
       return searchQueries(trace).length === 1 ? toolText(searchQueries(trace)[0], 100) : `${n} ${n === 1 ? "query" : "queries"}`;
     }
-    if (name === "create_artifact" || name === "update_artifact") return trace.title || "artifact";
+    if (["create_artifact", "update_artifact", "edit_artifact", "read_artifact"].includes(name)) return trace.title || "artifact";
     if (name === "load_skill") return [trace.preview || "skill", trace.path ? compactPath(trace.path, trace) : ""].filter(Boolean).join(" / ");
     if (name === "read_transcript") return transcriptRange(trace) || toolText(trace.preview || "", 90);
     if (name === "fuse-steer") return trace.summary || "New instruction";
@@ -102,7 +102,7 @@ function toolAction(trace) {
       run_terminal_command: "Shell", get_command_output: "Output", kill_command: "Stop", monitor: "Watch", spawn_subagent: "Agent",
       get_subagent_output: "Result", kill_subagent: "Stop", list_subagents: "Agents", search_models: "Models", search_tools: "Tools",
       load_skill: "Skill", propose_skill: "Draft", todo_write: "Tasks", scratch: "Scratch", read_transcript: "Transcript", read_url: "Page", web_search: "Search", search: "Search",
-      create_artifact: "Create", update_artifact: "Update", "fuse-steer": "Notice" };
+      create_artifact: "Create", update_artifact: "Update", edit_artifact: "Edit", read_artifact: "Read", "fuse-steer": "Notice" };
     return labels[trace.name] || String(trace.name || "Tool").replaceAll("_", " ");
   }
 
@@ -331,7 +331,7 @@ function consoleCallHtml(trace, presentation, full = false) {
       inner = consoleArgText(agentDescriptionFor(trace) || trace.child_id || "subagent", 90);
     } else if (name === "scratch") {
       inner = consoleArgText(scratchAction(trace), 90);
-    } else if (name === "create_artifact" || name === "update_artifact") {
+    } else if (["create_artifact", "update_artifact", "edit_artifact", "read_artifact"].includes(name)) {
       inner = consoleArgText(trace.title || "artifact", 80);
     } else if (name === "read_transcript") {
       inner = consoleArgText(transcriptRange(trace), 90);
@@ -477,6 +477,8 @@ const TOOL_ICON = {
     search: "web",
     create_artifact: "artifact",
     update_artifact: "artifact",
+    edit_artifact: "artifact",
+    read_artifact: "artifact",
     "fuse-steer": "steer",
   };
 

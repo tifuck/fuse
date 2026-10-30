@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     # Dictation in the chat composer (app/speech.py). Off by default: an
     # instance without a speech-to-text server shows no mic and allows none.
     speech_enabled: bool = False
+    # Site switch for artifacts (app/artifacts.py). Off removes the artifact
+    # tools from every chat; existing pages and links stay served.
+    artifacts_enabled: bool = True
     # Append raw Devin stream frames to data/devin-stream-debug.log.
     fuse_devin_debug: bool = False
 

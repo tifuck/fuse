@@ -883,6 +883,9 @@ async def _run(request, user, run):
             patch["error"] = stored.get("error", "")
             if output._stream_out:
                 patch["streamOut"] = int(output._stream_out)
+            drafting = output.drafting()
+            if drafting:
+                patch["drafting"] = drafting
             segment_patch = _segments_patch(previous_segments, stored.get("segments") or [])
             if segment_patch:
                 patch["segments"] = segment_patch

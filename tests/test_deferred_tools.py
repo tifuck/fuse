@@ -22,11 +22,18 @@ from app.chat_tools import execute_tool, openai_tools
 class OpenaiToolsLockTest(unittest.TestCase):
     def test_flag_off_still_injects_artifacts(self):
         names = [s["function"]["name"] for s in openai_tools([])]
-        self.assertEqual(names, ["create_artifact", "update_artifact"])
+        self.assertEqual(names, list(agent_catalog.ARTIFACT_NAMES))
         names = [s["function"]["name"] for s in openai_tools(["web_search"])]
         self.assertEqual(names[:2], ["web_search", "read_url"])
         self.assertIn("create_artifact", names)
-        self.assertIn("update_artifact", names)
+        self.assertIn("edit_artifact", names)
+
+    def test_artifacts_switch_removes_every_artifact_tool(self):
+        self.assertEqual(openai_tools([], artifacts=False), [])
+        names = [s["function"]["name"] for s in openai_tools([], coding=True, artifacts=False,
+                                                            extra=["read_file", "create_artifact"])]
+        self.assertIn("read_file", names)
+        self.assertFalse(set(names) & set(agent_catalog.ARTIFACT_NAMES))
 
     def test_coding_always_on_is_small(self):
         names = [
@@ -75,7 +82,7 @@ class OpenaiToolsLockTest(unittest.TestCase):
         self.assertIn("search_models", names)
 
     def test_extra_cap_preserves_advertised_packs(self):
-        extra = list(agent_catalog.WORKSPACE_NAMES) + ["create_artifact", "update_artifact", "propose_skill"]
+        extra = list(agent_catalog.WORKSPACE_NAMES) + [*agent_catalog.ARTIFACT_NAMES, "propose_skill"]
         self.assertEqual(len(extra), agent_catalog.MAX_EXTRA)
         overflow = {"type": "function", "function": {"name": "audit_extra", "parameters": {"type": "object", "properties": {}}}}
         with patch.dict(agent_catalog.SCHEMAS, {"audit_extra": overflow}):
@@ -146,16 +153,18 @@ class SearchToolsTest(unittest.IsolatedAsyncioTestCase):
             loaded=loaded,
         )
         data = json.loads(packed)
-        self.assertEqual(data["loaded"], ["create_artifact", "update_artifact"])
+        self.assertEqual(data["loaded"], list(agent_catalog.ARTIFACT_NAMES))
         self.assertEqual(data["already_loaded"], [])
         self.assertEqual(trace["status"], "done")
-        self.assertEqual(loaded, ["create_artifact", "update_artifact"])
+        self.assertEqual(loaded, list(agent_catalog.ARTIFACT_NAMES))
+        # Coding sessions may publish a host file; the plain chat schema may not.
+        self.assertIn("path", agent_catalog.schema("create_artifact")["function"]["parameters"]["properties"])
         advertised = {s["function"]["name"]: s for s in openai_tools([], coding=True, extra=loaded, project_session=True)}
         for name in loaded:
             self.assertEqual(advertised[name], agent_catalog.schema(name))
 
     async def test_extra_beyond_current_cap_refused_without_eviction(self):
-        loaded = list(agent_catalog.PACKS["workspace"]) + ["create_artifact", "update_artifact", "propose_skill"]
+        loaded = list(agent_catalog.PACKS["workspace"]) + [*agent_catalog.ARTIFACT_NAMES, "propose_skill"]
         self.assertEqual(len(loaded), agent_catalog.MAX_EXTRA)
         before = list(loaded)
         # Exercise an actual overflow even though all currently advertised
@@ -388,11 +397,13 @@ class CodingPromptTest(unittest.TestCase):
     def test_flag_off_schemas_carry_artifact_policy_without_coding_prompt(self):
         text = build_system_prompt(instructions="", profile="", thread_context="", tools=[])
         schemas = {s["function"]["name"]: s["function"] for s in openai_tools([])}
-        self.assertEqual(set(schemas), {"create_artifact", "update_artifact"})
-        self.assertIn("Default visibility is private", schemas["create_artifact"]["description"])
-        self.assertIn("Use public only when the user asked", schemas["create_artifact"]["description"])
+        self.assertEqual(set(schemas), set(agent_catalog.ARTIFACT_NAMES))
+        # Sharing is the user's action (Claude Code): no tool takes visibility.
+        self.assertIn("only the user can share it", schemas["create_artifact"]["description"])
+        for name in agent_catalog.ARTIFACT_NAMES:
+            self.assertNotIn("visibility", schemas[name]["parameters"]["properties"])
         self.assertIn("Never put secrets", schemas["create_artifact"]["description"])
-        self.assertIn("Publish only when the user asked", schemas["update_artifact"]["description"])
+        self.assertIn("Never include secrets", schemas["update_artifact"]["description"])
         self.assertNotIn("search_tools", text)
         self.assertNotIn("skill bodies and supporting files", text)
         self.assertNotIn("No skills enabled", text)

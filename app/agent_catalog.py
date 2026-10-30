@@ -27,8 +27,8 @@ SPAWN_NAMES = (
     "list_subagents",
     "search_models",
 )
-ARTIFACT_NAMES = ("create_artifact", "update_artifact")
-MAX_EXTRA = 13  # workspace (10) + artifacts (2) + propose_skill fits without refusing advertised packs
+ARTIFACT_NAMES = ("create_artifact", "update_artifact", "read_artifact", "edit_artifact")
+MAX_EXTRA = 15  # workspace (10) + artifacts (4) + propose_skill fits without refusing advertised packs
 JOB_CONTROL = ("get_command_output", "kill_command")
 EXPLORE_TOOLS = (
     "read_file",
@@ -922,9 +922,9 @@ def schema(name: str) -> dict | None:
     if item:
         return item
     if name in ARTIFACT_NAMES:
-        from .chat_tools import SCHEMAS as BASE
+        from .chat_tools import CODING_ARTIFACT_SCHEMAS
 
-        return BASE.get(name)
+        return CODING_ARTIFACT_SCHEMAS.get(name)
     return None
 
 

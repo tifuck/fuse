@@ -417,10 +417,11 @@ function consoleResultLine(trace, presentation) {
       const text = preview && preview !== "still running" ? preview : "";
       return text && text !== deps.displayCommand(trace) ? deps.shortToolText(text, 100) : "No output";
     }
-    if (name === "create_artifact" || name === "update_artifact") {
+    if (name === "create_artifact" || name === "update_artifact" || name === "edit_artifact") {
       const v = trace.version != null ? ` v${trace.version}` : "";
-      return `${name === "create_artifact" ? "Created" : "Updated"}${v}`;
+      return `${name === "create_artifact" ? "Created" : name === "edit_artifact" ? "Edited" : "Updated"}${v}`;
     }
+    if (name === "read_artifact") return trace.preview ? `Read ${deps.shortToolText(String(trace.preview), 80)}` : "Read source";
     if (name === "get_subagent_output") {
       const subject = deps.agentSubject(trace) || "subagent";
       // A join that returned while its child was still going is stored done

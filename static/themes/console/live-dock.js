@@ -89,7 +89,7 @@ function currentActivity(msg, groups, live) {
       } else if (current.name === "read_url") {
         phase = "reading";
         label = ("fetching");
-      } else if (current.name === "create_artifact" || current.name === "update_artifact") {
+      } else if (["create_artifact", "update_artifact", "edit_artifact", "read_artifact"].includes(current.name)) {
         phase = "building";
         label = ("artifact");
       } else if (current.name === "list_subagents") {

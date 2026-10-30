@@ -61,6 +61,8 @@ const AGENT_ACTIVITY_LABELS = {
   scratch: "scratch",
   create_artifact: "artifact",
   update_artifact: "artifact",
+  edit_artifact: "artifact",
+  read_artifact: "artifact",
   search_tools: "tools",
   read_transcript: "transcript",
 };

@@ -89,7 +89,7 @@ function toolDetailHtml(trace, failed, running) {
       else if (trace.truncated || total > retained) note = `Output truncated · ${retained.toLocaleString()} of ${trace.output_chars_exact === false ? "at least " : ""}${total.toLocaleString()} characters retained.`;
       if (note) sections.push(`<span class="chat-tool-truncated">${deps.escapeHtml(note)}</span>`);
     } else if (trace.output_truncated && output.length <= 4000) sections.push('<span class="chat-tool-truncated">Output preview was truncated before display.</span>');
-    if (!hasImage && !error && !output && !hasResults && !trace.command && !["todo_write", "create_artifact", "update_artifact"].includes(trace.name)) {
+    if (!hasImage && !error && !output && !hasResults && !trace.command && !["todo_write", "create_artifact", "update_artifact", "edit_artifact", "read_artifact"].includes(trace.name)) {
       sections.push(detailSectionHtml("Output", running ? "Waiting for output"
         : trace.child_id && ["spawn_subagent", "get_subagent_output"].includes(trace.name) ? "No inline output. Open agent for its transcript." : "No output", "is-empty"));
     }
@@ -149,10 +149,11 @@ function toolRowLabel(trace) {
 function toolStepHtml(trace, index, live, open, openMap, opts = {}) {
     const presentation = deps.toolPresentation(trace, live);
     const { running, interrupted, failed } = presentation;
-    const artifact = trace.name === "create_artifact" || trace.name === "update_artifact";
+    const artifact = ["create_artifact", "update_artifact", "edit_artifact", "read_artifact"].includes(trace.name);
     const read = trace.name === "read_url";
     const search = deps.isSearchTool(trace.name);
-    const label = artifact ? `${trace.name === "create_artifact" ? "Create artifact" : "Update artifact"} · ${trace.title || "artifact"}`
+    const artifactVerb = { create_artifact: "Create artifact", update_artifact: "Update artifact", edit_artifact: "Edit artifact", read_artifact: "Read artifact" }[trace.name];
+    const label = artifact ? `${artifactVerb} · ${trace.title || "artifact"}`
       : read ? `Page read · ${deps.pageHost(trace.url) || "page"}`
       : search ? `Search · ${deps.searchCountFor(trace) === 1 && deps.searchQueries(trace)[0] ? deps.shortToolText(deps.searchQueries(trace)[0], 72) : `${deps.searchCountFor(trace)} ${deps.searchCountFor(trace) === 1 ? "query" : "queries"}`}`
       : toolRowLabel(trace);
