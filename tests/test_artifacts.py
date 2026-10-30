@@ -272,7 +272,8 @@ class ArtifactToolWiringTest(unittest.TestCase):
         self.assertEqual(create["parameters"]["required"], ["title"])
         self.assertIn("complete HTML document", create["description"])
         self.assertNotIn("path", create["parameters"]["properties"])
-        self.assertIn("markdown link to the url", create["description"])
+        # The chat shows a card after the reply; a link in the text only repeated it.
+        self.assertIn("shows the artifact as a card under your reply, so do not link it", create["description"])
         self.assertIn("Never put secrets", create["description"])
         self.assertIn("Web search is off", text)
         block = _session_tail_block(

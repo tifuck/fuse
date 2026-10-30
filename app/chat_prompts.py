@@ -218,8 +218,8 @@ _SEARCH_PLAYBOOK = (
 _ARTIFACT_SAFETY = (
     "Artifact tools (`create_artifact`, `update_artifact`, `read_artifact`, `edit_artifact`) load via "
     "`search_tools` query `artifact`. Artifacts start private and only the user shares them. Never put "
-    "secrets, API keys, credentials, or other users' data in an artifact. After the tool returns, link the "
-    "url; do not dump the source into the chat."
+    "secrets, API keys, credentials, or other users' data in an artifact. The chat shows each artifact as a "
+    "card under the reply: do not link it or dump its source into the chat."
 )
 # Coding-agent method. Shared by the main agent and general-purpose children;
 # the first bullet differs because a child cannot ask the user anything.

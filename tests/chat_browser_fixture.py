@@ -26,19 +26,68 @@ from tests.mariadb_fixture import isolated_database
 
 
 queue_gates = {}
+REAL_STREAM = chat_runtime.stream_dashboard_chat
+ARTIFACT_PAGE = (
+    "<!doctype html><html><head><meta charset='utf-8'><title>Board</title></head>"
+    "<body style='font:15px system-ui;margin:2rem'><h1>Q3 revenue</h1><p>North 1.2M · South 0.8M</p></body></html>"
+)
+
+
+def _text_of(content) -> str:
+    if isinstance(content, list):
+        return " ".join(part.get("text") or "" for part in content if isinstance(part, dict))
+    return str(content or "")
+
+
+async def scripted_invoke(request, user, payload, **_kwargs):
+    """The provider for "Artifact fixture" turns. The real loop runs (tool
+    parsing, create/update_artifact, the tool result's directions, the
+    transcript); only the model's words are scripted, and they follow the
+    directions the real tool result gives, as models do in production."""
+    from types import SimpleNamespace
+
+    messages = payload["messages"]
+    said = next((_text_of(m.get("content")) for m in reversed(messages) if m.get("role") == "user"), "")
+    prompt = said.split("\n\n[Fuse session context", 1)[0]  # the user's words, not the server's tail
+    last = messages[-1]
+    if last.get("role") == "tool":
+        result = _text_of(last.get("content"))
+        url = (result.split("url=", 1)[1].split()[0]) if "url=" in result else ""
+        title = "Q3 revenue board"
+        asks_link = "markdown link" in result
+        if "habit" in prompt or (asks_link and "mid" in prompt):
+            # Production shape: the link glued into the sentence.
+            reply = f"Done — I published the board.[{title}]({url}) It splits revenue by region."
+        elif asks_link or "own-line" in prompt:
+            # Production shape: the link alone on its own line.
+            reply = f"I built a revenue board with a card per region.\n\n[View the {title}]({url})\n\nAsk if you want churn added."
+        else:
+            reply = f"I built **{title}**: one card per region, North ahead of South. Ask if you want churn added."
+        message = {"role": "assistant", "content": reply}
+        finish = "stop"
+    elif "update" in prompt:
+        # The session tail lists this chat's artifacts newest first: take the oldest.
+        tail = _text_of(messages[-1].get("content")).split("Artifacts attached to this chat", 1)[-1]
+        ident = [line[2:].split(":", 1)[0].strip() for line in tail.splitlines() if line.startswith("- ")][-1]
+        message = {"role": "assistant", "content": "Updating the board.", "tool_calls": [{"id": "call_update", "type": "function", "function": {
+            "name": "edit_artifact", "arguments": json.dumps({"identifier": ident, "edits": [{"old_string": "South 0.8M", "new_string": "South 0.9M"}], "note": "South revised"})}}]}
+        finish = "tool_calls"
+    else:
+        message = {"role": "assistant", "content": "I'll build that as a page.", "tool_calls": [{"id": "call_create", "type": "function", "function": {
+            "name": "create_artifact", "arguments": json.dumps({"title": "Q3 revenue board", "icon": "\U0001f4ca", "html": ARTIFACT_PAGE})}}]}
+        finish = "tool_calls"
+    usage = {"prompt_tokens": 120, "completion_tokens": 40}
+    body = {"choices": [{"message": message, "finish_reason": finish}], "usage": usage}
+    result = SimpleNamespace(status=200, body=body, usage=usage, stream=None, credential_id=None, response_headers={})
+    return user, SimpleNamespace(type_id="llama", source_id=1), "offline", "offline", result
 
 
 async def fake_model(request, user, raw, **kwargs):
+    if _text_of(raw["messages"][-1]["content"]).startswith("Artifact fixture"):
+        return await REAL_STREAM(request, user, raw, **kwargs)
+
     async def frames():
-        last = raw["messages"][-1]["content"]
-        if isinstance(last, list):
-            text = " ".join(
-                part.get("text") or ""
-                for part in last
-                if isinstance(part, dict)
-            )
-        else:
-            text = last
+        text = _text_of(raw["messages"][-1]["content"])
         if text.startswith("Queue fixture"):
             run_id = raw["run_id"]
             gate = queue_gates.setdefault(run_id, asyncio.Event())
@@ -108,6 +157,8 @@ async def lifespan(app):
     with isolated_database():
         db.execute("INSERT INTO users(id,email,password_hash,created_at) VALUES(1,'browser@test.invalid','unused',?)", (db.now(),))
         chat_runtime.stream_dashboard_chat = fake_model
+        chat_runtime.api.invoke_chat = scripted_invoke
+        chat_runtime.api._safe_record_usage = lambda *a, **k: None
         chat_runtime.generate_thread_title = fake_title
         chat_runs._stopping = False
         chat_events.start()

@@ -402,6 +402,7 @@ export function createConsoleTheme(runtime) {
     get toolStepHtml() { return theme.toolStepHtml; },
   }));
   Object.assign(theme, createTranscript({
+    get STEP_ICONS() { return theme.STEP_ICONS; },
     get parseProviderError() { return theme.parseProviderError; },
     get providerErrorHtml() { return theme.providerErrorHtml; },
     get activityKind() { return theme.activityKind; },

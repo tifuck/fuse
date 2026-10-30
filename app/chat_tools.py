@@ -192,7 +192,8 @@ SCHEMAS = {
                 "Give it a deliberate design (palette, type, spacing) that follows any design system in the "
                 "project instructions. It starts private and only the user can share it. Never put secrets, "
                 "API keys, credentials, or other users' data in it. Encode content as a valid JSON string. "
-                "After this returns, write a short reply with a markdown link to the url; do not paste the source. "
+                "After this returns, say in a sentence or two what you made: the chat shows the artifact as a card "
+                "under your reply, so do not link it or paste its source. "
                 "Change it later with edit_artifact or update_artifact instead of creating another."
             ),
             "parameters": {

@@ -1,5 +1,39 @@
 // transcript presentation. Dependencies are live getters supplied by index.js.
 export function create(deps) {
+const ARTIFACT_VERBS = { create_artifact: "Created", update_artifact: "Updated", edit_artifact: "Edited" };
+
+// One card per artifact a reply made or changed, from its latest call there.
+// The call row says where it happened; the card is what the reader got.
+function artifactCards(traces) {
+    const byId = new Map();
+    traces.forEach((trace) => {
+      const verb = trace && trace.status === "done" && ARTIFACT_VERBS[trace.name];
+      const id = verb ? String(trace.identifier || "") : "";
+      if (!/^[A-Za-z0-9_-]{8,64}$/.test(id)) return;
+      byId.delete(id);
+      byId.set(id, { id, verb, title: trace.title || "Artifact", icon: trace.icon || "", version: trace.version, format: trace.format || "" });
+    });
+    return [...byId.values()];
+  }
+
+function artifactCardHtml(card) {
+    const meta = [card.verb, card.version != null ? `v${card.version}` : "", card.format === "markdown" ? "Markdown" : ""].filter(Boolean).join(" · ");
+    const icon = card.icon ? deps.escapeHtml(card.icon) : deps.STEP_ICONS.artifact;
+    return `<button type="button" class="chat-artifact-card" data-open-artifact="${deps.escapeHtml(card.id)}" aria-label="Open artifact ${deps.escapeHtml(card.title)}">` +
+      `<span class="chat-artifact-card-icon" aria-hidden="true">${icon}</span>` +
+      `<span class="chat-artifact-card-copy"><span class="chat-artifact-card-title">${deps.escapeHtml(card.title)}</span>` +
+      `<span class="chat-artifact-card-meta">${deps.escapeHtml(meta)}</span></span>` +
+      `<span class="chat-artifact-card-open" aria-hidden="true">Open ↗</span></button>`;
+  }
+
+// A line holding nothing but a link to an artifact that has a card here only
+// repeats the card (models put one there, as the tools used to ask).
+function dropCardLinks(text, ids) {
+    if (!ids.size || !text.includes("/a/")) return text;
+    return text.replace(/^[ \t>*_-]*\[[^\]\n]*\]\((?:https?:\/\/[^)\s]+)?\/a\/([A-Za-z0-9_-]{8,64})\)[ \t*_.]*$/gm,
+      (line, id) => (ids.has(id) ? "" : line));
+  }
+
 function activityEntriesHtml(entries, msg, live, blockKey, blockLive = false) {
     return deps.consoleActivityEntriesHtml(entries, msg, live, blockLive);
 
@@ -137,6 +171,17 @@ function updateAssistant(article, msg, live) {
       article.querySelector("[data-source-count]").textContent = `${sources.length} ${sources.length === 1 ? "source" : "sources"}`;
     }
     const catalog = sources.map((row) => row.url);
+    const cards = artifactCards(traces);
+    const cardIds = new Set(cards.map((card) => card.id));
+    const cardsEl = article.querySelector("[data-artifact-cards]");
+    if (cardsEl) {
+      const cardSig = JSON.stringify(cards);
+      if (cardsEl._sig !== cardSig) {
+        cardsEl._sig = cardSig;
+        cardsEl.innerHTML = cards.map(artifactCardHtml).join("");
+      }
+      cardsEl.hidden = !cards.length;
+    }
     const toolById = new Map(traces.map((trace, index) => [trace.id, { trace, index }]));
     const permById = new Map((msg.permissions || []).map((perm) => [perm.id, perm]));
     const settleLines = deps.todoSettleLines(msg);
@@ -361,7 +406,7 @@ function updateAssistant(article, msg, live) {
       if (block.kind !== "content") return;
       const md = flow.querySelector(`[data-content-block="${blockIndex}"]`);
       if (!md) return;
-      const text = block.entries.map((entry) => entry.text).join("");
+      const text = dropCardLinks(block.entries.map((entry) => entry.text).join(""), cardIds);
       const writing = live && blockIndex === blocks.length - 1;
       const srcKey = text + "\0" + catalog.join("\n");
       md.classList.toggle("is-writing", writing);
