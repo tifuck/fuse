@@ -99,11 +99,11 @@ const shots = process.env.LOG_DIR || '/tmp/fuse-browser-tests';
 
       // Out of habit a model may still glue a link into a sentence.
       article = await turn('Artifact fixture habit: make another board', 'It splits revenue by region');
-      await check(article, 'habit-link', { title: 'Q3 revenue board', meta: /Created · v1/, linkInText: 1 });
+      const habit = await check(article, 'habit-link', { title: 'Q3 revenue board', meta: /Created · v1/, linkInText: 1 });
 
       // Most stored replies put the link alone on its own line: the card replaces it.
       article = await turn('Artifact fixture own-line: one more board', 'Ask if you want churn added');
-      await check(article, 'own-line-link', { title: 'Q3 revenue board', meta: /Created · v1/, linkInText: 0 });
+      const ownLine = await check(article, 'own-line-link', { title: 'Q3 revenue board', meta: /Created · v1/, linkInText: 0 });
       assert.equal((await article.locator('[data-flow]').innerText()).includes('View the Q3 revenue board'), false, `${width}: the link line is gone`);
 
       // A change to the first one gets its own card in that reply.
@@ -115,10 +115,30 @@ const shots = process.env.LOG_DIR || '/tmp/fuse-browser-tests';
       await article.locator('[data-artifact-cards] [data-open-artifact]').click();
       await page.locator('[data-chat-artifact]').waitFor({ state: 'visible' });
       assert.match(await page.locator('[data-artifact-frame]').getAttribute('src'), new RegExp(`/a/${first.id}/content`));
+
+      // Deleted or archived later: the card stays as a record but says so and
+      // no longer opens a pane that cannot load it.
+      for (const [id, action] of [[habit.id, 'delete'], [ownLine.id, 'archive']]) {
+        const status = await page.evaluate(([id, action]) => fetch(`/a/${id}/${action}`, {
+          method: 'POST', credentials: 'same-origin', body: '{}', headers: {
+            'Content-Type': 'application/json', 'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content,
+          },
+        }).then((res) => res.status), [id, action]);
+        assert.equal(status, 200, `${width}: ${action} ${id}`);
+      }
+      await page.reload();
+      await page.locator('[data-artifact-cards] [data-open-artifact]').first().waitFor({ state: 'attached', timeout: 30000 });
+      const gone = await page.evaluate(() => [...document.querySelectorAll('[data-artifact-cards] .chat-artifact-card')]
+        .map((card) => ({ text: card.textContent.replace(/\s+/g, ' ').trim(), opens: card.hasAttribute('data-open-artifact') })));
+      await articles.nth(1).screenshot({ path: `${shots}/artifact-placement-${width}-deleted.png` });
+      assert.equal(gone.length, 4, `${width}: every reply keeps its card: ${JSON.stringify(gone)}`);
+      assert.deepEqual(gone.map((card) => card.opens), [true, false, false, true], `${width}: only live artifacts open: ${JSON.stringify(gone)}`);
+      assert.match(gone[1].text, /Deleted$/, `${width}: deleted card says so`);
+      assert.match(gone[2].text, /Archived$/, `${width}: archived card says so`);
       await page.close();
     }
     assert.deepEqual(errors, []);
-    console.log('PASS: artifact placement — real turns: one card after the reply, inline links, no duplicate link line, edit card, opens the pane');
+    console.log('PASS: artifact placement — real turns: one card after the reply, inline links, no duplicate link line, edit card, opens the pane, deleted/archived cards inert');
   } finally {
     await browser.close();
   }

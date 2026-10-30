@@ -937,6 +937,7 @@ def thread_view(conn, user_id, thread_id, *, queued=(), stamps=None):
             result["context_cut"] = compaction_cut(result["messages"], state)
     result["messages"] = settle_spawn_traces(conn, user_id, result["messages"])
     result["messages"] = settle_command_traces(conn, user_id, thread_id, result["messages"])
+    result["messages"] = settle_artifact_traces(conn, user_id, result["messages"])
     # Lets reconnecting senders retire locally queued items after a lost HTTP
     # acknowledgment. The command ledger remains the idempotency authority.
     result["accepted_queue_ids"] = accepted_commands(conn, user_id, thread_id, queued)
@@ -1221,6 +1222,38 @@ def settle_spawn_traces(conn, user_id, messages):
     return messages
 
 
+ARTIFACT_TOOLS = ("create_artifact", "update_artifact", "edit_artifact")
+
+
+def settle_artifact_traces(conn, user_id, messages):
+    """Mark artifact calls whose artifact was since deleted or archived, so the
+    reply's card says so instead of opening a pane that cannot load it."""
+    wanted = [
+        tool
+        for msg in (messages if isinstance(messages, list) else [])
+        for tool in msg.get("tools") or []
+        if isinstance(tool, dict) and tool.get("name") in ARTIFACT_TOOLS and tool.get("identifier")
+    ]
+    ids = list({str(tool["identifier"]) for tool in wanted})
+    archived = {}
+    for offset in range(0, len(ids), 400):
+        batch = ids[offset:offset + 400]
+        marks = ",".join("?" for _ in batch)
+        archived.update((row["public_id"], bool(row["archived"])) for row in conn.execute(
+            f"SELECT public_id, archived FROM artifacts WHERE user_id=? AND public_id IN ({marks})",
+            (user_id, *batch),
+        ))
+    for tool in wanted:
+        ident = str(tool["identifier"])
+        if ident not in archived:
+            tool["artifact_gone"] = "deleted"
+        elif archived[ident]:
+            tool["artifact_gone"] = "archived"
+        else:
+            tool.pop("artifact_gone", None)
+    return messages
+
+
 def get_run(user_id, run_id):
     return run_view(db.fetchone("SELECT * FROM chat_runs WHERE user_id=? AND id=?", (user_id, run_id)))
 
@@ -1249,6 +1282,7 @@ def get_run_snapshot(user_id, run_id):
         run["live_start"] = _utf16_mark(run.get("message"), live_start) if live_start else None
         settle_spawn_traces(conn, user_id, run["display_messages"])
         settle_command_traces(conn, user_id, run["thread_id"], run["display_messages"])
+        settle_artifact_traces(conn, user_id, run["display_messages"])
         return run
 
 

@@ -11,14 +11,21 @@ function artifactCards(traces) {
       const id = verb ? String(trace.identifier || "") : "";
       if (!/^[A-Za-z0-9_-]{8,64}$/.test(id)) return;
       byId.delete(id);
-      byId.set(id, { id, verb, title: trace.title || "Artifact", icon: trace.icon || "", version: trace.version, format: trace.format || "" });
+      byId.set(id, { id, verb, title: trace.title || "Artifact", icon: trace.icon || "", version: trace.version, format: trace.format || "", gone: trace.artifact_gone || "" });
     });
     return [...byId.values()];
   }
 
 function artifactCardHtml(card) {
-    const meta = [card.verb, card.version != null ? `v${card.version}` : "", card.format === "markdown" ? "Markdown" : ""].filter(Boolean).join(" · ");
+    const meta = card.gone ? (card.gone === "archived" ? "Archived" : "Deleted")
+      : [card.verb, card.version != null ? `v${card.version}` : "", card.format === "markdown" ? "Markdown" : ""].filter(Boolean).join(" · ");
     const icon = card.icon ? deps.escapeHtml(card.icon) : deps.STEP_ICONS.artifact;
+    if (card.gone) {
+      return `<div class="chat-artifact-card is-gone">` +
+        `<span class="chat-artifact-card-icon" aria-hidden="true">${icon}</span>` +
+        `<span class="chat-artifact-card-copy"><span class="chat-artifact-card-title">${deps.escapeHtml(card.title)}</span>` +
+        `<span class="chat-artifact-card-meta">${meta}</span></span></div>`;
+    }
     return `<button type="button" class="chat-artifact-card" data-open-artifact="${deps.escapeHtml(card.id)}" aria-label="Open artifact ${deps.escapeHtml(card.title)}">` +
       `<span class="chat-artifact-card-icon" aria-hidden="true">${icon}</span>` +
       `<span class="chat-artifact-card-copy"><span class="chat-artifact-card-title">${deps.escapeHtml(card.title)}</span>` +

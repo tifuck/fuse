@@ -313,6 +313,8 @@
 }
 .chat .chat-artifact-card:hover,
 .chat .chat-artifact-card:focus-visible { border-color: color-mix(in srgb, var(--brass) 55%, var(--line)); background: var(--raise); }
+.chat .chat-artifact-card.is-gone,
+.chat .chat-artifact-card.is-gone:hover { border-style: dashed; border-color: var(--line); background: transparent; color: var(--mute); cursor: default; }
 .chat-artifact-card-icon {
   display: inline-flex;
   flex-shrink: 0;
