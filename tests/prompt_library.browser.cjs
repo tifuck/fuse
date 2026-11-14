@@ -34,10 +34,14 @@ const withConfig = (coding) => `(() => { const swap = () => { const el = documen
       const center = await page.evaluate(() => { const t = document.querySelector('[data-chat-thread]').getBoundingClientRect(), g = document.querySelector('.chat-library-tiles').getBoundingClientRect();
         return [t.left + t.width / 2 - (g.left + g.width / 2), t.top + t.height / 2 - (g.top + g.height / 2)]; });
       assert.ok(Math.abs(center[0]) < 12 && Math.abs(center[1]) < 24, `tiles centered in the thread: ${center}`);
-      // A tile swaps the grid for that category's prompt cards under a back bar.
+      // A tile swaps the grid for that category's prompts, one row each, under a back bar.
       await page.click('[data-library-cat="perf"]');
       assert.equal(await page.locator('[data-chat-library] [data-library-insert]').count(), 6);
       assert.match(await page.locator('.chat-library-bar-title').innerText(), /Performance/);
+      const bar = await page.locator('.chat-library-bar').boundingBox(), back = await page.locator('[data-library-home]').boundingBox();
+      assert.ok(back.y >= bar.y && back.y + back.height <= bar.y + bar.height + 1, 'back button on the title line');
+      const heights = await page.locator('.chat-library-prompt').evaluateAll((els) => els.map((e) => e.getBoundingClientRect().height));
+      assert.ok(Math.max(...heights) < 52, `single-line rows: ${heights}`);
       assert.ok(await page.evaluate(() => document.activeElement.matches('[data-library-home]')), 'focus on the back button');
       await page.keyboard.press('Escape');
       assert.equal(await page.locator('[data-library-cat]').count(), 10, 'Escape returns to the categories');
@@ -106,7 +110,7 @@ const withConfig = (coding) => `(() => { const swap = () => { const el = documen
     {
       const { context, page } = await open({ width: 1280, height: 800 }, false);
       await page.click('[data-library-cat="bugs"]');
-      assert.equal(await page.locator('.chat-library-tile[aria-disabled="true"]').count(), 7);
+      assert.equal(await page.locator('.chat-library-prompt[aria-disabled="true"]').count(), 7);
       await page.click('[data-library-insert="logic"]', { force: true });
       assert.equal(await page.inputValue('#chat-input'), '');
       await context.close();
@@ -124,7 +128,7 @@ const withConfig = (coding) => `(() => { const swap = () => { const el = documen
         return g.top >= t.top - 1 && g.bottom <= t.bottom + 1 && g.width < t.width * 0.9 && Math.abs(t.left + t.width / 2 - (g.left + g.width / 2)) < 2; });
       assert.ok(fits, `${width}: the tiles sit centered with a margin, without overflowing`);
       await page.tap('[data-library-cat="security"]');
-      const lefts = await page.locator('.chat-library-tile.is-prompt').evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().left)));
+      const lefts = await page.locator('.chat-library-prompt').evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().left)));
       assert.ok(lefts.length === 8 && new Set(lefts).size === 1, `${width}: one prompt per row ${lefts}`);
       assert.ok((await page.evaluate(() => document.scrollingElement.scrollWidth - document.documentElement.clientWidth)) <= 1, `${width}: prompts, no sideways scroll`);
       await page.goBack();

@@ -47,22 +47,19 @@ export function createLibrary(ctx) {
   const modeTag = (p) => (p.needs_input ? "Needs input" : CATALOG.footers[p.modes[0]].short);
 
   // The empty chat shows the category tiles, or one category's prompts as
-  // cards in the same grid under a back bar. A card inserts its prompt.
+  // single-line rows under a back bar. A row inserts its prompt.
   let shownCat = null;
   function renderTiles(catId = null) {
     if (!host) return;
     const cat = CATALOG.categories.find((c) => c.id === catId);
     shownCat = cat ? cat.id : null;
-    host.innerHTML = '<div class="chat-library-body">' + (cat
-      ? `<div class="chat-library-bar"><button type="button" class="chat-library-back" data-library-home>${icon("back", 14)}<span>All categories</span></button>` +
+    host.innerHTML = `<div class="chat-library-body${cat ? " is-category" : ""}">` + (cat
+      ? `<div class="chat-library-bar"><button type="button" class="chat-library-back" data-library-home aria-label="All categories" title="All categories">${icon("back", 16)}</button>` +
         `<h2 class="chat-library-bar-title">${icon(cat.icon, 18)}<span>${escapeHtml(cat.name)}</span></h2>` +
         `<span class="chat-library-bar-count">${cat.prompts.length} prompts</span></div>` +
-        `<div class="chat-library-tiles is-prompts" role="group" aria-label="${escapeHtml(cat.name)} prompts">${cat.prompts.map((p) => {
+        `<div class="chat-library-prompts" role="group" aria-label="${escapeHtml(cat.name)} prompts">${cat.prompts.map((p) => {
           const ok = usable(BY_ID.get(p.id));
-          return `<button type="button" class="chat-library-tile is-prompt" data-library-insert="${p.id}"${ok ? "" : ' aria-disabled="true"'}>` +
-            `<span class="chat-library-tile-name">${escapeHtml(p.title)}</span>` +
-            `<span class="chat-library-tile-blurb">${escapeHtml(ok ? p.blurb : "Needs a project chat. " + p.blurb)}</span>` +
-            `<span class="chat-library-tile-count">${escapeHtml(modeTag(BY_ID.get(p.id)))}</span></button>`;
+          return `<button type="button" class="chat-library-prompt" data-library-insert="${p.id}"${ok ? "" : ' aria-disabled="true" title="Needs a project chat"'}>${escapeHtml(p.title)}</button>`;
         }).join("")}</div>`
       : `<div class="chat-library-tiles" role="group" aria-label="Prompt library">${CATALOG.categories.map((c) =>
         `<button type="button" class="chat-library-tile" data-library-cat="${c.id}">${icon(c.icon, 18)}<span class="chat-library-tile-name">${escapeHtml(c.name)}</span><span class="chat-library-tile-count">${c.prompts.length} prompts</span></button>`).join("")}</div>`) +
