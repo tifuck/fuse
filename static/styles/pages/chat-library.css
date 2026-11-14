@@ -1,4 +1,4 @@
-/* Prompt library (static/chat/composer/library.js): starter chips and
+/* Prompt library (static/chat/composer/library.js): a centered grid of
    category tiles on an empty chat, then a bottom sheet with the category's
    prompts. Phones get a full-width sheet with swipe-down and back to close;
    wider screens get the same sheet rising from the composer, at its width. */
@@ -6,89 +6,68 @@
 .chat.is-empty:not(.is-composing) .chat-library:not([hidden]) {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
   width: min(100%, 56rem);
   min-height: 100%;
-  margin: 0;
-  padding: 1rem var(--console-gutter, 1rem) 0.75rem;
+  margin: 0 auto;
+  padding: 1rem var(--console-gutter, 1rem);
   box-sizing: border-box;
 }
-/* Bottom-aligned while it fits; when it does not, it scrolls from its top
-   (justify-content: flex-end would push the top out of reach). */
-.chat .chat-library > :first-child { margin-top: auto; }
 /* The phone keyboard needs the room; the box is where attention is. */
 body.is-chat.is-keyboard .chat .chat-library { display: none; }
 
-.chat .chat-library-starters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-}
-.chat .chat-library-starter,
-.chat .chat-library-tile {
-  font: 500 0.8125rem/1.3 var(--mono);
-  color: var(--mist);
-  background: var(--panel);
-  border: 1px solid var(--line);
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-}
-.chat .chat-library-starter {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-  min-height: 2.25rem;
-  padding: 0 0.8rem;
-  border-radius: 999px;
-  white-space: nowrap;
-}
-.chat .chat-library-starter svg,
-.chat .chat-library-tile svg { flex: none; color: var(--brass); }
+/* Centered while it fits; when it does not, it scrolls from its top
+   (justify-content: center would push the top out of reach). */
 .chat .chat-library-tiles {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
-  gap: 0.5rem;
+  grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+  gap: 0.6rem;
+  margin-block: auto;
 }
 .chat .chat-library-tile {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
+  justify-content: flex-end;
   gap: 0.3rem;
-  min-height: 4.75rem;
-  padding: 0.7rem 0.75rem;
+  min-height: 8rem;
+  padding: 0.9rem;
+  font: 500 0.875rem/1.3 var(--mono);
+  color: var(--mist);
+  background: var(--panel);
+  border: 1px solid var(--line);
   border-radius: 10px;
   text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
 }
+.chat .chat-library-tile svg { flex: none; margin-bottom: auto; color: var(--brass); }
 .chat .chat-library-tile-name { overflow-wrap: anywhere; }
-.chat .chat-library-tile-count { color: var(--mute); font-size: 0.72rem; font-weight: 400; }
+.chat .chat-library-tile-count { color: var(--mute); font-size: 0.75rem; font-weight: 400; }
 @media (hover: hover) {
-  .chat .chat-library-starter:hover,
   .chat .chat-library-tile:hover { border-color: color-mix(in srgb, var(--brass) 55%, var(--line)); background: var(--raise); }
 }
-.chat .chat-library-starter:focus-visible,
 .chat .chat-library-tile:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
 @media (max-width: 800px) {
-  /* One swipeable row of starters, two columns of tiles within thumb reach. */
-  .chat .chat-library-starters {
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    scrollbar-width: none;
-    margin-inline: calc(-1 * var(--console-gutter, 1rem));
-    padding-inline: var(--console-gutter, 1rem);
+  /* Phones: two columns of tiles fill the open area. */
+  .chat.is-empty:not(.is-composing) .chat-library:not([hidden]) { padding-block: 0.5rem; }
+  .chat .chat-library-tiles {
+    flex: 1 0 auto;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-auto-rows: minmax(4.25rem, 1fr);
+    gap: 0.5rem;
+    margin-block: 0;
   }
-  .chat .chat-library-starters::-webkit-scrollbar { display: none; }
-  .chat .chat-library-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   /* Icon beside the name: five rows still fit a short phone. */
   .chat .chat-library-tile {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
     align-content: center;
-    column-gap: 0.5rem;
+    column-gap: 0.6rem;
     row-gap: 0.15rem;
-    min-height: 3.5rem;
-    padding: 0.55rem 0.65rem;
+    min-height: 0;
+    padding: 0.6rem 0.75rem;
   }
-  .chat .chat-library-tile svg { grid-row: span 2; align-self: center; }
+  .chat .chat-library-tile svg { grid-row: span 2; align-self: center; margin: 0; }
 }
 
 /* —— Sheet —— */

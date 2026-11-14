@@ -48,10 +48,7 @@ export function createLibrary(ctx) {
 
   function renderTiles() {
     if (!host) return;
-    const starters = CATALOG.starters[codeTools() ? "project" : "plain"].map((id) => BY_ID.get(id));
     host.innerHTML =
-      `<div class="chat-library-starters" role="group" aria-label="Suggested prompts">${starters.map((p) =>
-        `<button type="button" class="chat-library-starter" data-library-insert="${p.id}">${icon(p.cat.icon, 14)}<span>${escapeHtml(p.title)}</span></button>`).join("")}</div>` +
       `<div class="chat-library-tiles" role="group" aria-label="Prompt library">${CATALOG.categories.map((c) =>
         `<button type="button" class="chat-library-tile" data-library-cat="${c.id}" aria-haspopup="dialog">${icon(c.icon, 18)}<span class="chat-library-tile-name">${escapeHtml(c.name)}</span><span class="chat-library-tile-count">${c.prompts.length} prompts</span></button>`).join("")}</div>`;
     host.hidden = false;
@@ -354,22 +351,9 @@ export function createLibrary(ctx) {
 
     host?.addEventListener("click", (event) => {
       const tile = event.target.closest("[data-library-cat]");
-      if (tile) return open(tile.getAttribute("data-library-cat"), tile);
-      const starter = event.target.closest("[data-library-insert]");
-      if (starter) insert(starter.getAttribute("data-library-insert"));
+      if (tile) open(tile.getAttribute("data-library-cat"), tile);
     });
 
-    // Starters follow the chat: project and coding chats lead with code work.
-    let lastKind = null;
-    new MutationObserver(() => {
-      if (!S.root.classList.contains("is-empty")) return;
-      const kind = codeTools();
-      if (kind !== lastKind) {
-        lastKind = kind;
-        renderTiles();
-      }
-    }).observe(S.root, { attributes: true, attributeFilter: ["class"] });
-    lastKind = codeTools();
     renderTiles();
     window.addEventListener("resize", place);
   }

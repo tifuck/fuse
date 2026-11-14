@@ -31,7 +31,9 @@ const withConfig = (coding) => `(() => { const swap = () => { const el = documen
     {
       const { context, page } = await open({ width: 1440, height: 900 }, true);
       assert.equal(await page.locator('.chat-library-tile').count(), 10);
-      assert.equal(await page.locator('.chat-library-starter').count(), 5);
+      const center = await page.evaluate(() => { const t = document.querySelector('[data-chat-thread]').getBoundingClientRect(), g = document.querySelector('.chat-library-tiles').getBoundingClientRect();
+        return [t.left + t.width / 2 - (g.left + g.width / 2), t.top + t.height / 2 - (g.top + g.height / 2)]; });
+      assert.ok(Math.abs(center[0]) < 12 && Math.abs(center[1]) < 24, `tiles centered in the thread: ${center}`);
       await page.click('[data-library-cat="perf"]');
       const sheet = page.locator('.chat-library-sheet');
       await sheet.waitFor();
@@ -65,7 +67,8 @@ const withConfig = (coding) => `(() => { const swap = () => { const el = documen
       await setBox(page, '');
       assert.ok(await page.locator('[data-chat-library]').isVisible(), 'back when the box is empty');
       // A required blank: selected, Tab to the next field, and Enter warns once.
-      await page.click('.chat-library-starter[data-library-insert="fix-bug"]');
+      await page.click('[data-library-cat="build"]');
+      await page.click('[data-library-insert="fix-bug"]');
       assert.equal(await selection(page), '{{What happens, and what should happen instead}}');
       await page.keyboard.press('Tab');
       assert.equal(await selection(page), 'unknown, find a reproduction');
@@ -90,14 +93,13 @@ const withConfig = (coding) => `(() => { const swap = () => { const el = documen
     // Plain chat: project prompts are dimmed and refuse to insert.
     {
       const { context, page } = await open({ width: 1280, height: 800 }, false);
-      assert.equal(await page.locator('.chat-library-starter').count(), 4);
       await page.click('[data-library-cat="bugs"]');
       assert.equal(await page.locator('.chat-library-row[aria-disabled="true"]').count(), 7);
       await page.click('[data-library-insert="logic"]', { force: true });
       assert.equal(await page.inputValue('#chat-input'), '');
       await context.close();
     }
-    // Phones: two-column tiles, a full-width bottom sheet, back closes it.
+    // Phones: two columns of tiles filling the open area, a full-width bottom sheet, back closes it.
     for (const [width, height] of [[390, 844], [360, 640]]) {
       const { context, page } = await open({ width, height }, true, { hasTouch: true, isMobile: true });
       if (await page.locator('[data-chat-new]').isVisible()) { await page.click('[data-chat-new]'); await page.waitForTimeout(500); }
@@ -105,9 +107,9 @@ const withConfig = (coding) => `(() => { const swap = () => { const el = documen
       assert.ok((await page.evaluate(() => document.scrollingElement.scrollWidth - document.documentElement.clientWidth)) <= 1, `${width}: no sideways scroll`);
       const widths = await page.locator('.chat-library-tile').evaluateAll((els) => els.map((e) => e.getBoundingClientRect().width));
       assert.ok(widths.length === 10 && Math.min(...widths) > 120, `${width}: tiles ${widths}`);
-      const reach = await page.evaluate(() => { const t = document.querySelector('[data-chat-thread]'); t.scrollTop = 0;
-        return document.querySelector('.chat-library-starters').getBoundingClientRect().top >= t.getBoundingClientRect().top - 1; });
-      assert.ok(reach, `${width}: the top of the library can be scrolled to`);
+      const fits = await page.evaluate(() => { const t = document.querySelector('[data-chat-thread]').getBoundingClientRect(), g = document.querySelector('.chat-library-tiles').getBoundingClientRect();
+        return g.top >= t.top - 1 && g.bottom <= t.bottom + 1 && g.height > t.height * 0.8; });
+      assert.ok(fits, `${width}: the tiles fill the open area without overflowing`);
       await page.tap('[data-library-cat="security"]');
       const sheet = page.locator('.chat-library-sheet');
       await sheet.waitFor();

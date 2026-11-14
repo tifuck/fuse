@@ -53,13 +53,7 @@ def test_fields_well_formed():
         assert p["needs_input"] == any(m.group(2) is None for m in FIELD.finditer(p["body"])), p["id"]
 
 
-def test_starters_and_modifiers_resolve():
+def test_modifiers_resolve():
     cat = load()
-    ids = {p["id"] for p in prompts(cat)}
-    for kind, starters in cat["starters"].items():
-        assert kind in ("project", "plain") and starters and set(starters) <= ids
     for mod in cat["modifiers"]:
         assert set(mod["modes"]) <= set(cat["footers"])
-    for p in prompts(cat):
-        if p["id"] in cat["starters"]["plain"]:
-            assert p["needs"] == "any", f"{p['id']} is a plain-chat starter but needs a project"

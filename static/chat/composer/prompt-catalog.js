@@ -71,21 +71,6 @@ export const CATALOG = {
    "text": "Also publish the final report as an artifact page, grouped by severity or section; keep the chat reply to a short summary."
   }
  ],
- "starters": {
-  "project": [
-   "fix-bug",
-   "review-diff",
-   "full-audit",
-   "onboard",
-   "build-feature"
-  ],
-  "plain": [
-   "spec",
-   "rubber-duck",
-   "tradeoffs",
-   "rfc"
-  ]
- },
  "categories": [
   {
    "id": "build",
