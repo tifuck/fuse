@@ -6,8 +6,9 @@ value Claude shows, the same remote finish as Devin. Chat is the Messages API
 translated to OpenAI chunks. Probes are profile only — never a completion.
 
 Model identity/catalog state: `claude_catalog`. Request shaping:
-`claude_payload`. Stream translation: `claude_stream`. Their public names are
-re-exported here as the provider's API surface.
+`claude_payload`. Stream translation: `claude_stream`. Message threads (send
+only the new turn): `claude_thread`. Their public names are re-exported here
+as the provider's API surface.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ import hashlib
 import json
 import secrets
 from datetime import datetime, timedelta, timezone
+from functools import partial
 from urllib.parse import urlencode
 
 import httpx
@@ -30,7 +32,7 @@ from ..proxy import UsageStream
 from .base import ChatResult
 from .grok import apply_usage_guard, is_held as credential_is_held
 from .pool_pick import Failover, auth_failure_confirmed, explain_empty, note_failure, pick_account, release, reserve
-from . import pool_policy
+from . import claude_thread, pool_policy
 from .pool_session import bind, lookup
 from .token_store import dead_grant, log_refresh_failures, oauth_reason, persist_rotated, revoked_grant, shield_refresh
 
@@ -751,11 +753,14 @@ class ClaudeSource:
 
     async def _post(self, client: httpx.AsyncClient, token: str, payload: dict):
         url = settings.claude_api_base.rstrip("/") + "/v1/messages"
+        # The beta set is a fixed field of a thread: every threaded request
+        # sends the same one, an unthreaded fallback the plain one.
+        beta = f"{_BETA},{claude_thread.BETA}" if "thread" in payload else _BETA
         # Streaming send: the body stays unread until the translator iterates
         # it, so the first event reaches the client as Anthropic produces it
         # and a cancelled request stops generation promptly. client.post would
         # buffer the whole SSE response before returning.
-        req = client.build_request("POST", url, headers=_chat_headers(token), json=payload)
+        req = client.build_request("POST", url, headers=_chat_headers(token, beta), json=payload)
         return await client.send(req, stream=True)
 
     async def chat(self, body: dict, *, session_id: str | None = None, user_id: int | None = None, affinity_id: str | None = None) -> ChatResult:
@@ -798,7 +803,8 @@ class ClaudeSource:
             stream_reserved = False
             try:
                 reserve(cred["id"])
-                resp = await self._post(client, token, payload)
+                send, mode = claude_thread.plan(session_id, int(cred["id"]), payload)
+                resp = await self._post(client, token, send)
                 status = resp.status_code
                 if status == 401 and extra.get("refresh_token"):
                     await resp.aclose()
@@ -812,8 +818,20 @@ class ClaudeSource:
                         extra = accounts.cred_extra(row)
                         token = _bearer(cred, extra)
                         client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=15.0))
-                        resp = await self._post(client, token, payload)
+                        resp = await self._post(client, token, send)
                         status = resp.status_code
+                # Thread refusals happen before the model runs and cost no
+                # tokens: replay the full conversation into a new thread, or
+                # send it without one where threads are not available.
+                while mode and status in (400, 404):
+                    raw = (await resp.aread()).decode("utf-8", errors="replace")
+                    retry = claude_thread.fallback(mode, status, raw, int(cred["id"]))
+                    if retry is False:
+                        break
+                    await resp.aclose()
+                    send, mode = (claude_thread.create_body(payload), "create") if retry == "create" else (payload, None)
+                    resp = await self._post(client, token, send)
+                    status = resp.status_code
                 if status == 400:
                     raw = (await resp.aread()).decode("utf-8", errors="replace")
                     await resp.aclose()
@@ -879,13 +897,15 @@ class ClaudeSource:
                         continue
                     last.attempts = attempts
                     return last
+                reply: dict = {}
+                remember = partial(claude_thread.record, session_id, int(cred["id"]), payload, mode, reply)
                 if want_stream:
                     collected: dict = {}
-                    stream = _translated_stream(resp, client, upstream, collected)
+                    stream = _translated_stream(resp, client, upstream, collected, reply)
                     stream_reserved = True
                     failover.served()
-                    return self._stream_result(stream, collected, cred, session_id, fuse_id(upstream), attempts)
-                obj = await _aggregate(resp, client, upstream)
+                    return self._stream_result(stream, collected, cred, session_id, fuse_id(upstream), attempts, remember)
+                obj = await _aggregate(resp, client, upstream, reply)
                 if isinstance(obj.get("error"), dict):
                     partial_usage = obj.pop("_fuse_usage", {}) if isinstance(obj, dict) else {}
                     if partial_usage:
@@ -899,6 +919,7 @@ class ClaudeSource:
                 usage = obj.get("usage") if isinstance(obj.get("usage"), dict) else {}
                 failover.served()
                 bind("claude", session_id, cred["id"])
+                remember()
                 last = ChatResult(status=200, body=obj, usage=usage if isinstance(usage, dict) else {}, credential_id=cred["id"], model=fuse_id(upstream))
                 last.attempts = attempts
                 return last
@@ -920,7 +941,7 @@ class ClaudeSource:
                 if not stream_reserved:
                     release(cred["id"])
 
-    def _stream_result(self, stream, collected: dict, cred, session_id: str | None, model: str, attempts: list[dict]) -> ChatResult:
+    def _stream_result(self, stream, collected: dict, cred, session_id: str | None, model: str, attempts: list[dict], remember=None) -> ChatResult:
         cid = cred["id"]
 
         async def _bind_on_finish():
@@ -934,6 +955,8 @@ class ClaudeSource:
                 status = (collected or {}).get("stream_status")
                 if status == "complete":
                     bind("claude", session_id, cid)
+                    if remember is not None:
+                        remember()
                 elif status == "failed":
                     note_failure(cid, cooldown_seconds=5, affinity_safe=True)
 

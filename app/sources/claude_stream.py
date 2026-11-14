@@ -80,6 +80,8 @@ class _Translator:
         self.model = model
         self.created = int(time.time())
         self.completion_id = "chatcmpl-claude"
+        self.message_id = ""
+        self.text: list[str] = []
         self.usage: dict = {}
         self.error = ""
         self.error_type = ""
@@ -162,7 +164,8 @@ class _Translator:
         if etype == "message_start":
             message = event.get("message") if isinstance(event.get("message"), dict) else {}
             if message.get("id"):
-                self.completion_id = "chatcmpl-" + str(message["id"])
+                self.message_id = str(message["id"])
+                self.completion_id = "chatcmpl-" + self.message_id
             self._note_usage(message.get("usage"))
             return self._chunk({"role": "assistant", "content": ""})
         if etype == "content_block_start":
@@ -202,6 +205,7 @@ class _Translator:
             rec = self.blocks.get(index)
             if kind == "text_delta" and delta.get("text"):
                 self.text_seen = True
+                self.text.append(str(delta["text"]))
                 return self._chunk({"content": str(delta["text"])})
             if kind == "thinking_delta" and delta.get("thinking"):
                 if rec is not None:
@@ -292,6 +296,15 @@ class _Translator:
             )
         return calls
 
+    def reply(self) -> dict:
+        """What a message thread needs to recognise this reply next turn."""
+        return {
+            "id": self.message_id,
+            "text": "".join(self.text),
+            "tool_ids": [call["id"] for call in self.tool_calls()],
+            "stop_reason": self.stop_reason,
+        }
+
     def _final_chunks(self) -> list[bytes]:
         delta: dict = {}
         if self.thinking:
@@ -306,7 +319,8 @@ def _signature_retryable(message: str) -> bool:
     return "signature" in text and "thinking" in text
 
 
-async def _translated_stream(resp: httpx.Response, client: httpx.AsyncClient, model: str, collected: dict | None = None):
+async def _translated_stream(resp: httpx.Response, client: httpx.AsyncClient, model: str, collected: dict | None = None,
+                             reply: dict | None = None):
     translator = _Translator(fuse_id(model))
     stream_status = "failed"
     try:
@@ -343,13 +357,15 @@ async def _translated_stream(resp: httpx.Response, client: httpx.AsyncClient, mo
             collected["stream_status"] = stream_status
             if translator.usage:
                 collected["usage_status"] = "complete" if stream_status == "complete" else "partial"
+        if reply is not None and stream_status == "complete":
+            reply.update(translator.reply())
             # Thinking reaches replay through the final chunk's delta. It is
             # not usage: signatures grow with the thought, and once merged into
             # the run's usage frame a long think overflowed USAGE_MAX and
             # failed the turn ("Generation usage limit reached.").
 
 
-async def _aggregate(resp: httpx.Response, client: httpx.AsyncClient, model: str) -> dict:
+async def _aggregate(resp: httpx.Response, client: httpx.AsyncClient, model: str, reply: dict | None = None) -> dict:
     translator = _Translator(fuse_id(model))
     text_parts: list[str] = []
     reasoning_parts: list[str] = []
@@ -378,6 +394,8 @@ async def _aggregate(resp: httpx.Response, client: httpx.AsyncClient, model: str
         translator.error = "upstream stream ended before a terminal response"
     if translator.error:
         return {"error": {"message": translator.error, "type": translator.error_type or "api_error", "code": 502}, "_fuse_usage": translator.usage}
+    if reply is not None:
+        reply.update(translator.reply())
     message: dict = {"role": "assistant", "content": "".join(text_parts)}
     if reasoning_parts:
         message["reasoning_content"] = "".join(reasoning_parts)

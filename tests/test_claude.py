@@ -19,6 +19,7 @@ os.environ.setdefault("APP_SECRET", "x" * 32)
 
 from app import accounts, api, db  # noqa: E402
 from app.sources import claude as claude_mod  # noqa: E402
+from app.sources import claude_thread  # noqa: E402
 from app.sources import pick, pool_denial  # noqa: E402
 from app.sources.pool_pick import reset_health  # noqa: E402
 
@@ -844,9 +845,118 @@ class _RevokeClient:
         return {"error": "invalid_grant", "error_description": "Refresh token expired"}
 
 
+_TOOLS = [{"type": "function", "function": {"name": "grep", "parameters": {"type": "object", "properties": {}}}}]
+_TURN1 = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
+_CALL = {"role": "assistant", "content": "", "tool_calls": [{"id": "toolu_1", "type": "function", "function": {"name": "grep", "arguments": "{}"}}]}
+_RESULT = {"role": "tool", "tool_call_id": "toolu_1", "content": "found"}
+_REPLY1 = {"id": "msg_1", "text": "", "tool_ids": ["toolu_1"], "stop_reason": "tool_use"}
+
+
+def _thread_payload(messages, tools=_TOOLS):
+    return claude_mod.build_messages_payload({"messages": messages, "tools": tools}, "claude-sonnet-4-6")
+
+
+def _breakpoints(value) -> int:
+    return json.dumps(value).count('"cache_control"')
+
+
+class ClaudeThreadTest(unittest.TestCase):
+    def setUp(self):
+        claude_thread.reset()
+
+    def _first(self):
+        payload = _thread_payload(_TURN1)
+        send, mode = claude_thread.plan("s1", 7, payload)
+        self.assertEqual(mode, "create")
+        self.assertEqual(send["thread"], {"type": "create"})
+        self.assertEqual(send["messages"], payload["messages"])
+        claude_thread.record("s1", 7, payload, mode, _REPLY1)
+        return payload
+
+    def test_next_turn_sends_only_new_messages(self):
+        first = self._first()
+        payload = _thread_payload([*_TURN1, _CALL, _RESULT])
+        send, mode = claude_thread.plan("s1", 7, payload)
+        self.assertEqual(mode, "continue")
+        self.assertEqual(send["thread"], {"type": "continue", "previous_message_id": "msg_1"})
+        self.assertNotIn("system", send)
+        self.assertNotIn("tools", send)
+        self.assertEqual(send["messages"], payload["messages"][2:])
+        self.assertEqual(send["messages"][0]["content"][0]["type"], "tool_result")
+        # Fixed fields go again; create-time system/tools breakpoints count
+        # against the limit of 4.
+        self.assertEqual(send["model"], first["model"])
+        self.assertLessEqual(_breakpoints(send["messages"]) + _breakpoints(first["system"]) + _breakpoints(first["tools"]), 4)
+        self.assertLessEqual(_breakpoints(payload), 4)
+        # A response id is continued once: the state is consumed.
+        self.assertEqual(claude_thread.plan("s1", 7, payload)[1], "create")
+
+    def test_anything_the_thread_does_not_hold_creates_a_new_thread(self):
+        edited = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hello"}, _CALL, _RESULT]
+        other_reply = {**_CALL, "tool_calls": [{**_CALL["tool_calls"][0], "id": "toolu_2"}]}
+        cases = {
+            "other account": (8, _thread_payload([*_TURN1, _CALL, _RESULT])),
+            "tools changed": (7, _thread_payload([*_TURN1, _CALL, _RESULT], tools=[])),
+            "history edited": (7, _thread_payload(edited)),
+            "other reply": (7, _thread_payload([*_TURN1, other_reply, {**_RESULT, "tool_call_id": "toolu_2"}])),
+            "nothing new": (7, _thread_payload([*_TURN1, _CALL])),
+        }
+        for name, (cred, payload) in cases.items():
+            with self.subTest(name):
+                self._first()
+                send, mode = claude_thread.plan("s1", cred, payload)
+                self.assertEqual(mode, "create")
+                self.assertEqual(send["messages"], payload["messages"])
+
+    def test_agent_loop_continues_every_round(self):
+        history = [{"role": "system", "content": "sys"}, {"role": "user", "content": "go"}]
+        for round_no in range(5):
+            payload = claude_mod.build_messages_payload({"messages": history, "tools": _TOOLS, "reasoning_effort": "high"},
+                                                        "claude-opus-5-5")
+            send, mode = claude_thread.plan("loop", 7, payload)
+            self.assertEqual(mode, "create" if round_no == 0 else "continue", round_no)
+            self.assertLessEqual(_breakpoints(send.get("messages")) + 2, 4)
+            ids = [f"toolu_{round_no}_{i}" for i in range(2)]
+            claude_thread.record("loop", 7, payload, mode, {"id": f"msg_{round_no}", "text": "Checking.", "tool_ids": ids,
+                                                             "stop_reason": "tool_use"})
+            history += [
+                {"role": "assistant", "content": "Checking.", "claude_thinking": [
+                    {"thinking": "t", "signature": f"sig{round_no}", "tool_index": 0},
+                    {"thinking": "", "signature": f"sig{round_no}b", "tool_index": 1, "after_text": True}],
+                 "tool_calls": [{"id": i, "type": "function", "function": {"name": "grep", "arguments": "{}"}} for i in ids]},
+                *({"role": "tool", "tool_call_id": i, "content": "ok"} for i in ids),
+            ]
+            if round_no == 2:
+                history.append({"role": "system", "content": "steer"})
+
+    def test_idle_thread_and_unstored_stop_create(self):
+        self._first()
+        with patch("app.sources.claude_thread.time.monotonic", return_value=claude_thread.time.monotonic() + claude_thread.IDLE_S + 1):
+            self.assertEqual(claude_thread.plan("s1", 7, _thread_payload([*_TURN1, _CALL, _RESULT]))[1], "create")
+        claude_thread.record("s1", 7, _thread_payload(_TURN1), "create", {**_REPLY1, "stop_reason": "refusal"})
+        self.assertEqual(claude_thread.plan("s1", 7, _thread_payload([*_TURN1, _CALL, _RESULT]))[1], "create")
+        self.assertIsNone(claude_thread.plan(None, 7, _thread_payload(_TURN1))[1])
+
+    def test_fallback_classifies_thread_errors(self):
+        def err(code="", message="x"):
+            return json.dumps({"type": "error", "error": {"type": "invalid_request_error", "message": message,
+                                                          **({"details": {"error_code": code}} if code else {})}})
+
+        self.assertEqual(claude_thread.fallback("continue", 404, err("thread_not_found"), 7), "create")
+        self.assertEqual(claude_thread.fallback("continue", 400, err("thread_already_continued"), 7), "create")
+        self.assertEqual(claude_thread.fallback("continue", 400, err("thread_fingerprint_mismatch"), 7), "create")
+        self.assertIs(claude_thread.fallback("continue", 400, err(message="signature verification failed"), 7), False)
+        self.assertIs(claude_thread.fallback("create", 404, err("thread_not_found"), 7), False)
+        self.assertTrue(claude_thread.enabled(7))
+        self.assertIsNone(claude_thread.fallback("create", 400, err("thread_unsupported_request"), 7))
+        self.assertFalse(claude_thread.enabled(7))
+        self.assertIsNone(claude_thread.plan("s1", 7, _thread_payload(_TURN1))[1])
+
+
 class ClaudePoolTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         reset_health()
+        claude_thread.reset()
         db.execute("DELETE FROM credentials")
         db.execute("DELETE FROM api_keys")
         db.execute("DELETE FROM users")
@@ -1161,6 +1271,105 @@ class ClaudePoolTest(unittest.IsolatedAsyncioTestCase):
         first_block = posts[0]["messages"][0]["content"][0]
         self.assertEqual(first_block["type"], "thinking")
         self.assertEqual(first_block["signature"], "stale")
+
+    async def _threaded_chat(self, replies, bodies):
+        """Run each body through chat() in one session; returns the posts."""
+        posts: list = []
+        queue = list(replies)
+
+        class Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def build_request(self, method, url, headers=None, json=None):
+                posts.append((headers, json))
+                return url
+
+            async def send(self, req, stream=False):
+                status, payload = queue.pop(0)
+                if status == 200:
+                    return _FakeResp(payload)
+                return httpx.Response(status, json=payload)
+
+            async def aclose(self):
+                return None
+
+        accounts.add_credential(self.sid, "mine", "tok", extra={"access_token": "tok", "refresh_token": "rt"},
+                                donated_by=self.alice["id"])
+        src = claude_mod.ClaudeSource({"id": self.sid, "name": "Claude"}, {}, [])
+        with patch("app.sources.claude.httpx.AsyncClient", Client), \
+             patch("app.sources.claude.refresh_pool_quota", new_callable=AsyncMock):
+            for body in bodies:
+                result = await src.chat({"model": "claude/claude-sonnet-4-6", "stream": True, "tools": _TOOLS, **body},
+                                        user_id=self.alice["id"], session_id="sess-thread")
+                self.assertEqual(result.status, 200)
+                async for _ in result.stream:
+                    pass
+        self.assertEqual(queue, [])
+        return posts
+
+    _TOOL_REPLY = [
+        {"type": "message_start", "message": {"id": "msg_1", "usage": {"input_tokens": 3}}},
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "toolu_1", "name": "grep"}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{}"}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {"output_tokens": 1}},
+        {"type": "message_stop"},
+    ]
+    _TEXT_REPLY = [
+        {"type": "message_start", "message": {"id": "msg_2", "usage": {"input_tokens": 3}}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "done"}},
+        {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 1}},
+        {"type": "message_stop"},
+    ]
+
+    @patch("app.sources.claude.note_pool_invoke")
+    @patch("app.sources.claude.refresh_due", new_callable=AsyncMock)
+    async def test_tool_round_continues_the_thread_with_only_new_messages(self, _due, _invoke):
+        posts = await self._threaded_chat(
+            [(200, self._TOOL_REPLY), (200, self._TEXT_REPLY)],
+            [{"messages": _TURN1}, {"messages": [*_TURN1, _CALL, _RESULT]}],
+        )
+        (h1, create), (h2, cont) = posts
+        self.assertIn(claude_thread.BETA, h1["anthropic-beta"])
+        self.assertEqual(h1["anthropic-beta"], h2["anthropic-beta"])
+        self.assertEqual(create["thread"], {"type": "create"})
+        self.assertIn("tools", create)
+        self.assertEqual(cont["thread"], {"type": "continue", "previous_message_id": "msg_1"})
+        self.assertNotIn("system", cont)
+        self.assertNotIn("tools", cont)
+        self.assertEqual([m["role"] for m in cont["messages"]], ["user"])
+        self.assertEqual(cont["messages"][0]["content"][0]["tool_use_id"], "toolu_1")
+
+    @patch("app.sources.claude.note_pool_invoke")
+    @patch("app.sources.claude.refresh_due", new_callable=AsyncMock)
+    async def test_lost_thread_replays_the_full_conversation(self, _due, _invoke):
+        lost = {"type": "error", "error": {"type": "not_found_error", "message": "thread not found",
+                                          "details": {"error_code": "thread_not_found"}}}
+        posts = await self._threaded_chat(
+            [(200, self._TOOL_REPLY), (404, lost), (200, self._TEXT_REPLY)],
+            [{"messages": _TURN1}, {"messages": [*_TURN1, _CALL, _RESULT]}],
+        )
+        self.assertEqual(posts[1][1]["thread"]["type"], "continue")
+        replay = posts[2][1]
+        self.assertEqual(replay["thread"], {"type": "create"})
+        self.assertEqual([m["role"] for m in replay["messages"]], ["user", "assistant", "user"])
+        self.assertIn("tools", replay)
+
+    @patch("app.sources.claude.note_pool_invoke")
+    @patch("app.sources.claude.refresh_due", new_callable=AsyncMock)
+    async def test_unsupported_thread_falls_back_to_plain_messages(self, _due, _invoke):
+        refused = {"type": "error", "error": {"type": "invalid_request_error", "message": "threads unavailable",
+                                             "details": {"error_code": "thread_unsupported_request", "unsupported": ["hipaa"]}}}
+        posts = await self._threaded_chat(
+            [(400, refused), (200, self._TOOL_REPLY), (200, self._TEXT_REPLY)],
+            [{"messages": _TURN1}, {"messages": [*_TURN1, _CALL, _RESULT]}],
+        )
+        self.assertEqual(posts[0][1]["thread"], {"type": "create"})
+        for headers, sent in posts[1:]:
+            self.assertNotIn("thread", sent)
+            self.assertNotIn(claude_thread.BETA, headers["anthropic-beta"])
+        self.assertEqual(len(posts[2][1]["messages"]), 3)
 
 
 if __name__ == "__main__":

@@ -429,11 +429,11 @@ def build_messages_payload(body: dict, model: str) -> dict:
     return payload
 
 
-def _chat_headers(token: str) -> dict:
+def _chat_headers(token: str, beta: str = _BETA) -> dict:
     return {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
         "Accept": "text/event-stream",
         "anthropic-version": _ANTHROPIC_VERSION,
-        "anthropic-beta": _BETA,
+        "anthropic-beta": beta,
     }
