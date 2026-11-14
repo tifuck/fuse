@@ -38,8 +38,15 @@ const withConfig = (coding) => `(() => { const swap = () => { const el = documen
       const sheet = page.locator('.chat-library-sheet');
       await sheet.waitFor();
       assert.equal(await page.locator('.chat-library-item').count(), 6);
-      const box = await sheet.boundingBox(), tiles = await page.locator('.chat-library-tiles').boundingBox(), composer = await page.locator('.chat-box').boundingBox();
-      assert.ok(Math.abs(box.x - tiles.x) < 2 && box.width <= 769 && box.y + box.height <= composer.y, `sheet placement ${JSON.stringify({ box, tiles, composer })}`);
+      // From a tile: the category takes the tiles' place, not a modal sheet.
+      assert.ok(await page.evaluate(() => document.querySelector('[data-chat-library]').contains(document.querySelector('.chat-library-sheet'))), 'inline in the library');
+      assert.ok(!(await page.locator('.chat-library-tiles').isVisible()) && !(await page.locator('.chat-library-backdrop').isVisible()), 'tiles replaced, no backdrop');
+      const box = await sheet.boundingBox(), thread = await page.locator('[data-chat-thread]').boundingBox(), composer = await page.locator('.chat-box').boundingBox();
+      assert.ok(Math.abs(thread.x + thread.width / 2 - (box.x + box.width / 2)) < 12 && box.y >= thread.y && box.y + box.height <= composer.y, `inline placement ${JSON.stringify({ box, thread, composer })}`);
+      await page.click('[data-library-back]');
+      assert.ok(!(await sheet.isVisible()) && (await page.locator('.chat-library-tiles').isVisible()), 'back returns to the tiles');
+      assert.ok(await page.evaluate(() => document.activeElement.matches('[data-library-cat="perf"]')), 'focus back on the tile');
+      await page.click('[data-library-cat="perf"]');
       const row = await page.locator('.chat-library-search').boundingBox();
       assert.ok(row.height < 48, `search row is one line: ${row.height}`);
       await page.fill('[data-library-search]', 'flaky');
@@ -82,9 +89,12 @@ const withConfig = (coding) => `(() => { const swap = () => { const el = documen
       assert.ok((await page.locator('.chat-library-item').count()) >= 8);
       await page.keyboard.press('Escape');
       assert.ok(!(await sheet.isVisible()));
+      // Outside an empty chat /prompts opens the modal sheet over the composer.
+      await page.evaluate(() => document.querySelector('.chat').classList.remove('is-empty'));
       await page.fill('#chat-input', '/prompts');
       await page.keyboard.press('Enter');
       await sheet.waitFor();
+      assert.ok(!(await page.evaluate(() => document.querySelector('[data-chat-library]').contains(document.querySelector('.chat-library-sheet')))), 'modal outside the library');
       await page.click('.chat-library-backdrop', { position: { x: 5, y: 5 } });
       assert.ok(!(await sheet.isVisible()), 'backdrop closes the sheet');
       assert.ok((await page.evaluate(() => document.scrollingElement.scrollWidth - document.documentElement.clientWidth)) <= 1);
@@ -99,7 +109,7 @@ const withConfig = (coding) => `(() => { const swap = () => { const el = documen
       assert.equal(await page.inputValue('#chat-input'), '');
       await context.close();
     }
-    // Phones: two columns of tiles centered with a margin, a full-width bottom sheet, back closes it.
+    // Phones: two columns of tiles centered with a margin; a category replaces them and back returns.
     for (const [width, height] of [[390, 844], [360, 640]]) {
       const { context, page } = await open({ width, height }, true, { hasTouch: true, isMobile: true });
       if (await page.locator('[data-chat-new]').isVisible()) { await page.click('[data-chat-new]'); await page.waitForTimeout(500); }
@@ -113,14 +123,15 @@ const withConfig = (coding) => `(() => { const swap = () => { const el = documen
       await page.tap('[data-library-cat="security"]');
       const sheet = page.locator('.chat-library-sheet');
       await sheet.waitFor();
-      const b = await sheet.boundingBox();
-      assert.ok(Math.abs(b.width - width) < 2 && Math.abs(b.y + b.height - height) < 2, `${width}: bottom sheet ${JSON.stringify(b)}`);
+      const b = await sheet.boundingBox(), t = await page.locator('[data-chat-thread]').boundingBox();
+      assert.ok(b.width < width && b.x > 0 && b.y >= t.y && b.y + b.height <= t.y + t.height + 1, `${width}: inline category ${JSON.stringify({ b, t })}`);
+      assert.ok(!(await page.locator('.chat-library-tiles').isVisible()), `${width}: tiles replaced`);
       assert.ok(!(await page.evaluate(() => document.activeElement.matches('input'))), `${width}: no keyboard`);
       await page.tap('[data-library-preview="sec-authz"]');
       assert.ok(await page.locator('.chat-library-preview').isVisible());
       await page.goBack();
       await page.waitForTimeout(300);
-      assert.ok(!(await sheet.isVisible()), `${width}: back closes the sheet`);
+      assert.ok(!(await sheet.isVisible()) && (await page.locator('.chat-library-tiles').isVisible()), `${width}: back returns to the tiles`);
       await page.tap('[data-library-cat="design"]');
       await page.tap('[data-library-insert="tradeoffs"]');
       assert.ok((await page.inputValue('#chat-input')).startsWith('Decision: {{'), `${width}: inserted`);

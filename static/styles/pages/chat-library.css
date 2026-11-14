@@ -3,7 +3,8 @@
    prompts. Phones get a full-width sheet with swipe-down and back to close;
    wider screens get the same sheet rising from the composer, at its width. */
 .chat .chat-library { display: none; }
-.chat.is-empty:not(.is-composing) .chat-library:not([hidden]) {
+.chat.is-empty:not(.is-composing) .chat-library:not([hidden]),
+.chat.is-empty .chat-library.is-open:not([hidden]) {
   display: flex;
   flex-direction: column;
   width: min(100%, 56rem);
@@ -12,8 +13,11 @@
   padding: 1rem var(--console-gutter, 1rem);
   box-sizing: border-box;
 }
+/* A category opened from a tile takes the tiles' place (see .is-inline). */
+.chat .chat-library.is-open { height: 100%; }
+.chat .chat-library.is-open .chat-library-tiles { display: none; }
 /* The phone keyboard needs the room; the box is where attention is. */
-body.is-chat.is-keyboard .chat .chat-library { display: none; }
+body.is-chat.is-keyboard .chat .chat-library:not(.is-open) { display: none; }
 
 /* Centered while it fits; when it does not, it scrolls from its top
    (justify-content: center would push the top out of reach). */
@@ -336,6 +340,35 @@ body.is-chat.is-keyboard .chat .chat-library { display: none; }
   .chat-library-list { padding-bottom: calc(0.75rem + var(--safe-bottom, 0px)); }
   .chat-library-row { min-height: 3.5rem; }
   .chat-library-peek { width: 2.75rem; height: 2.75rem; }
+  /* The tag drops under the blurb so titles keep the width. */
+  .chat-library-item { grid-template-columns: minmax(0, 1fr) auto; row-gap: 0; }
+  .chat-library-peek { grid-column: 2; grid-row: 1 / span 2; }
+  .chat-library-tag { grid-row: 2; justify-self: start; margin: 0 0 0.55rem 0.6rem; }
+}
+/* —— Inline: the category in place of the tiles, same column ——
+   Content height up to the open area, then the list scrolls inside. */
+.chat-library-sheet.is-inline {
+  position: static;
+  width: 100%;
+  height: auto;
+  max-height: 100%;
+  margin-block: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: none;
+}
+@starting-style {
+  .chat-library-sheet.is-inline:not([hidden]) { opacity: 0; translate: 0 0.5rem; }
+}
+.chat-library-sheet.is-inline [data-library-close],
+.chat-library-sheet.is-inline .chat-library-grab { display: none; }
+.chat-library-sheet.is-inline .chat-library-head { min-height: 3.25rem; padding: 0.5rem 0.9rem 0.5rem 0.5rem; touch-action: auto; }
+.chat-library-head-meta { flex: none; color: var(--mute); font: 0.75rem var(--mono); }
+.chat-library-head-meta:empty { display: none; }
+@media (max-width: 800px) {
+  .chat-library-sheet.is-inline { width: 92%; margin-inline: auto; }
+  .chat-library-sheet.is-inline .chat-library-list { padding-bottom: 0.5rem; }
+  .chat-library-sheet.is-inline .chat-library-foot { padding-bottom: 0.6rem; }
 }
 @media (prefers-reduced-motion: reduce) {
   .chat-library-sheet { transition: none; }
