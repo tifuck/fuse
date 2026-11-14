@@ -375,7 +375,8 @@ async def login(request: Request):
     from app import accounts
 
     # Stamped like a real login: unstamped sessions are refused.
-    request.session.update(uid=1, ph=accounts.password_fingerprint(accounts.get_user(1)), csrf="browser-test-csrf")
+    accounts.start_session(request.session, accounts.get_user(1))
+    request.session["csrf"] = "browser-test-csrf"
     return RedirectResponse("/chat")
 
 
