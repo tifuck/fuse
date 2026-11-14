@@ -136,6 +136,18 @@ def parse_catalog(payload) -> dict:
     return {"by_id": by_id}
 
 
+# The documented public lineup, served only while no live read has succeeded
+# (Cloudflare blocks some hosts). No prices: the documented ones are examples.
+_FALLBACK = parse_catalog({"data": [
+    {"id": "glm-5.3-abliterated", "context_length": 1048576, "reasoning_efforts": ["low", "high", "max"], "reasoning_default": "low"},
+    {"id": "glm-5.3-flash-abliterated", "context_length": 1048576, "reasoning_efforts": ["low", "high", "max"], "reasoning_default": "low"},
+    {"id": "deepseek-v4.1-flash-abliterated", "context_length": 1048576, "reasoning_efforts": ["off", "low", "high", "max"], "reasoning_default": "low"},
+    {"id": "deepseek-v4.1-flash-fast", "context_length": 1048576, "reasoning_efforts": ["off", "low", "high", "max"], "reasoning_default": "low"},
+    {"id": "minimax-m3.1-flash", "context_length": 1048576, "reasoning_efforts": ["low", "high", "max"], "reasoning_default": "low"},
+    {"id": "deepseek-v4.1-flash-abliterated-free", "context_length": 524288, "reasoning_efforts": ["off", "low", "high", "max"], "reasoning_default": "low"},
+]})
+
+
 def _remember_windows(catalog: dict) -> None:
     from .. import context_meter as ctxmod
 
@@ -177,7 +189,8 @@ async def _fetch_catalog() -> tuple[dict | None, int]:
 
 async def fetch_catalog(*, force: bool = False) -> dict:
     """The public lineup and list prices, read without a key.
-    An empty live catalog is the catalog; a failed read keeps the last one."""
+    An empty live catalog is the catalog; a failed read keeps the last one,
+    or the documented lineup before any read has succeeded."""
     global _catalog, _catalog_ok, _catalog_lock
     if not force and _catalog and time.time() - _catalog[0] < CATALOG_TTL:
         return _catalog[1]
@@ -193,11 +206,14 @@ async def fetch_catalog(*, force: bool = False) -> dict:
             _remember_windows(catalog)
             return catalog
         _catalog_ok = False
-        return _catalog[1] if _catalog else {"by_id": {}}
+        if _catalog:
+            return _catalog[1]
+        _remember_windows(_FALLBACK)
+        return _FALLBACK
 
 
-def cached_catalog() -> dict | None:
-    return _catalog[1] if _catalog else None
+def cached_catalog() -> dict:
+    return _catalog[1] if _catalog else _FALLBACK
 
 
 def catalog_available() -> bool:

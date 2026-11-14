@@ -125,6 +125,18 @@ def test_catalog_is_read_live_without_a_key(backend, network):
     assert asyncio.run(refuseless.fetch_catalog(force=True))["by_id"].keys() == refuseless.parse_catalog(newer)["by_id"].keys()
 
 
+def test_blocked_first_read_lists_the_documented_lineup(backend, network):
+    src, sid, (a, _b, _c) = backend
+    link(sid, a, "abl_live_key_a")
+    refuseless._catalog = None
+    network(lambda r: httpx.Response(403, text="<html>Attention Required! | Cloudflare</html>"))
+    names = asyncio.run(src.models())
+    assert f"refuseless/{GLM}" in names and "refuseless/minimax-m3.1-flash" in names
+    assert refuseless.efforts_for(f"refuseless/{GLM}") == ("low", "high", "max")
+    assert refuseless.catalog_record(GLM)["pricing"] == {}
+    assert asyncio.run(refuseless.resolve(f"refuseless/{GLM}", a)) == GLM
+
+
 def test_payload_maps_effort_clamps_output_and_keeps_tools():
     rec = refuseless.parse_catalog(CATALOG)["by_id"][GLM]
     tools = [{"type": "function", "function": {"name": "f", "parameters": {"type": "object"}}}]
