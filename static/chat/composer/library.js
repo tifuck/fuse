@@ -35,8 +35,6 @@ export function createLibrary(ctx) {
   let sheet = null;
   let backdrop = null;
   let opener = null;
-  // In place of the tiles on an empty chat; a modal sheet everywhere else.
-  let inline = false;
   let view = { cat: null, query: "", preview: null, mode: null, mods: [] };
   // Tab stops of the last inserted prompt, valid while the box holds it.
   let fields = [];
@@ -48,12 +46,39 @@ export function createLibrary(ctx) {
   const usable = (p) => p.needs !== "project" || codeTools();
   const modeTag = (p) => (p.needs_input ? "Needs input" : CATALOG.footers[p.modes[0]].short);
 
-  function renderTiles() {
+  // The empty chat shows the category tiles, or one category's prompts as
+  // cards in the same grid under a back bar. A card inserts its prompt.
+  let shownCat = null;
+  function renderTiles(catId = null) {
     if (!host) return;
-    host.innerHTML =
-      `<div class="chat-library-tiles" role="group" aria-label="Prompt library">${CATALOG.categories.map((c) =>
-        `<button type="button" class="chat-library-tile" data-library-cat="${c.id}" aria-haspopup="dialog">${icon(c.icon, 18)}<span class="chat-library-tile-name">${escapeHtml(c.name)}</span><span class="chat-library-tile-count">${c.prompts.length} prompts</span></button>`).join("")}</div>`;
+    const cat = CATALOG.categories.find((c) => c.id === catId);
+    shownCat = cat ? cat.id : null;
+    host.innerHTML = '<div class="chat-library-body">' + (cat
+      ? `<div class="chat-library-bar"><button type="button" class="chat-library-back" data-library-home>${icon("back", 14)}<span>All categories</span></button>` +
+        `<h2 class="chat-library-bar-title">${icon(cat.icon, 18)}<span>${escapeHtml(cat.name)}</span></h2>` +
+        `<span class="chat-library-bar-count">${cat.prompts.length} prompts</span></div>` +
+        `<div class="chat-library-tiles is-prompts" role="group" aria-label="${escapeHtml(cat.name)} prompts">${cat.prompts.map((p) => {
+          const ok = usable(BY_ID.get(p.id));
+          return `<button type="button" class="chat-library-tile is-prompt" data-library-insert="${p.id}"${ok ? "" : ' aria-disabled="true"'}>` +
+            `<span class="chat-library-tile-name">${escapeHtml(p.title)}</span>` +
+            `<span class="chat-library-tile-blurb">${escapeHtml(ok ? p.blurb : "Needs a project chat. " + p.blurb)}</span>` +
+            `<span class="chat-library-tile-count">${escapeHtml(modeTag(BY_ID.get(p.id)))}</span></button>`;
+        }).join("")}</div>`
+      : `<div class="chat-library-tiles" role="group" aria-label="Prompt library">${CATALOG.categories.map((c) =>
+        `<button type="button" class="chat-library-tile" data-library-cat="${c.id}">${icon(c.icon, 18)}<span class="chat-library-tile-name">${escapeHtml(c.name)}</span><span class="chat-library-tile-count">${c.prompts.length} prompts</span></button>`).join("")}</div>`) +
+      "</div>";
     host.hidden = false;
+  }
+
+  function showCategory(catId) {
+    const from = shownCat;
+    renderTiles(catId);
+    if (S.overlayMobile.matches && window.FuseBack) {
+      if (catId) FuseBack.open("chat:library-cat", () => showCategory(null));
+      else FuseBack.drop("chat:library-cat");
+    }
+    const target = catId ? host.querySelector("[data-library-home]") : host.querySelector(`[data-library-cat="${from}"]`);
+    target?.focus({ preventScroll: true });
   }
 
   function rowHtml(p) {
@@ -109,14 +134,13 @@ export function createLibrary(ctx) {
       `<button type="button" class="chat-library-iconbtn" data-library-back aria-label="Back to the list" hidden>${icon("back", 14)}</button>` +
       '<span class="chat-library-head-icon" data-library-head-icon aria-hidden="true"></span>' +
       '<h2 id="chat-library-title" data-library-title></h2>' +
-      '<span class="chat-library-head-meta" data-library-head-meta></span>' +
       `<button type="button" class="chat-library-iconbtn" data-library-close aria-label="Close">${icon("close", 14)}</button></div>` +
       `<label class="chat-library-search" data-library-searchrow>${icon("search", 14)}<input type="search" data-library-search placeholder="Search all ${PROMPTS.length} prompts" aria-label="Search prompts" autocomplete="off" enterkeyhint="search"></label>` +
       '<div class="chat-library-list" data-library-list role="list"></div>' +
       '<div class="chat-library-preview" data-library-preview-pane hidden></div>' +
       '<div class="chat-library-foot" data-library-foot hidden><button type="button" class="chat-library-insert" data-library-insert-preview>Insert into the message box</button></div>';
     S.root.append(backdrop, sheet);
-    attachSheetSwipe(sheet, ".chat-library-head", () => S.overlayMobile.matches && !inline, close);
+    attachSheetSwipe(sheet, ".chat-library-head", () => S.overlayMobile.matches, close);
     backdrop.addEventListener("click", close);
     sheet.addEventListener("click", onSheetClick);
     sheet.addEventListener("keydown", onSheetKey);
@@ -128,7 +152,7 @@ export function createLibrary(ctx) {
   }
 
   function place() {
-    if (!sheet || sheet.hidden || inline) return;
+    if (!sheet || sheet.hidden) return;
     if (S.overlayMobile.matches) {
       sheet.style.removeProperty("--library-left");
       sheet.style.removeProperty("--library-width");
@@ -149,10 +173,7 @@ export function createLibrary(ctx) {
     const searching = !view.preview && view.query.trim();
     sheet.querySelector("[data-library-title]").textContent = view.preview ? BY_ID.get(view.preview).title : searching ? "Search" : cat.name;
     sheet.querySelector("[data-library-head-icon]").innerHTML = view.preview || searching ? "" : icon(cat.icon, 16);
-    sheet.querySelector("[data-library-head-meta]").textContent = view.preview || searching ? "" : `${cat.prompts.length} prompts`;
-    const back = sheet.querySelector("[data-library-back]");
-    back.hidden = !view.preview && !inline;
-    back.setAttribute("aria-label", view.preview ? "Back to the list" : "Back to categories");
+    sheet.querySelector("[data-library-back]").hidden = !view.preview;
   }
 
   function paintList() {
@@ -186,17 +207,11 @@ export function createLibrary(ctx) {
     view = { cat: query || !catId ? CATALOG.categories[0].id : catId, query, preview: null, mode: null, mods: [] };
     const search = sheet.querySelector("[data-library-search]");
     search.value = query;
-    inline = Boolean(host) && S.root.classList.contains("is-empty");
-    sheet.classList.toggle("is-inline", inline);
-    sheet.setAttribute("aria-modal", String(!inline));
-    host?.classList.toggle("is-open", inline);
-    if (inline) host.append(sheet);
-    else S.root.append(sheet);
-    backdrop.hidden = inline;
+    backdrop.hidden = false;
     sheet.hidden = false;
     paint();
     place();
-    if (!inline) modalInert(sheet, true);
+    modalInert(sheet, true);
     if (S.overlayMobile.matches && window.FuseBack) FuseBack.open("chat:library", () => close(true));
     // Focusing the search on a phone would raise the keyboard over the list.
     if (S.overlayMobile.matches) sheet.focus({ preventScroll: true });
@@ -207,8 +222,7 @@ export function createLibrary(ctx) {
     if (!sheet || sheet.hidden) return;
     sheet.hidden = true;
     backdrop.hidden = true;
-    host?.classList.remove("is-open");
-    if (!inline) modalInert(sheet, false);
+    modalInert(sheet, false);
     if (fromBack !== true && window.FuseBack) FuseBack.drop("chat:library");
     returnFocus(sheet, opener);
   }
@@ -231,7 +245,7 @@ export function createLibrary(ctx) {
   function onSheetClick(event) {
     const t = event.target;
     if (t.closest("[data-library-close]")) return close();
-    if (t.closest("[data-library-back]")) return view.preview ? backToList() : close();
+    if (t.closest("[data-library-back]")) return backToList();
     const peek = t.closest("[data-library-preview]");
     if (peek) return showPreview(peek.getAttribute("data-library-preview"));
     const modeBtn = t.closest("[data-library-mode]");
@@ -285,6 +299,10 @@ export function createLibrary(ctx) {
       if (S.input.value.trim()) return;
     }
     close();
+    if (shownCat) {
+      renderTiles();
+      if (window.FuseBack) FuseBack.drop("chat:library-cat");
+    }
     const filled = fillFields(composePrompt(CATALOG, p, mode || p.modes[0], mods));
     S.input.value = filled.text;
     // The composer's own input handler saves the draft, resizes and syncs.
@@ -363,8 +381,17 @@ export function createLibrary(ctx) {
     S.form?.addEventListener("submit", guard, true);
 
     host?.addEventListener("click", (event) => {
-      const tile = event.target.closest("[data-library-cat]");
-      if (tile) open(tile.getAttribute("data-library-cat"), tile);
+      const t = event.target;
+      const tile = t.closest("[data-library-cat]");
+      if (tile) return showCategory(tile.getAttribute("data-library-cat"));
+      if (t.closest("[data-library-home]")) return showCategory(null);
+      const card = t.closest("[data-library-insert]");
+      if (card) insert(card.getAttribute("data-library-insert"));
+    });
+    host?.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || !shownCat) return;
+      event.preventDefault();
+      showCategory(null);
     });
 
     renderTiles();
