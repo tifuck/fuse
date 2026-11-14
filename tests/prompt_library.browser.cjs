@@ -99,17 +99,17 @@ const withConfig = (coding) => `(() => { const swap = () => { const el = documen
       assert.equal(await page.inputValue('#chat-input'), '');
       await context.close();
     }
-    // Phones: two columns of tiles filling the open area, a full-width bottom sheet, back closes it.
+    // Phones: two columns of tiles centered with a margin, a full-width bottom sheet, back closes it.
     for (const [width, height] of [[390, 844], [360, 640]]) {
       const { context, page } = await open({ width, height }, true, { hasTouch: true, isMobile: true });
       if (await page.locator('[data-chat-new]').isVisible()) { await page.click('[data-chat-new]'); await page.waitForTimeout(500); }
       assert.ok(await page.locator('[data-chat-library]').isVisible());
       assert.ok((await page.evaluate(() => document.scrollingElement.scrollWidth - document.documentElement.clientWidth)) <= 1, `${width}: no sideways scroll`);
       const widths = await page.locator('.chat-library-tile').evaluateAll((els) => els.map((e) => e.getBoundingClientRect().width));
-      assert.ok(widths.length === 10 && Math.min(...widths) > 120, `${width}: tiles ${widths}`);
+      assert.ok(widths.length === 10 && Math.min(...widths) > 110, `${width}: tiles ${widths}`);
       const fits = await page.evaluate(() => { const t = document.querySelector('[data-chat-thread]').getBoundingClientRect(), g = document.querySelector('.chat-library-tiles').getBoundingClientRect();
-        return g.top >= t.top - 1 && g.bottom <= t.bottom + 1 && g.height > t.height * 0.8; });
-      assert.ok(fits, `${width}: the tiles fill the open area without overflowing`);
+        return g.top >= t.top - 1 && g.bottom <= t.bottom + 1 && g.width < t.width * 0.9 && Math.abs(t.left + t.width / 2 - (g.left + g.width / 2)) < 2; });
+      assert.ok(fits, `${width}: the tiles sit centered with a margin, without overflowing`);
       await page.tap('[data-library-cat="security"]');
       const sheet = page.locator('.chat-library-sheet');
       await sheet.waitFor();

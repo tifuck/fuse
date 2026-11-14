@@ -48,14 +48,14 @@ body.is-chat.is-keyboard .chat .chat-library { display: none; }
 }
 .chat .chat-library-tile:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
 @media (max-width: 800px) {
-  /* Phones: two columns of tiles fill the open area. */
+  /* Phones: two columns of tiles, centered with a margin around them. */
   .chat.is-empty:not(.is-composing) .chat-library:not([hidden]) { padding-block: 0.5rem; }
   .chat .chat-library-tiles {
-    flex: 1 0 auto;
+    width: 86%;
+    margin: auto;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    grid-auto-rows: minmax(4.25rem, 1fr);
+    grid-auto-rows: 1fr;
     gap: 0.5rem;
-    margin-block: 0;
   }
   /* Icon beside the name: five rows still fit a short phone. */
   .chat .chat-library-tile {
@@ -64,8 +64,9 @@ body.is-chat.is-keyboard .chat .chat-library { display: none; }
     align-content: center;
     column-gap: 0.6rem;
     row-gap: 0.15rem;
-    min-height: 0;
-    padding: 0.6rem 0.75rem;
+    min-height: 3.75rem;
+    padding: 0.6rem 0.7rem;
+    font-size: 0.8125rem;
   }
   .chat .chat-library-tile svg { grid-row: span 2; align-self: center; margin: 0; }
 }
